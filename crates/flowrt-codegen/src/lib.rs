@@ -281,15 +281,11 @@ fn emit_cpp_components(contract: &ContractIr) -> String {
 }
 
 fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
-    if !is_cpp_standalone_contract(contract) {
-        return emit_cpp_runtime_shell_stub();
-    }
-
     let graph = contract
         .graphs
         .first()
         .expect("normalized contract must contain at least one graph");
-    let order = topo_order_instances(graph);
+    let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
@@ -349,15 +345,11 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
 }
 
 fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
-    if !is_cpp_standalone_contract(contract) {
-        return emit_cpp_runtime_shell_stub_header();
-    }
-
     let graph = contract
         .graphs
         .first()
         .expect("normalized contract must contain at least one graph");
-    let order = topo_order_instances(graph);
+    let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let selected_backend = selected_backend_name(contract);
@@ -418,38 +410,6 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         "\nnamespace flowrt_user {\n\n/**\n * @brief 构造用户 C++ 组件实例并交给 FlowRT 管理 shell。\n *\n * 用户项目必须实现该函数。函数体应只装配用户组件对象，不写入 FlowRT 管理产物。\n *\n * @return 已注入用户组件实例的 FlowRT C++ 应用对象。\n */\nflowrt_app::App build_app();\n\n}  // namespace flowrt_user\n",
     );
     output
-}
-
-fn emit_cpp_runtime_shell_stub() -> String {
-    let mut output = managed_header();
-    output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
-    output.push_str("namespace flowrt_app {\n\n");
-    output.push_str("flowrt::Status run() {\n    return flowrt::ok();\n}\n\n");
-    output.push_str(
-        "flowrt::Status run_process(std::string_view process) {\n    return process == \"main\" ? run() : flowrt::Status::Error;\n}\n\n",
-    );
-    output.push_str("}  // namespace flowrt_app\n");
-    output
-}
-
-fn emit_cpp_runtime_shell_stub_header() -> String {
-    let mut output = managed_header();
-    output.push_str("#pragma once\n\n");
-    output.push_str("#include <string_view>\n\n");
-    output.push_str("#include <flowrt/runtime.hpp>\n\n");
-    output.push_str("namespace flowrt_app {\n\n");
-    output.push_str(
-        "/**\n * @brief 运行 C++ managed runtime shell。\n *\n * v0.1 仅在 C++ only contract 中生成真实 inproc shell；混合语言 contract 的 C++ shell 暂保留可编译骨架，跨语言调度边界后续单独实现。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
-    );
-    output.push_str(
-        "/**\n * @brief 运行 C++ managed runtime shell 中的指定 process group。\n *\n * @param process process group 名称。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process);\n\n",
-    );
-    output.push_str("}  // namespace flowrt_app\n");
-    output
-}
-
-fn is_cpp_standalone_contract(contract: &ContractIr) -> bool {
-    has_language(contract, LanguageKind::Cpp) && !has_language(contract, LanguageKind::Rust)
 }
 
 fn emit_cpp_app_constructor_declaration(contract: &ContractIr, order: &[&InstanceIr]) -> String {
@@ -996,15 +956,11 @@ fn emit_rust_components(contract: &ContractIr) -> String {
 }
 
 fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
-    if !is_rust_standalone_contract(contract) {
-        return emit_mixed_rust_runtime_shell_stub(contract);
-    }
-
     let graph = contract
         .graphs
         .first()
         .expect("normalized contract must contain at least one graph");
-    let order = topo_order_instances(graph);
+    let order = topo_order_instances_for_language(contract, graph, LanguageKind::Rust);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
@@ -1075,76 +1031,6 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        _ => Box::new(flowrt::inproc_backend()),\n    }\n}\n\npub fn run() -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
     );
     output
-}
-
-fn emit_mixed_rust_runtime_shell_stub(contract: &ContractIr) -> String {
-    let graph = contract
-        .graphs
-        .first()
-        .expect("normalized contract must contain at least one graph");
-    let order = topo_order_instances(graph);
-    let rust_order = order
-        .into_iter()
-        .filter(|instance| {
-            component_by_name(contract, &instance.component.name).language == LanguageKind::Rust
-        })
-        .collect::<Vec<_>>();
-    let selected_backend = selected_backend_name(contract);
-
-    let mut output = managed_header();
-    output.push_str("\nuse crate::components::*;\nuse crate::user;\n\n");
-    output.push_str(&format!(
-        "const SELECTED_BACKEND: &str = {};\n\n",
-        rust_string_literal(&selected_backend)
-    ));
-    output.push_str("#[allow(dead_code)]\npub struct App {\n");
-    for instance in &rust_order {
-        let component = component_by_name(contract, &instance.component.name);
-        output.push_str(&format!(
-            "    {}: Box<dyn {}>,\n",
-            instance.name,
-            pascal_case(&component.name)
-        ));
-    }
-    output.push_str("}\n\n");
-    output.push_str("impl App {\n");
-    output.push_str(&emit_rust_language_subset_app_new(contract, &rust_order));
-    output.push_str(
-        "    pub fn run(self, _backend: &dyn flowrt::Backend) -> flowrt::Status {\n        let _ = self;\n        flowrt::Status::Error\n    }\n\n    pub fn run_process(self, _backend: &dyn flowrt::Backend, _process: &str) -> flowrt::Status {\n        let _ = self;\n        flowrt::Status::Error\n    }\n}\n\n",
-    );
-    output.push_str(
-        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        _ => Box::new(flowrt::inproc_backend()),\n    }\n}\n\n",
-    );
-    output.push_str(
-        "pub fn run() -> flowrt::Status {\n    let backend = backend();\n    let _ = \"mixed-language runtime shell is not implemented\";\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    let _ = \"mixed-language runtime shell is not implemented\";\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
-    );
-    output
-}
-
-fn emit_rust_language_subset_app_new(contract: &ContractIr, order: &[&InstanceIr]) -> String {
-    let mut output = String::new();
-    output.push_str("    pub fn new(\n");
-    for instance in order {
-        let component = component_by_name(contract, &instance.component.name);
-        output.push_str(&format!(
-            "        {}: Box<dyn {}>,\n",
-            instance.name,
-            pascal_case(&component.name)
-        ));
-    }
-    output.push_str("    ) -> Self {\n        Self {\n");
-    for instance in order {
-        output.push_str(&format!("            {},\n", instance.name));
-    }
-    output.push_str("        }\n    }\n");
-    output
-}
-
-fn is_rust_standalone_contract(contract: &ContractIr) -> bool {
-    contract
-        .components
-        .iter()
-        .all(|component| component.language == LanguageKind::Rust)
 }
 
 fn selected_backend_name(contract: &ContractIr) -> String {
@@ -2641,6 +2527,19 @@ fn topo_order_instances(graph: &GraphIr) -> Vec<&InstanceIr> {
         .collect()
 }
 
+fn topo_order_instances_for_language<'a>(
+    contract: &ContractIr,
+    graph: &'a GraphIr,
+    language: LanguageKind,
+) -> Vec<&'a InstanceIr> {
+    topo_order_instances(graph)
+        .into_iter()
+        .filter(|instance| {
+            component_by_name(contract, &instance.component.name).language == language
+        })
+        .collect()
+}
+
 #[allow(dead_code)]
 fn _port_type(port: &PortIr) -> &TypeExpr {
     &port.ty
@@ -2750,6 +2649,7 @@ input = ["value:u32"]
 
 [instance.source]
 component = "source"
+process = "cpp_source"
 
 [instance.source.task]
 trigger = "periodic"
@@ -2757,6 +2657,7 @@ output = ["value"]
 
 [instance.sink]
 component = "sink"
+process = "rust_sink"
 
 [instance.sink.task]
 trigger = "on_message"
@@ -2766,9 +2667,18 @@ input = ["value"]
 from = "source.value"
 to = "sink.value"
 channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp", "rust"]
+backends = ["iox2"]
 "#,
         );
         let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
         let rust_components = artifact_content(&bundle, "rust/src/components.rs");
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
@@ -2776,7 +2686,14 @@ channel = "latest"
         assert!(rust_components.contains("pub trait Sink"));
         assert!(!rust_shell.contains("source: Box<dyn Source>"));
         assert!(rust_shell.contains("sink: Box<dyn Sink>"));
-        assert!(rust_shell.contains("mixed-language runtime shell is not implemented"));
+        assert!(!rust_shell.contains("mixed-language runtime shell is not implemented"));
+        assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<u32>"));
+        assert!(rust_shell.contains("receive_latest_at(tick_time_ms)"));
+        assert!(!cpp_header.contains("std::unique_ptr<SinkInterface>"));
+        assert!(cpp_header.contains("std::unique_ptr<SourceInterface> source"));
+        assert!(!cpp_shell.contains("return flowrt::ok();"));
+        assert!(cpp_shell.contains("flowrt::iox2::Iox2PubSub<std::uint32_t>"));
+        assert!(cpp_shell.contains("bind_0_.publish_at(*value, tick_time_ms)"));
     }
 
     #[test]

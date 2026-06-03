@@ -236,6 +236,61 @@ fn run_mode(contract: &ContractIr) -> Option<RunMode> {
     }
 }
 
+fn run_mode_for_process(contract: &ContractIr, process: Option<&str>) -> Result<RunMode> {
+    if let Some(mode) = run_mode(contract) {
+        return Ok(mode);
+    }
+
+    let Some(process) = process else {
+        anyhow::bail!(
+            "mixed-language `run` requires `--process <name>`; use `flowrt launch` to start every process group"
+        );
+    };
+
+    let runtimes = process_runtime_flags(contract, process)
+        .with_context(|| format!("unknown FlowRT process group `{process}`"))?;
+
+    match (runtimes.rust, runtimes.cpp) {
+        (true, false) => Ok(RunMode::CargoApp),
+        (false, true) => Ok(RunMode::CmakeApp),
+        (true, true) => anyhow::bail!(
+            "mixed-language `run` cannot run process `{process}` because it contains both C++ and Rust components"
+        ),
+        (false, false) => {
+            anyhow::bail!("FlowRT process group `{process}` has no runnable components")
+        }
+    }
+}
+
+fn process_runtime_flags(contract: &ContractIr, process: &str) -> Option<ProcessRuntimeFlags> {
+    let component_languages = contract
+        .components
+        .iter()
+        .map(|component| (component.name.as_str(), component.language))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut runtimes = ProcessRuntimeFlags::default();
+    let mut found = false;
+    for graph in &contract.graphs {
+        for instance in &graph.instances {
+            let instance_process = instance.process.as_deref().unwrap_or("main");
+            if instance_process != process {
+                continue;
+            }
+            let Some(language) = component_languages
+                .get(instance.component.name.as_str())
+                .copied()
+            else {
+                continue;
+            };
+            runtimes.add(language);
+            found = true;
+        }
+    }
+
+    found.then_some(runtimes)
+}
+
 fn has_component_language(contract: &ContractIr, language: LanguageKind) -> bool {
     contract
         .components
@@ -268,9 +323,7 @@ fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Resu
         );
     }
 
-    anyhow::bail!(
-        "mixed-language `{command}` over `iox2` is not implemented yet; supervisor cross-language channel wiring is still missing"
-    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -372,7 +425,9 @@ fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
 fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
     ensure_backend_runtime_supported(contract, "run")?;
-    match run_mode(contract).context("contract does not contain runnable components")? {
+    match run_mode_for_process(contract, process)
+        .context("contract does not contain runnable components")?
+    {
         RunMode::CargoApp => {
             let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
             run_cargo_run(&manifest, &app_bin_name(contract), process)?;
@@ -735,6 +790,65 @@ language = "rust"
     }
 
     #[test]
+    fn run_mode_selects_app_by_process_for_mixed_iox2_contracts() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        assert_eq!(
+            run_mode_for_process(&contract, Some("rust_main")).unwrap(),
+            RunMode::CargoApp
+        );
+        assert_eq!(
+            run_mode_for_process(&contract, Some("cpp_main")).unwrap(),
+            RunMode::CmakeApp
+        );
+        assert!(run_mode_for_process(&contract, None).is_err());
+    }
+
+    #[test]
     fn mixed_runtime_readiness_rejects_same_process_mixed_components() {
         let contract = contract_from_source(
             r#"
@@ -844,7 +958,7 @@ default_stale_policy = "warn"
     }
 
     #[test]
-    fn mixed_runtime_readiness_keeps_iox2_gap_explicit() {
+    fn mixed_runtime_readiness_allows_iox2_cross_process_components() {
         let contract = contract_from_source(
             r#"
 [package]
@@ -891,10 +1005,7 @@ default_stale_policy = "warn"
 "#,
         );
 
-        let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("mixed-language `launch` over `iox2` is not implemented yet"));
-        assert!(message.contains("supervisor cross-language channel wiring"));
+        ensure_direct_runtime_supported(&contract, "launch").unwrap();
     }
 
     #[test]
