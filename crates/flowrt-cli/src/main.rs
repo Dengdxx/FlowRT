@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -247,12 +248,104 @@ fn is_mixed_language_contract(contract: &ContractIr) -> bool {
 }
 
 fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Result<()> {
-    if is_mixed_language_contract(contract) {
+    if !is_mixed_language_contract(contract) {
+        return Ok(());
+    }
+
+    if let Some(group) = mixed_process_group(contract) {
         anyhow::bail!(
-            "mixed-language `{command}` is not implemented yet; use `flowrt build` to validate generated artifacts until the cross-language runtime shell is available"
+            "mixed-language `{command}` cannot run graph `{}` process `{}` because it contains both C++ and Rust components; split them into language-specific RSDL process groups before using a cross-language backend",
+            group.graph,
+            group.process
         );
     }
-    Ok(())
+
+    let backend = selected_runtime_backend_name(contract);
+    if backend != "iox2" {
+        anyhow::bail!(
+            "mixed-language `{command}` requires backend `iox2`; selected backend `{backend}` cannot carry cross-language process boundaries"
+        );
+    }
+
+    anyhow::bail!(
+        "mixed-language `{command}` over `iox2` is not implemented yet; C++ iox2 runtime shell and supervisor cross-language channel wiring are still missing"
+    );
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProcessRuntimeFlags {
+    cpp: bool,
+    rust: bool,
+}
+
+impl ProcessRuntimeFlags {
+    fn add(&mut self, language: LanguageKind) {
+        match language {
+            LanguageKind::Cpp => self.cpp = true,
+            LanguageKind::Rust => self.rust = true,
+        }
+    }
+
+    fn is_mixed(&self) -> bool {
+        self.cpp && self.rust
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MixedProcessGroup {
+    graph: String,
+    process: String,
+}
+
+fn mixed_process_group(contract: &ContractIr) -> Option<MixedProcessGroup> {
+    let component_languages = contract
+        .components
+        .iter()
+        .map(|component| (component.name.as_str(), component.language))
+        .collect::<BTreeMap<_, _>>();
+
+    for graph in &contract.graphs {
+        let mut processes = BTreeMap::<String, ProcessRuntimeFlags>::new();
+        for instance in &graph.instances {
+            let Some(language) = component_languages
+                .get(instance.component.name.as_str())
+                .copied()
+            else {
+                continue;
+            };
+            processes
+                .entry(
+                    instance
+                        .process
+                        .clone()
+                        .unwrap_or_else(|| "main".to_string()),
+                )
+                .or_default()
+                .add(language);
+        }
+
+        if let Some((process, _)) = processes
+            .into_iter()
+            .find(|(_, runtimes)| runtimes.is_mixed())
+        {
+            return Some(MixedProcessGroup {
+                graph: graph.name.clone(),
+                process,
+            });
+        }
+    }
+
+    None
+}
+
+fn selected_runtime_backend_name(contract: &ContractIr) -> &str {
+    contract
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or_else(|| contract.profiles.first())
+        .map(|profile| profile.backend.0.as_str())
+        .unwrap_or("inproc")
 }
 
 fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
@@ -630,8 +723,172 @@ language = "rust"
         assert!(
             error
                 .to_string()
-                .contains("mixed-language `run` is not implemented yet")
+                .contains("mixed-language `run` requires backend `iox2`")
         );
+    }
+
+    #[test]
+    fn mixed_runtime_readiness_rejects_same_process_mixed_components() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("process `main`"));
+        assert!(message.contains("contains both C++ and Rust components"));
+        assert!(message.contains("split them into language-specific RSDL process groups"));
+    }
+
+    #[test]
+    fn mixed_runtime_readiness_rejects_inproc_cross_process_components() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("mixed-language `launch` requires backend `iox2`"));
+        assert!(message.contains("selected backend `inproc`"));
+    }
+
+    #[test]
+    fn mixed_runtime_readiness_keeps_iox2_gap_explicit() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("mixed-language `launch` over `iox2` is not implemented yet"));
+        assert!(message.contains("C++ iox2 runtime shell"));
+        assert!(message.contains("supervisor cross-language channel wiring"));
     }
 
     #[test]
