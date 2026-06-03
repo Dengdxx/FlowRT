@@ -1,0 +1,4 @@
+[component.estimator]
+language = "rust"
+input = ["imu:Imu"]
+output = ["odom:Odom"]

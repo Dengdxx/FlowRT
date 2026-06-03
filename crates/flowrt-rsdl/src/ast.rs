@@ -1,4 +1,39 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+/// 从文件系统加载并展开 imports 后的 RSDL 文档。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedDocument {
+    pub document: RawDocument,
+    pub sources: Vec<LoadedSource>,
+}
+
+impl LoadedDocument {
+    /// 返回用于 source hash 的规范化 source bundle 文本。
+    pub fn source_bundle_text(&self) -> String {
+        let mut sources = self.sources.clone();
+        sources.sort_by(|left, right| left.path.cmp(&right.path));
+
+        let mut output = String::new();
+        for source in sources {
+            output.push_str("-- ");
+            output.push_str(&source.path.to_string_lossy().replace('\\', "/"));
+            output.push_str(" --\n");
+            output.push_str(&source.content);
+            if !source.content.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+        output
+    }
+}
+
+/// source bundle 中的一个 RSDL 源文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedSource {
+    pub path: PathBuf,
+    pub content: String,
+}
 
 /// 语义归一化前的 RSDL v0.1 文档。
 #[derive(Debug, Clone, PartialEq)]

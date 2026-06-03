@@ -141,11 +141,10 @@ fn main() -> Result<()> {
 }
 
 fn load_contract_from_rsdl(path: &Path) -> Result<ContractIr> {
-    let source = fs::read_to_string(path)
-        .with_context(|| format!("failed to read RSDL source `{}`", path.display()))?;
-    let raw = flowrt_rsdl::parse_str(&source)
-        .with_context(|| format!("failed to parse RSDL source `{}`", path.display()))?;
-    let contract = normalize_document(&raw, hash_source(&source))
+    let loaded = flowrt_rsdl::load_file(path)
+        .with_context(|| format!("failed to load RSDL source `{}`", path.display()))?;
+    let source_bundle = loaded.source_bundle_text();
+    let contract = normalize_document(&loaded.document, hash_source(&source_bundle))
         .with_context(|| format!("failed to normalize `{}`", path.display()))?;
     validate_contract(&contract).context("contract validation failed")?;
     Ok(contract)

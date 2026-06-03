@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use toml::Value;
 use toml::value::Table;
@@ -7,31 +7,98 @@ use toml::value::Table;
 use crate::ast::*;
 use crate::{Result, RsdlError};
 
+#[derive(Debug)]
+struct ParsedDocument {
+    package: Option<RawPackage>,
+    types: BTreeMap<String, RawType>,
+    components: BTreeMap<String, RawComponent>,
+    instances: BTreeMap<String, RawInstance>,
+    binds: Vec<RawDataflowBind>,
+    profiles: BTreeMap<String, RawProfile>,
+    targets: BTreeMap<String, RawTarget>,
+}
+
 /// 从磁盘解析一个 `.rsdl` 文件。
 pub fn parse_file(path: impl AsRef<Path>) -> Result<RawDocument> {
+    Ok(load_file(path)?.document)
+}
+
+/// 从磁盘加载一个 `.rsdl` 文件，并展开 `[package.imports]`。
+pub fn load_file(path: impl AsRef<Path>) -> Result<LoadedDocument> {
     let path = path.as_ref();
-    let source = std::fs::read_to_string(path).map_err(|source| RsdlError::Io {
+    let root_path = canonicalize_existing(path)?;
+    let package_root = root_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut loaded_paths = std::collections::BTreeSet::new();
+    let mut sources = Vec::new();
+    let mut document = load_root_document(&root_path, &package_root, &mut sources)?;
+    loaded_paths.insert(root_path.clone());
+    expand_imports(
+        &mut document,
+        &root_path,
+        &package_root,
+        &mut loaded_paths,
+        &mut sources,
+    )?;
+
+    Ok(LoadedDocument { document, sources })
+}
+
+fn load_root_document(
+    path: &Path,
+    package_root: &Path,
+    sources: &mut Vec<LoadedSource>,
+) -> Result<RawDocument> {
+    let source = read_source(path)?;
+    sources.push(LoadedSource {
+        path: logical_source_path(path, package_root),
+        content: source.clone(),
+    });
+    parsed_to_raw(parse_source(&source, true)?)
+}
+
+fn load_import_document(
+    path: &Path,
+    package_root: &Path,
+    sources: &mut Vec<LoadedSource>,
+) -> Result<ParsedDocument> {
+    let source = read_source(path)?;
+    sources.push(LoadedSource {
+        path: logical_source_path(path, package_root),
+        content: source.clone(),
+    });
+    parse_source(&source, false)
+}
+
+fn read_source(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|source| RsdlError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
-    parse_str(&source)
+    })
 }
 
 /// 解析 RSDL v0.1 源文本。
 pub fn parse_str(source: &str) -> Result<RawDocument> {
+    parsed_to_raw(parse_source(source, true)?)
+}
+
+fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
     let value: Value = source.parse()?;
     let root = value.as_table().ok_or_else(|| RsdlError::InvalidValue {
         context: "document".to_string(),
         message: "expected a TOML table document".to_string(),
     })?;
 
-    let package_table = root
-        .get("package")
-        .and_then(Value::as_table)
-        .ok_or(RsdlError::MissingPackage)?;
+    let package = match root.get("package").and_then(Value::as_table) {
+        Some(package_table) => Some(parse_package(package_table)?),
+        None if require_package => return Err(RsdlError::MissingPackage),
+        None => None,
+    };
 
-    Ok(RawDocument {
-        package: parse_package(package_table)?,
+    Ok(ParsedDocument {
+        package,
         types: parse_named_tables(root, "type", parse_type)?,
         components: parse_named_tables(root, "component", parse_component)?,
         instances: parse_named_tables(root, "instance", parse_instance)?,
@@ -39,6 +106,255 @@ pub fn parse_str(source: &str) -> Result<RawDocument> {
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
     })
+}
+
+fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
+    Ok(RawDocument {
+        package: parsed.package.ok_or(RsdlError::MissingPackage)?,
+        types: parsed.types,
+        components: parsed.components,
+        instances: parsed.instances,
+        binds: parsed.binds,
+        profiles: parsed.profiles,
+        targets: parsed.targets,
+    })
+}
+
+fn expand_imports(
+    document: &mut RawDocument,
+    importer: &Path,
+    package_root: &Path,
+    loaded_paths: &mut std::collections::BTreeSet<PathBuf>,
+    sources: &mut Vec<LoadedSource>,
+) -> Result<()> {
+    let imports = document.package.imports.clone();
+    for pattern in imports.values().flatten() {
+        let matches = expand_import_pattern(importer, pattern)?;
+        for path in matches {
+            let path = canonicalize_existing(&path)?;
+            if !loaded_paths.insert(path.clone()) {
+                continue;
+            }
+
+            let imported = load_import_document(&path, package_root, sources)?;
+            let nested_imports = imported
+                .package
+                .as_ref()
+                .map(|package| package.imports.clone())
+                .unwrap_or_default();
+            merge_imported_document(document, imported)?;
+            expand_nested_imports(
+                document,
+                &path,
+                package_root,
+                nested_imports,
+                loaded_paths,
+                sources,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn expand_nested_imports(
+    document: &mut RawDocument,
+    importer: &Path,
+    package_root: &Path,
+    imports: BTreeMap<String, Vec<String>>,
+    loaded_paths: &mut std::collections::BTreeSet<PathBuf>,
+    sources: &mut Vec<LoadedSource>,
+) -> Result<()> {
+    for pattern in imports.values().flatten() {
+        let matches = expand_import_pattern(importer, pattern)?;
+        for path in matches {
+            let path = canonicalize_existing(&path)?;
+            if !loaded_paths.insert(path.clone()) {
+                continue;
+            }
+            let imported = load_import_document(&path, package_root, sources)?;
+            let nested_imports = imported
+                .package
+                .as_ref()
+                .map(|package| package.imports.clone())
+                .unwrap_or_default();
+            merge_imported_document(document, imported)?;
+            expand_nested_imports(
+                document,
+                &path,
+                package_root,
+                nested_imports,
+                loaded_paths,
+                sources,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn merge_imported_document(document: &mut RawDocument, imported: ParsedDocument) -> Result<()> {
+    merge_named_map("type", &mut document.types, imported.types)?;
+    merge_named_map("component", &mut document.components, imported.components)?;
+    merge_named_map("instance", &mut document.instances, imported.instances)?;
+    document.binds.extend(imported.binds);
+    merge_named_map("profile", &mut document.profiles, imported.profiles)?;
+    merge_named_map("target", &mut document.targets, imported.targets)?;
+    Ok(())
+}
+
+fn merge_named_map<T>(
+    kind: &'static str,
+    target: &mut BTreeMap<String, T>,
+    imported: BTreeMap<String, T>,
+) -> Result<()> {
+    for (name, value) in imported {
+        if target.contains_key(&name) {
+            return Err(RsdlError::DuplicateSymbol { kind, name });
+        }
+        target.insert(name, value);
+    }
+    Ok(())
+}
+
+fn expand_import_pattern(importer: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+    let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
+    validate_relative_import_path(importer, pattern)?;
+    let components = pattern.split('/').collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    expand_import_components(importer_dir, importer, pattern, &components, &mut matches)?;
+    matches.sort();
+    matches.dedup();
+    if matches.is_empty() {
+        return Err(RsdlError::ImportPatternNoMatches {
+            importer: importer.to_path_buf(),
+            pattern: pattern.to_string(),
+        });
+    }
+    Ok(matches)
+}
+
+fn expand_import_components(
+    base: &Path,
+    importer: &Path,
+    pattern: &str,
+    components: &[&str],
+    matches: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if !base.exists() {
+        return Ok(());
+    }
+
+    let Some((component, rest)) = components.split_first() else {
+        if base.extension() == Some(std::ffi::OsStr::new("rsdl")) {
+            matches.push(base.to_path_buf());
+        }
+        return Ok(());
+    };
+
+    if component.contains('*') {
+        let mut entries = std::fs::read_dir(base)
+            .map_err(|source| RsdlError::Io {
+                path: base.to_path_buf(),
+                source,
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|source| RsdlError::Io {
+                path: base.to_path_buf(),
+                source,
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if wildcard_match(component, &name) {
+                expand_import_components(&entry.path(), importer, pattern, rest, matches)?;
+            }
+        }
+        return Ok(());
+    }
+
+    let next = base.join(component);
+    if rest.is_empty() && !next.exists() {
+        return Err(RsdlError::ImportPatternNoMatches {
+            importer: importer.to_path_buf(),
+            pattern: pattern.to_string(),
+        });
+    }
+    expand_import_components(&next, importer, pattern, rest, matches)
+}
+
+fn validate_relative_import_path(importer: &Path, pattern: &str) -> Result<()> {
+    let path = Path::new(pattern);
+    if path.is_absolute() {
+        return Err(RsdlError::InvalidImportPath {
+            importer: importer.to_path_buf(),
+            pattern: pattern.to_string(),
+            message: "absolute paths are not allowed".to_string(),
+        });
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => {
+                return Err(RsdlError::InvalidImportPath {
+                    importer: importer.to_path_buf(),
+                    pattern: pattern.to_string(),
+                    message: "only normal relative path components are allowed".to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        return pattern == value;
+    }
+
+    let mut rest = value;
+    if let Some(first) = parts.first()
+        && !first.is_empty()
+    {
+        let Some(next) = rest.strip_prefix(first) else {
+            return false;
+        };
+        rest = next;
+    }
+
+    for part in parts.iter().skip(1).take(parts.len().saturating_sub(2)) {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(index) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[index + part.len()..];
+    }
+
+    if let Some(last) = parts.last()
+        && !last.is_empty()
+    {
+        return rest.ends_with(last);
+    }
+    true
+}
+
+fn canonicalize_existing(path: &Path) -> Result<PathBuf> {
+    std::fs::canonicalize(path).map_err(|source| RsdlError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn logical_source_path(path: &Path, package_root: &Path) -> PathBuf {
+    path.strip_prefix(package_root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| {
+            path.file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| path.to_path_buf())
+        })
 }
 
 fn parse_package(table: &Table) -> Result<RawPackage> {
@@ -413,5 +729,129 @@ input = ["odom"]
 
         let error = parse_str(source).expect_err("invalid port descriptor should fail");
         assert!(matches!(error, RsdlError::InvalidPortDescriptor { .. }));
+    }
+
+    #[test]
+    fn parse_file_expands_package_imports() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("types")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/*.rsdl"]
+components = ["components/estimator.rsdl"]
+
+[instance.estimator]
+component = "estimator"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("types").join("imu.rsdl"),
+            r#"
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components").join("estimator.rsdl"),
+            r#"
+[component.estimator]
+language = "rust"
+input = ["imu:Imu"]
+"#,
+        )
+        .unwrap();
+
+        let document = parse_file(root.join("robot.rsdl")).unwrap();
+
+        assert_eq!(document.package.name, "robot_demo");
+        assert_eq!(document.package.imports["types"], vec!["types/*.rsdl"]);
+        assert_eq!(document.types["Imu"].fields.len(), 2);
+        assert_eq!(document.components["estimator"].input[0].ty, "Imu");
+        assert_eq!(document.instances["estimator"].component, "estimator");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_file_rejects_import_patterns_without_matches() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/*.rsdl"]
+"#,
+        )
+        .unwrap();
+
+        let error = parse_file(root.join("robot.rsdl")).expect_err("missing import should fail");
+        assert!(matches!(error, RsdlError::ImportPatternNoMatches { .. }));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_file_rejects_duplicate_imported_symbols() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("types")).unwrap();
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/*.rsdl"]
+
+[type.Imu]
+timestamp = "u64"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("types").join("imu.rsdl"),
+            r#"
+[type.Imu]
+timestamp = "u64"
+"#,
+        )
+        .unwrap();
+
+        let error = parse_file(root.join("robot.rsdl")).expect_err("duplicate type should fail");
+        assert!(matches!(
+            error,
+            RsdlError::DuplicateSymbol { kind: "type", .. }
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn unique_temp_dir() -> std::path::PathBuf {
+        let suffix = format!(
+            "flowrt-rsdl-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(suffix)
     }
 }
