@@ -69,6 +69,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         .iter()
         .map(|ty| ty.name.as_str())
         .collect::<BTreeSet<_>>();
+    validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
     validate_message_abi(ir, &mut errors);
     validate_components(ir, &type_names, &mut errors);
@@ -88,6 +89,161 @@ fn validate_message_abi(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
             "message ABI v0.1 violation: {error}"
         )));
     }
+}
+
+fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    validate_name(
+        "package",
+        "package name",
+        &ir.package.name,
+        NameStyle::SnakeCase,
+        errors,
+    );
+
+    for ty in &ir.types {
+        validate_name("type", "type name", &ty.name, NameStyle::PascalCase, errors);
+        for field in &ty.fields {
+            validate_name(
+                "field",
+                "field name",
+                &field.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+        }
+    }
+
+    for component in &ir.components {
+        validate_name(
+            "component",
+            "component name",
+            &component.name,
+            NameStyle::SnakeCase,
+            errors,
+        );
+        for port in component.inputs.iter().chain(component.outputs.iter()) {
+            validate_name(
+                "port",
+                "port name",
+                &port.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+        }
+    }
+
+    for profile in &ir.profiles {
+        validate_name(
+            "profile",
+            "profile name",
+            &profile.name,
+            NameStyle::SnakeCase,
+            errors,
+        );
+    }
+
+    for target in &ir.targets {
+        validate_name(
+            "target",
+            "target name",
+            &target.name,
+            NameStyle::SnakeCase,
+            errors,
+        );
+    }
+
+    for graph in &ir.graphs {
+        validate_name(
+            "graph",
+            "graph name",
+            &graph.name,
+            NameStyle::SnakeCase,
+            errors,
+        );
+        for instance in &graph.instances {
+            validate_name(
+                "instance",
+                "instance name",
+                &instance.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NameStyle {
+    SnakeCase,
+    PascalCase,
+}
+
+impl NameStyle {
+    fn label(self) -> &'static str {
+        match self {
+            NameStyle::SnakeCase => "snake_case",
+            NameStyle::PascalCase => "PascalCase",
+        }
+    }
+
+    fn accepts(self, name: &str) -> bool {
+        match self {
+            NameStyle::SnakeCase => is_snake_case(name),
+            NameStyle::PascalCase => is_pascal_case(name),
+        }
+    }
+}
+
+fn validate_name(
+    entity_kind: &'static str,
+    label: &'static str,
+    name: &str,
+    style: NameStyle,
+    errors: &mut Vec<ValidationError>,
+) {
+    if !style.accepts(name) {
+        errors.push(ValidationError::new(format!(
+            "{label} `{name}` must be {}",
+            style.label()
+        )));
+    }
+    if name.starts_with("flowrt") {
+        errors.push(ValidationError::new(format!(
+            "{entity_kind} name `{name}` uses reserved `flowrt` prefix"
+        )));
+    }
+}
+
+fn is_snake_case(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+
+    let mut previous_underscore = false;
+    for ch in chars {
+        match ch {
+            '_' if !previous_underscore => previous_underscore = true,
+            '_' => return false,
+            'a'..='z' | '0'..='9' => previous_underscore = false,
+            _ => return false,
+        }
+    }
+    !previous_underscore
+}
+
+fn is_pascal_case(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric()) && name.chars().any(|ch| ch.is_ascii_lowercase())
 }
 
 fn validate_message_types(
@@ -604,6 +760,72 @@ backends = ["inproc"]
             error
                 .message
                 .contains("process `main` spans multiple targets")
+        }));
+    }
+
+    #[test]
+    fn rejects_invalid_rsdl_names() {
+        let source = r#"
+[package]
+name = "RobotDemo"
+rsdl_version = "0.1"
+
+[type.imu_sample]
+timestamp = "u64"
+
+[component.BadComponent]
+language = "rust"
+output = ["ImuOut:imu_sample"]
+
+[instance.BadInstance]
+component = "BadComponent"
+target = "Linux"
+
+[instance.BadInstance.task]
+trigger = "periodic"
+period_ms = 5
+output = ["ImuOut"]
+
+[profile.Default]
+backend = "inproc"
+
+[target.Linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("invalid RSDL names should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("package name `RobotDemo` must be snake_case")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("type name `imu_sample` must be PascalCase")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("component name `BadComponent` must be snake_case")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("port name `ImuOut` must be snake_case")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("profile name `Default` must be snake_case")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("target name `Linux` must be snake_case")
         }));
     }
 }
