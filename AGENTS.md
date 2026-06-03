@@ -41,12 +41,25 @@ examples/
   imu_demo/src/rust/mod.rs
   cpp_counter_demo/rsdl/robot.rsdl
   cpp_counter_demo/src/cpp/components.cpp
+  mixed_iox2_demo/rsdl/robot.rsdl
+  mixed_iox2_demo/src/rust/mod.rs
+  mixed_iox2_demo/src/cpp/components.cpp
 AGENTS.md
 ```
 
-当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。C++ runtime 已用 `std::chrono::milliseconds` 建模 `StaleConfig` 时间窗口，并提供 `LatestChannel<T>::publish_at` / `view_at`。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。profile 选择 `iox2` 时，Rust message codegen 必须生成 `#[type_name("TypeName")]`，C++ message codegen 必须生成同名 `IOX2_TYPE_NAME`；iox2 runtime timestamp 使用两端同名的 `FlowRTIox2Header` user header，payload 必须保持业务消息 `T`，不要重新引入 `Iox2Stamped<T>` 这类 payload envelope。Rust inproc/iox2 shell 和 C++ inproc shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。Mixed contract 当前只支持生成和构建语言分离的 FlowRT 管理产物；Rust codegen 不得为 C++ component 伪造 Rust trait，`flowrt run` / `flowrt launch` 必须在跨语言 runtime shell 完成前明确拒绝 mixed contract，并区分同进程混语言、`inproc` 跨进程混合、`iox2` 下缺 supervisor cross-language channel wiring 的缺口。C++ iox2 codegen 目前完成了 transport 契约和 shell 调用形态准备：profile 选择 `iox2` 时，C++ message struct 会暴露 `IOX2_TYPE_NAME`，生成的 CMake 会声明 `iceoryx2-cxx 0.9.1` 依赖、链接官方 target，并定义 `FLOWRT_HAS_ICEORYX2_CXX=1`，生成的 C++ shell 会使用 `flowrt::iox2::Iox2PubSub<T>`、canonical service name、bind-level channel/stale config、`receive_latest_at` 和 `publish_at`；runtime 中的 C++ `Iox2PubSub<T>` 在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx` 时会绑定真实 publisher/subscriber，默认未启用宏时仍安全返回 `ChannelError::Transport`。`flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 已读取 `runtime_kind`，能为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，并继续拒绝 mixed process group。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
+当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。
 
-当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch。该 workflow 暂不做 cache、release 发布或多平台矩阵。
+当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。
+
+C++ runtime 已用 `std::chrono::milliseconds` 建模 `StaleConfig` 时间窗口，并提供 `LatestChannel<T>::publish_at` / `view_at`。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。
+
+profile 选择 `iox2` 时，Rust message codegen 必须生成 `#[type_name("TypeName")]`，C++ message codegen 必须生成同名 `IOX2_TYPE_NAME`；iox2 runtime timestamp 使用两端同名的 `FlowRTIox2Header` user header，payload 必须保持业务消息 `T`，不要重新引入 `Iox2Stamped<T>` 这类 payload envelope。C++ iox2 shell 会使用 `flowrt::iox2::Iox2PubSub<T>`、canonical service name、bind-level channel/stale config、`receive_latest_at` 和 `publish_at`；runtime 中的 C++ `Iox2PubSub<T>` 在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx` 时会绑定真实 publisher/subscriber，默认未启用宏时仍安全返回 `ChannelError::Transport`。
+
+Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 `iox2` backend 下可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及 selected backend 为 `inproc` 的跨语言 process boundary。`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接。
+
+`flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 已读取 `runtime_kind`，能为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，并继续拒绝 mixed process group。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
+
+当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo` 执行 check。该 workflow 暂不做 cache、release 发布、多平台矩阵或默认安装 `iceoryx2-cxx`。
 
 ## 当前里程碑
 
@@ -311,9 +324,9 @@ flowrt launch path/to/robot.rsdl
 flowrt inspect flowrt/contract/contract.ir.json
 ```
 
-`--process` 运行生成应用中的单个 RSDL process group；它是后续 iox2 多进程 launcher 的基础入口。
-`run` / `launch` 当前只支持单语言 runtime path。mixed contract 可以 `flowrt build`，但在跨语言 runtime shell 完成前必须拒绝直接运行。
-`launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json` 并按 process group 启动生成应用。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，便于后续 mixed supervisor 决定启动 Rust app、C++ app 或拒绝 mixed in-process group。
+`--process` 运行生成应用中的单个 RSDL process group；mixed contract 使用 `flowrt run --process <name>` 时必须选择一个单语言 process group。
+`run` / `launch` 当前支持 Rust only、C++ only，以及 language-separated mixed contract over `iox2`。同一 process group 内混合 C++/Rust 或 mixed `inproc` 必须明确拒绝。
+`launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json` 并按 process group 启动生成应用。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，便于 supervisor 决定启动 Rust app、C++ app 或拒绝 mixed in-process group。
 
 `cargo run -p flowrt-cli -- ...` 只允许作为仓库开发者调试 FlowRT CLI 的内部命令，不得写成最终用户主路径。
 
