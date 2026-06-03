@@ -9,7 +9,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   ci:
@@ -18,7 +17,7 @@ jobs:
 
     steps:
       - name: 检出仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 安装系统构建工具
         run: |
@@ -66,7 +65,7 @@ jobs:
         run: cargo build --release -p flowrt-cli
 
       - name: 上传 flowrt Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flowrt-linux-x86_64
           path: target/release/flowrt
