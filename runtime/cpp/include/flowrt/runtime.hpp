@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -67,7 +68,8 @@ enum class ChannelWriteOutcome : std::uint8_t {
  * @brief channel 严格写入失败时的错误。
  */
 enum class ChannelError : std::uint8_t {
-    Overflow = 0,  ///< 有界队列已满且策略要求报告错误。
+    Overflow = 0,   ///< 有界队列已满且策略要求报告错误。
+    Transport = 1,  ///< backend transport 无法完成本次读写。
 };
 
 /**
@@ -476,6 +478,143 @@ class FifoChannel {
     std::size_t depth_ = 1;
     OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
 };
+
+namespace iox2 {
+
+/**
+ * @brief 打开 iceoryx2 publish-subscribe endpoint 时使用的 C++ QoS 配置。
+ *
+ * 该类型承载 Contract IR channel policy 归一化后的 depth、overflow 和 freshness intent。它不暴露
+ * iceoryx2 底层 publisher/subscriber API；生成 shell 用它把 FlowRT 语义传给后续真实 transport
+ * binding。
+ */
+class Iox2ChannelConfig {
+   public:
+    /**
+     * @brief 构造 latest channel 的默认 QoS 配置。
+     *
+     * @return depth 为 1、overflow 为 DropOldest 的配置。
+     */
+    static constexpr Iox2ChannelConfig latest() noexcept { return Iox2ChannelConfig{}; }
+
+    /**
+     * @brief 构造 FIFO channel 的 QoS 配置。
+     *
+     * @param depth 队列深度；传入 0 时按 1 处理。
+     * @param overflow 队列满时的 FlowRT 语义。
+     * @return 归一化后的配置。
+     */
+    static constexpr Iox2ChannelConfig fifo(std::size_t depth, OverflowPolicy overflow) noexcept {
+        return Iox2ChannelConfig(depth == 0 ? 1 : depth, overflow, StaleConfig{});
+    }
+
+    /**
+     * @brief 设置 freshness 配置。
+     *
+     * @param stale stale-data policy 和时间窗口。
+     * @return 更新后的配置副本。
+     */
+    constexpr Iox2ChannelConfig with_stale_config(StaleConfig stale) const noexcept {
+        return Iox2ChannelConfig(depth_, overflow_, stale);
+    }
+
+    /**
+     * @brief 返回归一化后的 channel depth。
+     */
+    constexpr std::size_t depth() const noexcept { return depth_; }
+
+    /**
+     * @brief 返回 overflow policy。
+     */
+    constexpr OverflowPolicy overflow() const noexcept { return overflow_; }
+
+    /**
+     * @brief 返回 stale-data 配置。
+     */
+    constexpr StaleConfig stale() const noexcept { return stale_; }
+
+   private:
+    constexpr Iox2ChannelConfig() noexcept = default;
+
+    constexpr Iox2ChannelConfig(
+        std::size_t depth, OverflowPolicy overflow, StaleConfig stale) noexcept
+        : depth_(depth), overflow_(overflow), stale_(stale) {}
+
+    std::size_t depth_ = 1;
+    OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
+    StaleConfig stale_;
+};
+
+/**
+ * @brief typed iceoryx2 publish-subscribe endpoint 的 C++ API 边界。
+ *
+ * @tparam T FlowRT Message ABI v0.1 plain-data payload 类型。
+ *
+ * 当前类只固定 generated shell 所需的稳定接口和安全失败语义；真实 `iceoryx2-cxx` transport
+ * binding 会在后续实现中替换内部状态。业务组件接口不应暴露该类型。
+ */
+template <typename T>
+class Iox2PubSub {
+   public:
+    /**
+     * @brief 打开或创建一个 FlowRT iox2 service endpoint。
+     *
+     * @param service_name canonical iox2 service name。
+     * @param config 从 Contract IR channel policy 生成的 QoS 配置。
+     * @return endpoint 对象；真实 transport 尚未绑定时 `ready()` 返回 false。
+     */
+    static Iox2PubSub open_with_config(
+        std::string_view service_name, Iox2ChannelConfig config) {
+        return Iox2PubSub(service_name, config);
+    }
+
+    /**
+     * @brief 返回 canonical service name。
+     */
+    std::string_view service_name() const noexcept { return service_name_; }
+
+    /**
+     * @brief 返回 channel QoS 配置。
+     */
+    constexpr Iox2ChannelConfig config() const noexcept { return config_; }
+
+    /**
+     * @brief 判断 transport endpoint 是否已经绑定到底层 iceoryx2 资源。
+     *
+     * 当前实现返回 false，避免在真实 transport 未完成前伪装成可运行路径。
+     */
+    constexpr bool ready() const noexcept { return false; }
+
+    /**
+     * @brief 带 FlowRT runtime 时间戳发布一个值。
+     *
+     * @return 当前 C++ iox2 transport 尚未完成时返回 `ChannelError::Transport`。
+     */
+    ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) const noexcept {
+        (void)value;
+        (void)published_at_ms;
+        return ChannelError::Transport;
+    }
+
+    /**
+     * @brief 读取 latest snapshot，并保留 transport 错误通道。
+     *
+     * @return 真实 transport 未完成时返回 `ChannelError::Transport`；后续实现会返回 `Latest<T>`。
+     */
+    std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+        (void)now_ms;
+        return ChannelError::Transport;
+    }
+
+   private:
+    Iox2PubSub(std::string_view service_name, Iox2ChannelConfig config)
+        : service_name_(service_name), config_(config) {}
+
+    std::string service_name_;
+    Iox2ChannelConfig config_;
+};
+
+}  // namespace iox2
 
 /**
  * @brief backend capability 的只读视图。
