@@ -10,7 +10,7 @@ use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr,
     LanguageKind, OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType,
-    StalePolicy as IrStalePolicy, TaskIr, TypeExpr,
+    StalePolicy as IrStalePolicy, TaskIr, TypeExpr, TypeIr,
 };
 
 /// artifact emission 返回的结果类型。
@@ -1740,14 +1740,119 @@ fn port_by_name<'a>(ports: &'a [PortIr], name: &str) -> &'a PortIr {
         .expect("validated component must contain referenced port")
 }
 
+fn type_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a TypeIr {
+    contract
+        .types
+        .iter()
+        .find(|ty| ty.name == name)
+        .expect("normalized contract must reference known message types")
+}
+
+fn message_sample_bytes(
+    contract: &ContractIr,
+    expectation: &MessageAbiExpectation,
+    expectations_by_name: &BTreeMap<&str, &MessageAbiExpectation>,
+) -> Vec<u8> {
+    let ty = type_by_name(contract, &expectation.type_name);
+    let mut bytes = vec![0u8; expectation.size_bytes];
+    for (index, field) in ty.fields.iter().enumerate() {
+        let field_expectation = &expectation.fields[index];
+        let field_bytes =
+            sample_bytes_for_expr(contract, expectations_by_name, &field.ty, index + 1);
+        debug_assert_eq!(field_bytes.len(), field_expectation.size_bytes);
+        let start = field_expectation.offset_bytes;
+        let end = start + field_bytes.len();
+        bytes[start..end].copy_from_slice(&field_bytes);
+    }
+    bytes
+}
+
+fn sample_bytes_for_expr(
+    contract: &ContractIr,
+    expectations_by_name: &BTreeMap<&str, &MessageAbiExpectation>,
+    expr: &TypeExpr,
+    seed: usize,
+) -> Vec<u8> {
+    match expr {
+        TypeExpr::Primitive { name } => primitive_sample_bytes(*name, seed),
+        TypeExpr::Named { name } => {
+            let expectation = expectations_by_name
+                .get(name.as_str())
+                .copied()
+                .expect("ABI expectation must exist for named message type");
+            message_sample_bytes(contract, expectation, expectations_by_name)
+        }
+        TypeExpr::Array { element, len } => {
+            let element_bytes =
+                sample_bytes_for_expr(contract, expectations_by_name, element, seed);
+            let mut bytes = Vec::with_capacity(element_bytes.len() * *len);
+            for _ in 0..*len {
+                bytes.extend_from_slice(&element_bytes);
+            }
+            bytes
+        }
+    }
+}
+
+fn primitive_sample_bytes(primitive: PrimitiveType, seed: usize) -> Vec<u8> {
+    let value = ((seed % 9) + 1) as u128;
+    match primitive {
+        PrimitiveType::Bool => vec![1],
+        PrimitiveType::U8 => vec![value as u8],
+        PrimitiveType::U16 => (value as u16).to_le_bytes().to_vec(),
+        PrimitiveType::U32 => (value as u32).to_le_bytes().to_vec(),
+        PrimitiveType::U64 => (value as u64).to_le_bytes().to_vec(),
+        PrimitiveType::U128 => value.to_le_bytes().to_vec(),
+        PrimitiveType::I8 => vec![-(value as i8) as u8],
+        PrimitiveType::I16 => (-(value as i16)).to_le_bytes().to_vec(),
+        PrimitiveType::I32 => (-(value as i32)).to_le_bytes().to_vec(),
+        PrimitiveType::I64 => (-(value as i64)).to_le_bytes().to_vec(),
+        PrimitiveType::I128 => (-(value as i128)).to_le_bytes().to_vec(),
+        PrimitiveType::F32 => ((value as f32) + 0.25).to_le_bytes().to_vec(),
+        PrimitiveType::F64 => ((value as f64) + 0.25).to_le_bytes().to_vec(),
+    }
+}
+
+fn byte_array_literal(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn expected_bytes_const_name(type_name: &str) -> String {
+    format!(
+        "EXPECTED_{}_BYTES",
+        snake_identifier(type_name).to_uppercase()
+    )
+}
+
 fn emit_rust_message_abi_tests(
     contract: &ContractIr,
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
+    let expectations_by_name = expectations
+        .iter()
+        .map(|expectation| (expectation.type_name.as_str(), expectation))
+        .collect::<BTreeMap<_, _>>();
     output.push_str(
         "\nfn bytes_of<T>(value: &T) -> Vec<u8> {\n    let mut bytes = vec![0u8; std::mem::size_of::<T>()];\n    // Safety：生成测试只传入 FlowRT ABI v0.1 plain-data 消息，且 padding 已初始化。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            (value as *const T).cast::<u8>(),\n            bytes.as_mut_ptr(),\n            bytes.len(),\n        );\n    }\n    bytes\n}\n\nfn assert_byte_roundtrip<T: Copy + Default>(value: T) {\n    let bytes = bytes_of(&value);\n    let mut roundtrip = T::default();\n    // Safety：`roundtrip` 是有效 plain-data 存储，`bytes` 长度等于 `size_of::<T>()`。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut roundtrip as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&roundtrip), bytes);\n}\n\n",
     );
+    output.push_str(
+        "fn assert_sample_bytes<T: Copy>(value: T, expected: &[u8]) {\n    assert_eq!(bytes_of(&value), expected);\n}\n\n",
+    );
+
+    for expectation in expectations {
+        let bytes = message_sample_bytes(contract, expectation, &expectations_by_name);
+        output.push_str(&format!(
+            "const {}: &[u8] = &[{}];\n",
+            expected_bytes_const_name(&expectation.type_name),
+            byte_array_literal(&bytes)
+        ));
+    }
+    output.push('\n');
 
     for ty in ordered_types(contract) {
         output.push_str(&format!(
@@ -1794,6 +1899,11 @@ fn emit_rust_message_abi_tests(
             "    assert_byte_roundtrip({}());\n",
             sample_function_name(&expectation.type_name)
         ));
+        output.push_str(&format!(
+            "    assert_sample_bytes({}(), {});\n",
+            sample_function_name(&expectation.type_name),
+            expected_bytes_const_name(&expectation.type_name)
+        ));
         output.push_str("}\n\n");
     }
 
@@ -1805,9 +1915,24 @@ fn emit_cpp_message_abi_tests(
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
+    let expectations_by_name = expectations
+        .iter()
+        .map(|expectation| (expectation.type_name.as_str(), expectation))
+        .collect::<BTreeMap<_, _>>();
     output.push_str(
-        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\n",
+        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\ntemplate <typename T, std::size_t N>\nvoid assert_sample_bytes(const T& value, const std::array<std::uint8_t, N>& expected) {\n    static_assert(sizeof(T) == N);\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    assert(bytes == expected);\n}\n\n",
     );
+
+    for expectation in expectations {
+        let bytes = message_sample_bytes(contract, expectation, &expectations_by_name);
+        output.push_str(&format!(
+            "constexpr std::array<std::uint8_t, {}> {}{{{{{}}}}};\n",
+            expectation.size_bytes,
+            expected_bytes_const_name(&expectation.type_name),
+            byte_array_literal(&bytes)
+        ));
+    }
+    output.push('\n');
 
     for ty in ordered_types(contract) {
         output.push_str(&format!(
@@ -1858,6 +1983,11 @@ fn emit_cpp_message_abi_tests(
         output.push_str(&format!(
             "    assert_byte_roundtrip({}());\n",
             sample_function_name(&expectation.type_name)
+        ));
+        output.push_str(&format!(
+            "    assert_sample_bytes({}(), {});\n",
+            sample_function_name(&expectation.type_name),
+            expected_bytes_const_name(&expectation.type_name)
         ));
         output.push_str("}\n\n");
     }
@@ -2629,6 +2759,41 @@ input = ["imu:Imu"]
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
         assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    }
+
+    #[test]
+    fn message_abi_tests_embed_cross_language_byte_fixtures() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "abi_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+tag = "u8"
+count = "u32"
+temperature = "f32"
+
+[component.producer]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.consumer]
+language = "cpp"
+input = ["packet:Packet"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+
+        let rust_abi = artifact_content(&bundle, "rust/tests/message_abi.rs");
+        assert!(rust_abi.contains("const EXPECTED_PACKET_BYTES: &[u8] = &["));
+        assert!(rust_abi.contains("2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 136, 64"));
+        assert!(rust_abi.contains("assert_sample_bytes(sample_packet(), EXPECTED_PACKET_BYTES);"));
+
+        let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+        assert!(cpp_abi.contains("constexpr std::array<std::uint8_t, 12> EXPECTED_PACKET_BYTES"));
+        assert!(cpp_abi.contains("2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 136, 64"));
+        assert!(cpp_abi.contains("assert_sample_bytes(sample_packet(), EXPECTED_PACKET_BYTES);"));
     }
 
     #[test]

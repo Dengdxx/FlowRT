@@ -49,7 +49,7 @@ AGENTS.md
 
 当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。
 
-当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。
+当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。生成的 Rust/C++ ABI 测试使用同一份 IR-derived expected byte fixtures，覆盖 size、alignment、field offset、byte-level roundtrip 和跨语言 field value equivalence。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。
 
 C++ runtime 已用 `std::chrono::milliseconds` 建模 `StaleConfig` 时间窗口，并提供 `LatestChannel<T>::publish_at` / `view_at`。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。
 
@@ -227,6 +227,7 @@ C++/Rust 生成类型必须通过 conformance tests 验证：
 - field offset
 - byte-level roundtrip
 - default initialization
+- Contract IR-derived expected byte fixtures，用于证明 Rust/C++ sample field value 的跨语言等价性
 
 ## Backend 约定
 
