@@ -280,6 +280,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         .first()
         .expect("normalized contract must contain at least one graph");
     let order = topo_order_instances(graph);
+    let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
@@ -307,10 +308,22 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         outgoing_bind_indices: &outgoing_bind_indices,
     };
     output.push_str(&emit_cpp_app_step(&step_emission, &order, "step"));
+    for process in &process_plans {
+        output.push_str(&emit_cpp_app_step(
+            &step_emission,
+            &process.instances,
+            &format!("step_process_{}", process.method_suffix),
+        ));
+    }
     output.push_str(&emit_cpp_app_run(&order));
-    output.push_str(
-        "flowrt::Status App::run_process(const flowrt::Backend& backend, std::string_view process) {\n    if (process == \"main\") {\n        return run(backend);\n    }\n    return flowrt::Status::Error;\n}\n\n",
-    );
+    output.push_str(&emit_cpp_app_run_process_dispatch(&process_plans));
+    for process in &process_plans {
+        output.push_str(&emit_cpp_app_run_function(
+            &format!("run_process_{}", process.method_suffix),
+            &format!("step_process_{}", process.method_suffix),
+            &process.instances,
+        ));
+    }
     output.push_str("flowrt::Status run() {\n    auto backend = flowrt::inproc_backend();\n    return flowrt_user::build_app().run(backend);\n}\n\n");
     output.push_str(
         "flowrt::Status run_process(std::string_view process) {\n    auto backend = flowrt::inproc_backend();\n    return flowrt_user::build_app().run_process(backend, process);\n}\n\n",
@@ -329,6 +342,7 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         .first()
         .expect("normalized contract must contain at least one graph");
     let order = topo_order_instances(graph);
+    let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
 
     let mut output = managed_header();
@@ -345,8 +359,21 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process process group 名称；v0.1 C++ only shell 仅支持 `main`。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context);\n\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context);\n",
     );
+    for process in &process_plans {
+        output.push_str(&format!(
+            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context);\n",
+            process.method_suffix
+        ));
+    }
+    for process in &process_plans {
+        output.push_str(&format!(
+            "    flowrt::Status run_process_{}(const flowrt::Backend& backend);\n",
+            process.method_suffix
+        ));
+    }
+    output.push('\n');
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
         output.push_str(&format!(
@@ -610,10 +637,34 @@ fn emit_cpp_app_step(
 }
 
 fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
+    emit_cpp_app_run_function("run", "step", order)
+}
+
+fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
     let mut output = String::new();
     output.push_str(
-        "flowrt::Status App::run(const flowrt::Backend& backend) {\n    flowrt::Context lifecycle_context;\n",
+        "flowrt::Status App::run_process(const flowrt::Backend& backend, std::string_view process) {\n",
     );
+    for process in processes {
+        output.push_str(&format!(
+            "    if (process == {}) {{\n        return run_process_{}(backend);\n    }}\n",
+            cpp_string_literal(&process.name),
+            process.method_suffix
+        ));
+    }
+    output.push_str("    return flowrt::Status::Error;\n}\n\n");
+    output
+}
+
+fn emit_cpp_app_run_function(
+    function_name: &str,
+    step_function_name: &str,
+    order: &[&InstanceIr],
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "flowrt::Status App::{function_name}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n",
+    ));
     for instance in order {
         output.push_str(&format!(
             "    if ({name}_ && {name}_->on_init(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
@@ -627,7 +678,9 @@ fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
         ));
     }
     output.push_str(
-        "    const auto status = backend.scheduler().run_ticks(\n        5, [this](std::size_t tick, flowrt::Context& tick_context) {\n            return step(tick, tick_context);\n        });\n    if (status != flowrt::Status::Ok) {\n        return status;\n    }\n",
+        &format!(
+            "    const auto status = backend.scheduler().run_ticks(\n        5, [this](std::size_t tick, flowrt::Context& tick_context) {{\n            return {step_function_name}(tick, tick_context);\n        }});\n    if (status != flowrt::Status::Ok) {{\n        return status;\n    }}\n"
+        ),
     );
     for instance in order.iter().rev() {
         output.push_str(&format!(
@@ -643,6 +696,10 @@ fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
     }
     output.push_str("    return flowrt::Status::Ok;\n}\n\n");
     output
+}
+
+fn cpp_string_literal(value: &str) -> String {
+    format!("{value:?}")
 }
 
 fn cpp_runtime_channel_type(bind: &BindRuntimePlan) -> String {
@@ -2961,6 +3018,75 @@ backends = ["iox2"]
         assert!(rust_main.contains("--process"));
         assert!(rust_main.contains("flowrt_app::runtime_shell::run_process(process)"));
         assert!(rust_lib.contains("pub use runtime_shell::{run, run_process, App};"));
+    }
+
+    #[test]
+    fn cpp_shell_exposes_process_run_entrypoint() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["value:u32"]
+
+[component.sink]
+language = "cpp"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "control"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+        let cpp_main = artifact_content(&bundle, "cpp/src/main.cpp");
+
+        assert!(cpp_header.contains(
+            "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context);"
+        ));
+        assert!(
+            cpp_header
+                .contains("flowrt::Status run_process_control(const flowrt::Backend& backend);")
+        );
+        assert!(cpp_shell.contains("flowrt::Status App::step_process_control"));
+        assert!(cpp_shell.contains("flowrt::Status App::run_process_control"));
+        assert!(cpp_shell.contains("if (process == \"control\")"));
+        assert!(cpp_shell.contains("return run_process_control(backend);"));
+        assert!(cpp_main.contains("--process"));
+        assert!(cpp_main.contains("flowrt_app::run_process(process)"));
     }
 
     #[test]

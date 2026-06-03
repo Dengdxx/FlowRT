@@ -58,7 +58,7 @@ jobs:
       - name: FlowRT demo smoke
         run: |
           cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process main
+          cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
           cargo run -p flowrt-cli -- run examples/imu_demo/rsdl/robot.rsdl --process main
 
       - name: 构建 release 版 flowrt
