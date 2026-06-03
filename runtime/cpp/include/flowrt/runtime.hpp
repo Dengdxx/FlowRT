@@ -12,8 +12,13 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
+
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+#include <iox2/iceoryx2.hpp>
+#endif
 
 namespace flowrt {
 
@@ -548,8 +553,8 @@ class Iox2ChannelConfig {
    private:
     constexpr Iox2ChannelConfig() noexcept = default;
 
-    constexpr Iox2ChannelConfig(
-        std::size_t depth, OverflowPolicy overflow, StaleConfig stale) noexcept
+    constexpr Iox2ChannelConfig(std::size_t depth, OverflowPolicy overflow,
+                                StaleConfig stale) noexcept
         : depth_(depth), overflow_(overflow), stale_(stale) {}
 
     std::size_t depth_ = 1;
@@ -562,21 +567,26 @@ class Iox2ChannelConfig {
  *
  * @tparam T FlowRT Message ABI v0.1 plain-data payload 类型。
  *
- * 当前类只固定 generated shell 所需的稳定接口和安全失败语义；真实 `iceoryx2-cxx` transport
- * binding 会在后续实现中替换内部状态。业务组件接口不应暴露该类型。
+ * 开启 `FLOWRT_HAS_ICEORYX2_CXX` 时，该类绑定真实 `iceoryx2-cxx` typed pub/sub endpoint；
+ * 默认构建不依赖 iceoryx2，并保持安全失败语义。业务组件接口不应暴露该类型。
  */
 template <typename T>
 class Iox2PubSub {
    public:
+    Iox2PubSub(Iox2PubSub &&) noexcept = default;
+    Iox2PubSub(const Iox2PubSub &) = delete;
+    auto operator=(Iox2PubSub &&) noexcept -> Iox2PubSub & = default;
+    auto operator=(const Iox2PubSub &) -> Iox2PubSub & = delete;
+    ~Iox2PubSub() = default;
+
     /**
      * @brief 打开或创建一个 FlowRT iox2 service endpoint。
      *
      * @param service_name canonical iox2 service name。
      * @param config 从 Contract IR channel policy 生成的 QoS 配置。
-     * @return endpoint 对象；真实 transport 尚未绑定时 `ready()` 返回 false。
+     * @return endpoint 对象；底层资源打开失败或未开启 iox2 支持时 `ready()` 返回 false。
      */
-    static Iox2PubSub open_with_config(
-        std::string_view service_name, Iox2ChannelConfig config) {
+    static Iox2PubSub open_with_config(std::string_view service_name, Iox2ChannelConfig config) {
         return Iox2PubSub(service_name, config);
     }
 
@@ -592,38 +602,168 @@ class Iox2PubSub {
 
     /**
      * @brief 判断 transport endpoint 是否已经绑定到底层 iceoryx2 资源。
-     *
-     * 当前实现返回 false，避免在真实 transport 未完成前伪装成可运行路径。
      */
-    constexpr bool ready() const noexcept { return false; }
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        return publisher_.has_value() && subscriber_.has_value();
+#else
+        return false;
+#endif
+    }
 
     /**
      * @brief 带 FlowRT runtime 时间戳发布一个值。
      *
-     * @return 当前 C++ iox2 transport 尚未完成时返回 `ChannelError::Transport`。
+     * @return 写入成功时返回 `Accepted`；transport 无法完成时返回 `ChannelError::Transport`。
      */
-    ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) const noexcept {
+    ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        if (!publisher_) {
+            return ChannelError::Transport;
+        }
+
+        auto sample = publisher_->loan_uninit();
+        if (!sample.has_value()) {
+            return ChannelError::Transport;
+        }
+
+        auto loaned_sample = std::move(sample).value();
+        loaned_sample.user_header_mut().published_at_ms = published_at_ms;
+        auto initialized_sample = loaned_sample.write_payload(std::move(value));
+        auto sent = ::iox2::send(std::move(initialized_sample));
+        if (!sent.has_value()) {
+            return ChannelError::Transport;
+        }
+
+        return ChannelWriteOutcome::Accepted;
+#else
         (void)value;
         (void)published_at_ms;
         return ChannelError::Transport;
+#endif
     }
 
     /**
      * @brief 读取 latest snapshot，并保留 transport 错误通道。
      *
-     * @return 真实 transport 未完成时返回 `ChannelError::Transport`；后续实现会返回 `Latest<T>`。
+     * @return 读取成功时返回 `Latest<T>`；transport 无法完成时返回 `ChannelError::Transport`。
      */
     std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        if (!subscriber_) {
+            return ChannelError::Transport;
+        }
+
+        while (true) {
+            auto received = subscriber_->receive();
+            if (!received.has_value()) {
+                return ChannelError::Transport;
+            }
+
+            auto sample = std::move(received).value();
+            if (!sample.has_value()) {
+                break;
+            }
+
+            received_ = sample->payload();
+            published_at_ms_ = sample->user_header().published_at_ms;
+        }
+
+        const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
+        const bool drop_stale = stale && config_.stale().policy() == StalePolicy::Drop;
+        return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
+#else
         (void)now_ms;
         return ChannelError::Transport;
+#endif
     }
 
    private:
     Iox2PubSub(std::string_view service_name, Iox2ChannelConfig config)
-        : service_name_(service_name), config_(config) {}
+        : service_name_(service_name), config_(config) {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        static_assert(std::is_trivially_copyable_v<T>,
+                      "FlowRT iox2 C++ payload must be trivially copyable");
+        open_iox2_endpoint();
+#endif
+    }
+
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+    using Iox2Node = ::iox2::Node<::iox2::ServiceType::Ipc>;
+    using Iox2Service =
+        ::iox2::PortFactoryPublishSubscribe<::iox2::ServiceType::Ipc, T, FlowrtIox2Header>;
+    using Iox2Publisher = ::iox2::Publisher<::iox2::ServiceType::Ipc, T, FlowrtIox2Header>;
+    using Iox2Subscriber = ::iox2::Subscriber<::iox2::ServiceType::Ipc, T, FlowrtIox2Header>;
+
+    static constexpr bool safe_overflow(Iox2ChannelConfig config) noexcept {
+        return config.overflow() != OverflowPolicy::Block;
+    }
+
+    static constexpr ::iox2::BackpressureStrategy backpressure_strategy(
+        Iox2ChannelConfig config) noexcept {
+        return config.overflow() == OverflowPolicy::Block
+                   ? ::iox2::BackpressureStrategy::RetryUntilDelivered
+                   : ::iox2::BackpressureStrategy::DiscardData;
+    }
+
+    void open_iox2_endpoint() {
+        auto name = ::iox2::ServiceName::create(service_name_.c_str());
+        if (!name.has_value()) {
+            return;
+        }
+
+        auto node = ::iox2::NodeBuilder().create<::iox2::ServiceType::Ipc>();
+        if (!node.has_value()) {
+            return;
+        }
+        node_.emplace(std::move(node).value());
+
+        const auto depth = static_cast<std::uint64_t>(config_.depth());
+        auto service = node_->service_builder(std::move(name).value())
+                           .publish_subscribe<T>()
+                           .template user_header<FlowrtIox2Header>()
+                           .enable_safe_overflow(safe_overflow(config_))
+                           .history_size(depth)
+                           .subscriber_max_buffer_size(depth)
+                           .open_or_create();
+        if (!service.has_value()) {
+            node_.reset();
+            return;
+        }
+        service_.emplace(std::move(service).value());
+
+        auto subscriber = service_->subscriber_builder().buffer_size(depth).create();
+        if (!subscriber.has_value()) {
+            service_.reset();
+            node_.reset();
+            return;
+        }
+        subscriber_.emplace(std::move(subscriber).value());
+
+        auto publisher = service_->publisher_builder()
+                             .backpressure_strategy(backpressure_strategy(config_))
+                             .max_loaned_samples(depth)
+                             .create();
+        if (!publisher.has_value()) {
+            subscriber_.reset();
+            service_.reset();
+            node_.reset();
+            return;
+        }
+        publisher_.emplace(std::move(publisher).value());
+    }
+#endif
 
     std::string service_name_;
     Iox2ChannelConfig config_;
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+    std::optional<Iox2Node> node_;
+    std::optional<Iox2Service> service_;
+    std::optional<Iox2Publisher> publisher_;
+    std::optional<Iox2Subscriber> subscriber_;
+    std::optional<T> received_;
+    std::optional<std::uint64_t> published_at_ms_;
+#endif
 };
 
 }  // namespace iox2
@@ -799,8 +939,9 @@ class InprocBackend final : public Backend {
 /**
  * @brief iceoryx2 backend 的 C++ capability 骨架。
  *
- * 当前 C++ 侧仅暴露 capability 和调度边界；具体 iox2 transport binding 后续实现。业务组件仍只应
- * 依赖 FlowRT runtime API，不直接依赖 iox2 publisher/subscriber。
+ * 该 backend 报告 iox2 capability，并继续复用同步调度器驱动 generated shell。具体 channel
+ * transport 由 `flowrt::iox2::Iox2PubSub<T>` 在 shell 内部绑定；业务组件仍只应依赖 FlowRT
+ * runtime API，不直接依赖 iox2 publisher/subscriber。
  */
 class Iox2Backend final : public Backend {
    public:
