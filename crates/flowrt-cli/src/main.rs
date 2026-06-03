@@ -123,6 +123,7 @@ fn main() -> Result<()> {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir)?;
             let contract = load_contract_from_json(&prepared.contract_path)?;
+            ensure_direct_runtime_supported(&contract, "launch")?;
             let manifest = cargo_manifest_with_local_runtime_patch(&out_dir)?;
             run_cargo("build", &manifest)?;
             run_cargo_supervisor(&manifest, &supervisor_bin_name(&contract))?;
@@ -223,13 +224,14 @@ fn build_steps(contract: &ContractIr) -> Vec<BuildStep> {
 }
 
 fn run_mode(contract: &ContractIr) -> Option<RunMode> {
-    if has_component_language(contract, LanguageKind::Rust) {
-        return Some(RunMode::CargoApp);
+    match (
+        has_component_language(contract, LanguageKind::Rust),
+        has_component_language(contract, LanguageKind::Cpp),
+    ) {
+        (true, false) => Some(RunMode::CargoApp),
+        (false, true) => Some(RunMode::CmakeApp),
+        _ => None,
     }
-    if has_component_language(contract, LanguageKind::Cpp) {
-        return Some(RunMode::CmakeApp);
-    }
-    None
 }
 
 fn has_component_language(contract: &ContractIr, language: LanguageKind) -> bool {
@@ -237,6 +239,20 @@ fn has_component_language(contract: &ContractIr, language: LanguageKind) -> bool
         .components
         .iter()
         .any(|component| component.language == language)
+}
+
+fn is_mixed_language_contract(contract: &ContractIr) -> bool {
+    has_component_language(contract, LanguageKind::Rust)
+        && has_component_language(contract, LanguageKind::Cpp)
+}
+
+fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Result<()> {
+    if is_mixed_language_contract(contract) {
+        anyhow::bail!(
+            "mixed-language `{command}` is not implemented yet; use `flowrt build` to validate generated artifacts until the cross-language runtime shell is available"
+        );
+    }
+    Ok(())
 }
 
 fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
@@ -255,6 +271,7 @@ fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
 }
 
 fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
+    ensure_direct_runtime_supported(contract, "run")?;
     match run_mode(contract).context("contract does not contain runnable components")? {
         RunMode::CargoApp => {
             let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
@@ -607,7 +624,14 @@ language = "cpp"
 language = "rust"
 "#,
         );
-        assert_eq!(run_mode(&mixed_contract), Some(RunMode::CargoApp));
+        assert_eq!(run_mode(&mixed_contract), None);
+        assert!(is_mixed_language_contract(&mixed_contract));
+        let error = ensure_direct_runtime_supported(&mixed_contract, "run").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("mixed-language `run` is not implemented yet")
+        );
     }
 
     #[test]
