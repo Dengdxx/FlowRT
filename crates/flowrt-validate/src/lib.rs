@@ -317,6 +317,7 @@ fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
         validate_process_targets(graph, errors);
         validate_tasks(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
+        validate_graph_is_acyclic(&instances, graph, errors);
     }
 }
 
@@ -478,6 +479,84 @@ fn validate_binds(
                 bind.to.instance.name, bind.to.port
             )));
         }
+    }
+}
+
+fn validate_graph_is_acyclic(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut indegree = instances
+        .keys()
+        .map(|name| ((*name).to_string(), 0usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut edges = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut self_loops = BTreeSet::<String>::new();
+
+    for bind in &graph.binds {
+        let source = bind.from.instance.name.as_str();
+        let target = bind.to.instance.name.as_str();
+        if !instances.contains_key(source) || !instances.contains_key(target) {
+            continue;
+        }
+
+        if source == target {
+            self_loops.insert(source.to_string());
+            continue;
+        }
+
+        let inserted = edges
+            .entry(source.to_string())
+            .or_default()
+            .insert(target.to_string());
+        if inserted {
+            *indegree
+                .get_mut(target)
+                .expect("known instance must have an indegree entry") += 1;
+        }
+    }
+
+    for instance in self_loops {
+        errors.push(ValidationError::new(format!(
+            "graph `{}` has a dataflow self-loop on instance `{}`",
+            graph.name, instance
+        )));
+    }
+
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(name, degree)| (*degree == 0).then_some(name.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut visited = 0usize;
+
+    while let Some(name) = ready.iter().next().cloned() {
+        ready.remove(&name);
+        visited += 1;
+
+        if let Some(next) = edges.get(&name) {
+            for target in next {
+                let degree = indegree
+                    .get_mut(target)
+                    .expect("known instance must have an indegree entry");
+                *degree -= 1;
+                if *degree == 0 {
+                    ready.insert(target.clone());
+                }
+            }
+        }
+    }
+
+    if visited != instances.len() {
+        let cycle_instances = indegree
+            .into_iter()
+            .filter_map(|(name, degree)| (degree > 0).then_some(format!("`{name}`")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        errors.push(ValidationError::new(format!(
+            "graph `{}` has a dataflow cycle involving {}",
+            graph.name, cycle_instances
+        )));
     }
 }
 
@@ -760,6 +839,102 @@ backends = ["inproc"]
             error
                 .message
                 .contains("process `main` spans multiple targets")
+        }));
+    }
+
+    #[test]
+    fn rejects_dataflow_cycle_between_instances() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.alpha]
+language = "rust"
+input = ["feedback:Sample"]
+output = ["forward:Sample"]
+
+[component.beta]
+language = "rust"
+input = ["forward:Sample"]
+output = ["feedback:Sample"]
+
+[instance.alpha]
+component = "alpha"
+
+[instance.alpha.task]
+trigger = "on_message"
+input = ["feedback"]
+output = ["forward"]
+
+[instance.beta]
+component = "beta"
+
+[instance.beta.task]
+trigger = "on_message"
+input = ["forward"]
+output = ["feedback"]
+
+[[bind.dataflow]]
+from = "alpha.forward"
+to = "beta.forward"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "beta.feedback"
+to = "alpha.feedback"
+channel = "latest"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("dataflow cycle should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("graph `default` has a dataflow cycle involving `alpha`")
+        }));
+    }
+
+    #[test]
+    fn rejects_dataflow_self_loop() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.echo]
+language = "rust"
+input = ["in_value:Sample"]
+output = ["out_value:Sample"]
+
+[instance.echo]
+component = "echo"
+
+[instance.echo.task]
+trigger = "on_message"
+input = ["in_value"]
+output = ["out_value"]
+
+[[bind.dataflow]]
+from = "echo.out_value"
+to = "echo.in_value"
+channel = "latest"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("dataflow self-loop should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("graph `default` has a dataflow self-loop on instance `echo`")
         }));
     }
 
