@@ -381,6 +381,9 @@ fn emit_cpp_runtime_shell_stub() -> String {
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
     output.push_str("flowrt::Status run() {\n    return flowrt::ok();\n}\n\n");
+    output.push_str(
+        "flowrt::Status run_process(std::string_view process) {\n    return process == \"main\" ? run() : flowrt::Status::Error;\n}\n\n",
+    );
     output.push_str("}  // namespace flowrt_app\n");
     output
 }
@@ -388,10 +391,14 @@ fn emit_cpp_runtime_shell_stub() -> String {
 fn emit_cpp_runtime_shell_stub_header() -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
+    output.push_str("#include <string_view>\n\n");
     output.push_str("#include <flowrt/runtime.hpp>\n\n");
     output.push_str("namespace flowrt_app {\n\n");
     output.push_str(
         "/**\n * @brief 运行 C++ managed runtime shell。\n *\n * v0.1 仅在 C++ only contract 中生成真实 inproc shell；混合语言 contract 的 C++ shell 暂保留可编译骨架，跨语言调度边界后续单独实现。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
+    );
+    output.push_str(
+        "/**\n * @brief 运行 C++ managed runtime shell 中的指定 process group。\n *\n * @param process process group 名称。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process);\n\n",
     );
     output.push_str("}  // namespace flowrt_app\n");
     output
@@ -702,8 +709,10 @@ fn cpp_runtime_overflow_policy(policy: IrOverflowPolicy) -> &'static str {
 fn emit_cpp_main() -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
-    output
-        .push_str("int main() {\n    return flowrt_app::run() == flowrt::Status::Ok ? 0 : 1;\n}\n");
+    output.push_str("#include <string_view>\n\n");
+    output.push_str(
+        "int main(int argc, char** argv) {\n    std::string_view process;\n    for (int index = 1; index < argc; ++index) {\n        const std::string_view arg(argv[index]);\n        if (arg == \"--process\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            process = argv[++index];\n        } else {\n            return 2;\n        }\n    }\n\n    const auto status = process.empty() ? flowrt_app::run() : flowrt_app::run_process(process);\n    return status == flowrt::Status::Ok ? 0 : 1;\n}\n",
+    );
     output
 }
 
@@ -2364,7 +2373,8 @@ channel = "latest"
 
         let main = artifact_content(&bundle, "cpp/src/main.cpp");
         assert!(main.contains("#include \"flowrt_app/runtime_shell.hpp\""));
-        assert!(main.contains("return flowrt_app::run() == flowrt::Status::Ok ? 0 : 1;"));
+        assert!(main.contains("std::string_view process;"));
+        assert!(main.contains("flowrt_app::run_process(process)"));
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
         assert!(cmake.contains("FLOWRT_CPP_RUNTIME_DIR"));

@@ -44,7 +44,7 @@ examples/
 AGENTS.md
 ```
 
-当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发和 `flowrt_user::build_app()` 用户工厂入口；`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的 CMake 构建路径。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。Rust inproc/iox2 shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
+当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。Rust inproc/iox2 shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
 ## 当前里程碑
 
@@ -289,7 +289,7 @@ pub trait Controller {
 - C++ build：优先使用 CMake。
 - Rust build：使用 Cargo workspace。
 - 生成的混合工程由 `flowrt` CLI 统一调度。
-- C++ only contract 的 `flowrt build` 不得依赖 Cargo，必须走 CMake 路径，以支持只写 C++ 业务逻辑且未安装 Rust/Cargo 的用户。
+- C++ only contract 的 `flowrt build` / `flowrt run` 不得依赖 Cargo app 路径，必须走 CMake 路径，以支持只写 C++ 业务逻辑且未安装 Rust/Cargo 的用户。
 - 含 Rust 用户组件的 contract 当前仍会触发 Cargo 构建；后续若要做到 Rust 用户组件免 Cargo 分发，需要单独设计安装包、预编译 runtime 和组件 ABI/插件边界。
 
 如需引入 parser、serialization、CLI、template 或测试库，优先选择成熟、维护良好、依赖面可控的库，并在相关文档中记录原因。

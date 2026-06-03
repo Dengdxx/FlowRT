@@ -112,8 +112,7 @@ fn main() -> Result<()> {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir)?;
             let contract = load_contract_from_json(&prepared.contract_path)?;
-            let manifest = cargo_manifest_with_local_runtime_patch(&out_dir)?;
-            run_cargo_run(&manifest, &app_bin_name(&contract), process.as_deref())?;
+            run_workspace(&contract, &out_dir, process.as_deref())?;
             println!(
                 "ran {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -206,6 +205,12 @@ enum BuildStep {
     Cmake,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    CargoApp,
+    CmakeApp,
+}
+
 fn build_steps(contract: &ContractIr) -> Vec<BuildStep> {
     let mut steps = Vec::new();
     if has_component_language(contract, LanguageKind::Rust) {
@@ -215,6 +220,16 @@ fn build_steps(contract: &ContractIr) -> Vec<BuildStep> {
         steps.push(BuildStep::Cmake);
     }
     steps
+}
+
+fn run_mode(contract: &ContractIr) -> Option<RunMode> {
+    if has_component_language(contract, LanguageKind::Rust) {
+        return Some(RunMode::CargoApp);
+    }
+    if has_component_language(contract, LanguageKind::Cpp) {
+        return Some(RunMode::CmakeApp);
+    }
+    None
 }
 
 fn has_component_language(contract: &ContractIr, language: LanguageKind) -> bool {
@@ -234,6 +249,20 @@ fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
             BuildStep::Cmake => {
                 run_cmake_configure_and_build(out_dir)?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
+    match run_mode(contract).context("contract does not contain runnable components")? {
+        RunMode::CargoApp => {
+            let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+            run_cargo_run(&manifest, &app_bin_name(contract), process)?;
+        }
+        RunMode::CmakeApp => {
+            build_workspace(contract, out_dir)?;
+            run_cmake_app(contract, out_dir, process)?;
         }
     }
     Ok(())
@@ -292,6 +321,42 @@ fn run_cmake_build(build_dir: &Path) -> Result<()> {
         anyhow::bail!("cmake build failed with status {status}");
     }
     Ok(())
+}
+
+fn run_cmake_app(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
+    let app = cpp_app_executable_path(contract, out_dir);
+    if !app.exists() {
+        anyhow::bail!(
+            "C++ app executable `{}` was not produced; implement `flowrt_user::build_app()` in `src/cpp/*.cpp` or set `FLOWRT_USER_CPP_SOURCES`",
+            app.display()
+        );
+    }
+    let mut command = ProcessCommand::new(&app);
+    if let Some(process) = process {
+        command.arg("--process").arg(process);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to spawn C++ app `{}`", app.display()))?;
+    if !status.success() {
+        anyhow::bail!("C++ app invocation failed with status {status}");
+    }
+    Ok(())
+}
+
+fn cpp_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
+    out_dir
+        .join("build")
+        .join("cmake")
+        .join(cpp_app_executable_name(contract))
+}
+
+fn cpp_app_executable_name(contract: &ContractIr) -> String {
+    format!(
+        "{}_cpp_app{}",
+        sanitize_package_name(&contract.package.name).replace('-', "_"),
+        std::env::consts::EXE_SUFFIX
+    )
 }
 
 fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
@@ -501,6 +566,48 @@ language = "rust"
             build_steps(&contract),
             vec![BuildStep::Cargo, BuildStep::Cmake]
         );
+    }
+
+    #[test]
+    fn run_mode_selects_cmake_app_only_for_cpp_only_contracts() {
+        let cpp_contract = contract_from_source(
+            r#"
+[package]
+name = "cpp_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+"#,
+        );
+        assert_eq!(run_mode(&cpp_contract), Some(RunMode::CmakeApp));
+
+        let rust_contract = contract_from_source(
+            r#"
+[package]
+name = "rust_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+"#,
+        );
+        assert_eq!(run_mode(&rust_contract), Some(RunMode::CargoApp));
+
+        let mixed_contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[component.cpp_worker]
+language = "cpp"
+
+[component.rust_worker]
+language = "rust"
+"#,
+        );
+        assert_eq!(run_mode(&mixed_contract), Some(RunMode::CargoApp));
     }
 
     #[test]
