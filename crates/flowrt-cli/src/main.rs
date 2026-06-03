@@ -6,7 +6,7 @@ use std::process::Command as ProcessCommand;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
-use flowrt_ir::{ContractIr, hash_source, normalize_document};
+use flowrt_ir::{ContractIr, LanguageKind, hash_source, normalize_document};
 use flowrt_validate::validate_contract;
 
 #[derive(Debug, Parser)]
@@ -35,7 +35,7 @@ enum Command {
         out_dir: PathBuf,
     },
 
-    /// 准备并构建 FlowRT 管理的应用 crate。
+    /// 准备并构建 FlowRT 管理的应用产物。
     Build {
         /// .rsdl 文件路径。
         rsdl: PathBuf,
@@ -95,8 +95,8 @@ fn main() -> Result<()> {
         Command::Build { rsdl, out_dir } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir)?;
-            let manifest = cargo_manifest_with_local_runtime_patch(&out_dir)?;
-            run_cargo("build", &manifest)?;
+            let contract = load_contract_from_json(&prepared.contract_path)?;
+            build_workspace(&contract, &out_dir)?;
             println!(
                 "built {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -199,6 +199,45 @@ fn write_artifacts(bundle: &ArtifactBundle, out_dir: &Path) -> Result<usize> {
     Ok(bundle.artifacts.len())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildStep {
+    Cargo,
+    Cmake,
+}
+
+fn build_steps(contract: &ContractIr) -> Vec<BuildStep> {
+    let mut steps = Vec::new();
+    if has_component_language(contract, LanguageKind::Rust) {
+        steps.push(BuildStep::Cargo);
+    }
+    if has_component_language(contract, LanguageKind::Cpp) {
+        steps.push(BuildStep::Cmake);
+    }
+    steps
+}
+
+fn has_component_language(contract: &ContractIr, language: LanguageKind) -> bool {
+    contract
+        .components
+        .iter()
+        .any(|component| component.language == language)
+}
+
+fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
+    for step in build_steps(contract) {
+        match step {
+            BuildStep::Cargo => {
+                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+                run_cargo("build", &manifest)?;
+            }
+            BuildStep::Cmake => {
+                run_cmake_configure_and_build(out_dir)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cargo_manifest_with_local_runtime_patch(out_dir: &Path) -> Result<PathBuf> {
     let generated_manifest = out_dir.join("build").join("Cargo.toml");
     let generated = fs::read_to_string(&generated_manifest)
@@ -214,6 +253,44 @@ fn cargo_manifest_with_local_runtime_patch(out_dir: &Path) -> Result<PathBuf> {
     fs::write(&generated_manifest, patched)
         .with_context(|| format!("failed to write `{}`", generated_manifest.display()))?;
     Ok(generated_manifest)
+}
+
+fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
+    let source_dir = out_dir.join("build");
+    let build_dir = source_dir.join("cmake");
+    let runtime_dir = repo_root_dir()?.join("runtime/cpp");
+    run_cmake_configure(&source_dir, &build_dir, &runtime_dir)?;
+    run_cmake_build(&build_dir)
+}
+
+fn run_cmake_configure(source_dir: &Path, build_dir: &Path, runtime_dir: &Path) -> Result<()> {
+    let status = ProcessCommand::new("cmake")
+        .arg("-S")
+        .arg(source_dir)
+        .arg("-B")
+        .arg(build_dir)
+        .arg(format!(
+            "-DFLOWRT_CPP_RUNTIME_DIR={}",
+            runtime_dir.to_string_lossy()
+        ))
+        .status()
+        .context("failed to spawn cmake configure")?;
+    if !status.success() {
+        anyhow::bail!("cmake configure failed with status {status}");
+    }
+    Ok(())
+}
+
+fn run_cmake_build(build_dir: &Path) -> Result<()> {
+    let status = ProcessCommand::new("cmake")
+        .arg("--build")
+        .arg(build_dir)
+        .status()
+        .context("failed to spawn cmake build")?;
+    if !status.success() {
+        anyhow::bail!("cmake build failed with status {status}");
+    }
+    Ok(())
 }
 
 fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
@@ -355,4 +432,72 @@ fn summary(contract: &ContractIr) -> String {
         task_count,
         bind_count
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use flowrt_rsdl::parse_str;
+
+    use super::*;
+
+    fn contract_from_source(source: &str) -> ContractIr {
+        let raw = parse_str(source).unwrap();
+        let contract = normalize_document(&raw, hash_source(source)).unwrap();
+        validate_contract(&contract).unwrap();
+        contract
+    }
+
+    #[test]
+    fn build_plan_selects_cargo_for_rust_contract() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "rust_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+"#,
+        );
+
+        assert_eq!(build_steps(&contract), vec![BuildStep::Cargo]);
+    }
+
+    #[test]
+    fn build_plan_selects_cmake_for_cpp_contract() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "cpp_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+"#,
+        );
+
+        assert_eq!(build_steps(&contract), vec![BuildStep::Cmake]);
+    }
+
+    #[test]
+    fn build_plan_selects_cargo_and_cmake_for_mixed_contract() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[component.cpp_worker]
+language = "cpp"
+
+[component.rust_worker]
+language = "rust"
+"#,
+        );
+
+        assert_eq!(
+            build_steps(&contract),
+            vec![BuildStep::Cargo, BuildStep::Cmake]
+        );
+    }
 }

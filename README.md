@@ -31,4 +31,5 @@ cargo run -p flowrt-cli -- check examples/import_demo/rsdl/robot.rsdl
 ```
 
 `prepare` / `build` / `run` 会从 `.rsdl` 文件推导应用根目录，并将 FlowRT 管理产物写入该项目可见的 `flowrt/` 目录。
+当 contract 含 Rust 组件时，`build` 使用 Cargo 构建 generated Rust 应用；当 contract 含 C++ 组件时，`build` 同时使用 CMake 构建 generated C++ managed shell、app 和 ABI test target。
 `examples/import_demo` 展示了 `[package.imports]` 如何把 `types/`、`components/`、`profiles/` 和 `targets/` 下的模块化 `.rsdl` 文件合并到同一个 Contract IR。
