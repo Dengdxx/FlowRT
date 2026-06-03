@@ -1,0 +1,14 @@
+[package]
+name = "flowrt-codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flowrt-conformance = { path = "../flowrt-conformance" }
+flowrt-ir = { path = "../flowrt-ir" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+flowrt-rsdl = { path = "../flowrt-rsdl" }
