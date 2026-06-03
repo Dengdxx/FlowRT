@@ -1826,13 +1826,17 @@ fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
         "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
             "name": graph.name,
-            "processes": launch_processes(graph, &selected_backend),
-            "instances": graph.instances.iter().map(|instance| serde_json::json!({
-                "name": instance.name,
-                "component": instance.component.name,
-                "process": instance.process,
-                "target": instance.target.as_ref().map(|target| &target.name),
-            })).collect::<Vec<_>>(),
+            "processes": launch_processes(contract, graph, &selected_backend),
+            "instances": graph.instances.iter().map(|instance| {
+                let component = component_by_name(contract, &instance.component.name);
+                serde_json::json!({
+                    "name": instance.name,
+                    "component": instance.component.name,
+                    "runtime": language_name(component.language),
+                    "process": instance.process,
+                    "target": instance.target.as_ref().map(|target| &target.name),
+                })
+            }).collect::<Vec<_>>(),
             "tasks": graph.tasks.iter().map(|task| serde_json::json!({
                 "instance": task.instance.name,
                 "trigger": task.trigger,
@@ -1846,7 +1850,11 @@ fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     Ok(output)
 }
 
-fn launch_processes(graph: &GraphIr, backend: &str) -> Vec<serde_json::Value> {
+fn launch_processes(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    backend: &str,
+) -> Vec<serde_json::Value> {
     let mut processes = BTreeMap::<String, Vec<&InstanceIr>>::new();
     for instance in &graph.instances {
         processes
@@ -1867,11 +1875,14 @@ fn launch_processes(graph: &GraphIr, backend: &str) -> Vec<serde_json::Value> {
                 .iter()
                 .map(|instance| instance.name.as_str())
                 .collect::<BTreeSet<_>>();
+            let runtimes = process_runtimes(contract, &instances);
             let target = common_process_target(&instances);
             serde_json::json!({
                 "name": name,
                 "backend": backend,
                 "target": target,
+                "runtimes": runtimes,
+                "runtime_kind": process_runtime_kind(&runtimes),
                 "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
                 "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(|task| serde_json::json!({
                     "instance": task.instance.name,
@@ -1882,6 +1893,31 @@ fn launch_processes(graph: &GraphIr, backend: &str) -> Vec<serde_json::Value> {
             })
         })
         .collect()
+}
+
+fn process_runtimes(contract: &ContractIr, instances: &[&InstanceIr]) -> Vec<&'static str> {
+    instances
+        .iter()
+        .map(|instance| component_by_name(contract, &instance.component.name))
+        .map(|component| language_name(component.language))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn process_runtime_kind(runtimes: &[&'static str]) -> &'static str {
+    if runtimes.len() == 1 {
+        runtimes[0]
+    } else {
+        "mixed"
+    }
+}
+
+fn language_name(language: LanguageKind) -> &'static str {
+    match language {
+        LanguageKind::Cpp => "cpp",
+        LanguageKind::Rust => "rust",
+    }
 }
 
 fn common_process_target(instances: &[&InstanceIr]) -> Option<String> {
@@ -3250,6 +3286,8 @@ backends = ["iox2"]
         assert_eq!(processes[0]["name"], "control");
         assert_eq!(processes[0]["backend"], "iox2");
         assert_eq!(processes[0]["target"], "linux");
+        assert_eq!(processes[0]["runtimes"], serde_json::json!(["rust"]));
+        assert_eq!(processes[0]["runtime_kind"], "rust");
         assert_eq!(processes[0]["instances"], serde_json::json!(["sink"]));
         assert_eq!(
             processes[0]["tasks"],
@@ -3265,7 +3303,63 @@ backends = ["iox2"]
         assert_eq!(processes[1]["name"], "sensors");
         assert_eq!(processes[1]["backend"], "iox2");
         assert_eq!(processes[1]["target"], "linux");
+        assert_eq!(processes[1]["runtimes"], serde_json::json!(["rust"]));
+        assert_eq!(processes[1]["runtime_kind"], "rust");
         assert_eq!(processes[1]["instances"], serde_json::json!(["source"]));
+    }
+
+    #[test]
+    fn launch_manifest_marks_mixed_process_runtime_kind() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "main"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "main"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[target.linux]
+runtime = ["cpp", "rust"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let launch: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+        let process = &launch["graphs"][0]["processes"][0];
+
+        assert_eq!(process["name"], "main");
+        assert_eq!(process["runtimes"], serde_json::json!(["cpp", "rust"]));
+        assert_eq!(process["runtime_kind"], "mixed");
     }
 
     #[test]
