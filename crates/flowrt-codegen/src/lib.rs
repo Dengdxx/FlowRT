@@ -92,9 +92,14 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             emit_cpp_components(contract),
         ));
         artifacts.push(artifact(
+            "cpp/include/flowrt_app/runtime_shell.hpp",
+            emit_cpp_runtime_shell_header(),
+        ));
+        artifacts.push(artifact(
             "cpp/src/runtime_shell.cpp",
             emit_cpp_runtime_shell(),
         ));
+        artifacts.push(artifact("cpp/src/main.cpp", emit_cpp_main()));
         if !abi_expectations.is_empty() {
             artifacts.push(artifact(
                 "cpp/tests/message_abi.cpp",
@@ -267,9 +272,30 @@ fn emit_cpp_components(contract: &ContractIr) -> String {
 
 fn emit_cpp_runtime_shell() -> String {
     let mut output = managed_header();
-    output.push_str("#include \"flowrt_app/components.hpp\"\n\n");
+    output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
+    output.push_str("flowrt::Status run() {\n    return flowrt::ok();\n}\n\n");
     output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_runtime_shell_header() -> String {
+    let mut output = managed_header();
+    output.push_str("#pragma once\n\n");
+    output.push_str("#include <flowrt/runtime.hpp>\n\n");
+    output.push_str("namespace flowrt_app {\n\n");
+    output.push_str(
+        "/**\n * @brief 运行 C++ managed runtime shell。\n *\n * v0.1 先提供可编译入口骨架。后续 C++ inproc demo 会在此处接入 Contract IR 驱动的组件实例、channel 和生命周期调度。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
+    );
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_main() -> String {
+    let mut output = managed_header();
+    output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
+    output
+        .push_str("int main() {\n    return flowrt_app::run() == flowrt::Status::Ok ? 0 : 1;\n}\n");
     output
 }
 
@@ -1269,6 +1295,35 @@ fn emit_cmake(contract: &ContractIr) -> String {
         package_name, package_name, package_name, package_name
     );
 
+    if has_language(contract, LanguageKind::Cpp) {
+        let shell_target = format!("{}_cpp_shell", package_name.replace('-', "_"));
+        let app_target = format!("{}_cpp_app", package_name.replace('-', "_"));
+        output.push_str(
+            "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
+        );
+        output.push_str(
+            "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
+        );
+        output.push_str(
+            "if(NOT FLOWRT_CPP_RUNTIME_DIR OR NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n    message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR must point to FlowRT runtime/cpp\")\nendif()\n",
+        );
+        output.push_str(&format!(
+            "target_include_directories({package_name}_flowrt_app INTERFACE ${{FLOWRT_CPP_RUNTIME_DIR}}/include)\n"
+        ));
+        output.push_str(&format!(
+            "\nadd_library({shell_target} STATIC ../cpp/src/runtime_shell.cpp)\n"
+        ));
+        output.push_str(&format!(
+            "target_link_libraries({shell_target} PUBLIC {package_name}_flowrt_app)\n"
+        ));
+        output.push_str(&format!(
+            "\nadd_executable({app_target} ../cpp/src/main.cpp)\n"
+        ));
+        output.push_str(&format!(
+            "target_link_libraries({app_target} PRIVATE {shell_target})\n"
+        ));
+    }
+
     if has_language(contract, LanguageKind::Cpp) && !contract.types.is_empty() {
         let test_target = format!("{}_message_abi", package_name.replace('-', "_"));
         output.push_str("\ninclude(CTest)\nif(BUILD_TESTING)\n");
@@ -1276,7 +1331,7 @@ fn emit_cmake(contract: &ContractIr) -> String {
             "    add_executable({test_target} ../cpp/tests/message_abi.cpp)\n"
         ));
         output.push_str(&format!(
-            "    target_include_directories({test_target} PRIVATE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n"
+            "    target_link_libraries({test_target} PRIVATE {package_name}_flowrt_app)\n"
         ));
         output.push_str(&format!(
             "    add_test(NAME message_abi COMMAND {test_target})\n"
@@ -1810,6 +1865,73 @@ input = ["imu:Imu"]
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
         assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    }
+
+    #[test]
+    fn emits_cpp_managed_app_targets() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Odom]
+timestamp = "u64"
+x = "f32"
+
+[type.Cmd]
+left = "f32"
+right = "f32"
+
+[component.controller]
+language = "cpp"
+input = ["odom:Odom"]
+output = ["cmd:Cmd"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["odom"]
+output = ["cmd"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let paths = bundle
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"cpp/include/flowrt_app/runtime_shell.hpp".to_string()));
+        assert!(paths.contains(&"cpp/src/runtime_shell.cpp".to_string()));
+        assert!(paths.contains(&"cpp/src/main.cpp".to_string()));
+
+        let runtime_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        assert!(runtime_shell.contains("#include \"flowrt_app/runtime_shell.hpp\""));
+        assert!(runtime_shell.contains("flowrt::Status run()"));
+        assert!(runtime_shell.contains("return flowrt::ok();"));
+
+        let main = artifact_content(&bundle, "cpp/src/main.cpp");
+        assert!(main.contains("#include \"flowrt_app/runtime_shell.hpp\""));
+        assert!(main.contains("return flowrt_app::run() == flowrt::Status::Ok ? 0 : 1;"));
+
+        let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+        assert!(cmake.contains("FLOWRT_CPP_RUNTIME_DIR"));
+        assert!(
+            cmake.contains("add_library(robot_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp)")
+        );
+        assert!(
+            cmake.contains(
+                "target_link_libraries(robot_demo_cpp_shell PUBLIC robot_demo_flowrt_app)"
+            )
+        );
+        assert!(cmake.contains("add_executable(robot_demo_cpp_app ../cpp/src/main.cpp)"));
+        assert!(
+            cmake
+                .contains("target_link_libraries(robot_demo_cpp_app PRIVATE robot_demo_cpp_shell)")
+        );
     }
 
     #[test]
