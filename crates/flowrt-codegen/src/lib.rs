@@ -10,7 +10,7 @@ use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
 use flowrt_ir::{
     ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr, LanguageKind,
     OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType, StalePolicy as IrStalePolicy,
-    TypeExpr,
+    TaskIr, TypeExpr,
 };
 
 /// artifact emission 返回的结果类型。
@@ -386,6 +386,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     ));
     let step_emission = RustStepEmission {
         contract,
+        graph,
         binds: &bind_plans,
         incoming_bind_index: &incoming_bind_index,
         outgoing_bind_indices: &outgoing_bind_indices,
@@ -675,6 +676,7 @@ fn emit_rust_app_new(
 
 struct RustStepEmission<'a> {
     contract: &'a ContractIr,
+    graph: &'a GraphIr,
     binds: &'a [BindRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
@@ -697,19 +699,39 @@ fn emit_rust_app_step(
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
+        let Some(task) = task_for_instance(emission.graph, instance) else {
+            continue;
+        };
+        let task_inputs = task
+            .inputs
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let task_outputs = task
+            .outputs
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
 
         for input in &component.inputs {
-            let bind_index = emission
-                .incoming_bind_index
-                .get(&(instance.name.clone(), input.name.clone()))
-                .expect("validated graph must provide a bind for each task input");
-            let bind = &emission.binds[*bind_index];
-            output.push_str(&runtime_channel_read(
-                input,
-                bind,
-                emission.selected_backend,
-            ));
-            output.push_str(&runtime_stale_error_guard(input, bind));
+            if task_inputs.contains(input.name.as_str()) {
+                let bind_index = emission
+                    .incoming_bind_index
+                    .get(&(instance.name.clone(), input.name.clone()))
+                    .expect("validated graph must provide a bind for each task input");
+                let bind = &emission.binds[*bind_index];
+                output.push_str(&runtime_channel_read(
+                    input,
+                    bind,
+                    emission.selected_backend,
+                ));
+                output.push_str(&runtime_stale_error_guard(input, bind));
+            } else {
+                output.push_str(&format!(
+                    "        let {input} = flowrt::Latest::new(None, false);\n",
+                    input = input.name
+                ));
+            }
         }
 
         for port in &component.outputs {
@@ -734,6 +756,9 @@ fn emit_rust_app_step(
         ));
 
         for port in &component.outputs {
+            if !task_outputs.contains(port.name.as_str()) {
+                continue;
+            }
             let outgoing = emission
                 .outgoing_bind_indices
                 .get(&(instance.name.clone(), port.name.clone()))
@@ -1626,6 +1651,13 @@ fn component_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a ComponentI
         .expect("normalized contract must reference known components")
 }
 
+fn task_for_instance<'a>(graph: &'a GraphIr, instance: &InstanceIr) -> Option<&'a TaskIr> {
+    graph
+        .tasks
+        .iter()
+        .find(|task| task.instance.id == instance.id)
+}
+
 fn topo_order_instances(graph: &GraphIr) -> Vec<&InstanceIr> {
     let mut indegree: BTreeMap<String, usize> = graph
         .instances
@@ -1640,11 +1672,13 @@ fn topo_order_instances(graph: &GraphIr) -> Vec<&InstanceIr> {
         if source == target {
             continue;
         }
-        edges
+        let inserted = edges
             .entry(source.clone())
             .or_default()
             .insert(target.clone());
-        *indegree.entry(target).or_default() += 1;
+        if inserted {
+            *indegree.entry(target).or_default() += 1;
+        }
     }
 
     let mut ready: BTreeSet<String> = indegree
@@ -2056,6 +2090,159 @@ backends = ["inproc"]
         assert!(
             rust_shell.find("if imu.stale()").unwrap() < rust_shell.find(".on_tick(imu)").unwrap()
         );
+    }
+
+    #[test]
+    fn rust_shell_accepts_multiple_binds_between_same_instance_pair() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["left:Sample", "right:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["left:Sample", "right:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["left", "right"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["left", "right"]
+
+[[bind.dataflow]]
+from = "source.left"
+to = "sink.left"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "source.right"
+to = "sink.right"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(rust_shell.contains("source: Box<dyn Source>"));
+        assert!(rust_shell.contains("sink: Box<dyn Sink>"));
+    }
+
+    #[test]
+    fn rust_shell_uses_task_port_subset_for_channel_io() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.used_source]
+language = "rust"
+output = ["used_out:Sample"]
+
+[component.unused_source]
+language = "rust"
+output = ["unused_out:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["used_in:Sample", "unused_in:Sample"]
+output = ["used_out:Sample", "unused_out:Sample"]
+
+[component.monitor]
+language = "rust"
+input = ["used_in:Sample", "unused_in:Sample"]
+
+[instance.used_source]
+component = "used_source"
+
+[instance.used_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["used_out"]
+
+[instance.unused_source]
+component = "unused_source"
+
+[instance.unused_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["unused_out"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["used_in"]
+output = ["used_out"]
+
+[instance.monitor]
+component = "monitor"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["used_in", "unused_in"]
+
+[[bind.dataflow]]
+from = "used_source.used_out"
+to = "sink.used_in"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "unused_source.unused_out"
+to = "sink.unused_in"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "sink.used_out"
+to = "monitor.used_in"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "sink.unused_out"
+to = "monitor.unused_in"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let sink_step_start = rust_shell.find("        let used_in =").unwrap();
+        let monitor_step_start = rust_shell
+            .find("        let used_in = self.bind_2.view_at(tick_time_ms);")
+            .unwrap();
+        let sink_step = &rust_shell[sink_step_start..monitor_step_start];
+
+        assert!(sink_step.contains("let used_in = self.bind_0.view_at(tick_time_ms);"));
+        assert!(sink_step.contains("let unused_in = flowrt::Latest::new(None, false);"));
+        assert!(sink_step.contains("let mut used_out = flowrt::Output::<Sample>::new();"));
+        assert!(sink_step.contains("let mut unused_out = flowrt::Output::<Sample>::new();"));
+        assert!(
+            sink_step
+                .contains("self.sink.on_tick(used_in, unused_in, &mut used_out, &mut unused_out)")
+        );
+        assert!(sink_step.contains("if let Some(value) = used_out.as_ref().copied()"));
+        assert!(!sink_step.contains("self.bind_1.view_at(tick_time_ms)"));
+        assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().copied()"));
     }
 
     #[test]
