@@ -1,0 +1,113 @@
+use std::collections::BTreeMap;
+
+/// 语义归一化前的 RSDL v0.1 文档。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawDocument {
+    pub package: RawPackage,
+    pub types: BTreeMap<String, RawType>,
+    pub components: BTreeMap<String, RawComponent>,
+    pub instances: BTreeMap<String, RawInstance>,
+    pub binds: Vec<RawDataflowBind>,
+    pub profiles: BTreeMap<String, RawProfile>,
+    pub targets: BTreeMap<String, RawTarget>,
+}
+
+/// `[package]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawPackage {
+    pub name: String,
+    pub version: Option<String>,
+    pub rsdl_version: String,
+    pub imports: BTreeMap<String, Vec<String>>,
+}
+
+/// `[type.<Name>]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawType {
+    pub fields: Vec<RawField>,
+}
+
+/// 消息字段声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawField {
+    pub name: String,
+    pub ty: String,
+}
+
+/// `[component.<name>]` 表。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawComponent {
+    pub language: String,
+    pub kind: Option<String>,
+    pub input: Vec<RawPort>,
+    pub output: Vec<RawPort>,
+    pub params: BTreeMap<String, RawValue>,
+}
+
+/// 组件端口声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawPort {
+    pub name: String,
+    pub ty: String,
+}
+
+/// `[instance.<name>]` 表。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawInstance {
+    pub component: String,
+    pub process: Option<String>,
+    pub target: Option<String>,
+    pub params: BTreeMap<String, RawValue>,
+    pub task: Option<RawTask>,
+}
+
+/// `[instance.<name>.task]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTask {
+    pub trigger: String,
+    pub period_ms: Option<u64>,
+    pub deadline_ms: Option<u64>,
+    pub priority: Option<u32>,
+    pub input: Vec<String>,
+    pub output: Vec<String>,
+}
+
+/// `[[bind.dataflow]]` 表项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawDataflowBind {
+    pub from: String,
+    pub to: String,
+    pub channel: String,
+    pub depth: Option<u32>,
+    pub overflow: Option<String>,
+    pub stale_policy: Option<String>,
+    pub max_age_ms: Option<u64>,
+}
+
+/// `[profile.<name>]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawProfile {
+    pub backend: Option<String>,
+    pub default_overflow: Option<String>,
+    pub default_stale_policy: Option<String>,
+    pub max_age_ms: Option<u64>,
+}
+
+/// `[target.<name>]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTarget {
+    pub platform: Option<String>,
+    pub runtime: Vec<String>,
+    pub backends: Vec<String>,
+}
+
+/// component 和 instance 参数表接受的 TOML value 子集。
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawValue {
+    Bool(bool),
+    Integer(i64),
+    Float(f64),
+    String(String),
+    Array(Vec<RawValue>),
+    Table(BTreeMap<String, RawValue>),
+}

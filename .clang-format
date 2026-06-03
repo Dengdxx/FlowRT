@@ -1,0 +1,29 @@
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+BreakBeforeBraces: Attach
+AccessModifierOffset: -1
+NamespaceIndentation: None
+SortIncludes: true
+IncludeBlocks: Regroup
+PointerAlignment: Right
+DerivePointerAlignment: false
+QualifierAlignment: Leave
+SpaceBeforeParens: ControlStatements
+# C++ headers should be included through `flowrt/...` or `flowrt_app/...` so the sorter
+# can keep runtime headers, FlowRT-managed application headers, and external headers separated.
+IncludeCategories:
+  - Regex: '^"flowrt/.*"'
+    Priority: 1
+    SortPriority: 0
+  - Regex: '^"flowrt_app/.*"'
+    Priority: 2
+    SortPriority: 1
+  - Regex: '^".*"'
+    Priority: 3
+    SortPriority: 2
+  - Regex: '^<.*>$'
+    Priority: 4
+    SortPriority: 3

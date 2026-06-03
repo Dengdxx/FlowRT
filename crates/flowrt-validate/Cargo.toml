@@ -1,0 +1,13 @@
+[package]
+name = "flowrt-validate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flowrt-conformance = { path = "../flowrt-conformance" }
+flowrt-ir = { path = "../flowrt-ir" }
+thiserror.workspace = true
+
+[dev-dependencies]
+flowrt-rsdl = { path = "../flowrt-rsdl" }

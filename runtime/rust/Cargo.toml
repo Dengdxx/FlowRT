@@ -1,0 +1,12 @@
+[package]
+name = "flowrt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+iox2 = ["dep:iceoryx2"]
+
+[dependencies]
+iceoryx2 = { version = "0.9", optional = true }

@@ -1,0 +1,2165 @@
+//! FlowRT 管理应用产物的生成入口。
+//!
+//! 本 crate 只从 Contract IR 生成 glue：消息类型、组件接口、runtime shell、启动配置和构建文件。
+//! 生成内容必须位于用户项目可见的 `flowrt/` 目录下，并且不得承载用户业务逻辑。
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+
+use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
+use flowrt_ir::{
+    ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr, LanguageKind,
+    OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType, StalePolicy as IrStalePolicy,
+    TypeExpr,
+};
+
+/// artifact emission 返回的结果类型。
+pub type Result<T> = std::result::Result<T, CodegenError>;
+
+/// 生成 FlowRT 管理产物时产生的错误。
+#[derive(Debug, thiserror::Error)]
+pub enum CodegenError {
+    #[error("failed to serialize launch manifest: {0}")]
+    LaunchJson(#[from] serde_json::Error),
+
+    #[error("failed to derive message ABI expectations: {0}")]
+    MessageAbi(#[from] flowrt_conformance::AbiError),
+}
+
+/// 一个要写入应用 `flowrt/` 目录下的 FlowRT 管理文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub relative_path: PathBuf,
+    pub content: String,
+}
+
+/// 从一个 Contract IR 文档生成的文件集合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactBundle {
+    pub artifacts: Vec<Artifact>,
+}
+
+/// codegen 输出语言。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodegenLanguage {
+    Cpp,
+    Rust,
+}
+
+/// 一个计划生成的输出族。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodegenUnit {
+    pub language: CodegenLanguage,
+    pub artifact_group: &'static str,
+}
+
+/// 从 Contract IR 推导出的保守 codegen plan。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodegenPlan {
+    pub units: Vec<CodegenUnit>,
+}
+
+/// 为一个 contract 构建高层生成计划。
+pub fn plan_codegen(contract: &ContractIr) -> CodegenPlan {
+    let mut units = Vec::new();
+    if has_language(contract, LanguageKind::Cpp) {
+        units.push(CodegenUnit {
+            language: CodegenLanguage::Cpp,
+            artifact_group: "runtime_shell",
+        });
+    }
+    if has_language(contract, LanguageKind::Rust) {
+        units.push(CodegenUnit {
+            language: CodegenLanguage::Rust,
+            artifact_group: "runtime_shell",
+        });
+    }
+    CodegenPlan { units }
+}
+
+/// 生成首批 FlowRT 管理的应用产物。
+pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
+    let mut artifacts = Vec::new();
+    let abi_expectations = message_abi_expectations(contract)?;
+
+    if has_language(contract, LanguageKind::Cpp) {
+        artifacts.push(artifact(
+            "cpp/include/flowrt_app/messages.hpp",
+            emit_cpp_messages(contract),
+        ));
+        artifacts.push(artifact(
+            "cpp/include/flowrt_app/components.hpp",
+            emit_cpp_components(contract),
+        ));
+        artifacts.push(artifact(
+            "cpp/src/runtime_shell.cpp",
+            emit_cpp_runtime_shell(),
+        ));
+        if !abi_expectations.is_empty() {
+            artifacts.push(artifact(
+                "cpp/tests/message_abi.cpp",
+                emit_cpp_message_abi_tests(contract, &abi_expectations),
+            ));
+        }
+    }
+
+    if has_language(contract, LanguageKind::Rust) {
+        artifacts.push(artifact(
+            "rust/src/messages.rs",
+            emit_rust_messages(contract),
+        ));
+        artifacts.push(artifact(
+            "rust/src/components.rs",
+            emit_rust_components(contract),
+        ));
+        artifacts.push(artifact(
+            "rust/src/runtime_shell.rs",
+            emit_rust_runtime_shell(contract),
+        ));
+        artifacts.push(artifact("rust/src/supervisor.rs", emit_rust_supervisor()));
+        artifacts.push(artifact("rust/src/lib.rs", emit_rust_lib()));
+        artifacts.push(artifact("rust/src/main.rs", emit_rust_main()));
+        artifacts.push(artifact(
+            "rust/src/supervisor_main.rs",
+            emit_rust_supervisor_main(),
+        ));
+        if !abi_expectations.is_empty() {
+            artifacts.push(artifact(
+                "rust/tests/message_abi.rs",
+                emit_rust_message_abi_tests(contract, &abi_expectations),
+            ));
+        }
+    }
+
+    artifacts.push(artifact(
+        "launch/launch.json",
+        emit_launch_manifest(contract)?,
+    ));
+    artifacts.push(artifact("build/CMakeLists.txt", emit_cmake(contract)));
+    artifacts.push(artifact("build/Cargo.toml", emit_cargo_manifest(contract)));
+
+    Ok(ArtifactBundle { artifacts })
+}
+
+fn artifact(path: impl Into<PathBuf>, content: String) -> Artifact {
+    Artifact {
+        relative_path: path.into(),
+        content,
+    }
+}
+
+fn has_language(contract: &ContractIr, language: LanguageKind) -> bool {
+    contract
+        .components
+        .iter()
+        .any(|component| component.language == language)
+}
+
+fn ordered_types(contract: &ContractIr) -> Vec<&flowrt_ir::TypeIr> {
+    let type_map = contract
+        .types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let mut visited = BTreeSet::new();
+    let mut visiting = BTreeSet::new();
+    let mut order = Vec::with_capacity(contract.types.len());
+
+    for ty in &contract.types {
+        visit_type(ty, &type_map, &mut visited, &mut visiting, &mut order);
+    }
+
+    order
+}
+
+fn visit_type<'a>(
+    ty: &'a flowrt_ir::TypeIr,
+    type_map: &BTreeMap<&str, &'a flowrt_ir::TypeIr>,
+    visited: &mut BTreeSet<String>,
+    visiting: &mut BTreeSet<String>,
+    order: &mut Vec<&'a flowrt_ir::TypeIr>,
+) {
+    if visited.contains(&ty.name) {
+        return;
+    }
+    if !visiting.insert(ty.name.clone()) {
+        panic!("validated contract must not contain recursive message types");
+    }
+
+    let mut deps = BTreeSet::new();
+    for field in &ty.fields {
+        collect_type_dependencies(&field.ty, &mut deps);
+    }
+    for dep in deps {
+        if let Some(next) = type_map.get(dep.as_str()) {
+            visit_type(next, type_map, visited, visiting, order);
+        }
+    }
+
+    visiting.remove(&ty.name);
+    visited.insert(ty.name.clone());
+    order.push(ty);
+}
+
+fn collect_type_dependencies(expr: &TypeExpr, dependencies: &mut BTreeSet<String>) {
+    match expr {
+        TypeExpr::Primitive { .. } => {}
+        TypeExpr::Named { name } => {
+            dependencies.insert(name.clone());
+        }
+        TypeExpr::Array { element, .. } => collect_type_dependencies(element, dependencies),
+    }
+}
+
+fn emit_cpp_messages(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push_str("#pragma once\n\n");
+    output.push_str("#include <array>\n#include <cstdint>\n\n");
+    output.push_str("namespace flowrt_app {\n\n");
+    for ty in ordered_types(contract) {
+        output.push_str(&format!("struct {} {{\n", ty.name));
+        for field in &ty.fields {
+            output.push_str(&format!(
+                "    {} {}{{}};\n",
+                cpp_type(&field.ty),
+                field.name
+            ));
+        }
+        output.push_str("};\n\n");
+    }
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_components(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push_str("#pragma once\n\n");
+    output.push_str("#include <flowrt/runtime.hpp>\n\n");
+    output.push_str("#include \"flowrt_app/messages.hpp\"\n\n");
+    output.push_str("namespace flowrt_app {\n\n");
+
+    for component in contract
+        .components
+        .iter()
+        .filter(|component| component.language == LanguageKind::Cpp)
+    {
+        output.push_str(&format!(
+            "class {}Interface {{\n",
+            pascal_case(&component.name)
+        ));
+        output.push_str("public:\n");
+        output.push_str(&format!(
+            "    virtual ~{}Interface() = default;\n",
+            pascal_case(&component.name)
+        ));
+        output.push_str(&cpp_lifecycle_method("on_init"));
+        output.push_str(&cpp_lifecycle_method("on_start"));
+        output.push_str(&cpp_lifecycle_method("on_stop"));
+        output.push_str(&cpp_lifecycle_method("on_shutdown"));
+        output.push_str(&cpp_tick_signature(component));
+        output.push_str("};\n\n");
+    }
+
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_runtime_shell() -> String {
+    let mut output = managed_header();
+    output.push_str("#include \"flowrt_app/components.hpp\"\n\n");
+    output.push_str("namespace flowrt_app {\n\n");
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_rust_messages(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push('\n');
+    let zero_copy_derive = if selected_backend_name(contract) == "iox2" {
+        output.push_str("use flowrt::ZeroCopySend;\n\n");
+        ", flowrt::ZeroCopySend"
+    } else {
+        ""
+    };
+    for ty in ordered_types(contract) {
+        output.push_str("#[repr(C)]\n");
+        output.push_str(&format!(
+            "#[derive(Clone, Copy, Debug, PartialEq{zero_copy_derive})]\n"
+        ));
+        output.push_str(&format!("pub struct {} {{\n", ty.name));
+        for field in &ty.fields {
+            output.push_str(&format!(
+                "    pub {}: {},\n",
+                field.name,
+                rust_type(&field.ty)
+            ));
+        }
+        output.push_str("}\n\n");
+        output.push_str(&format!("impl Default for {} {{\n", ty.name));
+        output.push_str("    fn default() -> Self {\n");
+        output.push_str(
+            "        // Safety：FlowRT Message ABI v0.1 只允许拥有有效全零位模式的 plain-data 类型。\n",
+        );
+        output.push_str("        unsafe { std::mem::zeroed() }\n");
+        output.push_str("    }\n");
+        output.push_str("}\n\n");
+    }
+    output
+}
+
+fn emit_rust_components(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push_str("\nuse crate::messages::*;\n\n");
+    for component in &contract.components {
+        output.push_str(&format!("pub trait {} {{\n", pascal_case(&component.name)));
+        output.push_str(
+            "    fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
+        );
+        output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(
+            "    fn on_start(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
+        );
+        output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(
+            "    fn on_stop(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
+        );
+        output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(
+            "    fn on_shutdown(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
+        );
+        output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(&rust_tick_signature(component));
+        output.push_str("}\n\n");
+    }
+    output
+}
+
+fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
+    let graph = contract
+        .graphs
+        .first()
+        .expect("normalized contract must contain at least one graph");
+    let order = topo_order_instances(graph);
+    let process_plans = process_runtime_plans(&order);
+    let bind_plans = bind_runtime_plans(contract, graph);
+    let incoming_bind_index = incoming_bind_index_map(&bind_plans);
+    let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
+    let selected_backend = selected_backend_name(contract);
+
+    let mut output = managed_header();
+    output.push_str("\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::user;\n\n");
+    output.push_str(&format!(
+        "const SELECTED_BACKEND: &str = {};\n\n",
+        rust_string_literal(&selected_backend)
+    ));
+    output.push_str("pub struct App {\n");
+    for instance in &order {
+        let component = component_by_name(contract, &instance.component.name);
+        output.push_str(&format!(
+            "    {}: Box<dyn {}>,\n",
+            instance.name,
+            pascal_case(&component.name)
+        ));
+    }
+    for bind in &bind_plans {
+        output.push_str(&format!(
+            "    {}: {},\n",
+            bind.field_name,
+            runtime_channel_type(bind, &selected_backend)
+        ));
+    }
+    output.push_str("}\n\n");
+
+    output.push_str("impl App {\n");
+    output.push_str(&emit_rust_app_new(
+        contract,
+        graph,
+        &order,
+        &bind_plans,
+        &selected_backend,
+    ));
+    let step_emission = RustStepEmission {
+        contract,
+        binds: &bind_plans,
+        incoming_bind_index: &incoming_bind_index,
+        outgoing_bind_indices: &outgoing_bind_indices,
+        selected_backend: &selected_backend,
+    };
+
+    output.push_str(&emit_rust_app_step(&step_emission, &order, "step"));
+    for process in &process_plans {
+        output.push_str(&emit_rust_app_step(
+            &step_emission,
+            &process.instances,
+            &format!("step_process_{}", process.method_suffix),
+        ));
+    }
+    output.push_str(&emit_rust_app_run(&order));
+    output.push_str(&emit_rust_app_run_process_dispatch(&process_plans));
+    for process in &process_plans {
+        output.push_str(&emit_rust_app_run_function(
+            &format!("run_process_{}", process.method_suffix),
+            &format!("step_process_{}", process.method_suffix),
+            &process.instances,
+            false,
+        ));
+    }
+    output.push_str("}\n\n");
+    output.push_str(
+        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        _ => Box::new(flowrt::inproc_backend()),\n    }\n}\n\npub fn run() -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
+    );
+    output
+}
+
+fn selected_backend_name(contract: &ContractIr) -> String {
+    contract
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or_else(|| contract.profiles.first())
+        .map(|profile| profile.backend.0.clone())
+        .unwrap_or_else(|| "inproc".to_string())
+}
+
+fn rust_string_literal(value: &str) -> String {
+    format!("{value:?}")
+}
+
+fn emit_rust_lib() -> String {
+    let mut output = managed_header();
+    output.push_str(
+        "\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../src/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
+    );
+    output
+}
+
+fn emit_rust_main() -> String {
+    let mut output = managed_header();
+    output.push_str(
+        "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut process = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--process\" => process = args.next(),\n            _ => {\n                eprintln!(\"unknown FlowRT app argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    let status = match process.as_deref() {\n        Some(process) => flowrt_app::runtime_shell::run_process(process),\n        None => flowrt_app::runtime_shell::run(),\n    };\n    let code = match status {\n        flowrt::Status::Ok => 0,\n        _ => 1,\n    };\n    std::process::exit(code);\n}\n",
+    );
+    output
+}
+
+fn emit_rust_supervisor_main() -> String {
+    let mut output = managed_header();
+    output.push_str(
+        "\nfn main() {\n    match flowrt_app::supervisor::launch() {\n        Ok(()) => std::process::exit(0),\n        Err(error) => {\n            eprintln!(\"FlowRT supervisor failed: {error}\");\n            std::process::exit(1);\n        }\n    }\n}\n",
+    );
+    output
+}
+
+fn emit_rust_supervisor() -> String {
+    let mut output = managed_header();
+    output.push_str(
+        r#"
+use std::process::Command;
+
+const LAUNCH_MANIFEST: &str = include_str!("../../launch/launch.json");
+
+#[derive(Debug, serde::Deserialize)]
+struct LaunchManifest {
+    graphs: Vec<LaunchGraph>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LaunchGraph {
+    processes: Vec<LaunchProcess>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LaunchProcess {
+    name: String,
+}
+
+pub fn launch() -> Result<(), String> {
+    let manifest: LaunchManifest = serde_json::from_str(LAUNCH_MANIFEST)
+        .map_err(|error| format!("failed to parse FlowRT launch manifest: {error}"))?;
+    let graph = manifest
+        .graphs
+        .first()
+        .ok_or_else(|| "FlowRT launch manifest does not contain a graph".to_string())?;
+    if graph.processes.is_empty() {
+        return Err("FlowRT launch manifest does not contain process groups".to_string());
+    }
+
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let mut app_exe = current_exe.clone();
+    let supervisor_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "failed to resolve supervisor executable name".to_string())?;
+    let app_stem = supervisor_name
+        .strip_suffix("-flowrt-supervisor")
+        .ok_or_else(|| format!("supervisor executable `{supervisor_name}` must end with `-flowrt-supervisor`"))?;
+    let app_name = format!("{app_stem}-flowrt-app");
+    app_exe.set_file_name(app_name);
+
+    let mut children = Vec::new();
+    for process in &graph.processes {
+        let child = Command::new(&app_exe)
+            .arg("--process")
+            .arg(&process.name)
+            .spawn()
+            .map_err(|error| format!("failed to start FlowRT process `{}`: {error}", process.name))?;
+        children.push((process.name.clone(), child));
+    }
+
+    let mut failures = Vec::new();
+    for (process, mut child) in children {
+        let status = child
+            .wait()
+            .map_err(|error| format!("failed to wait for FlowRT process `{process}`: {error}"))?;
+        if !status.success() {
+            failures.push(format!("{process} exited with {status}"));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+"#,
+    );
+    output
+}
+
+#[derive(Debug, Clone)]
+struct BindRuntimePlan {
+    index: usize,
+    field_name: String,
+    channel: ChannelKind,
+    overflow: IrOverflowPolicy,
+    stale: IrStalePolicy,
+    max_age_ms: Option<u64>,
+    depth: Option<u32>,
+    source_type: TypeExpr,
+    source_instance: String,
+    source_port: String,
+    target_instance: String,
+    target_port: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessRuntimePlan<'a> {
+    name: String,
+    method_suffix: String,
+    instances: Vec<&'a InstanceIr>,
+}
+
+fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<ProcessRuntimePlan<'a>> {
+    let mut by_process = BTreeMap::<String, Vec<&'a InstanceIr>>::new();
+    for &instance in order {
+        by_process
+            .entry(
+                instance
+                    .process
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string()),
+            )
+            .or_default()
+            .push(instance);
+    }
+
+    let mut used_suffixes = BTreeSet::new();
+    by_process
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, instances))| {
+            let base = snake_identifier(&name);
+            let mut suffix = base.clone();
+            if !used_suffixes.insert(suffix.clone()) {
+                suffix = format!("{}_{}", base, index);
+                while !used_suffixes.insert(suffix.clone()) {
+                    suffix.push('_');
+                }
+            }
+            ProcessRuntimePlan {
+                name,
+                method_suffix: suffix,
+                instances,
+            }
+        })
+        .collect()
+}
+
+fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<BindRuntimePlan> {
+    graph
+        .binds
+        .iter()
+        .enumerate()
+        .map(|(index, bind)| {
+            let source_instance = instance_by_name(graph, &bind.from.instance.name);
+            let source_component = component_by_name(contract, &source_instance.component.name);
+            let source_port = port_by_name(&source_component.outputs, &bind.from.port);
+            BindRuntimePlan {
+                index,
+                field_name: format!("bind_{index}"),
+                channel: bind.channel,
+                overflow: bind.overflow,
+                stale: bind.stale,
+                max_age_ms: bind.max_age_ms,
+                depth: bind.depth,
+                source_type: source_port.ty.clone(),
+                source_instance: source_instance.name.clone(),
+                source_port: bind.from.port.clone(),
+                target_instance: bind.to.instance.name.clone(),
+                target_port: bind.to.port.clone(),
+            }
+        })
+        .collect()
+}
+
+fn incoming_bind_index_map(plans: &[BindRuntimePlan]) -> BTreeMap<(String, String), usize> {
+    plans
+        .iter()
+        .map(|plan| {
+            (
+                (plan.target_instance.clone(), plan.target_port.clone()),
+                plan.index,
+            )
+        })
+        .collect()
+}
+
+fn outgoing_bind_indices_map(plans: &[BindRuntimePlan]) -> BTreeMap<(String, String), Vec<usize>> {
+    let mut map = BTreeMap::new();
+    for plan in plans {
+        map.entry((plan.source_instance.clone(), plan.source_port.clone()))
+            .or_insert_with(Vec::new)
+            .push(plan.index);
+    }
+    map
+}
+
+fn emit_rust_app_new(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+    selected_backend: &str,
+) -> String {
+    let mut output = String::new();
+    output.push_str("    pub fn new(\n");
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        output.push_str(&format!(
+            "        {}: Box<dyn {}>,\n",
+            instance.name,
+            pascal_case(&component.name)
+        ));
+    }
+    output.push_str("    ) -> Self {\n        Self {\n");
+    for instance in order {
+        output.push_str(&format!("            {},\n", instance.name));
+    }
+    for bind in binds {
+        output.push_str(&format!(
+            "            {}: {},\n",
+            bind.field_name,
+            runtime_channel_initializer(contract, graph, bind, selected_backend)
+        ));
+    }
+    output.push_str("        }\n    }\n");
+    output
+}
+
+struct RustStepEmission<'a> {
+    contract: &'a ContractIr,
+    binds: &'a [BindRuntimePlan],
+    incoming_bind_index: &'a BTreeMap<(String, String), usize>,
+    outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+    selected_backend: &'a str,
+}
+
+fn emit_rust_app_step(
+    emission: &RustStepEmission<'_>,
+    order: &[&InstanceIr],
+    function_name: &str,
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "    fn {function_name}(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {{\n",
+    ));
+    output.push_str("        let _ = tick;\n");
+    if runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
+        output.push_str("        let tick_time_ms = tick as u64;\n");
+    }
+
+    for instance in order {
+        let component = component_by_name(emission.contract, &instance.component.name);
+
+        for input in &component.inputs {
+            let bind_index = emission
+                .incoming_bind_index
+                .get(&(instance.name.clone(), input.name.clone()))
+                .expect("validated graph must provide a bind for each task input");
+            let bind = &emission.binds[*bind_index];
+            output.push_str(&runtime_channel_read(
+                input,
+                bind,
+                emission.selected_backend,
+            ));
+            output.push_str(&runtime_stale_error_guard(input, bind));
+        }
+
+        for port in &component.outputs {
+            output.push_str(&format!(
+                "        let mut {port} = flowrt::Output::<{ty}>::new();\n",
+                port = port.name,
+                ty = rust_type(&port.ty)
+            ));
+        }
+
+        let mut call_args = Vec::new();
+        for input in &component.inputs {
+            call_args.push(input.name.clone());
+        }
+        for port in &component.outputs {
+            call_args.push(format!("&mut {}", port.name));
+        }
+        output.push_str(&format!(
+            "        if self.{name}.on_tick({args}) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            name = instance.name,
+            args = call_args.join(", ")
+        ));
+
+        for port in &component.outputs {
+            let outgoing = emission
+                .outgoing_bind_indices
+                .get(&(instance.name.clone(), port.name.clone()))
+                .cloned()
+                .unwrap_or_default();
+            if outgoing.is_empty() {
+                continue;
+            }
+            output.push_str(&format!(
+                "        if let Some(value) = {port}.as_ref().copied() {{\n",
+                port = port.name
+            ));
+            for bind_index in outgoing {
+                let bind = &emission.binds[bind_index];
+                output.push_str(&runtime_channel_write(bind, emission.selected_backend));
+            }
+            output.push_str("        }\n");
+        }
+    }
+
+    output.push_str("        flowrt::Status::Ok\n    }\n");
+    output
+}
+
+fn emit_rust_app_run(order: &[&InstanceIr]) -> String {
+    emit_rust_app_run_function("run", "step", order, true)
+}
+
+fn emit_rust_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
+    let mut output = String::new();
+    output.push_str(
+        "    pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str) -> flowrt::Status {\n        match process {\n",
+    );
+    for process in processes {
+        output.push_str(&format!(
+            "            {} => self.run_process_{}(backend),\n",
+            rust_string_literal(&process.name),
+            process.method_suffix
+        ));
+    }
+    output.push_str("            _ => flowrt::Status::Error,\n        }\n    }\n");
+    output
+}
+
+fn emit_rust_app_run_function(
+    function_name: &str,
+    step_function_name: &str,
+    order: &[&InstanceIr],
+    public: bool,
+) -> String {
+    let mut output = String::new();
+    let visibility = if public { "pub " } else { "" };
+    output.push_str(&format!(
+        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n",
+    ));
+    for instance in order {
+        output.push_str(&format!(
+            "        if self.{name}.on_init(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            name = instance.name
+        ));
+    }
+    for instance in order {
+        output.push_str(&format!(
+            "        if self.{name}.on_start(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            name = instance.name
+        ));
+    }
+    output.push_str(&format!(
+        "        let status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| self.{step_function_name}(tick, tick_context));\n",
+    ));
+    output.push_str(
+        "        if status != flowrt::Status::Ok {\n            return status;\n        }\n",
+    );
+    for instance in order.iter().rev() {
+        output.push_str(&format!(
+            "        if self.{name}.on_stop(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            name = instance.name
+        ));
+    }
+    for instance in order.iter().rev() {
+        output.push_str(&format!(
+            "        if self.{name}.on_shutdown(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            name = instance.name
+        ));
+    }
+    output.push_str("        flowrt::Status::Ok\n    }\n");
+    output
+}
+
+fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
+    selected_backend == "iox2"
+        || binds
+            .iter()
+            .any(|bind| matches!(bind.channel, ChannelKind::Latest))
+}
+
+fn runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    let ty = rust_type(&bind.source_type);
+    if selected_backend == "iox2" {
+        return format!("flowrt::iox2::Iox2PubSub<{ty}>");
+    }
+
+    match bind.channel {
+        ChannelKind::Latest => format!("flowrt::LatestChannel<{ty}>"),
+        ChannelKind::Fifo => format!("flowrt::FifoChannel<{ty}>"),
+    }
+}
+
+fn runtime_channel_initializer(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    bind: &BindRuntimePlan,
+    selected_backend: &str,
+) -> String {
+    if selected_backend == "iox2" {
+        return format!(
+            "flowrt::iox2::Iox2PubSub::open_with_config({}, {}).expect(\"failed to open FlowRT iox2 channel\")",
+            rust_string_literal(&iox2_service_name(contract, graph, bind)),
+            iox2_channel_config_expr(bind),
+        );
+    }
+
+    match bind.channel {
+        ChannelKind::Latest => format!(
+            "flowrt::LatestChannel::with_stale_config({})",
+            runtime_stale_config_expr(bind)
+        ),
+        ChannelKind::Fifo => format!(
+            "flowrt::FifoChannel::new({}, {})",
+            bind.depth.unwrap_or(1),
+            runtime_overflow_policy(bind.overflow)
+        ),
+    }
+}
+
+fn iox2_channel_config_expr(bind: &BindRuntimePlan) -> String {
+    match bind.channel {
+        ChannelKind::Latest => format!(
+            "flowrt::iox2::Iox2ChannelConfig::latest().with_stale_config({})",
+            runtime_stale_config_expr(bind)
+        ),
+        ChannelKind::Fifo => format!(
+            "flowrt::iox2::Iox2ChannelConfig::fifo({}, {}).with_stale_config({})",
+            bind.depth.unwrap_or(1),
+            runtime_overflow_policy(bind.overflow),
+            runtime_stale_config_expr(bind)
+        ),
+    }
+}
+
+fn runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
+    match bind.max_age_ms {
+        Some(max_age_ms) => format!(
+            "flowrt::StaleConfig::new(Some({max_age_ms}), {})",
+            runtime_stale_policy(bind.stale)
+        ),
+        None => format!(
+            "flowrt::StaleConfig::new(None, {})",
+            runtime_stale_policy(bind.stale)
+        ),
+    }
+}
+
+fn runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    if selected_backend == "iox2" {
+        return format!(
+            "        let {input} = match self.{field}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
+            input = input.name,
+            field = bind.field_name
+        );
+    }
+
+    match bind.channel {
+        ChannelKind::Latest => {
+            format!(
+                "        let {input} = self.{field}.view_at(tick_time_ms);\n",
+                input = input.name,
+                field = bind.field_name
+            )
+        }
+        ChannelKind::Fifo => {
+            format!(
+                "        let {input}_value = self.{field}.pop();\n        let {input} = flowrt::Latest::new({input}_value.as_ref(), false);\n",
+                input = input.name,
+                field = bind.field_name
+            )
+        }
+    }
+}
+
+fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
+    if bind.stale != IrStalePolicy::Error {
+        return String::new();
+    }
+
+    format!(
+        "        if {input}.stale() {{\n            return flowrt::Status::Error;\n        }}\n",
+        input = input.name
+    )
+}
+
+fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    if selected_backend == "iox2" {
+        return format!(
+            "            if self.{field}.publish_at(value, tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n",
+            field = bind.field_name
+        );
+    }
+
+    match bind.channel {
+        ChannelKind::Latest => {
+            format!(
+                "            self.{field}.publish_at(value, tick_time_ms);\n",
+                field = bind.field_name
+            )
+        }
+        ChannelKind::Fifo => {
+            format!(
+                "            match self.{field}.push(value) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) | Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,\n                Err(flowrt::ChannelError::Overflow) => return flowrt::Status::Error,\n            }}\n",
+                field = bind.field_name
+            )
+        }
+    }
+}
+
+fn iox2_service_name(contract: &ContractIr, graph: &GraphIr, bind: &BindRuntimePlan) -> String {
+    format!(
+        "FlowRT/{}/{}/bind_{}/{}_{}_to_{}_{}",
+        iox2_service_part(&contract.package.name),
+        iox2_service_part(&graph.name),
+        bind.index,
+        iox2_service_part(&bind.source_instance),
+        iox2_service_part(&bind.source_port),
+        iox2_service_part(&bind.target_instance),
+        iox2_service_part(&bind.target_port),
+    )
+}
+
+fn iox2_service_part(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            output.push(ch);
+        } else if !output.ends_with('_') {
+            output.push('_');
+        }
+    }
+    while output.ends_with('_') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "unnamed".to_string()
+    } else {
+        output
+    }
+}
+
+fn runtime_overflow_policy(policy: IrOverflowPolicy) -> &'static str {
+    match policy {
+        IrOverflowPolicy::DropOldest => "flowrt::OverflowPolicy::DropOldest",
+        IrOverflowPolicy::DropNewest => "flowrt::OverflowPolicy::DropNewest",
+        IrOverflowPolicy::Error => "flowrt::OverflowPolicy::Error",
+        IrOverflowPolicy::Block => "flowrt::OverflowPolicy::Block",
+    }
+}
+
+fn runtime_stale_policy(policy: IrStalePolicy) -> &'static str {
+    match policy {
+        IrStalePolicy::Warn => "flowrt::StalePolicy::Warn",
+        IrStalePolicy::Drop => "flowrt::StalePolicy::Drop",
+        IrStalePolicy::HoldLast => "flowrt::StalePolicy::HoldLast",
+        IrStalePolicy::Error => "flowrt::StalePolicy::Error",
+    }
+}
+
+fn instance_by_name<'a>(graph: &'a GraphIr, name: &str) -> &'a InstanceIr {
+    graph
+        .instances
+        .iter()
+        .find(|instance| instance.name == name)
+        .expect("validated graph must reference known instances")
+}
+
+fn port_by_name<'a>(ports: &'a [PortIr], name: &str) -> &'a PortIr {
+    ports
+        .iter()
+        .find(|port| port.name == name)
+        .expect("validated component must contain referenced port")
+}
+
+fn emit_rust_message_abi_tests(
+    contract: &ContractIr,
+    expectations: &[MessageAbiExpectation],
+) -> String {
+    let mut output = managed_header();
+    output.push_str(
+        "\nfn bytes_of<T>(value: &T) -> Vec<u8> {\n    let mut bytes = vec![0u8; std::mem::size_of::<T>()];\n    // Safety：生成测试只传入 FlowRT ABI v0.1 plain-data 消息，且 padding 已初始化。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            (value as *const T).cast::<u8>(),\n            bytes.as_mut_ptr(),\n            bytes.len(),\n        );\n    }\n    bytes\n}\n\nfn assert_byte_roundtrip<T: Copy + Default>(value: T) {\n    let bytes = bytes_of(&value);\n    let mut roundtrip = T::default();\n    // Safety：`roundtrip` 是有效 plain-data 存储，`bytes` 长度等于 `size_of::<T>()`。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut roundtrip as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&roundtrip), bytes);\n}\n\n",
+    );
+
+    for ty in ordered_types(contract) {
+        output.push_str(&format!(
+            "fn {}() -> flowrt_app::messages::{} {{\n",
+            sample_function_name(&ty.name),
+            ty.name
+        ));
+        output.push_str(&format!(
+            "    let mut value = flowrt_app::messages::{}::default();\n",
+            ty.name
+        ));
+        for (index, field) in ty.fields.iter().enumerate() {
+            output.push_str(&format!(
+                "    value.{} = {};\n",
+                field.name,
+                rust_sample_expr(&field.ty, index + 1)
+            ));
+        }
+        output.push_str("    value\n}\n\n");
+    }
+
+    for expectation in expectations {
+        let ty = format!("flowrt_app::messages::{}", expectation.type_name);
+        output.push_str("#[test]\n");
+        output.push_str(&format!(
+            "fn {}_message_abi() {{\n",
+            snake_identifier(&expectation.type_name)
+        ));
+        output.push_str(&format!(
+            "    assert_eq!(std::mem::size_of::<{}>(), {});\n",
+            ty, expectation.size_bytes
+        ));
+        output.push_str(&format!(
+            "    assert_eq!(std::mem::align_of::<{}>(), {});\n",
+            ty, expectation.align_bytes
+        ));
+        for field in &expectation.fields {
+            output.push_str(&format!(
+                "    assert_eq!(std::mem::offset_of!({}, {}), {});\n",
+                ty, field.name, field.offset_bytes
+            ));
+        }
+        output.push_str(&format!(
+            "    assert_byte_roundtrip({}());\n",
+            sample_function_name(&expectation.type_name)
+        ));
+        output.push_str("}\n\n");
+    }
+
+    output
+}
+
+fn emit_cpp_message_abi_tests(
+    contract: &ContractIr,
+    expectations: &[MessageAbiExpectation],
+) -> String {
+    let mut output = managed_header();
+    output.push_str(
+        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\n",
+    );
+
+    for ty in ordered_types(contract) {
+        output.push_str(&format!(
+            "flowrt_app::{} {}() {{\n",
+            ty.name,
+            sample_function_name(&ty.name)
+        ));
+        output.push_str(&format!("    flowrt_app::{} value{{}};\n", ty.name));
+        output.push_str("    std::memset(&value, 0, sizeof(value));\n");
+        for (index, field) in ty.fields.iter().enumerate() {
+            output.push_str(&format!(
+                "    value.{} = {};\n",
+                field.name,
+                cpp_sample_expr(&field.ty, index + 1)
+            ));
+        }
+        output.push_str("    return value;\n}\n\n");
+    }
+
+    for expectation in expectations {
+        let ty = format!("flowrt_app::{}", expectation.type_name);
+        output.push_str(&format!(
+            "void test_{}_message_abi() {{\n",
+            snake_identifier(&expectation.type_name)
+        ));
+        output.push_str(&format!(
+            "    static_assert(std::is_standard_layout_v<{}>);\n",
+            ty
+        ));
+        output.push_str(&format!(
+            "    static_assert(std::is_trivially_copyable_v<{}>);\n",
+            ty
+        ));
+        output.push_str(&format!(
+            "    static_assert(sizeof({}) == {});\n",
+            ty, expectation.size_bytes
+        ));
+        output.push_str(&format!(
+            "    static_assert(alignof({}) == {});\n",
+            ty, expectation.align_bytes
+        ));
+        for field in &expectation.fields {
+            output.push_str(&format!(
+                "    static_assert(offsetof({}, {}) == {});\n",
+                ty, field.name, field.offset_bytes
+            ));
+        }
+        output.push_str(&format!(
+            "    assert_byte_roundtrip({}());\n",
+            sample_function_name(&expectation.type_name)
+        ));
+        output.push_str("}\n\n");
+    }
+
+    output.push_str("}  // namespace\n\nint main() {\n");
+    for expectation in expectations {
+        output.push_str(&format!(
+            "    test_{}_message_abi();\n",
+            snake_identifier(&expectation.type_name)
+        ));
+    }
+    output.push_str("    return 0;\n}\n");
+    output
+}
+
+fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
+    let selected_backend = selected_backend_name(contract);
+    let launch = serde_json::json!({
+        "package": contract.package.name,
+        "ir_version": contract.ir_version,
+        "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
+        "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
+        "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
+            "name": graph.name,
+            "processes": launch_processes(graph, &selected_backend),
+            "instances": graph.instances.iter().map(|instance| serde_json::json!({
+                "name": instance.name,
+                "component": instance.component.name,
+                "process": instance.process,
+                "target": instance.target.as_ref().map(|target| &target.name),
+            })).collect::<Vec<_>>(),
+            "tasks": graph.tasks.iter().map(|task| serde_json::json!({
+                "instance": task.instance.name,
+                "trigger": task.trigger,
+                "period_ms": task.period_ms,
+                "deadline_ms": task.deadline_ms,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&launch)?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn launch_processes(graph: &GraphIr, backend: &str) -> Vec<serde_json::Value> {
+    let mut processes = BTreeMap::<String, Vec<&InstanceIr>>::new();
+    for instance in &graph.instances {
+        processes
+            .entry(
+                instance
+                    .process
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string()),
+            )
+            .or_default()
+            .push(instance);
+    }
+
+    processes
+        .into_iter()
+        .map(|(name, instances)| {
+            let instance_names = instances
+                .iter()
+                .map(|instance| instance.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let target = common_process_target(&instances);
+            serde_json::json!({
+                "name": name,
+                "backend": backend,
+                "target": target,
+                "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
+                "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(|task| serde_json::json!({
+                    "instance": task.instance.name,
+                    "trigger": task.trigger,
+                    "period_ms": task.period_ms,
+                    "deadline_ms": task.deadline_ms,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+fn common_process_target(instances: &[&InstanceIr]) -> Option<String> {
+    let mut targets = instances
+        .iter()
+        .filter_map(|instance| instance.target.as_ref().map(|target| target.name.clone()))
+        .collect::<BTreeSet<_>>();
+
+    if targets.len() == 1 {
+        targets.pop_first()
+    } else {
+        None
+    }
+}
+
+fn emit_cmake(contract: &ContractIr) -> String {
+    let package_name = sanitize_package_name(&contract.package.name);
+    let mut output = format!(
+        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.20)\nproject({}_flowrt_app LANGUAGES CXX)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
+        package_name, package_name, package_name, package_name
+    );
+
+    if has_language(contract, LanguageKind::Cpp) && !contract.types.is_empty() {
+        let test_target = format!("{}_message_abi", package_name.replace('-', "_"));
+        output.push_str("\ninclude(CTest)\nif(BUILD_TESTING)\n");
+        output.push_str(&format!(
+            "    add_executable({test_target} ../cpp/tests/message_abi.cpp)\n"
+        ));
+        output.push_str(&format!(
+            "    target_include_directories({test_target} PRIVATE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n"
+        ));
+        output.push_str(&format!(
+            "    add_test(NAME message_abi COMMAND {test_target})\n"
+        ));
+        output.push_str("endif()\n");
+    }
+
+    output
+}
+
+fn emit_cargo_manifest(contract: &ContractIr) -> String {
+    let package_name = sanitize_package_name(&contract.package.name).replace('_', "-");
+    let flowrt_dependency = if selected_backend_name(contract) == "iox2" {
+        "flowrt = { version = \"0.1\", features = [\"iox2\"] }"
+    } else {
+        "flowrt = { version = \"0.1\" }"
+    };
+    let mut output = format!(
+        "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n\n[dependencies]\n{}\n",
+        package_name, package_name, flowrt_dependency
+    );
+
+    if has_language(contract, LanguageKind::Rust) {
+        output
+            .push_str("serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n");
+        output.push_str(&format!(
+            "\n[[bin]]\nname = \"{}-flowrt-supervisor\"\npath = \"../rust/src/supervisor_main.rs\"\n",
+            package_name
+        ));
+    }
+
+    if has_language(contract, LanguageKind::Rust) && !contract.types.is_empty() {
+        output.push_str(
+            "\n[[test]]\nname = \"message_abi\"\npath = \"../rust/tests/message_abi.rs\"\n",
+        );
+    }
+
+    output
+}
+
+fn cpp_callback_args(component: &ComponentIr) -> Vec<String> {
+    let mut args = Vec::new();
+    for input in &component.inputs {
+        args.push(format!(
+            "const flowrt::Latest<{}>& {}",
+            cpp_type(&input.ty),
+            input.name
+        ));
+    }
+    for output in &component.outputs {
+        args.push(format!(
+            "flowrt::Output<{}>& {}",
+            cpp_type(&output.ty),
+            output.name
+        ));
+    }
+    args
+}
+
+fn cpp_lifecycle_method(name: &str) -> String {
+    format!(
+        "    virtual flowrt::Status {name}(flowrt::Context&) {{\n        return flowrt::Status::ok();\n    }}\n"
+    )
+}
+
+fn cpp_tick_signature(component: &ComponentIr) -> String {
+    let args = cpp_callback_args(component);
+    if args.is_empty() {
+        "    virtual flowrt::Status on_tick() = 0;\n".to_string()
+    } else {
+        let joined = args
+            .iter()
+            .map(|arg| format!("        {arg}"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!("    virtual flowrt::Status on_tick(\n{joined}) = 0;\n")
+    }
+}
+
+fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
+    let mut args = Vec::new();
+    for input in &component.inputs {
+        args.push(format!(
+            "{}: flowrt::Latest<'_, {}>",
+            input.name,
+            rust_type(&input.ty)
+        ));
+    }
+    for output in &component.outputs {
+        args.push(format!(
+            "{}: &mut flowrt::Output<{}>",
+            output.name,
+            rust_type(&output.ty)
+        ));
+    }
+    args
+}
+
+fn rust_tick_signature(component: &ComponentIr) -> String {
+    let args = rust_callback_args(component);
+    if args.is_empty() {
+        "    fn on_tick(&mut self) -> flowrt::Status;\n".to_string()
+    } else {
+        let joined = args
+            .iter()
+            .map(|arg| format!("        {arg}"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!("    fn on_tick(\n        &mut self,\n{joined},\n    ) -> flowrt::Status;\n")
+    }
+}
+
+fn cpp_type(expr: &TypeExpr) -> String {
+    match expr {
+        TypeExpr::Primitive { name } => cpp_primitive(*name).to_string(),
+        TypeExpr::Named { name } => name.clone(),
+        TypeExpr::Array { element, len } => {
+            format!("std::array<{}, {}>", cpp_type(element), len)
+        }
+    }
+}
+
+fn cpp_primitive(primitive: PrimitiveType) -> &'static str {
+    match primitive {
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::U8 => "std::uint8_t",
+        PrimitiveType::U16 => "std::uint16_t",
+        PrimitiveType::U32 => "std::uint32_t",
+        PrimitiveType::U64 => "std::uint64_t",
+        PrimitiveType::U128 => "unsigned __int128",
+        PrimitiveType::I8 => "std::int8_t",
+        PrimitiveType::I16 => "std::int16_t",
+        PrimitiveType::I32 => "std::int32_t",
+        PrimitiveType::I64 => "std::int64_t",
+        PrimitiveType::I128 => "__int128",
+        PrimitiveType::F32 => "float",
+        PrimitiveType::F64 => "double",
+    }
+}
+
+fn rust_type(expr: &TypeExpr) -> String {
+    match expr {
+        TypeExpr::Primitive { name } => rust_primitive(*name).to_string(),
+        TypeExpr::Named { name } => name.clone(),
+        TypeExpr::Array { element, len } => format!("[{}; {}]", rust_type(element), len),
+    }
+}
+
+fn rust_primitive(primitive: PrimitiveType) -> &'static str {
+    match primitive {
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::U8 => "u8",
+        PrimitiveType::U16 => "u16",
+        PrimitiveType::U32 => "u32",
+        PrimitiveType::U64 => "u64",
+        PrimitiveType::U128 => "u128",
+        PrimitiveType::I8 => "i8",
+        PrimitiveType::I16 => "i16",
+        PrimitiveType::I32 => "i32",
+        PrimitiveType::I64 => "i64",
+        PrimitiveType::I128 => "i128",
+        PrimitiveType::F32 => "f32",
+        PrimitiveType::F64 => "f64",
+    }
+}
+
+fn rust_sample_expr(expr: &TypeExpr, seed: usize) -> String {
+    match expr {
+        TypeExpr::Primitive { name } => rust_primitive_sample(*name, seed),
+        TypeExpr::Named { name } => format!("{}()", sample_function_name(name)),
+        TypeExpr::Array { element, len } => {
+            format!("[{}; {}]", rust_sample_expr(element, seed), len)
+        }
+    }
+}
+
+fn rust_primitive_sample(primitive: PrimitiveType, seed: usize) -> String {
+    let value = (seed % 9) + 1;
+    match primitive {
+        PrimitiveType::Bool => "true".to_string(),
+        PrimitiveType::U8 => format!("{value}u8"),
+        PrimitiveType::U16 => format!("{value}u16"),
+        PrimitiveType::U32 => format!("{value}u32"),
+        PrimitiveType::U64 => format!("{value}u64"),
+        PrimitiveType::U128 => format!("{value}u128"),
+        PrimitiveType::I8 => format!("-{value}i8"),
+        PrimitiveType::I16 => format!("-{value}i16"),
+        PrimitiveType::I32 => format!("-{value}i32"),
+        PrimitiveType::I64 => format!("-{value}i64"),
+        PrimitiveType::I128 => format!("-{value}i128"),
+        PrimitiveType::F32 => format!("{value}.25f32"),
+        PrimitiveType::F64 => format!("{value}.25f64"),
+    }
+}
+
+fn cpp_sample_expr(expr: &TypeExpr, seed: usize) -> String {
+    match expr {
+        TypeExpr::Primitive { name } => cpp_primitive_sample(*name, seed),
+        TypeExpr::Named { name } => format!("{}()", sample_function_name(name)),
+        TypeExpr::Array { element, len: _ } => {
+            format!(
+                "[] {{ auto value = {}{{}}; value.fill({}); return value; }}()",
+                cpp_type(expr),
+                cpp_sample_expr(element, seed)
+            )
+        }
+    }
+}
+
+fn cpp_primitive_sample(primitive: PrimitiveType, seed: usize) -> String {
+    let value = (seed % 9) + 1;
+    match primitive {
+        PrimitiveType::Bool => "true".to_string(),
+        PrimitiveType::U8 => format!("std::uint8_t{{{value}}}"),
+        PrimitiveType::U16 => format!("std::uint16_t{{{value}}}"),
+        PrimitiveType::U32 => format!("std::uint32_t{{{value}}}"),
+        PrimitiveType::U64 => format!("std::uint64_t{{{value}}}"),
+        PrimitiveType::U128 => format!("static_cast<unsigned __int128>({value})"),
+        PrimitiveType::I8 => format!("std::int8_t{{-{value}}}"),
+        PrimitiveType::I16 => format!("std::int16_t{{-{value}}}"),
+        PrimitiveType::I32 => format!("std::int32_t{{-{value}}}"),
+        PrimitiveType::I64 => format!("std::int64_t{{-{value}}}"),
+        PrimitiveType::I128 => format!("static_cast<__int128>(-{value})"),
+        PrimitiveType::F32 => format!("{value}.25F"),
+        PrimitiveType::F64 => format!("{value}.25"),
+    }
+}
+
+fn sample_function_name(type_name: &str) -> String {
+    format!("sample_{}", snake_identifier(type_name))
+}
+
+fn snake_identifier(name: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_separator = true;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && !previous_was_separator && !output.ends_with('_') {
+                output.push('_');
+            }
+            output.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !output.ends_with('_') {
+            output.push('_');
+            previous_was_separator = true;
+        }
+    }
+    while output.ends_with('_') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "message".to_string()
+    } else {
+        output
+    }
+}
+
+fn pascal_case(name: &str) -> String {
+    let mut output = String::new();
+    for part in name.split('_').filter(|part| !part.is_empty()) {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            output.extend(first.to_uppercase());
+            output.push_str(chars.as_str());
+        }
+    }
+    output
+}
+
+fn sanitize_package_name(name: &str) -> String {
+    let mut output = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            output.push(ch);
+        } else {
+            output.push('_');
+        }
+    }
+    if output.is_empty() {
+        "flowrt_app".to_string()
+    } else {
+        output
+    }
+}
+
+fn managed_header() -> String {
+    "// FlowRT 管理产物。不要手工修改。\n".to_string()
+}
+
+fn component_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a ComponentIr {
+    contract
+        .components
+        .iter()
+        .find(|component| component.name == name)
+        .expect("normalized contract must reference known components")
+}
+
+fn topo_order_instances(graph: &GraphIr) -> Vec<&InstanceIr> {
+    let mut indegree: BTreeMap<String, usize> = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.clone(), 0usize))
+        .collect();
+    let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for bind in &graph.binds {
+        let source = bind.from.instance.name.clone();
+        let target = bind.to.instance.name.clone();
+        if source == target {
+            continue;
+        }
+        edges
+            .entry(source.clone())
+            .or_default()
+            .insert(target.clone());
+        *indegree.entry(target).or_default() += 1;
+    }
+
+    let mut ready: BTreeSet<String> = indegree
+        .iter()
+        .filter_map(|(name, degree)| (*degree == 0).then_some(name.clone()))
+        .collect();
+    let mut order = Vec::with_capacity(graph.instances.len());
+
+    while let Some(name) = ready.iter().next().cloned() {
+        ready.remove(&name);
+        order.push(name.clone());
+
+        if let Some(next) = edges.get(&name) {
+            for target in next {
+                let entry = indegree
+                    .get_mut(target)
+                    .expect("all graph instances have an indegree entry");
+                *entry -= 1;
+                if *entry == 0 {
+                    ready.insert(target.clone());
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        order.len(),
+        graph.instances.len(),
+        "validated graph must be acyclic"
+    );
+
+    order
+        .iter()
+        .map(|name| {
+            graph
+                .instances
+                .iter()
+                .find(|instance| &instance.name == name)
+                .expect("ordered instance must exist")
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
+fn _port_type(port: &PortIr) -> &TypeExpr {
+    &port.ty
+}
+
+#[allow(dead_code)]
+fn _field_type(field: &FieldIr) -> &TypeExpr {
+    &field.ty
+}
+
+#[cfg(test)]
+mod tests {
+    use flowrt_ir::{hash_source, normalize_document};
+    use flowrt_rsdl::parse_str;
+
+    use super::*;
+
+    #[test]
+    fn plans_rust_artifacts_for_rust_component() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "demo"
+rsdl_version = "0.1"
+
+[component.monitor]
+language = "rust"
+"#,
+        );
+        let plan = plan_codegen(&ir);
+        assert_eq!(plan.units.len(), 1);
+        assert_eq!(plan.units[0].language, CodegenLanguage::Rust);
+    }
+
+    #[test]
+    fn emits_cpp_and_rust_application_artifacts() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[type.Cmd]
+left = "f32"
+right = "f32"
+
+[component.controller]
+language = "cpp"
+input = ["imu:Imu"]
+output = ["cmd:Cmd"]
+
+[component.monitor]
+language = "rust"
+input = ["imu:Imu"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+
+        let paths = bundle
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"cpp/include/flowrt_app/messages.hpp".to_string()));
+        assert!(paths.contains(&"rust/src/components.rs".to_string()));
+        assert!(paths.contains(&"cpp/tests/message_abi.cpp".to_string()));
+        assert!(paths.contains(&"rust/tests/message_abi.rs".to_string()));
+        assert!(paths.contains(&"launch/launch.json".to_string()));
+
+        let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+        assert!(cpp_messages.contains("struct Imu"));
+        assert!(cpp_messages.contains("std::uint64_t timestamp{};"));
+
+        let rust_components = artifact_content(&bundle, "rust/src/components.rs");
+        assert!(rust_components.contains("pub trait Monitor"));
+        assert!(rust_components.contains("imu: flowrt::Latest<'_, Imu>"));
+
+        let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+        assert!(rust_messages.contains("impl Default for Imu"));
+        assert!(rust_messages.contains("std::mem::zeroed()"));
+
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
+        assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    }
+
+    #[test]
+    fn enables_flowrt_iox2_feature_when_profile_selects_iox2() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.monitor]
+language = "rust"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+        assert!(cargo_manifest.contains("features = [\"iox2\"]"));
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"iox2\";"));
+    }
+
+    #[test]
+    fn emits_iox2_typed_channels_when_profile_selects_iox2() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[component.fifo_sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[instance.fifo_sink]
+component = "fifo_sink"
+target = "linux"
+
+[instance.fifo_sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+max_age_ms = 20
+stale_policy = "drop"
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "fifo_sink.imu"
+channel = "fifo"
+depth = 8
+overflow = "drop_oldest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+        assert!(rust_messages.contains("use flowrt::ZeroCopySend;"));
+        assert!(rust_messages.contains("flowrt::ZeroCopySend"));
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<Imu>"));
+        assert!(!rust_shell.contains("flowrt::LatestChannel<Imu>"));
+        assert!(rust_shell.contains("flowrt::iox2::Iox2ChannelConfig::latest()"));
+        assert!(rust_shell.contains(
+            "flowrt::iox2::Iox2ChannelConfig::fifo(8, flowrt::OverflowPolicy::DropOldest)"
+        ));
+        assert!(
+            rust_shell.contains("flowrt::StaleConfig::new(Some(20), flowrt::StalePolicy::Drop)")
+        );
+        assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
+        assert!(rust_shell.contains("receive_latest_at(tick_time_ms)"));
+    }
+
+    #[test]
+    fn emits_inproc_stale_channel_reads_from_bind_policy() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+max_age_ms = 20
+stale_policy = "drop"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains(
+            "flowrt::LatestChannel::with_stale_config(flowrt::StaleConfig::new(Some(20), flowrt::StalePolicy::Drop))"
+        ));
+        assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
+        assert!(rust_shell.contains("view_at(tick_time_ms)"));
+    }
+
+    #[test]
+    fn emits_stale_error_guard_before_user_tick() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+max_age_ms = 20
+stale_policy = "error"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(
+            rust_shell
+                .contains("if imu.stale() {\n            return flowrt::Status::Error;\n        }")
+        );
+        assert!(
+            rust_shell.find("if imu.stale()").unwrap() < rust_shell.find(".on_tick(imu)").unwrap()
+        );
+    }
+
+    #[test]
+    fn launch_manifest_groups_instances_by_process() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensors"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let launch: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+        let processes = launch["graphs"][0]["processes"].as_array().unwrap();
+
+        assert_eq!(processes.len(), 2);
+        assert_eq!(processes[0]["name"], "control");
+        assert_eq!(processes[0]["backend"], "iox2");
+        assert_eq!(processes[0]["target"], "linux");
+        assert_eq!(processes[0]["instances"], serde_json::json!(["sink"]));
+        assert_eq!(
+            processes[0]["tasks"],
+            serde_json::json!([
+                {
+                    "instance": "sink",
+                    "trigger": "on_message",
+                    "period_ms": null,
+                    "deadline_ms": 10
+                }
+            ])
+        );
+        assert_eq!(processes[1]["name"], "sensors");
+        assert_eq!(processes[1]["backend"], "iox2");
+        assert_eq!(processes[1]["target"], "linux");
+        assert_eq!(processes[1]["instances"], serde_json::json!(["source"]));
+    }
+
+    #[test]
+    fn rust_shell_exposes_process_run_entrypoint() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensors"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let rust_main = artifact_content(&bundle, "rust/src/main.rs");
+        let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
+
+        assert!(rust_shell.contains("pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str) -> flowrt::Status"));
+        assert!(rust_shell.contains("\"control\" => self.run_process_control(backend)"));
+        assert!(rust_shell.contains("\"sensors\" => self.run_process_sensors(backend)"));
+        assert!(rust_shell.contains("pub fn run_process(process: &str) -> flowrt::Status"));
+        assert!(rust_main.contains("--process"));
+        assert!(rust_main.contains("flowrt_app::runtime_shell::run_process(process)"));
+        assert!(rust_lib.contains("pub use runtime_shell::{run, run_process, App};"));
+    }
+
+    #[test]
+    fn emits_rust_supervisor_artifacts_for_process_launch() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensors"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let paths = bundle
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let supervisor = artifact_content(&bundle, "rust/src/supervisor.rs");
+        let supervisor_main = artifact_content(&bundle, "rust/src/supervisor_main.rs");
+        let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+
+        assert!(paths.contains(&"rust/src/supervisor.rs".to_string()));
+        assert!(paths.contains(&"rust/src/supervisor_main.rs".to_string()));
+        assert!(
+            supervisor.contains(
+                "const LAUNCH_MANIFEST: &str = include_str!(\"../../launch/launch.json\");"
+            )
+        );
+        assert!(supervisor.contains("Command::new(&app_exe)"));
+        assert!(supervisor.contains(".strip_suffix(\"-flowrt-supervisor\")"));
+        assert!(supervisor.contains("format!(\"{app_stem}-flowrt-app\")"));
+        assert!(supervisor.contains(".arg(\"--process\")"));
+        assert!(supervisor.contains(".arg(&process.name)"));
+        assert!(supervisor_main.contains("flowrt_app::supervisor::launch()"));
+        assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
+        assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
+        assert!(cargo_manifest.contains("serde = { version = \"1\", features = [\"derive\"] }"));
+        assert!(cargo_manifest.contains("serde_json = \"1\""));
+    }
+
+    fn contract_from_source(source: &str) -> ContractIr {
+        let raw = parse_str(source).unwrap();
+        normalize_document(&raw, hash_source(source)).unwrap()
+    }
+
+    fn artifact_content<'a>(bundle: &'a ArtifactBundle, path: &str) -> &'a str {
+        bundle
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.relative_path.as_path() == std::path::Path::new(path))
+            .map(|artifact| artifact.content.as_str())
+            .unwrap()
+    }
+}
