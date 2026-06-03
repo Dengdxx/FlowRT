@@ -125,6 +125,7 @@ fn main() -> Result<()> {
             let prepared = prepare_workspace(&rsdl, &out_dir)?;
             let contract = load_contract_from_json(&prepared.contract_path)?;
             ensure_direct_runtime_supported(&contract, "launch")?;
+            ensure_backend_runtime_supported(&contract, "launch")?;
             let manifest = cargo_manifest_with_local_runtime_patch(&out_dir)?;
             run_cargo("build", &manifest)?;
             run_cargo_supervisor(&manifest, &supervisor_bin_name(&contract))?;
@@ -348,7 +349,18 @@ fn selected_runtime_backend_name(contract: &ContractIr) -> &str {
         .unwrap_or("inproc")
 }
 
+fn ensure_backend_runtime_supported(contract: &ContractIr, command: &str) -> Result<()> {
+    let backend = selected_runtime_backend_name(contract);
+    if backend == "iox2" && has_component_language(contract, LanguageKind::Cpp) {
+        anyhow::bail!(
+            "C++ iox2 runtime shell is not implemented yet; `{command}` would otherwise bind a C++ contract to the wrong transport"
+        );
+    }
+    Ok(())
+}
+
 fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
+    ensure_backend_runtime_supported(contract, "build")?;
     for step in build_steps(contract) {
         match step {
             BuildStep::Cargo => {
@@ -365,6 +377,7 @@ fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
 
 fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
+    ensure_backend_runtime_supported(contract, "run")?;
     match run_mode(contract).context("contract does not contain runnable components")? {
         RunMode::CargoApp => {
             let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
@@ -889,6 +902,51 @@ default_stale_policy = "warn"
         assert!(message.contains("mixed-language `launch` over `iox2` is not implemented yet"));
         assert!(message.contains("C++ iox2 runtime shell"));
         assert!(message.contains("supervisor cross-language channel wiring"));
+    }
+
+    #[test]
+    fn backend_runtime_readiness_rejects_cpp_iox2_contracts() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "cpp_iox2_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let error = ensure_backend_runtime_supported(&contract, "build").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("C++ iox2 runtime shell is not implemented yet"));
+        assert!(message.contains("`build`"));
+    }
+
+    #[test]
+    fn backend_runtime_readiness_allows_rust_iox2_contracts() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "rust_iox2_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        ensure_backend_runtime_supported(&contract, "build").unwrap();
     }
 
     #[test]
