@@ -39,10 +39,12 @@ runtime/
 examples/
   imu_demo/rsdl/robot.rsdl
   imu_demo/src/rust/mod.rs
+  cpp_counter_demo/rsdl/robot.rsdl
+  cpp_counter_demo/src/cpp/components.cpp
 AGENTS.md
 ```
 
-当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。Rust inproc/iox2 shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
+当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发和 `flowrt_user::build_app()` 用户工厂入口；`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的 CMake 构建路径。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。Rust inproc/iox2 shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
 ## 当前里程碑
 

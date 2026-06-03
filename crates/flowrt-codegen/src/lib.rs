@@ -93,11 +93,11 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         ));
         artifacts.push(artifact(
             "cpp/include/flowrt_app/runtime_shell.hpp",
-            emit_cpp_runtime_shell_header(),
+            emit_cpp_runtime_shell_header(contract),
         ));
         artifacts.push(artifact(
             "cpp/src/runtime_shell.cpp",
-            emit_cpp_runtime_shell(),
+            emit_cpp_runtime_shell(contract),
         ));
         artifacts.push(artifact("cpp/src/main.cpp", emit_cpp_main()));
         if !abi_expectations.is_empty() {
@@ -270,7 +270,113 @@ fn emit_cpp_components(contract: &ContractIr) -> String {
     output
 }
 
-fn emit_cpp_runtime_shell() -> String {
+fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
+    if !is_cpp_standalone_contract(contract) {
+        return emit_cpp_runtime_shell_stub();
+    }
+
+    let graph = contract
+        .graphs
+        .first()
+        .expect("normalized contract must contain at least one graph");
+    let order = topo_order_instances(graph);
+    let bind_plans = bind_runtime_plans(contract, graph);
+    let incoming_bind_index = incoming_bind_index_map(&bind_plans);
+    let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
+
+    let mut output = managed_header();
+    output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
+    output.push_str("#include <string_view>\n#include <utility>\n#include <variant>\n\n");
+    output.push_str("namespace {\n\n");
+    output.push_str(
+        "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
+    );
+    output.push_str("}  // namespace\n\n");
+    output.push_str("namespace flowrt_app {\n\n");
+    output.push_str(&emit_cpp_app_constructor(
+        contract,
+        graph,
+        &order,
+        &bind_plans,
+    ));
+    let step_emission = CppStepEmission {
+        contract,
+        graph,
+        binds: &bind_plans,
+        incoming_bind_index: &incoming_bind_index,
+        outgoing_bind_indices: &outgoing_bind_indices,
+    };
+    output.push_str(&emit_cpp_app_step(&step_emission, &order, "step"));
+    output.push_str(&emit_cpp_app_run(&order));
+    output.push_str(
+        "flowrt::Status App::run_process(const flowrt::Backend& backend, std::string_view process) {\n    if (process == \"main\") {\n        return run(backend);\n    }\n    return flowrt::Status::Error;\n}\n\n",
+    );
+    output.push_str("flowrt::Status run() {\n    auto backend = flowrt::inproc_backend();\n    return flowrt_user::build_app().run(backend);\n}\n\n");
+    output.push_str(
+        "flowrt::Status run_process(std::string_view process) {\n    auto backend = flowrt::inproc_backend();\n    return flowrt_user::build_app().run_process(backend, process);\n}\n\n",
+    );
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
+    if !is_cpp_standalone_contract(contract) {
+        return emit_cpp_runtime_shell_stub_header();
+    }
+
+    let graph = contract
+        .graphs
+        .first()
+        .expect("normalized contract must contain at least one graph");
+    let order = topo_order_instances(graph);
+    let bind_plans = bind_runtime_plans(contract, graph);
+
+    let mut output = managed_header();
+    output.push_str("#pragma once\n\n");
+    output.push_str("#include <memory>\n#include <string_view>\n\n");
+    output.push_str("#include <flowrt/runtime.hpp>\n\n");
+    output.push_str(
+        "#include \"flowrt_app/components.hpp\"\n#include \"flowrt_app/messages.hpp\"\n\n",
+    );
+    output.push_str("namespace flowrt_app {\n\n");
+    output.push_str(
+        "/**\n * @brief Contract IR 驱动的 C++ inproc 应用 shell。\n *\n * `App` 持有用户组件实现和 FlowRT 管理的 channel 状态。用户代码通过 `flowrt_user::build_app()` 构造该对象，runtime shell 负责生命周期、调度和数据流转发。\n */\n",
+    );
+    output.push_str("class App {\npublic:\n");
+    output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
+    output.push_str(
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process process group 名称；v0.1 C++ only shell 仅支持 `main`。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context);\n\n",
+    );
+    for instance in &order {
+        let component = component_by_name(contract, &instance.component.name);
+        output.push_str(&format!(
+            "    std::unique_ptr<{}Interface> {}_;\n",
+            pascal_case(&component.name),
+            instance.name
+        ));
+    }
+    for bind in &bind_plans {
+        output.push_str(&format!(
+            "    {} {}_;\n",
+            cpp_runtime_channel_type(bind),
+            bind.field_name
+        ));
+    }
+    output.push_str("};\n\n");
+    output.push_str(
+        "/**\n * @brief 运行默认 C++ inproc 应用。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
+    );
+    output.push_str(
+        "/**\n * @brief 运行默认 C++ inproc 应用中的指定 process group。\n *\n * @param process process group 名称。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process);\n\n",
+    );
+    output.push_str("}  // namespace flowrt_app\n");
+    output.push_str(
+        "\nnamespace flowrt_user {\n\n/**\n * @brief 构造用户 C++ 组件实例并交给 FlowRT 管理 shell。\n *\n * 用户项目必须实现该函数。函数体应只装配用户组件对象，不写入 FlowRT 管理产物。\n *\n * @return 已注入用户组件实例的 FlowRT C++ 应用对象。\n */\nflowrt_app::App build_app();\n\n}  // namespace flowrt_user\n",
+    );
+    output
+}
+
+fn emit_cpp_runtime_shell_stub() -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
@@ -279,16 +385,318 @@ fn emit_cpp_runtime_shell() -> String {
     output
 }
 
-fn emit_cpp_runtime_shell_header() -> String {
+fn emit_cpp_runtime_shell_stub_header() -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str("#include <flowrt/runtime.hpp>\n\n");
     output.push_str("namespace flowrt_app {\n\n");
     output.push_str(
-        "/**\n * @brief 运行 C++ managed runtime shell。\n *\n * v0.1 先提供可编译入口骨架。后续 C++ inproc demo 会在此处接入 Contract IR 驱动的组件实例、channel 和生命周期调度。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
+        "/**\n * @brief 运行 C++ managed runtime shell。\n *\n * v0.1 仅在 C++ only contract 中生成真实 inproc shell；混合语言 contract 的 C++ shell 暂保留可编译骨架，跨语言调度边界后续单独实现。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
     );
     output.push_str("}  // namespace flowrt_app\n");
     output
+}
+
+fn is_cpp_standalone_contract(contract: &ContractIr) -> bool {
+    has_language(contract, LanguageKind::Cpp) && !has_language(contract, LanguageKind::Rust)
+}
+
+fn emit_cpp_app_constructor_declaration(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut params = Vec::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        params.push(format!(
+            "std::unique_ptr<{}Interface> {}",
+            pascal_case(&component.name),
+            instance.name
+        ));
+    }
+
+    let mut output = String::new();
+    output.push_str("    /**\n     * @brief 构造 C++ 应用 shell。\n     *\n");
+    if params.is_empty() {
+        output.push_str("     * 该 contract 没有需要注入的 C++ 组件实例。\n");
+    } else {
+        for instance in order {
+            output.push_str(&format!(
+                "     * @param {} 用户组件实例所有权；shell 在生命周期内独占持有该对象。\n",
+                instance.name
+            ));
+        }
+    }
+    output.push_str("     */\n");
+    if params.is_empty() {
+        output.push_str("    App();\n\n");
+    } else {
+        output.push_str("    explicit App(\n");
+        for (index, param) in params.iter().enumerate() {
+            let suffix = if index + 1 == params.len() { "" } else { "," };
+            output.push_str(&format!("        {param}{suffix}\n"));
+        }
+        output.push_str("    );\n\n");
+    }
+    output
+}
+
+fn emit_cpp_app_constructor(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+) -> String {
+    let mut params = Vec::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        params.push(format!(
+            "std::unique_ptr<{}Interface> {}",
+            pascal_case(&component.name),
+            instance.name
+        ));
+    }
+
+    let mut initializers = Vec::new();
+    for instance in order {
+        initializers.push(format!("{}_(std::move({}))", instance.name, instance.name));
+    }
+    for bind in binds {
+        initializers.push(format!(
+            "{}_({})",
+            bind.field_name,
+            cpp_runtime_channel_initializer(graph, bind)
+        ));
+    }
+
+    let mut output = String::new();
+    if params.is_empty() {
+        output.push_str("App::App()");
+    } else {
+        output.push_str("App::App(\n");
+        for (index, param) in params.iter().enumerate() {
+            let suffix = if index + 1 == params.len() { "" } else { "," };
+            output.push_str(&format!("    {param}{suffix}\n"));
+        }
+        output.push(')');
+    }
+    if !initializers.is_empty() {
+        output.push_str("\n    : ");
+        for (index, initializer) in initializers.iter().enumerate() {
+            if index == 0 {
+                output.push_str(initializer);
+            } else {
+                output.push_str(&format!(",\n      {initializer}"));
+            }
+        }
+    }
+    output.push_str(" {}\n\n");
+    output
+}
+
+struct CppStepEmission<'a> {
+    contract: &'a ContractIr,
+    graph: &'a GraphIr,
+    binds: &'a [BindRuntimePlan],
+    incoming_bind_index: &'a BTreeMap<(String, String), usize>,
+    outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+}
+
+fn emit_cpp_app_step(
+    emission: &CppStepEmission<'_>,
+    order: &[&InstanceIr],
+    function_name: &str,
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context) {{\n",
+    ));
+    output.push_str("    (void)tick;\n    (void)tick_context;\n");
+
+    for instance in order {
+        let component = component_by_name(emission.contract, &instance.component.name);
+        let Some(task) = task_for_instance(emission.graph, instance) else {
+            continue;
+        };
+        let task_inputs = task
+            .inputs
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let task_outputs = task
+            .outputs
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+
+        for input in &component.inputs {
+            let input_local = cpp_step_local_name(&instance.name, &input.name);
+            if task_inputs.contains(input.name.as_str()) {
+                if let Some(bind_index) = emission
+                    .incoming_bind_index
+                    .get(&(instance.name.clone(), input.name.clone()))
+                {
+                    let bind = &emission.binds[*bind_index];
+                    output.push_str(&cpp_runtime_channel_read(input, bind, &input_local));
+                } else {
+                    output.push_str(&format!(
+                        "    flowrt::Latest<{ty}> {local};\n",
+                        ty = cpp_type(&input.ty),
+                        local = input_local
+                    ));
+                }
+            } else {
+                output.push_str(&format!(
+                    "    flowrt::Latest<{ty}> {local};\n",
+                    ty = cpp_type(&input.ty),
+                    local = input_local
+                ));
+            }
+        }
+
+        for port in &component.outputs {
+            let output_local = cpp_step_local_name(&instance.name, &port.name);
+            output.push_str(&format!(
+                "    flowrt::Output<{ty}> {local};\n",
+                ty = cpp_type(&port.ty),
+                local = output_local
+            ));
+        }
+
+        let mut call_args = Vec::new();
+        for input in &component.inputs {
+            call_args.push(cpp_step_local_name(&instance.name, &input.name));
+        }
+        for port in &component.outputs {
+            call_args.push(cpp_step_local_name(&instance.name, &port.name));
+        }
+        output.push_str(&format!(
+            "    if ({instance}_ && {instance}_->on_tick({args}) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            instance = instance.name,
+            args = call_args.join(", ")
+        ));
+
+        for port in &component.outputs {
+            if !task_outputs.contains(port.name.as_str()) {
+                continue;
+            }
+            let output_local = cpp_step_local_name(&instance.name, &port.name);
+            let outgoing = emission
+                .outgoing_bind_indices
+                .get(&(instance.name.clone(), port.name.clone()))
+                .cloned()
+                .unwrap_or_default();
+            if outgoing.is_empty() {
+                continue;
+            }
+            output.push_str(&format!(
+                "    if (const auto* value = {local}.as_ref()) {{\n",
+                local = output_local
+            ));
+            for bind_index in outgoing {
+                let bind = &emission.binds[bind_index];
+                output.push_str(&cpp_runtime_channel_write(bind));
+            }
+            output.push_str("    }\n");
+        }
+    }
+
+    output.push_str("    return flowrt::Status::Ok;\n}\n\n");
+    output
+}
+
+fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    output.push_str(
+        "flowrt::Status App::run(const flowrt::Backend& backend) {\n    flowrt::Context lifecycle_context;\n",
+    );
+    for instance in order {
+        output.push_str(&format!(
+            "    if ({name}_ && {name}_->on_init(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            name = instance.name
+        ));
+    }
+    for instance in order {
+        output.push_str(&format!(
+            "    if ({name}_ && {name}_->on_start(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            name = instance.name
+        ));
+    }
+    output.push_str(
+        "    const auto status = backend.scheduler().run_ticks(\n        5, [this](std::size_t tick, flowrt::Context& tick_context) {\n            return step(tick, tick_context);\n        });\n    if (status != flowrt::Status::Ok) {\n        return status;\n    }\n",
+    );
+    for instance in order.iter().rev() {
+        output.push_str(&format!(
+            "    if ({name}_ && {name}_->on_stop(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            name = instance.name
+        ));
+    }
+    for instance in order.iter().rev() {
+        output.push_str(&format!(
+            "    if ({name}_ && {name}_->on_shutdown(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            name = instance.name
+        ));
+    }
+    output.push_str("    return flowrt::Status::Ok;\n}\n\n");
+    output
+}
+
+fn cpp_runtime_channel_type(bind: &BindRuntimePlan) -> String {
+    let ty = cpp_type(&bind.source_type);
+    match bind.channel {
+        ChannelKind::Latest => format!("flowrt::LatestChannel<{ty}>"),
+        ChannelKind::Fifo => format!("flowrt::FifoChannel<{ty}>"),
+    }
+}
+
+fn cpp_runtime_channel_initializer(_graph: &GraphIr, bind: &BindRuntimePlan) -> String {
+    match bind.channel {
+        ChannelKind::Latest => String::new(),
+        ChannelKind::Fifo => format!(
+            "{}, {}",
+            bind.depth.unwrap_or(1),
+            cpp_runtime_overflow_policy(bind.overflow)
+        ),
+    }
+}
+
+fn cpp_runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, local_name: &str) -> String {
+    match bind.channel {
+        ChannelKind::Latest => format!(
+            "    const auto {local} = {field}_.view();\n",
+            local = local_name,
+            field = bind.field_name
+        ),
+        ChannelKind::Fifo => format!(
+            "    auto {local}_value = {field}_.pop();\n    flowrt::Latest<{ty}> {local}({local}_value ? &*{local}_value : nullptr, false);\n",
+            local = local_name,
+            field = bind.field_name,
+            ty = cpp_type(&input.ty)
+        ),
+    }
+}
+
+fn cpp_step_local_name(instance: &str, port: &str) -> String {
+    format!("{instance}_{port}")
+}
+
+fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
+    match bind.channel {
+        ChannelKind::Latest => format!(
+            "        {field}_.publish(*value);\n",
+            field = bind.field_name
+        ),
+        ChannelKind::Fifo => format!(
+            "        if (const auto status = status_from_push_result({field}_.push(*value)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
+            field = bind.field_name
+        ),
+    }
+}
+
+fn cpp_runtime_overflow_policy(policy: IrOverflowPolicy) -> &'static str {
+    match policy {
+        IrOverflowPolicy::DropOldest => "flowrt::OverflowPolicy::DropOldest",
+        IrOverflowPolicy::DropNewest => "flowrt::OverflowPolicy::DropNewest",
+        IrOverflowPolicy::Error => "flowrt::OverflowPolicy::Error",
+        IrOverflowPolicy::Block => "flowrt::OverflowPolicy::Block",
+    }
 }
 
 fn emit_cpp_main() -> String {
@@ -1316,12 +1724,24 @@ fn emit_cmake(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "target_link_libraries({shell_target} PUBLIC {package_name}_flowrt_app)\n"
         ));
+        output.push_str(
+            "\nfile(GLOB FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS \"${CMAKE_CURRENT_LIST_DIR}/../../src/cpp/*.cpp\")\nset(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING \"User C++ sources that implement flowrt_user::build_app\")\n",
+        );
+        output.push_str("if(FLOWRT_USER_CPP_SOURCES)\n");
+        let user_target = format!("{}_cpp_user", package_name.replace('-', "_"));
         output.push_str(&format!(
-            "\nadd_executable({app_target} ../cpp/src/main.cpp)\n"
+            "    add_library({user_target} STATIC ${{FLOWRT_USER_CPP_SOURCES}})\n"
         ));
         output.push_str(&format!(
-            "target_link_libraries({app_target} PRIVATE {shell_target})\n"
+            "    target_link_libraries({user_target} PUBLIC {package_name}_flowrt_app)\n"
         ));
+        output.push_str(&format!(
+            "    add_executable({app_target} ../cpp/src/main.cpp)\n"
+        ));
+        output.push_str(&format!(
+            "    target_link_libraries({app_target} PRIVATE {shell_target} {user_target})\n"
+        ));
+        output.push_str("endif()\n");
     }
 
     if has_language(contract, LanguageKind::Cpp) && !contract.types.is_empty() {
@@ -1407,7 +1827,7 @@ fn cpp_lifecycle_method(name: &str) -> String {
         _ => "组件生命周期钩子。",
     };
     format!(
-        "    /**\n     * @brief {brief}\n     *\n     * @param context runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。\n     * @return 本次生命周期步骤的 FlowRT 执行状态。\n     */\n    virtual flowrt::Status {name}(flowrt::Context& context) {{\n        (void)context;\n        return flowrt::Status::ok();\n    }}\n"
+        "    /**\n     * @brief {brief}\n     *\n     * @param context runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。\n     * @return 本次生命周期步骤的 FlowRT 执行状态。\n     */\n    virtual flowrt::Status {name}(flowrt::Context& context) {{\n        (void)context;\n        return flowrt::ok();\n    }}\n"
     )
 }
 
@@ -1883,10 +2303,21 @@ x = "f32"
 left = "f32"
 right = "f32"
 
+[component.source]
+language = "cpp"
+output = ["odom:Odom"]
+
 [component.controller]
 language = "cpp"
 input = ["odom:Odom"]
 output = ["cmd:Cmd"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["odom"]
 
 [instance.controller]
 component = "controller"
@@ -1895,6 +2326,11 @@ component = "controller"
 trigger = "on_message"
 input = ["odom"]
 output = ["cmd"]
+
+[[bind.dataflow]]
+from = "source.odom"
+to = "controller.odom"
+channel = "latest"
 "#,
         );
         let bundle = emit_artifacts(&ir).unwrap();
@@ -1908,10 +2344,23 @@ output = ["cmd"]
         assert!(paths.contains(&"cpp/src/runtime_shell.cpp".to_string()));
         assert!(paths.contains(&"cpp/src/main.cpp".to_string()));
 
+        let runtime_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+        assert!(runtime_header.contains("#include <memory>"));
+        assert!(runtime_header.contains("class App"));
+        assert!(runtime_header.contains("std::unique_ptr<SourceInterface> source"));
+        assert!(runtime_header.contains("flowrt::Status run(const flowrt::Backend& backend);"));
+        assert!(runtime_header.contains("namespace flowrt_user"));
+        assert!(runtime_header.contains("flowrt_app::App build_app();"));
+
         let runtime_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
         assert!(runtime_shell.contains("#include \"flowrt_app/runtime_shell.hpp\""));
-        assert!(runtime_shell.contains("flowrt::Status run()"));
-        assert!(runtime_shell.contains("return flowrt::ok();"));
+        assert!(runtime_shell.contains("App::App("));
+        assert!(runtime_shell.contains("bind_0_"));
+        assert!(runtime_shell.contains("flowrt::Output<Odom> source_odom;"));
+        assert!(runtime_shell.contains("const auto controller_odom = bind_0_.view();"));
+        assert!(runtime_shell.contains("source_->on_tick(source_odom)"));
+        assert!(runtime_shell.contains("controller_->on_tick(controller_odom, controller_cmd)"));
+        assert!(runtime_shell.contains("flowrt_user::build_app().run(backend);"));
 
         let main = artifact_content(&bundle, "cpp/src/main.cpp");
         assert!(main.contains("#include \"flowrt_app/runtime_shell.hpp\""));
@@ -1927,11 +2376,9 @@ output = ["cmd"]
                 "target_link_libraries(robot_demo_cpp_shell PUBLIC robot_demo_flowrt_app)"
             )
         );
+        assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
+        assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));
         assert!(cmake.contains("add_executable(robot_demo_cpp_app ../cpp/src/main.cpp)"));
-        assert!(
-            cmake
-                .contains("target_link_libraries(robot_demo_cpp_app PRIVATE robot_demo_cpp_shell)")
-        );
     }
 
     #[test]
