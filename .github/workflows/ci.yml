@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: Linux CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装系统构建工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 确认工具链版本
+        run: |
+          rustc --version
+          cargo --version
+          cmake --version
+          ninja --version
+          g++ --version
+
+      - name: Rust 格式检查
+        run: cargo fmt --check
+
+      - name: Rust 测试
+        run: cargo test
+
+      - name: Rust Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: C++ runtime 配置
+        run: cmake -S runtime/cpp -B build/cpp -G Ninja
+
+      - name: C++ runtime 构建
+        run: cmake --build build/cpp
+
+      - name: C++ runtime 测试
+        run: ctest --test-dir build/cpp --output-on-failure
+
+      - name: FlowRT demo smoke
+        run: |
+          cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
+          cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process main
+          cargo run -p flowrt-cli -- run examples/imu_demo/rsdl/robot.rsdl --process main
+
+      - name: 构建 release 版 flowrt
+        run: cargo build --release -p flowrt-cli
+
+      - name: 上传 flowrt Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowrt-linux-x86_64
+          path: target/release/flowrt
+          if-no-files-found: error
