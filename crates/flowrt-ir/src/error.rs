@@ -29,6 +29,17 @@ pub enum IrError {
         param: String,
     },
 
+    #[error(
+        "incompatible parameter `{param}` override on instance `{instance}` of component `{component}`: expected {expected}, got {actual}"
+    )]
+    IncompatibleParamOverride {
+        instance: String,
+        component: String,
+        param: String,
+        expected: &'static str,
+        actual: &'static str,
+    },
+
     #[error("invalid port endpoint `{endpoint}`; expected `<instance>.<port>`")]
     InvalidPortEndpoint { endpoint: String },
 
