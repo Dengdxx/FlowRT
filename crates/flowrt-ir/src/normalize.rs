@@ -320,14 +320,21 @@ fn merge_instance_params(
     raw: &flowrt_rsdl::RawInstance,
     component: &RawComponent,
 ) -> Result<Vec<ParamValueIr>> {
-    for param in raw.params.keys() {
-        if !component.params.contains_key(param) {
+    for (param, override_value) in &raw.params {
+        let Some(default_value) = component.params.get(param) else {
             return Err(IrError::UnknownParamOverride {
                 instance: instance_name.to_string(),
                 component: raw.component.clone(),
                 param: param.clone(),
             });
-        }
+        };
+        validate_param_override_type(
+            instance_name,
+            &raw.component,
+            param,
+            default_value,
+            override_value,
+        )?;
     }
 
     let mut merged = component.params.clone();
@@ -342,6 +349,68 @@ fn merge_instance_params(
             value: convert_param_value(value),
         })
         .collect())
+}
+
+fn validate_param_override_type(
+    instance_name: &str,
+    component_name: &str,
+    param_name: &str,
+    default_value: &RawValue,
+    override_value: &RawValue,
+) -> Result<()> {
+    if param_value_compatible(default_value, override_value) {
+        Ok(())
+    } else {
+        Err(IrError::IncompatibleParamOverride {
+            instance: instance_name.to_string(),
+            component: component_name.to_string(),
+            param: param_name.to_string(),
+            expected: param_value_kind(default_value),
+            actual: param_value_kind(override_value),
+        })
+    }
+}
+
+fn param_value_compatible(default_value: &RawValue, override_value: &RawValue) -> bool {
+    match (default_value, override_value) {
+        (RawValue::Bool(_), RawValue::Bool(_)) => true,
+        (RawValue::Integer(_), RawValue::Integer(_)) => true,
+        (RawValue::Float(_), RawValue::Float(_) | RawValue::Integer(_)) => true,
+        (RawValue::String(_), RawValue::String(_)) => true,
+        (RawValue::Array(default_values), RawValue::Array(override_values)) => {
+            array_param_compatible(default_values, override_values)
+        }
+        (RawValue::Table(default_values), RawValue::Table(override_values)) => override_values
+            .iter()
+            .all(|(name, value)| match default_values.get(name) {
+                Some(default_value) => param_value_compatible(default_value, value),
+                None => false,
+            }),
+        _ => false,
+    }
+}
+
+fn array_param_compatible(default_values: &[RawValue], override_values: &[RawValue]) -> bool {
+    if default_values.is_empty() || override_values.is_empty() {
+        return true;
+    }
+    let Some(default_sample) = default_values.first() else {
+        return true;
+    };
+    override_values
+        .iter()
+        .all(|value| param_value_compatible(default_sample, value))
+}
+
+fn param_value_kind(value: &RawValue) -> &'static str {
+    match value {
+        RawValue::Bool(_) => "bool",
+        RawValue::Integer(_) => "integer",
+        RawValue::Float(_) => "float",
+        RawValue::String(_) => "string",
+        RawValue::Array(_) => "array",
+        RawValue::Table(_) => "table",
+    }
 }
 
 fn normalize_binds(
@@ -709,5 +778,48 @@ channel = "latest"
 
         assert_eq!(ir.graphs[0].binds[0].channel, ChannelKind::Latest);
         assert_eq!(ir.graphs[0].binds[0].depth, Some(1));
+    }
+
+    #[test]
+    fn rejects_instance_param_overrides_with_incompatible_types() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+kp = 1.0
+enabled = true
+gains = [1.0, 2.0]
+
+[component.controller.params.limits]
+max = 10
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = "fast"
+enabled = 1
+gains = [true]
+
+[instance.controller.params.limits]
+max = false
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("incompatible parameter overrides should fail");
+
+        assert!(matches!(
+            error,
+            IrError::IncompatibleParamOverride {
+                instance,
+                component,
+                ..
+            } if instance == "controller" && component == "controller"
+        ));
     }
 }
