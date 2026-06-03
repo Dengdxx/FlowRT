@@ -44,9 +44,9 @@ examples/
 AGENTS.md
 ```
 
-当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。C++ runtime 已用 `std::chrono::milliseconds` 建模 `StaleConfig` 时间窗口，并提供 `LatestChannel<T>::publish_at` / `view_at`。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。Rust inproc/iox2 shell 和 C++ inproc shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
+当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。C++ runtime 已用 `std::chrono::milliseconds` 建模 `StaleConfig` 时间窗口，并提供 `LatestChannel<T>::publish_at` / `view_at`。Rust runtime 已有 feature-gated `iceoryx2` 0.9.x typed pub/sub endpoint、初始 `Iox2ChannelConfig` QoS 映射，以及 `StaleConfig`/`StalePolicy` freshness 语义；Rust codegen 可在 profile 选择 `iox2` 时生成 `Iox2PubSub<T>` channel shell，并传入 bind-level latest/FIFO depth、overflow policy 和 stale intent。Rust inproc/iox2 shell 和 C++ inproc shell 已支持 runtime timestamp stale 检测，并会在 `stale_policy = "error"` 时于调用用户组件前返回 `flowrt::Status::Error`。Mixed contract 当前只支持生成和构建语言分离的 FlowRT 管理产物；Rust codegen 不得为 C++ component 伪造 Rust trait，`flowrt run` / `flowrt launch` 必须在跨语言 runtime shell 完成前明确拒绝 mixed contract。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
-当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。该 workflow 暂不做 cache、release 发布或多平台矩阵。
+当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch。该 workflow 暂不做 cache、release 发布或多平台矩阵。
 
 ## 当前里程碑
 
@@ -312,6 +312,7 @@ flowrt inspect flowrt/contract/contract.ir.json
 ```
 
 `--process` 运行生成应用中的单个 RSDL process group；它是后续 iox2 多进程 launcher 的基础入口。
+`run` / `launch` 当前只支持单语言 runtime path。mixed contract 可以 `flowrt build`，但在跨语言 runtime shell 完成前必须拒绝直接运行。
 `launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json` 并按 process group 启动生成应用。
 
 `cargo run -p flowrt-cli -- ...` 只允许作为仓库开发者调试 FlowRT CLI 的内部命令，不得写成最终用户主路径。

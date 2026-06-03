@@ -868,7 +868,11 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
 fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("\nuse crate::messages::*;\n\n");
-    for component in &contract.components {
+    for component in contract
+        .components
+        .iter()
+        .filter(|component| component.language == LanguageKind::Rust)
+    {
         output.push_str(&rust_component_trait_doc(component));
         output.push_str(&format!("pub trait {} {{\n", pascal_case(&component.name)));
         output.push_str(&rust_lifecycle_doc("组件初始化钩子"));
@@ -898,6 +902,10 @@ fn emit_rust_components(contract: &ContractIr) -> String {
 }
 
 fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
+    if !is_rust_standalone_contract(contract) {
+        return emit_mixed_rust_runtime_shell_stub(contract);
+    }
+
     let graph = contract
         .graphs
         .first()
@@ -973,6 +981,76 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        _ => Box::new(flowrt::inproc_backend()),\n    }\n}\n\npub fn run() -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
     );
     output
+}
+
+fn emit_mixed_rust_runtime_shell_stub(contract: &ContractIr) -> String {
+    let graph = contract
+        .graphs
+        .first()
+        .expect("normalized contract must contain at least one graph");
+    let order = topo_order_instances(graph);
+    let rust_order = order
+        .into_iter()
+        .filter(|instance| {
+            component_by_name(contract, &instance.component.name).language == LanguageKind::Rust
+        })
+        .collect::<Vec<_>>();
+    let selected_backend = selected_backend_name(contract);
+
+    let mut output = managed_header();
+    output.push_str("\nuse crate::components::*;\nuse crate::user;\n\n");
+    output.push_str(&format!(
+        "const SELECTED_BACKEND: &str = {};\n\n",
+        rust_string_literal(&selected_backend)
+    ));
+    output.push_str("#[allow(dead_code)]\npub struct App {\n");
+    for instance in &rust_order {
+        let component = component_by_name(contract, &instance.component.name);
+        output.push_str(&format!(
+            "    {}: Box<dyn {}>,\n",
+            instance.name,
+            pascal_case(&component.name)
+        ));
+    }
+    output.push_str("}\n\n");
+    output.push_str("impl App {\n");
+    output.push_str(&emit_rust_language_subset_app_new(contract, &rust_order));
+    output.push_str(
+        "    pub fn run(self, _backend: &dyn flowrt::Backend) -> flowrt::Status {\n        let _ = self;\n        flowrt::Status::Error\n    }\n\n    pub fn run_process(self, _backend: &dyn flowrt::Backend, _process: &str) -> flowrt::Status {\n        let _ = self;\n        flowrt::Status::Error\n    }\n}\n\n",
+    );
+    output.push_str(
+        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        _ => Box::new(flowrt::inproc_backend()),\n    }\n}\n\n",
+    );
+    output.push_str(
+        "pub fn run() -> flowrt::Status {\n    let backend = backend();\n    let _ = \"mixed-language runtime shell is not implemented\";\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    let _ = \"mixed-language runtime shell is not implemented\";\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
+    );
+    output
+}
+
+fn emit_rust_language_subset_app_new(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    output.push_str("    pub fn new(\n");
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        output.push_str(&format!(
+            "        {}: Box<dyn {}>,\n",
+            instance.name,
+            pascal_case(&component.name)
+        ));
+    }
+    output.push_str("    ) -> Self {\n        Self {\n");
+    for instance in order {
+        output.push_str(&format!("            {},\n", instance.name));
+    }
+    output.push_str("        }\n    }\n");
+    output
+}
+
+fn is_rust_standalone_contract(contract: &ContractIr) -> bool {
+    contract
+        .components
+        .iter()
+        .all(|component| component.language == LanguageKind::Rust)
 }
 
 fn selected_backend_name(contract: &ContractIr) -> String {
@@ -2399,6 +2477,7 @@ input = ["imu:Imu"]
 
         let rust_components = artifact_content(&bundle, "rust/src/components.rs");
         assert!(rust_components.contains("pub trait Monitor"));
+        assert!(!rust_components.contains("pub trait Controller"));
         assert!(rust_components.contains("imu: flowrt::Latest<'_, Imu>"));
 
         let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
@@ -2408,6 +2487,53 @@ input = ["imu:Imu"]
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
         assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    }
+
+    #[test]
+    fn mixed_rust_shell_does_not_invent_traits_for_cpp_components() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_components = artifact_content(&bundle, "rust/src/components.rs");
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(!rust_components.contains("pub trait Source"));
+        assert!(rust_components.contains("pub trait Sink"));
+        assert!(!rust_shell.contains("source: Box<dyn Source>"));
+        assert!(rust_shell.contains("sink: Box<dyn Sink>"));
+        assert!(rust_shell.contains("mixed-language runtime shell is not implemented"));
     }
 
     #[test]

@@ -30,11 +30,10 @@ FlowRT 的用户入口是安装后的独立命令 `flowrt`。`cargo run -p flowr
 flowrt check examples/imu_demo/rsdl/robot.rsdl
 flowrt prepare examples/imu_demo/rsdl/robot.rsdl
 flowrt build examples/imu_demo/rsdl/robot.rsdl
-flowrt run examples/imu_demo/rsdl/robot.rsdl
-flowrt run examples/imu_demo/rsdl/robot.rsdl --process main
-flowrt launch examples/imu_demo/rsdl/robot.rsdl
 flowrt inspect examples/imu_demo/flowrt/contract/contract.ir.json
 flowrt check examples/import_demo/rsdl/robot.rsdl
+flowrt run examples/import_demo/rsdl/robot.rsdl --process main
+flowrt launch examples/import_demo/rsdl/robot.rsdl
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 ```
@@ -42,7 +41,9 @@ flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 `prepare` / `build` / `run` 会从 `.rsdl` 文件推导应用根目录，并将 FlowRT 管理产物写入该项目可见的 `flowrt/` 目录。
 当 contract 只含 C++ 组件时，`flowrt build` / `flowrt run` 使用 CMake 构建或运行 FlowRT 管理的 C++ shell、app 和 ABI test target；C++ only contract 不应触发 Cargo app 路径。
 当 contract 含 Rust 组件时，当前实现仍使用 Cargo 构建 FlowRT 管理的 Rust 应用；Rust 用户组件的免 Cargo 分发属于后续安装/打包设计。
+当 contract 同时含 C++ 和 Rust 组件时，当前实现支持生成和构建语言分离的 FlowRT 管理产物，但尚不支持 `run` / `launch` 跨语言 runtime；在 iox2 多进程路径或跨语言 shell 完成前，应使用 `flowrt build` 验证 mixed contract。
 `examples/import_demo` 展示了 `[package.imports]` 如何把 `types/`、`components/`、`profiles/` 和 `targets/` 下的模块化 `.rsdl` 文件合并到同一个 Contract IR。
+`examples/imu_demo` 当前是 mixed contract 示例，用于验证 C++/Rust 接口、消息和构建产物生成；它不会伪装成单进程 mixed runtime 已可运行。
 `examples/cpp_counter_demo` 展示了 C++ only contract：用户只在 `src/cpp/` 实现组件和 `flowrt_user::build_app()`，`flowrt build` / `flowrt run` 会通过 CMake 构建并运行 FlowRT 管理的 C++ inproc shell 和应用。
 
 仓库开发者验证 FlowRT 自身时可以使用：

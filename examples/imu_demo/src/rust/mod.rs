@@ -1,4 +1,4 @@
-use crate::components::{Controller, Estimator, ImuSim, Monitor};
+use crate::components::{Estimator, ImuSim, Monitor};
 use crate::messages::{Imu, MotorCmd, Odom};
 use flowrt::{Latest, Output, Status};
 
@@ -49,24 +49,6 @@ impl Estimator for EstimatorNode {
 }
 
 #[derive(Debug, Default)]
-struct ControllerNode;
-
-impl Controller for ControllerNode {
-    fn on_tick(&mut self, odom: Latest<'_, Odom>, cmd: &mut Output<MotorCmd>) -> Status {
-        let pose = match odom.as_ref() {
-            Some(pose) => *pose,
-            None => return Status::Retry,
-        };
-        let correction = (pose.x * 0.2).clamp(-0.4, 0.4);
-        cmd.write(MotorCmd {
-            left: 0.8 - correction,
-            right: 0.8 + correction,
-        });
-        Status::Ok
-    }
-}
-
-#[derive(Debug, Default)]
 struct MonitorNode {
     observed: u64,
 }
@@ -89,7 +71,6 @@ pub fn build_app() -> crate::App {
     crate::App::new(
         Box::new(ImuSimNode::default()),
         Box::new(EstimatorNode::default()),
-        Box::new(ControllerNode::default()),
         Box::new(MonitorNode::default()),
     )
 }
@@ -99,9 +80,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn demo_app_runs() {
+    fn demo_app_reports_mixed_runtime_gap() {
         let backend = flowrt::inproc_backend();
         let status = build_app().run(&backend);
-        assert_eq!(status, Status::Ok);
+        assert_eq!(status, Status::Error);
     }
 }
