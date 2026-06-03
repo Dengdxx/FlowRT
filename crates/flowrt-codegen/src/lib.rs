@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr, LanguageKind,
-    OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType, StalePolicy as IrStalePolicy,
-    TaskIr, TypeExpr,
+    ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr,
+    LanguageKind, OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType,
+    StalePolicy as IrStalePolicy, TaskIr, TypeExpr,
 };
 
 /// artifact emission 返回的结果类型。
@@ -1662,15 +1662,52 @@ fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> Stri
 }
 
 fn iox2_service_name(contract: &ContractIr, graph: &GraphIr, bind: &BindRuntimePlan) -> String {
+    iox2_service_name_from_parts(
+        &contract.package.name,
+        &graph.name,
+        bind.index,
+        &bind.source_instance,
+        &bind.source_port,
+        &bind.target_instance,
+        &bind.target_port,
+    )
+}
+
+fn iox2_service_name_for_edge(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    index: usize,
+    bind: &ChannelEdgeIr,
+) -> String {
+    iox2_service_name_from_parts(
+        &contract.package.name,
+        &graph.name,
+        index,
+        &bind.from.instance.name,
+        &bind.from.port,
+        &bind.to.instance.name,
+        &bind.to.port,
+    )
+}
+
+fn iox2_service_name_from_parts(
+    package: &str,
+    graph: &str,
+    index: usize,
+    source_instance: &str,
+    source_port: &str,
+    target_instance: &str,
+    target_port: &str,
+) -> String {
     format!(
         "FlowRT/{}/{}/bind_{}/{}_{}_to_{}_{}",
-        iox2_service_part(&contract.package.name),
-        iox2_service_part(&graph.name),
-        bind.index,
-        iox2_service_part(&bind.source_instance),
-        iox2_service_part(&bind.source_port),
-        iox2_service_part(&bind.target_instance),
-        iox2_service_part(&bind.target_port),
+        iox2_service_part(package),
+        iox2_service_part(graph),
+        index,
+        iox2_service_part(source_instance),
+        iox2_service_part(source_port),
+        iox2_service_part(target_instance),
+        iox2_service_part(target_port),
     )
 }
 
@@ -1869,6 +1906,7 @@ fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
             "name": graph.name,
             "processes": launch_processes(contract, graph, &selected_backend),
+            "channels": launch_channels(contract, graph, &selected_backend),
             "instances": graph.instances.iter().map(|instance| {
                 let component = component_by_name(contract, &instance.component.name);
                 serde_json::json!({
@@ -1890,6 +1928,33 @@ fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
+}
+
+fn launch_channels(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    backend: &str,
+) -> Vec<serde_json::Value> {
+    graph
+        .binds
+        .iter()
+        .enumerate()
+        .map(|(index, bind)| {
+            let service = (backend == "iox2")
+                .then(|| iox2_service_name_for_edge(contract, graph, index, bind));
+            serde_json::json!({
+                "from": format!("{}.{}", bind.from.instance.name, bind.from.port),
+                "to": format!("{}.{}", bind.to.instance.name, bind.to.port),
+                "backend": backend,
+                "service": service,
+                "channel": bind.channel,
+                "depth": bind.depth,
+                "overflow": bind.overflow,
+                "stale_policy": bind.stale,
+                "max_age_ms": bind.max_age_ms,
+            })
+        })
+        .collect()
 }
 
 fn launch_processes(
@@ -3402,6 +3467,71 @@ backends = ["inproc"]
         assert_eq!(process["name"], "main");
         assert_eq!(process["runtimes"], serde_json::json!(["cpp", "rust"]));
         assert_eq!(process["runtime_kind"], "mixed");
+    }
+
+    #[test]
+    fn launch_manifest_exposes_iox2_channel_services() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensors"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let launch: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+        let channels = launch["graphs"][0]["channels"].as_array().unwrap();
+        let channel = &channels[0];
+
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channel["from"], "source.value");
+        assert_eq!(channel["to"], "sink.value");
+        assert_eq!(channel["backend"], "iox2");
+        assert_eq!(
+            channel["service"],
+            "FlowRT/robot_demo/default/bind_0/source_value_to_sink_value"
+        );
+        assert_eq!(channel["channel"], "latest");
+        assert_eq!(channel["depth"], 1);
+        assert_eq!(channel["overflow"], "drop_oldest");
+        assert_eq!(channel["stale_policy"], "warn");
+        assert!(channel["max_age_ms"].is_null());
     }
 
     #[test]
