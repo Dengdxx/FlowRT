@@ -243,6 +243,7 @@ fn emit_cpp_components(contract: &ContractIr) -> String {
         .iter()
         .filter(|component| component.language == LanguageKind::Cpp)
     {
+        output.push_str(&cpp_component_interface_doc(component));
         output.push_str(&format!(
             "class {}Interface {{\n",
             pascal_case(&component.name)
@@ -311,19 +312,24 @@ fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("\nuse crate::messages::*;\n\n");
     for component in &contract.components {
+        output.push_str(&rust_component_trait_doc(component));
         output.push_str(&format!("pub trait {} {{\n", pascal_case(&component.name)));
+        output.push_str(&rust_lifecycle_doc("组件初始化钩子"));
         output.push_str(
             "    fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
         );
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(&rust_lifecycle_doc("组件启动钩子"));
         output.push_str(
             "    fn on_start(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
         );
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(&rust_lifecycle_doc("组件停止钩子"));
         output.push_str(
             "    fn on_stop(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
         );
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(&rust_lifecycle_doc("组件关闭钩子"));
         output.push_str(
             "    fn on_shutdown(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
         );
@@ -1305,24 +1311,63 @@ fn cpp_callback_args(component: &ComponentIr) -> Vec<String> {
     args
 }
 
-fn cpp_lifecycle_method(name: &str) -> String {
+fn cpp_component_interface_doc(component: &ComponentIr) -> String {
     format!(
-        "    virtual flowrt::Status {name}(flowrt::Context&) {{\n        return flowrt::Status::ok();\n    }}\n"
+        "/**\n * @brief `{}` 组件的 C++ 用户实现接口。\n *\n * 用户代码实现该接口并交给 FlowRT 管理的 runtime shell。接口只暴露组件算法所需的生命周期、输入视图和输出句柄，不暴露具体 backend API。\n */\n",
+        component.name
+    )
+}
+
+fn cpp_lifecycle_method(name: &str) -> String {
+    let brief = match name {
+        "on_init" => "组件初始化钩子。",
+        "on_start" => "组件启动钩子。",
+        "on_stop" => "组件停止钩子。",
+        "on_shutdown" => "组件关闭钩子。",
+        _ => "组件生命周期钩子。",
+    };
+    format!(
+        "    /**\n     * @brief {brief}\n     *\n     * @param context runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。\n     * @return 本次生命周期步骤的 FlowRT 执行状态。\n     */\n    virtual flowrt::Status {name}(flowrt::Context& context) {{\n        (void)context;\n        return flowrt::Status::ok();\n    }}\n"
     )
 }
 
 fn cpp_tick_signature(component: &ComponentIr) -> String {
     let args = cpp_callback_args(component);
+    let doc = cpp_tick_doc(component);
     if args.is_empty() {
-        "    virtual flowrt::Status on_tick() = 0;\n".to_string()
+        format!("{doc}    virtual flowrt::Status on_tick() = 0;\n")
     } else {
         let joined = args
             .iter()
             .map(|arg| format!("        {arg}"))
             .collect::<Vec<_>>()
             .join(",\n");
-        format!("    virtual flowrt::Status on_tick(\n{joined}) = 0;\n")
+        format!("{doc}    virtual flowrt::Status on_tick(\n{joined}) = 0;\n")
     }
+}
+
+fn cpp_tick_doc(component: &ComponentIr) -> String {
+    let mut output = format!(
+        "    /**\n     * @brief 执行一次 `{}` 组件调度回调。\n     *\n     * runtime shell 按 Contract IR 中的 task 和 dataflow 顺序调用该方法。输入使用 latest snapshot 视图，输出通过 `flowrt::Output<T>` 写入，本方法不得保存输入视图内部指针到回调之外。\n",
+        component.name
+    );
+    if !component.inputs.is_empty() || !component.outputs.is_empty() {
+        output.push_str("     *\n");
+    }
+    for input in &component.inputs {
+        output.push_str(&format!(
+            "     * @param {} latest snapshot 输入视图。\n",
+            input.name
+        ));
+    }
+    for output_port in &component.outputs {
+        output.push_str(&format!(
+            "     * @param {} 输出端口写入句柄。\n",
+            output_port.name
+        ));
+    }
+    output.push_str("     * @return 本次回调的 FlowRT 执行状态。\n     */\n");
+    output
 }
 
 fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
@@ -1346,16 +1391,54 @@ fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
 
 fn rust_tick_signature(component: &ComponentIr) -> String {
     let args = rust_callback_args(component);
+    let doc = rust_tick_doc(component);
     if args.is_empty() {
-        "    fn on_tick(&mut self) -> flowrt::Status;\n".to_string()
+        format!("{doc}    fn on_tick(&mut self) -> flowrt::Status;\n")
     } else {
         let joined = args
             .iter()
             .map(|arg| format!("        {arg}"))
             .collect::<Vec<_>>()
             .join(",\n");
-        format!("    fn on_tick(\n        &mut self,\n{joined},\n    ) -> flowrt::Status;\n")
+        format!("{doc}    fn on_tick(\n        &mut self,\n{joined},\n    ) -> flowrt::Status;\n")
     }
+}
+
+fn rust_component_trait_doc(component: &ComponentIr) -> String {
+    format!(
+        "/// `{}` 组件的 Rust 用户实现 trait。\n///\n/// 用户代码实现该 trait 并交给 FlowRT 管理的 runtime shell。接口只暴露组件算法所需的生命周期、输入视图和输出句柄，不暴露具体 backend API。\n",
+        component.name
+    )
+}
+
+fn rust_lifecycle_doc(brief: &str) -> String {
+    format!(
+        "    /// {brief}。\n    ///\n    /// `context` 是 runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。\n    /// 返回本次生命周期步骤的 FlowRT 执行状态。\n"
+    )
+}
+
+fn rust_tick_doc(component: &ComponentIr) -> String {
+    let mut output = format!(
+        "    /// 执行一次 `{}` 组件调度回调。\n    ///\n    /// runtime shell 按 Contract IR 中的 task 和 dataflow 顺序调用该方法。输入使用 latest snapshot 视图，输出通过 `flowrt::Output<T>` 写入，本方法不得保存输入引用到回调之外。\n",
+        component.name
+    );
+    if !component.inputs.is_empty() || !component.outputs.is_empty() {
+        output.push_str("    ///\n");
+    }
+    for input in &component.inputs {
+        output.push_str(&format!(
+            "    /// - `{}`: latest snapshot 输入视图。\n",
+            input.name
+        ));
+    }
+    for output_port in &component.outputs {
+        output.push_str(&format!(
+            "    /// - `{}`: 输出端口写入句柄。\n",
+            output_port.name
+        ));
+    }
+    output.push_str("    /// 返回本次回调的 FlowRT 执行状态。\n");
+    output
 }
 
 fn cpp_type(expr: &TypeExpr) -> String {
@@ -1693,6 +1776,49 @@ input = ["imu:Imu"]
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
         assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    }
+
+    #[test]
+    fn emits_documented_component_interfaces() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+
+[type.Cmd]
+left = "f32"
+right = "f32"
+
+[component.controller]
+language = "cpp"
+input = ["imu:Imu"]
+output = ["cmd:Cmd"]
+
+[component.monitor]
+language = "rust"
+input = ["imu:Imu"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+        let rust_components = artifact_content(&bundle, "rust/src/components.rs");
+
+        assert!(cpp_components.contains(" * @brief `controller` 组件的 C++ 用户实现接口。"));
+        assert!(cpp_components.contains(" * @brief 组件初始化钩子。"));
+        assert!(cpp_components.contains(" * @brief 执行一次 `controller` 组件调度回调。"));
+        assert!(cpp_components.contains(" * @param imu latest snapshot 输入视图。"));
+        assert!(cpp_components.contains(" * @param cmd 输出端口写入句柄。"));
+        assert!(cpp_components.contains(" * @return 本次回调的 FlowRT 执行状态。"));
+
+        assert!(rust_components.contains("/// `monitor` 组件的 Rust 用户实现 trait。"));
+        assert!(rust_components.contains("/// 组件初始化钩子。"));
+        assert!(rust_components.contains("/// 执行一次 `monitor` 组件调度回调。"));
+        assert!(rust_components.contains("/// - `imu`: latest snapshot 输入视图。"));
+        assert!(rust_components.contains("/// 返回本次回调的 FlowRT 执行状态。"));
     }
 
     #[test]
