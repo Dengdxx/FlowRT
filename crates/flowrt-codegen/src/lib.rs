@@ -224,8 +224,15 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
     output.push_str("#pragma once\n\n");
     output.push_str("#include <array>\n#include <cstdint>\n\n");
     output.push_str("namespace flowrt_app {\n\n");
+    let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
     for ty in ordered_types(contract) {
         output.push_str(&format!("struct {} {{\n", ty.name));
+        if needs_iox2_type_name {
+            output.push_str(&format!(
+                "    static constexpr const char* IOX2_TYPE_NAME = \"{}\";\n",
+                ty.name
+            ));
+        }
         for field in &ty.fields {
             output.push_str(&format!(
                 "    {} {}{{}};\n",
@@ -2050,6 +2057,12 @@ fn emit_cmake(contract: &ContractIr) -> String {
     if has_language(contract, LanguageKind::Cpp) {
         let shell_target = format!("{}_cpp_shell", package_name.replace('-', "_"));
         let app_target = format!("{}_cpp_app", package_name.replace('-', "_"));
+        if selected_backend_name(contract) == "iox2" {
+            output.push_str("\nfind_package(iceoryx2-cxx 0.9.1 REQUIRED)\n");
+            output.push_str(&format!(
+                "target_link_libraries({package_name}_flowrt_app INTERFACE iceoryx2-cxx::static-lib-cxx)\n"
+            ));
+        }
         output.push_str(
             "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
         );
@@ -2843,6 +2856,40 @@ backends = ["iox2"]
         assert!(cargo_manifest.contains("features = [\"iox2\"]"));
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"iox2\";"));
+    }
+
+    #[test]
+    fn emits_cpp_iox2_transport_contract_when_profile_selects_iox2() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "cpp"
+output = ["imu:Imu"]
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+
+        let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+        assert!(cpp_messages.contains("static constexpr const char* IOX2_TYPE_NAME = \"Imu\";"));
+
+        let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+        assert!(cmake.contains("find_package(iceoryx2-cxx 0.9.1 REQUIRED)"));
+        assert!(cmake.contains("iceoryx2-cxx::static-lib-cxx"));
     }
 
     #[test]
