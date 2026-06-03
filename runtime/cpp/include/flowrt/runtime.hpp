@@ -482,6 +482,18 @@ class FifoChannel {
 namespace iox2 {
 
 /**
+ * @brief FlowRT iox2 transport user header。
+ *
+ * 该 header 保存 transport 层 runtime timestamp，使 iceoryx2 payload 仍保持业务消息类型 `T`。这样
+ * C++ `IOX2_TYPE_NAME` 与 Rust `#[type_name(...)]` 都作用在同一个 payload 类型上。
+ */
+struct FlowrtIox2Header {
+    static constexpr const char *IOX2_TYPE_NAME = "FlowRTIox2Header";
+
+    std::uint64_t published_at_ms{};
+};
+
+/**
  * @brief 打开 iceoryx2 publish-subscribe endpoint 时使用的 C++ QoS 配置。
  *
  * 该类型承载 Contract IR channel policy 归一化后的 depth、overflow 和 freshness intent。它不暴露

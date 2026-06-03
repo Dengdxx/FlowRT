@@ -920,7 +920,8 @@ fn emit_cpp_main() -> String {
 fn emit_rust_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push('\n');
-    let zero_copy_derive = if selected_backend_name(contract) == "iox2" {
+    let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
+    let zero_copy_derive = if needs_iox2_type_name {
         output.push_str("use flowrt::ZeroCopySend;\n\n");
         ", flowrt::ZeroCopySend"
     } else {
@@ -931,6 +932,12 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "#[derive(Clone, Copy, Debug, PartialEq{zero_copy_derive})]\n"
         ));
+        if needs_iox2_type_name {
+            output.push_str(&format!(
+                "#[type_name({})]\n",
+                rust_string_literal(&ty.name)
+            ));
+        }
         output.push_str(&format!("pub struct {} {{\n", ty.name));
         for field in &ty.fields {
             output.push_str(&format!(
@@ -2139,6 +2146,9 @@ fn emit_cmake(contract: &ContractIr) -> String {
             output.push_str(&format!(
                 "target_link_libraries({package_name}_flowrt_app INTERFACE iceoryx2-cxx::static-lib-cxx)\n"
             ));
+            output.push_str(&format!(
+                "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)\n"
+            ));
         }
         output.push_str(
             "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
@@ -2992,6 +3002,9 @@ backends = ["iox2"]
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
         assert!(cmake.contains("find_package(iceoryx2-cxx 0.9.1 REQUIRED)"));
         assert!(cmake.contains("iceoryx2-cxx::static-lib-cxx"));
+        assert!(cmake.contains(
+            "target_compile_definitions(robot_demo_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)"
+        ));
 
         let runtime_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
         assert!(runtime_header.contains("flowrt::iox2::Iox2PubSub<Imu> bind_0_;"));
@@ -3083,6 +3096,7 @@ backends = ["iox2"]
         let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
         assert!(rust_messages.contains("use flowrt::ZeroCopySend;"));
         assert!(rust_messages.contains("flowrt::ZeroCopySend"));
+        assert!(rust_messages.contains("#[type_name(\"Imu\")]"));
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<Imu>"));
         assert!(!rust_shell.contains("flowrt::LatestChannel<Imu>"));
