@@ -121,7 +121,10 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             "rust/src/runtime_shell.rs",
             emit_rust_runtime_shell(contract),
         ));
-        artifacts.push(artifact("rust/src/supervisor.rs", emit_rust_supervisor()));
+        artifacts.push(artifact(
+            "rust/src/supervisor.rs",
+            emit_rust_supervisor(contract),
+        ));
         artifacts.push(artifact("rust/src/lib.rs", emit_rust_lib()));
         artifacts.push(artifact("rust/src/main.rs", emit_rust_main()));
         artifacts.push(artifact(
@@ -1091,12 +1094,15 @@ fn emit_rust_supervisor_main() -> String {
     output
 }
 
-fn emit_rust_supervisor() -> String {
+fn emit_rust_supervisor(contract: &ContractIr) -> String {
     let mut output = managed_header();
+    output.push_str(&format!(
+        "\nuse std::path::{{Path, PathBuf}};\nuse std::process::Command;\n\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\n",
+        rust_string_literal(&rust_app_stem(contract)),
+        rust_string_literal(&cpp_app_stem(contract))
+    ));
     output.push_str(
         r#"
-use std::process::Command;
-
 const LAUNCH_MANIFEST: &str = include_str!("../../launch/launch.json");
 
 #[derive(Debug, serde::Deserialize)]
@@ -1112,6 +1118,7 @@ struct LaunchGraph {
 #[derive(Debug, serde::Deserialize)]
 struct LaunchProcess {
     name: String,
+    runtime_kind: String,
 }
 
 pub fn launch() -> Result<(), String> {
@@ -1127,19 +1134,10 @@ pub fn launch() -> Result<(), String> {
 
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
-    let mut app_exe = current_exe.clone();
-    let supervisor_name = current_exe
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "failed to resolve supervisor executable name".to_string())?;
-    let app_stem = supervisor_name
-        .strip_suffix("-flowrt-supervisor")
-        .ok_or_else(|| format!("supervisor executable `{supervisor_name}` must end with `-flowrt-supervisor`"))?;
-    let app_name = format!("{app_stem}-flowrt-app");
-    app_exe.set_file_name(app_name);
 
     let mut children = Vec::new();
     for process in &graph.processes {
+        let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
         let child = Command::new(&app_exe)
             .arg("--process")
             .arg(&process.name)
@@ -1164,9 +1162,53 @@ pub fn launch() -> Result<(), String> {
         Err(failures.join("; "))
     }
 }
+
+fn app_executable_for_runtime(current_exe: &Path, runtime_kind: &str) -> Result<PathBuf, String> {
+    match runtime_kind {
+        "rust" => rust_app_executable(current_exe),
+        "cpp" => cpp_app_executable(current_exe),
+        "mixed" => Err("FlowRT mixed process groups are not launchable yet".to_string()),
+        other => Err(format!("unknown FlowRT process runtime_kind `{other}`")),
+    }
+}
+
+fn rust_app_executable(current_exe: &Path) -> Result<PathBuf, String> {
+    let mut path = current_exe.to_path_buf();
+    path.set_file_name(binary_name(RUST_APP_STEM));
+    Ok(path)
+}
+
+fn cpp_app_executable(current_exe: &Path) -> Result<PathBuf, String> {
+    let build_dir = current_exe
+        .parent()
+        .and_then(|profile_dir| profile_dir.parent())
+        .and_then(|target_dir| target_dir.parent())
+        .ok_or_else(|| format!("failed to resolve FlowRT build directory from `{}`", current_exe.display()))?;
+    let mut path = build_dir.join("cmake");
+    path.push(binary_name(CPP_APP_STEM));
+    Ok(path)
+}
+
+fn binary_name(stem: &str) -> String {
+    format!("{stem}{}", std::env::consts::EXE_SUFFIX)
+}
 "#,
     );
     output
+}
+
+fn rust_app_stem(contract: &ContractIr) -> String {
+    format!(
+        "{}-flowrt-app",
+        sanitize_package_name(&contract.package.name).replace('_', "-")
+    )
+}
+
+fn cpp_app_stem(contract: &ContractIr) -> String {
+    format!(
+        "{}_cpp_app",
+        sanitize_package_name(&contract.package.name).replace('-', "_")
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -3560,9 +3602,12 @@ backends = ["iox2"]
                 "const LAUNCH_MANIFEST: &str = include_str!(\"../../launch/launch.json\");"
             )
         );
+        assert!(supervisor.contains("runtime_kind: String"));
+        assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
         assert!(supervisor.contains("Command::new(&app_exe)"));
-        assert!(supervisor.contains(".strip_suffix(\"-flowrt-supervisor\")"));
-        assert!(supervisor.contains("format!(\"{app_stem}-flowrt-app\")"));
+        assert!(
+            supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
+        );
         assert!(supervisor.contains(".arg(\"--process\")"));
         assert!(supervisor.contains(".arg(&process.name)"));
         assert!(supervisor_main.contains("flowrt_app::supervisor::launch()"));
@@ -3570,6 +3615,75 @@ backends = ["iox2"]
         assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
         assert!(cargo_manifest.contains("serde = { version = \"1\", features = [\"derive\"] }"));
         assert!(cargo_manifest.contains("serde_json = \"1\""));
+    }
+
+    #[test]
+    fn rust_supervisor_selects_app_executable_from_runtime_kind() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "cpp_source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "rust_sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["cpp", "rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let supervisor = artifact_content(&bundle, "rust/src/supervisor.rs");
+
+        assert!(supervisor.contains("runtime_kind: String"));
+        assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
+        assert!(supervisor.contains("const CPP_APP_STEM: &str = \"robot_demo_cpp_app\";"));
+        assert!(supervisor.contains("fn app_executable_for_runtime("));
+        assert!(supervisor.contains("\"rust\" => rust_app_executable(current_exe),"));
+        assert!(supervisor.contains("\"cpp\" => cpp_app_executable(current_exe),"));
+        assert!(supervisor.contains("fn cpp_app_executable("));
+        assert!(supervisor.contains("let mut path = build_dir.join(\"cmake\");"));
+        assert!(supervisor.contains("path.push(binary_name(CPP_APP_STEM));"));
+        assert!(supervisor.contains(
+            "\"mixed\" => Err(\"FlowRT mixed process groups are not launchable yet\".to_string()),"
+        ));
+        assert!(
+            supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
+        );
     }
 
     fn contract_from_source(source: &str) -> ContractIr {
