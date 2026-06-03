@@ -12,3 +12,13 @@ add_executable(flowrt_runtime_smoke tests/runtime_smoke.cpp)
 target_link_libraries(flowrt_runtime_smoke PRIVATE flowrt_runtime)
 add_test(NAME flowrt_runtime_smoke COMMAND flowrt_runtime_smoke)
 
+option(FLOWRT_CPP_ENABLE_IOX2_TESTS "Build FlowRT C++ runtime tests that require iceoryx2-cxx" OFF)
+
+if(FLOWRT_CPP_ENABLE_IOX2_TESTS)
+    find_package(iceoryx2-cxx 0.9.1 REQUIRED)
+
+    add_executable(flowrt_runtime_iox2_smoke tests/iox2_smoke.cpp)
+    target_link_libraries(flowrt_runtime_iox2_smoke PRIVATE flowrt_runtime iceoryx2-cxx::static-lib-cxx)
+    target_compile_definitions(flowrt_runtime_iox2_smoke PRIVATE FLOWRT_HAS_ICEORYX2_CXX=1)
+    add_test(NAME flowrt_runtime_iox2_smoke COMMAND flowrt_runtime_iox2_smoke)
+endif()

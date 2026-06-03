@@ -269,7 +269,7 @@ fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Resu
     }
 
     anyhow::bail!(
-        "mixed-language `{command}` over `iox2` is not implemented yet; C++ iox2 runtime shell and supervisor cross-language channel wiring are still missing"
+        "mixed-language `{command}` over `iox2` is not implemented yet; supervisor cross-language channel wiring is still missing"
     );
 }
 
@@ -349,13 +349,7 @@ fn selected_runtime_backend_name(contract: &ContractIr) -> &str {
         .unwrap_or("inproc")
 }
 
-fn ensure_backend_runtime_supported(contract: &ContractIr, command: &str) -> Result<()> {
-    let backend = selected_runtime_backend_name(contract);
-    if backend == "iox2" && has_component_language(contract, LanguageKind::Cpp) {
-        anyhow::bail!(
-            "C++ iox2 runtime shell is not implemented yet; `{command}` would otherwise bind a C++ contract to the wrong transport"
-        );
-    }
+fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> Result<()> {
     Ok(())
 }
 
@@ -900,12 +894,11 @@ default_stale_policy = "warn"
         let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
         let message = error.to_string();
         assert!(message.contains("mixed-language `launch` over `iox2` is not implemented yet"));
-        assert!(message.contains("C++ iox2 runtime shell"));
         assert!(message.contains("supervisor cross-language channel wiring"));
     }
 
     #[test]
-    fn backend_runtime_readiness_rejects_cpp_iox2_contracts() {
+    fn backend_runtime_readiness_allows_cpp_iox2_contracts() {
         let contract = contract_from_source(
             r#"
 [package]
@@ -922,10 +915,8 @@ default_stale_policy = "warn"
 "#,
         );
 
-        let error = ensure_backend_runtime_supported(&contract, "build").unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("C++ iox2 runtime shell is not implemented yet"));
-        assert!(message.contains("`build`"));
+        ensure_backend_runtime_supported(&contract, "build").unwrap();
+        ensure_backend_runtime_supported(&contract, "run").unwrap();
     }
 
     #[test]
