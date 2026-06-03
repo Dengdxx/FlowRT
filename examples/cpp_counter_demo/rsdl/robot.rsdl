@@ -16,7 +16,7 @@ input = ["count:Count"]
 
 [instance.counter_source]
 component = "counter_source"
-process = "main"
+process = "control"
 target = "linux"
 
 [instance.counter_source.task]
@@ -26,7 +26,7 @@ output = ["count"]
 
 [instance.counter_sink]
 component = "counter_sink"
-process = "main"
+process = "control"
 target = "linux"
 
 [instance.counter_sink.task]

@@ -36,7 +36,7 @@ flowrt launch examples/imu_demo/rsdl/robot.rsdl
 flowrt inspect examples/imu_demo/flowrt/contract/contract.ir.json
 flowrt check examples/import_demo/rsdl/robot.rsdl
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
-flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process main
+flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 ```
 
 `prepare` / `build` / `run` 会从 `.rsdl` 文件推导应用根目录，并将 FlowRT 管理产物写入该项目可见的 `flowrt/` 目录。
