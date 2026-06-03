@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <flowrt/runtime.hpp>
+#include <string_view>
 
 struct Sample {
     std::uint32_t value;
@@ -91,6 +92,11 @@ int main() {
                            0, flowrt::OverflowPolicy::DropOldest)
                            .with_stale_config(flowrt::StaleConfig{
                                std::chrono::milliseconds{5}, flowrt::StalePolicy::Error});
+    static_assert(std::string_view{flowrt::iox2::FlowrtIox2Header::IOX2_TYPE_NAME} ==
+                  "FlowRTIox2Header");
+    static_assert(sizeof(flowrt::iox2::FlowrtIox2Header) == sizeof(std::uint64_t));
+    flowrt::iox2::FlowrtIox2Header iox2_header{10U};
+    assert(iox2_header.published_at_ms == 10U);
     assert(iox2_config.depth() == 1U);
     assert(iox2_config.overflow() == flowrt::OverflowPolicy::DropOldest);
     assert(iox2_config.stale().policy() == flowrt::StalePolicy::Error);

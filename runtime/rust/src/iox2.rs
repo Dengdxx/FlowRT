@@ -10,14 +10,20 @@ use iceoryx2::prelude::*;
 use crate::{Latest, OverflowPolicy, StaleConfig, StalePolicy};
 
 type IpcNode = Node<ipc::Service>;
-type IpcPublisher<T> = iceoryx2::port::publisher::Publisher<ipc::Service, Iox2Stamped<T>, ()>;
-type IpcSubscriber<T> = iceoryx2::port::subscriber::Subscriber<ipc::Service, Iox2Stamped<T>, ()>;
+type IpcPublisher<T> = iceoryx2::port::publisher::Publisher<ipc::Service, T, FlowrtIox2Header>;
+type IpcSubscriber<T> = iceoryx2::port::subscriber::Subscriber<ipc::Service, T, FlowrtIox2Header>;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, ZeroCopySend)]
-struct Iox2Stamped<T>
+#[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
+#[type_name("FlowRTIox2Header")]
+struct FlowrtIox2Header {
+    published_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Iox2Received<T>
 where
-    T: std::fmt::Debug + Copy + ZeroCopySend + 'static,
+    T: Copy,
 {
     published_at_ms: u64,
     payload: T,
@@ -133,7 +139,7 @@ where
     subscriber: IpcSubscriber<T>,
     node: IpcNode,
     stale: StaleConfig,
-    received: Option<Iox2Stamped<T>>,
+    received: Option<Iox2Received<T>>,
 }
 
 impl<T> Iox2PubSub<T>
@@ -158,7 +164,8 @@ where
             .map_err(|error| Iox2Error::new("failed to create iceoryx2 node", error))?;
         let service = node
             .service_builder(&service_name)
-            .publish_subscribe::<Iox2Stamped<T>>()
+            .publish_subscribe::<T>()
+            .user_header::<FlowrtIox2Header>()
             .enable_safe_overflow(config.safe_overflow())
             .history_size(config.depth())
             .subscriber_max_buffer_size(config.depth())
@@ -197,11 +204,10 @@ where
             .publisher
             .loan_uninit()
             .map_err(|error| Iox2Error::new("failed to loan iceoryx2 sample", error))?;
+        let mut sample = sample;
+        sample.user_header_mut().published_at_ms = published_at_ms;
         sample
-            .write_payload(Iox2Stamped {
-                published_at_ms,
-                payload: value,
-            })
+            .write_payload(value)
             .send()
             .map_err(|error| Iox2Error::new("failed to send iceoryx2 sample", error))?;
         Ok(())
@@ -211,7 +217,7 @@ where
     pub fn receive(&self) -> Result<Option<T>, Iox2Error> {
         self.subscriber
             .receive()
-            .map(|sample| sample.map(|sample| sample.payload))
+            .map(|sample| sample.map(|sample| *sample))
             .map_err(|error| Iox2Error::new("failed to receive iceoryx2 sample", error))
     }
 
@@ -222,7 +228,10 @@ where
             .receive()
             .map_err(|error| Iox2Error::new("failed to receive iceoryx2 sample", error))?
         {
-            self.received = Some(*sample);
+            self.received = Some(Iox2Received {
+                published_at_ms: sample.user_header().published_at_ms,
+                payload: *sample,
+            });
         }
 
         let stale = self
@@ -277,6 +286,11 @@ mod tests {
         timestamp: u64,
         x: f32,
         y: f32,
+    }
+
+    #[test]
+    fn flowrt_iox2_header_has_stable_cross_language_type_name() {
+        assert_eq!(unsafe { FlowrtIox2Header::type_name() }, "FlowRTIox2Header");
     }
 
     #[test]
