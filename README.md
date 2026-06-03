@@ -36,13 +36,14 @@ flowrt launch examples/imu_demo/rsdl/robot.rsdl
 flowrt inspect examples/imu_demo/flowrt/contract/contract.ir.json
 flowrt check examples/import_demo/rsdl/robot.rsdl
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process main
 ```
 
 `prepare` / `build` / `run` 会从 `.rsdl` 文件推导应用根目录，并将 FlowRT 管理产物写入该项目可见的 `flowrt/` 目录。
-当 contract 含 C++ 组件时，`flowrt build` 使用 CMake 构建 FlowRT 管理的 C++ shell、app 和 ABI test target；C++ only contract 不应触发 Cargo。
+当 contract 只含 C++ 组件时，`flowrt build` / `flowrt run` 使用 CMake 构建或运行 FlowRT 管理的 C++ shell、app 和 ABI test target；C++ only contract 不应触发 Cargo app 路径。
 当 contract 含 Rust 组件时，当前实现仍使用 Cargo 构建 FlowRT 管理的 Rust 应用；Rust 用户组件的免 Cargo 分发属于后续安装/打包设计。
 `examples/import_demo` 展示了 `[package.imports]` 如何把 `types/`、`components/`、`profiles/` 和 `targets/` 下的模块化 `.rsdl` 文件合并到同一个 Contract IR。
-`examples/cpp_counter_demo` 展示了 C++ only contract：用户只在 `src/cpp/` 实现组件和 `flowrt_user::build_app()`，`flowrt build` 会通过 CMake 构建 FlowRT 管理的 C++ inproc shell 和应用。
+`examples/cpp_counter_demo` 展示了 C++ only contract：用户只在 `src/cpp/` 实现组件和 `flowrt_user::build_app()`，`flowrt build` / `flowrt run` 会通过 CMake 构建并运行 FlowRT 管理的 C++ inproc shell 和应用。
 
 仓库开发者验证 FlowRT 自身时可以使用：
 
