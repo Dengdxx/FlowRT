@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -75,6 +76,95 @@ enum class ChannelError : std::uint8_t {
  * variant 左侧表示已按策略处理，右侧表示需要调用方显式处理的错误。
  */
 using ChannelPushResult = std::variant<ChannelWriteOutcome, ChannelError>;
+
+/**
+ * @brief 输入样本过期时的处理策略。
+ */
+enum class StalePolicy : std::uint8_t {
+    Warn = 0,      ///< 保留样本并暴露 stale 标记。
+    Drop = 1,      ///< 过期后隐藏样本。
+    HoldLast = 2,  ///< 保留最后一个样本并暴露 stale 标记。
+    Error = 3,     ///< 由 generated shell 将过期输入提升为错误状态。
+};
+
+/**
+ * @brief 带时间戳 channel 读取时的 freshness 配置。
+ *
+ * C++ runtime 使用 `std::chrono::milliseconds` 表达时间窗口，避免在公共 API 中传递没有单位的
+ * 裸整数。generated shell 仍可把调度 tick 归一化为毫秒计数，再交给 channel 计算 stale 状态。
+ */
+class StaleConfig {
+   public:
+    /**
+     * @brief freshness 时间窗口类型。
+     */
+    using Duration = std::chrono::milliseconds;
+
+    /**
+     * @brief 构造不检查过期时间的默认配置。
+     */
+    constexpr StaleConfig() noexcept = default;
+
+    /**
+     * @brief 构造不检查过期时间、但保留指定 stale policy 的配置。
+     *
+     * @param policy 样本过期时的处理策略。
+     */
+    constexpr explicit StaleConfig(StalePolicy policy) noexcept : policy_(policy) {}
+
+    /**
+     * @brief 构造带最大样本年龄的 freshness 配置。
+     *
+     * @param max_age 最大允许样本年龄。
+     * @param policy 样本过期时的处理策略。
+     */
+    constexpr StaleConfig(Duration max_age, StalePolicy policy) noexcept
+        : max_age_(max_age), policy_(policy) {}
+
+    /**
+     * @brief 返回不检查过期时间的默认配置。
+     *
+     * @return 默认 freshness 配置。
+     */
+    static constexpr StaleConfig none() noexcept { return StaleConfig{}; }
+
+    /**
+     * @brief 返回最大允许样本年龄。
+     *
+     * @return 配置了年龄窗口时返回该窗口，否则返回空值。
+     */
+    constexpr std::optional<Duration> max_age() const noexcept { return max_age_; }
+
+    /**
+     * @brief 返回样本过期时的处理策略。
+     *
+     * @return stale policy。
+     */
+    constexpr StalePolicy policy() const noexcept { return policy_; }
+
+    /**
+     * @brief 判断指定发布时间的样本在当前时间是否过期。
+     *
+     * @param published_at_ms 样本发布时间，单位为 runtime 毫秒。
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 超过 `max_age` 时返回 true。
+     */
+    constexpr bool stale_at(std::optional<std::uint64_t> published_at_ms,
+                            std::uint64_t now_ms) const noexcept {
+        if (!max_age_ || !published_at_ms || now_ms <= *published_at_ms) {
+            return false;
+        }
+        if (max_age_->count() < 0) {
+            return true;
+        }
+        const auto max_age_ms = static_cast<std::uint64_t>(max_age_->count());
+        return now_ms - *published_at_ms > max_age_ms;
+    }
+
+   private:
+    std::optional<Duration> max_age_;
+    StalePolicy policy_ = StalePolicy::Warn;
+};
 
 /**
  * @brief latest snapshot 输入视图。
@@ -210,6 +300,26 @@ class LatestChannel {
     LatestChannel() = default;
 
     /**
+     * @brief 使用 freshness 配置构造空 latest channel。
+     *
+     * @param stale_config 读取时使用的 freshness 配置。
+     */
+    explicit LatestChannel(StaleConfig stale_config) noexcept : stale_config_(stale_config) {}
+
+    /**
+     * @brief 使用 freshness 配置构造空 latest channel。
+     *
+     * 该工厂函数与 Rust runtime 的 `with_stale_config` 保持命名一致，方便 codegen
+     * 在跨语言 shell 中使用同一套语义表达。
+     *
+     * @param stale_config 读取时使用的 freshness 配置。
+     * @return 配置后的空 latest channel。
+     */
+    static LatestChannel with_stale_config(StaleConfig stale_config) noexcept {
+        return LatestChannel(stale_config);
+    }
+
+    /**
      * @brief 发布一个新样本并清除 stale 标记。
      *
      * @param value 新样本。
@@ -217,6 +327,19 @@ class LatestChannel {
     void publish(T value) {
         value_ = std::move(value);
         stale_ = false;
+        published_at_ms_.reset();
+    }
+
+    /**
+     * @brief 带 runtime 时间戳发布一个新样本。
+     *
+     * @param value 新样本。
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     */
+    void publish_at(T value, std::uint64_t now_ms) {
+        value_ = std::move(value);
+        stale_ = false;
+        published_at_ms_ = now_ms;
     }
 
     /**
@@ -236,6 +359,18 @@ class LatestChannel {
     }
 
     /**
+     * @brief 以指定 runtime 时间读取 latest snapshot，并按 freshness 配置计算 stale 状态。
+     *
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 只在 channel 当前状态有效期间可用的输入视图。
+     */
+    Latest<T> view_at(std::uint64_t now_ms) const noexcept {
+        const bool stale = stale_ || stale_config_.stale_at(published_at_ms_, now_ms);
+        const bool drop_stale = stale && stale_config_.policy() == StalePolicy::Drop;
+        return Latest<T>{value_ && !drop_stale ? std::addressof(*value_) : nullptr, stale};
+    }
+
+    /**
      * @brief 取走当前样本并清空 channel。
      *
      * @return 样本存在时返回该样本，否则返回空值。
@@ -249,6 +384,8 @@ class LatestChannel {
    private:
     std::optional<T> value_;
     bool stale_ = false;
+    std::optional<std::uint64_t> published_at_ms_;
+    StaleConfig stale_config_;
 };
 
 /**

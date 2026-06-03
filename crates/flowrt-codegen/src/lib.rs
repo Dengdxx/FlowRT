@@ -287,7 +287,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
 
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
-    output.push_str("#include <string_view>\n#include <utility>\n#include <variant>\n\n");
+    output.push_str("#include <chrono>\n#include <cstdint>\n#include <string_view>\n#include <utility>\n#include <variant>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -542,7 +542,12 @@ fn emit_cpp_app_step(
     output.push_str(&format!(
         "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context) {{\n",
     ));
-    output.push_str("    (void)tick;\n    (void)tick_context;\n");
+    if cpp_runtime_step_uses_tick_time(emission.binds) {
+        output.push_str("    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n");
+    } else {
+        output.push_str("    (void)tick;\n");
+    }
+    output.push_str("    (void)tick_context;\n");
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -569,6 +574,7 @@ fn emit_cpp_app_step(
                 {
                     let bind = &emission.binds[*bind_index];
                     output.push_str(&cpp_runtime_channel_read(input, bind, &input_local));
+                    output.push_str(&cpp_runtime_stale_error_guard(&input_local, bind));
                 } else {
                     output.push_str(&format!(
                         "    flowrt::Latest<{ty}> {local};\n",
@@ -712,7 +718,7 @@ fn cpp_runtime_channel_type(bind: &BindRuntimePlan) -> String {
 
 fn cpp_runtime_channel_initializer(_graph: &GraphIr, bind: &BindRuntimePlan) -> String {
     match bind.channel {
-        ChannelKind::Latest => String::new(),
+        ChannelKind::Latest => cpp_runtime_latest_channel_initializer(bind),
         ChannelKind::Fifo => format!(
             "{}, {}",
             bind.depth.unwrap_or(1),
@@ -721,10 +727,35 @@ fn cpp_runtime_channel_initializer(_graph: &GraphIr, bind: &BindRuntimePlan) -> 
     }
 }
 
+fn cpp_runtime_latest_channel_initializer(bind: &BindRuntimePlan) -> String {
+    let ty = cpp_type(&bind.source_type);
+    if bind.max_age_ms.is_none() && bind.stale == IrStalePolicy::Warn {
+        return String::new();
+    }
+
+    format!(
+        "flowrt::LatestChannel<{ty}>::with_stale_config({})",
+        cpp_runtime_stale_config_expr(bind)
+    )
+}
+
+fn cpp_runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
+    match bind.max_age_ms {
+        Some(max_age_ms) => format!(
+            "flowrt::StaleConfig{{std::chrono::milliseconds{{{max_age_ms}}}, {}}}",
+            cpp_runtime_stale_policy(bind.stale)
+        ),
+        None => format!(
+            "flowrt::StaleConfig{{{}}}",
+            cpp_runtime_stale_policy(bind.stale)
+        ),
+    }
+}
+
 fn cpp_runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, local_name: &str) -> String {
     match bind.channel {
         ChannelKind::Latest => format!(
-            "    const auto {local} = {field}_.view();\n",
+            "    const auto {local} = {field}_.view_at(tick_time_ms);\n",
             local = local_name,
             field = bind.field_name
         ),
@@ -737,6 +768,17 @@ fn cpp_runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, local_name: 
     }
 }
 
+fn cpp_runtime_stale_error_guard(local_name: &str, bind: &BindRuntimePlan) -> String {
+    if bind.stale != IrStalePolicy::Error {
+        return String::new();
+    }
+
+    format!(
+        "    if ({local}.stale()) {{\n        return flowrt::Status::Error;\n    }}\n",
+        local = local_name
+    )
+}
+
 fn cpp_step_local_name(instance: &str, port: &str) -> String {
     format!("{instance}_{port}")
 }
@@ -744,7 +786,7 @@ fn cpp_step_local_name(instance: &str, port: &str) -> String {
 fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
     match bind.channel {
         ChannelKind::Latest => format!(
-            "        {field}_.publish(*value);\n",
+            "        {field}_.publish_at(*value, tick_time_ms);\n",
             field = bind.field_name
         ),
         ChannelKind::Fifo => format!(
@@ -754,12 +796,27 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
     }
 }
 
+fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan]) -> bool {
+    binds
+        .iter()
+        .any(|bind| matches!(bind.channel, ChannelKind::Latest))
+}
+
 fn cpp_runtime_overflow_policy(policy: IrOverflowPolicy) -> &'static str {
     match policy {
         IrOverflowPolicy::DropOldest => "flowrt::OverflowPolicy::DropOldest",
         IrOverflowPolicy::DropNewest => "flowrt::OverflowPolicy::DropNewest",
         IrOverflowPolicy::Error => "flowrt::OverflowPolicy::Error",
         IrOverflowPolicy::Block => "flowrt::OverflowPolicy::Block",
+    }
+}
+
+fn cpp_runtime_stale_policy(policy: IrStalePolicy) -> &'static str {
+    match policy {
+        IrStalePolicy::Warn => "flowrt::StalePolicy::Warn",
+        IrStalePolicy::Drop => "flowrt::StalePolicy::Drop",
+        IrStalePolicy::HoldLast => "flowrt::StalePolicy::HoldLast",
+        IrStalePolicy::Error => "flowrt::StalePolicy::Error",
     }
 }
 
@@ -2423,7 +2480,9 @@ channel = "latest"
         assert!(runtime_shell.contains("App::App("));
         assert!(runtime_shell.contains("bind_0_"));
         assert!(runtime_shell.contains("flowrt::Output<Odom> source_odom;"));
-        assert!(runtime_shell.contains("const auto controller_odom = bind_0_.view();"));
+        assert!(
+            runtime_shell.contains("const auto controller_odom = bind_0_.view_at(tick_time_ms);")
+        );
         assert!(runtime_shell.contains("source_->on_tick(source_odom)"));
         assert!(runtime_shell.contains("controller_->on_tick(controller_odom, controller_cmd)"));
         assert!(runtime_shell.contains("flowrt_user::build_app().run(backend);"));
@@ -2725,6 +2784,132 @@ backends = ["inproc"]
         );
         assert!(
             rust_shell.find("if imu.stale()").unwrap() < rust_shell.find(".on_tick(imu)").unwrap()
+        );
+    }
+
+    #[test]
+    fn cpp_shell_emits_stale_channel_reads_from_bind_policy() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "cpp"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "cpp"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+max_age_ms = 20
+stale_policy = "drop"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+        assert!(cpp_shell.contains(
+            "flowrt::LatestChannel<Imu>::with_stale_config(flowrt::StaleConfig{std::chrono::milliseconds{20}, flowrt::StalePolicy::Drop})"
+        ));
+        assert!(cpp_shell.contains("const auto tick_time_ms = static_cast<std::uint64_t>(tick);"));
+        assert!(cpp_shell.contains("publish_at(*value, tick_time_ms)"));
+        assert!(cpp_shell.contains("view_at(tick_time_ms)"));
+    }
+
+    #[test]
+    fn cpp_shell_emits_stale_error_guard_before_user_tick() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "cpp"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "cpp"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+max_age_ms = 20
+stale_policy = "error"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+        assert!(
+            cpp_shell
+                .contains("if (sink_imu.stale()) {\n        return flowrt::Status::Error;\n    }")
+        );
+        assert!(
+            cpp_shell.find("if (sink_imu.stale())").unwrap()
+                < cpp_shell.find("sink_->on_tick(sink_imu)").unwrap()
         );
     }
 

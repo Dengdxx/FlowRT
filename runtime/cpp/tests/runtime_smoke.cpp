@@ -1,4 +1,5 @@
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <flowrt/runtime.hpp>
 
@@ -53,6 +54,28 @@ int main() {
     assert(latest_channel.view().present());
     assert(latest_channel.view().get()->value == 11U);
     assert(latest_channel.take()->value == 11U);
+
+    auto warn_channel = flowrt::LatestChannel<Sample>::with_stale_config(
+        flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::Warn});
+    warn_channel.publish_at(Sample{13U}, 100);
+    assert(warn_channel.view_at(109).present());
+    assert(!warn_channel.view_at(109).stale());
+    assert(warn_channel.view_at(111).present());
+    assert(warn_channel.view_at(111).stale());
+    assert(warn_channel.view_at(111).get()->value == 13U);
+
+    auto drop_channel = flowrt::LatestChannel<Sample>::with_stale_config(
+        flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::Drop});
+    drop_channel.publish_at(Sample{17U}, 100);
+    assert(!drop_channel.view_at(111).present());
+    assert(drop_channel.view_at(111).stale());
+
+    auto error_channel = flowrt::LatestChannel<Sample>::with_stale_config(
+        flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::Error});
+    error_channel.publish_at(Sample{19U}, 100);
+    assert(error_channel.view_at(111).present());
+    assert(error_channel.view_at(111).stale());
+    assert(error_channel.view_at(111).get()->value == 19U);
 
     flowrt::FifoChannel<Sample> fifo_channel(1, flowrt::OverflowPolicy::DropOldest);
     const auto first = fifo_channel.push(Sample{1U});
