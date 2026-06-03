@@ -11,6 +11,7 @@ use flowrt_validate::validate_contract;
 
 #[derive(Debug, Parser)]
 #[command(name = "flowrt")]
+#[command(version)]
 #[command(about = "FlowRT 数据流契约工具链")]
 struct Cli {
     #[command(subcommand)]
@@ -436,6 +437,7 @@ fn summary(contract: &ContractIr) -> String {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
     use flowrt_rsdl::parse_str;
 
     use super::*;
@@ -499,5 +501,13 @@ language = "rust"
             build_steps(&contract),
             vec![BuildStep::Cargo, BuildStep::Cmake]
         );
+    }
+
+    #[test]
+    fn cli_exposes_installed_binary_metadata() {
+        let command = Cli::command();
+
+        assert_eq!(command.get_name(), "flowrt");
+        assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
     }
 }
