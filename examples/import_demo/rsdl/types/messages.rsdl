@@ -1,0 +1,11 @@
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+ay = "f32"
+az = "f32"
+
+[type.Odom]
+timestamp = "u64"
+x = "f32"
+y = "f32"
+theta = "f32"

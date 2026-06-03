@@ -9,4 +9,4 @@ mod parser;
 
 pub use ast::*;
 pub use error::{Result, RsdlError};
-pub use parser::{parse_file, parse_str};
+pub use parser::{load_file, parse_file, parse_str};

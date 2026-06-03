@@ -27,6 +27,8 @@ cargo run -p flowrt-cli -- launch examples/imu_demo/rsdl/robot.rsdl
 cargo test --manifest-path examples/imu_demo/flowrt/build/Cargo.toml
 cargo test -p flowrt --features iox2 -- --nocapture
 cargo run -p flowrt-cli -- inspect examples/imu_demo/flowrt/contract/contract.ir.json
+cargo run -p flowrt-cli -- check examples/import_demo/rsdl/robot.rsdl
 ```
 
 `prepare` / `build` / `run` 会从 `.rsdl` 文件推导应用根目录，并将 FlowRT 管理产物写入该项目可见的 `flowrt/` 目录。
+`examples/import_demo` 展示了 `[package.imports]` 如何把 `types/`、`components/`、`profiles/` 和 `targets/` 下的模块化 `.rsdl` 文件合并到同一个 Contract IR。

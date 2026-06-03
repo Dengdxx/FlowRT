@@ -1,0 +1,5 @@
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 20

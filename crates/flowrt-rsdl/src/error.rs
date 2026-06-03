@@ -16,6 +16,19 @@ pub enum RsdlError {
     #[error("failed to parse TOML: {0}")]
     Toml(#[from] toml::de::Error),
 
+    #[error("invalid import path `{pattern}` in `{importer}`: {message}")]
+    InvalidImportPath {
+        importer: PathBuf,
+        pattern: String,
+        message: String,
+    },
+
+    #[error("import pattern `{pattern}` in `{importer}` did not match any .rsdl file")]
+    ImportPatternNoMatches { importer: PathBuf, pattern: String },
+
+    #[error("duplicate `{kind}` symbol `{name}` while merging imported RSDL")]
+    DuplicateSymbol { kind: &'static str, name: String },
+
     #[error("missing required table `[package]`")]
     MissingPackage,
 

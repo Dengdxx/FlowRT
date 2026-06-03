@@ -1,0 +1,3 @@
+[component.imu_sim]
+language = "rust"
+output = ["imu:Imu"]
