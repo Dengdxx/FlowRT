@@ -2685,6 +2685,36 @@ period_ms = 5
     }
 
     #[test]
+    fn rejects_reserved_process_name_prefix() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+process = "flowrt_supervisor"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report =
+            validate_contract(&ir).expect_err("reserved process prefix should fail validation");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("process name `flowrt_supervisor` uses reserved `flowrt` prefix")
+        }));
+    }
+
+    #[test]
     fn rejects_dataflow_cycle_between_instances() {
         let source = r#"
 [package]
