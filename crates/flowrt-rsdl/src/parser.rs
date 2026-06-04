@@ -90,6 +90,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         context: "document".to_string(),
         message: "expected a TOML table document".to_string(),
     })?;
+    validate_top_level_sections(root)?;
 
     let package = match root.get("package").and_then(Value::as_table) {
         Some(package_table) => Some(parse_package(package_table)?),
@@ -106,6 +107,27 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
     })
+}
+
+fn validate_top_level_sections(root: &Table) -> Result<()> {
+    const ALLOWED_SECTIONS: &[&str] = &[
+        "package",
+        "type",
+        "component",
+        "instance",
+        "bind",
+        "profile",
+        "target",
+    ];
+
+    for section in root.keys() {
+        if !ALLOWED_SECTIONS.contains(&section.as_str()) {
+            return Err(RsdlError::UnknownTopLevelSection {
+                section: section.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
@@ -729,6 +751,25 @@ input = ["odom"]
 
         let error = parse_str(source).expect_err("invalid port descriptor should fail");
         assert!(matches!(error, RsdlError::InvalidPortDescriptor { .. }));
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_sections() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[components.worker]
+language = "rust"
+"#;
+
+        let error = parse_str(source).expect_err("unknown top-level section should fail");
+
+        assert!(matches!(
+            error,
+            RsdlError::UnknownTopLevelSection { section } if section == "components"
+        ));
     }
 
     #[test]
