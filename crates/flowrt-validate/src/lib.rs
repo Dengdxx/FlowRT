@@ -455,6 +455,12 @@ fn validate_tasks(
                 instance.name
             )));
         }
+        if task.trigger == TriggerKind::Periodic && task.period_ms == Some(0) {
+            errors.push(ValidationError::new(format!(
+                "periodic task on instance `{}` must set period_ms greater than zero",
+                instance.name
+            )));
+        }
         if task.trigger != TriggerKind::Periodic && task.period_ms.is_some() {
             errors.push(ValidationError::new(format!(
                 "task on instance `{}` must not set period_ms unless trigger is periodic",
@@ -994,6 +1000,34 @@ channel = "latest"
             error.message.contains(
                 "task on instance `consumer` must not set period_ms unless trigger is periodic",
             )
+        }));
+    }
+
+    #[test]
+    fn rejects_zero_period_ms_on_periodic_task() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 0
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("zero period_ms should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("periodic task on instance `worker` must set period_ms greater than zero")
         }));
     }
 
