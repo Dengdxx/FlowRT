@@ -5,85 +5,218 @@ use crate::{
     TriggerKind, TypeExpr, TypeIr,
 };
 
-const IMPLEMENTED_BACKENDS: &[&str] = &["inproc", "iox2"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Capability {
+    AbiFixedSizePlainData,
+    AbiInt128,
+    LayoutNativeLayout,
+    AllocationBounded,
+    GraphStaticGraph,
+    TriggerPeriodic,
+    TriggerOnMessage,
+    TriggerStartup,
+    TriggerShutdown,
+    TimingDeadlineAware,
+    ChannelLatest,
+    ChannelFifo,
+    OverflowDropOldest,
+    OverflowDropNewest,
+    OverflowError,
+    OverflowBlock,
+    StaleWarn,
+    StaleDrop,
+    StaleHoldLast,
+    StaleError,
+    TopologySingleProcess,
+    TopologyMultiProcess,
+    TopologySingleHost,
+    TransferCopy,
+    TransferZeroCopy,
+    TransferLoaned,
+    ObservabilityHealth,
+}
 
-const COMMON_CAPABILITIES: &[&str] = &[
-    "abi:fixed_size_plain_data",
-    "layout:native_layout",
-    "allocation:bounded",
-    "graph:static_graph",
-    "trigger:periodic",
-    "trigger:on_message",
-    "trigger:startup",
-    "trigger:shutdown",
-    "timing:deadline_aware",
-    "channel:latest",
-    "channel:fifo",
-    "overflow:drop_oldest",
-    "overflow:drop_newest",
-    "overflow:error",
-    "overflow:block",
-    "stale:warn",
-    "stale:drop",
-    "stale:hold_last",
-    "stale:error",
+impl Capability {
+    fn atom(self) -> CapabilityAtom {
+        CapabilityAtom(self.name().to_string())
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Capability::AbiFixedSizePlainData => "abi:fixed_size_plain_data",
+            Capability::AbiInt128 => "abi:int128",
+            Capability::LayoutNativeLayout => "layout:native_layout",
+            Capability::AllocationBounded => "allocation:bounded",
+            Capability::GraphStaticGraph => "graph:static_graph",
+            Capability::TriggerPeriodic => "trigger:periodic",
+            Capability::TriggerOnMessage => "trigger:on_message",
+            Capability::TriggerStartup => "trigger:startup",
+            Capability::TriggerShutdown => "trigger:shutdown",
+            Capability::TimingDeadlineAware => "timing:deadline_aware",
+            Capability::ChannelLatest => "channel:latest",
+            Capability::ChannelFifo => "channel:fifo",
+            Capability::OverflowDropOldest => "overflow:drop_oldest",
+            Capability::OverflowDropNewest => "overflow:drop_newest",
+            Capability::OverflowError => "overflow:error",
+            Capability::OverflowBlock => "overflow:block",
+            Capability::StaleWarn => "stale:warn",
+            Capability::StaleDrop => "stale:drop",
+            Capability::StaleHoldLast => "stale:hold_last",
+            Capability::StaleError => "stale:error",
+            Capability::TopologySingleProcess => "topology:single_process",
+            Capability::TopologyMultiProcess => "topology:multi_process",
+            Capability::TopologySingleHost => "topology:single_host",
+            Capability::TransferCopy => "transfer:copy",
+            Capability::TransferZeroCopy => "transfer:zero_copy",
+            Capability::TransferLoaned => "transfer:loaned",
+            Capability::ObservabilityHealth => "observability:health",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendKind {
+    Inproc,
+    Iox2,
+}
+
+impl BackendKind {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "inproc" => Some(Self::Inproc),
+            "iox2" => Some(Self::Iox2),
+            _ => None,
+        }
+    }
+
+    fn spec(self) -> BackendSpec {
+        match self {
+            Self::Inproc => BackendSpec {
+                capabilities: &[&COMMON_BACKEND_CAPABILITIES, INPROC_BACKEND_CAPABILITIES],
+            },
+            Self::Iox2 => BackendSpec {
+                capabilities: &[&COMMON_BACKEND_CAPABILITIES, IOX2_BACKEND_CAPABILITIES],
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BackendSpec {
+    capabilities: &'static [&'static [Capability]],
+}
+
+impl BackendSpec {
+    fn capabilities(self) -> Vec<CapabilityAtom> {
+        let mut capabilities = CapabilityList::new();
+        for group in self.capabilities {
+            capabilities.extend(group.iter().copied());
+        }
+        capabilities.into_atoms()
+    }
+}
+
+struct CapabilityList {
+    seen: BTreeSet<Capability>,
+    items: Vec<Capability>,
+}
+
+impl CapabilityList {
+    fn new() -> Self {
+        Self {
+            seen: BTreeSet::new(),
+            items: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, capability: Capability) {
+        if self.seen.insert(capability) {
+            self.items.push(capability);
+        }
+    }
+
+    fn extend(&mut self, capabilities: impl IntoIterator<Item = Capability>) {
+        for capability in capabilities {
+            self.push(capability);
+        }
+    }
+
+    fn into_atoms(self) -> Vec<CapabilityAtom> {
+        self.items
+            .into_iter()
+            .map(Capability::atom)
+            .collect::<Vec<_>>()
+    }
+}
+
+const COMMON_BACKEND_CAPABILITIES: [Capability; 19] = [
+    Capability::AbiFixedSizePlainData,
+    Capability::LayoutNativeLayout,
+    Capability::AllocationBounded,
+    Capability::GraphStaticGraph,
+    Capability::TriggerPeriodic,
+    Capability::TriggerOnMessage,
+    Capability::TriggerStartup,
+    Capability::TriggerShutdown,
+    Capability::TimingDeadlineAware,
+    Capability::ChannelLatest,
+    Capability::ChannelFifo,
+    Capability::OverflowDropOldest,
+    Capability::OverflowDropNewest,
+    Capability::OverflowError,
+    Capability::OverflowBlock,
+    Capability::StaleWarn,
+    Capability::StaleDrop,
+    Capability::StaleHoldLast,
+    Capability::StaleError,
+];
+
+const INPROC_BACKEND_CAPABILITIES: &[Capability] = &[
+    Capability::TopologySingleProcess,
+    Capability::TransferCopy,
+    Capability::ObservabilityHealth,
+];
+
+const IOX2_BACKEND_CAPABILITIES: &[Capability] = &[
+    Capability::TopologyMultiProcess,
+    Capability::TopologySingleHost,
+    Capability::TransferZeroCopy,
+    Capability::TransferLoaned,
+    Capability::ObservabilityHealth,
 ];
 
 /// 判断当前实现是否认识某个 backend 名称。
 pub fn is_known_backend(name: &str) -> bool {
-    IMPLEMENTED_BACKENDS.contains(&name)
+    BackendKind::parse(name).is_some()
 }
 
 /// 返回某个 backend 提供的 capability atoms。
 pub fn backend_capabilities(name: &str) -> Option<Vec<CapabilityAtom>> {
-    let specific = match name {
-        "inproc" => &[
-            "topology:single_process",
-            "transfer:copy",
-            "observability:health",
-        ][..],
-        "iox2" => &[
-            "topology:multi_process",
-            "topology:single_host",
-            "transfer:zero_copy",
-            "transfer:loaned",
-            "observability:health",
-            "timing:deadline_aware",
-        ][..],
-        _ => return None,
-    };
-
-    Some(
-        COMMON_CAPABILITIES
-            .iter()
-            .chain(specific.iter())
-            .map(|capability| CapabilityAtom((*capability).to_string()))
-            .collect(),
-    )
+    BackendKind::parse(name).map(|backend| backend.spec().capabilities())
 }
 
 /// v0.1 deployment 在 graph-specific policy 之外必须满足的基础能力。
 pub fn base_deployment_capabilities() -> Vec<CapabilityAtom> {
     [
-        "abi:fixed_size_plain_data",
-        "layout:native_layout",
-        "allocation:bounded",
-        "graph:static_graph",
+        Capability::AbiFixedSizePlainData,
+        Capability::LayoutNativeLayout,
+        Capability::AllocationBounded,
+        Capability::GraphStaticGraph,
     ]
     .into_iter()
-    .map(|capability| CapabilityAtom(capability.to_string()))
+    .map(Capability::atom)
     .collect()
 }
 
 /// 返回某个 task trigger 所需的 capability atom。
 pub fn trigger_capability(trigger: TriggerKind) -> CapabilityAtom {
-    let name = match trigger {
-        TriggerKind::Periodic => "trigger:periodic",
-        TriggerKind::OnMessage => "trigger:on_message",
-        TriggerKind::Startup => "trigger:startup",
-        TriggerKind::Shutdown => "trigger:shutdown",
+    let capability = match trigger {
+        TriggerKind::Periodic => Capability::TriggerPeriodic,
+        TriggerKind::OnMessage => Capability::TriggerOnMessage,
+        TriggerKind::Startup => Capability::TriggerStartup,
+        TriggerKind::Shutdown => Capability::TriggerShutdown,
     };
-    CapabilityAtom(name.to_string())
+    capability.atom()
 }
 
 /// 推导 target 声明的 backend capability atoms。
@@ -103,9 +236,9 @@ pub fn channel_capabilities(
     stale: StalePolicy,
 ) -> Vec<CapabilityAtom> {
     vec![
-        CapabilityAtom(channel_capability_name(channel).to_string()),
-        CapabilityAtom(overflow_capability_name(overflow).to_string()),
-        CapabilityAtom(stale_capability_name(stale).to_string()),
+        channel_capability(channel).atom(),
+        overflow_capability(overflow).atom(),
+        stale_capability(stale).atom(),
     ]
 }
 
@@ -135,7 +268,7 @@ pub fn graph_required_capabilities(
     for task in &graph.tasks {
         capabilities.push(trigger_capability(task.trigger));
         if task.deadline_ms.is_some() {
-            capabilities.push(CapabilityAtom("timing:deadline_aware".to_string()));
+            capabilities.push(Capability::TimingDeadlineAware.atom());
         }
     }
     for bind in &graph.binds {
@@ -191,7 +324,7 @@ fn collect_type_expr_abi_capabilities_inner(
     match expr {
         TypeExpr::Primitive {
             name: PrimitiveType::U128 | PrimitiveType::I128,
-        } => required.push(CapabilityAtom("abi:int128".to_string())),
+        } => required.push(Capability::AbiInt128.atom()),
         TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
         TypeExpr::Named { name } => {
             if !visiting.insert(name.clone()) {
@@ -224,28 +357,28 @@ fn dedupe_capabilities(capabilities: Vec<CapabilityAtom>) -> Vec<CapabilityAtom>
         .collect()
 }
 
-fn channel_capability_name(channel: ChannelKind) -> &'static str {
+fn channel_capability(channel: ChannelKind) -> Capability {
     match channel {
-        ChannelKind::Latest => "channel:latest",
-        ChannelKind::Fifo => "channel:fifo",
+        ChannelKind::Latest => Capability::ChannelLatest,
+        ChannelKind::Fifo => Capability::ChannelFifo,
     }
 }
 
-fn overflow_capability_name(policy: OverflowPolicy) -> &'static str {
+fn overflow_capability(policy: OverflowPolicy) -> Capability {
     match policy {
-        OverflowPolicy::DropOldest => "overflow:drop_oldest",
-        OverflowPolicy::DropNewest => "overflow:drop_newest",
-        OverflowPolicy::Error => "overflow:error",
-        OverflowPolicy::Block => "overflow:block",
+        OverflowPolicy::DropOldest => Capability::OverflowDropOldest,
+        OverflowPolicy::DropNewest => Capability::OverflowDropNewest,
+        OverflowPolicy::Error => Capability::OverflowError,
+        OverflowPolicy::Block => Capability::OverflowBlock,
     }
 }
 
-fn stale_capability_name(policy: StalePolicy) -> &'static str {
+fn stale_capability(policy: StalePolicy) -> Capability {
     match policy {
-        StalePolicy::Warn => "stale:warn",
-        StalePolicy::Drop => "stale:drop",
-        StalePolicy::HoldLast => "stale:hold_last",
-        StalePolicy::Error => "stale:error",
+        StalePolicy::Warn => Capability::StaleWarn,
+        StalePolicy::Drop => Capability::StaleDrop,
+        StalePolicy::HoldLast => Capability::StaleHoldLast,
+        StalePolicy::Error => Capability::StaleError,
     }
 }
 
@@ -265,6 +398,43 @@ mod tests {
     fn rejects_unknown_backend_names() {
         assert!(!is_known_backend("typo_backend"));
         assert!(backend_capabilities("typo_backend").is_none());
+    }
+
+    #[test]
+    fn backend_capabilities_are_unique_and_canonical() {
+        let capabilities = backend_capabilities("iox2").unwrap();
+        let unique = capabilities.iter().collect::<BTreeSet<_>>();
+
+        assert_eq!(capabilities.len(), unique.len());
+        assert_eq!(
+            capabilities,
+            vec![
+                Capability::AbiFixedSizePlainData.atom(),
+                Capability::LayoutNativeLayout.atom(),
+                Capability::AllocationBounded.atom(),
+                Capability::GraphStaticGraph.atom(),
+                Capability::TriggerPeriodic.atom(),
+                Capability::TriggerOnMessage.atom(),
+                Capability::TriggerStartup.atom(),
+                Capability::TriggerShutdown.atom(),
+                Capability::TimingDeadlineAware.atom(),
+                Capability::ChannelLatest.atom(),
+                Capability::ChannelFifo.atom(),
+                Capability::OverflowDropOldest.atom(),
+                Capability::OverflowDropNewest.atom(),
+                Capability::OverflowError.atom(),
+                Capability::OverflowBlock.atom(),
+                Capability::StaleWarn.atom(),
+                Capability::StaleDrop.atom(),
+                Capability::StaleHoldLast.atom(),
+                Capability::StaleError.atom(),
+                Capability::TopologyMultiProcess.atom(),
+                Capability::TopologySingleHost.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+                Capability::ObservabilityHealth.atom(),
+            ]
+        );
     }
 
     #[test]
