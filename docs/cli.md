@@ -11,6 +11,8 @@ flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
+flowrt list <path/to/generated-app-or-selfdesc.json>
+flowrt nodes <path/to/generated-app-or-selfdesc.json>
 ```
 
 ## `check`
@@ -105,6 +107,17 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 ```
 
 `inspect` 会先校验已落盘 Contract IR JSON，再显示摘要，用于确认 package、type、component、instance、task、bind、profile、target 和 deployment 是否符合预期。当前工具链不支持的 `ir_version`、`schema_version` 或 package `rsdl_version` 会被明确拒绝。
+
+## `list` / `nodes`
+
+```bash
+flowrt list path/to/generated-app
+flowrt nodes path/to/generated-app
+```
+
+`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出静态拓扑摘要或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、instance、task、channel 和 Message ABI layout 是否与预期一致。
+
+当前这两个命令只读取编译期静态自描述；运行态 socket、channel snapshot、`status` 和 `echo` 会在后续切片接入。
 
 ## `--profile`
 
