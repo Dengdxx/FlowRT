@@ -69,6 +69,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         .iter()
         .map(|ty| ty.name.as_str())
         .collect::<BTreeSet<_>>();
+    validate_contract_shape(ir, &mut errors);
     validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
     validate_message_abi(ir, &mut errors);
@@ -80,6 +81,15 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         Ok(())
     } else {
         Err(ValidationReport { errors })
+    }
+}
+
+fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    if ir.graphs.len() != 1 {
+        errors.push(ValidationError::new(format!(
+            "Contract IR v0.1 must contain exactly one graph; found {}",
+            ir.graphs.len()
+        )));
     }
 }
 
@@ -721,6 +731,49 @@ channel = "latest"
         let raw = parse_str(source).unwrap();
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
         validate_contract(&ir).unwrap();
+    }
+
+    #[test]
+    fn rejects_contract_without_graphs() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.graphs.clear();
+
+        let report = validate_contract(&ir).expect_err("v0.1 contract without graphs should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("Contract IR v0.1 must contain exactly one graph; found 0")
+        }));
+    }
+
+    #[test]
+    fn rejects_contract_with_multiple_graphs() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let mut second_graph = ir.graphs[0].clone();
+        second_graph.name = "secondary".to_string();
+        ir.graphs.push(second_graph);
+
+        let report =
+            validate_contract(&ir).expect_err("v0.1 contract with multiple graphs should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("Contract IR v0.1 must contain exactly one graph; found 2")
+        }));
     }
 
     #[test]
