@@ -65,7 +65,7 @@ profile 选择 `iox2` 时，Rust message codegen 必须生成 `#[type_name("Type
 
 Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 `iox2` backend 下可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及 selected backend 为 `inproc` 的跨语言 process boundary。`examples/imu_demo_iox2` 用于验证主 demo 的 Rust source、C++ controller 和 Rust monitor 通过 iox2 分进程运行，`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接。
 
-`flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 已读取 `runtime_kind`，能为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，并继续拒绝 mixed process group。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
+`flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 会遍历 manifest 中的全部 graph，并读取 `runtime_kind`，为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，同时继续拒绝 mixed process group。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
 当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo`、`imu_demo_iox2` 与 `profile_switch_demo` 执行 check 或 profile 切换 smoke。该 workflow 暂不做 cache、release 发布、多平台矩阵或默认安装 `iceoryx2-cxx`。
 
@@ -336,7 +336,7 @@ flowrt inspect flowrt/contract/contract.ir.json
 
 `--process` 运行生成应用中的单个 RSDL process group；mixed contract 使用 `flowrt run --process <name>` 时必须选择一个单语言 process group。
 `run` / `launch` 当前支持 Rust only、C++ only，以及 language-separated mixed contract over `iox2`。同一 process group 内混合 C++/Rust 或 mixed `inproc` 必须明确拒绝。
-`launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json` 并按 process group 启动生成应用。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，便于 supervisor 决定启动 Rust app、C++ app 或拒绝 mixed in-process group。
+`launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json`，遍历全部 graph，并按 process group 启动生成应用。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，便于 supervisor 决定启动 Rust app、C++ app 或拒绝 mixed in-process group。
 
 `cargo run -p flowrt-cli -- ...` 只允许作为仓库开发者调试 FlowRT CLI 的内部命令，不得写成最终用户主路径。
 
