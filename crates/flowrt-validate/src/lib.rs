@@ -9,9 +9,11 @@ use std::fmt::{Display, Formatter};
 
 use flowrt_conformance::message_abi_expectations;
 use flowrt_ir::{
-    CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelKind, ComponentIr, ComponentKind,
-    ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind, PortIr, PortRef,
-    RSDL_VERSION, TaskIr, TriggerKind, TypeExpr, backend_capabilities, is_known_backend,
+    CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr, ChannelKind,
+    ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
+    OverflowPolicy, PortIr, PortRef, RSDL_VERSION, StalePolicy, TargetIr, TaskIr, TriggerKind,
+    TypeExpr, backend_capabilities, base_deployment_capabilities, is_known_backend,
+    trigger_capability,
 };
 
 /// validation passes 返回的结果类型。
@@ -75,6 +77,8 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_entity_name_uniqueness(ir, &mut errors);
     validate_entity_id_uniqueness(ir, &mut errors);
     validate_entity_references(ir, &mut errors);
+    validate_deployment_matrix(ir, &mut errors);
+    validate_derived_capabilities(ir, &mut errors);
     validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
     validate_message_abi(ir, &mut errors);
@@ -388,6 +392,90 @@ fn validate_named_entity_ref(
             "{context} points to {entity_kind} `{}` with ID `{}`, expected ID `{}`",
             reference.name, reference.id.0, expected_id.0
         )));
+    }
+}
+
+fn validate_deployment_matrix(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let mut rows = BTreeSet::new();
+    for deployment in &ir.deployments {
+        let row = (
+            deployment.graph.name.as_str(),
+            deployment.profile.name.as_str(),
+            deployment.target.name.as_str(),
+        );
+        if !rows.insert(row) {
+            errors.push(ValidationError::new(format!(
+                "contract has duplicate deployment for graph `{}`, profile `{}`, target `{}`",
+                deployment.graph.name, deployment.profile.name, deployment.target.name
+            )));
+        }
+    }
+
+    for graph in &ir.graphs {
+        for profile in &ir.profiles {
+            for target in &ir.targets {
+                let row = (
+                    graph.name.as_str(),
+                    profile.name.as_str(),
+                    target.name.as_str(),
+                );
+                if !rows.contains(&row) {
+                    errors.push(ValidationError::new(format!(
+                        "contract is missing deployment for graph `{}`, profile `{}`, target `{}`",
+                        graph.name, profile.name, target.name
+                    )));
+                }
+            }
+        }
+    }
+}
+
+fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let target_capabilities = ir
+        .targets
+        .iter()
+        .map(|target| (target.name.as_str(), expected_target_capabilities(target)))
+        .collect::<BTreeMap<_, _>>();
+    let graph_capabilities = ir
+        .graphs
+        .iter()
+        .map(|graph| (graph.name.as_str(), expected_graph_capabilities(graph)))
+        .collect::<BTreeMap<_, _>>();
+
+    for graph in &ir.graphs {
+        for bind in &graph.binds {
+            let expected = expected_bind_capabilities(bind);
+            if !capabilities_match(&bind.capability_requirements, &expected) {
+                errors.push(ValidationError::new(format!(
+                    "bind `{}.{}` -> `{}.{}` capability requirements do not match channel policy",
+                    bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
+                )));
+            }
+        }
+    }
+
+    for target in &ir.targets {
+        let expected = &target_capabilities[target.name.as_str()];
+        if !capabilities_match(&target.capabilities, expected) {
+            errors.push(ValidationError::new(format!(
+                "target `{}` capabilities do not match declared backends",
+                target.name
+            )));
+        }
+    }
+
+    for deployment in &ir.deployments {
+        if let Some(expected) = graph_capabilities.get(deployment.graph.name.as_str()) {
+            if !capabilities_match(&deployment.required_capabilities, expected) {
+                errors.push(ValidationError::new(format!(
+                    "deployment `{} / {} / {}` required capabilities do not match graph `{}`",
+                    deployment.graph.name,
+                    deployment.profile.name,
+                    deployment.target.name,
+                    deployment.graph.name
+                )));
+            }
+        }
     }
 }
 
@@ -1036,6 +1124,22 @@ enum PortDirection {
 }
 
 fn validate_deployments(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let profiles = ir
+        .profiles
+        .iter()
+        .map(|profile| (profile.name.as_str(), profile))
+        .collect::<BTreeMap<_, _>>();
+    let targets = ir
+        .targets
+        .iter()
+        .map(|target| (target.name.as_str(), target))
+        .collect::<BTreeMap<_, _>>();
+    let graphs = ir
+        .graphs
+        .iter()
+        .map(|graph| (graph.name.as_str(), graph))
+        .collect::<BTreeMap<_, _>>();
+
     for deployment in &ir.deployments {
         if !is_known_backend(&deployment.backend.0) {
             errors.push(ValidationError::new(format!(
@@ -1045,21 +1149,138 @@ fn validate_deployments(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
             continue;
         }
 
+        let Some(profile) = profiles.get(deployment.profile.name.as_str()) else {
+            continue;
+        };
+        if profile.backend.0 != deployment.backend.0 {
+            errors.push(ValidationError::new(format!(
+                "deployment backend `{}` does not match profile `{}` backend `{}`",
+                deployment.backend.0, deployment.profile.name, profile.backend.0
+            )));
+        }
+
+        let Some(target) = targets.get(deployment.target.name.as_str()) else {
+            continue;
+        };
+
+        let Some(graph) = graphs.get(deployment.graph.name.as_str()) else {
+            continue;
+        };
+
+        let expected_required_capabilities = expected_graph_capabilities(graph);
+        let backend_supported_by_target = target
+            .backends
+            .iter()
+            .any(|backend| backend.0 == deployment.backend.0);
         let Some(backend_caps) = backend_capabilities(&deployment.backend.0) else {
             continue;
         };
-        let missing_caps = deployment
-            .required_capabilities
+        let backend_satisfies_required = expected_required_capabilities
             .iter()
-            .filter(|capability| !backend_caps.contains(capability))
-            .collect::<Vec<_>>();
+            .all(|capability| backend_caps.contains(capability));
 
-        if !deployment.satisfied || !missing_caps.is_empty() {
+        if !backend_supported_by_target {
             errors.push(ValidationError::new(format!(
                 "target `{}` does not support backend `{}` selected by profile `{}`",
                 deployment.target.name, deployment.backend.0, deployment.profile.name
             )));
         }
+        if !backend_satisfies_required {
+            errors.push(ValidationError::new(format!(
+                "backend `{}` selected by profile `{}` cannot satisfy required capabilities for graph `{}`",
+                deployment.backend.0, deployment.profile.name, deployment.graph.name
+            )));
+        }
+
+        let expected_satisfied = profile.backend.0 == deployment.backend.0
+            && backend_supported_by_target
+            && backend_satisfies_required;
+        if deployment.satisfied != expected_satisfied {
+            errors.push(ValidationError::new(format!(
+                "deployment `{} / {} / {}` has inconsistent satisfied flag; expected {}",
+                deployment.graph.name,
+                deployment.profile.name,
+                deployment.target.name,
+                expected_satisfied
+            )));
+        }
+    }
+}
+
+fn expected_target_capabilities(target: &TargetIr) -> Vec<CapabilityAtom> {
+    let capabilities = target
+        .backends
+        .iter()
+        .filter_map(|backend| backend_capabilities(&backend.0))
+        .flatten()
+        .collect::<Vec<_>>();
+    dedupe_capabilities(capabilities)
+}
+
+fn expected_graph_capabilities(graph: &GraphIr) -> Vec<CapabilityAtom> {
+    let mut capabilities = base_deployment_capabilities();
+    for task in &graph.tasks {
+        capabilities.push(trigger_capability(task.trigger));
+        if task.deadline_ms.is_some() {
+            capabilities.push(CapabilityAtom("timing:deadline_aware".to_string()));
+        }
+    }
+    for bind in &graph.binds {
+        capabilities.extend(expected_bind_capabilities(bind));
+    }
+    dedupe_capabilities(capabilities)
+}
+
+fn expected_bind_capabilities(bind: &ChannelEdgeIr) -> Vec<CapabilityAtom> {
+    vec![
+        CapabilityAtom(channel_capability_name(bind.channel).to_string()),
+        CapabilityAtom(overflow_capability_name(bind.overflow).to_string()),
+        CapabilityAtom(stale_capability_name(bind.stale).to_string()),
+    ]
+}
+
+fn capability_set(capabilities: &[CapabilityAtom]) -> BTreeSet<CapabilityAtom> {
+    capabilities.iter().cloned().collect()
+}
+
+fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
+    let actual_set = capability_set(actual);
+    let expected_set = capability_set(expected);
+    actual_set.len() == actual.len()
+        && expected_set.len() == expected.len()
+        && actual_set == expected_set
+}
+
+fn dedupe_capabilities(capabilities: Vec<CapabilityAtom>) -> Vec<CapabilityAtom> {
+    let mut seen = BTreeSet::new();
+    capabilities
+        .into_iter()
+        .filter(|capability| seen.insert(capability.clone()))
+        .collect()
+}
+
+fn channel_capability_name(channel: ChannelKind) -> &'static str {
+    match channel {
+        ChannelKind::Latest => "channel:latest",
+        ChannelKind::Fifo => "channel:fifo",
+    }
+}
+
+fn overflow_capability_name(policy: OverflowPolicy) -> &'static str {
+    match policy {
+        OverflowPolicy::DropOldest => "overflow:drop_oldest",
+        OverflowPolicy::DropNewest => "overflow:drop_newest",
+        OverflowPolicy::Error => "overflow:error",
+        OverflowPolicy::Block => "overflow:block",
+    }
+}
+
+fn stale_capability_name(policy: StalePolicy) -> &'static str {
+    match policy {
+        StalePolicy::Warn => "stale:warn",
+        StalePolicy::Drop => "stale:drop",
+        StalePolicy::HoldLast => "stale:hold_last",
+        StalePolicy::Error => "stale:error",
     }
 }
 
@@ -2102,6 +2323,119 @@ backends = ["inproc"]
                 "missing validation error: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_deployment_backend_that_does_not_match_profile() {
+        let mut ir = valid_reference_contract();
+        ir.deployments[0].backend.0 = "iox2".to_string();
+        ir.deployments[0].satisfied = true;
+
+        let report =
+            validate_contract(&ir).expect_err("deployment backend/profile mismatch should fail");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment backend `iox2` does not match profile `default` backend `inproc`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` has inconsistent satisfied flag",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rejects_forged_satisfied_deployment() {
+        let mut ir = valid_reference_contract();
+        ir.targets[0].backends = vec![flowrt_ir::BackendName("iox2".to_string())];
+        ir.targets[0].capabilities = backend_capabilities("iox2").unwrap();
+        ir.deployments[0].satisfied = true;
+
+        let report = validate_contract(&ir).expect_err("forged satisfied flag should fail");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                "target `linux` does not support backend `inproc` selected by profile `default`",
+            )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` has inconsistent satisfied flag",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rejects_stale_derived_capability_metadata() {
+        let mut ir = valid_reference_contract();
+        ir.graphs[0].binds[0].capability_requirements.clear();
+        ir.targets[0].capabilities.clear();
+        ir.deployments[0].required_capabilities.clear();
+
+        let report = validate_contract(&ir).expect_err("stale derived capabilities should fail");
+
+        for expected in [
+            "bind `producer.sample` -> `consumer.sample` capability requirements do not match channel policy",
+            "target `linux` capabilities do not match declared backends",
+            "deployment `default / default / linux` required capabilities do not match graph `default`",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}; got {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_deployment_matrix_rows() {
+        let mut ir = valid_reference_contract();
+        ir.deployments.clear();
+
+        let report = validate_contract(&ir).expect_err("missing deployment row should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "contract is missing deployment for graph `default`, profile `default`, target `linux`",
+            )
+        }), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn rejects_duplicate_deployment_matrix_rows() {
+        let mut ir = valid_reference_contract();
+        let mut duplicate = ir.deployments[0].clone();
+        duplicate.id = EntityId("deployment_duplicate".to_string());
+        ir.deployments.push(duplicate);
+
+        let report = validate_contract(&ir).expect_err("duplicate deployment row should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "contract has duplicate deployment for graph `default`, profile `default`, target `linux`",
+            )
+        }), "{:?}", report.errors);
     }
 
     fn valid_reference_contract() -> ContractIr {
