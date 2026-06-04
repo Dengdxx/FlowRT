@@ -16,7 +16,7 @@ User code controls algorithms.
 
 不要把本项目做成 ROS2 的复刻。FlowRT 的核心对象是可编译、可校验、可生成的数据流系统契约，而不是运行时动态发现的节点和 topic 集合。
 
-当前阶段以架构计划和规格落地为主。设计文档放在本地 `docs/` 目录，但不纳入 Git 版本库。
+当前阶段仍需要持续维护架构计划、规格草案和入库配套文档。架构计划和规格草案放在本地 `docs/` 目录但不纳入 Git；面向用户或维护者的配套文档应放在 `docs/` 下并随代码入库。
 
 ## 当前仓库状态
 
@@ -280,7 +280,7 @@ backend capability 应被显式建模。validator 必须拒绝 selected backend 
   external process component  FlowRT 启动或连接已有外部进程
 ```
 
-这用于长期接入已有控制器、Python 脚本、ROS2 节点、串口程序和其他 legacy code。
+这用于长期接入已有控制器、Python 脚本、ROS2 节点、串口程序和其他 legacy code。v0.1 generated runtime shell 当前只支持 `native` 和 `adapter` 通过生成接口接入；`external` 是保留语义，必须由 validator 明确拒绝，直到外部进程生命周期、端口绑定和错误传播语义落地。
 
 C++ 推荐形态：
 
@@ -372,7 +372,12 @@ imu_sim -> estimator -> controller -> monitor
 
 - `README.md`：项目入口和简短定位。
 - `CHANGELOG.md`：阶段性变更记录。
-- 入门、操作指南、维护说明等配套文档：随代码入库。
+- `docs/README.md`：入库配套文档索引和文档边界。
+- `docs/getting-started.md`：面向用户的快速开始。
+- `docs/cli.md`：CLI 命令、选项和生成物边界。
+- `docs/examples.md`：示例矩阵和运行要求。
+- `docs/development.md`：开发验证、文档维护和提交规则。
+- 入门、操作指南、维护说明等后续配套文档：随代码入库。
 - `docs/architecture-plan.md`：总架构计划，本地维护但不入库。
 - `docs/rsdl-v0.1.md`：RSDL 语法和示例，本地维护但不入库。
 - `docs/contract-ir-v0.1.md`：IR schema 与 normalization 规则，本地维护但不入库。
@@ -382,7 +387,7 @@ imu_sim -> estimator -> controller -> monitor
 文档要写可执行决策，不写空泛愿景。架构取舍必须说明原因。
 实现代码时要顺手更新配套文档和 `CHANGELOG.md`。如果某次改动确实不影响文档或 changelog，最终回复需要说明原因。
 所有项目文档和 `CHANGELOG.md` 必须用中文维护，包括 `README.md`、`docs/*.md`、`AGENTS.md` 中的项目说明和变更记录。代码标识符、命令、配置键、协议名和必要的专有术语可以保留英文。代码注释仍按对应语言代码风格要求维护。
-`docs/` 下的设计和规格文档不纳入 Git；提交时不得把本地架构计划和规格设计文件加入索引。普通配套文档不受该限制。
+`docs/` 下的设计和规格文档不纳入 Git；提交时不得把 `.gitignore` 明确排除的本地设计/规格文件加入索引。普通配套文档不受该限制，并应随相关变更正常入库。
 
 ## 代码风格
 
@@ -490,12 +495,12 @@ test(abi): 补充 C++ 与 Rust 消息布局测试
 - 提交应只包含同一主题的代码、测试、文档和 changelog 更新。
 - 不把未验证的半成品、无关生成产物或大型构建输出混进提交。
 - 不为了提交而提交；只有形成阶段性、可验证成果后才提交。
-- 设计文档不入库；提交前确认 `docs/` 未进入索引。
+- 设计文档不入库；提交前确认 `.gitignore` 明确排除的本地设计/规格文件未进入索引，普通配套文档应随相关变更入库。
 - 如果仓库缺少基线提交，应先建立一次明确的 baseline commit；之后保持增量原子提交。
 
 ## Agent 工作方式
 
-- 开始编码前先阅读 `README.md`。如果任务涉及架构或规格，再阅读本地 `docs/architecture-plan.md` 等设计文档，但不要把 `docs/` 提交入库。
+- 开始编码前先阅读 `README.md`。如果任务涉及架构或规格，再阅读本地 `docs/architecture-plan.md` 等设计文档，但不要把被 `.gitignore` 排除的本地设计/规格文件提交入库。
 - 涉及 OpenAI、第三方库、iox2 当前 API 或编译器版本的问题时，使用官方文档或当前仓库实际配置确认，不凭记忆假设。
 - 优先小步提交可验证产物，不创建大量空架子。
 - 不覆盖用户代码，不删除用户未要求删除的文件。
