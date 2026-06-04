@@ -662,38 +662,42 @@ fn emit_cpp_app_run_function(
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "flowrt::Status App::{function_name}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n",
+        "flowrt::Status App::{function_name}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
     ));
     for instance in order {
         output.push_str(&format!(
-            "    if ({name}_ && {name}_->on_init(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            "    bool {name}_initialized = false;\n    bool {name}_started = false;\n",
             name = instance.name
         ));
     }
     for instance in order {
         output.push_str(&format!(
-            "    if ({name}_ && {name}_->on_start(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            "    if (status == flowrt::Status::Ok && {name}_) {{\n        status = {name}_->on_init(lifecycle_context);\n        {name}_initialized = status == flowrt::Status::Ok;\n    }}\n",
             name = instance.name
         ));
     }
-    output.push_str(
-        &format!(
-            "    const auto status = backend.scheduler().run_ticks(\n        5, [this](std::size_t tick, flowrt::Context& tick_context) {{\n            return {step_function_name}(tick, tick_context);\n        }});\n    if (status != flowrt::Status::Ok) {{\n        return status;\n    }}\n"
-        ),
-    );
+    for instance in order {
+        output.push_str(&format!(
+            "    if (status == flowrt::Status::Ok && {name}_initialized && {name}_) {{\n        status = {name}_->on_start(lifecycle_context);\n        {name}_started = status == flowrt::Status::Ok;\n    }}\n",
+            name = instance.name
+        ));
+    }
+    output.push_str(&format!(
+        "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this](std::size_t tick, flowrt::Context& tick_context) {{\n                return {step_function_name}(tick, tick_context);\n            }});\n    }}\n"
+    ));
     for instance in order.iter().rev() {
         output.push_str(&format!(
-            "    if ({name}_ && {name}_->on_stop(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            "    if ({name}_started && {name}_) {{\n        const auto stop_status = {name}_->on_stop(lifecycle_context);\n        if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
             name = instance.name
         ));
     }
     for instance in order.iter().rev() {
         output.push_str(&format!(
-            "    if ({name}_ && {name}_->on_shutdown(lifecycle_context) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            "    if ({name}_initialized && {name}_) {{\n        const auto shutdown_status = {name}_->on_shutdown(lifecycle_context);\n        if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
             name = instance.name
         ));
     }
-    output.push_str("    return flowrt::Status::Ok;\n}\n\n");
+    output.push_str("    return status;\n}\n\n");
     output
 }
 
@@ -1476,39 +1480,42 @@ fn emit_rust_app_run_function(
     let mut output = String::new();
     let visibility = if public { "pub " } else { "" };
     output.push_str(&format!(
-        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n",
+        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
     ));
     for instance in order {
         output.push_str(&format!(
-            "        if self.{name}.on_init(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            "        let mut {name}_initialized = false;\n        let mut {name}_started = false;\n",
             name = instance.name
         ));
     }
     for instance in order {
         output.push_str(&format!(
-            "        if self.{name}.on_start(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            "        if status == flowrt::Status::Ok {{\n            status = self.{name}.on_init(&mut lifecycle_context);\n            {name}_initialized = status == flowrt::Status::Ok;\n        }}\n",
+            name = instance.name
+        ));
+    }
+    for instance in order {
+        output.push_str(&format!(
+            "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = self.{name}.on_start(&mut lifecycle_context);\n            {name}_started = status == flowrt::Status::Ok;\n        }}\n",
             name = instance.name
         ));
     }
     output.push_str(&format!(
-        "        let status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| self.{step_function_name}(tick, tick_context));\n",
+        "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| self.{step_function_name}(tick, tick_context));\n        }}\n",
     ));
-    output.push_str(
-        "        if status != flowrt::Status::Ok {\n            return status;\n        }\n",
-    );
     for instance in order.iter().rev() {
         output.push_str(&format!(
-            "        if self.{name}.on_stop(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            "        if {name}_started {{\n            let stop_status = self.{name}.on_stop(&mut lifecycle_context);\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
             name = instance.name
         ));
     }
     for instance in order.iter().rev() {
         output.push_str(&format!(
-            "        if self.{name}.on_shutdown(&mut lifecycle_context) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            "        if {name}_initialized {{\n            let shutdown_status = self.{name}.on_shutdown(&mut lifecycle_context);\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
             name = instance.name
         ));
     }
-    output.push_str("        flowrt::Status::Ok\n    }\n");
+    output.push_str("        status\n    }\n");
     output
 }
 
@@ -2808,6 +2815,118 @@ input = ["imu:Imu"]
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
         assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    }
+
+    #[test]
+    fn generated_shells_cleanup_entered_lifecycle_stages_in_reverse_order() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.cpp_alpha]
+language = "cpp"
+
+[component.cpp_beta]
+language = "cpp"
+
+[component.rust_alpha]
+language = "rust"
+
+[component.rust_beta]
+language = "rust"
+
+[instance.cpp_alpha]
+component = "cpp_alpha"
+
+[instance.cpp_alpha.task]
+trigger = "periodic"
+period_ms = 5
+
+[instance.cpp_beta]
+component = "cpp_beta"
+
+[instance.cpp_beta.task]
+trigger = "periodic"
+period_ms = 5
+
+[instance.rust_alpha]
+component = "rust_alpha"
+
+[instance.rust_alpha.task]
+trigger = "periodic"
+period_ms = 5
+
+[instance.rust_beta]
+component = "rust_beta"
+
+[instance.rust_beta.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(cpp_shell.contains("auto status = flowrt::Status::Ok;"));
+        assert!(cpp_shell.contains("bool cpp_alpha_initialized = false;"));
+        assert!(cpp_shell.contains("bool cpp_alpha_started = false;"));
+        assert!(cpp_shell.contains("if (status == flowrt::Status::Ok) {"));
+        assert!(
+            cpp_shell
+                .contains("if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok)")
+        );
+        assert!(cpp_shell.contains(
+            "if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok)"
+        ));
+        assert!(cpp_shell.contains("return status;"));
+        assert!(!cpp_shell.contains("if (status != flowrt::Status::Ok) {\n        return status;"));
+        assert!(
+            cpp_shell
+                .find("if (cpp_beta_started && cpp_beta_)")
+                .unwrap()
+                < cpp_shell
+                    .find("if (cpp_alpha_started && cpp_alpha_)")
+                    .unwrap()
+        );
+        assert!(
+            cpp_shell
+                .find("if (cpp_beta_initialized && cpp_beta_)")
+                .unwrap()
+                < cpp_shell
+                    .find("if (cpp_alpha_initialized && cpp_alpha_)")
+                    .unwrap()
+        );
+
+        assert!(rust_shell.contains("let mut status = flowrt::Status::Ok;"));
+        assert!(rust_shell.contains("let mut rust_alpha_initialized = false;"));
+        assert!(rust_shell.contains("let mut rust_alpha_started = false;"));
+        assert!(rust_shell.contains("if status == flowrt::Status::Ok {"));
+        assert!(
+            rust_shell
+                .contains("if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok")
+        );
+        assert!(
+            rust_shell.contains(
+                "if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok"
+            )
+        );
+        assert!(rust_shell.contains("        status\n    }\n"));
+        assert!(
+            !rust_shell.contains(
+                "if status != flowrt::Status::Ok {\n            return status;\n        }"
+            )
+        );
+        assert!(
+            rust_shell.find("if rust_beta_started {").unwrap()
+                < rust_shell.find("if rust_alpha_started {").unwrap()
+        );
+        assert!(
+            rust_shell.find("if rust_beta_initialized {").unwrap()
+                < rust_shell.find("if rust_alpha_initialized {").unwrap()
+        );
     }
 
     #[test]

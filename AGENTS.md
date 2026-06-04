@@ -164,7 +164,7 @@ package_id
 - `instance` 是 graph 中的组件实例，绑定 component、参数、端口名、部署目标和执行任务。
 - `task` 是 instance 的执行单元，描述触发方式、周期、deadline、输入读取策略、输出写入策略和部署目标。
 
-- 最小生命周期接口保留 `on_init`、`on_start`、`on_stop`、`on_shutdown`。
+- 最小生命周期接口保留 `on_init`、`on_start`、`on_stop`、`on_shutdown`。生成的 Rust/C++ runtime shell 只对成功进入对应阶段的组件执行逆序清理：成功 start 的组件执行 `on_stop`，成功 init 的组件执行 `on_shutdown`；scheduler 或前序 hook 失败后仍必须继续清理。原始非 `Ok` 状态优先，原始状态为 `Ok` 时任一清理 hook 失败统一返回 `Error`。
 
 初代可以简化为 `instance ~= task`，但 IR 中必须保留 task 概念。
 
