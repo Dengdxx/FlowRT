@@ -2311,6 +2311,7 @@ fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
                 "trigger": task.trigger,
                 "period_ms": task.period_ms,
                 "deadline_ms": task.deadline_ms,
+                "priority": task.priority,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     });
@@ -2385,6 +2386,7 @@ fn launch_processes(
                     "trigger": task.trigger,
                     "period_ms": task.period_ms,
                     "deadline_ms": task.deadline_ms,
+                    "priority": task.priority,
                 })).collect::<Vec<_>>(),
             })
         })
@@ -4547,6 +4549,7 @@ target = "linux"
 trigger = "on_message"
 input = ["value"]
 deadline_ms = 10
+priority = 7
 
 [[bind.dataflow]]
 from = "source.value"
@@ -4580,10 +4583,22 @@ backends = ["iox2"]
                     "instance": "sink",
                     "trigger": "on_message",
                     "period_ms": null,
-                    "deadline_ms": 10
+                    "deadline_ms": 10,
+                    "priority": 7
                 }
             ])
         );
+        let graph_tasks = launch["graphs"][0]["tasks"].as_array().unwrap();
+        let source_task = graph_tasks
+            .iter()
+            .find(|task| task["instance"] == "source")
+            .unwrap();
+        let sink_task = graph_tasks
+            .iter()
+            .find(|task| task["instance"] == "sink")
+            .unwrap();
+        assert_eq!(source_task["priority"], serde_json::json!(null));
+        assert_eq!(sink_task["priority"], 7);
         assert_eq!(processes[1]["name"], "sensors");
         assert_eq!(processes[1]["backend"], "iox2");
         assert_eq!(processes[1]["target"], "linux");
