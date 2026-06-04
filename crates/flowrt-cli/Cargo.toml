@@ -15,3 +15,6 @@ flowrt-codegen = { path = "../flowrt-codegen" }
 flowrt-ir = { path = "../flowrt-ir" }
 flowrt-rsdl = { path = "../flowrt-rsdl" }
 flowrt-validate = { path = "../flowrt-validate" }
+
+[dev-dependencies]
+serde_json.workspace = true
