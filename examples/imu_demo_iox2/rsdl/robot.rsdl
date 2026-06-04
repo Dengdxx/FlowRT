@@ -1,0 +1,138 @@
+[package]
+name = "imu_demo_iox2"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+ay = "f32"
+az = "f32"
+gx = "f32"
+gy = "f32"
+gz = "f32"
+
+[type.Odom]
+timestamp = "u64"
+x = "f32"
+y = "f32"
+theta = "f32"
+vx = "f32"
+wz = "f32"
+
+[type.MotorCmd]
+left = "f32"
+right = "f32"
+
+[component.imu_sim]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.estimator]
+language = "rust"
+input = ["imu:Imu"]
+output = ["odom:Odom"]
+
+[component.estimator.params]
+gravity = 9.81
+
+[component.controller]
+language = "cpp"
+input = ["odom:Odom"]
+output = ["cmd:MotorCmd"]
+
+[component.controller.params]
+kp = 1.2
+kd = 0.08
+
+[component.monitor]
+language = "rust"
+input = ["imu:Imu", "odom:Odom", "cmd:MotorCmd"]
+
+[instance.imu_sim]
+component = "imu_sim"
+process = "rust_source"
+target = "linux"
+
+[instance.imu_sim.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.estimator]
+component = "estimator"
+process = "rust_source"
+target = "linux"
+
+[instance.estimator.params]
+gravity = 9.81
+
+[instance.estimator.task]
+trigger = "periodic"
+period_ms = 5
+input = ["imu"]
+output = ["odom"]
+
+[instance.controller]
+component = "controller"
+process = "cpp_control"
+target = "linux"
+
+[instance.controller.params]
+kp = 1.2
+kd = 0.08
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["odom"]
+output = ["cmd"]
+deadline_ms = 10
+
+[instance.monitor]
+component = "monitor"
+process = "rust_source"
+target = "linux"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["imu", "odom", "cmd"]
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "estimator.imu"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "estimator.odom"
+to = "controller.odom"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "monitor.cmd"
+channel = "fifo"
+depth = 8
+overflow = "drop_oldest"
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "monitor.imu"
+channel = "fifo"
+depth = 8
+
+[[bind.dataflow]]
+from = "estimator.odom"
+to = "monitor.odom"
+channel = "fifo"
+depth = 8
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 20
+
+[target.linux]
+platform = "linux-x86_64"
+runtime = ["cpp", "rust"]
+backends = ["iox2"]
