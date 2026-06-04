@@ -491,7 +491,14 @@ fn validate_task_ports(task: &TaskIr, component: &ComponentIr, errors: &mut Vec<
         .map(|port| port.name.as_str())
         .collect::<BTreeSet<_>>();
 
+    let mut listed_inputs = BTreeSet::new();
     for input in &task.inputs {
+        if !listed_inputs.insert(input.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "task on instance `{}` lists input port `{}` more than once",
+                task.instance.name, input
+            )));
+        }
         if !input_ports.contains(input.as_str()) {
             errors.push(ValidationError::new(format!(
                 "task on instance `{}` references undeclared input port `{}`",
@@ -499,7 +506,14 @@ fn validate_task_ports(task: &TaskIr, component: &ComponentIr, errors: &mut Vec<
             )));
         }
     }
+    let mut listed_outputs = BTreeSet::new();
     for output in &task.outputs {
+        if !listed_outputs.insert(output.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "task on instance `{}` lists output port `{}` more than once",
+                task.instance.name, output
+            )));
+        }
         if !output_ports.contains(output.as_str()) {
             errors.push(ValidationError::new(format!(
                 "task on instance `{}` references undeclared output port `{}`",
@@ -950,6 +964,88 @@ input = ["sample"]
             error
                 .message
                 .contains("task input `consumer.sample` has no incoming bind")
+        }));
+    }
+
+    #[test]
+    fn rejects_duplicate_task_inputs() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample", "sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("duplicate task inputs should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("task on instance `sink` lists input port `sample` more than once")
+        }));
+    }
+
+    #[test]
+    fn rejects_duplicate_task_outputs() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample", "sample"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("duplicate task outputs should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("task on instance `source` lists output port `sample` more than once")
         }));
     }
 
