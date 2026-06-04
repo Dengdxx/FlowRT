@@ -269,7 +269,7 @@ MCU static backend
 ```
 
 backend capability 应被显式建模。validator 必须拒绝未知 backend 名称，以及 selected backend 无法满足的 contract。未知 backend 不得因为没有被当前 profile 选中而在 `target.<name>.backends` 中静默保留。
-`ChannelEdgeIr.capability_requirements`、`TargetIr.capabilities`、`DeploymentIr.required_capabilities` 和 `DeploymentIr.satisfied` 都是由 channel policy、backend catalog、graph 和 profile/target 组合派生的字段；validator 必须重新推导并拒绝不一致值，能力列表顺序也必须与推导结果一致，不能信任落盘 IR 中可被手工改写的派生元数据。`ComponentIr.params` 和 `InstanceIr.params` 也必须保持参数名唯一、实例参数集合与 component 默认参数集合一致，且实例覆盖值必须与 component 默认值类型兼容。`TargetIr.runtime` 和 `TargetIr.backends` 也必须保持去重。声明 target 时，每个 graph/profile/target 组合必须恰好有一条 deployment，缺失或重复行都必须被拒绝。
+`ChannelEdgeIr.policy_source`、`ChannelEdgeIr.capability_requirements`、`TargetIr.capabilities`、`DeploymentIr.required_capabilities` 和 `DeploymentIr.satisfied` 都是由 channel policy、backend catalog、graph 和 profile/target 组合派生或记录的字段；validator 必须重新推导并拒绝不一致值，能力列表顺序也必须与推导结果一致，不能信任落盘 IR 中可被手工改写的派生元数据。`ComponentIr.params` 和 `InstanceIr.params` 也必须保持参数名唯一、实例参数集合与 component 默认参数集合一致，且实例覆盖值必须与 component 默认值类型兼容。`TargetIr.runtime` 和 `TargetIr.backends` 也必须保持去重。声明 target 时，每个 graph/profile/target 组合必须恰好有一条 deployment，缺失或重复行都必须被拒绝。
 
 ## Codegen 边界
 
