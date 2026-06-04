@@ -168,6 +168,7 @@ struct SelfDescriptionChannel {
     message_type: String,
     backend: String,
     service: Option<String>,
+    key_expr: Option<String>,
     channel: &'static str,
     depth: Option<u32>,
     overflow: &'static str,
@@ -421,6 +422,8 @@ fn self_description_graph<'a>(
                 backend: backend.clone(),
                 service: (backend == "iox2")
                     .then(|| iox2_service_name_for_edge(contract, graph, index, bind)),
+                key_expr: (backend == "zenoh")
+                    .then(|| zenoh_key_expr_for_edge(contract, graph, index, bind)),
                 channel: channel_name(bind.channel),
                 depth: bind.depth,
                 overflow: overflow_name(bind.overflow),
@@ -1441,10 +1444,11 @@ fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: 
 }
 
 fn cpp_backend_factory(selected_backend: &str) -> &'static str {
-    if selected_backend == "iox2" {
-        "flowrt::iox2_backend()"
-    } else {
-        "flowrt::inproc_backend()"
+    match selected_backend {
+        "inproc" => "flowrt::inproc_backend()",
+        "iox2" => "flowrt::iox2_backend()",
+        "zenoh" => "flowrt::zenoh_backend()",
+        _ => unreachable!("validated contract selected backend must be known"),
     }
 }
 
@@ -1694,7 +1698,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     }
     output.push_str("}\n\n");
     output.push_str(
-        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        _ => Box::new(flowrt::inproc_backend()),\n    }\n}\n\npub fn run() -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
+        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"inproc\" => Box::new(flowrt::inproc_backend()),\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        \"zenoh\" => Box::new(flowrt::zenoh_backend()),\n        other => panic!(\"unsupported generated FlowRT backend `{other}`\"),\n    }\n}\n\npub fn run() -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
     );
     output
 }
@@ -2562,6 +2566,51 @@ fn iox2_service_name(contract: &ContractIr, graph: &GraphIr, bind: &BindRuntimeP
     )
 }
 
+fn zenoh_key_expr_for_edge(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    index: usize,
+    bind: &ChannelEdgeIr,
+) -> String {
+    zenoh_key_expr_from_parts(
+        "flowrt",
+        &contract.package.name,
+        &selected_profile_name(contract),
+        &graph.name,
+        index,
+        &bind.from.instance.name,
+        &bind.from.port,
+        &bind.to.instance.name,
+        &bind.to.port,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zenoh_key_expr_from_parts(
+    namespace: &str,
+    package: &str,
+    profile: &str,
+    graph: &str,
+    index: usize,
+    source_instance: &str,
+    source_port: &str,
+    target_instance: &str,
+    target_port: &str,
+) -> String {
+    format!(
+        "{}/{}/{}/{}/bind_{}/{}_{}_to_{}_{}",
+        flowrt_path_part(namespace),
+        flowrt_path_part(package),
+        flowrt_path_part(profile),
+        flowrt_path_part(graph),
+        index,
+        flowrt_path_part(source_instance),
+        flowrt_path_part(source_port),
+        flowrt_path_part(target_instance),
+        flowrt_path_part(target_port),
+    )
+}
+
 fn iox2_service_name_for_edge(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -2579,6 +2628,16 @@ fn iox2_service_name_for_edge(
     )
 }
 
+fn selected_profile_name(contract: &ContractIr) -> String {
+    contract
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or_else(|| contract.profiles.first())
+        .map(|profile| profile.name.clone())
+        .unwrap_or_else(|| "default".to_string())
+}
+
 fn iox2_service_name_from_parts(
     package: &str,
     graph: &str,
@@ -2590,17 +2649,17 @@ fn iox2_service_name_from_parts(
 ) -> String {
     format!(
         "FlowRT/{}/{}/bind_{}/{}_{}_to_{}_{}",
-        iox2_service_part(package),
-        iox2_service_part(graph),
+        flowrt_path_part(package),
+        flowrt_path_part(graph),
         index,
-        iox2_service_part(source_instance),
-        iox2_service_part(source_port),
-        iox2_service_part(target_instance),
-        iox2_service_part(target_port),
+        flowrt_path_part(source_instance),
+        flowrt_path_part(source_port),
+        flowrt_path_part(target_instance),
+        flowrt_path_part(target_port),
     )
 }
 
-fn iox2_service_part(value: &str) -> String {
+fn flowrt_path_part(value: &str) -> String {
     let mut output = String::new();
     for ch in value.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
@@ -2983,11 +3042,14 @@ fn launch_channels(
         .map(|(index, bind)| {
             let service = (backend == "iox2")
                 .then(|| iox2_service_name_for_edge(contract, graph, index, bind));
+            let key_expr =
+                (backend == "zenoh").then(|| zenoh_key_expr_for_edge(contract, graph, index, bind));
             serde_json::json!({
                 "from": format!("{}.{}", bind.from.instance.name, bind.from.port),
                 "to": format!("{}.{}", bind.to.instance.name, bind.to.port),
                 "backend": backend,
                 "service": service,
+                "key_expr": key_expr,
                 "channel": bind.channel,
                 "depth": bind.depth,
                 "overflow": bind.overflow,
@@ -4647,6 +4709,93 @@ backends = ["iox2"]
         );
         assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
         assert!(rust_shell.contains("receive_latest_at(tick_time_ms)"));
+    }
+
+    #[test]
+    fn emits_zenoh_backend_and_key_expressions_when_profile_selects_zenoh() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "cpp"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+
+[target.pi_host]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"zenoh\";"));
+        assert!(rust_shell.contains("\"zenoh\" => Box::new(flowrt::zenoh_backend())"));
+        assert!(!rust_shell.contains("_ => Box::new(flowrt::inproc_backend())"));
+
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        assert!(cpp_shell.contains("auto backend = flowrt::zenoh_backend();"));
+
+        let launch: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+        let channel = &launch["graphs"][0]["channels"][0];
+        assert_eq!(channel["backend"], "zenoh");
+        assert_eq!(channel["service"], serde_json::Value::Null);
+        assert_eq!(
+            channel["key_expr"],
+            "flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu"
+        );
+
+        let sidecar: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+        let selfdesc_channel = &sidecar["graphs"][0]["channels"][0];
+        assert_eq!(selfdesc_channel["backend"], "zenoh");
+        assert_eq!(selfdesc_channel["service"], serde_json::Value::Null);
+        assert_eq!(
+            selfdesc_channel["key_expr"],
+            "flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu"
+        );
     }
 
     #[test]
