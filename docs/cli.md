@@ -140,7 +140,7 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 
 如果 runtime 还没有该 channel 的 payload，例如当前进程尚未发布该 channel 的样本，输出会包含 `payload_len=0 no payload`。
 
-本阶段 `echo` 只读取一次 latest snapshot，不支持 `--follow`。生成的 Rust runtime shell 会为当前 process 的 active channel 预注册 live 摘要，并在成功发布输出后记录 raw ABI payload 和 `published_at_ms`；C++ runtime live parity 仍是后续切片。
+本阶段 `echo` 只读取一次 latest snapshot，不支持 `--follow`。生成的 Rust runtime shell 会为当前 process 的 active channel 预注册 live 摘要，并在成功发布输出后记录 raw ABI payload 和 `published_at_ms`；C++ runtime 已有同 wire 协议的 socket API 基础，但生成的 C++ shell 尚未自动接入，因此 C++ 示例当前不会直接向 `flowrt echo` 暴露 live snapshot。
 
 ## `status`
 
@@ -150,7 +150,7 @@ flowrt status
 
 `status` 扫描当前用户 runtime socket 目录中的 FlowRT 进程，并通过 handshake 验证 PID、package、process、runtime、静态自描述 hash 和 tick/channel 摘要。socket 路径只作为发现入口；CLI 不把文件名当作进程身份事实。
 
-当前 runtime shell 已为 Rust 生成应用启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成的 Rust shell 会把 scheduler tick 计数、active channel 摘要、发布计数和 latest raw ABI payload 写入 live status/snapshot；`echo --follow` 和 C++ runtime parity 仍是后续切片。
+当前 runtime shell 已为 Rust 生成应用启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成的 Rust shell 会把 scheduler tick 计数、active channel 摘要、发布计数和 latest raw ABI payload 写入 live status/snapshot。C++ runtime 已提供同路径规则和同 JSON-line wire 格式的 API 基础，后续还需要 generated C++ shell 调用该 API 并写入 live state；`echo --follow` 仍是后续切片。
 
 ## `--profile`
 
