@@ -166,7 +166,7 @@ package_id
 
 - 最小生命周期接口保留 `on_init`、`on_start`、`on_stop`、`on_shutdown`。生成的 Rust/C++ runtime shell 只对成功进入对应阶段的组件执行逆序清理：成功 start 的组件执行 `on_stop`，成功 init 的组件执行 `on_shutdown`；scheduler 或前序 hook 失败后仍必须继续清理。原始非 `Ok` 状态优先，原始状态为 `Ok` 时任一清理 hook 失败统一返回 `Error`。
 
-初代可以简化为 `instance ~= task`，但 IR 中必须保留 task 概念。
+初代可以简化为 `instance ~= task`，但 IR 中必须保留 task 概念。Contract IR v0.1 当前每个 instance 最多只能有一个 task；validator 必须拒绝同一 instance 的多 task，避免 codegen 静默只消费第一条 task。
 
 优先支持：
 

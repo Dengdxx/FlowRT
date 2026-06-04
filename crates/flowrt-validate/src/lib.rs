@@ -398,6 +398,7 @@ fn validate_tasks(
     graph: &GraphIr,
     errors: &mut Vec<ValidationError>,
 ) {
+    let mut task_instances = BTreeSet::new();
     let incoming_binds = graph
         .binds
         .iter()
@@ -405,6 +406,13 @@ fn validate_tasks(
         .collect::<BTreeSet<_>>();
 
     for task in &graph.tasks {
+        if !task_instances.insert(task.instance.id.clone()) {
+            errors.push(ValidationError::new(format!(
+                "instance `{}` has multiple tasks in Contract IR v0.1",
+                task.instance.name
+            )));
+        }
+
         let Some(instance) = instances.get(task.instance.name.as_str()) else {
             errors.push(ValidationError::new(format!(
                 "task references unknown instance `{}`",
@@ -877,6 +885,44 @@ input = ["sample"]
             error
                 .message
                 .contains("task input `consumer.sample` has no incoming bind")
+        }));
+    }
+
+    #[test]
+    fn rejects_multiple_tasks_for_one_instance_in_v0_1() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let mut second_task = ir.graphs[0].tasks[0].clone();
+        second_task.id.0 = "task:default.worker.second".to_string();
+        second_task.period_ms = Some(10);
+        ir.graphs[0].tasks.push(second_task);
+
+        let report = validate_contract(&ir).expect_err("duplicate instance task should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("instance `worker` has multiple tasks in Contract IR v0.1")
         }));
     }
 
