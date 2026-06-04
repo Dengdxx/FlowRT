@@ -71,6 +71,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         .map(|ty| ty.name.as_str())
         .collect::<BTreeSet<_>>();
     validate_contract_shape(ir, &mut errors);
+    validate_entity_name_uniqueness(ir, &mut errors);
     validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
     validate_message_abi(ir, &mut errors);
@@ -92,6 +93,69 @@ fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
             "Contract IR v0.1 must contain exactly one graph; found {}",
             ir.graphs.len()
         )));
+    }
+}
+
+fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    validate_unique_names(
+        "contract",
+        "type",
+        ir.types.iter().map(|ty| ty.name.as_str()),
+        errors,
+    );
+    validate_unique_names(
+        "contract",
+        "component",
+        ir.components
+            .iter()
+            .map(|component| component.name.as_str()),
+        errors,
+    );
+    validate_unique_names(
+        "contract",
+        "profile",
+        ir.profiles.iter().map(|profile| profile.name.as_str()),
+        errors,
+    );
+    validate_unique_names(
+        "contract",
+        "target",
+        ir.targets.iter().map(|target| target.name.as_str()),
+        errors,
+    );
+    validate_unique_names(
+        "contract",
+        "graph",
+        ir.graphs.iter().map(|graph| graph.name.as_str()),
+        errors,
+    );
+
+    for graph in &ir.graphs {
+        validate_unique_names(
+            &format!("graph `{}`", graph.name),
+            "instance",
+            graph
+                .instances
+                .iter()
+                .map(|instance| instance.name.as_str()),
+            errors,
+        );
+    }
+}
+
+fn validate_unique_names<'a>(
+    scope: &str,
+    entity_kind: &str,
+    names: impl IntoIterator<Item = &'a str>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if !seen.insert(name) {
+            errors.push(ValidationError::new(format!(
+                "{scope} has duplicate {entity_kind} name `{name}`"
+            )));
+        }
     }
 }
 
@@ -893,6 +957,67 @@ rsdl_version = "0.1"
                 .message
                 .contains("Contract IR v0.1 must contain exactly one graph; found 2")
         }));
+    }
+
+    #[test]
+    fn rejects_duplicate_entity_names_in_contract_ir_scopes() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.types.push(ir.types[0].clone());
+        ir.components.push(ir.components[0].clone());
+        ir.profiles.push(ir.profiles[0].clone());
+        ir.targets.push(ir.targets[0].clone());
+        let duplicate_graph = ir.graphs[0].clone();
+        let duplicate_instance = ir.graphs[0].instances[0].clone();
+        ir.graphs[0].instances.push(duplicate_instance);
+        ir.graphs.push(duplicate_graph);
+
+        let report = validate_contract(&ir).expect_err("duplicate entity names should fail");
+
+        for expected in [
+            "contract has duplicate type name `Sample`",
+            "contract has duplicate component name `worker`",
+            "contract has duplicate profile name `default`",
+            "contract has duplicate target name `linux`",
+            "contract has duplicate graph name `default`",
+            "graph `default` has duplicate instance name `worker`",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}"
+            );
+        }
     }
 
     #[test]
