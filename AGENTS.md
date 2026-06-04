@@ -159,6 +159,8 @@ source_hash
 package_id
 ```
 
+validator 必须拒绝当前工具链不支持的 `ir_version`、`schema_version` 和 package `rsdl_version`，避免旧版或未来版本的契约被现有 codegen/runtime 静默误读。
+
 不要把 RSDL 原文直接转换成一份浅层 JSON 就称作 IR。
 
 ## 执行模型约定
