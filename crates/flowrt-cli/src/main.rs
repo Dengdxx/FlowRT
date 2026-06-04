@@ -1576,4 +1576,123 @@ backends = ["inproc"]
 
         let _ = std::fs::remove_dir_all(&rsdl_dir);
     }
+
+    #[test]
+    fn prepare_workspace_writes_projected_channel_policy_to_managed_artifacts() {
+        let source = r#"
+[package]
+name = "profile_policy_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["defaulted:Sample", "explicit:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["defaulted:Sample", "explicit:Sample"]
+
+[instance.producer]
+component = "producer"
+process = "main"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 1
+output = ["defaulted", "explicit"]
+
+[instance.consumer]
+component = "consumer"
+process = "main"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["defaulted", "explicit"]
+
+[[bind.dataflow]]
+from = "producer.defaulted"
+to = "consumer.defaulted"
+channel = "fifo"
+depth = 2
+
+[[bind.dataflow]]
+from = "producer.explicit"
+to = "consumer.explicit"
+channel = "latest"
+overflow = "drop_newest"
+stale_policy = "hold_last"
+max_age_ms = 7
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[profile.safety]
+backend = "inproc"
+default_overflow = "error"
+default_stale_policy = "drop"
+max_age_ms = 25
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let rsdl_dir = temp_test_dir("prepare-profile-policy");
+        let rsdl_path = rsdl_dir.join("robot.rsdl");
+        std::fs::create_dir_all(&rsdl_dir).unwrap();
+        std::fs::write(&rsdl_path, source).unwrap();
+        let out_dir = rsdl_dir.join("flowrt");
+
+        let prepared = prepare_workspace(&rsdl_path, &out_dir, Some("safety"))
+            .expect("selected profile policy should prepare");
+        let prepared_ir =
+            ContractIr::from_json_str(&std::fs::read_to_string(&prepared.contract_path).unwrap())
+                .unwrap();
+        let defaulted_ir = prepared_ir.graphs[0]
+            .binds
+            .iter()
+            .find(|bind| bind.to.port == "defaulted")
+            .unwrap();
+        let explicit_ir = prepared_ir.graphs[0]
+            .binds
+            .iter()
+            .find(|bind| bind.to.port == "explicit")
+            .unwrap();
+
+        assert_eq!(defaulted_ir.overflow, flowrt_ir::OverflowPolicy::Error);
+        assert_eq!(defaulted_ir.stale, flowrt_ir::StalePolicy::Drop);
+        assert_eq!(defaulted_ir.max_age_ms, Some(25));
+        assert_eq!(explicit_ir.overflow, flowrt_ir::OverflowPolicy::DropNewest);
+        assert_eq!(explicit_ir.stale, flowrt_ir::StalePolicy::HoldLast);
+        assert_eq!(explicit_ir.max_age_ms, Some(7));
+
+        let launch: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(out_dir.join("launch/launch.json")).unwrap(),
+        )
+        .unwrap();
+        let channels = launch["graphs"][0]["channels"].as_array().unwrap();
+        let defaulted_launch = channels
+            .iter()
+            .find(|channel| channel["to"] == "consumer.defaulted")
+            .unwrap();
+        let explicit_launch = channels
+            .iter()
+            .find(|channel| channel["to"] == "consumer.explicit")
+            .unwrap();
+
+        assert_eq!(defaulted_launch["overflow"], "error");
+        assert_eq!(defaulted_launch["stale_policy"], "drop");
+        assert_eq!(defaulted_launch["max_age_ms"], 25);
+        assert_eq!(explicit_launch["overflow"], "drop_newest");
+        assert_eq!(explicit_launch["stale_policy"], "hold_last");
+        assert_eq!(explicit_launch["max_age_ms"], 7);
+
+        let _ = std::fs::remove_dir_all(&rsdl_dir);
+    }
 }
