@@ -157,7 +157,24 @@ pub struct ChannelEdgeIr {
     pub overflow: OverflowPolicy,
     pub stale: StalePolicy,
     pub max_age_ms: Option<u64>,
+    pub policy_source: ChannelPolicySourceIr,
     pub capability_requirements: Vec<CapabilityAtom>,
+}
+
+/// channel policy 字段的来源，用于 profile 投影时只重算默认项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyValueSource {
+    Explicit,
+    ProfileDefault,
+}
+
+/// channel policy 各字段是否来自显式 bind 声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPolicySourceIr {
+    pub overflow: PolicyValueSource,
+    pub stale: PolicyValueSource,
+    pub max_age_ms: PolicyValueSource,
 }
 
 /// 端口引用。

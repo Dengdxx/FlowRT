@@ -110,7 +110,7 @@ flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-选择 profile 后，CLI 会先投影 Contract IR，再做 validation 和 codegen。默认 profile 仍是 `default` 或首个 profile。
+选择 profile 后，CLI 会先投影 Contract IR，再做 validation 和 codegen。默认 profile 仍是 `default` 或首个 profile。未在 `bind.dataflow` 上显式声明的 channel policy 会随选中 profile 的默认值一起投影；显式 bind policy 不会被 profile 覆盖。
 
 ## iox2 mixed 示例
 

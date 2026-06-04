@@ -116,6 +116,8 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 - 没有 `default` 时使用首个 profile。
 - RSDL 未声明任何 profile 时，归一化阶段会插入隐式 `default` profile，backend 为 `inproc`。
 
+profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。投影后的 `contract.ir.json` 会同时刷新 channel 和 deployment 的 capability 元数据。
+
 ## 生成物边界
 
 `flowrt/` 下的内容由 FlowRT 管理：

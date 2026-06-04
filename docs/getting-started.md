@@ -90,7 +90,7 @@ flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`--profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，再校验和生成对应产物。选择 `iox2` profile 时，Rust 生成物会启用 runtime crate 的 `iox2` feature；含 C++ iox2 组件的构建需要本机提供 `iceoryx2-cxx 0.9.1`。
+`--profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。选择 `iox2` profile 时，Rust 生成物会启用 runtime crate 的 `iox2` feature；含 C++ iox2 组件的构建需要本机提供 `iceoryx2-cxx 0.9.1`。
 
 ## 出错时先看什么
 
