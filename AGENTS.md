@@ -39,6 +39,9 @@ runtime/
 examples/
   imu_demo/rsdl/robot.rsdl
   imu_demo/src/rust/mod.rs
+  imu_demo_iox2/rsdl/robot.rsdl
+  imu_demo_iox2/src/rust/mod.rs
+  imu_demo_iox2/src/cpp/components.cpp
   cpp_counter_demo/rsdl/robot.rsdl
   cpp_counter_demo/src/cpp/components.cpp
   mixed_iox2_demo/rsdl/robot.rsdl
@@ -55,11 +58,11 @@ C++ runtime 已用 `std::chrono::milliseconds` 建模 `StaleConfig` 时间窗口
 
 profile 选择 `iox2` 时，Rust message codegen 必须生成 `#[type_name("TypeName")]`，C++ message codegen 必须生成同名 `IOX2_TYPE_NAME`；iox2 runtime timestamp 使用两端同名的 `FlowRTIox2Header` user header，payload 必须保持业务消息 `T`，不要重新引入 `Iox2Stamped<T>` 这类 payload envelope。C++ iox2 shell 会使用 `flowrt::iox2::Iox2PubSub<T>`、canonical service name、bind-level channel/stale config、`receive_latest_at` 和 `publish_at`；runtime 中的 C++ `Iox2PubSub<T>` 在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx` 时会绑定真实 publisher/subscriber，默认未启用宏时仍安全返回 `ChannelError::Transport`。
 
-Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 `iox2` backend 下可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及 selected backend 为 `inproc` 的跨语言 process boundary。`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接。
+Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 `iox2` backend 下可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及 selected backend 为 `inproc` 的跨语言 process boundary。`examples/imu_demo_iox2` 用于验证主 demo 的 Rust source、C++ controller 和 Rust monitor 通过 iox2 分进程运行，`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接。
 
 `flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 已读取 `runtime_kind`，能为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，并继续拒绝 mixed process group。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
-当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo` 执行 check。该 workflow 暂不做 cache、release 发布、多平台矩阵或默认安装 `iceoryx2-cxx`。
+当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo` 与 `imu_demo_iox2` 执行 check。该 workflow 暂不做 cache、release 发布、多平台矩阵或默认安装 `iceoryx2-cxx`。
 
 ## 当前里程碑
 
@@ -99,6 +102,7 @@ runtime/
   rust/                # Rust runtime core 和 backends
 examples/
   imu_demo/            # imu_sim -> estimator -> controller -> monitor
+  imu_demo_iox2/       # imu_demo 的语言分离 iox2 运行变体
 ```
 
 不要一次性创建空目录树。只有当对应内容或测试存在时再落目录。
