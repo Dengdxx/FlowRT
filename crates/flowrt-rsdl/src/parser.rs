@@ -784,6 +784,129 @@ input = ["imu:Imu"]
     }
 
     #[test]
+    fn parse_file_expands_graph_fragment_imports() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("types")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::create_dir_all(root.join("graphs")).unwrap();
+        std::fs::create_dir_all(root.join("profiles")).unwrap();
+        std::fs::create_dir_all(root.join("targets")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/*.rsdl"]
+components = ["components/*.rsdl"]
+graphs = ["graphs/*.rsdl"]
+profiles = ["profiles/*.rsdl"]
+targets = ["targets/*.rsdl"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("types").join("messages.rsdl"),
+            r#"
+[type.Imu]
+timestamp = "u64"
+
+[type.Odom]
+timestamp = "u64"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components").join("imu_sim.rsdl"),
+            r#"
+[component.imu_sim]
+language = "rust"
+output = ["imu:Imu"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components").join("estimator.rsdl"),
+            r#"
+[component.estimator]
+language = "rust"
+input = ["imu:Imu"]
+output = ["odom:Odom"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("graphs").join("default.rsdl"),
+            r#"
+[instance.imu_sim]
+component = "imu_sim"
+process = "main"
+target = "linux"
+
+[instance.imu_sim.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.estimator]
+component = "estimator"
+process = "main"
+target = "linux"
+
+[instance.estimator.task]
+trigger = "on_message"
+input = ["imu"]
+output = ["odom"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "estimator.imu"
+channel = "latest"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("profiles").join("default.rsdl"),
+            r#"
+[profile.default]
+backend = "inproc"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("targets").join("linux.rsdl"),
+            r#"
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+        )
+        .unwrap();
+
+        let document = parse_file(root.join("robot.rsdl")).unwrap();
+
+        assert_eq!(document.package.name, "robot_demo");
+        assert_eq!(document.types["Imu"].fields[0].name, "timestamp");
+        assert_eq!(document.components["imu_sim"].output[0].name, "imu");
+        assert_eq!(document.instances["imu_sim"].component, "imu_sim");
+        assert_eq!(
+            document.instances["estimator"]
+                .task
+                .as_ref()
+                .unwrap()
+                .trigger,
+            "on_message"
+        );
+        assert_eq!(document.binds[0].from, "imu_sim.imu");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn parse_file_rejects_import_patterns_without_matches() {
         let root = unique_temp_dir();
         std::fs::create_dir_all(&root).unwrap();

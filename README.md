@@ -48,7 +48,7 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 当 C++ only contract 选择 `iox2` backend 时，生成的 CMake 工程会显式依赖 `iceoryx2-cxx 0.9.1` 并启用 C++ iox2 transport；没有安装该依赖时应由 CMake 明确失败，而不是静默退回 inproc。
 当 contract 含 Rust 组件时，当前实现仍使用 Cargo 构建 FlowRT 管理的 Rust 应用；Rust 用户组件的免 Cargo 分发属于后续安装/打包设计。
 当 contract 同时含 C++ 和 Rust 组件时，当前实现支持语言分离 process group 在 `iox2` backend 下通过 `flowrt launch` 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可运行其中一个单语言 process group。同一 process group 内混合 C++/Rust 以及 mixed `inproc` 仍会明确拒绝。
-`examples/import_demo` 展示了 `[package.imports]` 如何把 `types/`、`components/`、`profiles/` 和 `targets/` 下的模块化 `.rsdl` 文件合并到同一个 Contract IR。
+`examples/import_demo` 展示了 `[package.imports]` 如何把 `types/`、`components/`、`graphs/`、`profiles/` 和 `targets/` 下的模块化 `.rsdl` 文件合并到同一个 Contract IR。
 `examples/imu_demo` 当前是 mixed contract 示例，用于验证 C++/Rust 接口、消息和构建产物生成；它不会伪装成单进程 mixed runtime 已可运行。
 `examples/imu_demo_iox2` 是 `imu_demo` 的语言分离 iox2 变体，用于验证同一个主 demo 的 Rust source、C++ controller 和 Rust monitor 可以通过 `flowrt launch` 分进程运行；构建或启动该示例需要本机安装匹配的 `iceoryx2-cxx`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
 `examples/cpp_counter_demo` 展示了 C++ only contract：用户只在 `src/cpp/` 实现组件和 `flowrt_user::build_app()`，`flowrt build` / `flowrt run` 会通过 CMake 构建并运行 FlowRT 管理的 C++ inproc shell 和应用。
