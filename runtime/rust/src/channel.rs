@@ -305,6 +305,18 @@ mod tests {
     }
 
     #[test]
+    fn latest_channel_hold_last_policy_keeps_stale_value_visible() {
+        let mut channel =
+            LatestChannel::with_stale_config(StaleConfig::new(Some(10), StalePolicy::HoldLast));
+        channel.publish_at(7u32, 100);
+
+        let stale = channel.view_at(111);
+        assert!(stale.present());
+        assert!(stale.stale());
+        assert_eq!(stale.as_ref(), Some(&7));
+    }
+
+    #[test]
     fn latest_channel_error_policy_keeps_value_for_shell_error_handling() {
         let mut channel =
             LatestChannel::with_stale_config(StaleConfig::new(Some(10), StalePolicy::Error));
@@ -314,5 +326,14 @@ mod tests {
         assert!(stale.present());
         assert!(stale.stale());
         assert_eq!(stale.as_ref(), Some(&7));
+    }
+
+    #[test]
+    fn fifo_channel_block_policy_reports_backpressure_without_overwriting_queue() {
+        let mut channel = FifoChannel::new(1, OverflowPolicy::Block);
+        assert_eq!(channel.push(1u32), Ok(ChannelWriteOutcome::Accepted));
+        assert_eq!(channel.push(2u32), Ok(ChannelWriteOutcome::Backpressured));
+        assert_eq!(channel.len(), 1);
+        assert_eq!(channel.pop(), Some(1));
     }
 }
