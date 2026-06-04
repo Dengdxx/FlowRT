@@ -74,6 +74,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         .collect::<BTreeSet<_>>();
     validate_contract_versions(ir, &mut errors);
     validate_contract_shape(ir, &mut errors);
+    validate_contract_canonical_fields(ir, &mut errors);
     validate_entity_name_uniqueness(ir, &mut errors);
     validate_entity_id_uniqueness(ir, &mut errors);
     validate_entity_references(ir, &mut errors);
@@ -127,6 +128,69 @@ fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
             "Contract IR v0.1 must contain at least one profile; found 0",
         ));
     }
+}
+
+fn validate_contract_canonical_fields(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    if !is_canonical_hex_digest(&ir.source_hash, 64) {
+        errors.push(ValidationError::new(format!(
+            "source_hash `{}` must be a 64-character lowercase hex digest",
+            ir.source_hash
+        )));
+    }
+
+    validate_entity_id_shape("package id", "package", &ir.package_id, errors);
+    for ty in &ir.types {
+        validate_entity_id_shape("type id", "type", &ty.id, errors);
+    }
+    for component in &ir.components {
+        validate_entity_id_shape("component id", "component", &component.id, errors);
+    }
+    for graph in &ir.graphs {
+        validate_entity_id_shape("graph id", "graph", &graph.id, errors);
+        for instance in &graph.instances {
+            validate_entity_id_shape("instance id", "instance", &instance.id, errors);
+        }
+        for task in &graph.tasks {
+            validate_entity_id_shape("task id", "task", &task.id, errors);
+        }
+        for bind in &graph.binds {
+            validate_entity_id_shape("bind id", "bind", &bind.id, errors);
+        }
+    }
+    for profile in &ir.profiles {
+        validate_entity_id_shape("profile id", "profile", &profile.id, errors);
+    }
+    for target in &ir.targets {
+        validate_entity_id_shape("target id", "target", &target.id, errors);
+    }
+    for deployment in &ir.deployments {
+        validate_entity_id_shape("deployment id", "deployment", &deployment.id, errors);
+    }
+}
+
+fn validate_entity_id_shape(
+    label: &str,
+    kind: &str,
+    id: &EntityId,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(hex) = id.0.strip_prefix(&format!("{kind}_")) else {
+        errors.push(ValidationError::new(format!(
+            "{label} `{}` must use the `{kind}_<hex>` canonical format",
+            id.0
+        )));
+        return;
+    };
+    if !is_canonical_hex_digest(hex, 16) {
+        errors.push(ValidationError::new(format!(
+            "{label} `{}` must use the `{kind}_<hex>` canonical format",
+            id.0
+        )));
+    }
+}
+
+fn is_canonical_hex_digest(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len && value.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f'))
 }
 
 fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
@@ -1591,6 +1655,27 @@ rsdl_version = "0.1"
                 "missing validation error: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_non_canonical_source_hash_and_entity_ids() {
+        let mut ir = valid_reference_contract();
+        ir.source_hash = "bad".to_string();
+        ir.package_id = EntityId("package_bad".to_string());
+
+        let report =
+            validate_contract(&ir).expect_err("non-canonical metadata should fail validation");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("source_hash `bad` must be a 64-character lowercase hex digest")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("package id `package_bad` must use the `package_<hex>` canonical format")
+        }));
     }
 
     #[test]
