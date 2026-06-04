@@ -1285,6 +1285,9 @@ fn cpp_runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> S
     if selected_backend == "iox2" {
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
+    if selected_backend == "zenoh" {
+        return format!("flowrt::zenoh::ZenohPubSub<{ty}>");
+    }
 
     match bind.channel {
         ChannelKind::Latest => format!("flowrt::LatestChannel<{ty}>"),
@@ -1306,10 +1309,33 @@ fn cpp_runtime_channel_initializer(
             cpp_iox2_channel_config_expr(bind)
         );
     }
+    if selected_backend == "zenoh" {
+        return format!(
+            "flowrt::zenoh::ZenohPubSub<{}>::open_with_config({}, {})",
+            cpp_type(&bind.source_type),
+            cpp_string_literal(&zenoh_key_expr(contract, graph, bind)),
+            cpp_zenoh_channel_config_expr(bind)
+        );
+    }
 
     match bind.channel {
         ChannelKind::Latest => cpp_runtime_latest_channel_initializer(bind),
         ChannelKind::Fifo => cpp_runtime_fifo_channel_initializer(bind),
+    }
+}
+
+fn cpp_zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
+    match bind.channel {
+        ChannelKind::Latest => format!(
+            "flowrt::zenoh::ZenohChannelConfig::latest().with_stale_config({})",
+            cpp_runtime_stale_config_expr(bind)
+        ),
+        ChannelKind::Fifo => format!(
+            "flowrt::zenoh::ZenohChannelConfig::fifo({}, {}).with_stale_config({})",
+            bind.depth.unwrap_or(1),
+            cpp_runtime_overflow_policy(bind.overflow),
+            cpp_runtime_stale_config_expr(bind)
+        ),
     }
 }
 
@@ -1375,7 +1401,7 @@ fn cpp_runtime_channel_read(
     local_name: &str,
     selected_backend: &str,
 ) -> String {
-    if selected_backend == "iox2" {
+    if matches!(selected_backend, "iox2" | "zenoh") {
         return format!(
             "    auto {local}_result = {field}_.receive_latest_at(tick_time_ms);\n    if (std::holds_alternative<flowrt::ChannelError>({local}_result)) {{\n        return flowrt::Status::Error;\n    }}\n    const auto {local} = std::get<flowrt::Latest<{ty}>>({local}_result);\n",
             local = local_name,
@@ -1423,7 +1449,7 @@ fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
 
 fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
     let introspection_record = cpp_introspection_publish_record(bind);
-    if selected_backend == "iox2" {
+    if matches!(selected_backend, "iox2" | "zenoh") {
         return format!(
             "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n{introspection_record}",
             field = bind.field_name
@@ -1443,7 +1469,7 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> 
 }
 
 fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
-    (!binds.is_empty() && selected_backend == "iox2")
+    (!binds.is_empty() && matches!(selected_backend, "iox2" | "zenoh"))
         || binds
             .iter()
             .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
@@ -2409,7 +2435,7 @@ fn emit_rust_app_run_function(
 }
 
 fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
-    (!binds.is_empty() && selected_backend == "iox2")
+    (!binds.is_empty() && matches!(selected_backend, "iox2" | "zenoh"))
         || binds
             .iter()
             .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
@@ -2419,6 +2445,9 @@ fn runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> Strin
     let ty = rust_type(&bind.source_type);
     if selected_backend == "iox2" {
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
+    }
+    if selected_backend == "zenoh" {
+        return format!("flowrt::zenoh::ZenohPubSub<{ty}>");
     }
 
     match bind.channel {
@@ -2440,6 +2469,13 @@ fn runtime_channel_initializer(
             iox2_channel_config_expr(bind),
         );
     }
+    if selected_backend == "zenoh" {
+        return format!(
+            "flowrt::zenoh::ZenohPubSub::open_with_config({}, {}).expect(\"failed to open FlowRT zenoh channel\")",
+            rust_string_literal(&zenoh_key_expr(contract, graph, bind)),
+            zenoh_channel_config_expr(bind),
+        );
+    }
 
     match bind.channel {
         ChannelKind::Latest => format!(
@@ -2447,6 +2483,21 @@ fn runtime_channel_initializer(
             runtime_stale_config_expr(bind)
         ),
         ChannelKind::Fifo => runtime_fifo_channel_initializer(bind),
+    }
+}
+
+fn zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
+    match bind.channel {
+        ChannelKind::Latest => format!(
+            "flowrt::zenoh::ZenohChannelConfig::latest().with_stale_config({})",
+            runtime_stale_config_expr(bind)
+        ),
+        ChannelKind::Fifo => format!(
+            "flowrt::zenoh::ZenohChannelConfig::fifo({}, {}).with_stale_config({})",
+            bind.depth.unwrap_or(1),
+            runtime_overflow_policy(bind.overflow),
+            runtime_stale_config_expr(bind)
+        ),
     }
 }
 
@@ -2494,7 +2545,7 @@ fn runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
 }
 
 fn runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    if selected_backend == "iox2" {
+    if matches!(selected_backend, "iox2" | "zenoh") {
         return format!(
             "        let {input} = match self.{field}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
             input = input.name,
@@ -2541,7 +2592,7 @@ fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
 
 fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
     let introspection_record = runtime_introspection_publish_record(bind);
-    if selected_backend == "iox2" {
+    if matches!(selected_backend, "iox2" | "zenoh") {
         return format!(
             "            if self.{field}.publish_at(value, tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n{introspection_record}",
             field = bind.field_name
@@ -2567,6 +2618,20 @@ fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> Stri
 fn iox2_service_name(contract: &ContractIr, graph: &GraphIr, bind: &BindRuntimePlan) -> String {
     iox2_service_name_from_parts(
         &contract.package.name,
+        &graph.name,
+        bind.index,
+        &bind.source_instance,
+        &bind.source_port,
+        &bind.target_instance,
+        &bind.target_port,
+    )
+}
+
+fn zenoh_key_expr(contract: &ContractIr, graph: &GraphIr, bind: &BindRuntimePlan) -> String {
+    zenoh_key_expr_from_parts(
+        "flowrt",
+        &contract.package.name,
+        &selected_profile_name(contract),
         &graph.name,
         bind.index,
         &bind.source_instance,
@@ -3272,6 +3337,14 @@ fn emit_cmake(contract: &ContractIr) -> String {
             output.push_str(&format!(
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)\n"
             ));
+        } else if selected_backend_name(contract) == "zenoh" {
+            output.push_str("\nfind_package(zenohc REQUIRED)\nfind_package(zenohcxx REQUIRED)\n");
+            output.push_str(&format!(
+                "target_link_libraries({package_name}_flowrt_app INTERFACE zenohcxx::zenohc)\n"
+            ));
+            output.push_str(&format!(
+                "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ZENOH_CXX=1)\n"
+            ));
         }
         output.push_str(
             "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
@@ -3349,10 +3422,10 @@ fn emit_cargo_manifest(contract: &ContractIr) -> String {
     let mut bins = String::new();
 
     if has_rust {
-        let flowrt_dependency = if selected_backend_name(contract) == "iox2" {
-            "flowrt = { version = \"0.1\", features = [\"iox2\"] }"
-        } else {
-            "flowrt = { version = \"0.1\" }"
+        let flowrt_dependency = match selected_backend_name(contract).as_str() {
+            "iox2" => "flowrt = { version = \"0.1\", features = [\"iox2\"] }",
+            "zenoh" => "flowrt = { version = \"0.1\", features = [\"zenoh\"] }",
+            _ => "flowrt = { version = \"0.1\" }",
         };
         output.push_str(flowrt_dependency);
         output.push('\n');
@@ -5219,9 +5292,34 @@ backends = ["zenoh"]
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"zenoh\";"));
         assert!(rust_shell.contains("\"zenoh\" => Box::new(flowrt::zenoh_backend())"));
         assert!(!rust_shell.contains("_ => Box::new(flowrt::inproc_backend())"));
+        assert!(rust_shell.contains("flowrt::zenoh::ZenohPubSub<Imu>"));
+        assert!(rust_shell.contains(
+            "flowrt::zenoh::ZenohPubSub::open_with_config(\"flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu\""
+        ));
+        assert!(rust_shell.contains("flowrt::zenoh::ZenohChannelConfig::latest()"));
+        assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
 
         let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
         assert!(cpp_shell.contains("auto backend = flowrt::zenoh_backend();"));
+        assert!(cpp_shell.contains(
+            "flowrt::zenoh::ZenohPubSub<Imu>::open_with_config(\"flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu\""
+        ));
+        assert!(cpp_shell.contains("flowrt::zenoh::ZenohChannelConfig::latest()"));
+        assert!(cpp_shell.contains("receive_latest_at(tick_time_ms)"));
+
+        let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+        assert!(cpp_header.contains("flowrt::zenoh::ZenohPubSub<Imu> bind_0_;"));
+
+        let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+        assert!(cargo_manifest.contains("features = [\"zenoh\"]"));
+        assert!(!cargo_manifest.contains("features = [\"iox2\"]"));
+
+        let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+        assert!(cmake.contains("find_package(zenohc REQUIRED)"));
+        assert!(cmake.contains("find_package(zenohcxx REQUIRED)"));
+        assert!(cmake.contains("zenohcxx::zenohc"));
+        assert!(cmake.contains("FLOWRT_HAS_ZENOH_CXX=1"));
+        assert!(!cmake.contains("find_package(iceoryx2-cxx"));
 
         let launch: serde_json::Value =
             serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
