@@ -2135,7 +2135,7 @@ fn emit_rust_message_abi_tests(
         .map(|expectation| (expectation.type_name.as_str(), expectation))
         .collect::<BTreeMap<_, _>>();
     output.push_str(
-        "\nfn bytes_of<T>(value: &T) -> Vec<u8> {\n    let mut bytes = vec![0u8; std::mem::size_of::<T>()];\n    // Safety：生成测试只传入 FlowRT ABI v0.1 plain-data 消息，且 padding 已初始化。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            (value as *const T).cast::<u8>(),\n            bytes.as_mut_ptr(),\n            bytes.len(),\n        );\n    }\n    bytes\n}\n\nfn assert_byte_roundtrip<T: Copy + Default>(value: T) {\n    let bytes = bytes_of(&value);\n    let mut roundtrip = T::default();\n    // Safety：`roundtrip` 是有效 plain-data 存储，`bytes` 长度等于 `size_of::<T>()`。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut roundtrip as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&roundtrip), bytes);\n}\n\n",
+        "\nfn bytes_of<T>(value: &T) -> Vec<u8> {\n    let mut bytes = vec![0u8; std::mem::size_of::<T>()];\n    // Safety：生成测试只传入 FlowRT ABI v0.1 plain-data 消息，且 padding 已初始化。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            (value as *const T).cast::<u8>(),\n            bytes.as_mut_ptr(),\n            bytes.len(),\n        );\n    }\n    bytes\n}\n\nfn assert_default_bytes_zero<T: Copy + Default>() {\n    let value = T::default();\n    assert_eq!(bytes_of(&value), vec![0u8; std::mem::size_of::<T>()]);\n}\n\nfn assert_byte_roundtrip<T: Copy + Default>(value: T) {\n    let bytes = bytes_of(&value);\n    let mut roundtrip = T::default();\n    // Safety：`roundtrip` 是有效 plain-data 存储，`bytes` 长度等于 `size_of::<T>()`。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut roundtrip as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&roundtrip), bytes);\n}\n\n",
     );
     output.push_str(
         "fn assert_sample_bytes<T: Copy>(value: T, expected: &[u8]) {\n    assert_eq!(bytes_of(&value), expected);\n}\n\n",
@@ -2186,6 +2186,7 @@ fn emit_rust_message_abi_tests(
             "    assert_eq!(std::mem::align_of::<{}>(), {});\n",
             ty, expectation.align_bytes
         ));
+        output.push_str(&format!("    assert_default_bytes_zero::<{}>();\n", ty));
         for field in &expectation.fields {
             output.push_str(&format!(
                 "    assert_eq!(std::mem::offset_of!({}, {}), {});\n",
@@ -2217,7 +2218,7 @@ fn emit_cpp_message_abi_tests(
         .map(|expectation| (expectation.type_name.as_str(), expectation))
         .collect::<BTreeMap<_, _>>();
     output.push_str(
-        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\ntemplate <typename T, std::size_t N>\nvoid assert_sample_bytes(const T& value, const std::array<std::uint8_t, N>& expected) {\n    static_assert(sizeof(T) == N);\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    assert(bytes == expected);\n}\n\n",
+        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nvoid assert_default_bytes_zero() {\n    T value{};\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::array<std::uint8_t, sizeof(T)> expected{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    assert(bytes == expected);\n}\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\ntemplate <typename T, std::size_t N>\nvoid assert_sample_bytes(const T& value, const std::array<std::uint8_t, N>& expected) {\n    static_assert(sizeof(T) == N);\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    assert(bytes == expected);\n}\n\n",
     );
 
     for expectation in expectations {
@@ -2271,6 +2272,7 @@ fn emit_cpp_message_abi_tests(
             "    static_assert(alignof({}) == {});\n",
             ty, expectation.align_bytes
         ));
+        output.push_str(&format!("    assert_default_bytes_zero<{}>();\n", ty));
         for field in &expectation.fields {
             output.push_str(&format!(
                 "    static_assert(offsetof({}, {}) == {});\n",
@@ -3317,6 +3319,40 @@ input = ["packet:Packet"]
         assert!(cpp_abi.contains("constexpr std::array<std::uint8_t, 12> EXPECTED_PACKET_BYTES"));
         assert!(cpp_abi.contains("2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 136, 64"));
         assert!(cpp_abi.contains("assert_sample_bytes(sample_packet(), EXPECTED_PACKET_BYTES);"));
+    }
+
+    #[test]
+    fn message_abi_tests_assert_default_initialization_zeroes_padding_bytes() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "abi_demo"
+rsdl_version = "0.1"
+
+[type.Padded]
+flag = "bool"
+count = "u32"
+
+[component.producer]
+language = "rust"
+output = ["padded:Padded"]
+
+[component.consumer]
+language = "cpp"
+input = ["padded:Padded"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+
+        let rust_abi = artifact_content(&bundle, "rust/tests/message_abi.rs");
+        assert!(rust_abi.contains("fn assert_default_bytes_zero<T: Copy + Default>()"));
+        assert!(rust_abi.contains("assert_default_bytes_zero::<flowrt_app::messages::Padded>();"));
+
+        let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+        assert!(cpp_abi.contains("void assert_default_bytes_zero()"));
+        assert!(cpp_abi.contains("std::array<std::uint8_t, sizeof(T)> expected{};"));
+        assert!(cpp_abi.contains("assert(bytes == expected);"));
+        assert!(cpp_abi.contains("assert_default_bytes_zero<flowrt_app::Padded>();"));
     }
 
     #[test]

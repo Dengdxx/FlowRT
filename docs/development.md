@@ -26,10 +26,13 @@ FlowRT demo smoke：
 cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/import_demo/rsdl/robot.rsdl --process main
 cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
 仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但面向用户的 README、文档、示例和最终说明应使用安装后的 `flowrt ...`。
