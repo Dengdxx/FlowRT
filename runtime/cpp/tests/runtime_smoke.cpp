@@ -4,9 +4,28 @@
 #include <cstdint>
 #include <flowrt/runtime.hpp>
 #include <string_view>
+#include <vector>
 
 struct Sample {
     std::uint32_t value;
+};
+
+struct TinyWireMessage {
+    std::uint16_t value{};
+
+    static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint16_t); }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        flowrt::ensure_wire_size(wire_size(), output.size());
+        flowrt::write_wire_le(output, 0, value);
+    }
+
+    static TinyWireMessage decode_wire(std::span<const std::uint8_t> input) {
+        flowrt::ensure_wire_size(wire_size(), input.size());
+        TinyWireMessage value{};
+        value.value = flowrt::read_wire_le<std::uint16_t>(input, 0);
+        return value;
+    }
 };
 
 template <std::size_t N>
@@ -24,6 +43,20 @@ int main() {
 
     flowrt::Context context;
     (void)context;
+
+    std::array<std::uint8_t, TinyWireMessage::wire_size()> tiny_wire{};
+    TinyWireMessage{0x1234U}.encode_wire(tiny_wire);
+    assert((tiny_wire == std::array<std::uint8_t, 2>{0x34U, 0x12U}));
+    assert(TinyWireMessage::decode_wire(tiny_wire).value == 0x1234U);
+    bool saw_wire_size_error = false;
+    try {
+        TinyWireMessage{7U}.encode_wire(std::span<std::uint8_t>{tiny_wire.data(), 1});
+    } catch (const flowrt::WireCodecError &error) {
+        saw_wire_size_error = true;
+        assert(error.expected() == 2U);
+        assert(error.actual() == 1U);
+    }
+    assert(saw_wire_size_error);
 
     flowrt::InprocBackend inproc_backend;
     assert(inproc_backend.kind() == flowrt::BackendKind::Inproc);
