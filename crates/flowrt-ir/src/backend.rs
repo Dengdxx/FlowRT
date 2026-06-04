@@ -261,6 +261,43 @@ pub fn base_deployment_capabilities() -> Vec<CapabilityAtom> {
     capabilities.into_atoms()
 }
 
+/// 依据 graph 的 process 边界推导 topology capability。
+///
+/// 只有当 bind 跨越不同 process group 时，deployment 才需要 `topology:multi_process`。
+/// 单 process graph 不额外要求 topology capability，避免把 backend 选择和 graph 结构
+/// 绑成一条静态路径。
+fn graph_topology_capabilities(graph: &GraphIr) -> CapabilityList {
+    let mut capabilities = CapabilityList::new();
+    let processes = graph
+        .instances
+        .iter()
+        .map(|instance| {
+            (
+                instance.name.as_str(),
+                instance.process.as_deref().unwrap_or("main"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let has_cross_process_bind = graph.binds.iter().any(|bind| {
+        let from_process = processes
+            .get(bind.from.instance.name.as_str())
+            .copied()
+            .unwrap_or("main");
+        let to_process = processes
+            .get(bind.to.instance.name.as_str())
+            .copied()
+            .unwrap_or("main");
+        from_process != to_process
+    });
+
+    if has_cross_process_bind {
+        capabilities.push(Capability::TopologyMultiProcess);
+    }
+
+    capabilities
+}
+
 /// 返回某个 task trigger 所需的 capability atom。
 pub fn trigger_capability(trigger: TriggerKind) -> CapabilityAtom {
     trigger_capability_kind(trigger).atom()
@@ -313,6 +350,7 @@ pub fn graph_required_capabilities(
 ) -> Vec<CapabilityAtom> {
     let mut capabilities = CapabilityList::new();
     capabilities.extend(BASE_DEPLOYMENT_CAPABILITIES);
+    capabilities.extend_list(graph_topology_capabilities(graph));
     let components_by_name = components
         .iter()
         .map(|component| (component.name.as_str(), component))
@@ -729,6 +767,108 @@ mod tests {
                 Capability::StaleError.atom(),
             ]
         );
+    }
+
+    #[test]
+    fn graph_required_capabilities_require_multi_process_for_cross_process_binds() {
+        let source_component = crate::ComponentIr {
+            id: crate::EntityId("component_0000000000000001".to_string()),
+            name: "source".to_string(),
+            language: crate::LanguageKind::Rust,
+            kind: crate::ComponentKind::Native,
+            inputs: vec![],
+            outputs: vec![crate::PortIr {
+                name: "sample".to_string(),
+                ty: TypeExpr::Primitive {
+                    name: PrimitiveType::U32,
+                },
+            }],
+            params: vec![],
+            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
+        };
+        let sink_component = crate::ComponentIr {
+            id: crate::EntityId("component_0000000000000002".to_string()),
+            name: "sink".to_string(),
+            language: crate::LanguageKind::Rust,
+            kind: crate::ComponentKind::Native,
+            inputs: vec![crate::PortIr {
+                name: "sample".to_string(),
+                ty: TypeExpr::Primitive {
+                    name: PrimitiveType::U32,
+                },
+            }],
+            outputs: vec![],
+            params: vec![],
+            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
+        };
+        let source = crate::EntityRef {
+            id: crate::EntityId("instance_0000000000000001".to_string()),
+            name: "source".to_string(),
+        };
+        let sink = crate::EntityRef {
+            id: crate::EntityId("instance_0000000000000002".to_string()),
+            name: "sink".to_string(),
+        };
+        let graph = GraphIr {
+            id: crate::EntityId("graph_0000000000000001".to_string()),
+            name: "default".to_string(),
+            instances: vec![
+                crate::InstanceIr {
+                    id: source.id.clone(),
+                    name: source.name.clone(),
+                    component: crate::EntityRef {
+                        id: source_component.id.clone(),
+                        name: source_component.name.clone(),
+                    },
+                    params: vec![],
+                    process: Some("producer".to_string()),
+                    target: None,
+                },
+                crate::InstanceIr {
+                    id: sink.id.clone(),
+                    name: sink.name.clone(),
+                    component: crate::EntityRef {
+                        id: sink_component.id.clone(),
+                        name: sink_component.name.clone(),
+                    },
+                    params: vec![],
+                    process: Some("consumer".to_string()),
+                    target: None,
+                },
+            ],
+            tasks: vec![],
+            binds: vec![crate::ChannelEdgeIr {
+                id: crate::EntityId("bind_0000000000000001".to_string()),
+                from: crate::PortRef {
+                    instance: source.clone(),
+                    port: "sample".to_string(),
+                },
+                to: crate::PortRef {
+                    instance: sink.clone(),
+                    port: "sample".to_string(),
+                },
+                channel: ChannelKind::Latest,
+                depth: Some(1),
+                overflow: OverflowPolicy::DropOldest,
+                stale: StalePolicy::Warn,
+                max_age_ms: None,
+                policy_source: crate::ChannelPolicySourceIr {
+                    overflow: crate::PolicyValueSource::Explicit,
+                    stale: crate::PolicyValueSource::Explicit,
+                    max_age_ms: crate::PolicyValueSource::Explicit,
+                },
+                capability_requirements: vec![],
+            }],
+        };
+
+        let capabilities = graph_required_capabilities(
+            &graph,
+            &[],
+            &[source_component.clone(), sink_component.clone()],
+        );
+
+        assert!(capabilities.contains(&CapabilityAtom("topology:multi_process".to_string())));
+        assert!(!capabilities.contains(&CapabilityAtom("topology:single_process".to_string())));
     }
 
     #[test]
