@@ -10,7 +10,7 @@ use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr,
     LanguageKind, OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType,
-    StalePolicy as IrStalePolicy, TaskIr, TypeExpr, TypeIr,
+    StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr, TypeIr,
 };
 
 /// artifact emission 返回的结果类型。
@@ -552,6 +552,8 @@ fn emit_cpp_app_step(
             .iter()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
+        let trigger_guard =
+            on_message_trigger_guard(task, |input| cpp_step_local_name(&instance.name, input));
 
         for input in &component.inputs {
             let input_local = cpp_step_local_name(&instance.name, &input.name);
@@ -584,10 +586,15 @@ fn emit_cpp_app_step(
             }
         }
 
+        if let Some(guard) = &trigger_guard {
+            output.push_str(&format!("    if ({guard}) {{\n"));
+        }
+
         for port in &component.outputs {
             let output_local = cpp_step_local_name(&instance.name, &port.name);
             output.push_str(&format!(
-                "    flowrt::Output<{ty}> {local};\n",
+                "{indent}flowrt::Output<{ty}> {local};\n",
+                indent = step_indent(trigger_guard.is_some()),
                 ty = cpp_type(&port.ty),
                 local = output_local
             ));
@@ -601,7 +608,9 @@ fn emit_cpp_app_step(
             call_args.push(cpp_step_local_name(&instance.name, &port.name));
         }
         output.push_str(&format!(
-            "    if ({instance}_ && {instance}_->on_tick({args}) != flowrt::Status::Ok) {{\n        return flowrt::Status::Error;\n    }}\n",
+            "{indent}if ({instance}_ && {instance}_->on_tick({args}) != flowrt::Status::Ok) {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
+            indent = step_indent(trigger_guard.is_some()),
+            inner_indent = nested_step_indent(trigger_guard.is_some()),
             instance = instance.name,
             args = call_args.join(", ")
         ));
@@ -620,19 +629,83 @@ fn emit_cpp_app_step(
                 continue;
             }
             output.push_str(&format!(
-                "    if (const auto* value = {local}.as_ref()) {{\n",
+                "{indent}if (const auto* value = {local}.as_ref()) {{\n",
+                indent = step_indent(trigger_guard.is_some()),
                 local = output_local
             ));
             for bind_index in outgoing {
                 let bind = &emission.binds[bind_index];
-                output.push_str(&cpp_runtime_channel_write(bind, emission.selected_backend));
+                output.push_str(&indent_generated_block(
+                    &cpp_runtime_channel_write(bind, emission.selected_backend),
+                    trigger_guard.is_some(),
+                ));
             }
+            output.push_str(&format!("{}}}\n", step_indent(trigger_guard.is_some())));
+        }
+
+        if trigger_guard.is_some() {
             output.push_str("    }\n");
         }
     }
 
     output.push_str("    return flowrt::Status::Ok;\n}\n\n");
     output
+}
+
+fn on_message_trigger_guard<F>(task: &TaskIr, input_name: F) -> Option<String>
+where
+    F: Fn(&str) -> String,
+{
+    if task.trigger != TriggerKind::OnMessage || task.inputs.is_empty() {
+        return None;
+    }
+
+    Some(
+        task.inputs
+            .iter()
+            .map(|input| format!("{}.present()", input_name(input)))
+            .collect::<Vec<_>>()
+            .join(" || "),
+    )
+}
+
+fn indent_generated_block(block: &str, nested: bool) -> String {
+    if !nested {
+        return block.to_string();
+    }
+
+    block
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("    {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn step_indent(nested: bool) -> &'static str {
+    if nested { "        " } else { "    " }
+}
+
+fn nested_step_indent(nested: bool) -> &'static str {
+    if nested { "            " } else { "        " }
+}
+
+fn rust_step_indent(nested: bool) -> &'static str {
+    if nested { "            " } else { "        " }
+}
+
+fn rust_nested_step_indent(nested: bool) -> &'static str {
+    if nested {
+        "                "
+    } else {
+        "            "
+    }
 }
 
 fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
@@ -1380,6 +1453,7 @@ fn emit_rust_app_step(
             .iter()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
+        let trigger_guard = on_message_trigger_guard(task, |input| input.to_string());
 
         for input in &component.inputs {
             if task_inputs.contains(input.name.as_str()) {
@@ -1402,9 +1476,14 @@ fn emit_rust_app_step(
             }
         }
 
+        if let Some(guard) = &trigger_guard {
+            output.push_str(&format!("        if {guard} {{\n"));
+        }
+
         for port in &component.outputs {
             output.push_str(&format!(
-                "        let mut {port} = flowrt::Output::<{ty}>::new();\n",
+                "{indent}let mut {port} = flowrt::Output::<{ty}>::new();\n",
+                indent = rust_step_indent(trigger_guard.is_some()),
                 port = port.name,
                 ty = rust_type(&port.ty)
             ));
@@ -1418,7 +1497,9 @@ fn emit_rust_app_step(
             call_args.push(format!("&mut {}", port.name));
         }
         output.push_str(&format!(
-            "        if self.{name}.on_tick({args}) != flowrt::Status::Ok {{\n            return flowrt::Status::Error;\n        }}\n",
+            "{indent}if self.{name}.on_tick({args}) != flowrt::Status::Ok {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
+            indent = rust_step_indent(trigger_guard.is_some()),
+            inner_indent = rust_nested_step_indent(trigger_guard.is_some()),
             name = instance.name,
             args = call_args.join(", ")
         ));
@@ -1436,13 +1517,24 @@ fn emit_rust_app_step(
                 continue;
             }
             output.push_str(&format!(
-                "        if let Some(value) = {port}.as_ref().copied() {{\n",
+                "{indent}if let Some(value) = {port}.as_ref().copied() {{\n",
+                indent = rust_step_indent(trigger_guard.is_some()),
                 port = port.name
             ));
             for bind_index in outgoing {
                 let bind = &emission.binds[bind_index];
-                output.push_str(&runtime_channel_write(bind, emission.selected_backend));
+                output.push_str(&indent_generated_block(
+                    &runtime_channel_write(bind, emission.selected_backend),
+                    trigger_guard.is_some(),
+                ));
             }
+            output.push_str(&format!(
+                "{}}}\n",
+                rust_step_indent(trigger_guard.is_some())
+            ));
+        }
+
+        if trigger_guard.is_some() {
             output.push_str("        }\n");
         }
     }
@@ -3818,6 +3910,7 @@ channel = "latest"
         assert!(sink_step.contains("let unused_in = flowrt::Latest::new(None, false);"));
         assert!(sink_step.contains("let mut used_out = flowrt::Output::<Sample>::new();"));
         assert!(sink_step.contains("let mut unused_out = flowrt::Output::<Sample>::new();"));
+        assert!(sink_step.contains("if used_in.present() {"));
         assert!(
             sink_step
                 .contains("self.sink.on_tick(used_in, unused_in, &mut used_out, &mut unused_out)")
@@ -3825,6 +3918,56 @@ channel = "latest"
         assert!(sink_step.contains("if let Some(value) = used_out.as_ref().copied()"));
         assert!(!sink_step.contains("self.bind_1.view_at(tick_time_ms)"));
         assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().copied()"));
+    }
+
+    #[test]
+    fn cpp_shell_gates_on_message_instances_on_present_inputs() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let source_call = cpp_shell.find("source_->on_tick(source_sample)").unwrap();
+        let gate = cpp_shell.find("if (sink_sample.present()) {").unwrap();
+        let sink_call = cpp_shell.find("sink_->on_tick(sink_sample)").unwrap();
+
+        assert!(source_call < gate);
+        assert!(gate < sink_call);
     }
 
     #[test]
