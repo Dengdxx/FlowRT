@@ -51,6 +51,86 @@ pub trait WireCodec: Sized {
     }
 }
 
+macro_rules! impl_primitive_wire_codec {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl WireCodec for $ty {
+                const WIRE_SIZE: usize = std::mem::size_of::<Self>();
+
+                fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+                    if output.len() != Self::WIRE_SIZE {
+                        return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+                    }
+                    output.copy_from_slice(&self.to_le_bytes());
+                    Ok(())
+                }
+
+                fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+                    if input.len() != Self::WIRE_SIZE {
+                        return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+                    }
+                    Ok(Self::from_le_bytes(
+                        input
+                            .try_into()
+                            .expect("wire size was checked before primitive decode"),
+                    ))
+                }
+            }
+        )+
+    };
+}
+
+impl_primitive_wire_codec!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
+
+impl WireCodec for bool {
+    const WIRE_SIZE: usize = 1;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        output[0] = u8::from(*self);
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        Ok(input[0] != 0)
+    }
+}
+
+impl<T, const N: usize> WireCodec for [T; N]
+where
+    T: WireCodec + Copy + Default,
+{
+    const WIRE_SIZE: usize = T::WIRE_SIZE * N;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        for (index, value) in self.iter().enumerate() {
+            let start = index * T::WIRE_SIZE;
+            value.encode_wire(&mut output[start..start + T::WIRE_SIZE])?;
+        }
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        let mut values = [T::default(); N];
+        for (index, value) in values.iter_mut().enumerate() {
+            let start = index * T::WIRE_SIZE;
+            *value = T::decode_wire(&input[start..start + T::WIRE_SIZE])?;
+        }
+        Ok(values)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +178,29 @@ mod tests {
         let bytes = value.to_wire_vec().unwrap();
         assert_eq!(bytes, vec![0x34, 0x12]);
         assert_eq!(Tiny::decode_wire(&bytes).unwrap(), value);
+    }
+
+    #[test]
+    fn primitive_wire_codec_uses_little_endian_bytes() {
+        assert_eq!(
+            0x1234_5678u32.to_wire_vec().unwrap(),
+            [0x78, 0x56, 0x34, 0x12]
+        );
+        assert_eq!(
+            u32::decode_wire(&[0x78, 0x56, 0x34, 0x12]).unwrap(),
+            0x1234_5678
+        );
+        assert_eq!(true.to_wire_vec().unwrap(), [1]);
+        assert!(bool::decode_wire(&[1]).unwrap());
+    }
+
+    #[test]
+    fn fixed_array_wire_codec_concatenates_element_payloads() {
+        let value = [0x1234u16, 0x5678u16];
+        assert_eq!(value.to_wire_vec().unwrap(), [0x34, 0x12, 0x78, 0x56]);
+        assert_eq!(
+            <[u16; 2]>::decode_wire(&[0x34, 0x12, 0x78, 0x56]).unwrap(),
+            value
+        );
     }
 }
