@@ -100,7 +100,7 @@ launch manifest 的关键字段包括：
 flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 ```
 
-`inspect` 查看已落盘 Contract IR JSON 的摘要，用于确认 package、type、component、instance、task、bind、profile、target 和 deployment 是否符合预期。
+`inspect` 会先校验已落盘 Contract IR JSON，再显示摘要，用于确认 package、type、component、instance、task、bind、profile、target 和 deployment 是否符合预期。当前工具链不支持的 `ir_version`、`schema_version` 或 package `rsdl_version` 会被明确拒绝。
 
 ## `--profile`
 

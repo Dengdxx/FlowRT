@@ -4,16 +4,13 @@ use flowrt_rsdl::{RawComponent, RawDocument, RawPort, RawProfile, RawTarget, Raw
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BackendName, CapabilityAtom, ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind,
-    ContractIr, DeploymentIr, EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError,
-    LanguageKind, LifecycleSurface, OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr,
-    PolicyDefaults, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr, TaskIr, TriggerKind,
-    TypeIr, backend_capabilities, base_deployment_capabilities, parse_type_expr,
-    trigger_capability,
+    BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr,
+    ChannelKind, ComponentIr, ComponentKind, ContractIr, DeploymentIr, EntityId, EntityRef,
+    FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind, LifecycleSurface,
+    OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults, PortIr, PortRef,
+    ProfileIr, Result, StalePolicy, TargetIr, TaskIr, TriggerKind, TypeIr, backend_capabilities,
+    base_deployment_capabilities, parse_type_expr, trigger_capability,
 };
-
-const IR_VERSION: &str = "0.1";
-const SCHEMA_VERSION: &str = "0.1";
 
 /// 计算稳定的 SHA-256 源文本哈希。
 pub fn hash_source(source: &str) -> String {
@@ -94,8 +91,8 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
     let deployments = normalize_deployments(&graph, &profiles, &targets);
 
     Ok(ContractIr {
-        ir_version: IR_VERSION.to_string(),
-        schema_version: SCHEMA_VERSION.to_string(),
+        ir_version: CONTRACT_IR_VERSION.to_string(),
+        schema_version: CONTRACT_SCHEMA_VERSION.to_string(),
         source_hash,
         package_id,
         package,

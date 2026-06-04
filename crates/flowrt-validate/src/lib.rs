@@ -9,9 +9,9 @@ use std::fmt::{Display, Formatter};
 
 use flowrt_conformance::message_abi_expectations;
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ComponentKind, ContractIr, EntityId, GraphIr, InstanceIr,
-    LanguageKind, PortIr, PortRef, TaskIr, TriggerKind, TypeExpr, backend_capabilities,
-    is_known_backend,
+    CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelKind, ComponentIr, ComponentKind,
+    ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind, PortIr, PortRef, RSDL_VERSION, TaskIr,
+    TriggerKind, TypeExpr, backend_capabilities, is_known_backend,
 };
 
 /// validation passes 返回的结果类型。
@@ -70,6 +70,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         .iter()
         .map(|ty| ty.name.as_str())
         .collect::<BTreeSet<_>>();
+    validate_contract_versions(ir, &mut errors);
     validate_contract_shape(ir, &mut errors);
     validate_entity_name_uniqueness(ir, &mut errors);
     validate_names(ir, &mut errors);
@@ -84,6 +85,27 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
         Ok(())
     } else {
         Err(ValidationReport { errors })
+    }
+}
+
+fn validate_contract_versions(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    if ir.ir_version != CONTRACT_IR_VERSION {
+        errors.push(ValidationError::new(format!(
+            "unsupported Contract IR version `{}`; expected `{CONTRACT_IR_VERSION}`",
+            ir.ir_version
+        )));
+    }
+    if ir.schema_version != CONTRACT_SCHEMA_VERSION {
+        errors.push(ValidationError::new(format!(
+            "unsupported Contract IR schema version `{}`; expected `{CONTRACT_SCHEMA_VERSION}`",
+            ir.schema_version
+        )));
+    }
+    if ir.package.rsdl_version != RSDL_VERSION {
+        errors.push(ValidationError::new(format!(
+            "unsupported RSDL version `{}`; expected `{RSDL_VERSION}`",
+            ir.package.rsdl_version
+        )));
     }
 }
 
@@ -957,6 +979,36 @@ rsdl_version = "0.1"
                 .message
                 .contains("Contract IR v0.1 must contain exactly one graph; found 2")
         }));
+    }
+
+    #[test]
+    fn rejects_unsupported_contract_versions() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.ir_version = "9.9".to_string();
+        ir.schema_version = "8.8".to_string();
+        ir.package.rsdl_version = "7.7".to_string();
+
+        let report = validate_contract(&ir).expect_err("unsupported versions should fail");
+
+        for expected in [
+            "unsupported Contract IR version `9.9`; expected `0.1`",
+            "unsupported Contract IR schema version `8.8`; expected `0.1`",
+            "unsupported RSDL version `7.7`; expected `0.1`",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}"
+            );
+        }
     }
 
     #[test]
