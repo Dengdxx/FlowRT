@@ -11,8 +11,8 @@ pub mod introspection;
 pub mod iox2;
 
 pub use backend::{
-    Backend, BackendKind, InprocBackend, InprocScheduler, Iox2Backend, Scheduler, inproc_backend,
-    iox2_backend,
+    Backend, BackendKind, InprocBackend, InprocScheduler, Iox2Backend, Scheduler, ZenohBackend,
+    inproc_backend, iox2_backend, zenoh_backend,
 };
 pub use channel::{
     BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,

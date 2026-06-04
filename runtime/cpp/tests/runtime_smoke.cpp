@@ -89,6 +89,39 @@ int main() {
             "observability:health",
         });
 
+    flowrt::ZenohBackend zenoh_backend;
+    assert(zenoh_backend.kind() == flowrt::BackendKind::Zenoh);
+    assert(zenoh_backend.capabilities().contains("topology:multi_process"));
+    assert(zenoh_backend.capabilities().contains("topology:multi_host"));
+    assert(zenoh_backend.capabilities().contains("transfer:copy"));
+    assert_capabilities_equal(
+        zenoh_backend.capabilities(),
+        std::array<std::string_view, 23>{
+            "abi:fixed_size_plain_data",
+            "layout:native_layout",
+            "allocation:bounded",
+            "graph:static_graph",
+            "trigger:periodic",
+            "trigger:on_message",
+            "trigger:startup",
+            "trigger:shutdown",
+            "timing:deadline_aware",
+            "channel:latest",
+            "channel:fifo",
+            "overflow:drop_oldest",
+            "overflow:drop_newest",
+            "overflow:error",
+            "overflow:block",
+            "stale:warn",
+            "stale:drop",
+            "stale:hold_last",
+            "stale:error",
+            "topology:multi_process",
+            "topology:multi_host",
+            "transfer:copy",
+            "observability:health",
+        });
+
     std::size_t seen = 0;
     const auto scheduler_status = inproc_backend.scheduler().run_ticks(
         5, [&seen](std::size_t tick, flowrt::Context &) -> flowrt::Status {
