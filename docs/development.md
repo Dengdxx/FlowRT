@@ -35,6 +35,28 @@ cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
+本地规格与生成物入库防回归：
+
+```bash
+tracked=$(
+  git ls-files -- \
+    docs/architecture-plan.md \
+    docs/backend-contract.md \
+    docs/contract-ir-v0.1.md \
+    docs/message-abi-v0.1.md \
+    docs/project-layout.md \
+    docs/rsdl-v0.1.md \
+    'flowrt/**' \
+    'examples/*/flowrt/**'
+)
+if [ -n "$tracked" ]; then
+  printf '%s\n' "以下本地规格或 FlowRT 生成物已被 git tracked，必须移出索引："
+  printf '%s\n' "$tracked"
+  exit 1
+fi
+printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
+```
+
 仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但面向用户的 README、文档、示例和最终说明应使用安装后的 `flowrt ...`。
 
 ## 代码与生成物边界
@@ -102,6 +124,7 @@ test(abi): 补充 C++ 与 Rust 消息布局测试
 
 - 一个提交只包含同一主题的代码、测试、文档和 changelog 更新。
 - 提交前运行与改动匹配的最小验证。
+- 提交前运行本地规格与生成物入库防回归检查，确认 `docs/` 下本地规格草案、`flowrt/` 和 `examples/*/flowrt/` 没有被 git tracked。
 - 不把生成物、大型构建输出或未验证半成品混入提交。
 - `docs/` 下被 `.gitignore` 排除的本地设计/规格文件不得加入索引。
 
