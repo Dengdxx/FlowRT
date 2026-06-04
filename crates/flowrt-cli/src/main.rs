@@ -12,6 +12,10 @@ use flowrt_ir::{
     ContractIr, LanguageKind, hash_source, normalize_document, project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
+use object::{Object, ObjectSection};
+use serde::Deserialize;
+
+const SELF_DESCRIPTION_SECTION: &str = ".flowrt.selfdesc";
 
 #[derive(Debug, Parser)]
 #[command(name = "flowrt")]
@@ -95,6 +99,18 @@ enum Command {
         /// contract.ir.json 路径。
         ir: PathBuf,
     },
+
+    /// 从 FlowRT 应用二进制或 selfdesc.json 输出静态拓扑。
+    List {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        image: PathBuf,
+    },
+
+    /// 从 FlowRT 应用二进制或 selfdesc.json 输出实例列表。
+    Nodes {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        image: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -168,6 +184,14 @@ fn main() -> Result<()> {
             let contract = load_contract_from_json(&ir)?;
             println!("{}", summary(&contract));
         }
+        Command::List { image } => {
+            let self_description = load_self_description(&image)?;
+            println!("{}", self_description_summary(&self_description));
+        }
+        Command::Nodes { image } => {
+            let self_description = load_self_description(&image)?;
+            println!("{}", self_description_nodes(&self_description));
+        }
     }
     Ok(())
 }
@@ -233,6 +257,157 @@ fn load_contract_from_json(path: &Path) -> Result<ContractIr> {
         .with_context(|| format!("failed to parse Contract IR `{}`", path.display()))?;
     validate_contract(&contract).context("contract validation failed")?;
     Ok(contract)
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescription {
+    self_description_version: String,
+    source_hash: String,
+    package: SelfDescriptionPackage,
+    graphs: Vec<SelfDescriptionGraph>,
+    message_abi: Vec<SelfDescriptionMessageAbi>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionPackage {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionGraph {
+    name: String,
+    instances: Vec<SelfDescriptionInstance>,
+    tasks: Vec<SelfDescriptionTask>,
+    channels: Vec<SelfDescriptionChannel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionInstance {
+    name: String,
+    component: String,
+    process: String,
+    runtime: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionTask {
+    instance: String,
+    trigger: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionChannel {
+    from: String,
+    to: String,
+    message_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionMessageAbi {
+    type_name: String,
+    size_bytes: usize,
+}
+
+fn load_self_description(path: &Path) -> Result<SelfDescription> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read FlowRT image `{}`", path.display()))?;
+    let json = if path
+        .file_name()
+        .is_some_and(|name| name == OsStr::new("selfdesc.json"))
+    {
+        bytes
+    } else {
+        self_description_section_bytes(&bytes).with_context(|| {
+            format!(
+                "failed to read `{SELF_DESCRIPTION_SECTION}` section from `{}`",
+                path.display()
+            )
+        })?
+    };
+    serde_json::from_slice(&json).with_context(|| {
+        format!(
+            "failed to parse FlowRT self-description from `{}`",
+            path.display()
+        )
+    })
+}
+
+fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>> {
+    let object =
+        object::File::parse(image).context("FlowRT image is not a supported object file")?;
+    let section = object
+        .section_by_name(SELF_DESCRIPTION_SECTION)
+        .with_context(|| format!("FlowRT image does not contain `{SELF_DESCRIPTION_SECTION}`"))?;
+    let data = section
+        .data()
+        .context("failed to decode FlowRT self-description section data")?;
+    Ok(data.to_vec())
+}
+
+fn self_description_summary(self_description: &SelfDescription) -> String {
+    let mut output = format!(
+        "package={} selfdesc={} source_hash={} graphs={} instances={} tasks={} channels={} messages={}",
+        self_description.package.name,
+        self_description.self_description_version,
+        self_description.source_hash,
+        self_description.graphs.len(),
+        self_description
+            .graphs
+            .iter()
+            .map(|graph| graph.instances.len())
+            .sum::<usize>(),
+        self_description
+            .graphs
+            .iter()
+            .map(|graph| graph.tasks.len())
+            .sum::<usize>(),
+        self_description
+            .graphs
+            .iter()
+            .map(|graph| graph.channels.len())
+            .sum::<usize>(),
+        self_description.message_abi.len()
+    );
+    for graph in &self_description.graphs {
+        output.push_str(&format!("\ngraph {}", graph.name));
+        for task in &graph.tasks {
+            output.push_str(&format!(
+                "\ntask {} trigger={}",
+                task.instance, task.trigger
+            ));
+        }
+        for channel in &graph.channels {
+            output.push_str(&format!(
+                "\nchannel {} -> {} type={}",
+                channel.from, channel.to, channel.message_type
+            ));
+        }
+    }
+    for message in &self_description.message_abi {
+        output.push_str(&format!(
+            "\nmessage {} size={}",
+            message.type_name, message.size_bytes
+        ));
+    }
+    output
+}
+
+fn self_description_nodes(self_description: &SelfDescription) -> String {
+    let mut lines = Vec::new();
+    for graph in &self_description.graphs {
+        lines.push(format!("graph {}", graph.name));
+        for instance in &graph.instances {
+            lines.push(format!(
+                "{} process={} runtime={} component={}",
+                instance.name, instance.process, instance.runtime, instance.component
+            ));
+        }
+    }
+    if lines.is_empty() {
+        "no graphs".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn write_contract(contract: &ContractIr, out_dir: &Path) -> Result<PathBuf> {
@@ -1430,6 +1605,110 @@ default_stale_policy = "warn"
 
         assert_eq!(command.get_name(), "flowrt");
         assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn self_description_sidecar_drives_list_and_nodes_output() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "source",
+      "component": "imu_sim",
+      "process": "main",
+      "target": null,
+      "runtime": "rust"
+    }],
+    "tasks": [{ "instance": "source", "trigger": "periodic" }],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 8 }]
+}
+"#;
+        let root = temp_test_dir("selfdesc-sidecar");
+        let path = root.join("selfdesc.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&path, source).unwrap();
+
+        let self_description = load_self_description(&path).unwrap();
+        let list = self_description_summary(&self_description);
+        let nodes = self_description_nodes(&self_description);
+
+        assert!(list.contains("package=robot_demo"));
+        assert!(list.contains("channel source.imu -> sink.imu type=Imu"));
+        assert!(list.contains("message Imu size=8"));
+        assert!(nodes.contains("source process=main runtime=rust component=imu_sim"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_self_description_from_object_section() {
+        let root = temp_test_dir("selfdesc-section");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "selfdesc-section-test"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            r##"
+#[used]
+#[unsafe(link_section = ".flowrt.selfdesc")]
+static FLOWRT_SELF_DESCRIPTION: [u8; 253] = *br#"{
+  "self_description_version": "0.1",
+  "source_hash": "feedface",
+  "package": { "name": "binary_demo" },
+  "graphs": [{ "name": "default", "instances": [], "tasks": [], "channels": [] }],
+  "message_abi": [{ "type_name": "Ping", "size_bytes": 4 }]
+}
+"#;
+
+fn main() {}
+"##,
+        )
+        .unwrap();
+
+        let status = ProcessCommand::new("cargo")
+            .arg("build")
+            .arg("--quiet")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let binary_name = if cfg!(windows) {
+            "selfdesc-section-test.exe"
+        } else {
+            "selfdesc-section-test"
+        };
+        let binary = root.join("target/debug").join(binary_name);
+        let self_description = load_self_description(&binary).unwrap();
+
+        assert_eq!(self_description.package.name, "binary_demo");
+        assert_eq!(self_description.message_abi[0].type_name, "Ping");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
