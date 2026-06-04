@@ -398,6 +398,12 @@ fn validate_tasks(
     graph: &GraphIr,
     errors: &mut Vec<ValidationError>,
 ) {
+    let incoming_binds = graph
+        .binds
+        .iter()
+        .map(|bind| (bind.to.instance.id.clone(), bind.to.port.as_str()))
+        .collect::<BTreeSet<_>>();
+
     for task in &graph.tasks {
         let Some(instance) = instances.get(task.instance.name.as_str()) else {
             errors.push(ValidationError::new(format!(
@@ -424,6 +430,7 @@ fn validate_tasks(
         }
 
         validate_task_ports(task, component, errors);
+        validate_task_input_binds(task, component, &incoming_binds, errors);
     }
 }
 
@@ -452,6 +459,31 @@ fn validate_task_ports(task: &TaskIr, component: &ComponentIr, errors: &mut Vec<
             errors.push(ValidationError::new(format!(
                 "task on instance `{}` references undeclared output port `{}`",
                 task.instance.name, output
+            )));
+        }
+    }
+}
+
+fn validate_task_input_binds(
+    task: &TaskIr,
+    component: &ComponentIr,
+    incoming_binds: &BTreeSet<(EntityId, &str)>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let input_ports = component
+        .inputs
+        .iter()
+        .map(|port| port.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for input in &task.inputs {
+        if !input_ports.contains(input.as_str()) {
+            continue;
+        }
+        if !incoming_binds.contains(&(task.instance.id.clone(), input.as_str())) {
+            errors.push(ValidationError::new(format!(
+                "task input `{}.{}` has no incoming bind",
+                task.instance.name, input
             )));
         }
     }
@@ -814,6 +846,38 @@ channel = "latest"
                 .iter()
                 .any(|error| error.message.contains("has no Output port"))
         );
+    }
+
+    #[test]
+    fn rejects_task_input_without_incoming_bind() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("missing incoming bind should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("task input `consumer.sample` has no incoming bind")
+        }));
     }
 
     #[test]
