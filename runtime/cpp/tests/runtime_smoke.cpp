@@ -71,12 +71,19 @@ int main() {
     assert(!drop_channel.view_at(111).present());
     assert(drop_channel.view_at(111).stale());
 
+    auto hold_last_channel = flowrt::LatestChannel<Sample>::with_stale_config(
+        flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::HoldLast});
+    hold_last_channel.publish_at(Sample{19U}, 100);
+    assert(hold_last_channel.view_at(111).present());
+    assert(hold_last_channel.view_at(111).stale());
+    assert(hold_last_channel.view_at(111).get()->value == 19U);
+
     auto error_channel = flowrt::LatestChannel<Sample>::with_stale_config(
         flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::Error});
-    error_channel.publish_at(Sample{19U}, 100);
+    error_channel.publish_at(Sample{23U}, 100);
     assert(error_channel.view_at(111).present());
     assert(error_channel.view_at(111).stale());
-    assert(error_channel.view_at(111).get()->value == 19U);
+    assert(error_channel.view_at(111).get()->value == 23U);
 
     flowrt::FifoChannel<Sample> fifo_channel(1, flowrt::OverflowPolicy::DropOldest);
     const auto first = fifo_channel.push(Sample{1U});
@@ -87,6 +94,17 @@ int main() {
     assert(std::get<flowrt::ChannelWriteOutcome>(second) ==
            flowrt::ChannelWriteOutcome::DroppedOldest);
     assert(fifo_channel.pop()->value == 2U);
+
+    flowrt::FifoChannel<Sample> block_channel(1, flowrt::OverflowPolicy::Block);
+    const auto block_first = block_channel.push(Sample{3U});
+    assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(block_first));
+    assert(std::get<flowrt::ChannelWriteOutcome>(block_first) ==
+           flowrt::ChannelWriteOutcome::Accepted);
+    const auto block_second = block_channel.push(Sample{4U});
+    assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(block_second));
+    assert(std::get<flowrt::ChannelWriteOutcome>(block_second) ==
+           flowrt::ChannelWriteOutcome::Backpressured);
+    assert(block_channel.pop()->value == 3U);
 
     auto iox2_config = flowrt::iox2::Iox2ChannelConfig::fifo(0, flowrt::OverflowPolicy::DropOldest)
                            .with_stale_config(flowrt::StaleConfig{std::chrono::milliseconds{5},
