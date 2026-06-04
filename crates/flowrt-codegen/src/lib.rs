@@ -4319,13 +4319,27 @@ channel = "latest"
         );
         let bundle = emit_artifacts(&ir).unwrap();
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
-        let sink_step_start = rust_shell.find("        let used_in =").unwrap();
-        let monitor_step_start = rust_shell
-            .find("        let used_in = self.bind_2.view_at(tick_time_ms);")
-            .unwrap();
+        let bind_index = |to_instance: &str, to_port: &str| {
+            ir.graphs[0]
+                .binds
+                .iter()
+                .position(|bind| {
+                    bind.to.instance.name == to_instance && bind.to.port.as_str() == to_port
+                })
+                .unwrap()
+        };
+        let sink_used_bind = bind_index("sink", "used_in");
+        let sink_unused_bind = bind_index("sink", "unused_in");
+        let monitor_used_bind = bind_index("monitor", "used_in");
+        let sink_used_read =
+            format!("        let used_in = self.bind_{sink_used_bind}.view_at(tick_time_ms);");
+        let monitor_used_read =
+            format!("        let used_in = self.bind_{monitor_used_bind}.view_at(tick_time_ms);");
+        let sink_step_start = rust_shell.find(&sink_used_read).unwrap();
+        let monitor_step_start = rust_shell.find(&monitor_used_read).unwrap();
         let sink_step = &rust_shell[sink_step_start..monitor_step_start];
 
-        assert!(sink_step.contains("let used_in = self.bind_0.view_at(tick_time_ms);"));
+        assert!(sink_step.contains(&sink_used_read));
         assert!(sink_step.contains("let unused_in = flowrt::Latest::new(None, false);"));
         assert!(sink_step.contains("let mut used_out = flowrt::Output::<Sample>::new();"));
         assert!(sink_step.contains("let mut unused_out = flowrt::Output::<Sample>::new();"));
@@ -4335,7 +4349,9 @@ channel = "latest"
                 .contains("self.sink.on_tick(used_in, unused_in, &mut used_out, &mut unused_out)")
         );
         assert!(sink_step.contains("if let Some(value) = used_out.as_ref().copied()"));
-        assert!(!sink_step.contains("self.bind_1.view_at(tick_time_ms)"));
+        assert!(!sink_step.contains(&format!(
+            "self.bind_{sink_unused_bind}.view_at(tick_time_ms)"
+        )));
         assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().copied()"));
     }
 

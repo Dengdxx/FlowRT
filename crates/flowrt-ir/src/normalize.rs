@@ -481,7 +481,7 @@ fn normalize_binds(
         .unwrap_or(StalePolicy::Warn);
     let default_max_age = default_policy.and_then(|profile| profile.defaults.max_age_ms);
 
-    document
+    let mut binds = document
         .binds
         .iter()
         .enumerate()
@@ -517,7 +517,22 @@ fn normalize_binds(
                 capability_requirements: channel_capabilities(channel, overflow, stale),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    binds.sort_by(|left, right| {
+        (
+            &left.from.instance.name,
+            &left.from.port,
+            &left.to.instance.name,
+            &left.to.port,
+        )
+            .cmp(&(
+                &right.from.instance.name,
+                &right.from.port,
+                &right.to.instance.name,
+                &right.to.port,
+            ))
+    });
+    Ok(binds)
 }
 
 fn parse_port_ref(endpoint: &str, instance_refs: &BTreeMap<String, EntityRef>) -> Result<PortRef> {
@@ -832,6 +847,77 @@ channel = "latest"
 
         assert_eq!(ir.graphs[0].binds[0].channel, ChannelKind::Latest);
         assert_eq!(ir.graphs[0].binds[0].depth, Some(1));
+    }
+
+    #[test]
+    fn canonicalizes_bind_order_independent_of_source_order() {
+        let source_a = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.alpha]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.beta]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+
+[instance.alpha]
+component = "alpha"
+
+[instance.beta]
+component = "beta"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "beta.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "alpha.sample"
+channel = "latest"
+"#;
+        let source_b = source_a.replace(
+            r#"[[bind.dataflow]]
+from = "producer.sample"
+to = "beta.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "alpha.sample"
+channel = "latest""#,
+            r#"[[bind.dataflow]]
+from = "producer.sample"
+to = "alpha.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "beta.sample"
+channel = "latest""#,
+        );
+        let raw_a = parse_str(source_a).unwrap();
+        let raw_b = parse_str(&source_b).unwrap();
+        let source_hash = hash_source("same logical source");
+
+        let ir_a = normalize_document(&raw_a, source_hash.clone()).unwrap();
+        let ir_b = normalize_document(&raw_b, source_hash).unwrap();
+
+        assert_eq!(ir_a, ir_b);
     }
 
     #[test]
