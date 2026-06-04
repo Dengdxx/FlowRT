@@ -37,6 +37,8 @@ runtime/
   cpp/
   rust/
 examples/
+  import_demo/rsdl/robot.rsdl
+  import_demo/rsdl/graphs/default.rsdl
   imu_demo/rsdl/robot.rsdl
   imu_demo/src/rust/mod.rs
   imu_demo_iox2/rsdl/robot.rsdl

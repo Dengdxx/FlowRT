@@ -1,0 +1,25 @@
+[instance.imu_sim]
+component = "imu_sim"
+process = "main"
+target = "linux"
+
+[instance.imu_sim.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.estimator]
+component = "estimator"
+process = "main"
+target = "linux"
+
+[instance.estimator.task]
+trigger = "on_message"
+input = ["imu"]
+output = ["odom"]
+deadline_ms = 10
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "estimator.imu"
+channel = "latest"
