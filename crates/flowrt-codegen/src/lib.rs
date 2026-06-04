@@ -1549,6 +1549,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         "const PACKAGE_NAME: &str = {};\n\n",
         rust_string_literal(&contract.package.name)
     ));
+    output.push_str(&emit_rust_introspection_helpers());
     output.push_str("pub struct App {\n");
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
@@ -1622,15 +1623,21 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             TaskEmissionPhase::Shutdown,
         ));
     }
-    output.push_str(&emit_rust_app_run(&order));
+    output.push_str(&emit_rust_app_run(&order, &bind_plans));
     output.push_str(&emit_rust_app_run_process_dispatch(&process_plans));
     for process in &process_plans {
+        let step_function_name = format!("step_process_{}", process.method_suffix);
+        let startup_function_name = format!("step_process_{}_startup", process.method_suffix);
+        let shutdown_function_name = format!("step_process_{}_shutdown", process.method_suffix);
         output.push_str(&emit_rust_app_run_function(
             &format!("run_process_{}", process.method_suffix),
-            &format!("step_process_{}", process.method_suffix),
-            &format!("step_process_{}_startup", process.method_suffix),
-            &format!("step_process_{}_shutdown", process.method_suffix),
+            RustRunStepFunctions {
+                scheduler: &step_function_name,
+                startup: &startup_function_name,
+                shutdown: &shutdown_function_name,
+            },
             &process.instances,
+            &bind_plans,
             &process.name,
             false,
         ));
@@ -1932,6 +1939,76 @@ fn outgoing_bind_indices_map(plans: &[BindRuntimePlan]) -> BTreeMap<(String, Str
     map
 }
 
+fn active_binds_for_instances<'a>(
+    binds: &'a [BindRuntimePlan],
+    order: &[&InstanceIr],
+) -> Vec<&'a BindRuntimePlan> {
+    let active_instances = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
+    binds
+        .iter()
+        .filter(|bind| {
+            active_instances.contains(bind.source_instance.as_str())
+                || active_instances.contains(bind.target_instance.as_str())
+        })
+        .collect()
+}
+
+fn runtime_channel_name(bind: &BindRuntimePlan) -> String {
+    format!(
+        "{}.{}_to_{}.{}",
+        bind.source_instance, bind.source_port, bind.target_instance, bind.target_port
+    )
+}
+
+fn runtime_channel_message_type(bind: &BindRuntimePlan) -> String {
+    bind.source_type.canonical_syntax()
+}
+
+fn emit_rust_introspection_helpers() -> String {
+    r#"fn register_introspection_channel(
+    state: &flowrt::IntrospectionState,
+    name: &'static str,
+    message_type: &'static str,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.register_channel(name, message_type);
+    }));
+}
+
+fn record_introspection_publish<T: Copy>(
+    state: &flowrt::IntrospectionState,
+    name: &'static str,
+    message_type: &'static str,
+    value: &T,
+    published_at_ms: u64,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.record_channel_publish(name, message_type, value, Some(published_at_ms));
+    }));
+}
+
+"#
+    .to_string()
+}
+
+fn emit_rust_introspection_channel_registration(
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+) -> String {
+    let mut output = String::new();
+    for bind in active_binds_for_instances(binds, order) {
+        output.push_str(&format!(
+            "        register_introspection_channel(&introspection_state, {}, {});\n",
+            rust_string_literal(&runtime_channel_name(bind)),
+            rust_string_literal(&runtime_channel_message_type(bind))
+        ));
+    }
+    output
+}
+
 fn emit_rust_app_new(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -1981,9 +2058,10 @@ fn emit_rust_app_step(
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "    fn {function_name}(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {{\n",
+        "    fn {function_name}(\n        &mut self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n    ) -> flowrt::Status {{\n",
     ));
     output.push_str("        let _ = tick;\n");
+    output.push_str("        let _ = introspection_state;\n");
     if runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
@@ -2113,13 +2191,16 @@ fn emit_rust_app_step(
     output
 }
 
-fn emit_rust_app_run(order: &[&InstanceIr]) -> String {
+fn emit_rust_app_run(order: &[&InstanceIr], binds: &[BindRuntimePlan]) -> String {
     emit_rust_app_run_function(
         "run",
-        "step",
-        "step_startup",
-        "step_shutdown",
+        RustRunStepFunctions {
+            scheduler: "step",
+            startup: "step_startup",
+            shutdown: "step_shutdown",
+        },
         order,
+        binds,
         "main",
         true,
     )
@@ -2141,12 +2222,18 @@ fn emit_rust_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> S
     output
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RustRunStepFunctions<'a> {
+    scheduler: &'a str,
+    startup: &'a str,
+    shutdown: &'a str,
+}
+
 fn emit_rust_app_run_function(
     function_name: &str,
-    step_function_name: &str,
-    startup_function_name: &str,
-    shutdown_function_name: &str,
+    steps: RustRunStepFunctions<'_>,
     order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
     process_name: &str,
     public: bool,
 ) -> String {
@@ -2155,8 +2242,10 @@ fn emit_rust_app_run_function(
     output.push_str(&format!(
         "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
     ));
+    output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
+    output.push_str(&emit_rust_introspection_channel_registration(order, binds));
     output.push_str(&format!(
-        "        let introspection_state = flowrt::IntrospectionState::new();\n        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",
+        "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",
         "PACKAGE_NAME",
         rust_string_literal(process_name)
     ));
@@ -2179,13 +2268,16 @@ fn emit_rust_app_run_function(
         ));
     }
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context);\n        }}\n",
+        "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context, &introspection_state);\n        }}\n",
+        startup_function_name = steps.startup
     ));
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick, tick_context)\n            }});\n        }}\n",
+        "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick, tick_context, &introspection_state)\n            }});\n        }}\n",
+        step_function_name = steps.scheduler
     ));
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context);\n        }}\n",
+        "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context, &introspection_state);\n        }}\n",
+        shutdown_function_name = steps.shutdown
     ));
     for instance in order.iter().rev() {
         output.push_str(&format!(
@@ -2326,10 +2418,19 @@ fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
     )
 }
 
+fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
+    format!(
+        "            record_introspection_publish(introspection_state, {}, {}, &value, tick_time_ms);\n",
+        rust_string_literal(&runtime_channel_name(bind)),
+        rust_string_literal(&runtime_channel_message_type(bind))
+    )
+}
+
 fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    let introspection_record = runtime_introspection_publish_record(bind);
     if selected_backend == "iox2" {
         return format!(
-            "            if self.{field}.publish_at(value, tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n",
+            "            if self.{field}.publish_at(value, tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n{introspection_record}",
             field = bind.field_name
         );
     }
@@ -2337,13 +2438,13 @@ fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> Stri
     match bind.channel {
         ChannelKind::Latest => {
             format!(
-                "            self.{field}.publish_at(value, tick_time_ms);\n",
+                "            self.{field}.publish_at(value, tick_time_ms);\n{introspection_record}",
                 field = bind.field_name
             )
         }
         ChannelKind::Fifo => {
             format!(
-                "            match self.{field}.push_at(value, tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) | Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,\n                Err(flowrt::ChannelError::Overflow) => return flowrt::Status::Error,\n            }}\n",
+                "            match self.{field}.push_at(value, tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,\n                Err(flowrt::ChannelError::Overflow) => return flowrt::Status::Error,\n            }}\n",
                 field = bind.field_name
             )
         }
@@ -4510,6 +4611,116 @@ backends = ["inproc"]
     }
 
     #[test]
+    fn rust_shell_registers_active_channels_and_records_publish_snapshots() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor_source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sensor_sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.aux_source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.aux_sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.sensor_source]
+component = "sensor_source"
+process = "sensors"
+target = "linux"
+
+[instance.sensor_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sensor_sink]
+component = "sensor_sink"
+process = "control"
+target = "linux"
+
+[instance.sensor_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.aux_source]
+component = "aux_source"
+process = "aux"
+target = "linux"
+
+[instance.aux_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.aux_sink]
+component = "aux_sink"
+process = "aux"
+target = "linux"
+
+[instance.aux_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "sensor_source.sample"
+to = "sensor_sink.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "aux_source.sample"
+to = "aux_sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let sensor_channel = "sensor_source.sample_to_sensor_sink.sample";
+        let aux_channel = "aux_source.sample_to_aux_sink.sample";
+        let sensor_register = format!(
+            "register_introspection_channel(&introspection_state, {}, \"Sample\");",
+            rust_string_literal(sensor_channel)
+        );
+        let aux_register = format!(
+            "register_introspection_channel(&introspection_state, {}, \"Sample\");",
+            rust_string_literal(aux_channel)
+        );
+        let sensor_record = format!(
+            "record_introspection_publish(introspection_state, {}, \"Sample\", &value, tick_time_ms);",
+            rust_string_literal(sensor_channel)
+        );
+
+        let sensors_run = generated_function_block(rust_shell, "fn run_process_sensors");
+        assert!(sensors_run.contains(&sensor_register));
+        assert!(!sensors_run.contains(&aux_register));
+        assert!(rust_shell.contains(&sensor_record));
+        let sensor_publish = "self.bind_0.publish_at(value, tick_time_ms)";
+        assert!(
+            rust_shell.find(sensor_publish).unwrap() < rust_shell.find(&sensor_record).unwrap()
+        );
+    }
+
+    #[test]
     fn emits_inproc_fifo_stale_channel_reads_from_bind_policy() {
         let ir = contract_from_source(
             r#"
@@ -5055,19 +5266,22 @@ period_ms = 5
         let run_start = rust_shell.find("    pub fn run(").unwrap();
         let run = &rust_shell[run_start..];
         let startup_call = run
-            .find("self.step_startup(0, &mut lifecycle_context)")
+            .find("self.step_startup(0, &mut lifecycle_context, &introspection_state)")
             .unwrap();
         let scheduler_call = run.find("backend.scheduler().run_ticks").unwrap();
         let shutdown_call = run
-            .find("self.step_shutdown(0, &mut lifecycle_context)")
+            .find("self.step_shutdown(0, &mut lifecycle_context, &introspection_state)")
             .unwrap();
+        let startup_step = generated_function_block(rust_shell, "fn step_startup");
+        let shutdown_step = generated_function_block(rust_shell, "fn step_shutdown");
+        let scheduler_step = generated_function_block(rust_shell, "fn step(");
 
         assert!(startup_call < scheduler_call);
         assert!(scheduler_call < shutdown_call);
-        assert!(rust_shell.contains("fn step_startup(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.boot.on_tick()"));
-        assert!(rust_shell.contains("fn step_shutdown(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.cleanup.on_tick()"));
-        assert!(!rust_shell.contains("fn step(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.boot.on_tick()"));
-        assert!(!rust_shell.contains("fn step(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.cleanup.on_tick()"));
+        assert!(startup_step.contains("if self.boot.on_tick()"));
+        assert!(shutdown_step.contains("if self.cleanup.on_tick()"));
+        assert!(!scheduler_step.contains("if self.boot.on_tick()"));
+        assert!(!scheduler_step.contains("if self.cleanup.on_tick()"));
     }
 
     #[test]
@@ -5812,5 +6026,17 @@ backends = ["iox2"]
             .find(|artifact| artifact.relative_path.as_path() == std::path::Path::new(path))
             .map(|artifact| artifact.content.as_str())
             .unwrap()
+    }
+
+    fn generated_function_block<'a>(source: &'a str, function: &str) -> &'a str {
+        let start = source
+            .find(function)
+            .expect("generated function must exist");
+        let rest = &source[start..];
+        let next = rest[function.len()..]
+            .find("\n    fn ")
+            .map(|offset| function.len() + offset)
+            .unwrap_or(rest.len());
+        &rest[..next]
     }
 }
