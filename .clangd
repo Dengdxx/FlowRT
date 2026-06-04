@@ -1,0 +1,19 @@
+---
+If:
+  PathMatch: runtime/cpp/.*
+CompileFlags:
+  CompilationDatabase: build/cpp
+  Add:
+    - -std=c++20
+    - -Iruntime/cpp/include
+    - -pthread
+---
+If:
+  PathMatch: examples/.*/src/cpp/.*
+CompileFlags:
+  CompilationDatabase: None
+  Add:
+    - -std=c++20
+    - -I../../../../runtime/cpp/include
+    - -I../../flowrt/cpp/include
+    - -pthread

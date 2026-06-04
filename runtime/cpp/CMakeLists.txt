@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(flowrt_runtime_cpp LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 find_package(Threads REQUIRED)
 
 add_library(flowrt_runtime INTERFACE)

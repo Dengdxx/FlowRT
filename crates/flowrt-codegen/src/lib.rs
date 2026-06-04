@@ -3091,7 +3091,7 @@ fn common_process_target(instances: &[&InstanceIr]) -> Option<String> {
 fn emit_cmake(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name);
     let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.20)\nproject({}_flowrt_app LANGUAGES CXX)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
+        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.20)\nproject({}_flowrt_app LANGUAGES CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
         package_name, package_name, package_name, package_name
     );
 
@@ -4328,6 +4328,7 @@ channel = "latest"
         assert!(main.contains("flowrt_app::run_process(process)"));
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+        assert!(cmake.contains("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)"));
         assert!(cmake.contains("FLOWRT_CPP_RUNTIME_DIR"));
         assert!(cmake.contains(
             "add_library(robot_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)"
