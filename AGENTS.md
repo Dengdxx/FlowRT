@@ -178,7 +178,7 @@ startup
 shutdown
 ```
 
-多输入默认语义为 `latest snapshot`。codegen 必须在用户接口中表达该语义，例如 C++ 使用 `Latest<T>` view，Rust 使用 `Latest<'_, T>` view，并暴露 present/stale 信息。task 声明的每个输入端口必须有且只有一条 incoming dataflow bind；缺失或多重绑定都必须由 validator 拒绝，不能让 codegen 隐式传空视图或 panic。v0.1 同步 tick shell 中，`periodic` task 每 tick 调用，`on_message` task 只有声明输入中至少一个 `Latest::present()` / `Latest<T>::present()` 为真时才调用；`startup` task 在组件成功 start 后、scheduler 前调用一次；`shutdown` task 在 scheduler 正常返回后、组件 stop 前调用一次。后续可扩展显式 `all_ready`、`any_ready`、时间同步窗口和 stale-data policy。
+多输入默认语义为 `latest snapshot`。codegen 必须在用户接口中表达该语义，例如 C++ 使用 `Latest<T>` view，Rust 使用 `Latest<'_, T>` view，并暴露 present/stale 信息。task 声明的每个输入端口必须有且只有一条 incoming dataflow bind；缺失或多重绑定都必须由 validator 拒绝，不能让 codegen 隐式传空视图或 panic。v0.1 同步 tick shell 中，`periodic` task 每 tick 调用且必须声明 `period_ms`；`on_message` task 只有声明输入中至少一个 `Latest::present()` / `Latest<T>::present()` 为真时才调用；`startup` task 在组件成功 start 后、scheduler 前调用一次；`shutdown` task 在 scheduler 正常返回后、组件 stop 前调用一次。非 `periodic` task 不得声明 `period_ms`，避免无效周期字段被 runtime shell 忽略。后续可扩展显式 `all_ready`、`any_ready`、时间同步窗口和 stale-data policy。
 
 v0.1 生成 shell 使用同步拓扑 tick，因此 codegen 可以假设已经通过 validator 的 graph 是 acyclic。不要在 codegen 中把环路隐式解释成反馈、延迟或跨 tick 状态。
 

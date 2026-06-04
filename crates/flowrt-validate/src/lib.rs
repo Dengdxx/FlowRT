@@ -439,6 +439,12 @@ fn validate_tasks(
                 instance.name
             )));
         }
+        if task.trigger != TriggerKind::Periodic && task.period_ms.is_some() {
+            errors.push(ValidationError::new(format!(
+                "task on instance `{}` must not set period_ms unless trigger is periodic",
+                instance.name
+            )));
+        }
         if task.trigger == TriggerKind::OnMessage && task.inputs.is_empty() {
             errors.push(ValidationError::new(format!(
                 "on_message task on instance `{}` must list at least one input",
@@ -922,6 +928,56 @@ input = ["sample"]
             error
                 .message
                 .contains("task input `consumer.sample` has no incoming bind")
+        }));
+    }
+
+    #[test]
+    fn rejects_period_ms_on_non_periodic_task() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+period_ms = 10
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("non-periodic period_ms should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "task on instance `consumer` must not set period_ms unless trigger is periodic",
+            )
         }));
     }
 
