@@ -18,6 +18,7 @@ int main() {
     assert(inproc_backend.kind() == flowrt::BackendKind::Inproc);
     assert(inproc_backend.capabilities().contains("channel:latest"));
     assert(inproc_backend.capabilities().contains("graph:static_graph"));
+    assert(inproc_backend.capabilities().contains("timing:deadline_aware"));
 
     flowrt::Iox2Backend iox2_backend;
     assert(iox2_backend.kind() == flowrt::BackendKind::Iox2);

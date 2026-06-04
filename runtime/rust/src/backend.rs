@@ -79,6 +79,7 @@ const INPROC_CAPABILITIES: &[&str] = &[
     "stale:error",
     "stale:hold_last",
     "stale:warn",
+    "timing:deadline_aware",
     "topology:single_process",
     "transfer:copy",
 ];
@@ -186,6 +187,7 @@ mod tests {
         let capabilities = backend.capabilities();
         assert!(capabilities.contains("channel:latest"));
         assert!(capabilities.contains("graph:static_graph"));
+        assert!(capabilities.contains("timing:deadline_aware"));
     }
 
     #[test]

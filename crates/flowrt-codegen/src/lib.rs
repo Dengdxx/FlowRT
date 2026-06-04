@@ -655,6 +655,14 @@ fn emit_cpp_app_step(
             output.push_str(&format!("    if ({guard}) {{\n"));
         }
 
+        if task.deadline_ms.is_some() {
+            output.push_str(&format!(
+                "{indent}const auto {instance}_deadline_started_at = std::chrono::steady_clock::now();\n",
+                indent = step_indent(trigger_guard.is_some()),
+                instance = instance.name
+            ));
+        }
+
         for port in &component.outputs {
             let output_local = cpp_step_local_name(&instance.name, &port.name);
             output.push_str(&format!(
@@ -679,6 +687,15 @@ fn emit_cpp_app_step(
             instance = instance.name,
             args = call_args.join(", ")
         ));
+
+        if let Some(deadline_ms) = task.deadline_ms {
+            output.push_str(&format!(
+                "{indent}if (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}}) {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
+                indent = step_indent(trigger_guard.is_some()),
+                inner_indent = nested_step_indent(trigger_guard.is_some()),
+                instance = instance.name
+            ));
+        }
 
         for port in &component.outputs {
             if !task_outputs.contains(port.name.as_str()) {
@@ -1600,6 +1617,14 @@ fn emit_rust_app_step(
             output.push_str(&format!("        if {guard} {{\n"));
         }
 
+        if task.deadline_ms.is_some() {
+            output.push_str(&format!(
+                "{indent}let {name}_deadline_started_at = std::time::Instant::now();\n",
+                indent = rust_step_indent(trigger_guard.is_some()),
+                name = instance.name
+            ));
+        }
+
         for port in &component.outputs {
             output.push_str(&format!(
                 "{indent}let mut {port} = flowrt::Output::<{ty}>::new();\n",
@@ -1623,6 +1648,15 @@ fn emit_rust_app_step(
             name = instance.name,
             args = call_args.join(", ")
         ));
+
+        if let Some(deadline_ms) = task.deadline_ms {
+            output.push_str(&format!(
+                "{indent}if {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms}) {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
+                indent = rust_step_indent(trigger_guard.is_some()),
+                inner_indent = rust_nested_step_indent(trigger_guard.is_some()),
+                name = instance.name
+            ));
+        }
 
         for port in &component.outputs {
             if !task_outputs.contains(port.name.as_str()) {
@@ -4304,6 +4338,128 @@ period_ms = 5
         assert!(cpp_shell.contains("flowrt::Status App::step_shutdown(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (cleanup_ && cleanup_->on_tick()"));
         assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (boot_ && boot_->on_tick()"));
         assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (cleanup_ && cleanup_->on_tick()"));
+    }
+
+    #[test]
+    fn rust_shell_enforces_task_deadline_before_publishing_outputs() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+deadline_ms = 10
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let deadline_start = rust_shell
+            .find("let source_deadline_started_at = std::time::Instant::now();")
+            .unwrap();
+        let source_call = rust_shell
+            .find("self.source.on_tick(&mut sample) != flowrt::Status::Ok")
+            .unwrap();
+        let deadline_guard = rust_shell
+            .find("source_deadline_started_at.elapsed() > std::time::Duration::from_millis(10)")
+            .unwrap();
+        let publish = rust_shell
+            .find("if let Some(value) = sample.as_ref().copied()")
+            .unwrap();
+
+        assert!(deadline_start < source_call);
+        assert!(source_call < deadline_guard);
+        assert!(deadline_guard < publish);
+    }
+
+    #[test]
+    fn cpp_shell_enforces_task_deadline_before_publishing_outputs() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+deadline_ms = 10
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let deadline_start = cpp_shell
+            .find("const auto source_deadline_started_at = std::chrono::steady_clock::now();")
+            .unwrap();
+        let source_call = cpp_shell
+            .find("source_ && source_->on_tick(source_sample) != flowrt::Status::Ok")
+            .unwrap();
+        let deadline_guard = cpp_shell
+            .find("std::chrono::steady_clock::now() - source_deadline_started_at > std::chrono::milliseconds{10}")
+            .unwrap();
+        let publish = cpp_shell
+            .find("if (const auto* value = source_sample.as_ref())")
+            .unwrap();
+
+        assert!(deadline_start < source_call);
+        assert!(source_call < deadline_guard);
+        assert!(deadline_guard < publish);
     }
 
     #[test]

@@ -568,6 +568,9 @@ fn graph_required_capabilities(graph: &GraphIr) -> Vec<CapabilityAtom> {
     let mut capabilities = base_deployment_capabilities();
     for task in &graph.tasks {
         capabilities.push(trigger_capability(task.trigger));
+        if task.deadline_ms.is_some() {
+            capabilities.push(CapabilityAtom("timing:deadline_aware".to_string()));
+        }
     }
     for bind in &graph.binds {
         capabilities.extend(bind.capability_requirements.clone());
@@ -808,6 +811,42 @@ channel = "latest"
 
         assert_eq!(ir.graphs[0].binds[0].channel, ChannelKind::Latest);
         assert_eq!(ir.graphs[0].binds[0].depth, Some(1));
+    }
+
+    #[test]
+    fn deadline_tasks_require_deadline_aware_backend_capability() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+deadline_ms = 2
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert!(
+            ir.deployments[0]
+                .required_capabilities
+                .contains(&CapabilityAtom("timing:deadline_aware".to_string()))
+        );
+        assert!(ir.deployments[0].satisfied);
     }
 
     #[test]

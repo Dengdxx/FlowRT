@@ -11,6 +11,7 @@ const COMMON_CAPABILITIES: &[&str] = &[
     "trigger:on_message",
     "trigger:startup",
     "trigger:shutdown",
+    "timing:deadline_aware",
     "channel:latest",
     "channel:fifo",
     "overflow:drop_oldest",
