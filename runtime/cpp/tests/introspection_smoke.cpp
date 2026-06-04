@@ -40,6 +40,23 @@ std::string request_line(const std::filesystem::path &socket_path, const std::st
     return response;
 }
 
+void send_line_and_close(const std::filesystem::path &socket_path, const std::string &request) {
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(fd >= 0);
+
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    const auto path = socket_path.string();
+    assert(path.size() < sizeof(address.sun_path));
+    std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
+    assert(::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+
+    const std::string line = request + "\n";
+    assert(::write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size()));
+    assert(::shutdown(fd, SHUT_RDWR) == 0);
+    ::close(fd);
+}
+
 std::filesystem::path temp_socket_path(std::string_view name) {
     std::filesystem::path root = std::filesystem::temp_directory_path() /
                                  ("flowrt-cpp-introspection-test-" + std::to_string(::getpid()));
@@ -130,6 +147,11 @@ int main() {
             socket_path, R"({"command":"channel_snapshot","channel":"missing.channel"})");
         assert_contains(unknown_response, R"("response":"error")");
         assert_contains(unknown_response, R"("message":"unknown FlowRT channel")");
+
+        send_line_and_close(socket_path, R"({"command":"status"})");
+        const auto status_after_early_close = request_line(socket_path, R"({"command":"status"})");
+        assert_contains(status_after_early_close, R"("response":"status")");
+        assert_contains(status_after_early_close, R"("tick_count":7)");
     }
 
     assert(!std::filesystem::exists(socket_path));

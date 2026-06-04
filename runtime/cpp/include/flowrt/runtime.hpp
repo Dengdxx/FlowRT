@@ -1199,9 +1199,14 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
 }
 
 inline bool write_all(int fd, std::string_view data) {
+#if defined(MSG_NOSIGNAL)
+    constexpr int send_flags = MSG_NOSIGNAL;
+#else
+    constexpr int send_flags = 0;
+#endif
     std::size_t offset = 0;
     while (offset < data.size()) {
-        const auto written = ::write(fd, data.data() + offset, data.size() - offset);
+        const auto written = ::send(fd, data.data() + offset, data.size() - offset, send_flags);
         if (written < 0) {
             if (errno == EINTR) {
                 continue;
