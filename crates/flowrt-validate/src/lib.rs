@@ -170,6 +170,16 @@ fn validate_contract_canonical_fields(ir: &ContractIr, errors: &mut Vec<Validati
 }
 
 fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    if !ir
+        .package
+        .imports
+        .windows(2)
+        .all(|pair| pair[0].kind <= pair[1].kind)
+    {
+        errors.push(ValidationError::new(
+            "package imports must use canonical kind order",
+        ));
+    }
     for import in &ir.package.imports {
         if !import.patterns.windows(2).all(|pair| pair[0] <= pair[1]) {
             errors.push(ValidationError::new(format!(
@@ -179,7 +189,75 @@ fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<Valida
         }
     }
 
+    if !ir.types.windows(2).all(|pair| pair[0].name <= pair[1].name) {
+        errors.push(ValidationError::new(
+            "contract types must use canonical name order",
+        ));
+    }
+    if !ir
+        .components
+        .windows(2)
+        .all(|pair| pair[0].name <= pair[1].name)
+    {
+        errors.push(ValidationError::new(
+            "contract components must use canonical name order",
+        ));
+    }
+    for component in &ir.components {
+        if !component
+            .params
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "component `{}` params must use canonical name order",
+                component.name
+            )));
+        }
+    }
+
+    if !ir
+        .graphs
+        .windows(2)
+        .all(|pair| pair[0].name <= pair[1].name)
+    {
+        errors.push(ValidationError::new(
+            "contract graphs must use canonical name order",
+        ));
+    }
     for graph in &ir.graphs {
+        if !graph
+            .instances
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` instances must use canonical name order",
+                graph.name
+            )));
+        }
+        for instance in &graph.instances {
+            if !instance
+                .params
+                .windows(2)
+                .all(|pair| pair[0].name <= pair[1].name)
+            {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` params must use canonical name order",
+                    instance.name
+                )));
+            }
+        }
+        if !graph
+            .tasks
+            .windows(2)
+            .all(|pair| pair[0].instance.name <= pair[1].instance.name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` tasks must use canonical instance order",
+                graph.name
+            )));
+        }
         if !graph
             .binds
             .windows(2)
@@ -192,6 +270,24 @@ fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<Valida
         }
     }
 
+    if !ir
+        .profiles
+        .windows(2)
+        .all(|pair| pair[0].name <= pair[1].name)
+    {
+        errors.push(ValidationError::new(
+            "contract profiles must use canonical name order",
+        ));
+    }
+    if !ir
+        .targets
+        .windows(2)
+        .all(|pair| pair[0].name <= pair[1].name)
+    {
+        errors.push(ValidationError::new(
+            "contract targets must use canonical name order",
+        ));
+    }
     for target in &ir.targets {
         if !target
             .runtime
@@ -209,6 +305,16 @@ fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<Valida
                 target.name
             )));
         }
+    }
+
+    if !ir
+        .deployments
+        .windows(2)
+        .all(|pair| deployment_canonical_key(&pair[0]) <= deployment_canonical_key(&pair[1]))
+    {
+        errors.push(ValidationError::new(
+            "contract deployments must use canonical graph/profile/target order",
+        ));
     }
 }
 
@@ -251,6 +357,14 @@ fn target_runtime_rank(language: LanguageKind) -> u8 {
         LanguageKind::Cpp => 0,
         LanguageKind::Rust => 1,
     }
+}
+
+fn deployment_canonical_key(deployment: &flowrt_ir::DeploymentIr) -> (&str, &str, &str) {
+    (
+        deployment.graph.name.as_str(),
+        deployment.profile.name.as_str(),
+        deployment.target.name.as_str(),
+    )
 }
 
 fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
@@ -1805,6 +1919,124 @@ backends = ["inproc", "iox2"]
             "graph `default` binds must use canonical endpoint order",
             "target `linux` runtime must use canonical sorted order",
             "target `linux` backends must use canonical sorted order",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing error containing `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_canonical_entity_collection_ordering() {
+        let source = r#"
+[package]
+name = "entity_ordering_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+components = ["components/a.rsdl"]
+types = ["types/a.rsdl"]
+
+[type.Extra]
+value = "u32"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.producer.params]
+alpha = 1
+beta = 2
+
+[instance.consumer]
+component = "consumer"
+target = "alpha_target"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.producer]
+component = "producer"
+target = "alpha_target"
+
+[instance.producer.params]
+alpha = 3
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[profile.iox2]
+backend = "iox2"
+
+[target.alpha_target]
+runtime = ["rust"]
+backends = ["inproc", "iox2"]
+
+[target.beta_target]
+runtime = ["rust"]
+backends = ["inproc", "iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        validate_contract(&ir).unwrap();
+
+        ir.package.imports.reverse();
+        ir.types.reverse();
+        ir.components.reverse();
+        ir.components
+            .iter_mut()
+            .find(|component| component.name == "producer")
+            .expect("producer component must exist")
+            .params
+            .reverse();
+        ir.graphs[0].instances.reverse();
+        ir.graphs[0].tasks.reverse();
+        ir.graphs[0]
+            .instances
+            .iter_mut()
+            .find(|instance| instance.name == "producer")
+            .expect("producer instance must exist")
+            .params
+            .reverse();
+        ir.profiles.reverse();
+        ir.targets.reverse();
+        ir.deployments.reverse();
+
+        let report = validate_contract(&ir)
+            .expect_err("non-canonical entity collection ordering should fail");
+        for expected in [
+            "package imports must use canonical kind order",
+            "contract types must use canonical name order",
+            "contract components must use canonical name order",
+            "component `producer` params must use canonical name order",
+            "graph `default` instances must use canonical name order",
+            "graph `default` tasks must use canonical instance order",
+            "instance `producer` params must use canonical name order",
+            "contract profiles must use canonical name order",
+            "contract targets must use canonical name order",
+            "contract deployments must use canonical graph/profile/target order",
         ] {
             assert!(
                 report
