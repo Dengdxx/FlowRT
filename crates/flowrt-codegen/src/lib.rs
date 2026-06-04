@@ -236,6 +236,8 @@ fn collect_type_dependencies(expr: &TypeExpr, dependencies: &mut BTreeSet<String
             dependencies.insert(name.clone());
         }
         TypeExpr::Array { element, .. } => collect_type_dependencies(element, dependencies),
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
+        TypeExpr::VarSequence { element, .. } => collect_type_dependencies(element, dependencies),
     }
 }
 
@@ -2088,6 +2090,12 @@ fn sample_bytes_for_expr(
             }
             bytes
         }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
     }
 }
 
@@ -2722,6 +2730,12 @@ fn cpp_type(expr: &TypeExpr) -> String {
         TypeExpr::Array { element, len } => {
             format!("std::array<{}, {}>", cpp_type(element), len)
         }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
     }
 }
 
@@ -2748,6 +2762,12 @@ fn rust_type(expr: &TypeExpr) -> String {
         TypeExpr::Primitive { name } => rust_primitive(*name).to_string(),
         TypeExpr::Named { name } => name.clone(),
         TypeExpr::Array { element, len } => format!("[{}; {}]", rust_type(element), len),
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
     }
 }
 
@@ -2775,6 +2795,12 @@ fn rust_sample_expr(expr: &TypeExpr, seed: usize) -> String {
         TypeExpr::Named { name } => format!("{}()", sample_function_name(name)),
         TypeExpr::Array { element, len } => {
             format!("[{}; {}]", rust_sample_expr(element, seed), len)
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
         }
     }
 }
@@ -2807,6 +2833,12 @@ fn cpp_sample_expr(expr: &TypeExpr, seed: usize) -> String {
                 "[] {{ auto value = {}{{}}; value.fill({}); return value; }}()",
                 cpp_type(expr),
                 cpp_sample_expr(element, seed)
+            )
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
             )
         }
     }
@@ -3113,6 +3145,46 @@ channel = "latest"
             error
                 .to_string()
                 .contains("instance `source` component `source` has no Output port `missing`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_variable_frame_message_fields_before_emitting_artifacts() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=262144>"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+"#,
+        );
+
+        let result = std::panic::catch_unwind(|| emit_artifacts(&ir));
+
+        assert!(result.is_ok(), "codegen should return an error, not panic");
+        let error = result
+            .expect("codegen invocation should not panic")
+            .expect_err("Variable Frame ABI fields should fail validation before emission");
+        assert!(matches!(&error, CodegenError::Validation(_)));
+        assert!(
+            error.to_string().contains(
+                "type `Packet` field `payload` uses bytes<max=262144>, which requires the future Variable Frame ABI",
+            ),
             "{error}"
         );
     }
