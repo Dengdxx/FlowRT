@@ -110,31 +110,35 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
 
 /// 依据 profile 名称投影出一个只包含目标 profile 的 Contract IR 副本。
 ///
-/// `None` 保持原始 contract 不变；`Some(name)` 会要求 contract 中存在该 profile，
-/// 并返回仅保留该 profile 的克隆版本，便于 codegen 和 CLI 统一按选定 profile 生成产物。
+/// `None` 优先选择 `default` profile，没有时选择首个 profile；`Some(name)` 会要求
+/// contract 中存在该 profile。返回值只保留选中 profile，便于 codegen 和 CLI 统一生成产物。
 pub fn project_contract_to_profile(
     contract: &ContractIr,
     profile_name: Option<&str>,
 ) -> Result<ContractIr> {
-    let Some(profile_name) = profile_name else {
-        return Ok(contract.clone());
-    };
-
-    let Some(profile) = contract
-        .profiles
-        .iter()
-        .find(|profile| profile.name == profile_name)
-    else {
-        return Err(crate::IrError::UnknownProfile {
-            profile: profile_name.to_string(),
-        });
+    let profile = match profile_name {
+        Some(profile_name) => contract
+            .profiles
+            .iter()
+            .find(|profile| profile.name == profile_name)
+            .ok_or_else(|| crate::IrError::UnknownProfile {
+                profile: profile_name.to_string(),
+            })?,
+        None => contract
+            .profiles
+            .iter()
+            .find(|profile| profile.name == "default")
+            .or_else(|| contract.profiles.first())
+            .ok_or_else(|| crate::IrError::UnknownProfile {
+                profile: "default".to_string(),
+            })?,
     };
 
     let mut projected = contract.clone();
     projected.profiles = vec![profile.clone()];
     projected
         .deployments
-        .retain(|deployment| deployment.profile.name == profile_name);
+        .retain(|deployment| deployment.profile.name == profile.name);
     Ok(projected)
 }
 
@@ -999,6 +1003,68 @@ backends = ["inproc", "iox2"]
         assert_eq!(projected.deployments.len(), 1);
         assert_eq!(projected.deployments[0].profile.name, "iox2");
         assert_eq!(projected.deployments[0].backend.0, "iox2");
+    }
+
+    #[test]
+    fn projects_default_profile_when_selection_is_omitted() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+
+[profile.iox2]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, None).unwrap();
+
+        assert_eq!(projected.profiles.len(), 1);
+        assert_eq!(projected.profiles[0].name, "default");
+        assert_eq!(projected.deployments.len(), 1);
+        assert_eq!(projected.deployments[0].profile.name, "default");
+        assert_eq!(projected.deployments[0].backend.0, "inproc");
+    }
+
+    #[test]
+    fn projects_first_profile_when_selection_is_omitted_and_default_is_absent() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.alpha]
+backend = "inproc"
+
+[profile.beta]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, None).unwrap();
+
+        assert_eq!(projected.profiles.len(), 1);
+        assert_eq!(projected.profiles[0].name, "alpha");
+        assert_eq!(projected.deployments.len(), 1);
+        assert_eq!(projected.deployments[0].profile.name, "alpha");
+        assert_eq!(projected.deployments[0].backend.0, "inproc");
     }
 
     #[test]

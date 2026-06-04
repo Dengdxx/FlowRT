@@ -108,7 +108,7 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`--profile <name>` 适用于 `prepare`、`build`、`run` 和 `launch`。CLI 会先按选定 profile 投影 Contract IR，只保留对应 deployment 视图，再校验和生成产物。
+`--profile <name>` 适用于 `prepare`、`build`、`run` 和 `launch`。CLI 会先按显式或默认选定的 profile 投影 Contract IR，只保留对应 deployment 视图，再校验和生成产物。省略 `--profile` 不会把全部 profile 一起写入生成产物。
 
 默认 profile 选择规则是：
 
