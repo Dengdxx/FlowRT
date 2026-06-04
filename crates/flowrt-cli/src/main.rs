@@ -1526,4 +1526,54 @@ backends = ["iox2"]
 
         let _ = std::fs::remove_dir_all(&rsdl_dir);
     }
+
+    #[test]
+    fn prepare_workspace_projects_default_profile_when_selection_is_omitted() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+process = "main"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 1
+
+[profile.default]
+backend = "inproc"
+
+[profile.iox2]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let rsdl_dir = temp_test_dir("prepare-default-profile");
+        let rsdl_path = rsdl_dir.join("robot.rsdl");
+        std::fs::create_dir_all(&rsdl_dir).unwrap();
+        std::fs::write(&rsdl_path, source).unwrap();
+        let out_dir = rsdl_dir.join("flowrt");
+
+        assert!(load_contract_from_rsdl(&rsdl_path).is_err());
+        let prepared =
+            prepare_workspace(&rsdl_path, &out_dir, None).expect("default profile should prepare");
+        let prepared_ir =
+            ContractIr::from_json_str(&std::fs::read_to_string(&prepared.contract_path).unwrap())
+                .unwrap();
+
+        assert_eq!(prepared_ir.profiles.len(), 1);
+        assert_eq!(prepared_ir.profiles[0].name, "default");
+        assert_eq!(prepared_ir.deployments.len(), 1);
+        assert_eq!(prepared_ir.deployments[0].profile.name, "default");
+
+        let _ = std::fs::remove_dir_all(&rsdl_dir);
+    }
 }
