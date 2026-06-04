@@ -1101,26 +1101,27 @@ struct LaunchProcess {
 pub fn launch() -> Result<(), String> {
     let manifest: LaunchManifest = serde_json::from_str(LAUNCH_MANIFEST)
         .map_err(|error| format!("failed to parse FlowRT launch manifest: {error}"))?;
-    let graph = manifest
-        .graphs
-        .first()
-        .ok_or_else(|| "FlowRT launch manifest does not contain a graph".to_string())?;
-    if graph.processes.is_empty() {
-        return Err("FlowRT launch manifest does not contain process groups".to_string());
+    if manifest.graphs.is_empty() {
+        return Err("FlowRT launch manifest does not contain a graph".to_string());
     }
 
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
 
     let mut children = Vec::new();
-    for process in &graph.processes {
-        let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
-        let child = Command::new(&app_exe)
-            .arg("--process")
-            .arg(&process.name)
-            .spawn()
-            .map_err(|error| format!("failed to start FlowRT process `{}`: {error}", process.name))?;
-        children.push((process.name.clone(), child));
+    for graph in &manifest.graphs {
+        for process in &graph.processes {
+            let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
+            let child = Command::new(&app_exe)
+                .arg("--process")
+                .arg(&process.name)
+                .spawn()
+                .map_err(|error| format!("failed to start FlowRT process `{}`: {error}", process.name))?;
+            children.push((process.name.clone(), child));
+        }
+    }
+    if children.is_empty() {
+        return Err("FlowRT launch manifest does not contain process groups".to_string());
     }
 
     let mut failures = Vec::new();
@@ -4059,6 +4060,8 @@ backends = ["iox2"]
         assert!(supervisor.contains("runtime_kind: String"));
         assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
         assert!(supervisor.contains("Command::new(&app_exe)"));
+        assert!(supervisor.contains("for graph in &manifest.graphs"));
+        assert!(!supervisor.contains(".graphs\n        .first()"));
         assert!(
             supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
         );
