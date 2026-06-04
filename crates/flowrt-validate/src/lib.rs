@@ -75,6 +75,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_contract_versions(ir, &mut errors);
     validate_contract_shape(ir, &mut errors);
     validate_contract_canonical_fields(ir, &mut errors);
+    validate_contract_canonical_ordering(ir, &mut errors);
     validate_entity_name_uniqueness(ir, &mut errors);
     validate_entity_id_uniqueness(ir, &mut errors);
     validate_entity_references(ir, &mut errors);
@@ -168,6 +169,49 @@ fn validate_contract_canonical_fields(ir: &ContractIr, errors: &mut Vec<Validati
     }
 }
 
+fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    for import in &ir.package.imports {
+        if !import.patterns.windows(2).all(|pair| pair[0] <= pair[1]) {
+            errors.push(ValidationError::new(format!(
+                "package import `{}` patterns must use canonical sorted order",
+                import.kind
+            )));
+        }
+    }
+
+    for graph in &ir.graphs {
+        if !graph
+            .binds
+            .windows(2)
+            .all(|pair| bind_canonical_key(&pair[0]) <= bind_canonical_key(&pair[1]))
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` binds must use canonical endpoint order",
+                graph.name
+            )));
+        }
+    }
+
+    for target in &ir.targets {
+        if !target
+            .runtime
+            .windows(2)
+            .all(|pair| target_runtime_rank(pair[0]) <= target_runtime_rank(pair[1]))
+        {
+            errors.push(ValidationError::new(format!(
+                "target `{}` runtime must use canonical sorted order",
+                target.name
+            )));
+        }
+        if !target.backends.windows(2).all(|pair| pair[0] <= pair[1]) {
+            errors.push(ValidationError::new(format!(
+                "target `{}` backends must use canonical sorted order",
+                target.name
+            )));
+        }
+    }
+}
+
 fn validate_entity_id_shape(
     label: &str,
     kind: &str,
@@ -191,6 +235,22 @@ fn validate_entity_id_shape(
 
 fn is_canonical_hex_digest(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len && value.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f'))
+}
+
+fn bind_canonical_key(bind: &ChannelEdgeIr) -> (&str, &str, &str, &str) {
+    (
+        bind.from.instance.name.as_str(),
+        bind.from.port.as_str(),
+        bind.to.instance.name.as_str(),
+        bind.to.port.as_str(),
+    )
+}
+
+fn target_runtime_rank(language: LanguageKind) -> u8 {
+    match language {
+        LanguageKind::Cpp => 0,
+        LanguageKind::Rust => 1,
+    }
 }
 
 fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
@@ -1676,6 +1736,84 @@ rsdl_version = "0.1"
                 .message
                 .contains("package id `package_bad` must use the `package_<hex>` canonical format")
         }));
+    }
+
+    #[test]
+    fn rejects_non_canonical_collection_ordering() {
+        let source = r#"
+[package]
+name = "ordering_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/a.rsdl", "types/b.rsdl"]
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.alpha]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.beta]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.alpha]
+component = "alpha"
+target = "linux"
+
+[instance.beta]
+component = "beta"
+target = "linux"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "alpha.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "beta.sample"
+channel = "latest"
+
+[target.linux]
+runtime = ["cpp", "rust"]
+backends = ["inproc", "iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        validate_contract(&ir).unwrap();
+
+        ir.package.imports[0].patterns.reverse();
+        ir.graphs[0].binds.reverse();
+        ir.targets[0].runtime.reverse();
+        ir.targets[0].backends.reverse();
+
+        let report =
+            validate_contract(&ir).expect_err("non-canonical collection ordering should fail");
+        for expected in [
+            "package import `types` patterns must use canonical sorted order",
+            "graph `default` binds must use canonical endpoint order",
+            "target `linux` runtime must use canonical sorted order",
+            "target `linux` backends must use canonical sorted order",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing error containing `{expected}`"
+            );
+        }
     }
 
     #[test]
