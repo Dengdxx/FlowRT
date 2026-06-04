@@ -130,6 +130,18 @@ fn validate_top_level_sections(root: &Table) -> Result<()> {
     Ok(())
 }
 
+fn validate_known_fields(table: &Table, context: &str, allowed_fields: &[&str]) -> Result<()> {
+    for field in table.keys() {
+        if !allowed_fields.contains(&field.as_str()) {
+            return Err(RsdlError::UnknownField {
+                context: context.to_string(),
+                field: field.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
     Ok(RawDocument {
         package: parsed.package.ok_or(RsdlError::MissingPackage)?,
@@ -380,9 +392,20 @@ fn logical_source_path(path: &Path, package_root: &Path) -> PathBuf {
 }
 
 fn parse_package(table: &Table) -> Result<RawPackage> {
+    validate_known_fields(
+        table,
+        "package",
+        &["name", "version", "rsdl_version", "imports"],
+    )?;
+
     let mut imports = BTreeMap::new();
     if let Some(value) = table.get("imports") {
         let table = expect_table_value("package", "imports", value)?;
+        validate_known_fields(
+            table,
+            "package.imports",
+            &["types", "components", "graphs", "profiles", "targets"],
+        )?;
         for (kind, value) in table {
             imports.insert(
                 kind.clone(),
@@ -412,35 +435,62 @@ fn parse_type(name: &str, table: &Table) -> Result<RawType> {
 }
 
 fn parse_component(name: &str, table: &Table) -> Result<RawComponent> {
+    let context = format!("component.{name}");
+    validate_known_fields(
+        table,
+        &context,
+        &["language", "kind", "input", "output", "params"],
+    )?;
+
     Ok(RawComponent {
-        language: required_string(table, &format!("component.{name}"), "language")?,
-        kind: optional_string(table, &format!("component.{name}"), "kind")?,
-        input: optional_port_array(table, &format!("component.{name}"), "input")?,
-        output: optional_port_array(table, &format!("component.{name}"), "output")?,
-        params: optional_param_table(table, &format!("component.{name}"), "params")?,
+        language: required_string(table, &context, "language")?,
+        kind: optional_string(table, &context, "kind")?,
+        input: optional_port_array(table, &context, "input")?,
+        output: optional_port_array(table, &context, "output")?,
+        params: optional_param_table(table, &context, "params")?,
     })
 }
 
 fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
+    let context = format!("instance.{name}");
+    validate_known_fields(
+        table,
+        &context,
+        &["component", "process", "target", "params", "task"],
+    )?;
+
     let task = table
         .get("task")
         .map(|value| {
-            let table = expect_table_value(&format!("instance.{name}"), "task", value)?;
+            let table = expect_table_value(&context, "task", value)?;
             parse_task(name, table)
         })
         .transpose()?;
 
     Ok(RawInstance {
-        component: required_string(table, &format!("instance.{name}"), "component")?,
-        process: optional_string(table, &format!("instance.{name}"), "process")?,
-        target: optional_string(table, &format!("instance.{name}"), "target")?,
-        params: optional_param_table(table, &format!("instance.{name}"), "params")?,
+        component: required_string(table, &context, "component")?,
+        process: optional_string(table, &context, "process")?,
+        target: optional_string(table, &context, "target")?,
+        params: optional_param_table(table, &context, "params")?,
         task,
     })
 }
 
 fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
     let context = format!("instance.{instance_name}.task");
+    validate_known_fields(
+        table,
+        &context,
+        &[
+            "trigger",
+            "period_ms",
+            "deadline_ms",
+            "priority",
+            "input",
+            "output",
+        ],
+    )?;
+
     Ok(RawTask {
         trigger: required_string(table, &context, "trigger")?,
         period_ms: optional_u64(table, &context, "period_ms")?,
@@ -462,6 +512,7 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             field: "bind".to_string(),
             expected: "table",
         })?;
+    validate_known_fields(bind_table, "bind", &["dataflow"])?;
     let Some(dataflow_value) = bind_table.get("dataflow") else {
         return Ok(Vec::new());
     };
@@ -483,6 +534,19 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
                 field: "dataflow".to_string(),
                 expected: "array of tables",
             })?;
+        validate_known_fields(
+            table,
+            &context,
+            &[
+                "from",
+                "to",
+                "channel",
+                "depth",
+                "overflow",
+                "stale_policy",
+                "max_age_ms",
+            ],
+        )?;
         parsed.push(RawDataflowBind {
             from: required_string(table, &context, "from")?,
             to: required_string(table, &context, "to")?,
@@ -496,20 +560,35 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
     Ok(parsed)
 }
 
-fn parse_profile(_name: &str, table: &Table) -> Result<RawProfile> {
+fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
+    let context = format!("profile.{name}");
+    validate_known_fields(
+        table,
+        &context,
+        &[
+            "backend",
+            "default_overflow",
+            "default_stale_policy",
+            "max_age_ms",
+        ],
+    )?;
+
     Ok(RawProfile {
-        backend: optional_string(table, "profile", "backend")?,
-        default_overflow: optional_string(table, "profile", "default_overflow")?,
-        default_stale_policy: optional_string(table, "profile", "default_stale_policy")?,
-        max_age_ms: optional_u64(table, "profile", "max_age_ms")?,
+        backend: optional_string(table, &context, "backend")?,
+        default_overflow: optional_string(table, &context, "default_overflow")?,
+        default_stale_policy: optional_string(table, &context, "default_stale_policy")?,
+        max_age_ms: optional_u64(table, &context, "max_age_ms")?,
     })
 }
 
-fn parse_target(_name: &str, table: &Table) -> Result<RawTarget> {
+fn parse_target(name: &str, table: &Table) -> Result<RawTarget> {
+    let context = format!("target.{name}");
+    validate_known_fields(table, &context, &["platform", "runtime", "backends"])?;
+
     Ok(RawTarget {
-        platform: optional_string(table, "target", "platform")?,
-        runtime: optional_string_array(table, "target", "runtime")?,
-        backends: optional_string_array(table, "target", "backends")?,
+        platform: optional_string(table, &context, "platform")?,
+        runtime: optional_string_array(table, &context, "runtime")?,
+        backends: optional_string_array(table, &context, "backends")?,
     })
 }
 
@@ -769,6 +848,30 @@ language = "rust"
         assert!(matches!(
             error,
             RsdlError::UnknownTopLevelSection { section } if section == "components"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_fields_in_fixed_schema_tables() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+proces = "main"
+"#;
+
+        let error = parse_str(source).expect_err("unknown fixed-schema field should fail");
+
+        assert!(matches!(
+            error,
+            RsdlError::UnknownField { context, field }
+                if context == "instance.worker" && field == "proces"
         ));
     }
 
