@@ -114,6 +114,7 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 
 - 优先使用名为 `default` 的 profile。
 - 没有 `default` 时使用首个 profile。
+- RSDL 未声明任何 profile 时，归一化阶段会插入隐式 `default` profile，backend 为 `inproc`。
 
 ## 生成物边界
 
