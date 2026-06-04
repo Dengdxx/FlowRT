@@ -171,12 +171,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_contract_from_rsdl(path: &Path) -> Result<ContractIr> {
+fn normalize_contract_from_rsdl(path: &Path) -> Result<ContractIr> {
     let loaded = flowrt_rsdl::load_file(path)
         .with_context(|| format!("failed to load RSDL source `{}`", path.display()))?;
     let source_bundle = loaded.source_bundle_text();
-    let contract = normalize_document(&loaded.document, hash_source(&source_bundle))
-        .with_context(|| format!("failed to normalize `{}`", path.display()))?;
+    normalize_document(&loaded.document, hash_source(&source_bundle))
+        .with_context(|| format!("failed to normalize `{}`", path.display()))
+}
+
+fn load_contract_from_rsdl(path: &Path) -> Result<ContractIr> {
+    let contract = normalize_contract_from_rsdl(path)?;
     validate_contract(&contract).context("contract validation failed")?;
     Ok(contract)
 }
@@ -211,9 +215,10 @@ fn prepare_workspace(
     out_dir: &Path,
     profile: Option<&str>,
 ) -> Result<PreparedWorkspace> {
-    let contract = load_contract_from_rsdl(rsdl)?;
+    let contract = normalize_contract_from_rsdl(rsdl)?;
     let selected_contract = project_contract_to_profile(&contract, profile)
         .with_context(|| format!("failed to select profile for `{}`", rsdl.display()))?;
+    validate_contract(&selected_contract).context("contract validation failed")?;
     let contract_path = write_contract(&selected_contract, out_dir)?;
     let artifacts = emit_artifacts(&selected_contract).context("failed to prepare artifacts")?;
     let artifact_count = write_artifacts(&artifacts, out_dir)?;
@@ -712,6 +717,7 @@ fn summary(contract: &ContractIr) -> String {
 mod tests {
     use clap::CommandFactory;
     use flowrt_rsdl::parse_str;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -720,6 +726,14 @@ mod tests {
         let contract = normalize_document(&raw, hash_source(source)).unwrap();
         validate_contract(&contract).unwrap();
         contract
+    }
+
+    fn temp_test_dir(test_name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("flowrt-{test_name}-{}-{nonce}", std::process::id()))
     }
 
     #[test]
@@ -1093,5 +1107,55 @@ default_stale_policy = "warn"
 
         assert_eq!(command.get_name(), "flowrt");
         assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn prepare_workspace_projects_selected_profile_before_validation() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+process = "main"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 1
+
+[profile.default]
+backend = "inproc"
+
+[profile.iox2]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+        let rsdl_dir = temp_test_dir("prepare-profile");
+        let rsdl_path = rsdl_dir.join("robot.rsdl");
+        std::fs::create_dir_all(&rsdl_dir).unwrap();
+        std::fs::write(&rsdl_path, source).unwrap();
+        let out_dir = rsdl_dir.join("flowrt");
+
+        assert!(load_contract_from_rsdl(&rsdl_path).is_err());
+        let prepared = prepare_workspace(&rsdl_path, &out_dir, Some("iox2"))
+            .expect("selected profile should prepare");
+        let prepared_ir =
+            ContractIr::from_json_str(&std::fs::read_to_string(&prepared.contract_path).unwrap())
+                .unwrap();
+
+        assert_eq!(prepared_ir.profiles.len(), 1);
+        assert_eq!(prepared_ir.profiles[0].name, "iox2");
+        assert_eq!(prepared_ir.deployments.len(), 1);
+        assert_eq!(prepared_ir.deployments[0].profile.name, "iox2");
+
+        let _ = std::fs::remove_dir_all(&rsdl_dir);
     }
 }

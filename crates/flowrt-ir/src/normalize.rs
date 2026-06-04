@@ -132,6 +132,9 @@ pub fn project_contract_to_profile(
 
     let mut projected = contract.clone();
     projected.profiles = vec![profile.clone()];
+    projected
+        .deployments
+        .retain(|deployment| deployment.profile.name == profile_name);
     Ok(projected)
 }
 
@@ -865,6 +868,10 @@ backend = "inproc"
 
 [profile.iox2]
 backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "iox2"]
 "#;
         let raw = parse_str(source).unwrap();
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
@@ -874,6 +881,9 @@ backend = "iox2"
         assert_eq!(projected.profiles.len(), 1);
         assert_eq!(projected.profiles[0].name, "iox2");
         assert_eq!(projected.profiles[0].backend.0, "iox2");
+        assert_eq!(projected.deployments.len(), 1);
+        assert_eq!(projected.deployments[0].profile.name, "iox2");
+        assert_eq!(projected.deployments[0].backend.0, "iox2");
     }
 
     #[test]
