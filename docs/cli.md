@@ -36,6 +36,8 @@ flowrt prepare examples/import_demo/rsdl/robot.rsdl
 
 默认输出目录是 RSDL 所在项目根目录下的 `flowrt/`。可以用 `--out-dir <dir>` 改写。
 
+`prepare`、`build`、`run` 和 `launch` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并在命令结束时释放；如果另一个 `flowrt` 命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。
+
 ## `build`
 
 ```bash
@@ -113,5 +115,6 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 - 可以重新生成。
 - 不应放用户算法代码。
 - 不应手写维护生成 runtime shell。
+- 不应由多个 `flowrt prepare` / `build` / `run` / `launch` 命令同时写入同一个输出目录；CLI 会通过 `.flowrt.lock` 做 fail-fast 保护。
 
 用户代码应放在项目自己的 `src/` 目录。C++ 用户代码通过生成接口和 `flowrt_user::build_app()` 接入；Rust 用户代码通过生成 trait 和用户模块接入。
