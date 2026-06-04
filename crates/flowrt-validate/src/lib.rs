@@ -1385,6 +1385,30 @@ fn validate_declared_backends(ir: &ContractIr, errors: &mut Vec<ValidationError>
                 )));
             }
         }
+
+        let mut runtimes = BTreeSet::new();
+        for runtime in &target.runtime {
+            let runtime_name = match runtime {
+                LanguageKind::Cpp => "cpp",
+                LanguageKind::Rust => "rust",
+            };
+            if !runtimes.insert(runtime_name) {
+                errors.push(ValidationError::new(format!(
+                    "target `{}` has duplicate runtime `{runtime_name}`",
+                    target.name
+                )));
+            }
+        }
+
+        let mut backends = BTreeSet::new();
+        for backend in &target.backends {
+            if !backends.insert(backend.0.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "target `{}` has duplicate backend `{}`",
+                    target.name, backend.0
+                )));
+            }
+        }
     }
 }
 
@@ -2576,6 +2600,29 @@ backends = ["inproc"]
             error
                 .message
                 .contains("instance `producer` param `gain` has incompatible value kind `string`; expected `float`")
+        }));
+    }
+
+    #[test]
+    fn rejects_duplicate_target_runtime_and_backends() {
+        let mut ir = valid_reference_contract();
+        ir.targets[0].runtime = vec![LanguageKind::Rust, LanguageKind::Rust];
+        ir.targets[0].backends = vec![
+            flowrt_ir::BackendName("inproc".to_string()),
+            flowrt_ir::BackendName("inproc".to_string()),
+        ];
+
+        let report = validate_contract(&ir).expect_err("duplicate target lists should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("target `linux` has duplicate runtime `rust`")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("target `linux` has duplicate backend `inproc`")
         }));
     }
 
