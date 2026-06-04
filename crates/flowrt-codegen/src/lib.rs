@@ -2306,13 +2306,7 @@ fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
                     "target": instance.target.as_ref().map(|target| &target.name),
                 })
             }).collect::<Vec<_>>(),
-            "tasks": graph.tasks.iter().map(|task| serde_json::json!({
-                "instance": task.instance.name,
-                "trigger": task.trigger,
-                "period_ms": task.period_ms,
-                "deadline_ms": task.deadline_ms,
-                "priority": task.priority,
-            })).collect::<Vec<_>>(),
+            "tasks": graph.tasks.iter().map(launch_task).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     });
     let mut output = serde_json::to_string_pretty(&launch)?;
@@ -2381,16 +2375,22 @@ fn launch_processes(
                 "runtimes": runtimes,
                 "runtime_kind": process_runtime_kind(&runtimes),
                 "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
-                "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(|task| serde_json::json!({
-                    "instance": task.instance.name,
-                    "trigger": task.trigger,
-                    "period_ms": task.period_ms,
-                    "deadline_ms": task.deadline_ms,
-                    "priority": task.priority,
-                })).collect::<Vec<_>>(),
+                "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(launch_task).collect::<Vec<_>>(),
             })
         })
         .collect()
+}
+
+fn launch_task(task: &TaskIr) -> serde_json::Value {
+    serde_json::json!({
+        "instance": task.instance.name,
+        "trigger": task.trigger,
+        "period_ms": task.period_ms,
+        "deadline_ms": task.deadline_ms,
+        "priority": task.priority,
+        "inputs": task.inputs,
+        "outputs": task.outputs,
+    })
 }
 
 fn process_runtimes(contract: &ContractIr, instances: &[&InstanceIr]) -> Vec<&'static str> {
@@ -4584,7 +4584,9 @@ backends = ["iox2"]
                     "trigger": "on_message",
                     "period_ms": null,
                     "deadline_ms": 10,
-                    "priority": 7
+                    "priority": 7,
+                    "inputs": ["value"],
+                    "outputs": []
                 }
             ])
         );
@@ -4598,7 +4600,11 @@ backends = ["iox2"]
             .find(|task| task["instance"] == "sink")
             .unwrap();
         assert_eq!(source_task["priority"], serde_json::json!(null));
+        assert_eq!(source_task["inputs"], serde_json::json!([]));
+        assert_eq!(source_task["outputs"], serde_json::json!(["value"]));
         assert_eq!(sink_task["priority"], 7);
+        assert_eq!(sink_task["inputs"], serde_json::json!(["value"]));
+        assert_eq!(sink_task["outputs"], serde_json::json!([]));
         assert_eq!(processes[1]["name"], "sensors");
         assert_eq!(processes[1]["backend"], "iox2");
         assert_eq!(processes[1]["target"], "linux");
