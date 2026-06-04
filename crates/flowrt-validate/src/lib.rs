@@ -12,8 +12,8 @@ use flowrt_ir::{
     CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr, ChannelKind,
     ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
     PolicyValueSource, PortIr, PortRef, RSDL_VERSION, TaskIr, TriggerKind, TypeExpr,
-    backend_capabilities, channel_capabilities, graph_required_capabilities, is_known_backend,
-    param_value_compatible, param_value_kind, target_capabilities,
+    channel_capabilities, deployment_capability_decision, graph_required_capabilities,
+    is_known_backend, param_value_compatible, param_value_kind, target_capabilities,
 };
 
 /// validation passes 返回的结果类型。
@@ -1577,33 +1577,26 @@ fn validate_deployments(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
 
         let expected_required_capabilities =
             graph_required_capabilities(graph, &ir.types, &ir.components);
-        let backend_supported_by_target = target
-            .backends
-            .iter()
-            .any(|backend| backend.0 == deployment.backend.0);
-        let Some(backend_caps) = backend_capabilities(&deployment.backend.0) else {
-            continue;
-        };
-        let backend_satisfies_required = expected_required_capabilities
-            .iter()
-            .all(|capability| backend_caps.contains(capability));
+        let decision = deployment_capability_decision(
+            &deployment.backend,
+            &target.backends,
+            &expected_required_capabilities,
+        );
 
-        if !backend_supported_by_target {
+        if !decision.target_supports_selected_backend {
             errors.push(ValidationError::new(format!(
                 "target `{}` does not support backend `{}` selected by profile `{}`",
                 deployment.target.name, deployment.backend.0, deployment.profile.name
             )));
         }
-        if !backend_satisfies_required {
+        if decision.selected_backend_known && !decision.missing_required_capabilities.is_empty() {
             errors.push(ValidationError::new(format!(
                 "backend `{}` selected by profile `{}` cannot satisfy required capabilities for graph `{}`",
                 deployment.backend.0, deployment.profile.name, deployment.graph.name
             )));
         }
 
-        let expected_satisfied = profile.backend.0 == deployment.backend.0
-            && backend_supported_by_target
-            && backend_satisfies_required;
+        let expected_satisfied = profile.backend.0 == deployment.backend.0 && decision.satisfied;
         if deployment.satisfied != expected_satisfied {
             errors.push(ValidationError::new(format!(
                 "deployment `{} / {} / {}` has inconsistent satisfied flag; expected {}",
@@ -1723,8 +1716,8 @@ fn _language_name(language: LanguageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use flowrt_ir::{
-        ContractIr, OverflowPolicy, ParamIr, ParamValue, ParamValueIr, StalePolicy, hash_source,
-        normalize_document,
+        CapabilityAtom, ContractIr, OverflowPolicy, ParamIr, ParamValue, ParamValueIr, StalePolicy,
+        backend_capabilities, deployment_capability_decision, hash_source, normalize_document,
     };
     use flowrt_rsdl::parse_str;
 
@@ -3323,6 +3316,112 @@ backends = ["inproc"]
                 error.message.contains(
                     "deployment `default / default / linux` has inconsistent satisfied flag",
                 )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn deployment_capability_validation_reuses_shared_decision() {
+        let source = r#"
+[package]
+name = "wide_demo"
+rsdl_version = "0.1"
+
+[type.WideSample]
+value = "i128"
+
+[component.producer]
+language = "rust"
+output = ["sample:WideSample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:WideSample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let decision = deployment_capability_decision(
+            &ir.deployments[0].backend,
+            &ir.targets[0].backends,
+            &ir.deployments[0].required_capabilities,
+        );
+
+        assert!(decision.selected_backend_known);
+        assert!(decision.target_supports_selected_backend);
+        assert_eq!(
+            decision.missing_required_capabilities,
+            vec![CapabilityAtom("abi:int128".to_string())]
+        );
+
+        ir.deployments[0].satisfied = true;
+        let report = validate_contract(&ir).expect_err("forged satisfied flag should fail");
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "backend `inproc` selected by profile `default` cannot satisfy required capabilities for graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` has inconsistent satisfied flag",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+
+        let mut unknown_ir = valid_reference_contract();
+        unknown_ir.deployments[0].backend.0 = "typo_backend".to_string();
+        let unknown_decision = deployment_capability_decision(
+            &unknown_ir.deployments[0].backend,
+            &unknown_ir.targets[0].backends,
+            &unknown_ir.deployments[0].required_capabilities,
+        );
+
+        assert!(!unknown_decision.selected_backend_known);
+        assert!(unknown_decision.missing_required_capabilities.is_empty());
+
+        let report = validate_contract(&unknown_ir).expect_err("unknown backend should fail");
+        assert!(
+            !report.errors.iter().any(|error| {
+                error
+                    .message
+                    .contains("cannot satisfy required capabilities")
             }),
             "{:?}",
             report.errors

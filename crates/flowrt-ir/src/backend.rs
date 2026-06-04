@@ -205,6 +205,55 @@ pub fn backend_capabilities(name: &str) -> Option<Vec<CapabilityAtom>> {
     BackendKind::parse(name).map(|backend| backend.spec().capabilities())
 }
 
+/// deployment capability 决策结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentCapabilityDecision {
+    /// selected backend 是否在内建 backend catalog 中已知。
+    pub selected_backend_known: bool,
+    /// target 声明的 backends 中是否包含 selected backend。
+    pub target_supports_selected_backend: bool,
+    /// selected backend 在 required capabilities 中缺失的能力，按 required 顺序返回。
+    pub missing_required_capabilities: Vec<CapabilityAtom>,
+    /// 该 deployment 是否满足 backend、target 和 capability 三方面约束。
+    pub satisfied: bool,
+}
+
+/// 依据 selected backend、target 声明和 required capabilities 推导 deployment capability 决策。
+///
+/// unknown backend 会显式返回 `selected_backend_known = false`，并且不会把缺失能力伪装成
+/// “已知 backend 但 capability 为空”。
+pub fn deployment_capability_decision(
+    selected_backend: &crate::BackendName,
+    target_backends: &[crate::BackendName],
+    required_capabilities: &[CapabilityAtom],
+) -> DeploymentCapabilityDecision {
+    let selected_backend_known = is_known_backend(&selected_backend.0);
+    let target_supports_selected_backend = target_backends
+        .iter()
+        .any(|backend| backend.0 == selected_backend.0);
+    let missing_required_capabilities = if selected_backend_known {
+        let backend_capabilities = backend_capabilities(&selected_backend.0)
+            .expect("known backend must resolve to capability catalog entry");
+        required_capabilities
+            .iter()
+            .filter(|required| !backend_capabilities.contains(required))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let satisfied = selected_backend_known
+        && target_supports_selected_backend
+        && missing_required_capabilities.is_empty();
+
+    DeploymentCapabilityDecision {
+        selected_backend_known,
+        target_supports_selected_backend,
+        missing_required_capabilities,
+        satisfied,
+    }
+}
+
 /// v0.1 deployment 在 graph-specific policy 之外必须满足的基础能力。
 pub fn base_deployment_capabilities() -> Vec<CapabilityAtom> {
     let mut capabilities = CapabilityList::new();
@@ -490,6 +539,78 @@ mod tests {
                 Capability::ObservabilityHealth.atom(),
             ]
         );
+    }
+
+    #[test]
+    fn deployment_capability_decision_exposes_known_target_support_and_missing_caps() {
+        let ready = deployment_capability_decision(
+            &crate::BackendName("inproc".to_string()),
+            &[crate::BackendName("inproc".to_string())],
+            &[
+                Capability::AbiFixedSizePlainData.atom(),
+                Capability::LayoutNativeLayout.atom(),
+            ],
+        );
+        assert!(ready.selected_backend_known);
+        assert!(ready.target_supports_selected_backend);
+        assert!(ready.missing_required_capabilities.is_empty());
+        assert!(ready.satisfied);
+
+        let unsupported_target = deployment_capability_decision(
+            &crate::BackendName("inproc".to_string()),
+            &[crate::BackendName("iox2".to_string())],
+            &[
+                Capability::AbiInt128.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+            ],
+        );
+        assert!(unsupported_target.selected_backend_known);
+        assert!(!unsupported_target.target_supports_selected_backend);
+        assert_eq!(
+            unsupported_target.missing_required_capabilities,
+            vec![
+                Capability::AbiInt128.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+            ]
+        );
+        assert!(!unsupported_target.satisfied);
+
+        let missing = deployment_capability_decision(
+            &crate::BackendName("inproc".to_string()),
+            &[crate::BackendName("inproc".to_string())],
+            &[
+                Capability::AbiInt128.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+            ],
+        );
+        assert!(missing.selected_backend_known);
+        assert!(missing.target_supports_selected_backend);
+        assert_eq!(
+            missing.missing_required_capabilities,
+            vec![
+                Capability::AbiInt128.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+            ]
+        );
+        assert!(!missing.satisfied);
+
+        let unknown = deployment_capability_decision(
+            &crate::BackendName("typo_backend".to_string()),
+            &[crate::BackendName("typo_backend".to_string())],
+            &[
+                Capability::AbiInt128.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+            ],
+        );
+        assert!(!unknown.selected_backend_known);
+        assert!(unknown.target_supports_selected_backend);
+        assert!(unknown.missing_required_capabilities.is_empty());
+        assert!(!unknown.satisfied);
     }
 
     #[test]
