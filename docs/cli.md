@@ -13,7 +13,7 @@ flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
-flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>]
+flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>] [--follow] [--interval-ms <ms>]
 flowrt status
 ```
 
@@ -126,6 +126,7 @@ flowrt nodes path/to/generated-app
 ```bash
 flowrt echo path/to/generated-app source.imu
 flowrt echo path/to/generated-app source.imu_to_sink.imu --socket /tmp/flowrt.1000/12345.sock
+flowrt echo path/to/generated-app source.imu --follow --interval-ms 100
 ```
 
 `echo` 用静态 self-description 判断 channel 是否存在，并读取该 channel 的 message type 与 Message ABI layout；runtime socket 只返回 raw ABI bytes、`published_count` 和 `published_at_ms`。CLI 不从 runtime 协议读取业务字段 schema，也不会把 payload 反序列化成字段值。`<channel>` 可以写完整 channel 名 `<from>_to_<to>`，也可以写唯一的 source 或 target 端点名，例如 `source.imu`；端点名匹配多条 channel 时需要改用完整 channel 名。
@@ -140,7 +141,9 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 
 如果 runtime 还没有该 channel 的 payload，例如当前进程尚未发布该 channel 的样本，输出会包含 `payload_len=0 no payload`。
 
-本阶段 `echo` 只读取一次 latest snapshot，不支持 `--follow`。生成的 Rust runtime shell 会为当前 process 的 active channel 预注册 live 摘要，并在成功发布输出后记录 raw ABI payload 和 `published_at_ms`；C++ runtime 已有同 wire 协议的 socket API 基础，但生成的 C++ shell 尚未自动接入，因此 C++ 示例当前不会直接向 `flowrt echo` 暴露 live snapshot。
+默认情况下，`echo` 只读取一次 latest snapshot。传入 `--follow` 后，CLI 会按 `--interval-ms <ms>` 指定的间隔持续轮询同一 runtime socket；第一条 snapshot 一定输出，后续只在 `published_count`、`published_at_ms` 或 raw payload 变化时输出，避免没有新发布时重复刷屏。默认轮询间隔是 250 ms。
+
+生成的 Rust/C++ runtime shell 会为当前 process 的 active channel 预注册 live 摘要，并在成功发布输出后记录 raw ABI payload 和 `published_at_ms`。因此 Rust 与 C++ 示例都可以通过 `flowrt status` 查看 live channel 摘要，并通过 `flowrt echo` / `flowrt echo --follow` 读取 live snapshot。
 
 ## `status`
 
@@ -150,7 +153,7 @@ flowrt status
 
 `status` 扫描当前用户 runtime socket 目录中的 FlowRT 进程，并通过 handshake 验证 PID、package、process、runtime、静态自描述 hash 和 tick/channel 摘要。socket 路径只作为发现入口；CLI 不把文件名当作进程身份事实。
 
-当前 runtime shell 已为 Rust 生成应用启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成的 Rust shell 会把 scheduler tick 计数、active channel 摘要、发布计数和 latest raw ABI payload 写入 live status/snapshot。C++ runtime 已提供同路径规则和同 JSON-line wire 格式的 API 基础，后续还需要 generated C++ shell 调用该 API 并写入 live state；`echo --follow` 仍是后续切片。
+当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数和 latest raw ABI payload 写入 live status/snapshot。
 
 ## `--profile`
 
