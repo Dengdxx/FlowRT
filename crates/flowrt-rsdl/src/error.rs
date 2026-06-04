@@ -32,6 +32,9 @@ pub enum RsdlError {
     #[error("missing required table `[package]`")]
     MissingPackage,
 
+    #[error("unknown top-level RSDL section `{section}`")]
+    UnknownTopLevelSection { section: String },
+
     #[error("missing required field `{field}` in `{context}`")]
     MissingField {
         context: String,

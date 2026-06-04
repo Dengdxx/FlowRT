@@ -123,6 +123,7 @@ examples/
 - 长期语义模型必须区分 `types`、`components`、`graphs`、`profiles`、`targets` 和 `package`。
 - RSDL 不应出现 backend 的底层 API 名称，例如 iox2 publisher/subscriber。应描述 channel、policy、target 和 capability requirement。
 - MVP 单文件示例建议使用 `[type.*]`、`[component.*]`、`[instance.*]`、`[instance.*.task]`、`[[bind.dataflow]]`、`[profile.*]`、`[target.*]` 这些表。
+- RSDL parser 必须拒绝未知顶层 section，例如 `[components.*]` 这类拼写错误不能被静默忽略。
 - `instance.<name>.task` 是 v0.1 推荐写法。
 - `instance.<name>.params` 覆盖 component 默认参数，并在 normalization 阶段合并。
 - `instance.<name>.process` 是 launch grouping label，必须使用 `snake_case`，且不得使用 `flowrt` 前缀；未声明时默认为 `main`。
