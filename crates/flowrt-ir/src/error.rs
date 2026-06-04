@@ -20,6 +20,9 @@ pub enum IrError {
     #[error("unknown target `{target}` referenced by instance `{instance}`")]
     UnknownTarget { instance: String, target: String },
 
+    #[error("unknown profile `{profile}` referenced by contract")]
+    UnknownProfile { profile: String },
+
     #[error(
         "unknown parameter `{param}` override on instance `{instance}` of component `{component}`"
     )]

@@ -108,6 +108,33 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
     })
 }
 
+/// 依据 profile 名称投影出一个只包含目标 profile 的 Contract IR 副本。
+///
+/// `None` 保持原始 contract 不变；`Some(name)` 会要求 contract 中存在该 profile，
+/// 并返回仅保留该 profile 的克隆版本，便于 codegen 和 CLI 统一按选定 profile 生成产物。
+pub fn project_contract_to_profile(
+    contract: &ContractIr,
+    profile_name: Option<&str>,
+) -> Result<ContractIr> {
+    let Some(profile_name) = profile_name else {
+        return Ok(contract.clone());
+    };
+
+    let Some(profile) = contract
+        .profiles
+        .iter()
+        .find(|profile| profile.name == profile_name)
+    else {
+        return Err(crate::IrError::UnknownProfile {
+            profile: profile_name.to_string(),
+        });
+    };
+
+    let mut projected = contract.clone();
+    projected.profiles = vec![profile.clone()];
+    Ok(projected)
+}
+
 fn normalize_types(document: &RawDocument) -> Result<Vec<TypeIr>> {
     document
         .types
@@ -820,6 +847,56 @@ max = false
                 component,
                 ..
             } if instance == "controller" && component == "controller"
+        ));
+    }
+
+    #[test]
+    fn projects_selected_profile_without_touching_other_profiles() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+
+[profile.iox2]
+backend = "iox2"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, Some("iox2")).unwrap();
+
+        assert_eq!(ir.profiles.len(), 2);
+        assert_eq!(projected.profiles.len(), 1);
+        assert_eq!(projected.profiles[0].name, "iox2");
+        assert_eq!(projected.profiles[0].backend.0, "iox2");
+    }
+
+    #[test]
+    fn rejects_unknown_profile_selection() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let error = project_contract_to_profile(&ir, Some("iox2"))
+            .expect_err("unknown profile selection should fail");
+
+        assert!(matches!(
+            error,
+            IrError::UnknownProfile { profile } if profile == "iox2"
         ));
     }
 }

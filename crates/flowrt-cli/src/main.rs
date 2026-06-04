@@ -7,7 +7,9 @@ use std::process::Command as ProcessCommand;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
-use flowrt_ir::{ContractIr, LanguageKind, hash_source, normalize_document};
+use flowrt_ir::{
+    ContractIr, LanguageKind, hash_source, normalize_document, project_contract_to_profile,
+};
 use flowrt_validate::validate_contract;
 
 #[derive(Debug, Parser)]
@@ -35,6 +37,10 @@ enum Command {
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
         out_dir: PathBuf,
+
+        /// 选择用于生成产物的 profile 名称。
+        #[arg(long)]
+        profile: Option<String>,
     },
 
     /// 准备并构建 FlowRT 管理的应用产物。
@@ -45,6 +51,10 @@ enum Command {
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
         out_dir: PathBuf,
+
+        /// 选择用于生成产物的 profile 名称。
+        #[arg(long)]
+        profile: Option<String>,
     },
 
     /// 准备并运行 FlowRT 管理的应用 crate。
@@ -59,6 +69,10 @@ enum Command {
         /// 只运行生成应用中的一个 RSDL process group。
         #[arg(long)]
         process: Option<String>,
+
+        /// 选择用于生成和运行的 profile 名称。
+        #[arg(long)]
+        profile: Option<String>,
     },
 
     /// 准备、构建并运行生成的 process supervisor。
@@ -69,6 +83,10 @@ enum Command {
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
         out_dir: PathBuf,
+
+        /// 选择用于生成和启动的 profile 名称。
+        #[arg(long)]
+        profile: Option<String>,
     },
 
     /// 查看已落盘的 Contract IR JSON 文档摘要。
@@ -85,20 +103,27 @@ fn main() -> Result<()> {
             let contract = load_contract_from_rsdl(&rsdl)?;
             println!("OK {}", summary(&contract));
         }
-        Command::Prepare { rsdl, out_dir } => {
+        Command::Prepare {
+            rsdl,
+            out_dir,
+            profile,
+        } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir)?;
+            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
             println!(
                 "prepared {} and {} artifact(s)",
                 prepared.contract_path.display(),
                 prepared.artifact_count
             );
         }
-        Command::Build { rsdl, out_dir } => {
+        Command::Build {
+            rsdl,
+            out_dir,
+            profile,
+        } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir)?;
-            let contract = load_contract_from_json(&prepared.contract_path)?;
-            build_workspace(&contract, &out_dir)?;
+            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
+            build_workspace(&prepared.selected_contract, &out_dir)?;
             println!(
                 "built {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -109,26 +134,29 @@ fn main() -> Result<()> {
             rsdl,
             out_dir,
             process,
+            profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir)?;
-            let contract = load_contract_from_json(&prepared.contract_path)?;
-            run_workspace(&contract, &out_dir, process.as_deref())?;
+            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
+            run_workspace(&prepared.selected_contract, &out_dir, process.as_deref())?;
             println!(
                 "ran {} and {} artifact(s)",
                 prepared.contract_path.display(),
                 prepared.artifact_count
             );
         }
-        Command::Launch { rsdl, out_dir } => {
+        Command::Launch {
+            rsdl,
+            out_dir,
+            profile,
+        } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir)?;
-            let contract = load_contract_from_json(&prepared.contract_path)?;
-            ensure_direct_runtime_supported(&contract, "launch")?;
-            ensure_backend_runtime_supported(&contract, "launch")?;
+            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
+            ensure_direct_runtime_supported(&prepared.selected_contract, "launch")?;
+            ensure_backend_runtime_supported(&prepared.selected_contract, "launch")?;
             let manifest = cargo_manifest_with_local_runtime_patch(&out_dir)?;
             run_cargo("build", &manifest)?;
-            run_cargo_supervisor(&manifest, &supervisor_bin_name(&contract))?;
+            run_cargo_supervisor(&manifest, &supervisor_bin_name(&prepared.selected_contract))?;
             println!(
                 "launched {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -175,16 +203,24 @@ fn write_contract(contract: &ContractIr, out_dir: &Path) -> Result<PathBuf> {
 struct PreparedWorkspace {
     contract_path: PathBuf,
     artifact_count: usize,
+    selected_contract: ContractIr,
 }
 
-fn prepare_workspace(rsdl: &Path, out_dir: &Path) -> Result<PreparedWorkspace> {
+fn prepare_workspace(
+    rsdl: &Path,
+    out_dir: &Path,
+    profile: Option<&str>,
+) -> Result<PreparedWorkspace> {
     let contract = load_contract_from_rsdl(rsdl)?;
-    let contract_path = write_contract(&contract, out_dir)?;
-    let artifacts = emit_artifacts(&contract).context("failed to prepare artifacts")?;
+    let selected_contract = project_contract_to_profile(&contract, profile)
+        .with_context(|| format!("failed to select profile for `{}`", rsdl.display()))?;
+    let contract_path = write_contract(&selected_contract, out_dir)?;
+    let artifacts = emit_artifacts(&selected_contract).context("failed to prepare artifacts")?;
     let artifact_count = write_artifacts(&artifacts, out_dir)?;
     Ok(PreparedWorkspace {
         contract_path,
         artifact_count,
+        selected_contract,
     })
 }
 

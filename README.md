@@ -38,9 +38,12 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
 flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
+flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
 `prepare` / `build` / `run` 会从 `.rsdl` 文件推导应用根目录，并将 FlowRT 管理产物写入该项目可见的 `flowrt/` 目录。
+`prepare` / `build` / `run` / `launch` 还支持 `--profile <name>`，用于显式选择某个 profile 并据此投影生成产物；`examples/profile_switch_demo` 展示了同一份 RSDL 在 `inproc` 与 `iox2` 之间切换的路径。
 当 contract 只含 C++ 组件时，`flowrt build` / `flowrt run` 使用 CMake 构建或运行 FlowRT 管理的 C++ shell、app 和 ABI test target；C++ only contract 不应触发 Cargo app 路径。
 当 C++ only contract 选择 `iox2` backend 时，生成的 CMake 工程会显式依赖 `iceoryx2-cxx 0.9.1` 并启用 C++ iox2 transport；没有安装该依赖时应由 CMake 明确失败，而不是静默退回 inproc。
 当 contract 含 Rust 组件时，当前实现仍使用 Cargo 构建 FlowRT 管理的 Rust 应用；Rust 用户组件的免 Cargo 分发属于后续安装/打包设计。
