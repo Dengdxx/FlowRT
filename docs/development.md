@@ -73,6 +73,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - 用户算法代码应放在示例或项目自己的 `src/` 目录，不写进生成文件。
 - FlowRT 管理代码只做 glue：消息、接口、runtime shell、backend 绑定、启动配置和构建文件。
 - Codegen 入口必须只消费通过 validator 的 Contract IR；crate public API 也要重新校验传入 IR，避免调用方绕过 CLI 后生成半成品或触发 panic。
+- 静态自描述产物必须来自已验证、已投影的 Contract IR。`flowrt/selfdesc/selfdesc.json` 只作为可读 sidecar 和测试辅助；部署后的事实源是生成应用二进制中的 `.flowrt.selfdesc` section。自描述 JSON 要包含静态拓扑、process、channel、profile/target/deployment 和 Message ABI layout，供后续 CLI 在没有 RSDL 源文件时自查。
 - C++ only contract 的 `flowrt build` / `flowrt run` 走 CMake app 路径，不依赖 Cargo app。
 - C++ only contract 的 `flowrt launch` 会生成 supervisor-only Rust crate；该 crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
 - 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有输出目录锁；`check` 和 `inspect` 不写生成物，不应获取该锁。
