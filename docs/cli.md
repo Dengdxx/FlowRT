@@ -83,6 +83,7 @@ launch manifest 的关键字段包括：
 
 - process group 的 `runtimes` 和 `runtime_kind`
 - graph instance 的 `runtime`
+- task 的 `trigger`、`period_ms`、`deadline_ms` 和 `priority`
 - graph `channels`
 - iox2 channel 的 canonical service name
 
