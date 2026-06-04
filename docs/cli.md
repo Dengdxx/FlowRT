@@ -21,6 +21,8 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 `check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。
 
+Message ABI v0.1 只接受 fixed-size plain data。RSDL type expression 可以解析未来有界变长语法，例如 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>`，但 `check` 会拒绝包含这些字段的 v0.1 contract，并提示需要未来 Variable Frame ABI；当前 `prepare`、`build`、`run`、`launch` 和 conformance 生成都不会继续处理这些字段。
+
 ## `prepare`
 
 ```bash

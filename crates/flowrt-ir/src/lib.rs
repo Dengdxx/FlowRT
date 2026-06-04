@@ -18,7 +18,7 @@ pub use normalize::{
     hash_source, normalize_document, param_value_compatible, param_value_kind,
     project_contract_to_profile,
 };
-pub use type_expr::{PrimitiveType, TypeExpr, parse_type_expr};
+pub use type_expr::{PrimitiveType, StringEncoding, TypeExpr, parse_type_expr};
 
 /// 当前工具链支持的 RSDL 源语言版本。
 pub const RSDL_VERSION: &str = "0.1";

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use flowrt_conformance::message_abi_expectations;
+use flowrt_conformance::{AbiError, message_abi_expectations};
 use flowrt_ir::{
     CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr, ChannelKind,
     ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
@@ -817,6 +817,9 @@ fn validate_unique_names<'a>(
 
 fn validate_message_abi(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     if let Err(error) = message_abi_expectations(ir) {
+        if matches!(error, AbiError::UnsupportedFutureType { .. }) {
+            return;
+        }
         errors.push(ValidationError::new(format!(
             "message ABI v0.1 violation: {error}"
         )));
@@ -1743,6 +1746,22 @@ fn validate_type_expr(
                     "{context} has zero-length array"
                 )));
             }
+            validate_type_expr(element, type_names, context, errors);
+        }
+        TypeExpr::VarBytes { max_len } => {
+            errors.push(ValidationError::new(format!(
+                "{context} uses bytes<max={max_len}>, which requires the future Variable Frame ABI"
+            )));
+        }
+        TypeExpr::VarString { max_len, .. } => {
+            errors.push(ValidationError::new(format!(
+                "{context} uses string<max={max_len}>, which requires the future Variable Frame ABI"
+            )));
+        }
+        TypeExpr::VarSequence { element, max_len } => {
+            errors.push(ValidationError::new(format!(
+                "{context} uses sequence<...,max={max_len}>, which requires the future Variable Frame ABI"
+            )));
             validate_type_expr(element, type_names, context, errors);
         }
     }
@@ -2673,6 +2692,45 @@ payload = "[u8; 1]"
             error
                 .message
                 .contains("type `Packet` field `payload` has zero-length array")
+        }));
+    }
+
+    #[test]
+    fn rejects_variable_frame_message_fields_in_v0_1() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=262144>"
+label = "string<max=64>"
+samples = "sequence<u32,max=16>"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir)
+            .expect_err("Variable Frame ABI fields should fail validation in v0.1");
+
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "type `Packet` field `payload` uses bytes<max=262144>, which requires the future Variable Frame ABI",
+            )
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "type `Packet` field `label` uses string<max=64>, which requires the future Variable Frame ABI",
+            )
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "type `Packet` field `samples` uses sequence<...,max=16>, which requires the future Variable Frame ABI",
+            )
+        }));
+        assert!(!report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("message ABI v0.1 violation: type expression `bytes<max=262144>`")
         }));
     }
 

@@ -18,6 +18,13 @@ pub enum AbiError {
 
     #[error("recursive message type `{type_name}` detected")]
     RecursiveType { type_name: String },
+
+    #[error("type expression `{type_expr}` in `{context}` requires future {required_abi}")]
+    UnsupportedFutureType {
+        context: String,
+        type_expr: String,
+        required_abi: &'static str,
+    },
 }
 
 /// 单个字段的 layout expectation。
@@ -51,15 +58,16 @@ pub struct LayoutExpectation {
 }
 
 /// 从 Contract IR 推导字段名 expectation。
-pub fn layout_expectations(contract: &ContractIr) -> Vec<LayoutExpectation> {
-    contract
+pub fn layout_expectations(contract: &ContractIr) -> Result<Vec<LayoutExpectation>> {
+    message_abi_expectations(contract)?;
+    Ok(contract
         .types
         .iter()
         .map(|ty| LayoutExpectation {
             type_name: ty.name.clone(),
             fields: ty.fields.iter().map(|field| field.name.clone()).collect(),
         })
-        .collect()
+        .collect())
 }
 
 /// 为 contract 中所有消息类型推导确定性的 ABI expectations。
@@ -191,6 +199,13 @@ fn type_layout(
                 align_bytes: element_layout.align_bytes,
             })
         }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            Err(AbiError::UnsupportedFutureType {
+                context: context.to_string(),
+                type_expr: expr.canonical_syntax(),
+                required_abi: expr.required_future_abi().unwrap_or("future ABI"),
+            })
+        }
     }
 }
 
@@ -263,7 +278,7 @@ ax = "f32"
 "#;
         let raw = parse_str(source).unwrap();
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
-        let expectations = layout_expectations(&ir);
+        let expectations = layout_expectations(&ir).unwrap();
         assert_eq!(expectations[0].fields, ["timestamp", "ax"]);
     }
 
@@ -311,5 +326,51 @@ next = "Node"
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
         let error = message_abi_expectations(&ir).unwrap_err();
         assert!(matches!(error, AbiError::RecursiveType { .. }));
+    }
+
+    #[test]
+    fn rejects_variable_frame_types_for_message_abi_v0_1_layout() {
+        let source = r#"
+[package]
+name = "demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=1024>"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let error = message_abi_expectations(&ir).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AbiError::UnsupportedFutureType { context, ref type_expr, required_abi }
+                if context == "Packet"
+                    && type_expr == "bytes<max=1024>"
+                    && required_abi == "Variable Frame ABI"
+        ));
+    }
+
+    #[test]
+    fn rejects_variable_frame_types_for_field_name_layout_expectations() {
+        let source = r#"
+[package]
+name = "demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=1024>"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let error = layout_expectations(&ir).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AbiError::UnsupportedFutureType { context, ref type_expr, required_abi }
+                if context == "Packet"
+                    && type_expr == "bytes<max=1024>"
+                    && required_abi == "Variable Frame ABI"
+        ));
     }
 }
