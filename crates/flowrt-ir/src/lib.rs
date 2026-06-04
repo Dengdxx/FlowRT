@@ -14,7 +14,10 @@ pub use backend::{
 };
 pub use error::{IrError, Result};
 pub use model::*;
-pub use normalize::{hash_source, normalize_document, project_contract_to_profile};
+pub use normalize::{
+    hash_source, normalize_document, param_value_compatible, param_value_kind,
+    project_contract_to_profile,
+};
 pub use type_expr::{PrimitiveType, TypeExpr, parse_type_expr};
 
 /// 当前工具链支持的 RSDL 源语言版本。
