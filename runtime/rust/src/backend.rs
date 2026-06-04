@@ -65,46 +65,54 @@ impl Scheduler for InprocScheduler {
 
 const INPROC_CAPABILITIES: &[&str] = &[
     "abi:fixed_size_plain_data",
-    "allocation:bounded",
-    "channel:fifo",
-    "channel:latest",
-    "graph:static_graph",
     "layout:native_layout",
-    "observability:health",
-    "overflow:block",
-    "overflow:drop_newest",
-    "overflow:drop_oldest",
-    "overflow:error",
-    "stale:drop",
-    "stale:error",
-    "stale:hold_last",
-    "stale:warn",
+    "allocation:bounded",
+    "graph:static_graph",
+    "trigger:periodic",
+    "trigger:on_message",
+    "trigger:startup",
+    "trigger:shutdown",
     "timing:deadline_aware",
+    "channel:latest",
+    "channel:fifo",
+    "overflow:drop_oldest",
+    "overflow:drop_newest",
+    "overflow:error",
+    "overflow:block",
+    "stale:warn",
+    "stale:drop",
+    "stale:hold_last",
+    "stale:error",
     "topology:single_process",
     "transfer:copy",
+    "observability:health",
 ];
 
 const IOX2_CAPABILITIES: &[&str] = &[
     "abi:fixed_size_plain_data",
-    "allocation:bounded",
-    "channel:fifo",
-    "channel:latest",
-    "graph:static_graph",
     "layout:native_layout",
-    "observability:health",
-    "overflow:block",
-    "overflow:drop_newest",
-    "overflow:drop_oldest",
-    "overflow:error",
-    "stale:drop",
-    "stale:error",
-    "stale:hold_last",
-    "stale:warn",
+    "allocation:bounded",
+    "graph:static_graph",
+    "trigger:periodic",
+    "trigger:on_message",
+    "trigger:startup",
+    "trigger:shutdown",
     "timing:deadline_aware",
+    "channel:latest",
+    "channel:fifo",
+    "overflow:drop_oldest",
+    "overflow:drop_newest",
+    "overflow:error",
+    "overflow:block",
+    "stale:warn",
+    "stale:drop",
+    "stale:hold_last",
+    "stale:error",
     "topology:multi_process",
     "topology:single_host",
-    "transfer:loaned",
     "transfer:zero_copy",
+    "transfer:loaned",
+    "observability:health",
 ];
 
 /// 单进程 backend 实现。
@@ -188,6 +196,33 @@ mod tests {
         assert!(capabilities.contains("channel:latest"));
         assert!(capabilities.contains("graph:static_graph"));
         assert!(capabilities.contains("timing:deadline_aware"));
+        assert_eq!(
+            capabilities.as_slice(),
+            &[
+                "abi:fixed_size_plain_data",
+                "layout:native_layout",
+                "allocation:bounded",
+                "graph:static_graph",
+                "trigger:periodic",
+                "trigger:on_message",
+                "trigger:startup",
+                "trigger:shutdown",
+                "timing:deadline_aware",
+                "channel:latest",
+                "channel:fifo",
+                "overflow:drop_oldest",
+                "overflow:drop_newest",
+                "overflow:error",
+                "overflow:block",
+                "stale:warn",
+                "stale:drop",
+                "stale:hold_last",
+                "stale:error",
+                "topology:single_process",
+                "transfer:copy",
+                "observability:health",
+            ]
+        );
     }
 
     #[test]
@@ -209,5 +244,34 @@ mod tests {
         let capabilities = backend.capabilities();
         assert!(capabilities.contains("topology:multi_process"));
         assert!(capabilities.contains("timing:deadline_aware"));
+        assert_eq!(
+            capabilities.as_slice(),
+            &[
+                "abi:fixed_size_plain_data",
+                "layout:native_layout",
+                "allocation:bounded",
+                "graph:static_graph",
+                "trigger:periodic",
+                "trigger:on_message",
+                "trigger:startup",
+                "trigger:shutdown",
+                "timing:deadline_aware",
+                "channel:latest",
+                "channel:fifo",
+                "overflow:drop_oldest",
+                "overflow:drop_newest",
+                "overflow:error",
+                "overflow:block",
+                "stale:warn",
+                "stale:drop",
+                "stale:hold_last",
+                "stale:error",
+                "topology:multi_process",
+                "topology:single_host",
+                "transfer:zero_copy",
+                "transfer:loaned",
+                "observability:health",
+            ]
+        );
     }
 }
