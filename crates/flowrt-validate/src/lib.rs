@@ -1321,7 +1321,12 @@ fn validate_type_expr(
                 )));
             }
         }
-        TypeExpr::Array { element, .. } => {
+        TypeExpr::Array { element, len } => {
+            if *len == 0 {
+                errors.push(ValidationError::new(format!(
+                    "{context} has zero-length array"
+                )));
+            }
             validate_type_expr(element, type_names, context, errors);
         }
     }
@@ -1922,6 +1927,34 @@ next = "Node"
                 .iter()
                 .any(|error| error.message.contains("recursive message type"))
         );
+    }
+
+    #[test]
+    fn rejects_zero_length_arrays_in_contract_ir() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "[u8; 1]"
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.types[0].fields[0].ty = TypeExpr::Array {
+            element: Box::new(TypeExpr::Primitive {
+                name: flowrt_ir::PrimitiveType::U8,
+            }),
+            len: 0,
+        };
+
+        let report = validate_contract(&ir).expect_err("zero-length arrays should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("type `Packet` field `payload` has zero-length array")
+        }));
     }
 
     #[test]
