@@ -426,16 +426,22 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
     let mut lines = Vec::new();
     for socket in sockets {
         match flowrt::request_status(&socket) {
-            Ok(response) => {
+            Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
                 lines.push(format!(
                     "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} socket={}",
-                    response.handshake.pid,
-                    response.handshake.package,
-                    response.handshake.process,
-                    response.handshake.runtime,
-                    response.handshake.self_description_hash,
-                    response.status.tick_count,
-                    response.status.channels.len(),
+                    handshake.pid,
+                    handshake.package,
+                    handshake.process,
+                    handshake.runtime,
+                    handshake.self_description_hash,
+                    status.tick_count,
+                    status.channels.len(),
+                    socket.display()
+                ));
+            }
+            Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
+                lines.push(format!(
+                    "stale socket={} error=unexpected channel snapshot response",
                     socket.display()
                 ));
             }
@@ -1765,16 +1771,20 @@ fn main() {}
             process: "main".to_string(),
             runtime: "rust".to_string(),
         };
-        let status = flowrt::IntrospectionStatus {
-            tick_count: 9,
-            channels: vec![flowrt::IntrospectionChannelStatus {
-                name: "source.imu_to_sink.imu".to_string(),
-                message_type: "Imu".to_string(),
-                published_count: 4,
-                last_payload_len: Some(48),
-            }],
-        };
-        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, status)
+        let state = flowrt::IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        for _ in 0..9 {
+            state.record_tick();
+        }
+        for _ in 0..4 {
+            state.record_channel_publish_bytes(
+                "source.imu_to_sink.imu",
+                "Imu",
+                vec![0u8; 48],
+                None,
+            );
+        }
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
             .expect("status server should start");
 
         let output = live_status_summary_for_sockets(vec![socket]).unwrap();
