@@ -257,32 +257,45 @@ fn normalize_targets(document: &RawDocument) -> Result<Vec<TargetIr>> {
         .targets
         .iter()
         .map(|(name, raw)| {
+            let mut backends = raw
+                .backends
+                .iter()
+                .cloned()
+                .map(BackendName)
+                .collect::<Vec<_>>();
+            backends.sort();
             Ok(TargetIr {
                 id: entity_id("target", name),
                 name: name.clone(),
                 platform: raw.platform.clone(),
                 runtime: normalize_target_runtime(name, raw)?,
-                backends: raw.backends.iter().cloned().map(BackendName).collect(),
-                capabilities: target_capabilities(&raw.backends),
+                capabilities: target_capabilities(&backends),
+                backends,
             })
         })
         .collect()
 }
 
-fn target_capabilities(backends: &[String]) -> Vec<CapabilityAtom> {
+fn target_capabilities(backends: &[BackendName]) -> Vec<CapabilityAtom> {
     let capabilities = backends
         .iter()
-        .filter_map(|backend| backend_capabilities(backend))
+        .filter_map(|backend| backend_capabilities(&backend.0))
         .flatten()
         .collect::<Vec<_>>();
     dedupe_capabilities(capabilities)
 }
 
 fn normalize_target_runtime(target_name: &str, raw: &RawTarget) -> Result<Vec<LanguageKind>> {
-    raw.runtime
+    let mut runtime = raw
+        .runtime
         .iter()
         .map(|language| parse_language(&format!("target.{target_name}.runtime"), language))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    runtime.sort_by_key(|language| match language {
+        LanguageKind::Cpp => 0,
+        LanguageKind::Rust => 1,
+    });
+    Ok(runtime)
 }
 
 fn normalize_instances(
@@ -912,6 +925,36 @@ channel = "latest""#,
         );
         let raw_a = parse_str(source_a).unwrap();
         let raw_b = parse_str(&source_b).unwrap();
+        let source_hash = hash_source("same logical source");
+
+        let ir_a = normalize_document(&raw_a, source_hash.clone()).unwrap();
+        let ir_b = normalize_document(&raw_b, source_hash).unwrap();
+
+        assert_eq!(ir_a, ir_b);
+    }
+
+    #[test]
+    fn canonicalizes_target_set_order_independent_of_source_order() {
+        let source_a = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["iox2", "inproc"]
+"#;
+        let source_b = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[target.linux]
+runtime = ["cpp", "rust"]
+backends = ["inproc", "iox2"]
+"#;
+        let raw_a = parse_str(source_a).unwrap();
+        let raw_b = parse_str(source_b).unwrap();
         let source_hash = hash_source("same logical source");
 
         let ir_a = normalize_document(&raw_a, source_hash.clone()).unwrap();
