@@ -42,6 +42,8 @@ examples/
   imu_demo_iox2/rsdl/robot.rsdl
   imu_demo_iox2/src/rust/mod.rs
   imu_demo_iox2/src/cpp/components.cpp
+  profile_switch_demo/rsdl/robot.rsdl
+  profile_switch_demo/src/rust/mod.rs
   cpp_counter_demo/rsdl/robot.rsdl
   cpp_counter_demo/src/cpp/components.cpp
   mixed_iox2_demo/rsdl/robot.rsdl
@@ -51,6 +53,7 @@ AGENTS.md
 ```
 
 当前已实现 Rust CLI 的 `check`、`prepare`、`build`、`run`、`launch` 和 `inspect` 基础闭环，安装后的 binary 名称为 `flowrt`。仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和最终回复应默认使用安装后的 `flowrt ...` 命令。
+`prepare` / `build` / `run` / `launch` 还支持 `--profile <name>`，用于显式选择 profile 并按该 profile 生成产物；默认仍使用 `default` profile 或首个 profile。
 
 当前已接入 Contract IR 驱动的 Rust/C++ message ABI conformance 测试生成。生成的 Rust/C++ ABI 测试使用同一份 IR-derived expected byte fixtures，覆盖 size、alignment、field offset、byte-level roundtrip 和跨语言 field value equivalence。C++ only contract 已能生成 inproc runtime shell，支持 `App` 注入接口、生命周期调度、latest/FIFO channel 转发、Contract IR 驱动的 process group 分发、bind-level stale freshness 策略和 `flowrt_user::build_app()` 用户工厂入口；`flowrt build` / `flowrt run` 对 C++ only contract 走 CMake app 路径，`examples/cpp_counter_demo` 用于验证只写 C++ 用户逻辑的构建和运行路径。
 
@@ -62,7 +65,7 @@ Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ compo
 
 `flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 已读取 `runtime_kind`，能为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，并继续拒绝 mixed process group。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
-当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo` 与 `imu_demo_iox2` 执行 check。该 workflow 暂不做 cache、release 发布、多平台矩阵或默认安装 `iceoryx2-cxx`。
+当前已存在 `.github/workflows/ci.yml` CI 雏形：Linux 上运行 Rust fmt/test/clippy、C++ runtime CMake/CTest、FlowRT demo smoke，并构建上传 `flowrt-linux-x86_64` artifact。CI smoke 中 C++ only demo 执行 build/run，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo`、`imu_demo_iox2` 与 `profile_switch_demo` 执行 check 或 profile 切换 smoke。该 workflow 暂不做 cache、release 发布、多平台矩阵或默认安装 `iceoryx2-cxx`。
 
 ## 当前里程碑
 

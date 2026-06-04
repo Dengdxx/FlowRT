@@ -1,0 +1,36 @@
+[package]
+name = "profile_switch_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.Counter]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["counter:Counter"]
+
+[instance.worker]
+component = "worker"
+process = "main"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 1
+output = ["counter"]
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[profile.iox2]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[target.linux]
+platform = "linux-x86_64"
+runtime = ["rust"]
+backends = ["inproc", "iox2"]

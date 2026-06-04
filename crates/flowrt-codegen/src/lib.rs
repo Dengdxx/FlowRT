@@ -835,7 +835,7 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> 
 }
 
 fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
-    selected_backend == "iox2"
+    (!binds.is_empty() && selected_backend == "iox2")
         || binds
             .iter()
             .any(|bind| matches!(bind.channel, ChannelKind::Latest))
@@ -1503,7 +1503,7 @@ fn emit_rust_app_run_function(
 }
 
 fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
-    selected_backend == "iox2"
+    (!binds.is_empty() && selected_backend == "iox2")
         || binds
             .iter()
             .any(|bind| matches!(bind.channel, ChannelKind::Latest))
@@ -2794,6 +2794,70 @@ input = ["packet:Packet"]
         assert!(cpp_abi.contains("constexpr std::array<std::uint8_t, 12> EXPECTED_PACKET_BYTES"));
         assert!(cpp_abi.contains("2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 136, 64"));
         assert!(cpp_abi.contains("assert_sample_bytes(sample_packet(), EXPECTED_PACKET_BYTES);"));
+    }
+
+    #[test]
+    fn profile_selection_projects_selected_backend_into_generated_artifacts() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[profile.iox2]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+        let projected = flowrt_ir::project_contract_to_profile(&ir, Some("iox2")).unwrap();
+        let bundle = emit_artifacts(&projected).unwrap();
+        let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+        assert!(cargo_manifest.contains("features = [\"iox2\"]"));
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"iox2\";"));
+    }
+
+    #[test]
+    fn iox2_runtime_shell_omits_tick_timestamp_for_empty_bind_graphs() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+process = "main"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 1
+
+[profile.iox2]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(!rust_shell.contains("let tick_time_ms = tick as u64;"));
     }
 
     #[test]
