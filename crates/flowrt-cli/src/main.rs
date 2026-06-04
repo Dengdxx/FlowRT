@@ -540,6 +540,7 @@ fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -
 fn launch_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
     ensure_direct_runtime_supported(contract, "launch")?;
     ensure_backend_runtime_supported(contract, "launch")?;
+    ensure_launch_process_boundaries_supported(contract)?;
     for step in launch_steps(contract) {
         match step {
             LaunchStep::Build(BuildStep::Cargo) => {
@@ -556,6 +557,63 @@ fn launch_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn ensure_launch_process_boundaries_supported(contract: &ContractIr) -> Result<()> {
+    let backend = selected_runtime_backend_name(contract);
+    if backend != "inproc" {
+        return Ok(());
+    }
+
+    if let Some(boundary) = first_cross_process_bind(contract) {
+        anyhow::bail!(
+            "backend `inproc` cannot launch dataflow `{}` -> `{}` across process groups `{}` -> `{}`; use backend `iox2` or place both instances in the same RSDL process group",
+            boundary.from,
+            boundary.to,
+            boundary.from_process,
+            boundary.to_process
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct CrossProcessBind {
+    from: String,
+    to: String,
+    from_process: String,
+    to_process: String,
+}
+
+fn first_cross_process_bind(contract: &ContractIr) -> Option<CrossProcessBind> {
+    for graph in &contract.graphs {
+        let processes = graph
+            .instances
+            .iter()
+            .map(|instance| {
+                (
+                    instance.name.as_str(),
+                    instance.process.as_deref().unwrap_or("main").to_string(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        for bind in &graph.binds {
+            let from_process = processes.get(bind.from.instance.name.as_str())?;
+            let to_process = processes.get(bind.to.instance.name.as_str())?;
+            if from_process != to_process {
+                return Some(CrossProcessBind {
+                    from: format!("{}.{}", bind.from.instance.name, bind.from.port),
+                    to: format!("{}.{}", bind.to.instance.name, bind.to.port),
+                    from_process: from_process.clone(),
+                    to_process: to_process.clone(),
+                });
+            }
+        }
+    }
+
+    None
 }
 
 fn cargo_manifest_with_local_runtime_patch(out_dir: &Path) -> Result<PathBuf> {
@@ -1161,6 +1219,61 @@ default_stale_policy = "warn"
         );
 
         ensure_direct_runtime_supported(&contract, "launch").unwrap();
+    }
+
+    #[test]
+    fn launch_readiness_rejects_inproc_dataflow_across_process_groups() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "split_rust_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_process"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "sink_process"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let error = ensure_launch_process_boundaries_supported(&contract).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("backend `inproc`"));
+        assert!(message.contains("source_process"));
+        assert!(message.contains("sink_process"));
     }
 
     #[test]
