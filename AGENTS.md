@@ -228,7 +228,7 @@ FlowRT Message ABI v0.1 只支持 fixed-size plain data：
 - integers
 - floats
 - bool
-- fixed arrays
+- fixed arrays with `N > 0`
 - nested structs
 
 暂不支持：
