@@ -11,9 +11,9 @@ use flowrt_conformance::message_abi_expectations;
 use flowrt_ir::{
     CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr, ChannelKind,
     ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
-    OverflowPolicy, PortIr, PortRef, RSDL_VERSION, StalePolicy, TargetIr, TaskIr, TriggerKind,
-    TypeExpr, backend_capabilities, base_deployment_capabilities, is_known_backend,
-    param_value_compatible, param_value_kind, trigger_capability,
+    OverflowPolicy, PolicyValueSource, PortIr, PortRef, RSDL_VERSION, StalePolicy, TargetIr,
+    TaskIr, TriggerKind, TypeExpr, backend_capabilities, base_deployment_capabilities,
+    is_known_backend, param_value_compatible, param_value_kind, trigger_capability,
 };
 
 /// validation passes 返回的结果类型。
@@ -81,6 +81,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_entity_references(ir, &mut errors);
     validate_deployment_matrix(ir, &mut errors);
     validate_derived_capabilities(ir, &mut errors);
+    validate_channel_policy_sources(ir, &mut errors);
     validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
     validate_message_abi(ir, &mut errors);
@@ -720,6 +721,48 @@ fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<ValidationErr
             }
         }
     }
+}
+
+fn validate_channel_policy_sources(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let Some(profile) = single_profile(ir) else {
+        return;
+    };
+
+    for graph in &ir.graphs {
+        for bind in &graph.binds {
+            if bind.policy_source.overflow == PolicyValueSource::ProfileDefault
+                && bind.overflow != profile.defaults.default_overflow
+            {
+                push_policy_source_error(bind, errors);
+                continue;
+            }
+            if bind.policy_source.stale == PolicyValueSource::ProfileDefault
+                && bind.stale != profile.defaults.default_stale_policy
+            {
+                push_policy_source_error(bind, errors);
+                continue;
+            }
+            if bind.policy_source.max_age_ms == PolicyValueSource::ProfileDefault
+                && bind.max_age_ms != profile.defaults.max_age_ms
+            {
+                push_policy_source_error(bind, errors);
+            }
+        }
+    }
+}
+
+fn single_profile(ir: &ContractIr) -> Option<&flowrt_ir::ProfileIr> {
+    match ir.profiles.as_slice() {
+        [profile] => Some(profile),
+        _ => None,
+    }
+}
+
+fn push_policy_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationError>) {
+    errors.push(ValidationError::new(format!(
+        "bind `{}.{}` -> `{}.{}` policy source metadata is inconsistent with selected profile defaults",
+        bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
+    )));
 }
 
 fn validate_unique_names<'a>(
@@ -3182,6 +3225,26 @@ backends = ["inproc"]
                 report.errors
             );
         }
+    }
+
+    #[test]
+    fn rejects_inconsistent_channel_policy_source_metadata() {
+        let mut ir = valid_reference_contract();
+        ir.graphs[0].binds[0].overflow = OverflowPolicy::Error;
+        ir.graphs[0].binds[0].stale = StalePolicy::Drop;
+        ir.graphs[0].binds[0].max_age_ms = Some(10);
+        ir.graphs[0].binds[0].capability_requirements =
+            expected_bind_capabilities(&ir.graphs[0].binds[0]);
+        ir.deployments[0].required_capabilities = expected_graph_capabilities(&ir.graphs[0]);
+
+        let report =
+            validate_contract(&ir).expect_err("forged channel policy source metadata should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("bind `producer.sample` -> `consumer.sample` policy source metadata is inconsistent")
+        }), "{:?}", report.errors);
     }
 
     #[test]

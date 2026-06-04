@@ -5,11 +5,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr,
-    ChannelKind, ComponentIr, ComponentKind, ContractIr, DeploymentIr, EntityId, EntityRef,
-    FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind, LifecycleSurface,
-    OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults, PortIr, PortRef,
-    ProfileIr, Result, StalePolicy, TargetIr, TaskIr, TriggerKind, TypeIr, backend_capabilities,
-    base_deployment_capabilities, parse_type_expr, trigger_capability,
+    ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
+    EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
+    LifecycleSurface, OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults,
+    PolicyValueSource, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr, TaskIr,
+    TriggerKind, TypeIr, backend_capabilities, base_deployment_capabilities, parse_type_expr,
+    trigger_capability,
 };
 
 /// 计算稳定的 SHA-256 源文本哈希。
@@ -140,7 +141,60 @@ pub fn project_contract_to_profile(
     projected
         .deployments
         .retain(|deployment| deployment.profile.name == profile.name);
+    apply_profile_defaults_to_binds(&mut projected, profile);
+    refresh_projected_deployments(&mut projected);
     Ok(projected)
+}
+
+fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileIr) {
+    for graph in &mut contract.graphs {
+        for bind in &mut graph.binds {
+            if bind.policy_source.overflow == PolicyValueSource::ProfileDefault {
+                bind.overflow = profile.defaults.default_overflow;
+            }
+            if bind.policy_source.stale == PolicyValueSource::ProfileDefault {
+                bind.stale = profile.defaults.default_stale_policy;
+            }
+            if bind.policy_source.max_age_ms == PolicyValueSource::ProfileDefault {
+                bind.max_age_ms = profile.defaults.max_age_ms;
+            }
+            bind.capability_requirements =
+                channel_capabilities(bind.channel, bind.overflow, bind.stale);
+        }
+    }
+}
+
+fn refresh_projected_deployments(contract: &mut ContractIr) {
+    let graph_capabilities = contract
+        .graphs
+        .iter()
+        .map(|graph| (graph.name.clone(), graph_required_capabilities(graph)))
+        .collect::<BTreeMap<_, _>>();
+    let profile_by_name = contract
+        .profiles
+        .iter()
+        .map(|profile| (profile.name.as_str(), profile))
+        .collect::<BTreeMap<_, _>>();
+    let target_by_name = contract
+        .targets
+        .iter()
+        .map(|target| (target.name.as_str(), target))
+        .collect::<BTreeMap<_, _>>();
+
+    for deployment in &mut contract.deployments {
+        if let Some(required) = graph_capabilities.get(&deployment.graph.name) {
+            deployment.required_capabilities = required.clone();
+        }
+        let Some(profile) = profile_by_name.get(deployment.profile.name.as_str()) else {
+            continue;
+        };
+        let Some(target) = target_by_name.get(deployment.target.name.as_str()) else {
+            continue;
+        };
+        deployment.backend = profile.backend.clone();
+        deployment.satisfied =
+            deployment_satisfied(target, profile, &deployment.required_capabilities);
+    }
 }
 
 fn normalize_types(document: &RawDocument) -> Result<Vec<TypeIr>> {
@@ -531,6 +585,23 @@ fn normalize_binds(
                 overflow,
                 stale,
                 max_age_ms: raw.max_age_ms.or(default_max_age),
+                policy_source: ChannelPolicySourceIr {
+                    overflow: if raw.overflow.is_some() {
+                        PolicyValueSource::Explicit
+                    } else {
+                        PolicyValueSource::ProfileDefault
+                    },
+                    stale: if raw.stale_policy.is_some() {
+                        PolicyValueSource::Explicit
+                    } else {
+                        PolicyValueSource::ProfileDefault
+                    },
+                    max_age_ms: if raw.max_age_ms.is_some() {
+                        PolicyValueSource::Explicit
+                    } else {
+                        PolicyValueSource::ProfileDefault
+                    },
+                },
                 capability_requirements: channel_capabilities(channel, overflow, stale),
             })
         })
@@ -584,15 +655,6 @@ fn normalize_deployments(
 
     for profile in profiles {
         for target in targets {
-            let backend_supported_by_target = target
-                .backends
-                .iter()
-                .any(|backend| backend.0 == profile.backend.0);
-            let backend_capabilities = backend_capabilities(&profile.backend.0).unwrap_or_default();
-            let capabilities_satisfied = required_capabilities
-                .iter()
-                .all(|required| backend_capabilities.contains(required));
-            let satisfied = backend_supported_by_target && capabilities_satisfied;
             deployments.push(DeploymentIr {
                 id: entity_id(
                     "deployment",
@@ -609,12 +671,28 @@ fn normalize_deployments(
                 },
                 backend: profile.backend.clone(),
                 required_capabilities: required_capabilities.clone(),
-                satisfied,
+                satisfied: deployment_satisfied(target, profile, &required_capabilities),
             });
         }
     }
 
     deployments
+}
+
+fn deployment_satisfied(
+    target: &TargetIr,
+    profile: &ProfileIr,
+    required_capabilities: &[CapabilityAtom],
+) -> bool {
+    let backend_supported_by_target = target
+        .backends
+        .iter()
+        .any(|backend| backend.0 == profile.backend.0);
+    let backend_capabilities = backend_capabilities(&profile.backend.0).unwrap_or_default();
+    let capabilities_satisfied = required_capabilities
+        .iter()
+        .all(|required| backend_capabilities.contains(required));
+    backend_supported_by_target && capabilities_satisfied
 }
 
 fn graph_required_capabilities(graph: &GraphIr) -> Vec<CapabilityAtom> {
@@ -1167,6 +1245,88 @@ backends = ["inproc", "iox2"]
         assert_eq!(projected.deployments.len(), 1);
         assert_eq!(projected.deployments[0].profile.name, "iox2");
         assert_eq!(projected.deployments[0].backend.0, "iox2");
+    }
+
+    #[test]
+    fn projects_selected_profile_channel_policy_defaults() {
+        let source = r#"
+[package]
+name = "profile_policy_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["defaulted:Sample", "explicit:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["defaulted:Sample", "explicit:Sample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[[bind.dataflow]]
+from = "producer.defaulted"
+to = "consumer.defaulted"
+channel = "fifo"
+depth = 2
+
+[[bind.dataflow]]
+from = "producer.explicit"
+to = "consumer.explicit"
+channel = "latest"
+overflow = "drop_newest"
+stale_policy = "hold_last"
+max_age_ms = 7
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[profile.safety]
+backend = "inproc"
+default_overflow = "error"
+default_stale_policy = "drop"
+max_age_ms = 25
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, Some("safety")).unwrap();
+        let defaulted = projected.graphs[0]
+            .binds
+            .iter()
+            .find(|bind| bind.to.port == "defaulted")
+            .unwrap();
+        let explicit = projected.graphs[0]
+            .binds
+            .iter()
+            .find(|bind| bind.to.port == "explicit")
+            .unwrap();
+
+        assert_eq!(defaulted.overflow, OverflowPolicy::Error);
+        assert_eq!(defaulted.stale, StalePolicy::Drop);
+        assert_eq!(defaulted.max_age_ms, Some(25));
+        assert_eq!(
+            defaulted.capability_requirements,
+            channel_capabilities(defaulted.channel, defaulted.overflow, defaulted.stale)
+        );
+
+        assert_eq!(explicit.overflow, OverflowPolicy::DropNewest);
+        assert_eq!(explicit.stale, StalePolicy::HoldLast);
+        assert_eq!(explicit.max_age_ms, Some(7));
     }
 
     #[test]
