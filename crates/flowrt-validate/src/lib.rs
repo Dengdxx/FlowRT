@@ -122,6 +122,11 @@ fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
             ir.graphs.len()
         )));
     }
+    if ir.profiles.is_empty() {
+        errors.push(ValidationError::new(
+            "Contract IR v0.1 must contain at least one profile; found 0",
+        ));
+    }
 }
 
 fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
@@ -1407,6 +1412,28 @@ rsdl_version = "0.1"
             error
                 .message
                 .contains("Contract IR v0.1 must contain exactly one graph; found 0")
+        }));
+    }
+
+    #[test]
+    fn rejects_contract_without_profiles() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.profiles.clear();
+        ir.deployments.clear();
+
+        let report =
+            validate_contract(&ir).expect_err("v0.1 contract without profiles should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("Contract IR v0.1 must contain at least one profile; found 0")
         }));
     }
 
