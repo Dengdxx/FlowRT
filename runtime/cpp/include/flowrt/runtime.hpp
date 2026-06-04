@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -64,6 +65,122 @@ constexpr Status ok() noexcept { return Status::Ok; }
  * 能力视图，同时保持用户接口稳定。
  */
 struct Context {};
+
+/**
+ * @brief canonical wire codec 错误。
+ *
+ * 该错误只描述 FlowRT wire payload 本身的问题，不暴露具体 backend 或 transport API。
+ */
+class WireCodecError final : public std::runtime_error {
+   public:
+    /**
+     * @brief 构造 payload size mismatch 错误。
+     *
+     * @param expected codec 期望的 wire payload 字节数。
+     * @param actual 调用方提供的字节数。
+     */
+    WireCodecError(std::size_t expected, std::size_t actual)
+        : std::runtime_error("wire payload size mismatch"),
+          expected_(expected),
+          actual_(actual) {}
+
+    /**
+     * @brief 返回期望字节数。
+     */
+    constexpr std::size_t expected() const noexcept { return expected_; }
+
+    /**
+     * @brief 返回实际字节数。
+     */
+    constexpr std::size_t actual() const noexcept { return actual_; }
+
+   private:
+    std::size_t expected_;
+    std::size_t actual_;
+};
+
+/**
+ * @brief 校验 wire payload buffer 大小。
+ *
+ * @throws WireCodecError 当实际大小与 codec 固定大小不一致。
+ */
+inline void ensure_wire_size(std::size_t expected, std::size_t actual) {
+    if (expected != actual) {
+        throw WireCodecError(expected, actual);
+    }
+}
+
+namespace detail {
+
+template <typename T, typename Enable = void>
+struct WireStorageSelector {
+    using Type = std::make_unsigned_t<T>;
+};
+
+template <typename T>
+struct WireStorageSelector<T, std::enable_if_t<std::is_floating_point_v<T>>> {
+    using Type = std::
+        conditional_t<sizeof(T) == sizeof(std::uint32_t), std::uint32_t, std::uint64_t>;
+};
+
+template <>
+struct WireStorageSelector<bool, void> {
+    using Type = std::uint8_t;
+};
+
+template <typename T>
+using WireStorageT = typename WireStorageSelector<T>::Type;
+
+template <typename T>
+WireStorageT<T> wire_to_storage(T value) noexcept {
+    if constexpr (std::is_floating_point_v<T>) {
+        WireStorageT<T> storage{};
+        std::memcpy(&storage, &value, sizeof(T));
+        return storage;
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return value ? std::uint8_t{1} : std::uint8_t{0};
+    } else {
+        return static_cast<WireStorageT<T>>(value);
+    }
+}
+
+template <typename T>
+T wire_from_storage(WireStorageT<T> storage) noexcept {
+    if constexpr (std::is_floating_point_v<T>) {
+        T value{};
+        std::memcpy(&value, &storage, sizeof(T));
+        return value;
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return storage != 0U;
+    } else {
+        return static_cast<T>(storage);
+    }
+}
+
+}  // namespace detail
+
+/**
+ * @brief 按 little-endian 写入一个 fixed-size scalar。
+ */
+template <typename T>
+void write_wire_le(std::span<std::uint8_t> output, std::size_t offset, T value) {
+    auto storage = detail::wire_to_storage(value);
+    for (std::size_t index = 0; index < sizeof(T); ++index) {
+        output[offset + index] = static_cast<std::uint8_t>((storage >> (index * 8U)) & 0xFFU);
+    }
+}
+
+/**
+ * @brief 按 little-endian 读取一个 fixed-size scalar。
+ */
+template <typename T>
+T read_wire_le(std::span<const std::uint8_t> input, std::size_t offset) {
+    detail::WireStorageT<T> storage{};
+    for (std::size_t index = 0; index < sizeof(T); ++index) {
+        storage |= static_cast<detail::WireStorageT<T>>(input[offset + index]) << (index * 8U);
+    }
+    return detail::wire_from_storage<T>(storage);
+}
 
 /**
  * @brief 有界 channel 写满时的处理策略。

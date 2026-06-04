@@ -565,9 +565,12 @@ fn collect_type_dependencies(expr: &TypeExpr, dependencies: &mut BTreeSet<String
 fn emit_cpp_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
-    output.push_str("#include <array>\n#include <cstdint>\n\n");
+    output.push_str(
+        "#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <span>\n\n#include <flowrt/runtime.hpp>\n\n",
+    );
     output.push_str("namespace flowrt_app {\n\n");
     let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
+    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
     for ty in ordered_types(contract) {
         output.push_str(&format!("struct {} {{\n", ty.name));
         if needs_iox2_type_name {
@@ -582,6 +585,9 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
                 cpp_type(&field.ty),
                 field.name
             ));
+        }
+        if needs_wire_codec {
+            output.push_str(&cpp_wire_codec_methods(contract, ty));
         }
         output.push_str("};\n\n");
     }
@@ -2969,6 +2975,7 @@ fn emit_cpp_message_abi_tests(
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
+    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
     let expectations_by_name = expectations
         .iter()
         .map(|expectation| (expectation.type_name.as_str(), expectation))
@@ -3050,6 +3057,35 @@ fn emit_cpp_message_abi_tests(
             sample_function_name(&expectation.type_name)
         ));
         output.push_str("}\n\n");
+        if needs_wire_codec {
+            let message = type_by_name(contract, &expectation.type_name);
+            let wire_bytes = message_wire_sample_bytes(contract, message);
+            output.push_str(&format!(
+                "void test_{}_wire_codec_omits_native_padding() {{\n",
+                snake_identifier(&expectation.type_name)
+            ));
+            output.push_str(&format!(
+                "    const auto value = {}();\n",
+                sample_function_name(&expectation.type_name)
+            ));
+            output.push_str(&format!(
+                "    std::array<std::uint8_t, flowrt_app::{}::wire_size()> wire{{}};\n",
+                expectation.type_name
+            ));
+            output.push_str("    value.encode_wire(wire);\n");
+            output.push_str(&format!(
+                "    const std::array<std::uint8_t, flowrt_app::{}::wire_size()> expected_wire{{{}}};\n",
+                expectation.type_name,
+                byte_array_literal(&wire_bytes)
+            ));
+            output.push_str("    assert(wire == expected_wire);\n");
+            output.push_str(&format!(
+                "    const auto decoded = flowrt_app::{}::decode_wire(wire);\n",
+                expectation.type_name
+            ));
+            output.push_str("    assert(bytes_of(decoded) == bytes_of(value));\n");
+            output.push_str("}\n\n");
+        }
     }
 
     output.push_str("}  // namespace\n\nint main() {\n");
@@ -3058,6 +3094,12 @@ fn emit_cpp_message_abi_tests(
             "    test_{}_message_abi();\n",
             snake_identifier(&expectation.type_name)
         ));
+        if needs_wire_codec {
+            output.push_str(&format!(
+                "    test_{}_wire_codec_omits_native_padding();\n",
+                snake_identifier(&expectation.type_name)
+            ));
+        }
     }
     output.push_str("    return 0;\n}\n");
     output
@@ -3756,6 +3798,126 @@ fn rust_wire_decode_le(ty: &str, local: &str, input: &str, size: usize, indent: 
         .collect::<Vec<_>>()
         .join(", ");
     format!("{pad}let {local} = {ty}::from_le_bytes([{indexes}]);\n{pad}cursor += {size};\n")
+}
+
+fn cpp_wire_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "\n    static constexpr std::size_t wire_size() noexcept {{ return {}; }}\n\n",
+        rust_wire_size(
+            contract,
+            &TypeExpr::Named {
+                name: ty.name.clone()
+            }
+        )
+    ));
+    output.push_str(
+        "    void encode_wire(std::span<std::uint8_t> output) const {\n        flowrt::ensure_wire_size(wire_size(), output.size());\n        std::size_t cursor = 0;\n",
+    );
+    for field in &ty.fields {
+        output.push_str(&cpp_wire_encode_expr(
+            contract,
+            &field.ty,
+            &field.name,
+            "output",
+            8,
+        ));
+    }
+    output.push_str("    }\n\n");
+    output.push_str(&format!(
+        "    static {} decode_wire(std::span<const std::uint8_t> input) {{\n        flowrt::ensure_wire_size(wire_size(), input.size());\n        std::size_t cursor = 0;\n        {} value{{}};\n",
+        ty.name, ty.name
+    ));
+    for field in &ty.fields {
+        output.push_str(&cpp_wire_decode_expr(
+            contract,
+            &field.ty,
+            &format!("value.{}", field.name),
+            "input",
+            8,
+        ));
+    }
+    output.push_str("        return value;\n    }\n");
+    output
+}
+
+fn cpp_wire_encode_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    value: &str,
+    output: &str,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    match expr {
+        TypeExpr::Primitive { .. } => {
+            let size = rust_wire_size(contract, expr);
+            format!(
+                "{pad}flowrt::write_wire_le({output}, cursor, {value});\n{pad}cursor += {size};\n"
+            )
+        }
+        TypeExpr::Named { name } => format!(
+            "{pad}{value}.encode_wire({output}.subspan(cursor, {name}::wire_size()));\n{pad}cursor += {name}::wire_size();\n"
+        ),
+        TypeExpr::Array { element, .. } => {
+            let mut code = format!("{pad}for (const auto& element : {value}) {{\n");
+            code.push_str(&cpp_wire_encode_expr(
+                contract,
+                element,
+                "element",
+                output,
+                indent + 4,
+            ));
+            code.push_str(&format!("{pad}}}\n"));
+            code
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
+}
+
+fn cpp_wire_decode_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    target: &str,
+    input: &str,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    match expr {
+        TypeExpr::Primitive { .. } => {
+            let size = rust_wire_size(contract, expr);
+            format!(
+                "{pad}{target} = flowrt::read_wire_le<{}>({input}, cursor);\n{pad}cursor += {size};\n",
+                cpp_type(expr)
+            )
+        }
+        TypeExpr::Named { name } => format!(
+            "{pad}{target} = {name}::decode_wire({input}.subspan(cursor, {name}::wire_size()));\n{pad}cursor += {name}::wire_size();\n"
+        ),
+        TypeExpr::Array { element, len } => {
+            let mut code = format!("{pad}for (std::size_t index = 0; index < {len}; ++index) {{\n");
+            code.push_str(&cpp_wire_decode_expr(
+                contract,
+                element,
+                &format!("{target}[index]"),
+                input,
+                indent + 4,
+            ));
+            code.push_str(&format!("{pad}}}\n"));
+            code
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
 }
 
 fn rust_primitive(primitive: PrimitiveType) -> &'static str {
@@ -5147,6 +5309,78 @@ backends = ["zenoh"]
         assert!(rust_abi.contains(
             "assert_eq!(flowrt_app::messages::Packet::decode_wire(&wire).unwrap(), value);"
         ));
+    }
+
+    #[test]
+    fn emits_cpp_wire_codec_when_profile_selects_zenoh() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "wire_demo"
+rsdl_version = "0.1"
+
+[type.Inner]
+value = "u16"
+
+[type.Packet]
+flag = "bool"
+count = "u32"
+inner = "Inner"
+samples = "[i16; 2]"
+
+[component.source]
+language = "cpp"
+output = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+
+        assert!(
+            cpp_messages
+                .contains("static constexpr std::size_t wire_size() noexcept { return 2; }")
+        );
+        assert!(
+            cpp_messages
+                .contains("static constexpr std::size_t wire_size() noexcept { return 11; }")
+        );
+        assert!(cpp_messages.contains("flowrt::write_wire_le(output, cursor, flag);"));
+        assert!(cpp_messages.contains("flowrt::write_wire_le(output, cursor, count);"));
+        assert!(
+            cpp_messages.contains("inner.encode_wire(output.subspan(cursor, Inner::wire_size()));")
+        );
+        assert!(cpp_messages.contains("for (const auto& element : samples)"));
+        assert!(
+            cpp_messages.contains(
+                "value.samples[index] = flowrt::read_wire_le<std::int16_t>(input, cursor);"
+            )
+        );
+
+        let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+        assert!(cpp_abi.contains("void test_packet_wire_codec_omits_native_padding()"));
+        assert!(
+            cpp_abi.contains("std::array<std::uint8_t, flowrt_app::Packet::wire_size()> wire{};")
+        );
+        assert!(cpp_abi.contains(
+            "const std::array<std::uint8_t, flowrt_app::Packet::wire_size()> expected_wire{1, 3, 0, 0, 0, 2, 0, 251, 255, 251, 255};"
+        ));
+        assert!(cpp_abi.contains("const auto decoded = flowrt_app::Packet::decode_wire(wire);"));
+        assert!(cpp_abi.contains("assert(bytes_of(decoded) == bytes_of(value));"));
     }
 
     #[test]
