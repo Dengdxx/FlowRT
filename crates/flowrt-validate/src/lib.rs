@@ -625,7 +625,13 @@ fn validate_channel_depth(
     errors: &mut Vec<ValidationError>,
 ) {
     match (channel, depth) {
-        (ChannelKind::Latest, Some(0)) | (ChannelKind::Fifo, Some(0)) => {
+        (ChannelKind::Latest, Some(depth)) if depth != 1 => {
+            errors.push(ValidationError::new(format!(
+                "latest channel to `{}.{}` must omit depth or set depth = 1",
+                to.instance.name, to.port
+            )));
+        }
+        (ChannelKind::Fifo, Some(0)) => {
             errors.push(ValidationError::new(format!(
                 "channel to `{}.{}` has zero depth",
                 to.instance.name, to.port
@@ -1140,6 +1146,57 @@ channel = "latest"
             error
                 .message
                 .contains("graph `default` has a dataflow self-loop on instance `echo`")
+        }));
+    }
+
+    #[test]
+    fn rejects_latest_channel_depth_greater_than_one() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+depth = 2
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report =
+            validate_contract(&ir).expect_err("latest channel depth greater than one should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("latest channel to `sink.sample` must omit depth or set depth = 1")
         }));
     }
 

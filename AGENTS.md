@@ -192,6 +192,8 @@ latest(depth = 1)
 fifo(depth = N)
 ```
 
+`latest` 只能保留当前 snapshot；`depth` 只能省略或为 `1`。如果用户需要 backlog，必须显式使用 `fifo(depth = N)`。validator 必须拒绝 `latest` 上的 `depth > 1`，避免 codegen 静默忽略不支持的策略。
+
 overflow policy 必须显式：
 
 ```text
