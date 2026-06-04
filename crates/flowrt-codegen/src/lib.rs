@@ -592,6 +592,7 @@ fn emit_cpp_selfdesc_header(_contract: &ContractIr) -> String {
     output.push_str("#include <cstddef>\n#include <string_view>\n\n");
     output.push_str("namespace flowrt_app {\n\n");
     output.push_str("std::string_view self_description_json() noexcept;\n\n");
+    output.push_str("std::string_view self_description_hash() noexcept;\n\n");
     output.push_str("}  // namespace flowrt_app\n");
     output
 }
@@ -599,6 +600,7 @@ fn emit_cpp_selfdesc_header(_contract: &ContractIr) -> String {
 fn emit_cpp_selfdesc_source(contract: &ContractIr) -> String {
     let json = emit_self_description(contract)
         .expect("validated contract self-description should serialize");
+    let hash = hex_sha256(&json);
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
     output.push_str("#include <string_view>\n\n");
@@ -609,9 +611,15 @@ fn emit_cpp_selfdesc_source(contract: &ContractIr) -> String {
     output.push_str("const char kFlowrtSelfDescription[] = ");
     output.push_str(&cpp_raw_string_literal(&json));
     output.push_str(";\n\n");
+    output.push_str("const char kFlowrtSelfDescriptionHash[] = ");
+    output.push_str(&cpp_string_literal(&hash));
+    output.push_str(";\n\n");
     output.push_str("}  // namespace\n\n");
     output.push_str(
         "std::string_view self_description_json() noexcept {\n    return std::string_view{kFlowrtSelfDescription, sizeof(kFlowrtSelfDescription) - 1};\n}\n\n",
+    );
+    output.push_str(
+        "std::string_view self_description_hash() noexcept {\n    return std::string_view{kFlowrtSelfDescriptionHash, sizeof(kFlowrtSelfDescriptionHash) - 1};\n}\n\n",
     );
     output.push_str("}  // namespace flowrt_app\n");
     output
@@ -665,11 +673,13 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
 
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
-    output.push_str("#include <chrono>\n#include <cstdint>\n#include <string_view>\n#include <utility>\n#include <variant>\n\n");
+    output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
+    output.push_str("#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <utility>\n#include <variant>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
     );
+    output.push_str(&emit_cpp_introspection_helpers());
     output.push_str("}  // namespace\n\n");
     output.push_str("namespace flowrt_app {\n\n");
     output.push_str(&emit_cpp_app_constructor(
@@ -725,7 +735,11 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             TaskEmissionPhase::Shutdown,
         ));
     }
-    output.push_str(&emit_cpp_app_run(&order));
+    output.push_str(&emit_cpp_app_run(
+        &order,
+        &bind_plans,
+        &contract.package.name,
+    ));
     output.push_str(&emit_cpp_app_run_process_dispatch(&process_plans));
     for process in &process_plans {
         output.push_str(&emit_cpp_app_run_function(
@@ -734,6 +748,9 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             &format!("step_process_{}_startup", process.method_suffix),
             &format!("step_process_{}_shutdown", process.method_suffix),
             &process.instances,
+            &bind_plans,
+            &contract.package.name,
+            &process.name,
         ));
     }
     let backend_factory = cpp_backend_factory(&selected_backend);
@@ -771,19 +788,19 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context);\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
     );
     for process in &process_plans {
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context);\n",
+            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
             process.method_suffix
         ));
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context);\n",
+            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
             process.method_suffix
         ));
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context);\n",
+            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
             process.method_suffix
         ));
     }
@@ -950,7 +967,7 @@ fn emit_cpp_app_step(
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context) {{\n",
+        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {{\n",
     ));
     if cpp_runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
         output.push_str(
@@ -960,6 +977,7 @@ fn emit_cpp_app_step(
         output.push_str("    (void)tick;\n");
     }
     output.push_str("    (void)tick_context;\n");
+    output.push_str("    (void)introspection_state;\n");
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -1152,8 +1170,21 @@ fn rust_nested_step_indent(nested: bool) -> &'static str {
     }
 }
 
-fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
-    emit_cpp_app_run_function("run", "step", "step_startup", "step_shutdown", order)
+fn emit_cpp_app_run(
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+    package_name: &str,
+) -> String {
+    emit_cpp_app_run_function(
+        "run",
+        "step",
+        "step_startup",
+        "step_shutdown",
+        order,
+        binds,
+        package_name,
+        "main",
+    )
 }
 
 fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
@@ -1178,10 +1209,20 @@ fn emit_cpp_app_run_function(
     startup_function_name: &str,
     shutdown_function_name: &str,
     order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+    package_name: &str,
+    process_name: &str,
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
         "flowrt::Status App::{function_name}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
+    ));
+    output.push_str("    flowrt::IntrospectionState introspection_state;\n");
+    output.push_str(&emit_cpp_introspection_channel_registration(order, binds));
+    output.push_str(&format!(
+        "    auto introspection_server = flowrt::spawn_status_server(\n        flowrt::IntrospectionIdentity{{\n            .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n            .package = {},\n            .process = {},\n            .runtime = \"cpp\",\n        }},\n        introspection_state);\n    (void)introspection_server;\n",
+        cpp_string_literal(package_name),
+        cpp_string_literal(process_name)
     ));
     for instance in order {
         output.push_str(&format!(
@@ -1202,13 +1243,13 @@ fn emit_cpp_app_run_function(
         ));
     }
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {startup_function_name}(0, lifecycle_context);\n    }}\n"
+        "    if (status == flowrt::Status::Ok) {{\n        status = {startup_function_name}(0, lifecycle_context, introspection_state);\n    }}\n"
     ));
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this](std::size_t tick, flowrt::Context& tick_context) {{\n                return {step_function_name}(tick, tick_context);\n            }});\n    }}\n"
+        "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this, &introspection_state](std::size_t tick, flowrt::Context& tick_context) {{\n                introspection_state.record_tick();\n                return {step_function_name}(tick, tick_context, introspection_state);\n            }});\n    }}\n"
     ));
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {shutdown_function_name}(0, lifecycle_context);\n    }}\n"
+        "    if (status == flowrt::Status::Ok) {{\n        status = {shutdown_function_name}(0, lifecycle_context, introspection_state);\n    }}\n"
     ));
     for instance in order.iter().rev() {
         output.push_str(&format!(
@@ -1363,21 +1404,30 @@ fn cpp_step_local_name(instance: &str, port: &str) -> String {
     format!("{instance}_{port}")
 }
 
+fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
+    format!(
+        "        record_introspection_publish(introspection_state, {}, {}, *value, tick_time_ms);\n",
+        cpp_string_literal(&runtime_channel_name(bind)),
+        cpp_string_literal(&runtime_channel_message_type(bind))
+    )
+}
+
 fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    let introspection_record = cpp_introspection_publish_record(bind);
     if selected_backend == "iox2" {
         return format!(
-            "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
+            "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n{introspection_record}",
             field = bind.field_name
         );
     }
 
     match bind.channel {
         ChannelKind::Latest => format!(
-            "        {field}_.publish_at(*value, tick_time_ms);\n",
+            "        {field}_.publish_at(*value, tick_time_ms);\n{introspection_record}",
             field = bind.field_name
         ),
         ChannelKind::Fifo => format!(
-            "        if (const auto status = status_from_push_result({field}_.push_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
+            "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
             field = bind.field_name
         ),
     }
@@ -1965,6 +2015,55 @@ fn runtime_channel_name(bind: &BindRuntimePlan) -> String {
 
 fn runtime_channel_message_type(bind: &BindRuntimePlan) -> String {
     bind.source_type.canonical_syntax()
+}
+
+fn emit_cpp_introspection_helpers() -> String {
+    r#"void register_introspection_channel(
+    flowrt::IntrospectionState& state,
+    std::string_view name,
+    std::string_view message_type
+) {
+    try {
+        state.register_channel(std::string{name}, std::string{message_type});
+    } catch (...) {
+    }
+}
+
+template <typename T>
+void record_introspection_publish(
+    flowrt::IntrospectionState& state,
+    std::string_view name,
+    std::string_view message_type,
+    const T& value,
+    std::uint64_t published_at_ms
+) {
+    try {
+        state.record_channel_publish(
+            std::string{name},
+            std::string{message_type},
+            value,
+            std::optional<std::uint64_t>{published_at_ms});
+    } catch (...) {
+    }
+}
+
+"#
+    .to_string()
+}
+
+fn emit_cpp_introspection_channel_registration(
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+) -> String {
+    let mut output = String::new();
+    for bind in active_binds_for_instances(binds, order) {
+        output.push_str(&format!(
+            "    register_introspection_channel(introspection_state, {}, {});\n",
+            cpp_string_literal(&runtime_channel_name(bind)),
+            cpp_string_literal(&runtime_channel_message_type(bind))
+        ));
+    }
+    output
 }
 
 fn emit_rust_introspection_helpers() -> String {
@@ -4721,6 +4820,135 @@ backends = ["iox2"]
     }
 
     #[test]
+    fn cpp_shell_registers_active_channels_and_records_publish_snapshots() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor_source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sensor_sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[component.aux_source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.aux_sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.sensor_source]
+component = "sensor_source"
+process = "sensors"
+target = "linux"
+
+[instance.sensor_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sensor_sink]
+component = "sensor_sink"
+process = "sensors"
+target = "linux"
+
+[instance.sensor_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.aux_source]
+component = "aux_source"
+process = "aux"
+target = "linux"
+
+[instance.aux_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.aux_sink]
+component = "aux_sink"
+process = "aux"
+target = "linux"
+
+[instance.aux_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "sensor_source.sample"
+to = "sensor_sink.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "aux_source.sample"
+to = "aux_sink.sample"
+channel = "fifo"
+depth = 2
+overflow = "drop_oldest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let sensor_channel = "sensor_source.sample_to_sensor_sink.sample";
+        let aux_channel = "aux_source.sample_to_aux_sink.sample";
+        let sensor_register = format!(
+            "register_introspection_channel(introspection_state, {}, \"Sample\");",
+            cpp_string_literal(sensor_channel)
+        );
+        let aux_register = format!(
+            "register_introspection_channel(introspection_state, {}, \"Sample\");",
+            cpp_string_literal(aux_channel)
+        );
+        let sensor_record = format!(
+            "record_introspection_publish(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
+            cpp_string_literal(sensor_channel)
+        );
+        let aux_record = format!(
+            "record_introspection_publish(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
+            cpp_string_literal(aux_channel)
+        );
+
+        assert!(cpp_shell.contains("flowrt::IntrospectionState introspection_state;"));
+        assert!(cpp_shell.contains("flowrt::spawn_status_server("));
+        assert!(cpp_shell.contains("flowrt_app::self_description_hash()"));
+        assert!(cpp_shell.contains("runtime = \"cpp\""));
+        assert!(cpp_shell.contains("introspection_state.record_tick();"));
+
+        let sensors_run = generated_function_block(cpp_shell, "App::run_process_sensors");
+        assert!(sensors_run.contains(&sensor_register));
+        assert!(!sensors_run.contains(&aux_register));
+        assert!(cpp_shell.contains(&sensor_record));
+        let sensor_record_at = cpp_shell.find(&sensor_record).unwrap();
+        let sensor_before_record = &cpp_shell[..sensor_record_at];
+        assert!(sensor_before_record.contains("publish_at(*value, tick_time_ms)"));
+
+        let aux_run = generated_function_block(cpp_shell, "App::run_process_aux");
+        assert!(aux_run.contains(&aux_register));
+        assert!(cpp_shell.contains(&aux_record));
+        let aux_record_at = cpp_shell.find(&aux_record).unwrap();
+        let aux_before_record = &cpp_shell[..aux_record_at];
+        assert!(aux_before_record.contains("push_at(*value, tick_time_ms)"));
+        assert!(aux_before_record.contains("ChannelWriteOutcome::DroppedOldest"));
+    }
+
+    #[test]
     fn emits_inproc_fifo_stale_channel_reads_from_bind_policy() {
         let ir = contract_from_source(
             r#"
@@ -5323,19 +5551,19 @@ period_ms = 5
         let run_start = cpp_shell.find("flowrt::Status App::run(").unwrap();
         let run = &cpp_shell[run_start..];
         let startup_call = run
-            .find("status = step_startup(0, lifecycle_context)")
+            .find("status = step_startup(0, lifecycle_context, introspection_state)")
             .unwrap();
         let scheduler_call = run.find("backend.scheduler().run_ticks").unwrap();
         let shutdown_call = run
-            .find("status = step_shutdown(0, lifecycle_context)")
+            .find("status = step_shutdown(0, lifecycle_context, introspection_state)")
             .unwrap();
 
         assert!(startup_call < scheduler_call);
         assert!(scheduler_call < shutdown_call);
-        assert!(cpp_shell.contains("flowrt::Status App::step_startup(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (boot_ && boot_->on_tick()"));
-        assert!(cpp_shell.contains("flowrt::Status App::step_shutdown(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (cleanup_ && cleanup_->on_tick()"));
-        assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (boot_ && boot_->on_tick()"));
-        assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (cleanup_ && cleanup_->on_tick()"));
+        assert!(cpp_shell.contains("flowrt::Status App::step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (boot_ && boot_->on_tick()"));
+        assert!(cpp_shell.contains("flowrt::Status App::step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (cleanup_ && cleanup_->on_tick()"));
+        assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (boot_ && boot_->on_tick()"));
+        assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (cleanup_ && cleanup_->on_tick()"));
     }
 
     #[test]
@@ -5847,7 +6075,7 @@ backends = ["inproc"]
         let cpp_main = artifact_content(&bundle, "cpp/src/main.cpp");
 
         assert!(cpp_header.contains(
-            "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context);"
+            "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);"
         ));
         assert!(
             cpp_header
