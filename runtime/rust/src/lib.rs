@@ -14,7 +14,7 @@ pub use backend::{
     iox2_backend,
 };
 pub use channel::{
-    BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, LatestChannel,
+    BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,
     OverflowPolicy, StaleConfig, StalePolicy,
 };
 #[cfg(feature = "iox2")]
