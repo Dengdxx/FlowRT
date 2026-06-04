@@ -82,6 +82,8 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 含 C++ component 的 contract 会先构建生成的 CMake app；C++ only contract 只生成 supervisor 所需的最小 Rust crate，不生成 Rust runtime shell 或 Rust app binary。
 
+`inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` backend，或把相关 instance 放回同一 process group。
+
 launch manifest 的关键字段包括：
 
 - process group 的 `runtimes` 和 `runtime_kind`
