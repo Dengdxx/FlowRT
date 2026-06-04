@@ -210,6 +210,19 @@ fn normalize_component_params(raw: &RawComponent) -> Vec<ParamIr> {
 }
 
 fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr>> {
+    if document.profiles.is_empty() {
+        return Ok(vec![ProfileIr {
+            id: entity_id("profile", "default"),
+            name: "default".to_string(),
+            backend: BackendName("inproc".to_string()),
+            defaults: PolicyDefaults {
+                default_overflow: OverflowPolicy::DropOldest,
+                default_stale_policy: StalePolicy::Warn,
+                max_age_ms: None,
+            },
+        }]);
+    }
+
     document
         .profiles
         .iter()
@@ -846,6 +859,32 @@ backends = ["inproc"]
                 .required_capabilities
                 .contains(&CapabilityAtom("timing:deadline_aware".to_string()))
         );
+        assert!(ir.deployments[0].satisfied);
+    }
+
+    #[test]
+    fn inserts_implicit_default_profile_when_source_omits_profiles() {
+        let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.profiles.len(), 1);
+        assert_eq!(ir.profiles[0].name, "default");
+        assert_eq!(ir.profiles[0].backend.0, "inproc");
+        assert_eq!(ir.deployments.len(), 1);
+        assert_eq!(ir.deployments[0].profile.name, "default");
+        assert_eq!(ir.deployments[0].backend.0, "inproc");
         assert!(ir.deployments[0].satisfied);
     }
 

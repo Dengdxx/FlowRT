@@ -1116,6 +1116,40 @@ backends = ["inproc", "typo_backend"]
     }
 
     #[test]
+    fn rejects_implicit_default_backend_when_target_does_not_support_it() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir)
+            .expect_err("implicit default backend unsupported by target should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "target `linux` does not support backend `inproc` selected by profile `default`",
+            )
+        }));
+    }
+
+    #[test]
     fn rejects_recursive_message_type() {
         let source = r#"
 [package]
