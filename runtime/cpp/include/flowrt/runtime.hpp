@@ -1024,7 +1024,7 @@ class InprocBackend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 17> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 18> kCapabilities = {
         "abi:fixed_size_plain_data",
         "allocation:bounded",
         "channel:fifo",
@@ -1040,6 +1040,7 @@ class InprocBackend final : public Backend {
         "stale:error",
         "stale:hold_last",
         "stale:warn",
+        "timing:deadline_aware",
         "topology:single_process",
         "transfer:copy",
     };
