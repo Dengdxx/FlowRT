@@ -13,6 +13,7 @@ use flowrt_ir::{
     StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_validate::validate_contract;
+use serde::Serialize;
 
 /// artifact emission 返回的结果类型。
 pub type Result<T> = std::result::Result<T, CodegenError>;
@@ -84,6 +85,111 @@ pub fn plan_codegen(contract: &ContractIr) -> CodegenPlan {
     CodegenPlan { units }
 }
 
+const SELF_DESCRIPTION_SCHEMA_VERSION: &str = "0.1";
+const SELF_DESCRIPTION_SECTION: &str = ".flowrt.selfdesc";
+
+#[derive(Debug, Serialize)]
+struct SelfDescription<'a> {
+    self_description_version: &'static str,
+    ir_version: &'a str,
+    schema_version: &'a str,
+    source_hash: &'a str,
+    package: SelfDescriptionPackage<'a>,
+    profiles: Vec<SelfDescriptionProfile<'a>>,
+    targets: Vec<SelfDescriptionTarget<'a>>,
+    deployments: Vec<SelfDescriptionDeployment<'a>>,
+    graphs: Vec<SelfDescriptionGraph<'a>>,
+    message_abi: Vec<SelfDescriptionMessageAbi>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionPackage<'a> {
+    name: &'a str,
+    version: Option<&'a str>,
+    rsdl_version: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionProfile<'a> {
+    name: &'a str,
+    backend: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionTarget<'a> {
+    name: &'a str,
+    platform: Option<&'a str>,
+    runtimes: Vec<&'static str>,
+    backends: Vec<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionDeployment<'a> {
+    graph: &'a str,
+    profile: &'a str,
+    target: &'a str,
+    backend: &'a str,
+    satisfied: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionGraph<'a> {
+    name: &'a str,
+    instances: Vec<SelfDescriptionInstance<'a>>,
+    tasks: Vec<SelfDescriptionTask<'a>>,
+    channels: Vec<SelfDescriptionChannel>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionInstance<'a> {
+    name: &'a str,
+    component: &'a str,
+    process: &'a str,
+    target: Option<&'a str>,
+    runtime: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionTask<'a> {
+    instance: &'a str,
+    trigger: &'static str,
+    period_ms: Option<u64>,
+    deadline_ms: Option<u64>,
+    priority: Option<u32>,
+    inputs: &'a [String],
+    outputs: &'a [String],
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionChannel {
+    from: String,
+    to: String,
+    message_type: String,
+    backend: String,
+    service: Option<String>,
+    channel: &'static str,
+    depth: Option<u32>,
+    overflow: &'static str,
+    stale_policy: &'static str,
+    max_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionMessageAbi {
+    type_name: String,
+    size_bytes: usize,
+    align_bytes: usize,
+    fields: Vec<SelfDescriptionFieldAbi>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionFieldAbi {
+    name: String,
+    offset_bytes: usize,
+    size_bytes: usize,
+    align_bytes: usize,
+}
+
 /// 生成首批 FlowRT 管理的应用产物。
 pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     validate_contract(contract)?;
@@ -105,12 +211,20 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             emit_cpp_messages(contract),
         ));
         artifacts.push(artifact(
+            "cpp/include/flowrt_app/selfdesc.hpp",
+            emit_cpp_selfdesc_header(contract),
+        ));
+        artifacts.push(artifact(
             "cpp/include/flowrt_app/components.hpp",
             emit_cpp_components(contract),
         ));
         artifacts.push(artifact(
             "cpp/include/flowrt_app/runtime_shell.hpp",
             emit_cpp_runtime_shell_header(contract),
+        ));
+        artifacts.push(artifact(
+            "cpp/src/selfdesc.cpp",
+            emit_cpp_selfdesc_source(contract),
         ));
         artifacts.push(artifact(
             "cpp/src/runtime_shell.cpp",
@@ -126,6 +240,10 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     }
 
     if has_rust {
+        artifacts.push(artifact(
+            "rust/src/selfdesc.rs",
+            emit_rust_selfdesc(contract),
+        ));
         artifacts.push(artifact(
             "rust/src/messages.rs",
             emit_rust_messages(contract),
@@ -146,6 +264,11 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             ));
         }
     }
+
+    artifacts.push(artifact(
+        "selfdesc/selfdesc.json",
+        emit_self_description(contract)?,
+    ));
 
     if has_cpp || has_rust {
         artifacts.push(artifact(
@@ -181,6 +304,200 @@ fn has_language(contract: &ContractIr, language: LanguageKind) -> bool {
         .components
         .iter()
         .any(|component| component.language == language)
+}
+
+fn emit_self_description(contract: &ContractIr) -> Result<String> {
+    let self_description = self_description(contract)?;
+    let mut output = serde_json::to_string_pretty(&self_description)?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
+    let selected_backend = selected_backend_name(contract);
+    Ok(SelfDescription {
+        self_description_version: SELF_DESCRIPTION_SCHEMA_VERSION,
+        ir_version: &contract.ir_version,
+        schema_version: &contract.schema_version,
+        source_hash: &contract.source_hash,
+        package: SelfDescriptionPackage {
+            name: &contract.package.name,
+            version: contract.package.version.as_deref(),
+            rsdl_version: &contract.package.rsdl_version,
+        },
+        profiles: contract
+            .profiles
+            .iter()
+            .map(|profile| SelfDescriptionProfile {
+                name: &profile.name,
+                backend: &profile.backend.0,
+            })
+            .collect(),
+        targets: contract
+            .targets
+            .iter()
+            .map(|target| SelfDescriptionTarget {
+                name: &target.name,
+                platform: target.platform.as_deref(),
+                runtimes: target
+                    .runtime
+                    .iter()
+                    .copied()
+                    .map(language_name)
+                    .collect::<Vec<_>>(),
+                backends: target
+                    .backends
+                    .iter()
+                    .map(|backend| backend.0.as_str())
+                    .collect::<Vec<_>>(),
+            })
+            .collect(),
+        deployments: contract
+            .deployments
+            .iter()
+            .map(|deployment| SelfDescriptionDeployment {
+                graph: &deployment.graph.name,
+                profile: &deployment.profile.name,
+                target: &deployment.target.name,
+                backend: &deployment.backend.0,
+                satisfied: deployment.satisfied,
+            })
+            .collect(),
+        graphs: contract
+            .graphs
+            .iter()
+            .map(|graph| self_description_graph(contract, graph, selected_backend.clone()))
+            .collect(),
+        message_abi: message_abi_expectations(contract)?
+            .into_iter()
+            .map(self_description_message_abi)
+            .collect(),
+    })
+}
+
+fn self_description_graph<'a>(
+    contract: &'a ContractIr,
+    graph: &'a GraphIr,
+    backend: String,
+) -> SelfDescriptionGraph<'a> {
+    SelfDescriptionGraph {
+        name: &graph.name,
+        instances: graph
+            .instances
+            .iter()
+            .map(|instance| {
+                let component = component_by_name(contract, &instance.component.name);
+                SelfDescriptionInstance {
+                    name: &instance.name,
+                    component: &instance.component.name,
+                    process: instance.process.as_deref().unwrap_or("main"),
+                    target: instance.target.as_ref().map(|target| target.name.as_str()),
+                    runtime: language_name(component.language),
+                }
+            })
+            .collect(),
+        tasks: graph
+            .tasks
+            .iter()
+            .map(|task| SelfDescriptionTask {
+                instance: &task.instance.name,
+                trigger: trigger_name(task.trigger),
+                period_ms: task.period_ms,
+                deadline_ms: task.deadline_ms,
+                priority: task.priority,
+                inputs: &task.inputs,
+                outputs: &task.outputs,
+            })
+            .collect(),
+        channels: graph
+            .binds
+            .iter()
+            .enumerate()
+            .map(|(index, bind)| SelfDescriptionChannel {
+                from: format!("{}.{}", bind.from.instance.name, bind.from.port),
+                to: format!("{}.{}", bind.to.instance.name, bind.to.port),
+                message_type: channel_message_type(contract, graph, bind),
+                backend: backend.clone(),
+                service: (backend == "iox2")
+                    .then(|| iox2_service_name_for_edge(contract, graph, index, bind)),
+                channel: channel_name(bind.channel),
+                depth: bind.depth,
+                overflow: overflow_name(bind.overflow),
+                stale_policy: stale_name(bind.stale),
+                max_age_ms: bind.max_age_ms,
+            })
+            .collect(),
+    }
+}
+
+fn self_description_message_abi(expectation: MessageAbiExpectation) -> SelfDescriptionMessageAbi {
+    SelfDescriptionMessageAbi {
+        type_name: expectation.type_name,
+        size_bytes: expectation.size_bytes,
+        align_bytes: expectation.align_bytes,
+        fields: expectation
+            .fields
+            .into_iter()
+            .map(|field| SelfDescriptionFieldAbi {
+                name: field.name,
+                offset_bytes: field.offset_bytes,
+                size_bytes: field.size_bytes,
+                align_bytes: field.align_bytes,
+            })
+            .collect(),
+    }
+}
+
+fn channel_message_type(contract: &ContractIr, graph: &GraphIr, bind: &ChannelEdgeIr) -> String {
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    let source_instance = instances
+        .get(bind.from.instance.name.as_str())
+        .expect("validated bind source instance must exist");
+    let component = component_by_name(contract, &source_instance.component.name);
+    component
+        .outputs
+        .iter()
+        .find(|port| port.name == bind.from.port)
+        .map(|port| port.ty.canonical_syntax())
+        .expect("validated bind source port must exist")
+}
+
+fn channel_name(channel: ChannelKind) -> &'static str {
+    match channel {
+        ChannelKind::Latest => "latest",
+        ChannelKind::Fifo => "fifo",
+    }
+}
+
+fn overflow_name(policy: IrOverflowPolicy) -> &'static str {
+    match policy {
+        IrOverflowPolicy::DropOldest => "drop_oldest",
+        IrOverflowPolicy::DropNewest => "drop_newest",
+        IrOverflowPolicy::Error => "error",
+        IrOverflowPolicy::Block => "block",
+    }
+}
+
+fn stale_name(policy: IrStalePolicy) -> &'static str {
+    match policy {
+        IrStalePolicy::Warn => "warn",
+        IrStalePolicy::Drop => "drop",
+        IrStalePolicy::HoldLast => "hold_last",
+        IrStalePolicy::Error => "error",
+    }
+}
+
+fn trigger_name(trigger: TriggerKind) -> &'static str {
+    match trigger {
+        TriggerKind::Periodic => "periodic",
+        TriggerKind::OnMessage => "on_message",
+        TriggerKind::Startup => "startup",
+        TriggerKind::Shutdown => "shutdown",
+    }
 }
 
 fn ordered_types(contract: &ContractIr) -> Vec<&flowrt_ir::TypeIr> {
@@ -264,6 +581,37 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
         }
         output.push_str("};\n\n");
     }
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_selfdesc_header(_contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push_str("#pragma once\n\n");
+    output.push_str("#include <cstddef>\n#include <string_view>\n\n");
+    output.push_str("namespace flowrt_app {\n\n");
+    output.push_str("std::string_view self_description_json() noexcept;\n\n");
+    output.push_str("}  // namespace flowrt_app\n");
+    output
+}
+
+fn emit_cpp_selfdesc_source(contract: &ContractIr) -> String {
+    let json = emit_self_description(contract)
+        .expect("validated contract self-description should serialize");
+    let mut output = managed_header();
+    output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
+    output.push_str("#include <string_view>\n\n");
+    output.push_str("namespace flowrt_app {\nnamespace {\n\n");
+    output.push_str(&format!(
+        "#if defined(__GNUC__) || defined(__clang__)\n[[gnu::used, gnu::section(\"{SELF_DESCRIPTION_SECTION}\")]]\n#endif\n"
+    ));
+    output.push_str("const char kFlowrtSelfDescription[] = ");
+    output.push_str(&cpp_raw_string_literal(&json));
+    output.push_str(";\n\n");
+    output.push_str("}  // namespace\n\n");
+    output.push_str(
+        "std::string_view self_description_json() noexcept {\n    return std::string_view{kFlowrtSelfDescription, sizeof(kFlowrtSelfDescription) - 1};\n}\n\n",
+    );
     output.push_str("}  // namespace flowrt_app\n");
     output
 }
@@ -1119,6 +1467,22 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
     output
 }
 
+fn emit_rust_selfdesc(contract: &ContractIr) -> String {
+    let json = emit_self_description(contract)
+        .expect("validated contract self-description should serialize");
+    let mut output = managed_header();
+    output.push('\n');
+    output.push_str(&format!(
+        "#[used]\n#[unsafe(link_section = \"{SELF_DESCRIPTION_SECTION}\")]\nstatic FLOWRT_SELF_DESCRIPTION: [u8; {}] = *b{};\n\n",
+        json.len(),
+        rust_byte_string_literal(&json),
+    ));
+    output.push_str(
+        "pub fn self_description_json() -> &'static str {\n    std::str::from_utf8(&FLOWRT_SELF_DESCRIPTION).expect(\"generated FlowRT self-description is UTF-8\")\n}\n",
+    );
+    output
+}
+
 fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("\nuse crate::messages::*;\n\n");
@@ -1279,14 +1643,30 @@ fn rust_string_literal(value: &str) -> String {
     format!("{value:?}")
 }
 
+fn rust_byte_string_literal(value: &str) -> String {
+    let mut hashes = String::from("#");
+    while value.contains(&format!("\"{hashes}")) {
+        hashes.push('#');
+    }
+    format!("br{hashes}\"{value}\"{hashes}")
+}
+
+fn cpp_raw_string_literal(value: &str) -> String {
+    let mut hashes = String::new();
+    while value.contains(&format!("){hashes}\"")) {
+        hashes.push('#');
+    }
+    format!("R\"{hashes}({value}){hashes}\"")
+}
+
 fn emit_rust_lib(include_runtime_shell: bool) -> String {
     let mut output = managed_header();
     if include_runtime_shell {
         output.push_str(
-            "\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../src/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
+            "\npub(crate) mod selfdesc;\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../src/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
         );
     } else {
-        output.push_str("\npub mod supervisor;\n");
+        output.push_str("\npub(crate) mod selfdesc;\npub mod supervisor;\n");
     }
     output
 }
@@ -2507,7 +2887,7 @@ fn emit_cmake(contract: &ContractIr) -> String {
             "target_include_directories({package_name}_flowrt_app INTERFACE ${{FLOWRT_CPP_RUNTIME_DIR}}/include)\n"
         ));
         output.push_str(&format!(
-            "\nadd_library({shell_target} STATIC ../cpp/src/runtime_shell.cpp)\n"
+            "\nadd_library({shell_target} STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)\n"
         ));
         output.push_str(&format!(
             "target_link_libraries({shell_target} PUBLIC {package_name}_flowrt_app)\n"
@@ -3251,9 +3631,13 @@ input = ["imu:Imu"]
             .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(paths.contains(&"cpp/include/flowrt_app/messages.hpp".to_string()));
+        assert!(paths.contains(&"cpp/include/flowrt_app/selfdesc.hpp".to_string()));
+        assert!(paths.contains(&"cpp/src/selfdesc.cpp".to_string()));
+        assert!(paths.contains(&"rust/src/selfdesc.rs".to_string()));
         assert!(paths.contains(&"rust/src/components.rs".to_string()));
         assert!(paths.contains(&"cpp/tests/message_abi.cpp".to_string()));
         assert!(paths.contains(&"rust/tests/message_abi.rs".to_string()));
+        assert!(paths.contains(&"selfdesc/selfdesc.json".to_string()));
         assert!(paths.contains(&"launch/launch.json".to_string()));
 
         let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
@@ -3271,6 +3655,27 @@ input = ["imu:Imu"]
 
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
+
+        let sidecar: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+        assert_eq!(sidecar["self_description_version"], "0.1");
+        assert_eq!(sidecar["package"]["name"], "robot_demo");
+        assert_eq!(sidecar["graphs"][0]["name"], "default");
+        assert!(
+            sidecar["graphs"][0]["instances"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(sidecar["message_abi"][0]["type_name"], "Cmd");
+
+        let rust_selfdesc = artifact_content(&bundle, "rust/src/selfdesc.rs");
+        assert!(rust_selfdesc.contains("#[unsafe(link_section = \".flowrt.selfdesc\")]"));
+        assert!(rust_selfdesc.contains("static FLOWRT_SELF_DESCRIPTION"));
+
+        let cpp_selfdesc = artifact_content(&bundle, "cpp/src/selfdesc.cpp");
+        assert!(cpp_selfdesc.contains("[[gnu::used, gnu::section(\".flowrt.selfdesc\")]]"));
+        assert!(cpp_selfdesc.contains("const char kFlowrtSelfDescription[]"));
         assert!(rust_shell.contains("flowrt::iox2_backend()"));
     }
 
@@ -3681,9 +4086,9 @@ channel = "latest"
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
         assert!(cmake.contains("FLOWRT_CPP_RUNTIME_DIR"));
-        assert!(
-            cmake.contains("add_library(robot_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp)")
-        );
+        assert!(cmake.contains(
+            "add_library(robot_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)"
+        ));
         assert!(
             cmake.contains(
                 "target_link_libraries(robot_demo_cpp_shell PUBLIC robot_demo_flowrt_app)"

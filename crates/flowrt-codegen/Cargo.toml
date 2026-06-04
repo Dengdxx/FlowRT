@@ -8,6 +8,7 @@ rust-version.workspace = true
 flowrt-conformance = { path = "../flowrt-conformance" }
 flowrt-ir = { path = "../flowrt-ir" }
 flowrt-validate = { path = "../flowrt-validate" }
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
