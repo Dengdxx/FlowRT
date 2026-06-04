@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -109,6 +110,7 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
+            let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
             println!(
                 "prepared {} and {} artifact(s)",
@@ -122,6 +124,7 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
+            let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
             build_workspace(&prepared.selected_contract, &out_dir)?;
             println!(
@@ -137,6 +140,7 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
+            let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
             run_workspace(&prepared.selected_contract, &out_dir, process.as_deref())?;
             println!(
@@ -151,6 +155,7 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
+            let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
             ensure_direct_runtime_supported(&prepared.selected_contract, "launch")?;
             ensure_backend_runtime_supported(&prepared.selected_contract, "launch")?;
@@ -169,6 +174,46 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct WorkspaceLock {
+    path: PathBuf,
+}
+
+impl WorkspaceLock {
+    fn acquire(out_dir: &Path) -> Result<Self> {
+        fs::create_dir_all(out_dir)
+            .with_context(|| format!("failed to create `{}`", out_dir.display()))?;
+        let path = out_dir.join(".flowrt.lock");
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                writeln!(file, "pid={}", std::process::id())
+                    .with_context(|| format!("failed to write `{}`", path.display()))?;
+                Ok(Self { path })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::bail!(
+                    "FlowRT output directory `{}` is already in use by another flowrt command; retry after it finishes, or remove `{}` if no FlowRT command is running",
+                    out_dir.display(),
+                    path.display()
+                )
+            }
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to create lock `{}`", path.display()))
+            }
+        }
+    }
+}
+
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn normalize_contract_from_rsdl(path: &Path) -> Result<ContractIr> {
@@ -1107,6 +1152,22 @@ default_stale_policy = "warn"
 
         assert_eq!(command.get_name(), "flowrt");
         assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn workspace_lock_rejects_concurrent_access_to_same_out_dir() {
+        let root = temp_test_dir("workspace-lock");
+        let out_dir = root.join("flowrt");
+
+        let first = WorkspaceLock::acquire(&out_dir).expect("first lock should be acquired");
+        let error =
+            WorkspaceLock::acquire(&out_dir).expect_err("second lock for same out dir should fail");
+
+        assert!(error.to_string().contains("already in use"));
+        drop(first);
+        WorkspaceLock::acquire(&out_dir).expect("lock should be released on drop");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
