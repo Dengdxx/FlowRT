@@ -40,6 +40,7 @@ cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 - 用户算法代码应放在示例或项目自己的 `src/` 目录，不写进生成文件。
 - FlowRT 管理代码只做 glue：消息、接口、runtime shell、backend 绑定、启动配置和构建文件。
 - C++ only contract 的 `flowrt build` / `flowrt run` 走 CMake app 路径，不依赖 Cargo app。
+- Runtime 与 codegen 不能吞掉 bind-level channel 语义：`latest` 和 `fifo` 都要保留 `overflow`、`max_age_ms` 与 `stale_policy`，inproc shell 也应使用 timestamped read/write 路径传递 freshness。
 
 ## 文档维护
 

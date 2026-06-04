@@ -396,6 +396,64 @@ class LatestChannel {
 };
 
 /**
+ * @brief FIFO channel 的单次读取结果。
+ *
+ * @tparam T channel 承载的消息类型。
+ *
+ * 该类型拥有从 FIFO 队列取出的样本，并在一次调度步骤内借出 `Latest<T>` 用户视图。
+ */
+template <typename T>
+class FifoRead {
+   public:
+    /**
+     * @brief 构造空读取结果。
+     */
+    FifoRead() = default;
+
+    /**
+     * @brief 从样本和 stale 标记构造读取结果。
+     *
+     * @param value 本次读取到的样本；为空表示没有样本或 stale drop 已隐藏样本。
+     * @param stale 本次读取是否发现样本过期。
+     */
+    FifoRead(std::optional<T> value, bool stale) : value_(std::move(value)), stale_(stale) {}
+
+    /**
+     * @brief 借用本次读取结果，形成组件输入使用的 latest-style 视图。
+     *
+     * @return 只在本读取结果对象存活期间可用的输入视图。
+     */
+    Latest<T> view() const noexcept {
+        return Latest<T>{value_ ? std::addressof(*value_) : nullptr, stale_};
+    }
+
+    /**
+     * @brief 判断本次读取是否有可见样本。
+     *
+     * @return 有可见样本时返回 true。
+     */
+    bool present() const noexcept { return value_.has_value(); }
+
+    /**
+     * @brief 判断本次读取是否发现样本过期。
+     *
+     * @return 样本超过 freshness 约束时返回 true。
+     */
+    bool stale() const noexcept { return stale_; }
+
+    /**
+     * @brief 借用本次读取的样本。
+     *
+     * @return 样本存在时返回非空指针，否则返回 `nullptr`。
+     */
+    const T *as_ref() const noexcept { return value_ ? std::addressof(*value_) : nullptr; }
+
+   private:
+    std::optional<T> value_;
+    bool stale_ = false;
+};
+
+/**
  * @brief 有界 FIFO channel 的最小内存态实现。
  *
  * @tparam T channel 承载的消息类型。
@@ -416,31 +474,37 @@ class FifoChannel {
         : depth_(depth == 0 ? 1 : depth), overflow_(overflow) {}
 
     /**
+     * @brief 使用 freshness 配置构造有界 FIFO channel。
+     *
+     * @param depth 队列深度；传入 0 时按 1 处理。
+     * @param overflow 队列满时的处理策略。
+     * @param stale_config 读取时使用的 freshness 配置。
+     * @return 配置后的空 FIFO channel。
+     */
+    static FifoChannel with_stale_config(std::size_t depth, OverflowPolicy overflow,
+                                         StaleConfig stale_config) noexcept {
+        FifoChannel channel(depth, overflow);
+        channel.stale_config_ = stale_config;
+        return channel;
+    }
+
+    /**
      * @brief 写入一个样本。
      *
      * @param value 要写入的消息。
      * @return 成功处理结果或严格错误。
      */
-    ChannelPushResult push(T value) {
-        if (queue_.size() < depth_) {
-            queue_.push_back(std::move(value));
-            return ChannelWriteOutcome::Accepted;
-        }
+    ChannelPushResult push(T value) { return push_entry(Entry{std::move(value), std::nullopt}); }
 
-        switch (overflow_) {
-            case OverflowPolicy::DropOldest:
-                queue_.pop_front();
-                queue_.push_back(std::move(value));
-                return ChannelWriteOutcome::DroppedOldest;
-            case OverflowPolicy::DropNewest:
-                return ChannelWriteOutcome::DroppedNewest;
-            case OverflowPolicy::Error:
-                return ChannelError::Overflow;
-            case OverflowPolicy::Block:
-                return ChannelWriteOutcome::Backpressured;
-        }
-
-        return ChannelWriteOutcome::Backpressured;
+    /**
+     * @brief 带 runtime 时间戳写入一个样本。
+     *
+     * @param value 要写入的消息。
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 成功处理结果或严格错误。
+     */
+    ChannelPushResult push_at(T value, std::uint64_t now_ms) {
+        return push_entry(Entry{std::move(value), now_ms});
     }
 
     /**
@@ -452,9 +516,28 @@ class FifoChannel {
         if (queue_.empty()) {
             return std::nullopt;
         }
-        T value = std::move(queue_.front());
+        Entry entry = std::move(queue_.front());
         queue_.pop_front();
-        return value;
+        return std::move(entry.value);
+    }
+
+    /**
+     * @brief 以指定 runtime 时间弹出最旧样本，并按 freshness 配置计算 stale 状态。
+     *
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 拥有样本的读取结果。
+     */
+    FifoRead<T> pop_at(std::uint64_t now_ms) {
+        if (queue_.empty()) {
+            return FifoRead<T>{};
+        }
+        Entry entry = std::move(queue_.front());
+        queue_.pop_front();
+        const bool stale = stale_config_.stale_at(entry.published_at_ms, now_ms);
+        if (stale && stale_config_.policy() == StalePolicy::Drop) {
+            return FifoRead<T>{std::nullopt, true};
+        }
+        return FifoRead<T>{std::move(entry.value), stale};
     }
 
     /**
@@ -479,9 +562,37 @@ class FifoChannel {
     std::size_t depth() const noexcept { return depth_; }
 
    private:
-    std::deque<T> queue_;
+    struct Entry {
+        T value;
+        std::optional<std::uint64_t> published_at_ms;
+    };
+
+    ChannelPushResult push_entry(Entry entry) {
+        if (queue_.size() < depth_) {
+            queue_.push_back(std::move(entry));
+            return ChannelWriteOutcome::Accepted;
+        }
+
+        switch (overflow_) {
+            case OverflowPolicy::DropOldest:
+                queue_.pop_front();
+                queue_.push_back(std::move(entry));
+                return ChannelWriteOutcome::DroppedOldest;
+            case OverflowPolicy::DropNewest:
+                return ChannelWriteOutcome::DroppedNewest;
+            case OverflowPolicy::Error:
+                return ChannelError::Overflow;
+            case OverflowPolicy::Block:
+                return ChannelWriteOutcome::Backpressured;
+        }
+
+        return ChannelWriteOutcome::Backpressured;
+    }
+
+    std::deque<Entry> queue_;
     std::size_t depth_ = 1;
     OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
+    StaleConfig stale_config_;
 };
 
 namespace iox2 {
