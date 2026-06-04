@@ -4,13 +4,13 @@ use flowrt_rsdl::{RawComponent, RawDocument, RawPort, RawProfile, RawTarget, Raw
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr,
-    ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
-    EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
-    LifecycleSurface, OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults,
+    BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelEdgeIr, ChannelKind,
+    ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr, EntityId,
+    EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind, LifecycleSurface,
+    OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults,
     PolicyValueSource, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr, TaskIr,
-    TriggerKind, TypeIr, backend_capabilities, channel_capabilities, graph_required_capabilities,
-    parse_type_expr, target_capabilities,
+    TriggerKind, TypeIr, channel_capabilities, deployment_capability_decision,
+    graph_required_capabilities, parse_type_expr, target_capabilities,
 };
 
 /// 计算稳定的 SHA-256 源文本哈希。
@@ -197,8 +197,12 @@ fn refresh_projected_deployments(contract: &mut ContractIr) {
             continue;
         };
         deployment.backend = profile.backend.clone();
-        deployment.satisfied =
-            deployment_satisfied(target, profile, &deployment.required_capabilities);
+        deployment.satisfied = deployment_capability_decision(
+            &deployment.backend,
+            &target.backends,
+            &deployment.required_capabilities,
+        )
+        .satisfied;
     }
 }
 
@@ -669,28 +673,17 @@ fn normalize_deployments(
                 },
                 backend: profile.backend.clone(),
                 required_capabilities: required_capabilities.clone(),
-                satisfied: deployment_satisfied(target, profile, &required_capabilities),
+                satisfied: deployment_capability_decision(
+                    &profile.backend,
+                    &target.backends,
+                    &required_capabilities,
+                )
+                .satisfied,
             });
         }
     }
 
     deployments
-}
-
-fn deployment_satisfied(
-    target: &TargetIr,
-    profile: &ProfileIr,
-    required_capabilities: &[CapabilityAtom],
-) -> bool {
-    let backend_supported_by_target = target
-        .backends
-        .iter()
-        .any(|backend| backend.0 == profile.backend.0);
-    let backend_capabilities = backend_capabilities(&profile.backend.0).unwrap_or_default();
-    let capabilities_satisfied = required_capabilities
-        .iter()
-        .all(|required| backend_capabilities.contains(required));
-    backend_supported_by_target && capabilities_satisfied
 }
 
 fn convert_param_value(value: &RawValue) -> ParamValue {
@@ -796,7 +789,9 @@ mod tests {
     use flowrt_rsdl::parse_str;
 
     use super::*;
-    use crate::{ChannelKind, PrimitiveType, TypeExpr};
+    use crate::{
+        CapabilityAtom, ChannelKind, PrimitiveType, TypeExpr, deployment_capability_decision,
+    };
 
     #[test]
     fn normalizes_minimal_document() {
@@ -1219,6 +1214,53 @@ backends = ["iox2"]
                 .contains(&CapabilityAtom("abi:int128".to_string()))
         );
         assert!(!ir.deployments[0].satisfied);
+    }
+
+    #[test]
+    fn normalized_deployment_satisfied_matches_shared_capability_decision() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.WideSample]
+value = "i128"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let deployment = &ir.deployments[0];
+        let decision = deployment_capability_decision(
+            &deployment.backend,
+            &ir.targets[0].backends,
+            &deployment.required_capabilities,
+        );
+
+        assert!(decision.selected_backend_known);
+        assert!(decision.target_supports_selected_backend);
+        assert_eq!(
+            decision.missing_required_capabilities,
+            vec![CapabilityAtom("abi:int128".to_string())]
+        );
+        assert_eq!(deployment.satisfied, decision.satisfied);
+        assert!(!deployment.satisfied);
     }
 
     #[test]
