@@ -101,6 +101,7 @@ launch manifest 的关键字段包括：
 - task 的 `trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
 - graph `channels`
 - iox2 channel 的 canonical service name
+- zenoh channel 的 deterministic key expression
 
 ## `inspect`
 
