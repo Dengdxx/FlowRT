@@ -9,8 +9,9 @@ use std::fmt::{Display, Formatter};
 
 use flowrt_conformance::message_abi_expectations;
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind, PortIr,
-    PortRef, TaskIr, TriggerKind, TypeExpr, backend_capabilities, is_known_backend,
+    ChannelKind, ComponentIr, ComponentKind, ContractIr, EntityId, GraphIr, InstanceIr,
+    LanguageKind, PortIr, PortRef, TaskIr, TriggerKind, TypeExpr, backend_capabilities,
+    is_known_backend,
 };
 
 /// validation passes 返回的结果类型。
@@ -286,6 +287,13 @@ fn validate_components(
     errors: &mut Vec<ValidationError>,
 ) {
     for component in &ir.components {
+        if component.kind == ComponentKind::External {
+            errors.push(ValidationError::new(format!(
+                "component `{}` uses external process kind, which is not supported by Contract IR v0.1 runtime shell",
+                component.name
+            )));
+        }
+
         let mut ports = BTreeSet::new();
         for port in component.inputs.iter().chain(component.outputs.iter()) {
             if !ports.insert(port.name.as_str()) {
@@ -923,6 +931,40 @@ output = ["sample"]
             error
                 .message
                 .contains("instance `worker` has multiple tasks in Contract IR v0.1")
+        }));
+    }
+
+    #[test]
+    fn rejects_external_component_kind_until_process_adapter_semantics_exist() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.external_source]
+language = "rust"
+kind = "external"
+output = ["sample:Sample"]
+
+[instance.external_source]
+component = "external_source"
+
+[instance.external_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("external components should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error.message.contains(
+                "component `external_source` uses external process kind, which is not supported by Contract IR v0.1 runtime shell",
+            )
         }));
     }
 
