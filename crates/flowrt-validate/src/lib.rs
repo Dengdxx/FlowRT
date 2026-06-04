@@ -76,6 +76,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_message_abi(ir, &mut errors);
     validate_components(ir, &type_names, &mut errors);
     validate_graphs(ir, &mut errors);
+    validate_declared_backends(ir, &mut errors);
     validate_deployments(ir, &mut errors);
 
     if errors.is_empty() {
@@ -708,6 +709,28 @@ fn validate_deployments(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     }
 }
 
+fn validate_declared_backends(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    for profile in &ir.profiles {
+        if !is_known_backend(&profile.backend.0) {
+            errors.push(ValidationError::new(format!(
+                "profile `{}` selects unknown backend `{}`",
+                profile.name, profile.backend.0
+            )));
+        }
+    }
+
+    for target in &ir.targets {
+        for backend in &target.backends {
+            if !is_known_backend(&backend.0) {
+                errors.push(ValidationError::new(format!(
+                    "target `{}` declares unknown backend `{}`",
+                    target.name, backend.0
+                )));
+            }
+        }
+    }
+}
+
 fn validate_type_expr(
     expr: &TypeExpr,
     type_names: &BTreeSet<&str>,
@@ -971,6 +994,52 @@ output = ["sample"]
             error.message.contains(
                 "component `external_source` uses external process kind, which is not supported by Contract IR v0.1 runtime shell",
             )
+        }));
+    }
+
+    #[test]
+    fn rejects_unknown_backend_names_declared_in_profiles() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[profile.default]
+backend = "typo_backend"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("unknown profile backend should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("profile `default` selects unknown backend `typo_backend`")
+        }));
+    }
+
+    #[test]
+    fn rejects_unknown_backend_names_declared_in_targets() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "typo_backend"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("unknown target backend should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("target `linux` declares unknown backend `typo_backend`")
         }));
     }
 
