@@ -735,23 +735,32 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             TaskEmissionPhase::Shutdown,
         ));
     }
-    output.push_str(&emit_cpp_app_run(
-        &order,
-        &bind_plans,
-        &contract.package.name,
-    ));
+    output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
+        function_name: "run",
+        step_function_name: "step",
+        startup_function_name: "step_startup",
+        shutdown_function_name: "step_shutdown",
+        order: &order,
+        binds: &bind_plans,
+        package_name: &contract.package.name,
+        process_name: "main",
+    }));
     output.push_str(&emit_cpp_app_run_process_dispatch(&process_plans));
     for process in &process_plans {
-        output.push_str(&emit_cpp_app_run_function(
-            &format!("run_process_{}", process.method_suffix),
-            &format!("step_process_{}", process.method_suffix),
-            &format!("step_process_{}_startup", process.method_suffix),
-            &format!("step_process_{}_shutdown", process.method_suffix),
-            &process.instances,
-            &bind_plans,
-            &contract.package.name,
-            &process.name,
-        ));
+        let function_name = format!("run_process_{}", process.method_suffix);
+        let step_function_name = format!("step_process_{}", process.method_suffix);
+        let startup_function_name = format!("step_process_{}_startup", process.method_suffix);
+        let shutdown_function_name = format!("step_process_{}_shutdown", process.method_suffix);
+        output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
+            function_name: &function_name,
+            step_function_name: &step_function_name,
+            startup_function_name: &startup_function_name,
+            shutdown_function_name: &shutdown_function_name,
+            order: &process.instances,
+            binds: &bind_plans,
+            package_name: &contract.package.name,
+            process_name: &process.name,
+        }));
     }
     let backend_factory = cpp_backend_factory(&selected_backend);
     output.push_str(&format!(
@@ -1170,23 +1179,6 @@ fn rust_nested_step_indent(nested: bool) -> &'static str {
     }
 }
 
-fn emit_cpp_app_run(
-    order: &[&InstanceIr],
-    binds: &[BindRuntimePlan],
-    package_name: &str,
-) -> String {
-    emit_cpp_app_run_function(
-        "run",
-        "step",
-        "step_startup",
-        "step_shutdown",
-        order,
-        binds,
-        package_name,
-        "main",
-    )
-}
-
 fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
     let mut output = String::new();
     output.push_str(
@@ -1203,61 +1195,69 @@ fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> St
     output
 }
 
-fn emit_cpp_app_run_function(
-    function_name: &str,
-    step_function_name: &str,
-    startup_function_name: &str,
-    shutdown_function_name: &str,
-    order: &[&InstanceIr],
-    binds: &[BindRuntimePlan],
-    package_name: &str,
-    process_name: &str,
-) -> String {
+struct CppRunEmission<'a> {
+    function_name: &'a str,
+    step_function_name: &'a str,
+    startup_function_name: &'a str,
+    shutdown_function_name: &'a str,
+    order: &'a [&'a InstanceIr],
+    binds: &'a [BindRuntimePlan],
+    package_name: &'a str,
+    process_name: &'a str,
+}
+
+fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "flowrt::Status App::{function_name}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
+        "flowrt::Status App::{}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
+        run.function_name
     ));
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
-    output.push_str(&emit_cpp_introspection_channel_registration(order, binds));
+    output.push_str(&emit_cpp_introspection_channel_registration(
+        run.order, run.binds,
+    ));
     output.push_str(&format!(
         "    auto introspection_server = flowrt::spawn_status_server(\n        flowrt::IntrospectionIdentity{{\n            .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n            .package = {},\n            .process = {},\n            .runtime = \"cpp\",\n        }},\n        introspection_state);\n    (void)introspection_server;\n",
-        cpp_string_literal(package_name),
-        cpp_string_literal(process_name)
+        cpp_string_literal(run.package_name),
+        cpp_string_literal(run.process_name)
     ));
-    for instance in order {
+    for instance in run.order {
         output.push_str(&format!(
             "    bool {name}_initialized = false;\n    bool {name}_started = false;\n",
             name = instance.name
         ));
     }
-    for instance in order {
+    for instance in run.order {
         output.push_str(&format!(
             "    if (status == flowrt::Status::Ok && {name}_) {{\n        status = {name}_->on_init(lifecycle_context);\n        {name}_initialized = status == flowrt::Status::Ok;\n    }}\n",
             name = instance.name
         ));
     }
-    for instance in order {
+    for instance in run.order {
         output.push_str(&format!(
             "    if (status == flowrt::Status::Ok && {name}_initialized && {name}_) {{\n        status = {name}_->on_start(lifecycle_context);\n        {name}_started = status == flowrt::Status::Ok;\n    }}\n",
             name = instance.name
         ));
     }
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {startup_function_name}(0, lifecycle_context, introspection_state);\n    }}\n"
+        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state);\n    }}\n",
+        run.startup_function_name
     ));
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this, &introspection_state](std::size_t tick, flowrt::Context& tick_context) {{\n                introspection_state.record_tick();\n                return {step_function_name}(tick, tick_context, introspection_state);\n            }});\n    }}\n"
+        "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this, &introspection_state](std::size_t tick, flowrt::Context& tick_context) {{\n                introspection_state.record_tick();\n                return {}(tick, tick_context, introspection_state);\n            }});\n    }}\n",
+        run.step_function_name
     ));
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {shutdown_function_name}(0, lifecycle_context, introspection_state);\n    }}\n"
+        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state);\n    }}\n",
+        run.shutdown_function_name
     ));
-    for instance in order.iter().rev() {
+    for instance in run.order.iter().rev() {
         output.push_str(&format!(
             "    if ({name}_started && {name}_) {{\n        const auto stop_status = {name}_->on_stop(lifecycle_context);\n        if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
             name = instance.name
         ));
     }
-    for instance in order.iter().rev() {
+    for instance in run.order.iter().rev() {
         output.push_str(&format!(
             "    if ({name}_initialized && {name}_) {{\n        const auto shutdown_status = {name}_->on_shutdown(lifecycle_context);\n        if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
             name = instance.name

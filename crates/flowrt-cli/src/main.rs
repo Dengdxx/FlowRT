@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -124,6 +125,14 @@ enum Command {
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 持续轮询该 channel；按 Ctrl-C 结束。
+        #[arg(long)]
+        follow: bool,
+
+        /// `--follow` 模式下的轮询间隔，单位毫秒。
+        #[arg(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(1..))]
+        interval_ms: u64,
     },
 
     /// 扫描当前用户 runtime socket 并输出 live status。
@@ -213,8 +222,20 @@ fn main() -> Result<()> {
             image,
             channel,
             socket,
+            follow,
+            interval_ms,
         } => {
-            println!("{}", echo_channel(&image, &channel, socket.as_deref())?);
+            if follow {
+                echo_channel_follow(
+                    &image,
+                    &channel,
+                    socket.as_deref(),
+                    Duration::from_millis(interval_ms),
+                    &mut io::stdout(),
+                )?;
+            } else {
+                println!("{}", echo_channel(&image, &channel, socket.as_deref())?);
+            }
         }
         Command::Status => {
             println!("{}", live_status_summary()?);
@@ -479,19 +500,78 @@ struct EchoChannelSpec {
 fn echo_channel(image: &Path, channel: &str, socket: Option<&Path>) -> Result<String> {
     let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
     let channel_spec = find_echo_channel(&self_description, channel)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let snapshot = request_echo_snapshot(&socket, &channel_spec, &self_description_hash)?;
+
+    format_echo_snapshot(&channel_spec, &snapshot)
+}
+
+fn echo_channel_follow(
+    image: &Path,
+    channel: &str,
+    socket: Option<&Path>,
+    interval: Duration,
+    output: &mut dyn Write,
+) -> Result<()> {
+    echo_channel_follow_for_polls(image, channel, socket, interval, usize::MAX, output)
+}
+
+fn echo_channel_follow_for_polls(
+    image: &Path,
+    channel: &str,
+    socket: Option<&Path>,
+    interval: Duration,
+    max_polls: usize,
+    output: &mut dyn Write,
+) -> Result<()> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let channel_spec = find_echo_channel(&self_description, channel)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let mut last_snapshot_key = None;
+
+    for index in 0..max_polls {
+        let snapshot = request_echo_snapshot(&socket, &channel_spec, &self_description_hash)?;
+        let snapshot_key = EchoSnapshotKey::from(&snapshot);
+        if last_snapshot_key.as_ref() != Some(&snapshot_key) {
+            writeln!(
+                output,
+                "{}",
+                format_echo_snapshot(&channel_spec, &snapshot)?
+            )
+            .context("failed to write echo output")?;
+            output.flush().context("failed to flush echo output")?;
+            last_snapshot_key = Some(snapshot_key);
+        }
+        if index + 1 < max_polls {
+            std::thread::sleep(interval);
+        }
+    }
+
+    Ok(())
+}
+
+fn select_echo_socket(socket: Option<&Path>, self_description_hash: &str) -> Result<PathBuf> {
     let socket = match socket {
         Some(socket) => {
-            ensure_socket_matches_self_description_hash(socket, &self_description_hash)?;
+            ensure_socket_matches_self_description_hash(socket, self_description_hash)?;
             socket.to_path_buf()
         }
         None => {
             let sockets = flowrt::discover_runtime_sockets()
                 .context("failed to scan FlowRT runtime sockets")?;
-            select_matching_runtime_socket(&self_description_hash, sockets)?
+            select_matching_runtime_socket(self_description_hash, sockets)?
         }
     };
+    Ok(socket)
+}
+
+fn request_echo_snapshot(
+    socket: &Path,
+    channel_spec: &EchoChannelSpec,
+    self_description_hash: &str,
+) -> Result<flowrt::introspection::IntrospectionChannelSnapshot> {
     let response =
-        flowrt::request_channel_snapshot(&socket, &channel_spec.name).with_context(|| {
+        flowrt::request_channel_snapshot(socket, &channel_spec.name).with_context(|| {
             format!(
                 "failed to request channel snapshot from `{}`",
                 socket.display()
@@ -526,7 +606,24 @@ fn echo_channel(image: &Path, channel: &str, socket: Option<&Path>) -> Result<St
         );
     }
 
-    format_echo_snapshot(&channel_spec, &snapshot)
+    Ok(snapshot)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EchoSnapshotKey {
+    published_count: u64,
+    published_at_ms: Option<u64>,
+    payload: Option<Vec<u8>>,
+}
+
+impl From<&flowrt::introspection::IntrospectionChannelSnapshot> for EchoSnapshotKey {
+    fn from(snapshot: &flowrt::introspection::IntrospectionChannelSnapshot) -> Self {
+        Self {
+            published_count: snapshot.published_count,
+            published_at_ms: snapshot.published_at_ms,
+            payload: snapshot.payload.clone(),
+        }
+    }
 }
 
 fn ensure_socket_matches_self_description_hash(
@@ -2098,6 +2195,8 @@ fn main() {}
             image,
             channel,
             socket,
+            follow,
+            interval_ms,
         } = cli.command
         else {
             panic!("echo command should parse into Command::Echo")
@@ -2106,6 +2205,49 @@ fn main() {}
         assert_eq!(image, PathBuf::from("flowrt/selfdesc/selfdesc.json"));
         assert_eq!(channel, "source.imu_to_sink.imu");
         assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+        assert!(!follow);
+        assert_eq!(interval_ms, 250);
+    }
+
+    #[test]
+    fn cli_parses_echo_follow_options() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "echo",
+            "flowrt/selfdesc/selfdesc.json",
+            "source.imu_to_sink.imu",
+            "--follow",
+            "--interval-ms",
+            "10",
+        ]);
+
+        let Command::Echo {
+            follow,
+            interval_ms,
+            ..
+        } = cli.unwrap().command
+        else {
+            panic!("echo --follow should parse into Command::Echo")
+        };
+
+        assert!(follow);
+        assert_eq!(interval_ms, 10);
+    }
+
+    #[test]
+    fn cli_rejects_zero_echo_follow_interval() {
+        let error = Cli::try_parse_from([
+            "flowrt",
+            "echo",
+            "flowrt/selfdesc/selfdesc.json",
+            "source.imu_to_sink.imu",
+            "--follow",
+            "--interval-ms",
+            "0",
+        ])
+        .expect_err("zero follow interval should be rejected");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
@@ -2166,6 +2308,96 @@ fn main() {}
         assert!(output.contains("published_at_ms=123"));
         assert!(output.contains("payload_len=4"));
         assert!(output.contains("raw=01020aff"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_follow_outputs_changed_snapshots_from_fake_status_server() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let root = temp_test_dir("echo-follow");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 86,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.record_channel_publish_bytes(
+            "source.imu_to_sink.imu",
+            "Imu",
+            vec![0x01, 0x02, 0x03, 0x04],
+            Some(10),
+        );
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("status server should start");
+        let mut output = Vec::new();
+
+        echo_channel_follow_for_polls(
+            &selfdesc,
+            "source.imu",
+            Some(&socket),
+            std::time::Duration::from_millis(0),
+            1,
+            &mut output,
+        )
+        .unwrap();
+        state.record_channel_publish_bytes(
+            "source.imu_to_sink.imu",
+            "Imu",
+            vec![0x05, 0x06, 0x07, 0x08],
+            Some(11),
+        );
+        echo_channel_follow_for_polls(
+            &selfdesc,
+            "source.imu",
+            Some(&socket),
+            std::time::Duration::from_millis(0),
+            2,
+            &mut output,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("published_count=1"));
+        assert!(lines[0].contains("published_at_ms=10"));
+        assert!(lines[0].contains("raw=01020304"));
+        assert!(lines[1].contains("published_count=2"));
+        assert!(lines[1].contains("published_at_ms=11"));
+        assert!(lines[1].contains("raw=05060708"));
 
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
