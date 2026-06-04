@@ -157,11 +157,7 @@ fn main() -> Result<()> {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            ensure_direct_runtime_supported(&prepared.selected_contract, "launch")?;
-            ensure_backend_runtime_supported(&prepared.selected_contract, "launch")?;
-            let manifest = cargo_manifest_with_local_runtime_patch(&out_dir)?;
-            run_cargo("build", &manifest)?;
-            run_cargo_supervisor(&manifest, &supervisor_bin_name(&prepared.selected_contract))?;
+            launch_workspace(&prepared.selected_contract, &out_dir)?;
             println!(
                 "launched {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -295,6 +291,12 @@ enum BuildStep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchStep {
+    Build(BuildStep),
+    CargoSupervisor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
     CargoApp,
     CmakeApp,
@@ -308,6 +310,15 @@ fn build_steps(contract: &ContractIr) -> Vec<BuildStep> {
     if has_component_language(contract, LanguageKind::Cpp) {
         steps.push(BuildStep::Cmake);
     }
+    steps
+}
+
+fn launch_steps(contract: &ContractIr) -> Vec<LaunchStep> {
+    let mut steps = build_steps(contract)
+        .into_iter()
+        .map(LaunchStep::Build)
+        .collect::<Vec<_>>();
+    steps.push(LaunchStep::CargoSupervisor);
     steps
 }
 
@@ -526,11 +537,32 @@ fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -
     Ok(())
 }
 
+fn launch_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
+    ensure_direct_runtime_supported(contract, "launch")?;
+    ensure_backend_runtime_supported(contract, "launch")?;
+    for step in launch_steps(contract) {
+        match step {
+            LaunchStep::Build(BuildStep::Cargo) => {
+                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+                run_cargo("build", &manifest)?;
+            }
+            LaunchStep::Build(BuildStep::Cmake) => {
+                run_cmake_configure_and_build(out_dir)?;
+            }
+            LaunchStep::CargoSupervisor => {
+                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+                run_cargo_supervisor(&manifest, &supervisor_bin_name(contract))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cargo_manifest_with_local_runtime_patch(out_dir: &Path) -> Result<PathBuf> {
     let generated_manifest = out_dir.join("build").join("Cargo.toml");
     let generated = fs::read_to_string(&generated_manifest)
         .with_context(|| format!("failed to read `{}`", generated_manifest.display()))?;
-    if generated.contains("[patch.crates-io]") {
+    if generated.contains("[patch.crates-io]") || !manifest_declares_flowrt_dependency(&generated) {
         return Ok(generated_manifest);
     }
     let repo_runtime = repo_root_dir()?.join("runtime/rust");
@@ -541,6 +573,12 @@ fn cargo_manifest_with_local_runtime_patch(out_dir: &Path) -> Result<PathBuf> {
     fs::write(&generated_manifest, patched)
         .with_context(|| format!("failed to write `{}`", generated_manifest.display()))?;
     Ok(generated_manifest)
+}
+
+fn manifest_declares_flowrt_dependency(manifest: &str) -> bool {
+    manifest
+        .lines()
+        .any(|line| line.trim_start().starts_with("flowrt ="))
 }
 
 fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
@@ -811,6 +849,28 @@ language = "cpp"
         );
 
         assert_eq!(build_steps(&contract), vec![BuildStep::Cmake]);
+    }
+
+    #[test]
+    fn launch_plan_builds_cpp_app_before_running_supervisor() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "cpp_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+"#,
+        );
+
+        assert_eq!(
+            launch_steps(&contract),
+            vec![
+                LaunchStep::Build(BuildStep::Cmake),
+                LaunchStep::CargoSupervisor
+            ]
+        );
     }
 
     #[test]
@@ -1166,6 +1226,35 @@ default_stale_policy = "warn"
         assert!(error.to_string().contains("already in use"));
         drop(first);
         WorkspaceLock::acquire(&out_dir).expect("lock should be released on drop");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cargo_manifest_patch_is_skipped_when_flowrt_dependency_is_absent() {
+        let root = temp_test_dir("cargo-patch-skip");
+        let build_dir = root.join("flowrt").join("build");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        let manifest = build_dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            r#"[package]
+name = "supervisor-only"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+"#,
+        )
+        .unwrap();
+
+        let patched_manifest = cargo_manifest_with_local_runtime_patch(&root.join("flowrt"))
+            .expect("manifest without flowrt dependency should still be accepted");
+        let content = std::fs::read_to_string(&patched_manifest).unwrap();
+
+        assert!(!content.contains("[patch.crates-io]"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

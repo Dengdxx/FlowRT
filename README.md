@@ -62,6 +62,7 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 ```bash
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
 更多步骤见 [快速开始](docs/getting-started.md)。

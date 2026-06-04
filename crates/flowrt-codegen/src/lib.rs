@@ -90,8 +90,10 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
 
     let mut artifacts = Vec::new();
     let abi_expectations = message_abi_expectations(contract)?;
+    let has_cpp = has_language(contract, LanguageKind::Cpp);
+    let has_rust = has_language(contract, LanguageKind::Rust);
 
-    if has_language(contract, LanguageKind::Cpp) {
+    if has_cpp {
         artifacts.push(artifact(
             "cpp/include/flowrt_app/messages.hpp",
             emit_cpp_messages(contract),
@@ -117,7 +119,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         }
     }
 
-    if has_language(contract, LanguageKind::Rust) {
+    if has_rust {
         artifacts.push(artifact(
             "rust/src/messages.rs",
             emit_rust_messages(contract),
@@ -130,22 +132,25 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             "rust/src/runtime_shell.rs",
             emit_rust_runtime_shell(contract),
         ));
-        artifacts.push(artifact(
-            "rust/src/supervisor.rs",
-            emit_rust_supervisor(contract),
-        ));
-        artifacts.push(artifact("rust/src/lib.rs", emit_rust_lib()));
         artifacts.push(artifact("rust/src/main.rs", emit_rust_main()));
-        artifacts.push(artifact(
-            "rust/src/supervisor_main.rs",
-            emit_rust_supervisor_main(),
-        ));
         if !abi_expectations.is_empty() {
             artifacts.push(artifact(
                 "rust/tests/message_abi.rs",
                 emit_rust_message_abi_tests(contract, &abi_expectations),
             ));
         }
+    }
+
+    if has_cpp || has_rust {
+        artifacts.push(artifact(
+            "rust/src/supervisor.rs",
+            emit_rust_supervisor(contract),
+        ));
+        artifacts.push(artifact("rust/src/lib.rs", emit_rust_lib(has_rust)));
+        artifacts.push(artifact(
+            "rust/src/supervisor_main.rs",
+            emit_rust_supervisor_main(),
+        ));
     }
 
     artifacts.push(artifact(
@@ -1266,11 +1271,15 @@ fn rust_string_literal(value: &str) -> String {
     format!("{value:?}")
 }
 
-fn emit_rust_lib() -> String {
+fn emit_rust_lib(include_runtime_shell: bool) -> String {
     let mut output = managed_header();
-    output.push_str(
-        "\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../src/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
-    );
+    if include_runtime_shell {
+        output.push_str(
+            "\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../src/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
+        );
+    } else {
+        output.push_str("\npub mod supervisor;\n");
+    }
     output
 }
 
@@ -2508,26 +2517,39 @@ fn emit_cmake(contract: &ContractIr) -> String {
 
 fn emit_cargo_manifest(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name).replace('_', "-");
-    let flowrt_dependency = if selected_backend_name(contract) == "iox2" {
-        "flowrt = { version = \"0.1\", features = [\"iox2\"] }"
-    } else {
-        "flowrt = { version = \"0.1\" }"
-    };
+    let has_rust = has_language(contract, LanguageKind::Rust);
+    let has_supervisor = has_rust || has_language(contract, LanguageKind::Cpp);
     let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n\n[dependencies]\n{}\n",
-        package_name, package_name, flowrt_dependency
+        "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[dependencies]\n",
+        package_name
     );
+    let mut bins = String::new();
 
-    if has_language(contract, LanguageKind::Rust) {
-        output
-            .push_str("serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n");
-        output.push_str(&format!(
-            "\n[[bin]]\nname = \"{}-flowrt-supervisor\"\npath = \"../rust/src/supervisor_main.rs\"\n",
+    if has_rust {
+        let flowrt_dependency = if selected_backend_name(contract) == "iox2" {
+            "flowrt = { version = \"0.1\", features = [\"iox2\"] }"
+        } else {
+            "flowrt = { version = \"0.1\" }"
+        };
+        output.push_str(flowrt_dependency);
+        output.push('\n');
+        bins.push_str(&format!(
+            "\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n",
             package_name
         ));
     }
 
-    if has_language(contract, LanguageKind::Rust) && !contract.types.is_empty() {
+    if has_supervisor {
+        output
+            .push_str("serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n");
+        bins.push_str(&format!(
+            "\n[[bin]]\nname = \"{}-flowrt-supervisor\"\npath = \"../rust/src/supervisor_main.rs\"\n",
+            package_name
+        ));
+    }
+    output.push_str(&bins);
+
+    if has_rust && !contract.types.is_empty() {
         output.push_str(
             "\n[[test]]\nname = \"message_abi\"\npath = \"../rust/tests/message_abi.rs\"\n",
         );
@@ -3455,6 +3477,75 @@ channel = "latest"
         assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
         assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));
         assert!(cmake.contains("add_executable(robot_demo_cpp_app ../cpp/src/main.cpp)"));
+    }
+
+    #[test]
+    fn emits_supervisor_only_rust_crate_for_cpp_only_launch() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["value:u32"]
+
+[component.sink]
+language = "cpp"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "control"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let paths = bundle
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"rust/src/supervisor.rs".to_string()));
+        assert!(paths.contains(&"rust/src/supervisor_main.rs".to_string()));
+        assert!(paths.contains(&"rust/src/lib.rs".to_string()));
+        assert!(!paths.contains(&"rust/src/runtime_shell.rs".to_string()));
+        assert!(!paths.contains(&"rust/src/main.rs".to_string()));
+
+        let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
+        assert!(rust_lib.contains("pub mod supervisor;"));
+        assert!(!rust_lib.contains("pub mod runtime_shell;"));
+        assert!(!rust_lib.contains("pub mod user;"));
+
+        let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+        assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
+        assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
+        assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
     }
 
     #[test]
@@ -4945,6 +5036,7 @@ backends = ["iox2"]
         assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
         assert!(cargo_manifest.contains("serde = { version = \"1\", features = [\"derive\"] }"));
         assert!(cargo_manifest.contains("serde_json = \"1\""));
+        assert!(cargo_manifest.find("serde =").unwrap() < cargo_manifest.find("[[bin]]").unwrap());
     }
 
     #[test]

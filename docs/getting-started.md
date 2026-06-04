@@ -78,9 +78,10 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 ```bash
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-C++ only contract 的 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
+C++ only contract 的 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。`launch` 会先构建 CMake app，再用生成的 supervisor 启动对应 process。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
 
 ## 切换 profile
 
