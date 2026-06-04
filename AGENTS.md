@@ -259,7 +259,7 @@ ROS2 bridge
 MCU static backend
 ```
 
-backend capability 应被显式建模。validator 必须拒绝 selected backend 无法满足的 contract。
+backend capability 应被显式建模。validator 必须拒绝未知 backend 名称，以及 selected backend 无法满足的 contract。未知 backend 不得因为没有被当前 profile 选中而在 `target.<name>.backends` 中静默保留。
 
 ## Codegen 边界
 
