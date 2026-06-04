@@ -145,7 +145,7 @@ IR 生成前必须归一化：
 - 解析 names。
 - 分配 stable IDs。
 - 填充 defaults。
-- 规范化 ordering；不具备顺序语义的实体数组、参数数组、deployment 数组、`package.imports` kind/pattern、`bind.dataflow`、`target.runtime` 和 `target.backends` 必须稳定排序，不能让声明顺序改变 canonical Contract IR。`bind.dataflow` 按端点排序；deployment 按 graph/profile/target 排序；排序不得吞掉重复项，重复声明仍由 parser 或 validator 拒绝。validator 必须拒绝落盘 IR 中非 canonical 的这些集合顺序和重复的 `package.imports` kind/pattern。
+- 规范化 ordering；不具备顺序语义的实体数组、参数数组、deployment 数组、`package.imports` kind/pattern、`bind.dataflow`、`target.runtime` 和 `target.backends` 必须稳定排序，不能让声明顺序改变 canonical Contract IR。`bind.dataflow` 按端点排序；deployment 按 graph/profile/target 排序；排序不得吞掉重复项，重复声明仍由 parser 或 validator 拒绝。validator 必须拒绝落盘 IR 中非 canonical 的这些集合顺序、重复的 `package.imports` kind/pattern，以及未知 import kind。
 - 附加 backend capabilities。
 
 Contract IR validator 必须独立拒绝同一作用域内的重复实体名称，包括顶层 type、component、profile、target、graph，以及 graph 内 instance；不能只依赖 RSDL parser 的 map 结构保证唯一性。`EntityId` 也必须在同一 Contract IR 内保持全局唯一，且所有 `EntityRef` 的 `id` 和 `name` 必须同时指向同一个实体，不能让手工改写或旧工具产物造成引用歧义。

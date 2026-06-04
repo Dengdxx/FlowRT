@@ -173,6 +173,13 @@ fn validate_contract_canonical_fields(ir: &ContractIr, errors: &mut Vec<Validati
 fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     let mut import_kinds = BTreeSet::new();
     for import in &ir.package.imports {
+        if !is_supported_import_kind(&import.kind) {
+            errors.push(ValidationError::new(format!(
+                "package import kind `{}` is not supported",
+                import.kind
+            )));
+        }
+
         if !import_kinds.insert(import.kind.as_str()) {
             errors.push(ValidationError::new(format!(
                 "package imports have duplicate kind `{}`",
@@ -337,6 +344,13 @@ fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<Valida
             "contract deployments must use canonical graph/profile/target order",
         ));
     }
+}
+
+fn is_supported_import_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "types" | "components" | "graphs" | "profiles" | "targets"
+    )
 }
 
 fn validate_entity_id_shape(
@@ -2023,6 +2037,31 @@ types = ["types/a.rsdl"]
                 report.errors
             );
         }
+    }
+
+    #[test]
+    fn rejects_unknown_package_import_kind_in_contract_ir() {
+        let source = r#"
+[package]
+name = "import_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/a.rsdl"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        validate_contract(&ir).unwrap();
+
+        ir.package.imports[0].kind = "widgets".to_string();
+
+        let report = validate_contract(&ir).expect_err("unknown package import kind should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("package import kind `widgets` is not supported")
+        }));
     }
 
     #[test]
