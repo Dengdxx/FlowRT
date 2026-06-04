@@ -5,6 +5,7 @@ use crate::{
     TriggerKind, TypeExpr, TypeIr,
 };
 
+// 枚举声明顺序是所有已知 capability 的全局 canonical 顺序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Capability {
     AbiFixedSizePlainData,
@@ -109,36 +110,38 @@ struct BackendSpec {
 impl BackendSpec {
     fn capabilities(self) -> Vec<CapabilityAtom> {
         let mut capabilities = CapabilityList::new();
+        self.extend_capabilities(&mut capabilities);
+        capabilities.into_atoms()
+    }
+
+    fn extend_capabilities(self, capabilities: &mut CapabilityList) {
         for group in self.capabilities {
             capabilities.extend(group.iter().copied());
         }
-        capabilities.into_atoms()
     }
 }
 
 struct CapabilityList {
-    seen: BTreeSet<Capability>,
-    items: Vec<Capability>,
+    items: BTreeSet<Capability>,
 }
 
 impl CapabilityList {
     fn new() -> Self {
         Self {
-            seen: BTreeSet::new(),
-            items: Vec::new(),
+            items: BTreeSet::new(),
         }
     }
 
     fn push(&mut self, capability: Capability) {
-        if self.seen.insert(capability) {
-            self.items.push(capability);
-        }
+        self.items.insert(capability);
     }
 
     fn extend(&mut self, capabilities: impl IntoIterator<Item = Capability>) {
-        for capability in capabilities {
-            self.push(capability);
-        }
+        self.items.extend(capabilities);
+    }
+
+    fn extend_list(&mut self, capabilities: Self) {
+        self.items.extend(capabilities.items);
     }
 
     fn into_atoms(self) -> Vec<CapabilityAtom> {
@@ -148,6 +151,13 @@ impl CapabilityList {
             .collect::<Vec<_>>()
     }
 }
+
+const BASE_DEPLOYMENT_CAPABILITIES: [Capability; 4] = [
+    Capability::AbiFixedSizePlainData,
+    Capability::LayoutNativeLayout,
+    Capability::AllocationBounded,
+    Capability::GraphStaticGraph,
+];
 
 const COMMON_BACKEND_CAPABILITIES: [Capability; 19] = [
     Capability::AbiFixedSizePlainData,
@@ -197,36 +207,35 @@ pub fn backend_capabilities(name: &str) -> Option<Vec<CapabilityAtom>> {
 
 /// v0.1 deployment 在 graph-specific policy 之外必须满足的基础能力。
 pub fn base_deployment_capabilities() -> Vec<CapabilityAtom> {
-    [
-        Capability::AbiFixedSizePlainData,
-        Capability::LayoutNativeLayout,
-        Capability::AllocationBounded,
-        Capability::GraphStaticGraph,
-    ]
-    .into_iter()
-    .map(Capability::atom)
-    .collect()
+    let mut capabilities = CapabilityList::new();
+    capabilities.extend(BASE_DEPLOYMENT_CAPABILITIES);
+    capabilities.into_atoms()
 }
 
 /// 返回某个 task trigger 所需的 capability atom。
 pub fn trigger_capability(trigger: TriggerKind) -> CapabilityAtom {
-    let capability = match trigger {
+    trigger_capability_kind(trigger).atom()
+}
+
+fn trigger_capability_kind(trigger: TriggerKind) -> Capability {
+    match trigger {
         TriggerKind::Periodic => Capability::TriggerPeriodic,
         TriggerKind::OnMessage => Capability::TriggerOnMessage,
         TriggerKind::Startup => Capability::TriggerStartup,
         TriggerKind::Shutdown => Capability::TriggerShutdown,
-    };
-    capability.atom()
+    }
 }
 
 /// 推导 target 声明的 backend capability atoms。
 pub fn target_capabilities(backends: &[crate::BackendName]) -> Vec<CapabilityAtom> {
-    let capabilities = backends
+    let mut capabilities = CapabilityList::new();
+    for backend in backends
         .iter()
-        .filter_map(|backend| backend_capabilities(&backend.0))
-        .flatten()
-        .collect::<Vec<_>>();
-    dedupe_capabilities(capabilities)
+        .filter_map(|backend| BackendKind::parse(&backend.0))
+    {
+        backend.spec().extend_capabilities(&mut capabilities);
+    }
+    capabilities.into_atoms()
 }
 
 /// 推导 data channel policy 需要的 capability atoms。
@@ -235,11 +244,13 @@ pub fn channel_capabilities(
     overflow: OverflowPolicy,
     stale: StalePolicy,
 ) -> Vec<CapabilityAtom> {
-    vec![
-        channel_capability(channel).atom(),
-        overflow_capability(overflow).atom(),
-        stale_capability(stale).atom(),
-    ]
+    let mut capabilities = CapabilityList::new();
+    capabilities.extend([
+        channel_capability(channel),
+        overflow_capability(overflow),
+        stale_capability(stale),
+    ]);
+    capabilities.into_atoms()
 }
 
 /// 推导 graph deployment 需要的 capability atoms。
@@ -251,13 +262,14 @@ pub fn graph_required_capabilities(
     types: &[TypeIr],
     components: &[ComponentIr],
 ) -> Vec<CapabilityAtom> {
-    let mut capabilities = base_deployment_capabilities();
+    let mut capabilities = CapabilityList::new();
+    capabilities.extend(BASE_DEPLOYMENT_CAPABILITIES);
     let components_by_name = components
         .iter()
         .map(|component| (component.name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
 
-    capabilities.extend(message_abi_capabilities(
+    capabilities.extend_list(message_abi_capability_list(
         types,
         graph
             .instances
@@ -266,19 +278,19 @@ pub fn graph_required_capabilities(
             .copied(),
     ));
     for task in &graph.tasks {
-        capabilities.push(trigger_capability(task.trigger));
+        capabilities.push(trigger_capability_kind(task.trigger));
         if task.deadline_ms.is_some() {
-            capabilities.push(Capability::TimingDeadlineAware.atom());
+            capabilities.push(Capability::TimingDeadlineAware);
         }
     }
     for bind in &graph.binds {
-        capabilities.extend(channel_capabilities(
-            bind.channel,
-            bind.overflow,
-            bind.stale,
-        ));
+        capabilities.extend([
+            channel_capability(bind.channel),
+            overflow_capability(bind.overflow),
+            stale_capability(bind.stale),
+        ]);
     }
-    dedupe_capabilities(capabilities)
+    capabilities.into_atoms()
 }
 
 /// 推导 Contract IR message 与 component port 类型需要的 ABI capability atoms。
@@ -286,11 +298,18 @@ pub fn message_abi_capabilities<'a>(
     types: &[TypeIr],
     components: impl IntoIterator<Item = &'a ComponentIr>,
 ) -> Vec<CapabilityAtom> {
+    message_abi_capability_list(types, components).into_atoms()
+}
+
+fn message_abi_capability_list<'a>(
+    types: &[TypeIr],
+    components: impl IntoIterator<Item = &'a ComponentIr>,
+) -> CapabilityList {
     let types_by_name = types
         .iter()
         .map(|ty| (ty.name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
-    let mut required = Vec::new();
+    let mut required = CapabilityList::new();
 
     for ty in types {
         for field in &ty.fields {
@@ -303,13 +322,13 @@ pub fn message_abi_capabilities<'a>(
         }
     }
 
-    dedupe_capabilities(required)
+    required
 }
 
 fn collect_type_expr_abi_capabilities(
     expr: &TypeExpr,
     types_by_name: &BTreeMap<&str, &TypeIr>,
-    required: &mut Vec<CapabilityAtom>,
+    required: &mut CapabilityList,
 ) {
     let mut visiting = BTreeSet::new();
     collect_type_expr_abi_capabilities_inner(expr, types_by_name, required, &mut visiting);
@@ -318,13 +337,13 @@ fn collect_type_expr_abi_capabilities(
 fn collect_type_expr_abi_capabilities_inner(
     expr: &TypeExpr,
     types_by_name: &BTreeMap<&str, &TypeIr>,
-    required: &mut Vec<CapabilityAtom>,
+    required: &mut CapabilityList,
     visiting: &mut BTreeSet<String>,
 ) {
     match expr {
         TypeExpr::Primitive {
             name: PrimitiveType::U128 | PrimitiveType::I128,
-        } => required.push(Capability::AbiInt128.atom()),
+        } => required.push(Capability::AbiInt128),
         TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
         TypeExpr::Named { name } => {
             if !visiting.insert(name.clone()) {
@@ -346,15 +365,6 @@ fn collect_type_expr_abi_capabilities_inner(
             collect_type_expr_abi_capabilities_inner(element, types_by_name, required, visiting);
         }
     }
-}
-
-/// 去重 capability atoms，并保留首次出现顺序作为 canonical 派生列表。
-fn dedupe_capabilities(capabilities: Vec<CapabilityAtom>) -> Vec<CapabilityAtom> {
-    let mut seen = BTreeSet::new();
-    capabilities
-        .into_iter()
-        .filter(|capability| seen.insert(capability.clone()))
-        .collect()
 }
 
 fn channel_capability(channel: ChannelKind) -> Capability {
@@ -433,6 +443,169 @@ mod tests {
                 Capability::TransferZeroCopy.atom(),
                 Capability::TransferLoaned.atom(),
                 Capability::ObservabilityHealth.atom(),
+            ]
+        );
+    }
+
+    #[test]
+    fn target_capabilities_use_global_catalog_order() {
+        let capabilities = target_capabilities(&[
+            crate::BackendName("iox2".to_string()),
+            crate::BackendName("inproc".to_string()),
+        ]);
+        let capabilities_from_reversed_backends = target_capabilities(&[
+            crate::BackendName("inproc".to_string()),
+            crate::BackendName("iox2".to_string()),
+        ]);
+
+        assert_eq!(capabilities, capabilities_from_reversed_backends);
+        assert_eq!(
+            capabilities,
+            vec![
+                Capability::AbiFixedSizePlainData.atom(),
+                Capability::LayoutNativeLayout.atom(),
+                Capability::AllocationBounded.atom(),
+                Capability::GraphStaticGraph.atom(),
+                Capability::TriggerPeriodic.atom(),
+                Capability::TriggerOnMessage.atom(),
+                Capability::TriggerStartup.atom(),
+                Capability::TriggerShutdown.atom(),
+                Capability::TimingDeadlineAware.atom(),
+                Capability::ChannelLatest.atom(),
+                Capability::ChannelFifo.atom(),
+                Capability::OverflowDropOldest.atom(),
+                Capability::OverflowDropNewest.atom(),
+                Capability::OverflowError.atom(),
+                Capability::OverflowBlock.atom(),
+                Capability::StaleWarn.atom(),
+                Capability::StaleDrop.atom(),
+                Capability::StaleHoldLast.atom(),
+                Capability::StaleError.atom(),
+                Capability::TopologySingleProcess.atom(),
+                Capability::TopologyMultiProcess.atom(),
+                Capability::TopologySingleHost.atom(),
+                Capability::TransferCopy.atom(),
+                Capability::TransferZeroCopy.atom(),
+                Capability::TransferLoaned.atom(),
+                Capability::ObservabilityHealth.atom(),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_required_capabilities_use_global_catalog_order() {
+        let instance = crate::EntityRef {
+            id: crate::EntityId("instance_0000000000000001".to_string()),
+            name: "worker".to_string(),
+        };
+        let port = |name: &str| crate::PortRef {
+            instance: instance.clone(),
+            port: name.to_string(),
+        };
+        let policy_source = crate::ChannelPolicySourceIr {
+            overflow: crate::PolicyValueSource::Explicit,
+            stale: crate::PolicyValueSource::Explicit,
+            max_age_ms: crate::PolicyValueSource::Explicit,
+        };
+        let mut graph = GraphIr {
+            id: crate::EntityId("graph_0000000000000001".to_string()),
+            name: "default".to_string(),
+            instances: vec![],
+            tasks: vec![
+                crate::TaskIr {
+                    id: crate::EntityId("task_0000000000000001".to_string()),
+                    instance: instance.clone(),
+                    trigger: TriggerKind::Shutdown,
+                    period_ms: None,
+                    deadline_ms: Some(10),
+                    priority: None,
+                    inputs: vec![],
+                    outputs: vec![],
+                },
+                crate::TaskIr {
+                    id: crate::EntityId("task_0000000000000002".to_string()),
+                    instance: instance.clone(),
+                    trigger: TriggerKind::Periodic,
+                    period_ms: Some(10),
+                    deadline_ms: None,
+                    priority: None,
+                    inputs: vec![],
+                    outputs: vec![],
+                },
+            ],
+            binds: vec![
+                crate::ChannelEdgeIr {
+                    id: crate::EntityId("bind_0000000000000001".to_string()),
+                    from: port("fifo_out"),
+                    to: port("fifo_in"),
+                    channel: ChannelKind::Fifo,
+                    depth: Some(2),
+                    overflow: OverflowPolicy::Block,
+                    stale: StalePolicy::Error,
+                    max_age_ms: Some(10),
+                    policy_source,
+                    capability_requirements: vec![],
+                },
+                crate::ChannelEdgeIr {
+                    id: crate::EntityId("bind_0000000000000002".to_string()),
+                    from: port("latest_out"),
+                    to: port("latest_in"),
+                    channel: ChannelKind::Latest,
+                    depth: Some(1),
+                    overflow: OverflowPolicy::DropNewest,
+                    stale: StalePolicy::HoldLast,
+                    max_age_ms: Some(10),
+                    policy_source,
+                    capability_requirements: vec![],
+                },
+            ],
+        };
+        let types = [TypeIr {
+            id: crate::EntityId("type_0000000000000001".to_string()),
+            name: "WideIntegers".to_string(),
+            fields: vec![
+                crate::FieldIr {
+                    name: "signed".to_string(),
+                    ty: TypeExpr::Primitive {
+                        name: PrimitiveType::I128,
+                    },
+                    default: None,
+                },
+                crate::FieldIr {
+                    name: "unsigned".to_string(),
+                    ty: TypeExpr::Primitive {
+                        name: PrimitiveType::U128,
+                    },
+                    default: None,
+                },
+            ],
+        }];
+
+        let capabilities = graph_required_capabilities(&graph, &types, &[]);
+        graph.tasks.reverse();
+        graph.binds.reverse();
+
+        assert_eq!(
+            capabilities,
+            graph_required_capabilities(&graph, &types, &[])
+        );
+        assert_eq!(
+            capabilities,
+            vec![
+                Capability::AbiFixedSizePlainData.atom(),
+                Capability::AbiInt128.atom(),
+                Capability::LayoutNativeLayout.atom(),
+                Capability::AllocationBounded.atom(),
+                Capability::GraphStaticGraph.atom(),
+                Capability::TriggerPeriodic.atom(),
+                Capability::TriggerShutdown.atom(),
+                Capability::TimingDeadlineAware.atom(),
+                Capability::ChannelLatest.atom(),
+                Capability::ChannelFifo.atom(),
+                Capability::OverflowDropNewest.atom(),
+                Capability::OverflowBlock.atom(),
+                Capability::StaleHoldLast.atom(),
+                Capability::StaleError.atom(),
             ]
         );
     }
