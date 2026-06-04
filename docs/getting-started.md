@@ -1,0 +1,99 @@
+# 快速开始
+
+本文从源码安装 `flowrt`，并跑通当前仓库中最小的 Rust-only 和 C++ only 示例。
+
+## 前置条件
+
+- Rust toolchain，支持当前 workspace 使用的 Rust 2024 Edition。
+- C++20 编译器、CMake 和 CTest，用于构建 C++ runtime 与 C++ 示例。
+- 可选：`iceoryx2-cxx 0.9.1`，仅在构建或运行 C++ iox2 示例时需要。
+
+## 安装 CLI
+
+在仓库根目录执行：
+
+```bash
+cargo install --path crates/flowrt-cli --locked
+flowrt --version
+```
+
+面向用户的入口是安装后的 `flowrt ...`。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用 `flowrt ...`。
+
+## 检查 RSDL
+
+先检查模块化 RSDL 示例：
+
+```bash
+flowrt check examples/import_demo/rsdl/robot.rsdl
+```
+
+预期输出类似：
+
+```text
+OK package=import_demo types=2 components=2 instances=2 tasks=2 binds=1
+```
+
+`check` 会解析 RSDL、展开 `[package.imports]`、归一化 Contract IR，并运行 validator。它不会生成或构建应用产物。
+
+## 生成产物
+
+```bash
+flowrt prepare examples/import_demo/rsdl/robot.rsdl
+```
+
+生成物写入示例项目下的 `flowrt/`：
+
+```text
+examples/import_demo/flowrt/
+  contract/contract.ir.json
+  build/
+  launch/launch.json
+  src/
+```
+
+`flowrt/` 是 FlowRT 管理目录，可以删除后重新生成。用户算法代码应放在项目自己的 `src/` 目录，不放进生成目录。
+
+查看已落盘的 Contract IR 摘要：
+
+```bash
+flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
+```
+
+## 运行 Rust-only 示例
+
+```bash
+flowrt run examples/import_demo/rsdl/robot.rsdl --process main
+```
+
+也可以通过生成的 supervisor 启动全部 process group：
+
+```bash
+flowrt launch examples/import_demo/rsdl/robot.rsdl
+```
+
+当前 `import_demo` 是 Rust-only inproc 示例，适合验证 RSDL import、Contract IR、Rust codegen 和 launch manifest 的基础闭环。
+
+## 运行 C++ only 示例
+
+```bash
+flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+```
+
+C++ only contract 的 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
+
+## 切换 profile
+
+```bash
+flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+```
+
+`--profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，再校验和生成对应产物。选择 `iox2` profile 时，Rust 生成物会启用 runtime crate 的 `iox2` feature；含 C++ iox2 组件的构建需要本机提供 `iceoryx2-cxx 0.9.1`。
+
+## 出错时先看什么
+
+- `flowrt check` 失败：优先修正 RSDL 命名、类型、端口、task、bind、target/backend 声明。
+- `flowrt build` 失败：检查用户组件实现是否匹配生成接口，以及 C++ toolchain / CMake / 可选 iox2 依赖是否存在。
+- `flowrt run --process <name>` 失败：确认 process 名称来自 RSDL `instance.<name>.process`；mixed contract 必须选择单语言 process，或使用 `flowrt launch`。
+- `flowrt launch` 失败：检查 `flowrt/launch/launch.json` 是否生成，并确认 mixed process group 没有把 C++ 和 Rust component 放在同一 process 内。

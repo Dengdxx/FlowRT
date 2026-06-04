@@ -1,0 +1,141 @@
+# 示例矩阵
+
+本仓库的 `examples/` 目录用于验证 RSDL、Contract IR、validator、codegen、runtime 和 CLI 的端到端切片。每个示例都尽量覆盖一个明确边界，不把所有能力塞进同一个 demo。
+
+## 示例列表
+
+| 示例 | Runtime | Backend | 推荐命令 | 用途 |
+| --- | --- | --- | --- | --- |
+| `examples/import_demo` | Rust | `inproc` | `flowrt run examples/import_demo/rsdl/robot.rsdl --process main` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
+| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂和 C++ runtime shell |
+| `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息和生成物边界；不伪装为 mixed inproc 可运行 |
+| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
+| `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
+| `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体 |
+
+## `import_demo`
+
+入口文件：
+
+```text
+examples/import_demo/rsdl/robot.rsdl
+```
+
+该文件只声明 package 和 imports：
+
+```toml
+[package.imports]
+types = ["types/*.rsdl"]
+components = ["components/*.rsdl"]
+graphs = ["graphs/*.rsdl"]
+profiles = ["profiles/*.rsdl"]
+targets = ["targets/*.rsdl"]
+```
+
+它用于证明 v0.1 可以把 `types`、`components`、`graphs`、`profiles` 和 `targets` 拆成多个 RSDL 片段，同时仍归一化到同一份 Contract IR。
+
+常用命令：
+
+```bash
+flowrt check examples/import_demo/rsdl/robot.rsdl
+flowrt run examples/import_demo/rsdl/robot.rsdl --process main
+flowrt launch examples/import_demo/rsdl/robot.rsdl
+```
+
+## `cpp_counter_demo`
+
+入口文件：
+
+```text
+examples/cpp_counter_demo/rsdl/robot.rsdl
+```
+
+该示例是 C++ only inproc contract：
+
+```text
+counter_source.count -> counter_sink.count
+```
+
+它验证：
+
+- C++ message codegen。
+- C++ interface codegen。
+- C++ inproc runtime shell。
+- `flowrt_user::build_app()` 用户工厂入口。
+- C++ only `flowrt build` / `flowrt run` 走 CMake app 路径。
+
+常用命令：
+
+```bash
+flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+```
+
+## `imu_demo`
+
+入口文件：
+
+```text
+examples/imu_demo/rsdl/robot.rsdl
+```
+
+该示例表达主线数据流：
+
+```text
+imu_sim -> estimator -> controller -> monitor
+```
+
+它用于验证 mixed contract 的生成能力，包括 C++/Rust message、接口和构建产物。当前规则要求 mixed contract 保持语言边界诚实：Rust codegen 不为 C++ component 伪造 Rust trait，C++ codegen 不为 Rust component 伪造 C++ interface。
+
+基础 smoke：
+
+```bash
+flowrt build examples/imu_demo/rsdl/robot.rsdl
+```
+
+## `profile_switch_demo`
+
+入口文件：
+
+```text
+examples/profile_switch_demo/rsdl/robot.rsdl
+```
+
+该示例用于验证 `--profile`：
+
+```bash
+flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+```
+
+选择 profile 后，CLI 会先投影 Contract IR，再做 validation 和 codegen。默认 profile 仍是 `default` 或首个 profile。
+
+## iox2 mixed 示例
+
+入口文件：
+
+```text
+examples/mixed_iox2_demo/rsdl/robot.rsdl
+examples/imu_demo_iox2/rsdl/robot.rsdl
+```
+
+这两个示例验证 language-separated mixed contract over `iox2`：
+
+- process group 必须按语言拆分。
+- selected backend 必须是 `iox2`。
+- launch manifest 中的 channel 必须暴露 canonical service name。
+- Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
+
+基础 CI 只对这两个示例执行 `check`。构建和运行需要本机安装匹配的 `iceoryx2-cxx 0.9.1`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
+
+## 添加新示例
+
+新增示例时应明确它验证的边界：
+
+- RSDL 语法或 import 行为。
+- validator 规则。
+- Rust/C++ codegen 边界。
+- runtime channel 或 lifecycle 行为。
+- backend capability 或 launch 行为。
+
+不要新增只展示目录结构、但没有可验证命令的空示例。示例如果引入新语义、命令或生成物边界，应同步更新 README、本文档和 `CHANGELOG.md`。

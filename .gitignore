@@ -3,6 +3,8 @@ build/
 /flowrt/
 examples/*/flowrt/
 .agents/
+
+# 本地设计/规格草案不入库；docs/ 下其他用户和维护者配套文档可入库。
 docs/architecture-plan.md
 docs/backend-contract.md
 docs/contract-ir-v0.1.md
