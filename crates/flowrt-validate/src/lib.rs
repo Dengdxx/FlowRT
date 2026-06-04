@@ -171,6 +171,26 @@ fn validate_contract_canonical_fields(ir: &ContractIr, errors: &mut Vec<Validati
 }
 
 fn validate_contract_canonical_ordering(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let mut import_kinds = BTreeSet::new();
+    for import in &ir.package.imports {
+        if !import_kinds.insert(import.kind.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "package imports have duplicate kind `{}`",
+                import.kind
+            )));
+        }
+
+        let mut import_patterns = BTreeSet::new();
+        for pattern in &import.patterns {
+            if !import_patterns.insert(pattern.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "package import `{}` has duplicate pattern `{pattern}`",
+                    import.kind
+                )));
+            }
+        }
+    }
+
     if !ir
         .package
         .imports
@@ -1964,6 +1984,43 @@ backends = ["inproc", "iox2"]
                     .iter()
                     .any(|error| error.message.contains(expected)),
                 "missing error containing `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_package_import_collections_in_contract_ir() {
+        let source = r#"
+[package]
+name = "import_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+components = ["components/a.rsdl"]
+types = ["types/a.rsdl"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        validate_contract(&ir).unwrap();
+
+        let duplicate_pattern = ir.package.imports[0].patterns[0].clone();
+        ir.package.imports[0].patterns.push(duplicate_pattern);
+        ir.package.imports.push(ir.package.imports[0].clone());
+
+        let report = validate_contract(&ir)
+            .expect_err("duplicate package import collections should fail validation");
+
+        for expected in [
+            "package imports have duplicate kind",
+            "package import `components` has duplicate pattern",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}; got {:?}",
+                report.errors
             );
         }
     }
