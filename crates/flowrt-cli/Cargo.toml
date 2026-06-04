@@ -15,6 +15,7 @@ flowrt-codegen = { path = "../flowrt-codegen" }
 flowrt-ir = { path = "../flowrt-ir" }
 flowrt-rsdl = { path = "../flowrt-rsdl" }
 flowrt-validate = { path = "../flowrt-validate" }
+flowrt = { path = "../../runtime/rust" }
 object.workspace = true
 serde.workspace = true
 serde_json.workspace = true

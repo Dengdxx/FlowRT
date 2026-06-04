@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod channel;
 pub mod inproc;
+pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
 
@@ -19,6 +20,12 @@ pub use channel::{
 };
 #[cfg(feature = "iox2")]
 pub use iceoryx2::prelude::ZeroCopySend;
+pub use introspection::{
+    INTROSPECTION_PROTOCOL_VERSION, IntrospectionChannelStatus, IntrospectionHandshake,
+    IntrospectionIdentity, IntrospectionRequest, IntrospectionResponse, IntrospectionServer,
+    IntrospectionStatus, discover_runtime_sockets, request_status, runtime_socket_dir,
+    runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
+};
 
 /// 生成组件接口返回的执行状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
