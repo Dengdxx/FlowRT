@@ -724,7 +724,7 @@ fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<ValidationErr
 }
 
 fn validate_channel_policy_sources(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
-    let Some(profile) = single_profile(ir) else {
+    let Some(profile) = policy_anchor_profile(ir) else {
         return;
     };
 
@@ -751,11 +751,11 @@ fn validate_channel_policy_sources(ir: &ContractIr, errors: &mut Vec<ValidationE
     }
 }
 
-fn single_profile(ir: &ContractIr) -> Option<&flowrt_ir::ProfileIr> {
-    match ir.profiles.as_slice() {
-        [profile] => Some(profile),
-        _ => None,
-    }
+fn policy_anchor_profile(ir: &ContractIr) -> Option<&flowrt_ir::ProfileIr> {
+    ir.profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or_else(|| ir.profiles.first())
 }
 
 fn push_policy_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationError>) {
@@ -3239,6 +3239,84 @@ backends = ["inproc"]
 
         let report =
             validate_contract(&ir).expect_err("forged channel policy source metadata should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("bind `producer.sample` -> `consumer.sample` policy source metadata is inconsistent")
+        }), "{:?}", report.errors);
+    }
+
+    #[test]
+    fn rejects_inconsistent_channel_policy_source_metadata_before_profile_projection() {
+        let source = r#"
+[package]
+name = "profile_policy_source"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[profile.safety]
+backend = "inproc"
+default_overflow = "error"
+default_stale_policy = "drop"
+max_age_ms = 10
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        validate_contract(&ir).unwrap();
+
+        ir.graphs[0].binds[0].overflow = OverflowPolicy::Error;
+        ir.graphs[0].binds[0].stale = StalePolicy::Drop;
+        ir.graphs[0].binds[0].max_age_ms = Some(10);
+        ir.graphs[0].binds[0].capability_requirements =
+            expected_bind_capabilities(&ir.graphs[0].binds[0]);
+        for deployment in &mut ir.deployments {
+            deployment.required_capabilities = expected_graph_capabilities(&ir.graphs[0]);
+        }
+
+        let report =
+            validate_contract(&ir).expect_err("forged unprojected policy metadata should fail");
 
         assert!(report.errors.iter().any(|error| {
             error
