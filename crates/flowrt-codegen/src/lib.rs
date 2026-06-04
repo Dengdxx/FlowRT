@@ -3339,6 +3339,7 @@ process = "cpp_source"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["value"]
 
 [instance.sink]
@@ -3412,6 +3413,7 @@ component = "source"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["odom"]
 
 [instance.controller]
@@ -3642,6 +3644,7 @@ component = "source"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -3724,6 +3727,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -3809,6 +3813,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -3869,6 +3874,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -3940,6 +3946,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -4003,6 +4010,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -4065,6 +4073,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -4137,6 +4146,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["imu"]
 
 [instance.sink]
@@ -4727,6 +4737,7 @@ target = "linux"
 
 [instance.source.task]
 trigger = "periodic"
+period_ms = 5
 output = ["value"]
 
 [instance.sink]
