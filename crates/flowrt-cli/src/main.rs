@@ -522,6 +522,7 @@ fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
 fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
     ensure_backend_runtime_supported(contract, "run")?;
+    ensure_run_process_boundaries_supported(contract, process)?;
     match run_mode_for_process(contract, process)
         .context("contract does not contain runnable components")?
     {
@@ -578,6 +579,33 @@ fn ensure_launch_process_boundaries_supported(contract: &ContractIr) -> Result<(
     Ok(())
 }
 
+fn ensure_run_process_boundaries_supported(
+    contract: &ContractIr,
+    process: Option<&str>,
+) -> Result<()> {
+    let backend = selected_runtime_backend_name(contract);
+    if backend != "inproc" {
+        return Ok(());
+    }
+
+    let Some(process) = process else {
+        return Ok(());
+    };
+
+    if let Some(boundary) = first_cross_process_bind_for_process(contract, process) {
+        anyhow::bail!(
+            "backend `inproc` cannot run --process `{}` because dataflow `{}` -> `{}` crosses process groups `{}` -> `{}`; use backend `iox2`, run the whole inproc app, or place both instances in the same RSDL process group",
+            process,
+            boundary.from,
+            boundary.to,
+            boundary.from_process,
+            boundary.to_process
+        );
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct CrossProcessBind {
     from: String,
@@ -587,6 +615,22 @@ struct CrossProcessBind {
 }
 
 fn first_cross_process_bind(contract: &ContractIr) -> Option<CrossProcessBind> {
+    first_cross_process_bind_matching(contract, |_| true)
+}
+
+fn first_cross_process_bind_for_process(
+    contract: &ContractIr,
+    process: &str,
+) -> Option<CrossProcessBind> {
+    first_cross_process_bind_matching(contract, |boundary| {
+        boundary.from_process == process || boundary.to_process == process
+    })
+}
+
+fn first_cross_process_bind_matching(
+    contract: &ContractIr,
+    matches: impl Fn(&CrossProcessBind) -> bool,
+) -> Option<CrossProcessBind> {
     for graph in &contract.graphs {
         let processes = graph
             .instances
@@ -603,12 +647,15 @@ fn first_cross_process_bind(contract: &ContractIr) -> Option<CrossProcessBind> {
             let from_process = processes.get(bind.from.instance.name.as_str())?;
             let to_process = processes.get(bind.to.instance.name.as_str())?;
             if from_process != to_process {
-                return Some(CrossProcessBind {
+                let boundary = CrossProcessBind {
                     from: format!("{}.{}", bind.from.instance.name, bind.from.port),
                     to: format!("{}.{}", bind.to.instance.name, bind.to.port),
                     from_process: from_process.clone(),
                     to_process: to_process.clone(),
-                });
+                };
+                if matches(&boundary) {
+                    return Some(boundary);
+                }
             }
         }
     }
@@ -1274,6 +1321,64 @@ default_stale_policy = "warn"
         assert!(message.contains("backend `inproc`"));
         assert!(message.contains("source_process"));
         assert!(message.contains("sink_process"));
+    }
+
+    #[test]
+    fn run_process_readiness_rejects_inproc_dataflow_across_process_groups() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "split_rust_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_process"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "sink_process"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let error =
+            ensure_run_process_boundaries_supported(&contract, Some("sink_process")).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("backend `inproc`"));
+        assert!(message.contains("source_process"));
+        assert!(message.contains("sink_process"));
+        assert!(message.contains("run --process"));
+        ensure_run_process_boundaries_supported(&contract, None).unwrap();
     }
 
     #[test]

@@ -71,6 +71,8 @@ mixed contract 规则：
 - language-separated mixed contract 在 `iox2` backend 下可以使用 `flowrt run --process <name>` 运行某个单语言 process。
 - 未指定 process 的 mixed iox2 contract 应使用 `flowrt launch` 启动全部 process group。
 
+`inproc` backend 下，`run --process <name>` 只能运行没有跨 process dataflow 依赖的 process group；如果该 process 与其他 process 之间存在 bind，CLI 会拒绝单独运行它。此时应运行完整 inproc app，改用 `iox2`，或调整 RSDL process group。
+
 ## `launch`
 
 ```bash

@@ -96,5 +96,5 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 
 - `flowrt check` 失败：优先修正 RSDL 命名、类型、端口、task、bind、target/backend 声明。
 - `flowrt build` 失败：检查用户组件实现是否匹配生成接口，以及 C++ toolchain / CMake / 可选 iox2 依赖是否存在。
-- `flowrt run --process <name>` 失败：确认 process 名称来自 RSDL `instance.<name>.process`；mixed contract 必须选择单语言 process，或使用 `flowrt launch`。
+- `flowrt run --process <name>` 失败：确认 process 名称来自 RSDL `instance.<name>.process`；mixed contract 必须选择单语言 process，或使用 `flowrt launch`；`inproc` backend 下不能单独运行带跨 process dataflow 的 process group。
 - `flowrt launch` 失败：检查 `flowrt/launch/launch.json` 是否生成；确认 mixed process group 没有把 C++ 和 Rust component 放在同一 process 内；如果 backend 是 `inproc`，还要确认 dataflow bind 没有跨 RSDL process group。
