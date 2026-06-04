@@ -914,7 +914,10 @@ fn validate_name(
             style.label()
         )));
     }
-    if name.starts_with("flowrt") {
+    if name
+        .get(.."flowrt".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("flowrt"))
+    {
         errors.push(ValidationError::new(format!(
             "{entity_kind} name `{name}` uses reserved `flowrt` prefix"
         )));
@@ -2711,6 +2714,28 @@ period_ms = 5
             error
                 .message
                 .contains("process name `flowrt_supervisor` uses reserved `flowrt` prefix")
+        }));
+    }
+
+    #[test]
+    fn rejects_reserved_name_prefix_case_insensitively() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.FlowrtSample]
+value = "u32"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report =
+            validate_contract(&ir).expect_err("reserved prefix with PascalCase should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("type name `FlowrtSample` uses reserved `flowrt` prefix")
         }));
     }
 

@@ -62,7 +62,7 @@ flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 
 `run` 先执行 `prepare` 和必要的构建，再运行生成应用。
 
-`--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用 `flowrt` 前缀。
+`--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 
 mixed contract 规则：
 

@@ -126,7 +126,7 @@ examples/
 - RSDL parser 必须拒绝未知顶层 section 和固定 schema 表中的未知字段，例如 `[components.*]`、`instance.foo.proces` 这类拼写错误不能被静默忽略；`type.<Name>` 的 message fields 与 `params` 表是开放键空间。
 - `instance.<name>.task` 是 v0.1 推荐写法。
 - `instance.<name>.params` 覆盖 component 默认参数，并在 normalization 阶段合并；override 不能引入 component 未声明参数，类型必须与默认值兼容，空默认数组不能被非空数组覆盖。
-- `instance.<name>.process` 是 launch grouping label，必须使用 `snake_case`，且不得使用 `flowrt` 前缀；未声明时默认为 `main`。
+- `instance.<name>.process` 是 launch grouping label，必须使用 `snake_case`，且不得使用大小写不敏感的保留 `flowrt` 前缀；未声明时默认为 `main`。
 - `bind.dataflow` 表示图连线，归一化后展开成具体 channel edges。
 - Contract IR v0.1 必须恰好包含一个 graph，且至少包含一个 profile；顶层 `graphs` 保留为数组是为了后续扩展，validator 和 codegen 当前必须拒绝 0 graph 和多 graph contract，空 profiles 也必须被拒绝。
 - v0.1 dataflow graph 必须无环；instance 间闭环和 self-loop 都必须由 validator 拒绝。反馈环、delay、初始值或时间同步窗口必须在后续 RSDL/IR 中显式建模后才能支持。
