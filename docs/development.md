@@ -82,6 +82,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - Message ABI v0.1 必须保持 fixed-size plain data。未来 `bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 可以进入 Contract IR 表达层，但 validator、conformance helper 和 codegen public 入口必须明确拒绝，直到 Variable Frame ABI runtime 语义落地。
 - Mixed contract 的 Message ABI conformance 不能只依赖同一生成器内嵌的 expected bytes；C++ test 写出的 fixture 和 Rust test 读取后的 typed roundtrip 都应保持可运行。
 - 扩展 backend capability 时，先在 `flowrt-ir` 的 typed capability catalog 中维护全局 canonical 顺序，再由 `backend_capabilities`、`channel_capabilities`、`trigger_capability` 或 message ABI 推导函数输出既有 `CapabilityAtom` 字符串。凡是 backend、target、deployment、channel 的 capability 组合，都要先去重再按该 catalog 顺序输出，不能依赖声明顺序或首次出现顺序；新增或重排 catalog 都会改变 canonical IR 顺序，因此必须同步补顺序独立测试。不要在 validator、normalizer 或 codegen 中散落新 capability 字符串。
+- Rust/C++ runtime 的 backend capability 报告顺序也必须跟随同一个 catalog；runtime smoke test 应精确断言顺序，避免自描述、诊断和跨语言对比输出出现漂移。
 - deployment satisfaction 只能通过 `flowrt-ir` 的集中 typed decision 推导；normalizer 和 validator 必须复用同一 decision 入口，不能各自复制 unknown backend、target 未声明支持、missing required capabilities 或 satisfied 的判断逻辑，也不能把 `TargetIr.capabilities` 或 `DeploymentIr.satisfied` 当作事实源。
 
 ## 文档维护

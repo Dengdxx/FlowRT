@@ -1,4 +1,5 @@
 #include <cassert>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/runtime.hpp>
@@ -7,6 +8,16 @@
 struct Sample {
     std::uint32_t value;
 };
+
+template <std::size_t N>
+void assert_capabilities_equal(flowrt::BackendCapabilities capabilities,
+                               const std::array<std::string_view, N> &expected) {
+    const auto actual = capabilities.items();
+    assert(actual.size() == expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        assert(actual[index] == expected[index]);
+    }
+}
 
 int main() {
     static_assert(flowrt::ok() == flowrt::Status::Ok);
@@ -19,10 +30,64 @@ int main() {
     assert(inproc_backend.capabilities().contains("channel:latest"));
     assert(inproc_backend.capabilities().contains("graph:static_graph"));
     assert(inproc_backend.capabilities().contains("timing:deadline_aware"));
+    assert_capabilities_equal(
+        inproc_backend.capabilities(),
+        std::array<std::string_view, 22>{
+            "abi:fixed_size_plain_data",
+            "layout:native_layout",
+            "allocation:bounded",
+            "graph:static_graph",
+            "trigger:periodic",
+            "trigger:on_message",
+            "trigger:startup",
+            "trigger:shutdown",
+            "timing:deadline_aware",
+            "channel:latest",
+            "channel:fifo",
+            "overflow:drop_oldest",
+            "overflow:drop_newest",
+            "overflow:error",
+            "overflow:block",
+            "stale:warn",
+            "stale:drop",
+            "stale:hold_last",
+            "stale:error",
+            "topology:single_process",
+            "transfer:copy",
+            "observability:health",
+        });
 
     flowrt::Iox2Backend iox2_backend;
     assert(iox2_backend.kind() == flowrt::BackendKind::Iox2);
     assert(iox2_backend.capabilities().contains("topology:multi_process"));
+    assert_capabilities_equal(
+        iox2_backend.capabilities(),
+        std::array<std::string_view, 24>{
+            "abi:fixed_size_plain_data",
+            "layout:native_layout",
+            "allocation:bounded",
+            "graph:static_graph",
+            "trigger:periodic",
+            "trigger:on_message",
+            "trigger:startup",
+            "trigger:shutdown",
+            "timing:deadline_aware",
+            "channel:latest",
+            "channel:fifo",
+            "overflow:drop_oldest",
+            "overflow:drop_newest",
+            "overflow:error",
+            "overflow:block",
+            "stale:warn",
+            "stale:drop",
+            "stale:hold_last",
+            "stale:error",
+            "topology:multi_process",
+            "topology:single_host",
+            "transfer:zero_copy",
+            "transfer:loaned",
+            "observability:health",
+        });
 
     std::size_t seen = 0;
     const auto scheduler_status = inproc_backend.scheduler().run_ticks(

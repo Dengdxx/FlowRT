@@ -1024,25 +1024,29 @@ class InprocBackend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 18> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 22> kCapabilities = {
         "abi:fixed_size_plain_data",
-        "allocation:bounded",
-        "channel:fifo",
-        "channel:latest",
-        "graph:static_graph",
         "layout:native_layout",
-        "observability:health",
-        "overflow:block",
-        "overflow:drop_newest",
-        "overflow:drop_oldest",
-        "overflow:error",
-        "stale:drop",
-        "stale:error",
-        "stale:hold_last",
-        "stale:warn",
+        "allocation:bounded",
+        "graph:static_graph",
+        "trigger:periodic",
+        "trigger:on_message",
+        "trigger:startup",
+        "trigger:shutdown",
         "timing:deadline_aware",
+        "channel:latest",
+        "channel:fifo",
+        "overflow:drop_oldest",
+        "overflow:drop_newest",
+        "overflow:error",
+        "overflow:block",
+        "stale:warn",
+        "stale:drop",
+        "stale:hold_last",
+        "stale:error",
         "topology:single_process",
         "transfer:copy",
+        "observability:health",
     };
 
     InprocScheduler scheduler_;
@@ -1075,27 +1079,31 @@ class Iox2Backend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 20> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 24> kCapabilities = {
         "abi:fixed_size_plain_data",
-        "allocation:bounded",
-        "channel:fifo",
-        "channel:latest",
-        "graph:static_graph",
         "layout:native_layout",
-        "observability:health",
-        "overflow:block",
-        "overflow:drop_newest",
-        "overflow:drop_oldest",
-        "overflow:error",
-        "stale:drop",
-        "stale:error",
-        "stale:hold_last",
-        "stale:warn",
+        "allocation:bounded",
+        "graph:static_graph",
+        "trigger:periodic",
+        "trigger:on_message",
+        "trigger:startup",
+        "trigger:shutdown",
         "timing:deadline_aware",
+        "channel:latest",
+        "channel:fifo",
+        "overflow:drop_oldest",
+        "overflow:drop_newest",
+        "overflow:error",
+        "overflow:block",
+        "stale:warn",
+        "stale:drop",
+        "stale:hold_last",
+        "stale:error",
         "topology:multi_process",
         "topology:single_host",
-        "transfer:loaned",
         "transfer:zero_copy",
+        "transfer:loaned",
+        "observability:health",
     };
 
     InprocScheduler scheduler_;
