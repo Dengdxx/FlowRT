@@ -35,6 +35,9 @@ pub enum RsdlError {
     #[error("unknown top-level RSDL section `{section}`")]
     UnknownTopLevelSection { section: String },
 
+    #[error("unknown field `{field}` in `{context}`")]
+    UnknownField { context: String, field: String },
+
     #[error("missing required field `{field}` in `{context}`")]
     MissingField {
         context: String,
