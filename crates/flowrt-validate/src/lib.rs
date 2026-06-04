@@ -180,6 +180,15 @@ fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
                 NameStyle::SnakeCase,
                 errors,
             );
+            if let Some(process) = &instance.process {
+                validate_name(
+                    "process",
+                    "process name",
+                    process,
+                    NameStyle::SnakeCase,
+                    errors,
+                );
+            }
         }
     }
 }
@@ -1175,6 +1184,35 @@ backends = ["inproc"]
             error
                 .message
                 .contains("process `main` spans multiple targets")
+        }));
+    }
+
+    #[test]
+    fn rejects_invalid_process_names() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+process = "Control-Loop"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("invalid process names should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("process name `Control-Loop` must be snake_case")
         }));
     }
 

@@ -125,6 +125,7 @@ examples/
 - MVP 单文件示例建议使用 `[type.*]`、`[component.*]`、`[instance.*]`、`[instance.*.task]`、`[[bind.dataflow]]`、`[profile.*]`、`[target.*]` 这些表。
 - `instance.<name>.task` 是 v0.1 推荐写法。
 - `instance.<name>.params` 覆盖 component 默认参数，并在 normalization 阶段合并。
+- `instance.<name>.process` 是 launch grouping label，必须使用 `snake_case`，且不得使用 `flowrt` 前缀；未声明时默认为 `main`。
 - `bind.dataflow` 表示图连线，归一化后展开成具体 channel edges。
 - Contract IR v0.1 必须恰好包含一个 graph；顶层 `graphs` 保留为数组是为了后续扩展，validator 和 codegen 当前必须拒绝 0 graph 和多 graph contract。
 - v0.1 dataflow graph 必须无环；instance 间闭环和 self-loop 都必须由 validator 拒绝。反馈环、delay、初始值或时间同步窗口必须在后续 RSDL/IR 中显式建模后才能支持。
