@@ -182,14 +182,17 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let _lock = WorkspaceLock::acquire(&out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            run_workspace(&prepared.selected_contract, &out_dir, process.as_deref())?;
-            println!(
-                "ran {} and {} artifact(s)",
-                prepared.contract_path.display(),
-                prepared.artifact_count
-            );
+            let contract = {
+                let _lock = WorkspaceLock::acquire(&out_dir)?;
+                let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
+                println!(
+                    "prepared {} and {} artifact(s)",
+                    prepared.contract_path.display(),
+                    prepared.artifact_count
+                );
+                prepared.selected_contract
+            };
+            run_workspace(&contract, &out_dir, process.as_deref())?;
         }
         Command::Launch {
             rsdl,
@@ -1128,11 +1131,16 @@ fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -
         .context("contract does not contain runnable components")?
     {
         RunMode::CargoApp => {
-            let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
-            run_cargo_run(&manifest, &app_bin_name(contract), process)?;
+            let bin = cargo_app_executable_path(contract, out_dir);
+            if !bin.exists() {
+                anyhow::bail!(
+                    "app binary `{}` not found; run `flowrt build` first",
+                    bin.display()
+                );
+            }
+            run_binary(&bin, process)?;
         }
         RunMode::CmakeApp => {
-            build_workspace(contract, out_dir)?;
             run_cmake_app(contract, out_dir, process)?;
         }
     }
@@ -1361,6 +1369,28 @@ fn cpp_app_executable_name(contract: &ContractIr) -> String {
     )
 }
 
+fn cargo_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
+    out_dir
+        .join("build")
+        .join("target")
+        .join("debug")
+        .join(format!("{}{}", app_bin_name(contract), std::env::consts::EXE_SUFFIX))
+}
+
+fn run_binary(binary: &Path, process: Option<&str>) -> Result<()> {
+    let mut command = ProcessCommand::new(binary);
+    if let Some(process) = process {
+        command.arg("--process").arg(process);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to spawn `{}`", binary.display()))?;
+    if !status.success() {
+        anyhow::bail!("app invocation failed with status {status}");
+    }
+    Ok(())
+}
+
 fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
     let status = ProcessCommand::new("cargo")
         .arg(subcommand)
@@ -1368,24 +1398,6 @@ fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
         .arg(manifest)
         .status()
         .context("failed to spawn cargo")?;
-    if !status.success() {
-        anyhow::bail!("cargo invocation failed with status {status}");
-    }
-    Ok(())
-}
-
-fn run_cargo_run(manifest: &Path, app_bin: &str, process: Option<&str>) -> Result<()> {
-    let mut command = ProcessCommand::new("cargo");
-    command
-        .arg("run")
-        .arg("--manifest-path")
-        .arg(manifest)
-        .arg("--bin")
-        .arg(app_bin);
-    if let Some(process) = process {
-        command.arg("--").arg("--process").arg(process);
-    }
-    let status = command.status().context("failed to spawn cargo")?;
     if !status.success() {
         anyhow::bail!("cargo invocation failed with status {status}");
     }
