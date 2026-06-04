@@ -298,6 +298,7 @@ dependencies = [
  "flowrt-conformance",
  "flowrt-ir",
  "flowrt-rsdl",
+ "flowrt-validate",
  "serde_json",
  "thiserror",
 ]

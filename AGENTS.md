@@ -282,6 +282,8 @@ backend capability 应被显式建模。validator 必须拒绝未知 backend 名
 - 启动配置。
 - 构建文件。
 
+Codegen public 入口必须重新运行 Contract IR validator；即使调用方绕过 CLI，也不得让未验证或手工改坏的 IR 进入生成阶段后触发 panic 或写出半成品。
+
 用户代码放在 `src/` 或示例项目自己的用户代码目录。生成器不得覆盖用户代码。
 
 组件接入类型必须显式区分：

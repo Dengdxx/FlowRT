@@ -12,6 +12,7 @@ use flowrt_ir::{
     LanguageKind, OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType,
     StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr, TypeIr,
 };
+use flowrt_validate::validate_contract;
 
 /// artifact emission 返回的结果类型。
 pub type Result<T> = std::result::Result<T, CodegenError>;
@@ -27,6 +28,9 @@ pub enum CodegenError {
 
     #[error("failed to derive message ABI expectations: {0}")]
     MessageAbi(#[from] flowrt_conformance::AbiError),
+
+    #[error("contract validation failed: {0}")]
+    Validation(#[from] flowrt_validate::ValidationReport),
 }
 
 /// 一个要写入应用 `flowrt/` 目录下的 FlowRT 管理文件。
@@ -82,6 +86,8 @@ pub fn plan_codegen(contract: &ContractIr) -> CodegenPlan {
 
 /// 生成首批 FlowRT 管理的应用产物。
 pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
+    validate_contract(contract)?;
+
     if contract.graphs.len() != 1 {
         return Err(CodegenError::GraphCount {
             count: contract.graphs.len(),
@@ -3025,9 +3031,11 @@ language = "rust"
         ir.graphs.clear();
 
         let error = emit_artifacts(&ir).expect_err("codegen should reject a graphless contract");
-        assert_eq!(
-            error.to_string(),
-            "Contract IR v0.1 must contain exactly one graph; found 0"
+        assert!(
+            error
+                .to_string()
+                .contains("Contract IR v0.1 must contain exactly one graph; found 0"),
+            "{error}"
         );
 
         let mut ir = contract_from_source(
@@ -3043,9 +3051,67 @@ language = "rust"
         ir.graphs.push(ir.graphs[0].clone());
 
         let error = emit_artifacts(&ir).expect_err("codegen should reject multiple graphs");
-        assert_eq!(
-            error.to_string(),
-            "Contract IR v0.1 must contain exactly one graph; found 2"
+        assert!(
+            error
+                .to_string()
+                .contains("Contract IR v0.1 must contain exactly one graph; found 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_contract_before_emitting_artifacts() {
+        let mut ir = contract_from_source(
+            r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+"#,
+        );
+        ir.graphs[0].binds[0].from.port = "missing".to_string();
+
+        let result = std::panic::catch_unwind(|| emit_artifacts(&ir));
+
+        assert!(result.is_ok(), "codegen should return an error, not panic");
+        let error = result
+            .expect("codegen invocation should not panic")
+            .expect_err("invalid Contract IR should be rejected before emission");
+        assert!(
+            error
+                .to_string()
+                .contains("instance `source` component `source` has no Output port `missing`"),
+            "{error}"
         );
     }
 
@@ -4385,7 +4451,9 @@ period_ms = 5
 "#,
         );
         ir.graphs[0].tasks[0].trigger = TriggerKind::Startup;
+        ir.graphs[0].tasks[0].period_ms = None;
         ir.graphs[0].tasks[1].trigger = TriggerKind::Shutdown;
+        ir.graphs[0].tasks[1].period_ms = None;
 
         let bundle = emit_artifacts(&ir).unwrap();
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
@@ -4437,7 +4505,9 @@ period_ms = 5
 "#,
         );
         ir.graphs[0].tasks[0].trigger = TriggerKind::Startup;
+        ir.graphs[0].tasks[0].period_ms = None;
         ir.graphs[0].tasks[1].trigger = TriggerKind::Shutdown;
+        ir.graphs[0].tasks[1].period_ms = None;
 
         let bundle = emit_artifacts(&ir).unwrap();
         let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");

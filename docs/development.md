@@ -40,6 +40,7 @@ cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 - 生成目录可以删除并重新生成。
 - 用户算法代码应放在示例或项目自己的 `src/` 目录，不写进生成文件。
 - FlowRT 管理代码只做 glue：消息、接口、runtime shell、backend 绑定、启动配置和构建文件。
+- Codegen 入口必须只消费通过 validator 的 Contract IR；crate public API 也要重新校验传入 IR，避免调用方绕过 CLI 后生成半成品或触发 panic。
 - C++ only contract 的 `flowrt build` / `flowrt run` 走 CMake app 路径，不依赖 Cargo app。
 - C++ only contract 的 `flowrt launch` 会生成 supervisor-only Rust crate；该 crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
 - 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有输出目录锁；`check` 和 `inspect` 不写生成物，不应获取该锁。
