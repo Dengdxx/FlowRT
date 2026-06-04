@@ -13,6 +13,7 @@ flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
+flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>]
 flowrt status
 ```
 
@@ -118,7 +119,28 @@ flowrt nodes path/to/generated-app
 
 `list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出静态拓扑摘要或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、instance、task、channel 和 Message ABI layout 是否与预期一致。
 
-当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status` 使用。channel snapshot 协议已经在 Rust runtime API 中预留，但 `flowrt echo` 还未接入 CLI。
+当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status` 和 `echo` 使用。
+
+## `echo`
+
+```bash
+flowrt echo path/to/generated-app source.imu
+flowrt echo path/to/generated-app source.imu_to_sink.imu --socket /tmp/flowrt.1000/12345.sock
+```
+
+`echo` 用静态 self-description 判断 channel 是否存在，并读取该 channel 的 message type 与 Message ABI layout；runtime socket 只返回 raw ABI bytes、`published_count` 和 `published_at_ms`。CLI 不从 runtime 协议读取业务字段 schema，也不会把 payload 反序列化成字段值。`<channel>` 可以写完整 channel 名 `<from>_to_<to>`，也可以写唯一的 source 或 target 端点名，例如 `source.imu`；端点名匹配多条 channel 时需要改用完整 channel 名。
+
+省略 `--socket` 时，CLI 会扫描当前用户 runtime socket 目录，连接候选 socket 后读取 handshake，并选择 `self_description_hash` 与静态 self-description JSON hash 匹配的唯一进程。若没有匹配进程会报错；若多个进程匹配同一个 hash，也会报错并要求显式传入 `--socket <path>`，避免从错误进程读取 channel 快照。
+
+输出是最小稳定摘要：
+
+```text
+channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_at_ms=42 payload_len=24 raw=...
+```
+
+如果 runtime 还没有该 channel 的 payload，输出会包含 `payload_len=0 no payload`。
+
+本阶段 `echo` 只读取一次 latest snapshot，不支持 `--follow`。当前生成的 Rust runtime shell 只记录 scheduler tick，channel 发布统计和 payload snapshot 接入仍是后续切片；因此真实生成应用可能暂时没有 payload 可读。
 
 ## `status`
 
@@ -128,7 +150,7 @@ flowrt status
 
 `status` 扫描当前用户 runtime socket 目录中的 FlowRT 进程，并通过 handshake 验证 PID、package、process、runtime、静态自描述 hash 和 tick/channel 摘要。socket 路径只作为发现入口；CLI 不把文件名当作进程身份事实。
 
-当前 runtime shell 已为 Rust 生成应用启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成的 Rust shell 会把 scheduler tick 计数写入 live status；channel 发布统计、payload snapshot 展示、`echo` 和 `echo --follow` 仍是后续切片。
+当前 runtime shell 已为 Rust 生成应用启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成的 Rust shell 会把 scheduler tick 计数写入 live status；channel 发布统计、payload snapshot 写入、`echo --follow` 和 C++ runtime parity 仍是后续切片。
 
 ## `--profile`
 

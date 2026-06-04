@@ -42,6 +42,10 @@ pub enum IntrospectionResponse {
         handshake: IntrospectionHandshake,
         channel: IntrospectionChannelSnapshot,
     },
+    Error {
+        handshake: IntrospectionHandshake,
+        message: String,
+    },
 }
 
 /// CLI 连接 socket 后首先验证的进程身份。
@@ -75,8 +79,6 @@ pub struct IntrospectionChannelStatus {
 /// 单个 channel 的 latest raw ABI snapshot。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntrospectionChannelSnapshot {
-    pub name: String,
-    pub message_type: String,
     pub published_count: u64,
     pub payload: Option<Vec<u8>>,
     pub published_at_ms: Option<u64>,
@@ -200,8 +202,6 @@ impl IntrospectionState {
             .channels
             .get(name)
             .map(|channel| IntrospectionChannelSnapshot {
-                name: name.to_string(),
-                message_type: channel.message_type.clone(),
                 published_count: channel.published_count,
                 payload: channel.payload.clone(),
                 published_at_ms: channel.published_at_ms,
@@ -399,10 +399,18 @@ fn handle_connection(
         }
         IntrospectionRequest::ChannelSnapshot { channel } => {
             let Some(channel) = state.channel_snapshot(&channel) else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "unknown FlowRT channel",
-                ));
+                let response = IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message: "unknown FlowRT channel".to_string(),
+                };
+                let mut writer = stream;
+                writer.write_all(
+                    serde_json::to_string(&response)
+                        .map_err(std::io::Error::other)?
+                        .as_bytes(),
+                )?;
+                writer.write_all(b"\n")?;
+                return Ok(());
             };
             let response = IntrospectionResponse::ChannelSnapshot {
                 handshake: handshake.clone(),
@@ -526,10 +534,20 @@ mod tests {
         else {
             panic!("snapshot request returned wrong response")
         };
-        assert_eq!(channel.message_type, "Imu");
         assert_eq!(channel.published_count, 3);
         assert_eq!(channel.payload, Some(vec![3u8; 48]));
         assert_eq!(channel.published_at_ms, Some(9));
+        let channel_json = serde_json::to_value(&channel).unwrap();
+        assert!(channel_json.get("name").is_none());
+        assert!(channel_json.get("message_type").is_none());
+
+        let IntrospectionResponse::Error { message, .. } =
+            request_channel_snapshot(server.path(), "missing.channel")
+                .expect("missing channel should return structured error response")
+        else {
+            panic!("missing channel request returned wrong response")
+        };
+        assert_eq!(message, "unknown FlowRT channel");
 
         drop(server);
         let _ = fs::remove_dir_all(root);

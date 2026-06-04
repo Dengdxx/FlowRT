@@ -14,6 +14,7 @@ use flowrt_ir::{
 use flowrt_validate::validate_contract;
 use object::{Object, ObjectSection};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const SELF_DESCRIPTION_SECTION: &str = ".flowrt.selfdesc";
 
@@ -112,6 +113,19 @@ enum Command {
         image: PathBuf,
     },
 
+    /// 读取 live runtime 中一个 channel 的 latest raw ABI 快照。
+    Echo {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        image: PathBuf,
+
+        /// channel 名称；可用完整 channel 名，或唯一的 `<instance>.<port>` 端点名。
+        channel: String,
+
+        /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
     /// 扫描当前用户 runtime socket 并输出 live status。
     Status,
 }
@@ -194,6 +208,13 @@ fn main() -> Result<()> {
         Command::Nodes { image } => {
             let self_description = load_self_description(&image)?;
             println!("{}", self_description_nodes(&self_description));
+        }
+        Command::Echo {
+            image,
+            channel,
+            socket,
+        } => {
+            println!("{}", echo_channel(&image, &channel, socket.as_deref())?);
         }
         Command::Status => {
             println!("{}", live_status_summary()?);
@@ -338,6 +359,32 @@ fn load_self_description(path: &Path) -> Result<SelfDescription> {
     })
 }
 
+fn load_self_description_with_hash(path: &Path) -> Result<(SelfDescription, String)> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read FlowRT image `{}`", path.display()))?;
+    let json = if path
+        .file_name()
+        .is_some_and(|name| name == OsStr::new("selfdesc.json"))
+    {
+        bytes
+    } else {
+        self_description_section_bytes(&bytes).with_context(|| {
+            format!(
+                "failed to read `{SELF_DESCRIPTION_SECTION}` section from `{}`",
+                path.display()
+            )
+        })?
+    };
+    let hash = self_description_hash(&json);
+    let self_description = serde_json::from_slice(&json).with_context(|| {
+        format!(
+            "failed to parse FlowRT self-description from `{}`",
+            path.display()
+        )
+    })?;
+    Ok((self_description, hash))
+}
+
 fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>> {
     let object =
         object::File::parse(image).context("FlowRT image is not a supported object file")?;
@@ -348,6 +395,12 @@ fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>> {
         .data()
         .context("failed to decode FlowRT self-description section data")?;
     Ok(data.to_vec())
+}
+
+fn self_description_hash(json: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(json);
+    format!("{:x}", hasher.finalize())
 }
 
 fn self_description_summary(self_description: &SelfDescription) -> String {
@@ -416,6 +469,232 @@ fn self_description_nodes(self_description: &SelfDescription) -> String {
     }
 }
 
+#[derive(Debug, Clone)]
+struct EchoChannelSpec {
+    name: String,
+    message_type: String,
+    message_size_bytes: usize,
+}
+
+fn echo_channel(image: &Path, channel: &str, socket: Option<&Path>) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let channel_spec = find_echo_channel(&self_description, channel)?;
+    let socket = match socket {
+        Some(socket) => {
+            ensure_socket_matches_self_description_hash(socket, &self_description_hash)?;
+            socket.to_path_buf()
+        }
+        None => {
+            let sockets = flowrt::discover_runtime_sockets()
+                .context("failed to scan FlowRT runtime sockets")?;
+            select_matching_runtime_socket(&self_description_hash, sockets)?
+        }
+    };
+    let response =
+        flowrt::request_channel_snapshot(&socket, &channel_spec.name).with_context(|| {
+            format!(
+                "failed to request channel snapshot from `{}`",
+                socket.display()
+            )
+        })?;
+
+    let (handshake, snapshot) = match response {
+        flowrt::IntrospectionResponse::ChannelSnapshot { handshake, channel } => {
+            (handshake, channel)
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to read channel snapshot `{}` from `{}`: {message}",
+                channel_spec.name,
+                socket.display()
+            );
+        }
+        flowrt::IntrospectionResponse::Status { .. } => {
+            anyhow::bail!(
+                "runtime socket `{}` returned an unexpected status response",
+                socket.display()
+            );
+        }
+    };
+
+    if handshake.self_description_hash != self_description_hash {
+        anyhow::bail!(
+            "runtime socket `{}` self-description hash `{}` does not match static self-description `{}`",
+            socket.display(),
+            handshake.self_description_hash,
+            self_description_hash
+        );
+    }
+
+    format_echo_snapshot(&channel_spec, &snapshot)
+}
+
+fn ensure_socket_matches_self_description_hash(
+    socket: &Path,
+    self_description_hash: &str,
+) -> Result<()> {
+    let response = flowrt::request_status(socket)
+        .with_context(|| format!("failed to request status from `{}`", socket.display()))?;
+    let flowrt::IntrospectionResponse::Status { handshake, .. } = response else {
+        anyhow::bail!(
+            "runtime socket `{}` returned an unexpected introspection response",
+            socket.display()
+        );
+    };
+    if handshake.self_description_hash != self_description_hash {
+        anyhow::bail!(
+            "runtime socket `{}` self-description hash `{}` does not match static self-description `{}`",
+            socket.display(),
+            handshake.self_description_hash,
+            self_description_hash
+        );
+    }
+    Ok(())
+}
+
+fn find_echo_channel(
+    self_description: &SelfDescription,
+    channel_name: &str,
+) -> Result<EchoChannelSpec> {
+    let mut matches = Vec::new();
+    for graph in &self_description.graphs {
+        for channel in &graph.channels {
+            let name = echo_channel_name(channel);
+            if name == channel_name || channel.from == channel_name || channel.to == channel_name {
+                matches.push(EchoChannelSpec {
+                    name,
+                    message_type: channel.message_type.clone(),
+                    message_size_bytes: message_abi_size(
+                        &self_description.message_abi,
+                        &channel.message_type,
+                    )?,
+                });
+            }
+        }
+    }
+
+    match matches.len() {
+        0 => anyhow::bail!("FlowRT self-description does not contain channel `{channel_name}`"),
+        1 => Ok(matches.remove(0)),
+        _ => anyhow::bail!(
+            "FlowRT self-description contains multiple channels named `{channel_name}`"
+        ),
+    }
+}
+
+fn echo_channel_name(channel: &SelfDescriptionChannel) -> String {
+    format!("{}_to_{}", channel.from, channel.to)
+}
+
+fn message_abi_size(messages: &[SelfDescriptionMessageAbi], message_type: &str) -> Result<usize> {
+    let mut sizes = messages
+        .iter()
+        .filter(|message| message.type_name == message_type)
+        .map(|message| message.size_bytes)
+        .collect::<Vec<_>>();
+    match sizes.len() {
+        0 => anyhow::bail!(
+            "FlowRT self-description does not contain Message ABI layout for `{message_type}`"
+        ),
+        1 => Ok(sizes.remove(0)),
+        _ => anyhow::bail!(
+            "FlowRT self-description contains multiple Message ABI layouts for `{message_type}`"
+        ),
+    }
+}
+
+fn select_matching_runtime_socket(
+    self_description_hash: &str,
+    sockets: Vec<PathBuf>,
+) -> Result<PathBuf> {
+    let mut matches = Vec::new();
+    for socket in sockets {
+        let Ok(flowrt::IntrospectionResponse::Status { handshake, .. }) =
+            flowrt::request_status(&socket)
+        else {
+            continue;
+        };
+        if handshake.self_description_hash == self_description_hash {
+            matches.push(socket);
+        }
+    }
+
+    match matches.len() {
+        0 => anyhow::bail!(
+            "no live FlowRT process matches self-description hash `{self_description_hash}`; pass `--socket <path>` if the process uses a non-discoverable socket"
+        ),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let sockets = matches
+                .iter()
+                .map(|socket| socket.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "multiple live FlowRT processes match self-description hash `{self_description_hash}`: {sockets}; pass `--socket <path>` to choose one"
+            )
+        }
+    }
+}
+
+fn format_echo_snapshot(
+    channel: &EchoChannelSpec,
+    snapshot: &flowrt::introspection::IntrospectionChannelSnapshot,
+) -> Result<String> {
+    let published_at_ms = snapshot
+        .published_at_ms
+        .map_or_else(|| "none".to_string(), |value| value.to_string());
+    let Some(payload) = &snapshot.payload else {
+        return Ok(format!(
+            "channel={} type={} abi_size={} published_count={} published_at_ms={} payload_len=0 no payload",
+            channel.name,
+            channel.message_type,
+            channel.message_size_bytes,
+            snapshot.published_count,
+            published_at_ms
+        ));
+    };
+    if payload.is_empty() {
+        return Ok(format!(
+            "channel={} type={} abi_size={} published_count={} published_at_ms={} payload_len=0 no payload",
+            channel.name,
+            channel.message_type,
+            channel.message_size_bytes,
+            snapshot.published_count,
+            published_at_ms
+        ));
+    }
+    if payload.len() != channel.message_size_bytes {
+        anyhow::bail!(
+            "channel `{}` payload length {} does not match Message ABI size {} for `{}`",
+            channel.name,
+            payload.len(),
+            channel.message_size_bytes,
+            channel.message_type
+        );
+    }
+    Ok(format!(
+        "channel={} type={} abi_size={} published_count={} published_at_ms={} payload_len={} raw={}",
+        channel.name,
+        channel.message_type,
+        channel.message_size_bytes,
+        snapshot.published_count,
+        published_at_ms,
+        payload.len(),
+        hex_bytes(payload)
+    ))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
 fn live_status_summary() -> Result<String> {
     let sockets =
         flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
@@ -444,6 +723,9 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
                     "stale socket={} error=unexpected channel snapshot response",
                     socket.display()
                 ));
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                lines.push(format!("stale socket={} error={message}", socket.display()));
             }
             Err(error) => {
                 lines.push(format!("stale socket={} error={error}", socket.display()));
@@ -1795,6 +2077,407 @@ fn main() {}
         assert!(output.contains("selfdesc=feedface"));
         assert!(output.contains("ticks=9"));
         assert!(output.contains("channels=1"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cli_parses_echo_command_with_optional_socket() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "echo",
+            "flowrt/selfdesc/selfdesc.json",
+            "source.imu_to_sink.imu",
+            "--socket",
+            "/tmp/flowrt-main.sock",
+        ])
+        .unwrap();
+
+        let Command::Echo {
+            image,
+            channel,
+            socket,
+        } = cli.command
+        else {
+            panic!("echo command should parse into Command::Echo")
+        };
+
+        assert_eq!(image, PathBuf::from("flowrt/selfdesc/selfdesc.json"));
+        assert_eq!(channel, "source.imu_to_sink.imu");
+        assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    }
+
+    #[test]
+    fn echo_reads_channel_snapshot_from_fake_status_server() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let root = temp_test_dir("echo-snapshot");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 81,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.record_channel_publish_bytes(
+            "source.imu_to_sink.imu",
+            "Imu",
+            vec![0x01, 0x02, 0x0a, 0xff],
+            Some(123),
+        );
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let output = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap();
+
+        assert!(output.contains("channel=source.imu_to_sink.imu"));
+        assert!(output.contains("type=Imu"));
+        assert!(output.contains("published_count=1"));
+        assert!(output.contains("published_at_ms=123"));
+        assert!(output.contains("payload_len=4"));
+        assert!(output.contains("raw=01020aff"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_auto_socket_requires_explicit_socket_for_multiple_matches() {
+        let root = temp_test_dir("echo-multiple-sockets");
+        let first_socket = root.join("first.sock");
+        let second_socket = root.join("second.sock");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let self_description_hash = "feedface".to_string();
+        let state = flowrt::IntrospectionState::new();
+        let first = flowrt::spawn_status_server_at(
+            first_socket.clone(),
+            flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: 91,
+                started_at_unix_ms: 1,
+                self_description_hash: self_description_hash.clone(),
+                package: "robot_demo".to_string(),
+                process: "first".to_string(),
+                runtime: "rust".to_string(),
+            },
+            state.clone(),
+        )
+        .expect("first status server should start");
+        let second = flowrt::spawn_status_server_at(
+            second_socket.clone(),
+            flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: 92,
+                started_at_unix_ms: 2,
+                self_description_hash: self_description_hash.clone(),
+                package: "robot_demo".to_string(),
+                process: "second".to_string(),
+                runtime: "rust".to_string(),
+            },
+            state,
+        )
+        .expect("second status server should start");
+
+        let error = select_matching_runtime_socket(
+            &self_description_hash,
+            vec![first_socket.clone(), second_socket.clone()],
+        )
+        .expect_err("multiple matching sockets should require explicit selection");
+
+        let message = error.to_string();
+        assert!(message.contains("multiple live FlowRT processes match self-description hash"));
+        assert!(message.contains("--socket"));
+        assert!(message.contains(&first_socket.display().to_string()));
+        assert!(message.contains(&second_socket.display().to_string()));
+
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_endpoint_alias_reports_ambiguous_channels() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "left_sink.imu",
+      "message_type": "Imu"
+    }, {
+      "from": "source.imu",
+      "to": "right_sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let self_description: SelfDescription = serde_json::from_str(source).unwrap();
+
+        let error = find_echo_channel(&self_description, "source.imu").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("contains multiple channels named `source.imu`")
+        );
+    }
+
+    #[test]
+    fn echo_reports_no_payload_when_snapshot_is_empty() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let root = temp_test_dir("echo-no-payload");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 82,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let output = echo_channel(&selfdesc, "source.imu_to_sink.imu", Some(&socket)).unwrap();
+
+        assert!(output.contains("payload_len=0"));
+        assert!(output.contains("no payload"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_rejects_payload_length_that_does_not_match_message_abi() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let root = temp_test_dir("echo-bad-payload-len");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 83,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.record_channel_publish_bytes("source.imu_to_sink.imu", "Imu", vec![0x01, 0x02], None);
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let error = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("payload length 2"));
+        assert!(message.contains("Message ABI size 4"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_checks_explicit_socket_hash_before_snapshot_request() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let root = temp_test_dir("echo-wrong-socket-hash");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 84,
+            started_at_unix_ms: 1234,
+            self_description_hash: "different_hash".to_string(),
+            package: "other_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let error = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("self-description hash `different_hash` does not match"));
+        assert!(!message.contains("failed to request channel snapshot"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_reports_structured_live_channel_errors() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Imu", "size_bytes": 4 }]
+}
+"#;
+        let root = temp_test_dir("echo-live-channel-error");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 85,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let error = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("failed to read channel snapshot `source.imu_to_sink.imu`"));
+        assert!(message.contains("unknown FlowRT channel"));
 
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
