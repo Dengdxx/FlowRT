@@ -2138,6 +2138,7 @@ fn emit_rust_message_abi_tests(
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
+    let reads_cpp_fixtures = has_language(contract, LanguageKind::Cpp);
     let expectations_by_name = expectations
         .iter()
         .map(|expectation| (expectation.type_name.as_str(), expectation))
@@ -2145,6 +2146,11 @@ fn emit_rust_message_abi_tests(
     output.push_str(
         "\nfn bytes_of<T>(value: &T) -> Vec<u8> {\n    let mut bytes = vec![0u8; std::mem::size_of::<T>()];\n    // Safety：生成测试只传入 FlowRT ABI v0.1 plain-data 消息，且 padding 已初始化。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            (value as *const T).cast::<u8>(),\n            bytes.as_mut_ptr(),\n            bytes.len(),\n        );\n    }\n    bytes\n}\n\nfn assert_default_bytes_zero<T: Copy + Default>() {\n    let value = T::default();\n    assert_eq!(bytes_of(&value), vec![0u8; std::mem::size_of::<T>()]);\n}\n\nfn assert_byte_roundtrip<T: Copy + Default>(value: T) {\n    let bytes = bytes_of(&value);\n    let mut roundtrip = T::default();\n    // Safety：`roundtrip` 是有效 plain-data 存储，`bytes` 长度等于 `size_of::<T>()`。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut roundtrip as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&roundtrip), bytes);\n}\n\n",
     );
+    if reads_cpp_fixtures {
+        output.push_str(
+            "fn assert_cpp_fixture_roundtrip<T: Copy + Default>(name: &str, expected: &[u8]) {\n    let path = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"))\n        .join(\"abi-fixtures\")\n        .join(\"cpp\")\n        .join(name);\n    let bytes = std::fs::read(&path).unwrap_or_else(|error| {\n        panic!(\"failed to read C++ ABI fixture `{}`: {error}\", path.display())\n    });\n    assert_eq!(bytes, expected);\n    assert_eq!(bytes.len(), std::mem::size_of::<T>());\n    let mut value = T::default();\n    // Safety：C++ fixture bytes 已按同一 Contract IR 的 Message ABI v0.1 写出。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut value as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&value), expected);\n}\n\n",
+        );
+    }
     output.push_str(
         "fn assert_sample_bytes<T: Copy>(value: T, expected: &[u8]) {\n    assert_eq!(bytes_of(&value), expected);\n}\n\n",
     );
@@ -2210,6 +2216,14 @@ fn emit_rust_message_abi_tests(
             sample_function_name(&expectation.type_name),
             expected_bytes_const_name(&expectation.type_name)
         ));
+        if reads_cpp_fixtures {
+            output.push_str(&format!(
+                "    assert_cpp_fixture_roundtrip::<{}>(\"{}.bin\", {});\n",
+                ty,
+                snake_identifier(&expectation.type_name),
+                expected_bytes_const_name(&expectation.type_name)
+            ));
+        }
         output.push_str("}\n\n");
     }
 
@@ -2226,7 +2240,7 @@ fn emit_cpp_message_abi_tests(
         .map(|expectation| (expectation.type_name.as_str(), expectation))
         .collect::<BTreeMap<_, _>>();
     output.push_str(
-        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nvoid assert_default_bytes_zero() {\n    T value{};\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::array<std::uint8_t, sizeof(T)> expected{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    assert(bytes == expected);\n}\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\ntemplate <typename T, std::size_t N>\nvoid assert_sample_bytes(const T& value, const std::array<std::uint8_t, N>& expected) {\n    static_assert(sizeof(T) == N);\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    assert(bytes == expected);\n}\n\n",
+        "\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <filesystem>\n#include <fstream>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <type_traits>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nstd::array<std::uint8_t, sizeof(T)> bytes_of(const T& value) {\n    std::array<std::uint8_t, sizeof(T)> bytes{};\n    std::memcpy(bytes.data(), &value, bytes.size());\n    return bytes;\n}\n\ntemplate <typename T>\nvoid assert_default_bytes_zero() {\n    T value{};\n    std::array<std::uint8_t, sizeof(T)> expected{};\n    assert(bytes_of(value) == expected);\n}\n\ntemplate <typename T>\nvoid assert_byte_roundtrip(const T& value) {\n    const auto bytes = bytes_of(value);\n    T roundtrip{};\n    std::memset(&roundtrip, 0, sizeof(roundtrip));\n    std::memcpy(&roundtrip, bytes.data(), bytes.size());\n    assert(std::memcmp(&roundtrip, &value, sizeof(T)) == 0);\n}\n\ntemplate <typename T, std::size_t N>\nvoid assert_sample_bytes(const T& value, const std::array<std::uint8_t, N>& expected) {\n    static_assert(sizeof(T) == N);\n    assert(bytes_of(value) == expected);\n}\n\ntemplate <std::size_t N>\nvoid write_fixture(std::string_view name, const std::array<std::uint8_t, N>& bytes) {\n#ifdef FLOWRT_ABI_FIXTURE_DIR\n    std::filesystem::create_directories(FLOWRT_ABI_FIXTURE_DIR);\n    auto path = std::filesystem::path(FLOWRT_ABI_FIXTURE_DIR) / std::string(name);\n    std::ofstream output(path, std::ios::binary);\n    if (!output) {\n        throw std::runtime_error(\"failed to open ABI fixture output\");\n    }\n    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));\n    if (!output) {\n        throw std::runtime_error(\"failed to write ABI fixture output\");\n    }\n#else\n    (void)name;\n    (void)bytes;\n#endif\n}\n\n",
     );
 
     for expectation in expectations {
@@ -2295,6 +2309,11 @@ fn emit_cpp_message_abi_tests(
             "    assert_sample_bytes({}(), {});\n",
             sample_function_name(&expectation.type_name),
             expected_bytes_const_name(&expectation.type_name)
+        ));
+        output.push_str(&format!(
+            "    write_fixture(\"{}.bin\", bytes_of({}()));\n",
+            snake_identifier(&expectation.type_name),
+            sample_function_name(&expectation.type_name)
         ));
         output.push_str("}\n\n");
     }
@@ -2521,6 +2540,15 @@ fn emit_cmake(contract: &ContractIr) -> String {
         ));
         output.push_str(&format!(
             "    target_link_libraries({test_target} PRIVATE {package_name}_flowrt_app)\n"
+        ));
+        output.push_str(
+            "    set(FLOWRT_ABI_CPP_FIXTURE_DIR \"${CMAKE_CURRENT_LIST_DIR}/abi-fixtures/cpp\")\n",
+        );
+        output.push_str(&format!(
+            "    target_compile_definitions({test_target} PRIVATE FLOWRT_ABI_FIXTURE_DIR=\"${{FLOWRT_ABI_CPP_FIXTURE_DIR}}\")\n"
+        ));
+        output.push_str(&format!(
+            "    add_custom_command(TARGET {test_target} POST_BUILD\n        COMMAND $<TARGET_FILE:{test_target}>\n        COMMENT \"Generate C++ Message ABI cross-language fixtures\")\n"
         ));
         output.push_str(&format!(
             "    add_test(NAME message_abi COMMAND {test_target})\n"
@@ -3386,11 +3414,22 @@ input = ["packet:Packet"]
         assert!(rust_abi.contains("const EXPECTED_PACKET_BYTES: &[u8] = &["));
         assert!(rust_abi.contains("2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 136, 64"));
         assert!(rust_abi.contains("assert_sample_bytes(sample_packet(), EXPECTED_PACKET_BYTES);"));
+        assert!(rust_abi.contains("fn assert_cpp_fixture_roundtrip<T: Copy + Default>"));
+        assert!(rust_abi.contains(
+            "assert_cpp_fixture_roundtrip::<flowrt_app::messages::Packet>(\"packet.bin\", EXPECTED_PACKET_BYTES);"
+        ));
 
         let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
         assert!(cpp_abi.contains("constexpr std::array<std::uint8_t, 12> EXPECTED_PACKET_BYTES"));
         assert!(cpp_abi.contains("2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 136, 64"));
         assert!(cpp_abi.contains("assert_sample_bytes(sample_packet(), EXPECTED_PACKET_BYTES);"));
+        assert!(cpp_abi.contains("write_fixture(\"packet.bin\", bytes_of(sample_packet()));"));
+
+        let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+        assert!(cmake.contains(
+            "target_compile_definitions(abi_demo_message_abi PRIVATE FLOWRT_ABI_FIXTURE_DIR="
+        ));
+        assert!(cmake.contains("add_custom_command(TARGET abi_demo_message_abi POST_BUILD"));
     }
 
     #[test]
@@ -3423,7 +3462,7 @@ input = ["padded:Padded"]
         let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
         assert!(cpp_abi.contains("void assert_default_bytes_zero()"));
         assert!(cpp_abi.contains("std::array<std::uint8_t, sizeof(T)> expected{};"));
-        assert!(cpp_abi.contains("assert(bytes == expected);"));
+        assert!(cpp_abi.contains("assert(bytes_of(value) == expected);"));
         assert!(cpp_abi.contains("assert_default_bytes_zero<flowrt_app::Padded>();"));
     }
 
