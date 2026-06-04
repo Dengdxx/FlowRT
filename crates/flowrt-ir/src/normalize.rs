@@ -402,29 +402,32 @@ fn validate_param_override_type(
     default_value: &RawValue,
     override_value: &RawValue,
 ) -> Result<()> {
-    if param_value_compatible(default_value, override_value) {
+    let default_value = convert_param_value(default_value);
+    let override_value = convert_param_value(override_value);
+    if param_value_compatible(&default_value, &override_value) {
         Ok(())
     } else {
         Err(IrError::IncompatibleParamOverride {
             instance: instance_name.to_string(),
             component: component_name.to_string(),
             param: param_name.to_string(),
-            expected: param_value_kind(default_value),
-            actual: param_value_kind(override_value),
+            expected: param_value_kind(&default_value),
+            actual: param_value_kind(&override_value),
         })
     }
 }
 
-fn param_value_compatible(default_value: &RawValue, override_value: &RawValue) -> bool {
+/// 判断一个参数值是否可覆盖另一个参数值。
+pub fn param_value_compatible(default_value: &ParamValue, override_value: &ParamValue) -> bool {
     match (default_value, override_value) {
-        (RawValue::Bool(_), RawValue::Bool(_)) => true,
-        (RawValue::Integer(_), RawValue::Integer(_)) => true,
-        (RawValue::Float(_), RawValue::Float(_) | RawValue::Integer(_)) => true,
-        (RawValue::String(_), RawValue::String(_)) => true,
-        (RawValue::Array(default_values), RawValue::Array(override_values)) => {
+        (ParamValue::Bool(_), ParamValue::Bool(_)) => true,
+        (ParamValue::Integer(_), ParamValue::Integer(_)) => true,
+        (ParamValue::Float(_), ParamValue::Float(_) | ParamValue::Integer(_)) => true,
+        (ParamValue::String(_), ParamValue::String(_)) => true,
+        (ParamValue::Array(default_values), ParamValue::Array(override_values)) => {
             array_param_compatible(default_values, override_values)
         }
-        (RawValue::Table(default_values), RawValue::Table(override_values)) => override_values
+        (ParamValue::Table(default_values), ParamValue::Table(override_values)) => override_values
             .iter()
             .all(|(name, value)| match default_values.get(name) {
                 Some(default_value) => param_value_compatible(default_value, value),
@@ -434,7 +437,7 @@ fn param_value_compatible(default_value: &RawValue, override_value: &RawValue) -
     }
 }
 
-fn array_param_compatible(default_values: &[RawValue], override_values: &[RawValue]) -> bool {
+fn array_param_compatible(default_values: &[ParamValue], override_values: &[ParamValue]) -> bool {
     if default_values.is_empty() {
         return override_values.is_empty();
     }
@@ -449,14 +452,15 @@ fn array_param_compatible(default_values: &[RawValue], override_values: &[RawVal
         .all(|value| param_value_compatible(default_sample, value))
 }
 
-fn param_value_kind(value: &RawValue) -> &'static str {
+/// 返回参数值的类别名称。
+pub fn param_value_kind(value: &ParamValue) -> &'static str {
     match value {
-        RawValue::Bool(_) => "bool",
-        RawValue::Integer(_) => "integer",
-        RawValue::Float(_) => "float",
-        RawValue::String(_) => "string",
-        RawValue::Array(_) => "array",
-        RawValue::Table(_) => "table",
+        ParamValue::Bool(_) => "bool",
+        ParamValue::Integer(_) => "integer",
+        ParamValue::Float(_) => "float",
+        ParamValue::String(_) => "string",
+        ParamValue::Array(_) => "array",
+        ParamValue::Table(_) => "table",
     }
 }
 

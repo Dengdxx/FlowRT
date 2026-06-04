@@ -13,7 +13,7 @@ use flowrt_ir::{
     ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
     OverflowPolicy, PortIr, PortRef, RSDL_VERSION, StalePolicy, TargetIr, TaskIr, TriggerKind,
     TypeExpr, backend_capabilities, base_deployment_capabilities, is_known_backend,
-    trigger_capability,
+    param_value_compatible, param_value_kind, trigger_capability,
 };
 
 /// validation passes 返回的结果类型。
@@ -731,6 +731,16 @@ fn validate_components(
                 errors,
             );
         }
+
+        let mut params = BTreeSet::new();
+        for param in &component.params {
+            if !params.insert(param.name.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "component `{}` has duplicate param `{}`",
+                    component.name, param.name
+                )));
+            }
+        }
     }
 }
 
@@ -756,6 +766,7 @@ fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
         validate_instance_targets(&components, &targets, graph, errors);
         validate_process_targets(graph, errors);
         validate_tasks(&components, &instances, graph, errors);
+        validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
     }
@@ -949,6 +960,72 @@ fn validate_task_input_binds(
                 "task input `{}.{}` has no incoming bind",
                 task.instance.name, input
             )));
+        }
+    }
+}
+
+fn validate_instance_params(
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    for instance in &graph.instances {
+        let Some(component) = components.get(instance.component.name.as_str()) else {
+            continue;
+        };
+        if !instances.contains_key(instance.name.as_str()) {
+            continue;
+        }
+
+        let mut seen = BTreeSet::new();
+        let instance_params = instance
+            .params
+            .iter()
+            .map(|param| (param.name.as_str(), &param.value))
+            .collect::<BTreeMap<_, _>>();
+
+        for param in &instance.params {
+            if !seen.insert(param.name.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` has duplicate param `{}`",
+                    instance.name, param.name
+                )));
+            }
+        }
+
+        let component_params = component
+            .params
+            .iter()
+            .map(|param| (param.name.as_str(), &param.default))
+            .collect::<BTreeMap<_, _>>();
+
+        for param in &component.params {
+            let Some(value) = instance_params.get(param.name.as_str()) else {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` is missing param `{}`",
+                    instance.name, param.name
+                )));
+                continue;
+            };
+            if !param_value_compatible(&param.default, value) {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` param `{}` has incompatible value kind `{}`; expected `{}`",
+                    instance.name,
+                    param.name,
+                    param_value_kind(value),
+                    param_value_kind(&param.default)
+                )));
+            }
+        }
+
+        for param in &instance.params {
+            if !component_params.contains_key(param.name.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` has unknown param `{}`",
+                    instance.name, param.name
+                )));
+            }
         }
     }
 }
@@ -1347,7 +1424,9 @@ fn _language_name(language: LanguageKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use flowrt_ir::{ContractIr, hash_source, normalize_document};
+    use flowrt_ir::{
+        ContractIr, ParamIr, ParamValue, ParamValueIr, hash_source, normalize_document,
+    };
     use flowrt_rsdl::parse_str;
 
     use super::*;
@@ -2383,6 +2462,121 @@ backends = ["inproc"]
                 "missing validation error: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_duplicate_component_params() {
+        let mut ir = valid_reference_contract();
+        let producer = ir
+            .components
+            .iter_mut()
+            .find(|component| component.name == "producer")
+            .expect("producer component must exist");
+        producer.params = vec![
+            ParamIr {
+                name: "gain".to_string(),
+                default: ParamValue::Float(1.0),
+            },
+            ParamIr {
+                name: "gain".to_string(),
+                default: ParamValue::Float(2.0),
+            },
+        ];
+
+        let report = validate_contract(&ir).expect_err("duplicate component params should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("component `producer` has duplicate param `gain`")
+        }));
+    }
+
+    #[test]
+    fn rejects_missing_and_unknown_instance_params() {
+        let mut ir = valid_reference_contract();
+        let producer = ir
+            .components
+            .iter_mut()
+            .find(|component| component.name == "producer")
+            .expect("producer component must exist");
+        producer.params = vec![
+            ParamIr {
+                name: "gain".to_string(),
+                default: ParamValue::Float(1.0),
+            },
+            ParamIr {
+                name: "mode".to_string(),
+                default: ParamValue::String("auto".to_string()),
+            },
+        ];
+        let producer = ir.graphs[0]
+            .instances
+            .iter_mut()
+            .find(|instance| instance.name == "producer")
+            .expect("producer instance must exist");
+        producer.params = vec![
+            ParamValueIr {
+                name: "gain".to_string(),
+                value: ParamValue::Float(2.0),
+            },
+            ParamValueIr {
+                name: "gain".to_string(),
+                value: ParamValue::Float(3.0),
+            },
+            ParamValueIr {
+                name: "mystery".to_string(),
+                value: ParamValue::Bool(true),
+            },
+        ];
+
+        let report =
+            validate_contract(&ir).expect_err("missing and unknown instance params should fail");
+
+        for expected in [
+            "instance `producer` has duplicate param `gain`",
+            "instance `producer` is missing param `mode`",
+            "instance `producer` has unknown param `mystery`",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_incompatible_instance_params() {
+        let mut ir = valid_reference_contract();
+        let producer = ir
+            .components
+            .iter_mut()
+            .find(|component| component.name == "producer")
+            .expect("producer component must exist");
+        producer.params = vec![ParamIr {
+            name: "gain".to_string(),
+            default: ParamValue::Float(1.0),
+        }];
+        let producer = ir.graphs[0]
+            .instances
+            .iter_mut()
+            .find(|instance| instance.name == "producer")
+            .expect("producer instance must exist");
+        producer.params = vec![ParamValueIr {
+            name: "gain".to_string(),
+            value: ParamValue::String("fast".to_string()),
+        }];
+
+        let report = validate_contract(&ir).expect_err("incompatible instance params should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("instance `producer` param `gain` has incompatible value kind `string`; expected `float`")
+        }));
     }
 
     #[test]
