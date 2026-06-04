@@ -234,6 +234,7 @@ FlowRT Message ABI v0.1 只支持 fixed-size plain data：
 - maps
 - recursive structures
 - language-specific ownership types
+- empty message structs
 
 C++/Rust 生成类型必须通过 conformance tests 验证：
 

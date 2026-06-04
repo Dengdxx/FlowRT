@@ -273,6 +273,13 @@ fn validate_message_types(
     errors: &mut Vec<ValidationError>,
 ) {
     for ty in &ir.types {
+        if ty.fields.is_empty() {
+            errors.push(ValidationError::new(format!(
+                "type `{}` must declare at least one field",
+                ty.name
+            )));
+        }
+
         let mut fields = BTreeSet::new();
         for field in &ty.fields {
             if !fields.insert(field.name.as_str()) {
@@ -1127,6 +1134,26 @@ next = "Node"
                 .iter()
                 .any(|error| error.message.contains("recursive message type"))
         );
+    }
+
+    #[test]
+    fn rejects_empty_message_types() {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Empty]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir).expect_err("empty message type should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("type `Empty` must declare at least one field")
+        }));
     }
 
     #[test]
