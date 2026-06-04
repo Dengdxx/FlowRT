@@ -1484,6 +1484,7 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push('\n');
     let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
+    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
     let zero_copy_derive = if needs_iox2_type_name {
         output.push_str("use flowrt::ZeroCopySend;\n\n");
         ", flowrt::ZeroCopySend"
@@ -1518,6 +1519,9 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
         output.push_str("        unsafe { std::mem::zeroed() }\n");
         output.push_str("    }\n");
         output.push_str("}\n\n");
+        if needs_wire_codec {
+            output.push_str(&rust_wire_codec_impl(contract, ty));
+        }
     }
     output
 }
@@ -2738,6 +2742,14 @@ fn message_sample_bytes(
     bytes
 }
 
+fn message_wire_sample_bytes(contract: &ContractIr, ty: &TypeIr) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (index, field) in ty.fields.iter().enumerate() {
+        bytes.extend_from_slice(&wire_sample_bytes_for_expr(contract, &field.ty, index + 1));
+    }
+    bytes
+}
+
 fn sample_bytes_for_expr(
     contract: &ContractIr,
     expectations_by_name: &BTreeMap<&str, &MessageAbiExpectation>,
@@ -2756,6 +2768,29 @@ fn sample_bytes_for_expr(
         TypeExpr::Array { element, len } => {
             let element_bytes =
                 sample_bytes_for_expr(contract, expectations_by_name, element, seed);
+            let mut bytes = Vec::with_capacity(element_bytes.len() * *len);
+            for _ in 0..*len {
+                bytes.extend_from_slice(&element_bytes);
+            }
+            bytes
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
+}
+
+fn wire_sample_bytes_for_expr(contract: &ContractIr, expr: &TypeExpr, seed: usize) -> Vec<u8> {
+    match expr {
+        TypeExpr::Primitive { name } => primitive_sample_bytes(*name, seed),
+        TypeExpr::Named { name } => {
+            message_wire_sample_bytes(contract, type_by_name(contract, name))
+        }
+        TypeExpr::Array { element, len } => {
+            let element_bytes = wire_sample_bytes_for_expr(contract, element, seed);
             let mut bytes = Vec::with_capacity(element_bytes.len() * *len);
             for _ in 0..*len {
                 bytes.extend_from_slice(&element_bytes);
@@ -2810,11 +2845,15 @@ fn emit_rust_message_abi_tests(
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
+    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
     let reads_cpp_fixtures = has_language(contract, LanguageKind::Cpp);
     let expectations_by_name = expectations
         .iter()
         .map(|expectation| (expectation.type_name.as_str(), expectation))
         .collect::<BTreeMap<_, _>>();
+    if needs_wire_codec {
+        output.push_str("\nuse flowrt::WireCodec;\n");
+    }
     output.push_str(
         "\nfn bytes_of<T>(value: &T) -> Vec<u8> {\n    let mut bytes = vec![0u8; std::mem::size_of::<T>()];\n    // Safety：生成测试只传入 FlowRT ABI v0.1 plain-data 消息，且 padding 已初始化。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            (value as *const T).cast::<u8>(),\n            bytes.as_mut_ptr(),\n            bytes.len(),\n        );\n    }\n    bytes\n}\n\nfn assert_default_bytes_zero<T: Copy + Default>() {\n    let value = T::default();\n    assert_eq!(bytes_of(&value), vec![0u8; std::mem::size_of::<T>()]);\n}\n\nfn assert_byte_roundtrip<T: Copy + Default>(value: T) {\n    let bytes = bytes_of(&value);\n    let mut roundtrip = T::default();\n    // Safety：`roundtrip` 是有效 plain-data 存储，`bytes` 长度等于 `size_of::<T>()`。\n    unsafe {\n        std::ptr::copy_nonoverlapping(\n            bytes.as_ptr(),\n            (&mut roundtrip as *mut T).cast::<u8>(),\n            bytes.len(),\n        );\n    }\n    assert_eq!(bytes_of(&roundtrip), bytes);\n}\n\n",
     );
@@ -2897,6 +2936,29 @@ fn emit_rust_message_abi_tests(
             ));
         }
         output.push_str("}\n\n");
+        if needs_wire_codec {
+            let message = type_by_name(contract, &expectation.type_name);
+            let wire_bytes = message_wire_sample_bytes(contract, message);
+            output.push_str("#[test]\n");
+            output.push_str(&format!(
+                "fn {}_wire_codec_omits_native_padding() {{\n",
+                snake_identifier(&expectation.type_name)
+            ));
+            output.push_str(&format!(
+                "    let value = {}();\n",
+                sample_function_name(&expectation.type_name)
+            ));
+            output.push_str("    let wire = value.to_wire_vec().unwrap();\n");
+            output.push_str(&format!(
+                "    assert_eq!(wire, vec![{}]);\n",
+                byte_array_literal(&wire_bytes)
+            ));
+            output.push_str(&format!(
+                "    assert_eq!(flowrt_app::messages::{}::decode_wire(&wire).unwrap(), value);\n",
+                expectation.type_name
+            ));
+            output.push_str("}\n\n");
+        }
     }
 
     output
@@ -3472,6 +3534,228 @@ fn rust_type(expr: &TypeExpr) -> String {
             )
         }
     }
+}
+
+fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("impl flowrt::WireCodec for {} {{\n", ty.name));
+    output.push_str(&format!(
+        "    const WIRE_SIZE: usize = {};\n\n",
+        rust_wire_size(
+            contract,
+            &TypeExpr::Named {
+                name: ty.name.clone()
+            }
+        )
+    ));
+    output.push_str(
+        "    fn encode_wire(&self, output: &mut [u8]) -> Result<(), flowrt::WireCodecError> {\n        if output.len() != Self::WIRE_SIZE {\n            return Err(flowrt::WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));\n        }\n        let mut cursor = 0usize;\n",
+    );
+    for field in &ty.fields {
+        output.push_str(&rust_wire_encode_expr(
+            contract,
+            &field.ty,
+            &format!("self.{}", field.name),
+            "output",
+            8,
+        ));
+    }
+    output.push_str("        Ok(())\n    }\n\n");
+    output.push_str(
+        "    fn decode_wire(input: &[u8]) -> Result<Self, flowrt::WireCodecError> {\n        if input.len() != Self::WIRE_SIZE {\n            return Err(flowrt::WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));\n        }\n        let mut cursor = 0usize;\n",
+    );
+    for field in &ty.fields {
+        output.push_str(&rust_wire_decode_expr(
+            contract,
+            &field.ty,
+            &field.name,
+            "input",
+            8,
+        ));
+    }
+    output.push_str("        Ok(Self {\n");
+    for field in &ty.fields {
+        output.push_str(&format!("            {},\n", field.name));
+    }
+    output.push_str("        })\n    }\n}\n\n");
+    output
+}
+
+fn rust_wire_size(contract: &ContractIr, expr: &TypeExpr) -> usize {
+    match expr {
+        TypeExpr::Primitive { name } => primitive_wire_size(*name),
+        TypeExpr::Named { name } => type_by_name(contract, name)
+            .fields
+            .iter()
+            .map(|field| rust_wire_size(contract, &field.ty))
+            .sum(),
+        TypeExpr::Array { element, len } => rust_wire_size(contract, element) * *len,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
+}
+
+fn primitive_wire_size(primitive: PrimitiveType) -> usize {
+    match primitive {
+        PrimitiveType::Bool | PrimitiveType::U8 | PrimitiveType::I8 => 1,
+        PrimitiveType::U16 | PrimitiveType::I16 => 2,
+        PrimitiveType::U32 | PrimitiveType::I32 | PrimitiveType::F32 => 4,
+        PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::F64 => 8,
+        PrimitiveType::U128 | PrimitiveType::I128 => 16,
+    }
+}
+
+fn rust_wire_encode_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    value: &str,
+    output: &str,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    match expr {
+        TypeExpr::Primitive { name } => rust_wire_encode_primitive(*name, value, output, indent),
+        TypeExpr::Named { name } => format!(
+            "{pad}{value}.encode_wire(&mut {output}[cursor..cursor + {name}::WIRE_SIZE])?;\n{pad}cursor += {name}::WIRE_SIZE;\n"
+        ),
+        TypeExpr::Array { element, .. } => {
+            let mut code = format!("{pad}for element in &{value} {{\n");
+            code.push_str(&rust_wire_encode_expr(
+                contract,
+                element,
+                "*element",
+                output,
+                indent + 4,
+            ));
+            code.push_str(&format!("{pad}}}\n"));
+            code
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
+}
+
+fn rust_wire_encode_primitive(
+    primitive: PrimitiveType,
+    value: &str,
+    output: &str,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    match primitive {
+        PrimitiveType::Bool => {
+            format!("{pad}{output}[cursor] = {value} as u8;\n{pad}cursor += 1;\n")
+        }
+        PrimitiveType::U8 | PrimitiveType::I8 => {
+            format!("{pad}{output}[cursor] = {value} as u8;\n{pad}cursor += 1;\n")
+        }
+        PrimitiveType::U16
+        | PrimitiveType::U32
+        | PrimitiveType::U64
+        | PrimitiveType::U128
+        | PrimitiveType::I16
+        | PrimitiveType::I32
+        | PrimitiveType::I64
+        | PrimitiveType::I128
+        | PrimitiveType::F32
+        | PrimitiveType::F64 => {
+            let size = primitive_wire_size(primitive);
+            format!(
+                "{pad}{output}[cursor..cursor + {size}].copy_from_slice(&{value}.to_le_bytes());\n{pad}cursor += {size};\n"
+            )
+        }
+    }
+}
+
+fn rust_wire_decode_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    local: &str,
+    input: &str,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    match expr {
+        TypeExpr::Primitive { name } => rust_wire_decode_primitive(*name, local, input, indent),
+        TypeExpr::Named { name } => format!(
+            "{pad}let {local} = {name}::decode_wire(&{input}[cursor..cursor + {name}::WIRE_SIZE])?;\n{pad}cursor += {name}::WIRE_SIZE;\n"
+        ),
+        TypeExpr::Array { element, len } => {
+            let element_ty = rust_type(element);
+            let mut code = format!(
+                "{pad}let mut {local} = [{}::default(); {len}];\n{pad}for element in &mut {local} {{\n",
+                element_ty
+            );
+            code.push_str(&rust_wire_decode_expr(
+                contract,
+                element,
+                "decoded_element",
+                input,
+                indent + 4,
+            ));
+            code.push_str(&format!("{pad}    *element = decoded_element;\n{pad}}}\n"));
+            code
+        }
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
+}
+
+fn rust_wire_decode_primitive(
+    primitive: PrimitiveType,
+    local: &str,
+    input: &str,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    match primitive {
+        PrimitiveType::Bool => {
+            format!("{pad}let {local} = {input}[cursor] != 0;\n{pad}cursor += 1;\n")
+        }
+        PrimitiveType::U8 => {
+            format!("{pad}let {local} = {input}[cursor];\n{pad}cursor += 1;\n")
+        }
+        PrimitiveType::I8 => {
+            format!("{pad}let {local} = {input}[cursor] as i8;\n{pad}cursor += 1;\n")
+        }
+        PrimitiveType::U16 => rust_wire_decode_le("u16", local, input, 2, indent),
+        PrimitiveType::U32 => rust_wire_decode_le("u32", local, input, 4, indent),
+        PrimitiveType::U64 => rust_wire_decode_le("u64", local, input, 8, indent),
+        PrimitiveType::U128 => rust_wire_decode_le("u128", local, input, 16, indent),
+        PrimitiveType::I16 => rust_wire_decode_le("i16", local, input, 2, indent),
+        PrimitiveType::I32 => rust_wire_decode_le("i32", local, input, 4, indent),
+        PrimitiveType::I64 => rust_wire_decode_le("i64", local, input, 8, indent),
+        PrimitiveType::I128 => rust_wire_decode_le("i128", local, input, 16, indent),
+        PrimitiveType::F32 => rust_wire_decode_le("f32", local, input, 4, indent),
+        PrimitiveType::F64 => rust_wire_decode_le("f64", local, input, 8, indent),
+    }
+}
+
+fn rust_wire_decode_le(ty: &str, local: &str, input: &str, size: usize, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let indexes = (0..size)
+        .map(|offset| {
+            if offset == 0 {
+                format!("{input}[cursor]")
+            } else {
+                format!("{input}[cursor + {offset}]")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{pad}let {local} = {ty}::from_le_bytes([{indexes}]);\n{pad}cursor += {size};\n")
 }
 
 fn rust_primitive(primitive: PrimitiveType) -> &'static str {
@@ -4796,6 +5080,73 @@ backends = ["zenoh"]
             selfdesc_channel["key_expr"],
             "flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu"
         );
+    }
+
+    #[test]
+    fn emits_rust_wire_codec_when_profile_selects_zenoh() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "wire_demo"
+rsdl_version = "0.1"
+
+[type.Inner]
+value = "u16"
+
+[type.Packet]
+flag = "bool"
+count = "u32"
+inner = "Inner"
+samples = "[i16; 2]"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+
+        assert!(rust_messages.contains("impl flowrt::WireCodec for Inner"));
+        assert!(rust_messages.contains("const WIRE_SIZE: usize = 2;"));
+        assert!(rust_messages.contains("impl flowrt::WireCodec for Packet"));
+        assert!(rust_messages.contains("const WIRE_SIZE: usize = 11;"));
+        assert!(rust_messages.contains("output[cursor] = self.flag as u8;"));
+        assert!(
+            rust_messages
+                .contains("output[cursor..cursor + 4].copy_from_slice(&self.count.to_le_bytes());")
+        );
+        assert!(
+            rust_messages.contains(
+                "self.inner.encode_wire(&mut output[cursor..cursor + Inner::WIRE_SIZE])?;"
+            )
+        );
+        assert!(rust_messages.contains("for element in &self.samples"));
+        assert!(rust_messages.contains("i16::from_le_bytes([input[cursor], input[cursor + 1]])"));
+
+        let rust_abi = artifact_content(&bundle, "rust/tests/message_abi.rs");
+        assert!(rust_abi.contains("fn packet_wire_codec_omits_native_padding()"));
+        assert!(
+            rust_abi.contains("assert_eq!(wire, vec![1, 3, 0, 0, 0, 2, 0, 251, 255, 251, 255]);")
+        );
+        assert!(rust_abi.contains(
+            "assert_eq!(flowrt_app::messages::Packet::decode_wire(&wire).unwrap(), value);"
+        ));
     }
 
     #[test]
