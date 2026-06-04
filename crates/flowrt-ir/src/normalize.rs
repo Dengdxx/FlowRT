@@ -434,11 +434,14 @@ fn param_value_compatible(default_value: &RawValue, override_value: &RawValue) -
 }
 
 fn array_param_compatible(default_values: &[RawValue], override_values: &[RawValue]) -> bool {
-    if default_values.is_empty() || override_values.is_empty() {
+    if default_values.is_empty() {
+        return override_values.is_empty();
+    }
+    if override_values.is_empty() {
         return true;
     }
     let Some(default_sample) = default_values.first() else {
-        return true;
+        return false;
     };
     override_values
         .iter()
@@ -928,6 +931,40 @@ max = false
                 component,
                 ..
             } if instance == "controller" && component == "controller"
+        ));
+    }
+
+    #[test]
+    fn rejects_non_empty_array_override_for_empty_default_array() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gains = []
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+gains = [true]
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("non-empty override for empty array default should fail");
+
+        assert!(matches!(
+            error,
+            IrError::IncompatibleParamOverride {
+                instance,
+                component,
+                param,
+                ..
+            } if instance == "controller" && component == "controller" && param == "gains"
         ));
     }
 
