@@ -277,6 +277,8 @@ name = "flowrt"
 version = "0.1.0"
 dependencies = [
  "iceoryx2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -285,6 +287,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flowrt",
  "flowrt-codegen",
  "flowrt-ir",
  "flowrt-rsdl",
@@ -304,6 +307,7 @@ dependencies = [
  "flowrt-validate",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

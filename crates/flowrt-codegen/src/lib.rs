@@ -14,6 +14,7 @@ use flowrt_ir::{
 };
 use flowrt_validate::validate_contract;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 /// artifact emission 返回的结果类型。
 pub type Result<T> = std::result::Result<T, CodegenError>;
@@ -1470,6 +1471,7 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
 fn emit_rust_selfdesc(contract: &ContractIr) -> String {
     let json = emit_self_description(contract)
         .expect("validated contract self-description should serialize");
+    let hash = hex_sha256(&json);
     let mut output = managed_header();
     output.push('\n');
     output.push_str(&format!(
@@ -1480,6 +1482,10 @@ fn emit_rust_selfdesc(contract: &ContractIr) -> String {
     output.push_str(
         "pub fn self_description_json() -> &'static str {\n    std::str::from_utf8(&FLOWRT_SELF_DESCRIPTION).expect(\"generated FlowRT self-description is UTF-8\")\n}\n",
     );
+    output.push_str(&format!(
+        "\npub fn self_description_hash() -> &'static str {{\n    {}\n}}\n",
+        rust_string_literal(&hash)
+    ));
     output
 }
 
@@ -1532,10 +1538,16 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let selected_backend = selected_backend_name(contract);
 
     let mut output = managed_header();
-    output.push_str("\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::user;\n\n");
+    output.push_str(
+        "\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::selfdesc;\nuse crate::user;\n\n",
+    );
     output.push_str(&format!(
         "const SELECTED_BACKEND: &str = {};\n\n",
         rust_string_literal(&selected_backend)
+    ));
+    output.push_str(&format!(
+        "const PACKAGE_NAME: &str = {};\n\n",
+        rust_string_literal(&contract.package.name)
     ));
     output.push_str("pub struct App {\n");
     for instance in &order {
@@ -1619,6 +1631,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             &format!("step_process_{}_startup", process.method_suffix),
             &format!("step_process_{}_shutdown", process.method_suffix),
             &process.instances,
+            &process.name,
             false,
         ));
     }
@@ -1649,6 +1662,12 @@ fn rust_byte_string_literal(value: &str) -> String {
         hashes.push('#');
     }
     format!("br{hashes}\"{value}\"{hashes}")
+}
+
+fn hex_sha256(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn cpp_raw_string_literal(value: &str) -> String {
@@ -2095,7 +2114,15 @@ fn emit_rust_app_step(
 }
 
 fn emit_rust_app_run(order: &[&InstanceIr]) -> String {
-    emit_rust_app_run_function("run", "step", "step_startup", "step_shutdown", order, true)
+    emit_rust_app_run_function(
+        "run",
+        "step",
+        "step_startup",
+        "step_shutdown",
+        order,
+        "main",
+        true,
+    )
 }
 
 fn emit_rust_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
@@ -2120,12 +2147,18 @@ fn emit_rust_app_run_function(
     startup_function_name: &str,
     shutdown_function_name: &str,
     order: &[&InstanceIr],
+    process_name: &str,
     public: bool,
 ) -> String {
     let mut output = String::new();
     let visibility = if public { "pub " } else { "" };
     output.push_str(&format!(
         "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
+    ));
+    output.push_str(&format!(
+        "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            flowrt::IntrospectionStatus {{\n                tick_count: 0,\n                channels: Vec::new(),\n            }},\n        )\n        .ok();\n",
+        "PACKAGE_NAME",
+        rust_string_literal(process_name)
     ));
     for instance in order {
         output.push_str(&format!(
@@ -3655,6 +3688,9 @@ input = ["imu:Imu"]
 
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
+        assert!(rust_shell.contains("const PACKAGE_NAME: &str = \"robot_demo\";"));
+        assert!(rust_shell.contains("flowrt::spawn_status_server("));
+        assert!(rust_shell.contains("selfdesc::self_description_hash().to_string()"));
 
         let sidecar: serde_json::Value =
             serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();

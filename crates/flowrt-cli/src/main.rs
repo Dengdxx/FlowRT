@@ -111,6 +111,9 @@ enum Command {
         /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
         image: PathBuf,
     },
+
+    /// 扫描当前用户 runtime socket 并输出 live status。
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -191,6 +194,9 @@ fn main() -> Result<()> {
         Command::Nodes { image } => {
             let self_description = load_self_description(&image)?;
             println!("{}", self_description_nodes(&self_description));
+        }
+        Command::Status => {
+            println!("{}", live_status_summary()?);
         }
     }
     Ok(())
@@ -407,6 +413,41 @@ fn self_description_nodes(self_description: &SelfDescription) -> String {
         "no graphs".to_string()
     } else {
         lines.join("\n")
+    }
+}
+
+fn live_status_summary() -> Result<String> {
+    let sockets =
+        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
+    live_status_summary_for_sockets(sockets)
+}
+
+fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
+    let mut lines = Vec::new();
+    for socket in sockets {
+        match flowrt::request_status(&socket) {
+            Ok(response) => {
+                lines.push(format!(
+                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} socket={}",
+                    response.handshake.pid,
+                    response.handshake.package,
+                    response.handshake.process,
+                    response.handshake.runtime,
+                    response.handshake.self_description_hash,
+                    response.status.tick_count,
+                    response.status.channels.len(),
+                    socket.display()
+                ));
+            }
+            Err(error) => {
+                lines.push(format!("stale socket={} error={error}", socket.display()));
+            }
+        }
+    }
+    if lines.is_empty() {
+        Ok("no live FlowRT processes".to_string())
+    } else {
+        Ok(lines.join("\n"))
     }
 }
 
@@ -1708,6 +1749,44 @@ fn main() {}
         assert_eq!(self_description.package.name, "binary_demo");
         assert_eq!(self_description.message_abi[0].type_name, "Ping");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn live_status_summary_reads_runtime_socket_handshake() {
+        let root = temp_test_dir("live-status");
+        let socket = root.join("main.sock");
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 77,
+            started_at_unix_ms: 1234,
+            self_description_hash: "feedface".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let status = flowrt::IntrospectionStatus {
+            tick_count: 9,
+            channels: vec![flowrt::IntrospectionChannelStatus {
+                name: "source.imu_to_sink.imu".to_string(),
+                message_type: "Imu".to_string(),
+                published_count: 4,
+                last_payload_len: Some(48),
+            }],
+        };
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, status)
+            .expect("status server should start");
+
+        let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+        assert!(output.contains("pid=77"));
+        assert!(output.contains("package=robot_demo"));
+        assert!(output.contains("process=main"));
+        assert!(output.contains("selfdesc=feedface"));
+        assert!(output.contains("ticks=9"));
+        assert!(output.contains("channels=1"));
+
+        drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }
 
