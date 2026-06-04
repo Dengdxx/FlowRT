@@ -19,6 +19,9 @@ pub type Result<T> = std::result::Result<T, CodegenError>;
 /// 生成 FlowRT 管理产物时产生的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum CodegenError {
+    #[error("Contract IR v0.1 must contain exactly one graph; found {count}")]
+    GraphCount { count: usize },
+
     #[error("failed to serialize launch manifest: {0}")]
     LaunchJson(#[from] serde_json::Error),
 
@@ -79,6 +82,12 @@ pub fn plan_codegen(contract: &ContractIr) -> CodegenPlan {
 
 /// 生成首批 FlowRT 管理的应用产物。
 pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
+    if contract.graphs.len() != 1 {
+        return Err(CodegenError::GraphCount {
+            count: contract.graphs.len(),
+        });
+    }
+
     let mut artifacts = Vec::new();
     let abi_expectations = message_abi_expectations(contract)?;
 
@@ -2703,6 +2712,45 @@ language = "rust"
         let plan = plan_codegen(&ir);
         assert_eq!(plan.units.len(), 1);
         assert_eq!(plan.units[0].language, CodegenLanguage::Rust);
+    }
+
+    #[test]
+    fn rejects_contract_without_exactly_one_graph() {
+        let mut ir = contract_from_source(
+            r#"
+[package]
+name = "demo"
+rsdl_version = "0.1"
+
+[component.monitor]
+language = "rust"
+"#,
+        );
+        ir.graphs.clear();
+
+        let error = emit_artifacts(&ir).expect_err("codegen should reject a graphless contract");
+        assert_eq!(
+            error.to_string(),
+            "Contract IR v0.1 must contain exactly one graph; found 0"
+        );
+
+        let mut ir = contract_from_source(
+            r#"
+[package]
+name = "demo"
+rsdl_version = "0.1"
+
+[component.monitor]
+language = "rust"
+"#,
+        );
+        ir.graphs.push(ir.graphs[0].clone());
+
+        let error = emit_artifacts(&ir).expect_err("codegen should reject multiple graphs");
+        assert_eq!(
+            error.to_string(),
+            "Contract IR v0.1 must contain exactly one graph; found 2"
+        );
     }
 
     #[test]
