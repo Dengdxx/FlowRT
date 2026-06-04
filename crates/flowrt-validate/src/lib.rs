@@ -2586,6 +2586,134 @@ backends = ["iox2"]
     }
 
     #[test]
+    fn rejects_iox2_for_cross_target_dataflow_that_requires_multi_host() {
+        let source = r#"
+[package]
+name = "distributed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["iox2"]
+
+[target.pi_host]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report =
+            validate_contract(&ir).expect_err("iox2 should not satisfy cross-host dataflow");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "backend `iox2` selected by profile `default` cannot satisfy required capabilities for graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn accepts_zenoh_for_cross_target_dataflow_that_requires_multi_host() {
+        let source = r#"
+[package]
+name = "distributed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+
+[target.pi_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        validate_contract(&ir).unwrap();
+    }
+
+    #[test]
     fn rejects_recursive_message_type() {
         let source = r#"
 [package]

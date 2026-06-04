@@ -7,6 +7,8 @@ pub enum BackendKind {
     Inproc,
     /// iceoryx2 backend，用于本机多进程高性能 dataflow。
     Iox2,
+    /// zenoh backend，用于跨主机 copy transport dataflow。
+    Zenoh,
 }
 
 /// 调度器抽象边界。
@@ -115,6 +117,32 @@ const IOX2_CAPABILITIES: &[&str] = &[
     "observability:health",
 ];
 
+const ZENOH_CAPABILITIES: &[&str] = &[
+    "abi:fixed_size_plain_data",
+    "layout:native_layout",
+    "allocation:bounded",
+    "graph:static_graph",
+    "trigger:periodic",
+    "trigger:on_message",
+    "trigger:startup",
+    "trigger:shutdown",
+    "timing:deadline_aware",
+    "channel:latest",
+    "channel:fifo",
+    "overflow:drop_oldest",
+    "overflow:drop_newest",
+    "overflow:error",
+    "overflow:block",
+    "stale:warn",
+    "stale:drop",
+    "stale:hold_last",
+    "stale:error",
+    "topology:multi_process",
+    "topology:multi_host",
+    "transfer:copy",
+    "observability:health",
+];
+
 /// 单进程 backend 实现。
 ///
 /// InprocBackend 使用进程内 channel 和同步调度器，适合测试、CI 和最小端到端 demo。
@@ -182,6 +210,41 @@ impl Backend for Iox2Backend {
 /// 构造 iox2 backend capability 骨架。
 pub fn iox2_backend() -> Iox2Backend {
     Iox2Backend::default()
+}
+
+/// zenoh backend 的 capability 骨架。
+///
+/// zenoh 用于跨主机 dataflow。该对象只表达 runtime 层的 backend 种类、capability 和调度边界；
+/// 具体 channel transport 由 generated shell 内部绑定，业务组件仍只依赖 FlowRT runtime API。
+#[derive(Debug, Default)]
+pub struct ZenohBackend {
+    scheduler: InprocScheduler,
+}
+
+impl ZenohBackend {
+    /// 构造 zenoh backend capability 骨架。
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Backend for ZenohBackend {
+    fn kind(&self) -> BackendKind {
+        BackendKind::Zenoh
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(ZENOH_CAPABILITIES)
+    }
+
+    fn scheduler(&self) -> &dyn Scheduler {
+        &self.scheduler
+    }
+}
+
+/// 构造 zenoh backend capability 骨架。
+pub fn zenoh_backend() -> ZenohBackend {
+    ZenohBackend::default()
 }
 
 #[cfg(test)]
@@ -270,6 +333,44 @@ mod tests {
                 "topology:single_host",
                 "transfer:zero_copy",
                 "transfer:loaned",
+                "observability:health",
+            ]
+        );
+    }
+
+    #[test]
+    fn zenoh_backend_reports_expected_capabilities() {
+        let backend = zenoh_backend();
+        assert_eq!(backend.kind(), BackendKind::Zenoh);
+        let capabilities = backend.capabilities();
+        assert!(capabilities.contains("topology:multi_process"));
+        assert!(capabilities.contains("topology:multi_host"));
+        assert!(capabilities.contains("transfer:copy"));
+        assert_eq!(
+            capabilities.as_slice(),
+            &[
+                "abi:fixed_size_plain_data",
+                "layout:native_layout",
+                "allocation:bounded",
+                "graph:static_graph",
+                "trigger:periodic",
+                "trigger:on_message",
+                "trigger:startup",
+                "trigger:shutdown",
+                "timing:deadline_aware",
+                "channel:latest",
+                "channel:fifo",
+                "overflow:drop_oldest",
+                "overflow:drop_newest",
+                "overflow:error",
+                "overflow:block",
+                "stale:warn",
+                "stale:drop",
+                "stale:hold_last",
+                "stale:error",
+                "topology:multi_process",
+                "topology:multi_host",
+                "transfer:copy",
                 "observability:health",
             ]
         );

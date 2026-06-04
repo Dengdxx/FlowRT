@@ -1640,6 +1640,7 @@ class BackendCapabilities {
 enum class BackendKind : std::uint8_t {
     Inproc = 0,  ///< 单进程内存 backend，主要用于测试、CI 和最小 demo。
     Iox2 = 1,    ///< iceoryx2 backend，用于本机多进程高性能 dataflow。
+    Zenoh = 2,   ///< zenoh backend，用于跨主机 copy transport dataflow。
 };
 
 /**
@@ -1828,6 +1829,62 @@ class Iox2Backend final : public Backend {
 };
 
 /**
+ * @brief zenoh backend 的 C++ capability 骨架。
+ *
+ * 该 backend 报告跨主机 copy transport capability，并继续复用同步调度器驱动 generated shell。
+ * 具体 channel transport 由后续 `flowrt::zenoh` endpoint 在 shell 内部绑定；业务组件仍只应依赖
+ * FlowRT runtime API，不直接依赖 zenoh publisher/subscriber。
+ */
+class ZenohBackend final : public Backend {
+   public:
+    /**
+     * @copydoc Backend::kind
+     */
+    BackendKind kind() const noexcept override { return BackendKind::Zenoh; }
+
+    /**
+     * @copydoc Backend::capabilities
+     */
+    BackendCapabilities capabilities() const noexcept override {
+        return BackendCapabilities{std::span<const std::string_view>(kCapabilities)};
+    }
+
+    /**
+     * @copydoc Backend::scheduler
+     */
+    const Scheduler &scheduler() const noexcept override { return scheduler_; }
+
+   private:
+    static inline constexpr std::array<std::string_view, 23> kCapabilities = {
+        "abi:fixed_size_plain_data",
+        "layout:native_layout",
+        "allocation:bounded",
+        "graph:static_graph",
+        "trigger:periodic",
+        "trigger:on_message",
+        "trigger:startup",
+        "trigger:shutdown",
+        "timing:deadline_aware",
+        "channel:latest",
+        "channel:fifo",
+        "overflow:drop_oldest",
+        "overflow:drop_newest",
+        "overflow:error",
+        "overflow:block",
+        "stale:warn",
+        "stale:drop",
+        "stale:hold_last",
+        "stale:error",
+        "topology:multi_process",
+        "topology:multi_host",
+        "transfer:copy",
+        "observability:health",
+    };
+
+    InprocScheduler scheduler_;
+};
+
+/**
  * @brief 构造默认 inproc backend。
  *
  * @return 可直接传给 generated shell 的单进程 backend。
@@ -1840,5 +1897,12 @@ inline InprocBackend inproc_backend() { return InprocBackend{}; }
  * @return 可用于 capability 选择和后续 iox2 shell 绑定的 backend 对象。
  */
 inline Iox2Backend iox2_backend() { return Iox2Backend{}; }
+
+/**
+ * @brief 构造 zenoh backend capability 骨架。
+ *
+ * @return 可用于 capability 选择和后续 zenoh shell 绑定的 backend 对象。
+ */
+inline ZenohBackend zenoh_backend() { return ZenohBackend{}; }
 
 }  // namespace flowrt
