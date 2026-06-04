@@ -118,7 +118,7 @@ flowrt nodes path/to/generated-app
 
 `list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出静态拓扑摘要或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、instance、task、channel 和 Message ABI layout 是否与预期一致。
 
-当前这两个命令只读取编译期静态自描述；运行态 socket、channel snapshot、`status` 和 `echo` 会在后续切片接入。
+当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status` 使用。channel snapshot 协议已经在 Rust runtime API 中预留，但 `flowrt echo` 还未接入 CLI。
 
 ## `status`
 
@@ -128,7 +128,7 @@ flowrt status
 
 `status` 扫描当前用户 runtime socket 目录中的 FlowRT 进程，并通过 handshake 验证 PID、package、process、runtime、静态自描述 hash 和 tick/channel 摘要。socket 路径只作为发现入口；CLI 不把文件名当作进程身份事实。
 
-当前 runtime shell 已为 Rust 生成应用启动最小 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。后续切片会把真实 tick 计数、channel payload snapshot 和 `echo --follow` 接到同一协议。
+当前 runtime shell 已为 Rust 生成应用启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成的 Rust shell 会把 scheduler tick 计数写入 live status；channel 发布统计、payload snapshot 展示、`echo` 和 `echo --follow` 仍是后续切片。
 
 ## `--profile`
 

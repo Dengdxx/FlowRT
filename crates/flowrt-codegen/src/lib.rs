@@ -1475,12 +1475,12 @@ fn emit_rust_selfdesc(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push('\n');
     output.push_str(&format!(
-        "#[used]\n#[unsafe(link_section = \"{SELF_DESCRIPTION_SECTION}\")]\nstatic FLOWRT_SELF_DESCRIPTION: [u8; {}] = *b{};\n\n",
+        "#[used]\n#[unsafe(link_section = \"{SELF_DESCRIPTION_SECTION}\")]\nstatic FLOWRT_SELF_DESCRIPTION: [u8; {}] = *{};\n\n",
         json.len(),
         rust_byte_string_literal(&json),
     ));
     output.push_str(
-        "pub fn self_description_json() -> &'static str {\n    std::str::from_utf8(&FLOWRT_SELF_DESCRIPTION).expect(\"generated FlowRT self-description is UTF-8\")\n}\n",
+        "#[allow(dead_code)]\npub fn self_description_json() -> &'static str {\n    std::str::from_utf8(&FLOWRT_SELF_DESCRIPTION).expect(\"generated FlowRT self-description is UTF-8\")\n}\n",
     );
     output.push_str(&format!(
         "\npub fn self_description_hash() -> &'static str {{\n    {}\n}}\n",
@@ -2156,7 +2156,7 @@ fn emit_rust_app_run_function(
         "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
     ));
     output.push_str(&format!(
-        "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            flowrt::IntrospectionStatus {{\n                tick_count: 0,\n                channels: Vec::new(),\n            }},\n        )\n        .ok();\n",
+        "        let introspection_state = flowrt::IntrospectionState::new();\n        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",
         "PACKAGE_NAME",
         rust_string_literal(process_name)
     ));
@@ -2182,7 +2182,7 @@ fn emit_rust_app_run_function(
         "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context);\n        }}\n",
     ));
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| self.{step_function_name}(tick, tick_context));\n        }}\n",
+        "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick, tick_context)\n            }});\n        }}\n",
     ));
     output.push_str(&format!(
         "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context);\n        }}\n",
@@ -3690,6 +3690,11 @@ input = ["imu:Imu"]
         assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
         assert!(rust_shell.contains("const PACKAGE_NAME: &str = \"robot_demo\";"));
         assert!(rust_shell.contains("flowrt::spawn_status_server("));
+        assert!(
+            rust_shell.contains("let introspection_state = flowrt::IntrospectionState::new();")
+        );
+        assert!(rust_shell.contains("introspection_state.record_tick();"));
+        assert!(!rust_shell.contains("flowrt::IntrospectionStatus {"));
         assert!(rust_shell.contains("selfdesc::self_description_hash().to_string()"));
 
         let sidecar: serde_json::Value =
@@ -3708,6 +3713,8 @@ input = ["imu:Imu"]
         let rust_selfdesc = artifact_content(&bundle, "rust/src/selfdesc.rs");
         assert!(rust_selfdesc.contains("#[unsafe(link_section = \".flowrt.selfdesc\")]"));
         assert!(rust_selfdesc.contains("static FLOWRT_SELF_DESCRIPTION"));
+        assert!(rust_selfdesc.contains("= *br#"));
+        assert!(!rust_selfdesc.contains("*bbr#"));
 
         let cpp_selfdesc = artifact_content(&bundle, "cpp/src/selfdesc.cpp");
         assert!(cpp_selfdesc.contains("[[gnu::used, gnu::section(\".flowrt.selfdesc\")]]"));
