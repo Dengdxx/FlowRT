@@ -160,6 +160,7 @@ package_id
 ```
 
 validator 必须拒绝当前工具链不支持的 `ir_version`、`schema_version` 和 package `rsdl_version`，避免旧版或未来版本的契约被现有 codegen/runtime 静默误读。
+`source_hash` 必须保持 64 位小写 hex digest；`EntityId` 必须保持当前生成器使用的 `<kind>_<16hex>` canonical 形状。
 
 不要把 RSDL 原文直接转换成一份浅层 JSON 就称作 IR。
 
