@@ -148,6 +148,8 @@ IR 生成前必须归一化：
 - 规范化 ordering。
 - 附加 backend capabilities。
 
+Contract IR validator 必须独立拒绝同一作用域内的重复实体名称，包括顶层 type、component、profile、target、graph，以及 graph 内 instance；不能只依赖 RSDL parser 的 map 结构保证唯一性。
+
 IR 文档必须内建版本字段，例如：
 
 ```text
