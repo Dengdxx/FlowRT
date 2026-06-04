@@ -7,7 +7,7 @@
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
 | `examples/import_demo` | Rust | `inproc` | `flowrt run examples/import_demo/rsdl/robot.rsdl --process main` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
-| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂和 C++ runtime shell |
+| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
 | `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息和生成物边界；不伪装为 mixed inproc 可运行 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
@@ -63,12 +63,14 @@ counter_source.count -> counter_sink.count
 - C++ inproc runtime shell。
 - `flowrt_user::build_app()` 用户工厂入口。
 - C++ only `flowrt build` / `flowrt run` 走 CMake app 路径。
+- C++ only `flowrt launch` 会先构建 CMake app，再由生成 supervisor 启动 process。
 
 常用命令：
 
 ```bash
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
 ## `imu_demo`

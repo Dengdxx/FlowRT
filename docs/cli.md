@@ -75,9 +75,12 @@ mixed contract 规则：
 
 ```bash
 flowrt launch examples/import_demo/rsdl/robot.rsdl
+flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-`launch` 会准备、构建并运行生成的 process supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable 或 C++ app executable。
+`launch` 会准备、构建运行所需的 generated app，并运行生成的 process supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable 或 C++ app executable。
+
+含 C++ component 的 contract 会先构建生成的 CMake app；C++ only contract 只生成 supervisor 所需的最小 Rust crate，不生成 Rust runtime shell 或 Rust app binary。
 
 launch manifest 的关键字段包括：
 

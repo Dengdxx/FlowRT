@@ -341,7 +341,7 @@ flowrt inspect flowrt/contract/contract.ir.json
 `--process` 运行生成应用中的单个 RSDL process group；mixed contract 使用 `flowrt run --process <name>` 时必须选择一个单语言 process group。
 `run` / `launch` 当前支持 Rust only、C++ only，以及 language-separated mixed contract over `iox2`。同一 process group 内混合 C++/Rust 或 mixed `inproc` 必须明确拒绝。
 `prepare`、`build`、`run` 和 `launch` 会写 `flowrt/` 输出目录，必须在命令级持有输出目录锁；`check` 和 `inspect` 不写生成物，不应获取该锁。
-`launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json`，遍历全部 graph，并按 process group 启动生成应用。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，task metadata 必须暴露 `inputs`、`outputs` 和 `priority` scheduler hint，便于后续 supervisor/scheduler 消费；graph instance 必须暴露 `runtime`，graph 必须暴露 `channels`。
+`launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json`，遍历全部 graph，并按 process group 启动生成应用。C++ only contract 会生成 supervisor-only Rust crate，`launch` 先构建 CMake app 再运行 supervisor，不生成 Rust runtime shell 或 Rust app binary。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，task metadata 必须暴露 `inputs`、`outputs` 和 `priority` scheduler hint，便于后续 supervisor/scheduler 消费；graph instance 必须暴露 `runtime`，graph 必须暴露 `channels`。
 
 `cargo run -p flowrt-cli -- ...` 只允许作为仓库开发者调试 FlowRT CLI 的内部命令，不得写成最终用户主路径。
 
