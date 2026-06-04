@@ -1559,16 +1559,8 @@ fn expected_bind_capabilities(bind: &ChannelEdgeIr) -> Vec<CapabilityAtom> {
     ]
 }
 
-fn capability_set(capabilities: &[CapabilityAtom]) -> BTreeSet<CapabilityAtom> {
-    capabilities.iter().cloned().collect()
-}
-
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
-    let actual_set = capability_set(actual);
-    let expected_set = capability_set(expected);
-    actual_set.len() == actual.len()
-        && expected_set.len() == expected.len()
-        && actual_set == expected_set
+    actual == expected
 }
 
 fn dedupe_capabilities(capabilities: Vec<CapabilityAtom>) -> Vec<CapabilityAtom> {
@@ -3147,6 +3139,34 @@ backends = ["inproc"]
         ir.deployments[0].required_capabilities.clear();
 
         let report = validate_contract(&ir).expect_err("stale derived capabilities should fail");
+
+        for expected in [
+            "bind `producer.sample` -> `consumer.sample` capability requirements do not match channel policy",
+            "target `linux` capabilities do not match declared backends",
+            "deployment `default / default / linux` required capabilities do not match graph `default`",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}; got {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_canonical_derived_capability_ordering() {
+        let mut ir = valid_reference_contract();
+        validate_contract(&ir).unwrap();
+
+        ir.graphs[0].binds[0].capability_requirements.reverse();
+        ir.targets[0].capabilities.reverse();
+        ir.deployments[0].required_capabilities.reverse();
+
+        let report =
+            validate_contract(&ir).expect_err("reordered derived capabilities should fail");
 
         for expected in [
             "bind `producer.sample` -> `consumer.sample` capability requirements do not match channel policy",
