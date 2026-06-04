@@ -10,7 +10,9 @@ mod normalize;
 mod type_expr;
 
 pub use backend::{
-    backend_capabilities, base_deployment_capabilities, is_known_backend, trigger_capability,
+    backend_capabilities, base_deployment_capabilities, channel_capabilities,
+    graph_required_capabilities, is_known_backend, message_abi_capabilities, target_capabilities,
+    trigger_capability,
 };
 pub use error::{IrError, Result};
 pub use model::*;

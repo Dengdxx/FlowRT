@@ -9,8 +9,8 @@ use crate::{
     EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
     LifecycleSurface, OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults,
     PolicyValueSource, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr, TaskIr,
-    TriggerKind, TypeIr, backend_capabilities, base_deployment_capabilities, parse_type_expr,
-    trigger_capability,
+    TriggerKind, TypeIr, backend_capabilities, channel_capabilities, graph_required_capabilities,
+    parse_type_expr, target_capabilities,
 };
 
 /// 计算稳定的 SHA-256 源文本哈希。
@@ -93,7 +93,7 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
         binds,
     };
 
-    let deployments = normalize_deployments(&graph, &profiles, &targets);
+    let deployments = normalize_deployments(&graph, &types, &components, &profiles, &targets);
 
     Ok(ContractIr {
         ir_version: CONTRACT_IR_VERSION.to_string(),
@@ -168,7 +168,12 @@ fn refresh_projected_deployments(contract: &mut ContractIr) {
     let graph_capabilities = contract
         .graphs
         .iter()
-        .map(|graph| (graph.name.clone(), graph_required_capabilities(graph)))
+        .map(|graph| {
+            (
+                graph.name.clone(),
+                graph_required_capabilities(graph, &contract.types, &contract.components),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let profile_by_name = contract
         .profiles
@@ -332,15 +337,6 @@ fn normalize_targets(document: &RawDocument) -> Result<Vec<TargetIr>> {
             })
         })
         .collect()
-}
-
-fn target_capabilities(backends: &[BackendName]) -> Vec<CapabilityAtom> {
-    let capabilities = backends
-        .iter()
-        .filter_map(|backend| backend_capabilities(&backend.0))
-        .flatten()
-        .collect::<Vec<_>>();
-    dedupe_capabilities(capabilities)
 }
 
 fn normalize_target_runtime(target_name: &str, raw: &RawTarget) -> Result<Vec<LanguageKind>> {
@@ -643,6 +639,8 @@ fn parse_port_ref(endpoint: &str, instance_refs: &BTreeMap<String, EntityRef>) -
 
 fn normalize_deployments(
     graph: &GraphIr,
+    types: &[TypeIr],
+    components: &[ComponentIr],
     profiles: &[ProfileIr],
     targets: &[TargetIr],
 ) -> Vec<DeploymentIr> {
@@ -651,7 +649,7 @@ fn normalize_deployments(
         name: graph.name.clone(),
     };
     let mut deployments = Vec::new();
-    let required_capabilities = graph_required_capabilities(graph);
+    let required_capabilities = graph_required_capabilities(graph, types, components);
 
     for profile in profiles {
         for target in targets {
@@ -695,28 +693,6 @@ fn deployment_satisfied(
     backend_supported_by_target && capabilities_satisfied
 }
 
-fn graph_required_capabilities(graph: &GraphIr) -> Vec<CapabilityAtom> {
-    let mut capabilities = base_deployment_capabilities();
-    for task in &graph.tasks {
-        capabilities.push(trigger_capability(task.trigger));
-        if task.deadline_ms.is_some() {
-            capabilities.push(CapabilityAtom("timing:deadline_aware".to_string()));
-        }
-    }
-    for bind in &graph.binds {
-        capabilities.extend(bind.capability_requirements.clone());
-    }
-    dedupe_capabilities(capabilities)
-}
-
-fn dedupe_capabilities(capabilities: Vec<CapabilityAtom>) -> Vec<CapabilityAtom> {
-    let mut seen = std::collections::BTreeSet::new();
-    capabilities
-        .into_iter()
-        .filter(|capability| seen.insert(capability.clone()))
-        .collect()
-}
-
 fn convert_param_value(value: &RawValue) -> ParamValue {
     match value {
         RawValue::Bool(value) => ParamValue::Bool(*value),
@@ -732,43 +708,6 @@ fn convert_param_value(value: &RawValue) -> ParamValue {
                 .map(|(name, value)| (name.clone(), convert_param_value(value)))
                 .collect(),
         ),
-    }
-}
-
-fn channel_capabilities(
-    channel: ChannelKind,
-    overflow: OverflowPolicy,
-    stale: StalePolicy,
-) -> Vec<CapabilityAtom> {
-    vec![
-        CapabilityAtom(channel_capability_name(channel).to_string()),
-        CapabilityAtom(overflow_capability_name(overflow).to_string()),
-        CapabilityAtom(stale_capability_name(stale).to_string()),
-    ]
-}
-
-fn channel_capability_name(channel: ChannelKind) -> &'static str {
-    match channel {
-        ChannelKind::Latest => "channel:latest",
-        ChannelKind::Fifo => "channel:fifo",
-    }
-}
-
-fn overflow_capability_name(policy: OverflowPolicy) -> &'static str {
-    match policy {
-        OverflowPolicy::DropOldest => "overflow:drop_oldest",
-        OverflowPolicy::DropNewest => "overflow:drop_newest",
-        OverflowPolicy::Error => "overflow:error",
-        OverflowPolicy::Block => "overflow:block",
-    }
-}
-
-fn stale_capability_name(policy: StalePolicy) -> &'static str {
-    match policy {
-        StalePolicy::Warn => "stale:warn",
-        StalePolicy::Drop => "stale:drop",
-        StalePolicy::HoldLast => "stale:hold_last",
-        StalePolicy::Error => "stale:error",
     }
 }
 
@@ -1109,6 +1048,177 @@ backends = ["inproc"]
                 .contains(&CapabilityAtom("timing:deadline_aware".to_string()))
         );
         assert!(ir.deployments[0].satisfied);
+    }
+
+    #[test]
+    fn int128_component_ports_require_abi_capability() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u128"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u128"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert!(
+            ir.deployments[0]
+                .required_capabilities
+                .contains(&CapabilityAtom("abi:int128".to_string()))
+        );
+        assert!(!ir.deployments[0].satisfied);
+    }
+
+    #[test]
+    fn declared_int128_message_types_require_abi_capability_even_when_not_port_reachable() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.UnusedWide]
+value = "u128"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert!(
+            ir.deployments[0]
+                .required_capabilities
+                .contains(&CapabilityAtom("abi:int128".to_string()))
+        );
+        assert!(!ir.deployments[0].satisfied);
+    }
+
+    #[test]
+    fn iox2_does_not_satisfy_int128_abi_capability() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:i128"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:i128"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert!(
+            ir.deployments[0]
+                .required_capabilities
+                .contains(&CapabilityAtom("abi:int128".to_string()))
+        );
+        assert!(!ir.deployments[0].satisfied);
     }
 
     #[test]
