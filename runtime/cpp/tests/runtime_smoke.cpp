@@ -109,6 +109,10 @@ int main() {
     auto iox2_config = flowrt::iox2::Iox2ChannelConfig::fifo(0, flowrt::OverflowPolicy::DropOldest)
                            .with_stale_config(flowrt::StaleConfig{std::chrono::milliseconds{5},
                                                                   flowrt::StalePolicy::Error});
+    auto iox2_hold_last_config =
+        flowrt::iox2::Iox2ChannelConfig::latest().with_stale_config(
+            flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::HoldLast});
+    auto iox2_block_config = flowrt::iox2::Iox2ChannelConfig::fifo(0, flowrt::OverflowPolicy::Block);
     static_assert(std::string_view{flowrt::iox2::FlowrtIox2Header::IOX2_TYPE_NAME} ==
                   "FlowRTIox2Header");
     static_assert(sizeof(flowrt::iox2::FlowrtIox2Header) == sizeof(std::uint64_t));
@@ -117,11 +121,17 @@ int main() {
     assert(iox2_config.depth() == 1U);
     assert(iox2_config.overflow() == flowrt::OverflowPolicy::DropOldest);
     assert(iox2_config.stale().policy() == flowrt::StalePolicy::Error);
+    assert(iox2_hold_last_config.stale().policy() == flowrt::StalePolicy::HoldLast);
+    assert(iox2_hold_last_config.stale().max_age() ==
+           std::optional<flowrt::StaleConfig::Duration>{std::chrono::milliseconds{10}});
+    assert(iox2_block_config.depth() == 1U);
+    assert(iox2_block_config.overflow() == flowrt::OverflowPolicy::Block);
 
     auto iox2_endpoint =
         flowrt::iox2::Iox2PubSub<Sample>::open_with_config("FlowRT/Cpp/Smoke", iox2_config);
     assert(iox2_endpoint.service_name() == "FlowRT/Cpp/Smoke");
     assert(iox2_endpoint.config().depth() == 1U);
+    assert(iox2_endpoint.config().overflow() == flowrt::OverflowPolicy::DropOldest);
     assert(!iox2_endpoint.ready());
     const auto transport_write = iox2_endpoint.publish_at(Sample{23U}, 10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_write));

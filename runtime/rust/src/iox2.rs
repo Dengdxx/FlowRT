@@ -138,6 +138,7 @@ where
     publisher: IpcPublisher<T>,
     subscriber: IpcSubscriber<T>,
     node: IpcNode,
+    config: Iox2ChannelConfig,
     stale: StaleConfig,
     received: Option<Iox2Received<T>>,
 }
@@ -188,6 +189,7 @@ where
             publisher,
             subscriber,
             node,
+            config,
             stale: config.stale(),
             received: None,
         })
@@ -245,6 +247,11 @@ where
         };
 
         Ok(Latest::new(value, stale))
+    }
+
+    /// 返回 endpoint 的 QoS 配置。
+    pub fn config(&self) -> Iox2ChannelConfig {
+        self.config
     }
 
     /// 短暂等待，让 iceoryx2 推进本机 endpoint 状态。
@@ -406,5 +413,32 @@ mod tests {
 
         assert!(received.as_ref().is_none());
         assert!(received.stale());
+    }
+
+    #[test]
+    fn typed_pubsub_endpoint_exposes_hold_last_stale_policy_configuration() {
+        let endpoint = Iox2PubSub::<Iox2SmokeMessage>::open_with_config(
+            "FlowRT/Smoke/StaleHoldLast",
+            Iox2ChannelConfig::latest().with_stale_config(crate::StaleConfig::new(
+                Some(10),
+                crate::StalePolicy::HoldLast,
+            )),
+        )
+        .expect("typed iceoryx2 endpoint should open with hold-last config");
+
+        assert_eq!(endpoint.stale.policy(), crate::StalePolicy::HoldLast);
+        assert_eq!(endpoint.stale.max_age_ms(), Some(10));
+    }
+
+    #[test]
+    fn typed_pubsub_endpoint_exposes_block_overflow_configuration() {
+        let endpoint = Iox2PubSub::<Iox2SmokeMessage>::open_with_config(
+            "FlowRT/Smoke/OverflowBlock",
+            Iox2ChannelConfig::fifo(0, crate::OverflowPolicy::Block),
+        )
+        .expect("typed iceoryx2 endpoint should open with block overflow config");
+
+        assert_eq!(endpoint.config().depth(), 1);
+        assert_eq!(endpoint.config().overflow(), crate::OverflowPolicy::Block);
     }
 }
