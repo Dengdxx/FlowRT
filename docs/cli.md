@@ -23,6 +23,8 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 Message ABI v0.1 只接受 fixed-size plain data。RSDL type expression 可以解析未来有界变长语法，例如 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>`，但 `check` 会拒绝包含这些字段的 v0.1 contract，并提示需要未来 Variable Frame ABI；当前 `prepare`、`build`、`run`、`launch` 和 conformance 生成都不会继续处理这些字段。
 
+`u128` 和 `i128` 属于 fixed-size primitive，但它们需要额外的 `abi:int128` capability。当前 `inproc` 和 `iox2` backend 不提供该能力，因此使用这些类型的 contract 会在 deployment capability 校验阶段被判定为不满足。
+
 ## `prepare`
 
 ```bash

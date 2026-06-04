@@ -11,9 +11,9 @@ use flowrt_conformance::{AbiError, message_abi_expectations};
 use flowrt_ir::{
     CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr, ChannelKind,
     ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
-    OverflowPolicy, PolicyValueSource, PortIr, PortRef, RSDL_VERSION, StalePolicy, TargetIr,
-    TaskIr, TriggerKind, TypeExpr, backend_capabilities, base_deployment_capabilities,
-    is_known_backend, param_value_compatible, param_value_kind, trigger_capability,
+    PolicyValueSource, PortIr, PortRef, RSDL_VERSION, TaskIr, TriggerKind, TypeExpr,
+    backend_capabilities, channel_capabilities, graph_required_capabilities, is_known_backend,
+    param_value_compatible, param_value_kind, target_capabilities,
 };
 
 /// validation passes 返回的结果类型。
@@ -709,15 +709,20 @@ fn validate_deployment_matrix(ir: &ContractIr, errors: &mut Vec<ValidationError>
 }
 
 fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
-    let target_capabilities = ir
+    let expected_capabilities_by_target = ir
         .targets
         .iter()
-        .map(|target| (target.name.as_str(), expected_target_capabilities(target)))
+        .map(|target| (target.name.as_str(), target_capabilities(&target.backends)))
         .collect::<BTreeMap<_, _>>();
-    let graph_capabilities = ir
+    let expected_capabilities_by_graph = ir
         .graphs
         .iter()
-        .map(|graph| (graph.name.as_str(), expected_graph_capabilities(graph)))
+        .map(|graph| {
+            (
+                graph.name.as_str(),
+                graph_required_capabilities(graph, &ir.types, &ir.components),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
 
     for graph in &ir.graphs {
@@ -733,7 +738,7 @@ fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<ValidationErr
     }
 
     for target in &ir.targets {
-        let expected = &target_capabilities[target.name.as_str()];
+        let expected = &expected_capabilities_by_target[target.name.as_str()];
         if !capabilities_match(&target.capabilities, expected) {
             errors.push(ValidationError::new(format!(
                 "target `{}` capabilities do not match declared backends",
@@ -743,7 +748,7 @@ fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<ValidationErr
     }
 
     for deployment in &ir.deployments {
-        if let Some(expected) = graph_capabilities.get(deployment.graph.name.as_str()) {
+        if let Some(expected) = expected_capabilities_by_graph.get(deployment.graph.name.as_str()) {
             if !capabilities_match(&deployment.required_capabilities, expected) {
                 errors.push(ValidationError::new(format!(
                     "deployment `{} / {} / {}` required capabilities do not match graph `{}`",
@@ -1570,7 +1575,8 @@ fn validate_deployments(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
             continue;
         };
 
-        let expected_required_capabilities = expected_graph_capabilities(graph);
+        let expected_required_capabilities =
+            graph_required_capabilities(graph, &ir.types, &ir.components);
         let backend_supported_by_target = target
             .backends
             .iter()
@@ -1610,73 +1616,12 @@ fn validate_deployments(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     }
 }
 
-fn expected_target_capabilities(target: &TargetIr) -> Vec<CapabilityAtom> {
-    let capabilities = target
-        .backends
-        .iter()
-        .filter_map(|backend| backend_capabilities(&backend.0))
-        .flatten()
-        .collect::<Vec<_>>();
-    dedupe_capabilities(capabilities)
-}
-
-fn expected_graph_capabilities(graph: &GraphIr) -> Vec<CapabilityAtom> {
-    let mut capabilities = base_deployment_capabilities();
-    for task in &graph.tasks {
-        capabilities.push(trigger_capability(task.trigger));
-        if task.deadline_ms.is_some() {
-            capabilities.push(CapabilityAtom("timing:deadline_aware".to_string()));
-        }
-    }
-    for bind in &graph.binds {
-        capabilities.extend(expected_bind_capabilities(bind));
-    }
-    dedupe_capabilities(capabilities)
-}
-
 fn expected_bind_capabilities(bind: &ChannelEdgeIr) -> Vec<CapabilityAtom> {
-    vec![
-        CapabilityAtom(channel_capability_name(bind.channel).to_string()),
-        CapabilityAtom(overflow_capability_name(bind.overflow).to_string()),
-        CapabilityAtom(stale_capability_name(bind.stale).to_string()),
-    ]
+    channel_capabilities(bind.channel, bind.overflow, bind.stale)
 }
 
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
     actual == expected
-}
-
-fn dedupe_capabilities(capabilities: Vec<CapabilityAtom>) -> Vec<CapabilityAtom> {
-    let mut seen = BTreeSet::new();
-    capabilities
-        .into_iter()
-        .filter(|capability| seen.insert(capability.clone()))
-        .collect()
-}
-
-fn channel_capability_name(channel: ChannelKind) -> &'static str {
-    match channel {
-        ChannelKind::Latest => "channel:latest",
-        ChannelKind::Fifo => "channel:fifo",
-    }
-}
-
-fn overflow_capability_name(policy: OverflowPolicy) -> &'static str {
-    match policy {
-        OverflowPolicy::DropOldest => "overflow:drop_oldest",
-        OverflowPolicy::DropNewest => "overflow:drop_newest",
-        OverflowPolicy::Error => "overflow:error",
-        OverflowPolicy::Block => "overflow:block",
-    }
-}
-
-fn stale_capability_name(policy: StalePolicy) -> &'static str {
-    match policy {
-        StalePolicy::Warn => "stale:warn",
-        StalePolicy::Drop => "stale:drop",
-        StalePolicy::HoldLast => "stale:hold_last",
-        StalePolicy::Error => "stale:error",
-    }
 }
 
 fn validate_declared_backends(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
@@ -1778,7 +1723,8 @@ fn _language_name(language: LanguageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use flowrt_ir::{
-        ContractIr, ParamIr, ParamValue, ParamValueIr, hash_source, normalize_document,
+        ContractIr, OverflowPolicy, ParamIr, ParamValue, ParamValueIr, StalePolicy, hash_source,
+        normalize_document,
     };
     use flowrt_rsdl::parse_str;
 
@@ -3384,6 +3330,172 @@ backends = ["inproc"]
     }
 
     #[test]
+    fn rejects_forged_int128_abi_capability_metadata() {
+        let source = r#"
+[package]
+name = "wide_demo"
+rsdl_version = "0.1"
+
+[type.WideSample]
+value = "i128"
+
+[component.producer]
+language = "rust"
+output = ["sample:WideSample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:WideSample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.deployments[0]
+            .required_capabilities
+            .retain(|capability| capability.0 != "abi:int128");
+        ir.deployments[0].satisfied = true;
+
+        let report =
+            validate_contract(&ir).expect_err("forged int128 capability metadata should fail");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` required capabilities do not match graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "backend `inproc` selected by profile `default` cannot satisfy required capabilities for graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` has inconsistent satisfied flag",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rejects_forged_int128_metadata_for_declared_unreachable_message_type() {
+        let source = r#"
+[package]
+name = "wide_demo"
+rsdl_version = "0.1"
+
+[type.UnusedWide]
+value = "i128"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+        ir.deployments[0]
+            .required_capabilities
+            .retain(|capability| capability.0 != "abi:int128");
+        ir.deployments[0].satisfied = true;
+
+        let report = validate_contract(&ir)
+            .expect_err("forged unreachable int128 type metadata should fail");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` required capabilities do not match graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` has inconsistent satisfied flag",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn rejects_stale_derived_capability_metadata() {
         let mut ir = valid_reference_contract();
         ir.graphs[0].binds[0].capability_requirements.clear();
@@ -3444,7 +3556,8 @@ backends = ["inproc"]
         ir.graphs[0].binds[0].max_age_ms = Some(10);
         ir.graphs[0].binds[0].capability_requirements =
             expected_bind_capabilities(&ir.graphs[0].binds[0]);
-        ir.deployments[0].required_capabilities = expected_graph_capabilities(&ir.graphs[0]);
+        ir.deployments[0].required_capabilities =
+            graph_required_capabilities(&ir.graphs[0], &ir.types, &ir.components);
 
         let report =
             validate_contract(&ir).expect_err("forged channel policy source metadata should fail");
@@ -3520,8 +3633,10 @@ backends = ["inproc"]
         ir.graphs[0].binds[0].max_age_ms = Some(10);
         ir.graphs[0].binds[0].capability_requirements =
             expected_bind_capabilities(&ir.graphs[0].binds[0]);
+        let required_capabilities =
+            graph_required_capabilities(&ir.graphs[0], &ir.types, &ir.components);
         for deployment in &mut ir.deployments {
-            deployment.required_capabilities = expected_graph_capabilities(&ir.graphs[0]);
+            deployment.required_capabilities = required_capabilities.clone();
         }
 
         let report =
