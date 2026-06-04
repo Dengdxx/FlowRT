@@ -1244,7 +1244,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.startup_function_name
     ));
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this, &introspection_state](std::size_t tick, flowrt::Context& tick_context) {{\n                introspection_state.record_tick();\n                return {}(tick, tick_context, introspection_state);\n            }});\n    }}\n",
+        "    {{\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok) {{\n            status = backend.scheduler().run_ticks(\n                1, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
         run.step_function_name
     ));
     output.push_str(&format!(
@@ -2371,7 +2371,7 @@ fn emit_rust_app_run_function(
         startup_function_name = steps.startup
     ));
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick, tick_context, &introspection_state)\n            }});\n        }}\n",
+        "        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(1, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
         step_function_name = steps.scheduler
     ));
     output.push_str(&format!(
