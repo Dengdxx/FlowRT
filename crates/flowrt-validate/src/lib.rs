@@ -10,8 +10,8 @@ use std::fmt::{Display, Formatter};
 use flowrt_conformance::message_abi_expectations;
 use flowrt_ir::{
     CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelKind, ComponentIr, ComponentKind,
-    ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind, PortIr, PortRef, RSDL_VERSION, TaskIr,
-    TriggerKind, TypeExpr, backend_capabilities, is_known_backend,
+    ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind, PortIr, PortRef,
+    RSDL_VERSION, TaskIr, TriggerKind, TypeExpr, backend_capabilities, is_known_backend,
 };
 
 /// validation passes 返回的结果类型。
@@ -73,6 +73,8 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_contract_versions(ir, &mut errors);
     validate_contract_shape(ir, &mut errors);
     validate_entity_name_uniqueness(ir, &mut errors);
+    validate_entity_id_uniqueness(ir, &mut errors);
+    validate_entity_references(ir, &mut errors);
     validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
     validate_message_abi(ir, &mut errors);
@@ -162,6 +164,230 @@ fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationE
                 .map(|instance| instance.name.as_str()),
             errors,
         );
+    }
+}
+
+fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let mut seen = BTreeMap::<&EntityId, String>::new();
+    record_entity_id(
+        &mut seen,
+        &ir.package_id,
+        format!("package `{}`", ir.package.name),
+        errors,
+    );
+    for ty in &ir.types {
+        record_entity_id(&mut seen, &ty.id, format!("type `{}`", ty.name), errors);
+    }
+    for component in &ir.components {
+        record_entity_id(
+            &mut seen,
+            &component.id,
+            format!("component `{}`", component.name),
+            errors,
+        );
+    }
+    for graph in &ir.graphs {
+        record_entity_id(
+            &mut seen,
+            &graph.id,
+            format!("graph `{}`", graph.name),
+            errors,
+        );
+        for instance in &graph.instances {
+            record_entity_id(
+                &mut seen,
+                &instance.id,
+                format!("instance `{}`", instance.name),
+                errors,
+            );
+        }
+        for task in &graph.tasks {
+            record_entity_id(
+                &mut seen,
+                &task.id,
+                format!("task on instance `{}`", task.instance.name),
+                errors,
+            );
+        }
+        for bind in &graph.binds {
+            record_entity_id(
+                &mut seen,
+                &bind.id,
+                format!(
+                    "bind `{}.{}` -> `{}.{}`",
+                    bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
+                ),
+                errors,
+            );
+        }
+    }
+    for profile in &ir.profiles {
+        record_entity_id(
+            &mut seen,
+            &profile.id,
+            format!("profile `{}`", profile.name),
+            errors,
+        );
+    }
+    for target in &ir.targets {
+        record_entity_id(
+            &mut seen,
+            &target.id,
+            format!("target `{}`", target.name),
+            errors,
+        );
+    }
+    for deployment in &ir.deployments {
+        record_entity_id(
+            &mut seen,
+            &deployment.id,
+            format!(
+                "deployment `{}` / `{}` / `{}`",
+                deployment.graph.name, deployment.profile.name, deployment.target.name
+            ),
+            errors,
+        );
+    }
+}
+
+fn record_entity_id<'a>(
+    seen: &mut BTreeMap<&'a EntityId, String>,
+    id: &'a EntityId,
+    description: String,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(previous) = seen.insert(id, description.clone()) {
+        errors.push(ValidationError::new(format!(
+            "contract has duplicate entity ID `{}` shared by {previous} and {description}",
+            id.0
+        )));
+    }
+}
+
+fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let component_ids = ir
+        .components
+        .iter()
+        .map(|component| (component.name.as_str(), &component.id))
+        .collect::<BTreeMap<_, _>>();
+    let graph_ids = ir
+        .graphs
+        .iter()
+        .map(|graph| (graph.name.as_str(), &graph.id))
+        .collect::<BTreeMap<_, _>>();
+    let profile_ids = ir
+        .profiles
+        .iter()
+        .map(|profile| (profile.name.as_str(), &profile.id))
+        .collect::<BTreeMap<_, _>>();
+    let target_ids = ir
+        .targets
+        .iter()
+        .map(|target| (target.name.as_str(), &target.id))
+        .collect::<BTreeMap<_, _>>();
+
+    for graph in &ir.graphs {
+        let instance_ids = graph
+            .instances
+            .iter()
+            .map(|instance| (instance.name.as_str(), &instance.id))
+            .collect::<BTreeMap<_, _>>();
+
+        for instance in &graph.instances {
+            validate_named_entity_ref(
+                &format!("instance `{}` component reference", instance.name),
+                "component",
+                &instance.component,
+                &component_ids,
+                errors,
+            );
+            if let Some(target) = &instance.target {
+                validate_named_entity_ref(
+                    &format!("instance `{}` target reference", instance.name),
+                    "target",
+                    target,
+                    &target_ids,
+                    errors,
+                );
+            }
+        }
+
+        for task in &graph.tasks {
+            validate_named_entity_ref(
+                &format!(
+                    "task on instance `{}` instance reference",
+                    task.instance.name
+                ),
+                "instance",
+                &task.instance,
+                &instance_ids,
+                errors,
+            );
+        }
+
+        for bind in &graph.binds {
+            validate_named_entity_ref(
+                "bind source instance reference",
+                "instance",
+                &bind.from.instance,
+                &instance_ids,
+                errors,
+            );
+            validate_named_entity_ref(
+                "bind target instance reference",
+                "instance",
+                &bind.to.instance,
+                &instance_ids,
+                errors,
+            );
+        }
+    }
+
+    for deployment in &ir.deployments {
+        validate_named_entity_ref(
+            "deployment graph reference",
+            "graph",
+            &deployment.graph,
+            &graph_ids,
+            errors,
+        );
+        validate_named_entity_ref(
+            "deployment profile reference",
+            "profile",
+            &deployment.profile,
+            &profile_ids,
+            errors,
+        );
+        validate_named_entity_ref(
+            "deployment target reference",
+            "target",
+            &deployment.target,
+            &target_ids,
+            errors,
+        );
+    }
+}
+
+fn validate_named_entity_ref(
+    context: &str,
+    entity_kind: &str,
+    reference: &EntityRef,
+    known: &BTreeMap<&str, &EntityId>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(expected_id) = known.get(reference.name.as_str()) else {
+        errors.push(ValidationError::new(format!(
+            "{context} references unknown {entity_kind} `{}`",
+            reference.name
+        )));
+        return;
+    };
+
+    if *expected_id != &reference.id {
+        errors.push(ValidationError::new(format!(
+            "{context} points to {entity_kind} `{}` with ID `{}`, expected ID `{}`",
+            reference.name, reference.id.0, expected_id.0
+        )));
     }
 }
 
@@ -890,7 +1116,7 @@ fn _language_name(language: LanguageKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use flowrt_ir::{hash_source, normalize_document};
+    use flowrt_ir::{ContractIr, hash_source, normalize_document};
     use flowrt_rsdl::parse_str;
 
     use super::*;
@@ -1795,5 +2021,136 @@ backends = ["inproc"]
                 .message
                 .contains("target name `Linux` must be snake_case")
         }));
+    }
+
+    #[test]
+    fn rejects_duplicate_entity_ids_in_contract_ir_scopes() {
+        let mut ir = valid_reference_contract();
+        let duplicate_id = ir.types[0].id.clone();
+        ir.components[0].id = duplicate_id.clone();
+        ir.graphs[0].id = duplicate_id.clone();
+        ir.graphs[0].tasks[0].id = duplicate_id.clone();
+        ir.graphs[0].binds[0].id = duplicate_id.clone();
+        ir.deployments[0].id = duplicate_id.clone();
+
+        let report = validate_contract(&ir).expect_err("duplicate entity IDs should fail");
+
+        assert!(report.errors.iter().any(|error| {
+            error
+                .message
+                .contains(&format!("duplicate entity ID `{}`", duplicate_id.0))
+        }));
+    }
+
+    #[test]
+    fn rejects_inconsistent_entity_references_in_contract_ir() {
+        let mut ir = valid_reference_contract();
+        let consumer_component_id = ir
+            .components
+            .iter()
+            .find(|component| component.name == "consumer")
+            .expect("consumer component must exist")
+            .id
+            .clone();
+        let consumer_instance_id = ir.graphs[0]
+            .instances
+            .iter()
+            .find(|instance| instance.name == "consumer")
+            .expect("consumer instance must exist")
+            .id
+            .clone();
+        let consumer_target_id = ir.targets[0].id.clone();
+
+        ir.graphs[0]
+            .instances
+            .iter_mut()
+            .find(|instance| instance.name == "producer")
+            .expect("producer instance must exist")
+            .component
+            .id = consumer_component_id;
+        ir.graphs[0]
+            .tasks
+            .iter_mut()
+            .find(|task| task.instance.name == "producer")
+            .expect("producer task must exist")
+            .instance
+            .id = consumer_instance_id.clone();
+        ir.graphs[0]
+            .binds
+            .iter_mut()
+            .find(|bind| bind.from.instance.name == "producer")
+            .expect("producer bind must exist")
+            .from
+            .instance
+            .id = consumer_instance_id;
+        ir.deployments[0].profile.id = consumer_target_id;
+
+        let report =
+            validate_contract(&ir).expect_err("inconsistent entity references should fail");
+
+        for expected in [
+            "instance `producer` component reference",
+            "task on instance `producer` instance reference",
+            "bind source instance reference",
+            "deployment profile reference",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}"
+            );
+        }
+    }
+
+    fn valid_reference_contract() -> ContractIr {
+        let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        normalize_document(&raw, hash_source(source)).unwrap()
     }
 }
