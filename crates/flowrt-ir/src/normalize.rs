@@ -36,9 +36,13 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
             .package
             .imports
             .iter()
-            .map(|(kind, patterns)| ImportIr {
-                kind: kind.clone(),
-                patterns: patterns.clone(),
+            .map(|(kind, patterns)| {
+                let mut patterns = patterns.clone();
+                patterns.sort();
+                ImportIr {
+                    kind: kind.clone(),
+                    patterns,
+                }
             })
             .collect(),
     };
@@ -952,6 +956,36 @@ rsdl_version = "0.1"
 [target.linux]
 runtime = ["cpp", "rust"]
 backends = ["inproc", "iox2"]
+"#;
+        let raw_a = parse_str(source_a).unwrap();
+        let raw_b = parse_str(source_b).unwrap();
+        let source_hash = hash_source("same logical source");
+
+        let ir_a = normalize_document(&raw_a, source_hash.clone()).unwrap();
+        let ir_b = normalize_document(&raw_b, source_hash).unwrap();
+
+        assert_eq!(ir_a, ir_b);
+    }
+
+    #[test]
+    fn canonicalizes_import_pattern_order_independent_of_source_order() {
+        let source_a = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/b.rsdl", "types/a.rsdl"]
+components = ["components/b.rsdl", "components/a.rsdl"]
+"#;
+        let source_b = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["types/a.rsdl", "types/b.rsdl"]
+components = ["components/a.rsdl", "components/b.rsdl"]
 "#;
         let raw_a = parse_str(source_a).unwrap();
         let raw_b = parse_str(source_b).unwrap();
