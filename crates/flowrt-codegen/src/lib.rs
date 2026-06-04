@@ -325,12 +325,42 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         outgoing_bind_indices: &outgoing_bind_indices,
         selected_backend: &selected_backend,
     };
-    output.push_str(&emit_cpp_app_step(&step_emission, &order, "step"));
+    output.push_str(&emit_cpp_app_step(
+        &step_emission,
+        &order,
+        "step",
+        TaskEmissionPhase::Scheduler,
+    ));
+    output.push_str(&emit_cpp_app_step(
+        &step_emission,
+        &order,
+        "step_startup",
+        TaskEmissionPhase::Startup,
+    ));
+    output.push_str(&emit_cpp_app_step(
+        &step_emission,
+        &order,
+        "step_shutdown",
+        TaskEmissionPhase::Shutdown,
+    ));
     for process in &process_plans {
         output.push_str(&emit_cpp_app_step(
             &step_emission,
             &process.instances,
             &format!("step_process_{}", process.method_suffix),
+            TaskEmissionPhase::Scheduler,
+        ));
+        output.push_str(&emit_cpp_app_step(
+            &step_emission,
+            &process.instances,
+            &format!("step_process_{}_startup", process.method_suffix),
+            TaskEmissionPhase::Startup,
+        ));
+        output.push_str(&emit_cpp_app_step(
+            &step_emission,
+            &process.instances,
+            &format!("step_process_{}_shutdown", process.method_suffix),
+            TaskEmissionPhase::Shutdown,
         ));
     }
     output.push_str(&emit_cpp_app_run(&order));
@@ -339,6 +369,8 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         output.push_str(&emit_cpp_app_run_function(
             &format!("run_process_{}", process.method_suffix),
             &format!("step_process_{}", process.method_suffix),
+            &format!("step_process_{}_startup", process.method_suffix),
+            &format!("step_process_{}_shutdown", process.method_suffix),
             &process.instances,
         ));
     }
@@ -377,11 +409,19 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context);\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context);\n",
     );
     for process in &process_plans {
         output.push_str(&format!(
             "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context);\n",
+            process.method_suffix
+        ));
+        output.push_str(&format!(
+            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context);\n",
+            process.method_suffix
+        ));
+        output.push_str(&format!(
+            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context);\n",
             process.method_suffix
         ));
     }
@@ -521,17 +561,39 @@ struct CppStepEmission<'a> {
     selected_backend: &'a str,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TaskEmissionPhase {
+    Scheduler,
+    Startup,
+    Shutdown,
+}
+
+impl TaskEmissionPhase {
+    fn includes(self, trigger: TriggerKind) -> bool {
+        match self {
+            TaskEmissionPhase::Scheduler => {
+                matches!(trigger, TriggerKind::Periodic | TriggerKind::OnMessage)
+            }
+            TaskEmissionPhase::Startup => trigger == TriggerKind::Startup,
+            TaskEmissionPhase::Shutdown => trigger == TriggerKind::Shutdown,
+        }
+    }
+}
+
 fn emit_cpp_app_step(
     emission: &CppStepEmission<'_>,
     order: &[&InstanceIr],
     function_name: &str,
+    phase: TaskEmissionPhase,
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
         "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context) {{\n",
     ));
     if cpp_runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
-        output.push_str("    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n");
+        output.push_str(
+            "    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n    (void)tick_time_ms;\n",
+        );
     } else {
         output.push_str("    (void)tick;\n");
     }
@@ -542,6 +604,9 @@ fn emit_cpp_app_step(
         let Some(task) = task_for_instance(emission.graph, instance) else {
             continue;
         };
+        if !phase.includes(task.trigger) {
+            continue;
+        }
         let task_inputs = task
             .inputs
             .iter()
@@ -709,7 +774,7 @@ fn rust_nested_step_indent(nested: bool) -> &'static str {
 }
 
 fn emit_cpp_app_run(order: &[&InstanceIr]) -> String {
-    emit_cpp_app_run_function("run", "step", order)
+    emit_cpp_app_run_function("run", "step", "step_startup", "step_shutdown", order)
 }
 
 fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
@@ -731,6 +796,8 @@ fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> St
 fn emit_cpp_app_run_function(
     function_name: &str,
     step_function_name: &str,
+    startup_function_name: &str,
+    shutdown_function_name: &str,
     order: &[&InstanceIr],
 ) -> String {
     let mut output = String::new();
@@ -756,7 +823,13 @@ fn emit_cpp_app_run_function(
         ));
     }
     output.push_str(&format!(
+        "    if (status == flowrt::Status::Ok) {{\n        status = {startup_function_name}(0, lifecycle_context);\n    }}\n"
+    ));
+    output.push_str(&format!(
         "    if (status == flowrt::Status::Ok) {{\n        status = backend.scheduler().run_ticks(\n            5, [this](std::size_t tick, flowrt::Context& tick_context) {{\n                return {step_function_name}(tick, tick_context);\n            }});\n    }}\n"
+    ));
+    output.push_str(&format!(
+        "    if (status == flowrt::Status::Ok) {{\n        status = {shutdown_function_name}(0, lifecycle_context);\n    }}\n"
     ));
     for instance in order.iter().rev() {
         output.push_str(&format!(
@@ -1094,12 +1167,42 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         selected_backend: &selected_backend,
     };
 
-    output.push_str(&emit_rust_app_step(&step_emission, &order, "step"));
+    output.push_str(&emit_rust_app_step(
+        &step_emission,
+        &order,
+        "step",
+        TaskEmissionPhase::Scheduler,
+    ));
+    output.push_str(&emit_rust_app_step(
+        &step_emission,
+        &order,
+        "step_startup",
+        TaskEmissionPhase::Startup,
+    ));
+    output.push_str(&emit_rust_app_step(
+        &step_emission,
+        &order,
+        "step_shutdown",
+        TaskEmissionPhase::Shutdown,
+    ));
     for process in &process_plans {
         output.push_str(&emit_rust_app_step(
             &step_emission,
             &process.instances,
             &format!("step_process_{}", process.method_suffix),
+            TaskEmissionPhase::Scheduler,
+        ));
+        output.push_str(&emit_rust_app_step(
+            &step_emission,
+            &process.instances,
+            &format!("step_process_{}_startup", process.method_suffix),
+            TaskEmissionPhase::Startup,
+        ));
+        output.push_str(&emit_rust_app_step(
+            &step_emission,
+            &process.instances,
+            &format!("step_process_{}_shutdown", process.method_suffix),
+            TaskEmissionPhase::Shutdown,
         ));
     }
     output.push_str(&emit_rust_app_run(&order));
@@ -1108,6 +1211,8 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         output.push_str(&emit_rust_app_run_function(
             &format!("run_process_{}", process.method_suffix),
             &format!("step_process_{}", process.method_suffix),
+            &format!("step_process_{}_startup", process.method_suffix),
+            &format!("step_process_{}_shutdown", process.method_suffix),
             &process.instances,
             false,
         ));
@@ -1428,6 +1533,7 @@ fn emit_rust_app_step(
     emission: &RustStepEmission<'_>,
     order: &[&InstanceIr],
     function_name: &str,
+    phase: TaskEmissionPhase,
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
@@ -1435,7 +1541,7 @@ fn emit_rust_app_step(
     ));
     output.push_str("        let _ = tick;\n");
     if runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
-        output.push_str("        let tick_time_ms = tick as u64;\n");
+        output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
 
     for instance in order {
@@ -1443,6 +1549,9 @@ fn emit_rust_app_step(
         let Some(task) = task_for_instance(emission.graph, instance) else {
             continue;
         };
+        if !phase.includes(task.trigger) {
+            continue;
+        }
         let task_inputs = task
             .inputs
             .iter()
@@ -1544,7 +1653,7 @@ fn emit_rust_app_step(
 }
 
 fn emit_rust_app_run(order: &[&InstanceIr]) -> String {
-    emit_rust_app_run_function("run", "step", order, true)
+    emit_rust_app_run_function("run", "step", "step_startup", "step_shutdown", order, true)
 }
 
 fn emit_rust_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
@@ -1566,6 +1675,8 @@ fn emit_rust_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> S
 fn emit_rust_app_run_function(
     function_name: &str,
     step_function_name: &str,
+    startup_function_name: &str,
+    shutdown_function_name: &str,
     order: &[&InstanceIr],
     public: bool,
 ) -> String {
@@ -1593,7 +1704,13 @@ fn emit_rust_app_run_function(
         ));
     }
     output.push_str(&format!(
+        "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context);\n        }}\n",
+    ));
+    output.push_str(&format!(
         "        if status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(5, &mut |tick, tick_context| self.{step_function_name}(tick, tick_context));\n        }}\n",
+    ));
+    output.push_str(&format!(
+        "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context);\n        }}\n",
     ));
     for instance in order.iter().rev() {
         output.push_str(&format!(
@@ -3918,6 +4035,110 @@ channel = "latest"
         assert!(sink_step.contains("if let Some(value) = used_out.as_ref().copied()"));
         assert!(!sink_step.contains("self.bind_1.view_at(tick_time_ms)"));
         assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().copied()"));
+    }
+
+    #[test]
+    fn rust_shell_runs_startup_and_shutdown_tasks_outside_tick_loop() {
+        let mut ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.boot]
+language = "rust"
+
+[component.cleanup]
+language = "rust"
+
+[instance.boot]
+component = "boot"
+
+[instance.boot.task]
+trigger = "periodic"
+period_ms = 5
+
+[instance.cleanup]
+component = "cleanup"
+
+[instance.cleanup.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+        );
+        ir.graphs[0].tasks[0].trigger = TriggerKind::Startup;
+        ir.graphs[0].tasks[1].trigger = TriggerKind::Shutdown;
+
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let run_start = rust_shell.find("    pub fn run(").unwrap();
+        let run = &rust_shell[run_start..];
+        let startup_call = run
+            .find("self.step_startup(0, &mut lifecycle_context)")
+            .unwrap();
+        let scheduler_call = run.find("backend.scheduler().run_ticks").unwrap();
+        let shutdown_call = run
+            .find("self.step_shutdown(0, &mut lifecycle_context)")
+            .unwrap();
+
+        assert!(startup_call < scheduler_call);
+        assert!(scheduler_call < shutdown_call);
+        assert!(rust_shell.contains("fn step_startup(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.boot.on_tick()"));
+        assert!(rust_shell.contains("fn step_shutdown(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.cleanup.on_tick()"));
+        assert!(!rust_shell.contains("fn step(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.boot.on_tick()"));
+        assert!(!rust_shell.contains("fn step(&mut self, tick: usize, _tick_context: &mut flowrt::Context) -> flowrt::Status {\n        let _ = tick;\n        if self.cleanup.on_tick()"));
+    }
+
+    #[test]
+    fn cpp_shell_runs_startup_and_shutdown_tasks_outside_tick_loop() {
+        let mut ir = contract_from_source(
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.boot]
+language = "cpp"
+
+[component.cleanup]
+language = "cpp"
+
+[instance.boot]
+component = "boot"
+
+[instance.boot.task]
+trigger = "periodic"
+period_ms = 5
+
+[instance.cleanup]
+component = "cleanup"
+
+[instance.cleanup.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+        );
+        ir.graphs[0].tasks[0].trigger = TriggerKind::Startup;
+        ir.graphs[0].tasks[1].trigger = TriggerKind::Shutdown;
+
+        let bundle = emit_artifacts(&ir).unwrap();
+        let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let run_start = cpp_shell.find("flowrt::Status App::run(").unwrap();
+        let run = &cpp_shell[run_start..];
+        let startup_call = run
+            .find("status = step_startup(0, lifecycle_context)")
+            .unwrap();
+        let scheduler_call = run.find("backend.scheduler().run_ticks").unwrap();
+        let shutdown_call = run
+            .find("status = step_shutdown(0, lifecycle_context)")
+            .unwrap();
+
+        assert!(startup_call < scheduler_call);
+        assert!(scheduler_call < shutdown_call);
+        assert!(cpp_shell.contains("flowrt::Status App::step_startup(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (boot_ && boot_->on_tick()"));
+        assert!(cpp_shell.contains("flowrt::Status App::step_shutdown(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (cleanup_ && cleanup_->on_tick()"));
+        assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (boot_ && boot_->on_tick()"));
+        assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context) {\n    (void)tick;\n    (void)tick_context;\n    if (cleanup_ && cleanup_->on_tick()"));
     }
 
     #[test]

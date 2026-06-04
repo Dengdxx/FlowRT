@@ -154,7 +154,7 @@ runtime = ["cpp"]
 backends = ["inproc"]
 ```
 
-`component` 描述可复用组件类型，`instance` 把组件放进 graph，`instance.<name>.task` 描述执行单元，`bind.dataflow` 描述 typed channel。Contract IR v0.1 当前每个 instance 最多一个 task；`task.input` 中声明的每个 active input 必须有且只有一条 incoming bind。
+`component` 描述可复用组件类型，`instance` 把组件放进 graph，`instance.<name>.task` 描述执行单元，`bind.dataflow` 描述 typed channel。Contract IR v0.1 当前每个 instance 最多一个 task；`task.input` 中声明的每个 active input 必须有且只有一条 incoming bind。`periodic` / `on_message` 由 scheduler tick 驱动，`startup` / `shutdown` 分别在 scheduler 前后各运行一次。
 
 ## 示例目录
 
