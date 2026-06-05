@@ -1265,6 +1265,74 @@ mod tests {
     }
 
     #[test]
+    fn status_server_returns_registered_self_description_json() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-selfdesc-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.set_self_description_json(r#"{"package":{"name":"robot_demo"}}"#);
+        let server = spawn_status_server_at(socket.clone(), handshake.clone(), state)
+            .expect("server should start");
+
+        let IntrospectionResponse::SelfDescription {
+            handshake: response_handshake,
+            json,
+        } = request_self_description(server.path())
+            .expect("self-description request should succeed")
+        else {
+            panic!("self-description request returned wrong response")
+        };
+
+        assert_eq!(response_handshake, handshake);
+        assert_eq!(json, r#"{"package":{"name":"robot_demo"}}"#);
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn status_server_reports_missing_self_description() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-missing-selfdesc-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let server = spawn_status_server_at(socket.clone(), handshake, IntrospectionState::new())
+            .expect("server should start");
+
+        let IntrospectionResponse::Error { message, .. } = request_self_description(server.path())
+            .expect("missing self-description should return structured error")
+        else {
+            panic!("missing self-description request returned wrong response")
+        };
+
+        assert_eq!(message, "FlowRT self-description is not registered");
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn state_recovers_after_mutex_poison() {
         let state = IntrospectionState::new();
         let poison_state = state.clone();
@@ -1373,6 +1441,46 @@ mod tests {
     }
 
     #[test]
+    fn bounded_probe_drops_oversized_payload_and_reports_drop_count() {
+        let state = IntrospectionState::new();
+        state.register_channel_with_probe_capacity("source.image_to_sink.image", "Image", Some(4));
+        let guard = state
+            .observe_channel("source.image_to_sink.image")
+            .expect("registered channel should be observable");
+
+        let record = state.try_probe_channel_publish_bytes(
+            "source.image_to_sink.image",
+            "Image",
+            &[1, 2, 3, 4, 5],
+            Some(10),
+        );
+        let snapshot = state
+            .channel_snapshot("source.image_to_sink.image")
+            .expect("registered channel should have snapshot state");
+        let status = state
+            .channel_status("source.image_to_sink.image")
+            .expect("registered channel should have status");
+
+        assert_eq!(
+            record,
+            IntrospectionProbeRecord {
+                recorded: false,
+                dropped: true,
+            }
+        );
+        assert_eq!(snapshot.published_count, 0);
+        assert_eq!(snapshot.payload.as_deref(), Some([].as_slice()));
+        assert_eq!(status.active_observers, 1);
+        assert_eq!(status.dropped_samples, 1);
+
+        drop(guard);
+        assert_eq!(
+            state.active_probe_count("source.image_to_sink.image"),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn observe_channel_socket_enables_probe_until_connection_closes() {
         let root = std::env::temp_dir().join(format!(
             "flowrt-introspection-observe-test-{}",
@@ -1433,6 +1541,41 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn observe_unknown_channel_returns_error_without_enabling_probe() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-observe-missing-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        let server = spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("server should start");
+
+        let (_stream, response) = observe_channel_stream(server.path(), "missing.channel")
+            .expect("missing channel should return structured error");
+
+        assert!(matches!(
+            response,
+            IntrospectionResponse::Error { message, .. } if message == "unknown FlowRT channel"
+        ));
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
+        assert_eq!(state.active_probe_count("missing.channel"), None);
 
         drop(server);
         let _ = fs::remove_dir_all(root);

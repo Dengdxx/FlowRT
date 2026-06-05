@@ -1074,6 +1074,126 @@ types = ["types/*.rsdl"]
     }
 
     #[test]
+    fn parse_file_rejects_absolute_import_paths() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["/tmp/flowrt/secret.rsdl"]
+"#,
+        )
+        .unwrap();
+
+        let error =
+            parse_file(root.join("robot.rsdl")).expect_err("absolute import path should fail");
+
+        assert!(matches!(
+            error,
+            RsdlError::InvalidImportPath { pattern, .. }
+                if pattern == "/tmp/flowrt/secret.rsdl"
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_file_rejects_parent_directory_import_paths() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["../shared/types.rsdl"]
+"#,
+        )
+        .unwrap();
+
+        let error =
+            parse_file(root.join("robot.rsdl")).expect_err("parent import path should fail");
+
+        assert!(matches!(
+            error,
+            RsdlError::InvalidImportPath { pattern, .. }
+                if pattern == "../shared/types.rsdl"
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_file_expands_nested_imports_and_records_loaded_sources() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("components").join("common")).unwrap();
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[package.imports]
+components = ["components/source.rsdl"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components").join("source.rsdl"),
+            r#"
+[package]
+name = "source_fragment"
+rsdl_version = "0.1"
+
+[package.imports]
+types = ["common/*.rsdl"]
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components").join("common").join("sample.rsdl"),
+            r#"
+[type.Sample]
+value = "u32"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_file(root.join("robot.rsdl")).unwrap();
+        let source_paths = loaded
+            .sources
+            .iter()
+            .map(|source| source.path.as_path())
+            .collect::<Vec<_>>();
+
+        assert!(loaded.document.types.contains_key("Sample"));
+        assert_eq!(loaded.document.components["source"].output[0].ty, "Sample");
+        assert_eq!(
+            source_paths,
+            vec![
+                Path::new("robot.rsdl"),
+                Path::new("components/source.rsdl"),
+                Path::new("components/common/sample.rsdl"),
+            ]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn parse_file_rejects_duplicate_imported_symbols() {
         let root = unique_temp_dir();
         std::fs::create_dir_all(root.join("types")).unwrap();
