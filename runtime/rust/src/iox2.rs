@@ -6,8 +6,12 @@
 use std::time::Duration;
 
 use iceoryx2::prelude::*;
+use iceoryx2::sample::Sample;
 
-use crate::{Latest, OverflowPolicy, StaleConfig, StalePolicy, WireCodecError};
+use crate::{
+    BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, Latest, OverflowPolicy,
+    ReconnectPolicy, StaleConfig, StalePolicy, WireCodecError,
+};
 
 type IpcNode = Node<ipc::Service>;
 type IpcPublisher<T> = iceoryx2::port::publisher::Publisher<ipc::Service, T, FlowrtIox2Header>;
@@ -36,6 +40,15 @@ where
 {
     published_at_ms: u64,
     payload: T,
+}
+
+struct Iox2EndpointParts<T>
+where
+    T: std::fmt::Debug + ZeroCopySend + 'static,
+{
+    publisher: IpcPublisher<T>,
+    subscriber: IpcSubscriber<T>,
+    node: IpcNode,
 }
 
 /// 可选 iceoryx2 transport helper 返回的错误。
@@ -157,11 +170,13 @@ pub struct Iox2PubSub<T>
 where
     T: std::fmt::Debug + Copy + ZeroCopySend + 'static,
 {
-    publisher: IpcPublisher<T>,
-    subscriber: IpcSubscriber<T>,
-    node: IpcNode,
+    service_name: String,
+    publisher: Option<IpcPublisher<T>>,
+    subscriber: Option<IpcSubscriber<T>>,
+    node: Option<IpcNode>,
     config: Iox2ChannelConfig,
     stale: StaleConfig,
+    health: BackendHealthTracker,
     received: Option<Iox2Received<T>>,
 }
 
@@ -175,11 +190,13 @@ where
     T: Clone,
     S: Iox2FrameSlot<T> + std::fmt::Debug + Copy + ZeroCopySend + 'static,
 {
-    publisher: IpcPublisher<S>,
-    subscriber: IpcSubscriber<S>,
-    node: IpcNode,
+    service_name: String,
+    publisher: Option<IpcPublisher<S>>,
+    subscriber: Option<IpcSubscriber<S>>,
+    node: Option<IpcNode>,
     config: Iox2ChannelConfig,
     stale: StaleConfig,
+    health: BackendHealthTracker,
     received: Option<Iox2FrameReceived<T>>,
 }
 
@@ -193,53 +210,45 @@ where
         service_name: &str,
         config: Iox2ChannelConfig,
     ) -> Result<Self, Iox2Error> {
-        let service_name = service_name
-            .try_into()
-            .map_err(|error| Iox2Error::new("invalid iceoryx2 service name", error))?;
-        let node = NodeBuilder::new()
-            .create::<ipc::Service>()
-            .map_err(|error| Iox2Error::new("failed to create iceoryx2 node", error))?;
-        let service = node
-            .service_builder(&service_name)
-            .publish_subscribe::<S>()
-            .user_header::<FlowrtIox2Header>()
-            .enable_safe_overflow(config.safe_overflow())
-            .history_size(config.depth())
-            .subscriber_max_buffer_size(config.depth())
-            .open_or_create()
-            .map_err(|error| {
-                Iox2Error::new(
-                    "failed to open or create iceoryx2 frame pubsub service",
-                    error,
-                )
-            })?;
-        let publisher = service
-            .publisher_builder()
-            .backpressure_strategy(config.backpressure_strategy())
-            .create()
-            .map_err(|error| Iox2Error::new("failed to create iceoryx2 frame publisher", error))?;
-        let subscriber = service
-            .subscriber_builder()
-            .buffer_size(config.depth())
-            .create()
-            .map_err(|error| Iox2Error::new("failed to create iceoryx2 frame subscriber", error))?;
+        let parts = open_iox2_parts(service_name, config)?;
 
         Ok(Self {
-            publisher,
-            subscriber,
-            node,
+            service_name: service_name.to_string(),
+            publisher: Some(parts.publisher),
+            subscriber: Some(parts.subscriber),
+            node: Some(parts.node),
             config,
             stale: config.stale(),
+            health: BackendHealthTracker::new(ReconnectPolicy::default()),
             received: None,
         })
     }
 
     /// 带 FlowRT runtime 时间戳发布一个结构化变长消息。
-    pub fn publish_at(&self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
+    pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
         let slot = S::try_from_message(&value)
             .map_err(|error| Iox2Error::new("encode FlowRT iox2 frame payload", error))?;
-        let sample = self
-            .publisher
+        self.ensure_ready("publish iceoryx2 frame sample")?;
+        match self.publish_slot(slot, published_at_ms) {
+            Ok(()) => {
+                self.health.mark_ready();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_transport_error(&error);
+                self.recover_after_transport_error("publish iceoryx2 frame sample")?;
+                self.publish_slot(slot, published_at_ms)
+                    .inspect(|_| self.health.mark_ready())
+                    .inspect_err(|error| self.mark_transport_error(error))
+            }
+        }
+    }
+
+    fn publish_slot(&self, slot: S, published_at_ms: u64) -> Result<(), Iox2Error> {
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            Iox2Error::new("publish iceoryx2 frame sample", "endpoint is not ready")
+        })?;
+        let sample = publisher
             .loan_uninit()
             .map_err(|error| Iox2Error::new("failed to loan iceoryx2 frame sample", error))?;
         let mut sample = sample;
@@ -253,11 +262,8 @@ where
 
     /// 接收一个结构化消息，并根据 transport 时间戳暴露 freshness 状态。
     pub fn receive_latest_at(&mut self, now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
-        if let Some(sample) = self
-            .subscriber
-            .receive()
-            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 frame sample", error))?
-        {
+        self.ensure_ready("receive iceoryx2 frame sample")?;
+        if let Some(sample) = self.try_receive_frame_with_recovery()? {
             self.received = Some(Iox2FrameReceived {
                 published_at_ms: sample.user_header().published_at_ms,
                 payload: (*sample)
@@ -285,11 +291,93 @@ where
         self.config
     }
 
+    /// 判断底层 iox2 endpoint 是否已经打开。
+    pub fn ready(&self) -> bool {
+        self.node.is_some() && self.publisher.is_some() && self.subscriber.is_some()
+    }
+
+    /// 返回 endpoint 健康快照。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        if !self.ready() && self.health.snapshot().state == BackendHealthState::Ready {
+            return BackendHealthSnapshot {
+                state: BackendHealthState::Degraded,
+                last_error: Some("iceoryx2 endpoint is not ready".to_string()),
+                attempt: 0,
+                next_retry_unix_ms: None,
+                recoverable: true,
+            };
+        }
+        self.health.snapshot()
+    }
+
+    /// 返回 endpoint 重连策略。
+    pub fn reconnect_policy(&self) -> ReconnectPolicy {
+        self.health.policy()
+    }
+
     /// 短暂等待，让 iceoryx2 推进本机 endpoint 状态。
     pub fn poll_once(&self, timeout: Duration) -> Result<(), Iox2Error> {
         self.node
+            .as_ref()
+            .ok_or_else(|| Iox2Error::new("poll iceoryx2 frame node", "endpoint is not ready"))?
             .wait(timeout)
             .map_err(|error| Iox2Error::new("failed to poll iceoryx2 frame node", error))
+    }
+
+    fn try_receive_frame(
+        &self,
+    ) -> Result<Option<Sample<ipc::Service, S, FlowrtIox2Header>>, Iox2Error> {
+        let subscriber = self.subscriber.as_ref().ok_or_else(|| {
+            Iox2Error::new("receive iceoryx2 frame sample", "endpoint is not ready")
+        })?;
+        subscriber
+            .receive()
+            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 frame sample", error))
+    }
+
+    fn try_receive_frame_with_recovery(
+        &mut self,
+    ) -> Result<Option<Sample<ipc::Service, S, FlowrtIox2Header>>, Iox2Error> {
+        match self.try_receive_frame() {
+            Ok(sample) => {
+                self.health.mark_ready();
+                Ok(sample)
+            }
+            Err(error) => {
+                self.mark_transport_error(&error);
+                self.recover_after_transport_error("receive iceoryx2 frame sample")?;
+                self.try_receive_frame()
+                    .inspect(|_| self.health.mark_ready())
+                    .inspect_err(|error| self.mark_transport_error(error))
+            }
+        }
+    }
+
+    fn ensure_ready(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
+        if self.ready() {
+            return Ok(());
+        }
+        if self.health.snapshot().state != BackendHealthState::Reconnecting {
+            self.health
+                .mark_degraded(format!("{operation}: endpoint is not ready"));
+        }
+        self.recover_after_transport_error(operation)
+    }
+
+    fn mark_transport_error(&mut self, error: &Iox2Error) {
+        self.health.mark_degraded(error.to_string());
+    }
+
+    fn recover_after_transport_error(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
+        recover_iox2_endpoint(
+            operation,
+            &self.service_name,
+            self.config,
+            &mut self.publisher,
+            &mut self.subscriber,
+            &mut self.node,
+            &mut self.health,
+        )
     }
 }
 
@@ -307,53 +395,49 @@ where
         service_name: &str,
         config: Iox2ChannelConfig,
     ) -> Result<Self, Iox2Error> {
-        let service_name = service_name
-            .try_into()
-            .map_err(|error| Iox2Error::new("invalid iceoryx2 service name", error))?;
-        let node = NodeBuilder::new()
-            .create::<ipc::Service>()
-            .map_err(|error| Iox2Error::new("failed to create iceoryx2 node", error))?;
-        let service = node
-            .service_builder(&service_name)
-            .publish_subscribe::<T>()
-            .user_header::<FlowrtIox2Header>()
-            .enable_safe_overflow(config.safe_overflow())
-            .history_size(config.depth())
-            .subscriber_max_buffer_size(config.depth())
-            .open_or_create()
-            .map_err(|error| {
-                Iox2Error::new("failed to open or create iceoryx2 pubsub service", error)
-            })?;
-        let publisher = service
-            .publisher_builder()
-            .backpressure_strategy(config.backpressure_strategy())
-            .create()
-            .map_err(|error| Iox2Error::new("failed to create iceoryx2 publisher", error))?;
-        let subscriber = service
-            .subscriber_builder()
-            .buffer_size(config.depth())
-            .create()
-            .map_err(|error| Iox2Error::new("failed to create iceoryx2 subscriber", error))?;
+        let parts = open_iox2_parts(service_name, config)?;
 
         Ok(Self {
-            publisher,
-            subscriber,
-            node,
+            service_name: service_name.to_string(),
+            publisher: Some(parts.publisher),
+            subscriber: Some(parts.subscriber),
+            node: Some(parts.node),
             config,
             stale: config.stale(),
+            health: BackendHealthTracker::new(ReconnectPolicy::default()),
             received: None,
         })
     }
 
     /// 通过 iceoryx2 loaned sample 发布一个值。
-    pub fn publish(&self, value: T) -> Result<(), Iox2Error> {
+    pub fn publish(&mut self, value: T) -> Result<(), Iox2Error> {
         self.publish_at(value, 0)
     }
 
     /// 带 FlowRT runtime 时间戳发布一个值。
-    pub fn publish_at(&self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
-        let sample = self
+    pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
+        self.ensure_ready("publish iceoryx2 sample")?;
+        match self.publish_slot(value, published_at_ms) {
+            Ok(()) => {
+                self.health.mark_ready();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_transport_error(&error);
+                self.recover_after_transport_error("publish iceoryx2 sample")?;
+                self.publish_slot(value, published_at_ms)
+                    .inspect(|_| self.health.mark_ready())
+                    .inspect_err(|error| self.mark_transport_error(error))
+            }
+        }
+    }
+
+    fn publish_slot(&self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
+        let publisher = self
             .publisher
+            .as_ref()
+            .ok_or_else(|| Iox2Error::new("publish iceoryx2 sample", "endpoint is not ready"))?;
+        let sample = publisher
             .loan_uninit()
             .map_err(|error| Iox2Error::new("failed to loan iceoryx2 sample", error))?;
         let mut sample = sample;
@@ -366,20 +450,16 @@ where
     }
 
     /// 如果有可用样本，则接收一个值。
-    pub fn receive(&self) -> Result<Option<T>, Iox2Error> {
-        self.subscriber
-            .receive()
+    pub fn receive(&mut self) -> Result<Option<T>, Iox2Error> {
+        self.ensure_ready("receive iceoryx2 sample")?;
+        self.try_receive_sample_with_recovery()
             .map(|sample| sample.map(|sample| *sample))
-            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 sample", error))
     }
 
     /// 接收一个值，并根据 transport 时间戳暴露 freshness 状态。
     pub fn receive_latest_at(&mut self, now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
-        if let Some(sample) = self
-            .subscriber
-            .receive()
-            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 sample", error))?
-        {
+        self.ensure_ready("receive iceoryx2 sample")?;
+        if let Some(sample) = self.try_receive_sample_with_recovery()? {
             self.received = Some(Iox2Received {
                 published_at_ms: sample.user_header().published_at_ms,
                 payload: *sample,
@@ -404,12 +484,215 @@ where
         self.config
     }
 
+    /// 判断底层 iox2 endpoint 是否已经打开。
+    pub fn ready(&self) -> bool {
+        self.node.is_some() && self.publisher.is_some() && self.subscriber.is_some()
+    }
+
+    /// 返回 endpoint 健康快照。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        if !self.ready() && self.health.snapshot().state == BackendHealthState::Ready {
+            return BackendHealthSnapshot {
+                state: BackendHealthState::Degraded,
+                last_error: Some("iceoryx2 endpoint is not ready".to_string()),
+                attempt: 0,
+                next_retry_unix_ms: None,
+                recoverable: true,
+            };
+        }
+        self.health.snapshot()
+    }
+
+    /// 返回 endpoint 重连策略。
+    pub fn reconnect_policy(&self) -> ReconnectPolicy {
+        self.health.policy()
+    }
+
     /// 短暂等待，让 iceoryx2 推进本机 endpoint 状态。
     pub fn poll_once(&self, timeout: Duration) -> Result<(), Iox2Error> {
         self.node
+            .as_ref()
+            .ok_or_else(|| Iox2Error::new("poll iceoryx2 node", "endpoint is not ready"))?
             .wait(timeout)
             .map_err(|error| Iox2Error::new("failed to poll iceoryx2 node", error))
     }
+
+    fn try_receive_sample(
+        &self,
+    ) -> Result<Option<Sample<ipc::Service, T, FlowrtIox2Header>>, Iox2Error> {
+        let subscriber = self
+            .subscriber
+            .as_ref()
+            .ok_or_else(|| Iox2Error::new("receive iceoryx2 sample", "endpoint is not ready"))?;
+        subscriber
+            .receive()
+            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 sample", error))
+    }
+
+    fn try_receive_sample_with_recovery(
+        &mut self,
+    ) -> Result<Option<Sample<ipc::Service, T, FlowrtIox2Header>>, Iox2Error> {
+        match self.try_receive_sample() {
+            Ok(sample) => {
+                self.health.mark_ready();
+                Ok(sample)
+            }
+            Err(error) => {
+                self.mark_transport_error(&error);
+                self.recover_after_transport_error("receive iceoryx2 sample")?;
+                self.try_receive_sample()
+                    .inspect(|_| self.health.mark_ready())
+                    .inspect_err(|error| self.mark_transport_error(error))
+            }
+        }
+    }
+
+    fn ensure_ready(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
+        if self.ready() {
+            return Ok(());
+        }
+        if self.health.snapshot().state != BackendHealthState::Reconnecting {
+            self.health
+                .mark_degraded(format!("{operation}: endpoint is not ready"));
+        }
+        self.recover_after_transport_error(operation)
+    }
+
+    fn mark_transport_error(&mut self, error: &Iox2Error) {
+        self.health.mark_degraded(error.to_string());
+    }
+
+    fn recover_after_transport_error(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
+        recover_iox2_endpoint(
+            operation,
+            &self.service_name,
+            self.config,
+            &mut self.publisher,
+            &mut self.subscriber,
+            &mut self.node,
+            &mut self.health,
+        )
+    }
+
+    #[cfg(test)]
+    fn reset_transport_for_test(&mut self) {
+        self.publisher = None;
+        self.subscriber = None;
+        self.node = None;
+        self.health.mark_degraded("iceoryx2 endpoint reset by test");
+    }
+}
+
+fn open_iox2_parts<T>(
+    service_name: &str,
+    config: Iox2ChannelConfig,
+) -> Result<Iox2EndpointParts<T>, Iox2Error>
+where
+    T: std::fmt::Debug + ZeroCopySend + 'static,
+{
+    let service_name = service_name
+        .try_into()
+        .map_err(|error| Iox2Error::new("invalid iceoryx2 service name", error))?;
+    let node = NodeBuilder::new()
+        .create::<ipc::Service>()
+        .map_err(|error| Iox2Error::new("failed to create iceoryx2 node", error))?;
+    let service = node
+        .service_builder(&service_name)
+        .publish_subscribe::<T>()
+        .user_header::<FlowrtIox2Header>()
+        .enable_safe_overflow(config.safe_overflow())
+        .history_size(config.depth())
+        .subscriber_max_buffer_size(config.depth())
+        .open_or_create()
+        .map_err(|error| {
+            Iox2Error::new("failed to open or create iceoryx2 pubsub service", error)
+        })?;
+    let publisher = service
+        .publisher_builder()
+        .backpressure_strategy(config.backpressure_strategy())
+        .create()
+        .map_err(|error| Iox2Error::new("failed to create iceoryx2 publisher", error))?;
+    let subscriber = service
+        .subscriber_builder()
+        .buffer_size(config.depth())
+        .create()
+        .map_err(|error| Iox2Error::new("failed to create iceoryx2 subscriber", error))?;
+
+    Ok(Iox2EndpointParts {
+        publisher,
+        subscriber,
+        node,
+    })
+}
+
+fn recover_iox2_endpoint<T>(
+    operation: &'static str,
+    service_name: &str,
+    config: Iox2ChannelConfig,
+    publisher: &mut Option<IpcPublisher<T>>,
+    subscriber: &mut Option<IpcSubscriber<T>>,
+    node: &mut Option<IpcNode>,
+    health: &mut BackendHealthTracker,
+) -> Result<(), Iox2Error>
+where
+    T: std::fmt::Debug + ZeroCopySend + 'static,
+{
+    let snapshot = health.snapshot();
+    if let Some(next_retry_unix_ms) = snapshot.next_retry_unix_ms
+        && snapshot.state == BackendHealthState::Reconnecting
+        && unix_now_ms() < next_retry_unix_ms
+    {
+        return Err(Iox2Error::new(
+            operation,
+            "iceoryx2 endpoint reconnect backoff is active",
+        ));
+    }
+
+    let attempt = snapshot.attempt;
+    if !health.policy().can_retry(attempt) {
+        health.mark_failed("iceoryx2 endpoint reconnect budget exhausted", attempt);
+        return Err(Iox2Error::new(
+            operation,
+            "iceoryx2 endpoint reconnect budget exhausted",
+        ));
+    }
+
+    let now_ms = unix_now_ms();
+    health.mark_reconnecting(
+        attempt,
+        now_ms.saturating_add(health.policy().delay_for_attempt(attempt)),
+    );
+    *publisher = None;
+    *subscriber = None;
+    *node = None;
+    match open_iox2_parts(service_name, config) {
+        Ok(parts) => {
+            *publisher = Some(parts.publisher);
+            *subscriber = Some(parts.subscriber);
+            *node = Some(parts.node);
+            health.mark_ready();
+            Ok(())
+        }
+        Err(error) => {
+            let next_attempt = attempt.saturating_add(1);
+            if health.policy().can_retry(next_attempt) {
+                health.mark_reconnecting(
+                    next_attempt,
+                    now_ms.saturating_add(health.policy().delay_for_attempt(next_attempt)),
+                );
+            } else {
+                health.mark_failed(error.to_string(), next_attempt);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 /// 通过 iceoryx2 运行一个单进程 publish/subscribe roundtrip。
@@ -417,7 +700,7 @@ pub fn smoke_pubsub<T>(service_name: &str, value: T) -> Result<T, Iox2Error>
 where
     T: std::fmt::Debug + Copy + ZeroCopySend + 'static,
 {
-    let endpoint = Iox2PubSub::<T>::open(service_name)?;
+    let mut endpoint = Iox2PubSub::<T>::open(service_name)?;
     endpoint.publish(value)?;
     endpoint.poll_once(Duration::from_millis(1))?;
     match endpoint.receive()? {
@@ -471,7 +754,7 @@ mod tests {
 
     #[test]
     fn typed_pubsub_endpoint_roundtrips_flowrt_abi_message() {
-        let endpoint = Iox2PubSub::<Iox2SmokeMessage>::open("FlowRT/Smoke/TypedEndpoint")
+        let mut endpoint = Iox2PubSub::<Iox2SmokeMessage>::open("FlowRT/Smoke/TypedEndpoint")
             .expect("typed iceoryx2 endpoint should open");
         let message = Iox2SmokeMessage {
             timestamp: 11,
@@ -492,7 +775,7 @@ mod tests {
 
     #[test]
     fn typed_pubsub_endpoint_accepts_fifo_qos_config() {
-        let endpoint = Iox2PubSub::<Iox2SmokeMessage>::open_with_config(
+        let mut endpoint = Iox2PubSub::<Iox2SmokeMessage>::open_with_config(
             "FlowRT/Smoke/FifoQos",
             Iox2ChannelConfig::fifo(8, crate::OverflowPolicy::DropOldest),
         )
@@ -598,7 +881,7 @@ mod tests {
         let mut receiver = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
             .expect("receiver endpoint should open");
         {
-            let sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+            let mut sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
                 .expect("first sender endpoint should open");
             let message = Iox2SmokeMessage {
                 timestamp: 21,
@@ -620,7 +903,7 @@ mod tests {
             );
         }
 
-        let sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+        let mut sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
             .expect("restarted sender endpoint should open");
         let message = Iox2SmokeMessage {
             timestamp: 22,
@@ -640,5 +923,68 @@ mod tests {
                 .as_ref(),
             Some(&message)
         );
+    }
+
+    #[test]
+    fn typed_pubsub_endpoint_recovers_after_local_transport_is_reset() {
+        let mut endpoint = Iox2PubSub::<Iox2SmokeMessage>::open("FlowRT/Smoke/TypedRecovery")
+            .expect("typed endpoint should open before forced reset");
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+
+        endpoint.reset_transport_for_test();
+        assert_eq!(endpoint.health().state, BackendHealthState::Degraded);
+
+        let message = Iox2SmokeMessage {
+            timestamp: 31,
+            x: 5.0,
+            y: 6.0,
+        };
+        endpoint
+            .publish_at(message, 200)
+            .expect("publish should reopen a reset iox2 endpoint");
+
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct FrameSmokeMessage {
+        value: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, ZeroCopySend)]
+    #[type_name("FlowRTIox2DecodeFailingSlot")]
+    struct DecodeFailingSlot {
+        value: u32,
+    }
+
+    impl Iox2FrameSlot<FrameSmokeMessage> for DecodeFailingSlot {
+        fn try_from_message(value: &FrameSmokeMessage) -> Result<Self, WireCodecError> {
+            Ok(Self { value: value.value })
+        }
+
+        fn decode_message(&self) -> Result<FrameSmokeMessage, WireCodecError> {
+            Err(WireCodecError::invalid_frame("test decode failure"))
+        }
+    }
+
+    #[test]
+    fn frame_decode_errors_do_not_mark_endpoint_reconnecting() {
+        let mut endpoint =
+            Iox2FramePubSub::<FrameSmokeMessage, DecodeFailingSlot>::open_with_config(
+                "FlowRT/Smoke/FrameDecodeHealth",
+                Iox2ChannelConfig::latest(),
+            )
+            .expect("frame endpoint should open");
+
+        endpoint
+            .publish_at(FrameSmokeMessage { value: 1 }, 300)
+            .expect("invalid frame payload should still publish");
+        let error = endpoint
+            .receive_latest_at(301)
+            .expect_err("decode failure should be returned to caller");
+
+        assert!(error.message().contains("decode FlowRT iox2 frame payload"));
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
     }
 }

@@ -198,8 +198,7 @@ int main() {
     tracker.mark_failed("retry budget exhausted", 3U);
     assert(tracker.snapshot().state == flowrt::BackendHealthState::Failed);
     assert(tracker.snapshot().attempt == 3U);
-    assert(tracker.snapshot().last_error ==
-           std::optional<std::string>{"retry budget exhausted"});
+    assert(tracker.snapshot().last_error == std::optional<std::string>{"retry budget exhausted"});
     assert(!tracker.snapshot().recoverable);
 
     assert(zenoh_backend.health().state == flowrt::BackendHealthState::Ready);
@@ -383,9 +382,13 @@ int main() {
     assert(iox2_endpoint.config().depth() == 1U);
     assert(iox2_endpoint.config().overflow() == flowrt::OverflowPolicy::DropOldest);
     assert(!iox2_endpoint.ready());
+    assert(iox2_endpoint.health().state == flowrt::BackendHealthState::Degraded);
+    assert(iox2_endpoint.health().recoverable);
     const auto transport_write = iox2_endpoint.publish_at(Sample{23U}, 10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_write));
     assert(std::get<flowrt::ChannelError>(transport_write) == flowrt::ChannelError::Transport);
+    assert(iox2_endpoint.health().state == flowrt::BackendHealthState::Failed);
+    assert(!iox2_endpoint.health().recoverable);
     const auto transport_read = iox2_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_read));
     assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Transport);
@@ -396,8 +399,12 @@ int main() {
     assert(iox2_frame_endpoint.service_name() == "FlowRT/Cpp/FrameSmoke");
     assert(iox2_frame_endpoint.config().depth() == 1U);
     assert(!iox2_frame_endpoint.ready());
+    assert(iox2_frame_endpoint.health().state == flowrt::BackendHealthState::Degraded);
+    assert(iox2_frame_endpoint.health().recoverable);
     const auto frame_transport_write = iox2_frame_endpoint.publish_at(FrameSmokeMessage{42U}, 10U);
     assert(std::holds_alternative<flowrt::ChannelError>(frame_transport_write));
+    assert(iox2_frame_endpoint.health().state == flowrt::BackendHealthState::Failed);
+    assert(!iox2_frame_endpoint.health().recoverable);
     const auto frame_transport_read = iox2_frame_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(frame_transport_read));
 

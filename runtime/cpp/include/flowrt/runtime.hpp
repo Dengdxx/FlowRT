@@ -1326,33 +1326,65 @@ class Iox2PubSub {
     }
 
     /**
+     * @brief 返回 endpoint 健康快照。
+     */
+    BackendHealthSnapshot health() const {
+        if (!ready() && health_.snapshot().state == BackendHealthState::Ready) {
+            return BackendHealthSnapshot{
+                .state = BackendHealthState::Degraded,
+                .last_error = std::optional<std::string>{"iceoryx2 endpoint is not ready"},
+                .attempt = 0,
+                .next_retry_unix_ms = std::nullopt,
+                .recoverable = true,
+            };
+        }
+        return health_.snapshot();
+    }
+
+    /**
+     * @brief 返回 endpoint 重连策略。
+     */
+    ReconnectPolicy reconnect_policy() const noexcept { return health_.policy(); }
+
+#ifdef FLOWRT_ENABLE_TEST_HOOKS
+    /**
+     * @brief 测试钩子：模拟本地 iox2 endpoint 资源丢失。
+     */
+    void reset_transport_for_test() noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        reset_iox2_endpoint();
+#endif
+        health_.mark_degraded("iceoryx2 endpoint reset by test");
+    }
+#endif
+
+    /**
      * @brief 带 FlowRT runtime 时间戳发布一个值。
      *
      * @return 写入成功时返回 `Accepted`；transport 无法完成时返回 `ChannelError::Transport`。
      */
     ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
-        if (!publisher_) {
+        if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
-        auto sample = publisher_->loan_uninit();
-        if (!sample.has_value()) {
+        if (publish_payload(std::move(value), published_at_ms)) {
+            health_.mark_ready();
+            return ChannelWriteOutcome::Accepted;
+        }
+        if (!recover_after_transport_error("publish iceoryx2 sample")) {
             return ChannelError::Transport;
         }
-
-        auto loaned_sample = std::move(sample).value();
-        loaned_sample.user_header_mut().published_at_ms = published_at_ms;
-        auto initialized_sample = loaned_sample.write_payload(std::move(value));
-        auto sent = ::iox2::send(std::move(initialized_sample));
-        if (!sent.has_value()) {
+        if (!publish_payload(std::move(value), published_at_ms)) {
             return ChannelError::Transport;
         }
-
+        health_.mark_ready();
         return ChannelWriteOutcome::Accepted;
 #else
         (void)value;
         (void)published_at_ms;
+        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
         return ChannelError::Transport;
 #endif
     }
@@ -1364,18 +1396,25 @@ class Iox2PubSub {
      */
     std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
-        if (!subscriber_) {
+        if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
+        bool retried = false;
         while (true) {
             auto received = subscriber_->receive();
             if (!received.has_value()) {
-                return ChannelError::Transport;
+                mark_transport_error("receive iceoryx2 sample");
+                if (retried || !recover_after_transport_error("receive iceoryx2 sample")) {
+                    return ChannelError::Transport;
+                }
+                retried = true;
+                continue;
             }
 
             auto sample = std::move(received).value();
             if (!sample.has_value()) {
+                health_.mark_ready();
                 break;
             }
 
@@ -1388,17 +1427,24 @@ class Iox2PubSub {
         return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
 #else
         (void)now_ms;
+        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
         return ChannelError::Transport;
 #endif
     }
 
    private:
     Iox2PubSub(std::string_view service_name, Iox2ChannelConfig config)
-        : service_name_(service_name), config_(config) {
+        : service_name_(service_name), config_(config), health_(ReconnectPolicy{}) {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
         static_assert(std::is_trivially_copyable_v<T>,
                       "FlowRT iox2 C++ payload must be trivially copyable");
-        open_iox2_endpoint();
+        if (open_iox2_endpoint()) {
+            health_.mark_ready();
+        } else {
+            health_.mark_degraded("failed to open iceoryx2 endpoint");
+        }
+#else
+        health_.mark_degraded("iceoryx2-cxx support is disabled");
 #endif
     }
 
@@ -1420,15 +1466,89 @@ class Iox2PubSub {
                    : ::iox2::BackpressureStrategy::DiscardData;
     }
 
-    void open_iox2_endpoint() {
+    bool ensure_ready() noexcept {
+        if (ready()) {
+            return true;
+        }
+        if (health_.snapshot().state != BackendHealthState::Reconnecting) {
+            mark_transport_error("iceoryx2 endpoint is not ready");
+        }
+        return recover_after_transport_error("reopen iceoryx2 endpoint");
+    }
+
+    void mark_transport_error(std::string error) { health_.mark_degraded(std::move(error)); }
+
+    bool recover_after_transport_error(std::string error) noexcept {
+        const auto snapshot = health_.snapshot();
+        if (snapshot.state == BackendHealthState::Reconnecting && snapshot.next_retry_unix_ms &&
+            unix_now_ms() < *snapshot.next_retry_unix_ms) {
+            return false;
+        }
+
+        const auto attempt = snapshot.attempt;
+        if (!health_.policy().can_retry(attempt)) {
+            health_.mark_failed("iceoryx2 endpoint reconnect budget exhausted", attempt);
+            return false;
+        }
+
+        const auto now_ms = unix_now_ms();
+        health_.mark_reconnecting(attempt, now_ms + health_.policy().delay_for_attempt(attempt));
+        reset_iox2_endpoint();
+        if (open_iox2_endpoint()) {
+            health_.mark_ready();
+            return true;
+        }
+
+        const auto next_attempt = attempt + 1U;
+        if (health_.policy().can_retry(next_attempt)) {
+            health_.mark_reconnecting(next_attempt,
+                                      now_ms + health_.policy().delay_for_attempt(next_attempt));
+        } else {
+            health_.mark_failed(std::move(error), next_attempt);
+        }
+        return false;
+    }
+
+    void reset_iox2_endpoint() noexcept {
+        publisher_.reset();
+        subscriber_.reset();
+        service_.reset();
+        node_.reset();
+    }
+
+    bool publish_payload(T value, std::uint64_t published_at_ms) noexcept {
+        if (!publisher_) {
+            mark_transport_error("iceoryx2 publisher is not ready");
+            return false;
+        }
+
+        auto sample = publisher_->loan_uninit();
+        if (!sample.has_value()) {
+            mark_transport_error("loan iceoryx2 sample failed");
+            return false;
+        }
+
+        auto loaned_sample = std::move(sample).value();
+        loaned_sample.user_header_mut().published_at_ms = published_at_ms;
+        auto initialized_sample = loaned_sample.write_payload(std::move(value));
+        auto sent = ::iox2::send(std::move(initialized_sample));
+        if (!sent.has_value()) {
+            mark_transport_error("send iceoryx2 sample failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool open_iox2_endpoint() {
+        reset_iox2_endpoint();
         auto name = ::iox2::ServiceName::create(service_name_.c_str());
         if (!name.has_value()) {
-            return;
+            return false;
         }
 
         auto node = ::iox2::NodeBuilder().create<::iox2::ServiceType::Ipc>();
         if (!node.has_value()) {
-            return;
+            return false;
         }
         node_.emplace(std::move(node).value());
 
@@ -1442,7 +1562,7 @@ class Iox2PubSub {
                            .open_or_create();
         if (!service.has_value()) {
             node_.reset();
-            return;
+            return false;
         }
         service_.emplace(std::move(service).value());
 
@@ -1450,7 +1570,7 @@ class Iox2PubSub {
         if (!subscriber.has_value()) {
             service_.reset();
             node_.reset();
-            return;
+            return false;
         }
         subscriber_.emplace(std::move(subscriber).value());
 
@@ -1462,14 +1582,16 @@ class Iox2PubSub {
             subscriber_.reset();
             service_.reset();
             node_.reset();
-            return;
+            return false;
         }
         publisher_.emplace(std::move(publisher).value());
+        return true;
     }
 #endif
 
     std::string service_name_;
     Iox2ChannelConfig config_;
+    BackendHealthTracker health_;
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
     std::optional<Iox2Node> node_;
     std::optional<Iox2Service> service_;
@@ -1529,27 +1651,60 @@ class Iox2FramePubSub {
     }
 
     /**
+     * @brief 返回 endpoint 健康快照。
+     */
+    BackendHealthSnapshot health() const {
+        if (!ready() && health_.snapshot().state == BackendHealthState::Ready) {
+            return BackendHealthSnapshot{
+                .state = BackendHealthState::Degraded,
+                .last_error = std::optional<std::string>{"iceoryx2 frame endpoint is not ready"},
+                .attempt = 0,
+                .next_retry_unix_ms = std::nullopt,
+                .recoverable = true,
+            };
+        }
+        return health_.snapshot();
+    }
+
+    /**
+     * @brief 返回 endpoint 重连策略。
+     */
+    ReconnectPolicy reconnect_policy() const noexcept { return health_.policy(); }
+
+#ifdef FLOWRT_ENABLE_TEST_HOOKS
+    /**
+     * @brief 测试钩子：模拟本地 iox2 frame endpoint 资源丢失。
+     */
+    void reset_transport_for_test() noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        reset_iox2_endpoint();
+#endif
+        health_.mark_degraded("iceoryx2 frame endpoint reset by test");
+    }
+#endif
+
+    /**
      * @brief 带 FlowRT runtime 时间戳发布一个结构化变长消息。
      */
     ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
-        if (!publisher_) {
+        if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
         try {
-            auto sample = publisher_->loan_uninit();
-            if (!sample.has_value()) {
+            const auto slot = Slot::from_message(value);
+            if (publish_slot(slot, published_at_ms)) {
+                health_.mark_ready();
+                return ChannelWriteOutcome::Accepted;
+            }
+            if (!recover_after_transport_error("publish iceoryx2 frame sample")) {
                 return ChannelError::Transport;
             }
-
-            auto loaned_sample = std::move(sample).value();
-            loaned_sample.user_header_mut().published_at_ms = published_at_ms;
-            auto initialized_sample = loaned_sample.write_payload(Slot::from_message(value));
-            auto sent = ::iox2::send(std::move(initialized_sample));
-            if (!sent.has_value()) {
+            if (!publish_slot(slot, published_at_ms)) {
                 return ChannelError::Transport;
             }
+            health_.mark_ready();
             return ChannelWriteOutcome::Accepted;
         } catch (...) {
             return ChannelError::Transport;
@@ -1557,6 +1712,7 @@ class Iox2FramePubSub {
 #else
         (void)value;
         (void)published_at_ms;
+        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
         return ChannelError::Transport;
 #endif
     }
@@ -1566,19 +1722,27 @@ class Iox2FramePubSub {
      */
     std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
-        if (!subscriber_) {
+        if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
+        bool retried = false;
         try {
             while (true) {
                 auto received = subscriber_->receive();
                 if (!received.has_value()) {
-                    return ChannelError::Transport;
+                    mark_transport_error("receive iceoryx2 frame sample");
+                    if (retried ||
+                        !recover_after_transport_error("receive iceoryx2 frame sample")) {
+                        return ChannelError::Transport;
+                    }
+                    retried = true;
+                    continue;
                 }
 
                 auto sample = std::move(received).value();
                 if (!sample.has_value()) {
+                    health_.mark_ready();
                     break;
                 }
 
@@ -1594,15 +1758,22 @@ class Iox2FramePubSub {
         return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
 #else
         (void)now_ms;
+        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
         return ChannelError::Transport;
 #endif
     }
 
    private:
     Iox2FramePubSub(std::string_view service_name, Iox2ChannelConfig config)
-        : service_name_(service_name), config_(config) {
+        : service_name_(service_name), config_(config), health_(ReconnectPolicy{}) {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
-        open_iox2_endpoint();
+        if (open_iox2_endpoint()) {
+            health_.mark_ready();
+        } else {
+            health_.mark_degraded("failed to open iceoryx2 frame endpoint");
+        }
+#else
+        health_.mark_degraded("iceoryx2-cxx support is disabled");
 #endif
     }
 
@@ -1624,15 +1795,89 @@ class Iox2FramePubSub {
                    : ::iox2::BackpressureStrategy::DiscardData;
     }
 
-    void open_iox2_endpoint() {
+    bool ensure_ready() noexcept {
+        if (ready()) {
+            return true;
+        }
+        if (health_.snapshot().state != BackendHealthState::Reconnecting) {
+            mark_transport_error("iceoryx2 frame endpoint is not ready");
+        }
+        return recover_after_transport_error("reopen iceoryx2 frame endpoint");
+    }
+
+    void mark_transport_error(std::string error) { health_.mark_degraded(std::move(error)); }
+
+    bool recover_after_transport_error(std::string error) noexcept {
+        const auto snapshot = health_.snapshot();
+        if (snapshot.state == BackendHealthState::Reconnecting && snapshot.next_retry_unix_ms &&
+            unix_now_ms() < *snapshot.next_retry_unix_ms) {
+            return false;
+        }
+
+        const auto attempt = snapshot.attempt;
+        if (!health_.policy().can_retry(attempt)) {
+            health_.mark_failed("iceoryx2 frame endpoint reconnect budget exhausted", attempt);
+            return false;
+        }
+
+        const auto now_ms = unix_now_ms();
+        health_.mark_reconnecting(attempt, now_ms + health_.policy().delay_for_attempt(attempt));
+        reset_iox2_endpoint();
+        if (open_iox2_endpoint()) {
+            health_.mark_ready();
+            return true;
+        }
+
+        const auto next_attempt = attempt + 1U;
+        if (health_.policy().can_retry(next_attempt)) {
+            health_.mark_reconnecting(next_attempt,
+                                      now_ms + health_.policy().delay_for_attempt(next_attempt));
+        } else {
+            health_.mark_failed(std::move(error), next_attempt);
+        }
+        return false;
+    }
+
+    void reset_iox2_endpoint() noexcept {
+        publisher_.reset();
+        subscriber_.reset();
+        service_.reset();
+        node_.reset();
+    }
+
+    bool publish_slot(Slot slot, std::uint64_t published_at_ms) noexcept {
+        if (!publisher_) {
+            mark_transport_error("iceoryx2 frame publisher is not ready");
+            return false;
+        }
+
+        auto sample = publisher_->loan_uninit();
+        if (!sample.has_value()) {
+            mark_transport_error("loan iceoryx2 frame sample failed");
+            return false;
+        }
+
+        auto loaned_sample = std::move(sample).value();
+        loaned_sample.user_header_mut().published_at_ms = published_at_ms;
+        auto initialized_sample = loaned_sample.write_payload(slot);
+        auto sent = ::iox2::send(std::move(initialized_sample));
+        if (!sent.has_value()) {
+            mark_transport_error("send iceoryx2 frame sample failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool open_iox2_endpoint() {
+        reset_iox2_endpoint();
         auto name = ::iox2::ServiceName::create(service_name_.c_str());
         if (!name.has_value()) {
-            return;
+            return false;
         }
 
         auto node = ::iox2::NodeBuilder().create<::iox2::ServiceType::Ipc>();
         if (!node.has_value()) {
-            return;
+            return false;
         }
         node_.emplace(std::move(node).value());
 
@@ -1646,7 +1891,7 @@ class Iox2FramePubSub {
                            .open_or_create();
         if (!service.has_value()) {
             node_.reset();
-            return;
+            return false;
         }
         service_.emplace(std::move(service).value());
 
@@ -1654,7 +1899,7 @@ class Iox2FramePubSub {
         if (!subscriber.has_value()) {
             service_.reset();
             node_.reset();
-            return;
+            return false;
         }
         subscriber_.emplace(std::move(subscriber).value());
 
@@ -1666,14 +1911,16 @@ class Iox2FramePubSub {
             subscriber_.reset();
             service_.reset();
             node_.reset();
-            return;
+            return false;
         }
         publisher_.emplace(std::move(publisher).value());
+        return true;
     }
 #endif
 
     std::string service_name_;
     Iox2ChannelConfig config_;
+    BackendHealthTracker health_;
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
     std::optional<Iox2Node> node_;
     std::optional<Iox2Service> service_;
@@ -2319,9 +2566,8 @@ class IntrospectionChannelProbe {
     void record_publish_event() const noexcept {
         std::uint64_t current = inner_->published_count.load(std::memory_order_acquire);
         while (current != UINT64_MAX) {
-            if (inner_->published_count.compare_exchange_weak(current, current + 1,
-                                                              std::memory_order_acq_rel,
-                                                              std::memory_order_acquire)) {
+            if (inner_->published_count.compare_exchange_weak(
+                    current, current + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
                 break;
             }
         }
