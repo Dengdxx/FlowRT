@@ -47,16 +47,15 @@ Rust/C++ 生成的 runtime shell 会启动与 Rust wire JSON 兼容的 introspec
 - C++20 编译器、CMake 和 CTest，用于 C++ runtime 与 C++ 示例。
 - 可选：`iceoryx2-cxx 0.9.1`、基于 `zenoh-c` backend 的 `zenohcxx 1.9.0`。含 C++ `iox2` 组件的构建会先查找本机安装；`zenoh` 组件要求本机提供 `zenohcxx::zenohc` 目标，找不到时 configure 直接失败。
 
-从源码构建并安装系统级 `flowrt` 命令：
+构建并安装单包 Debian 包：
 
 ```bash
-/usr/bin/env cargo build --release -p flowrt-cli
-sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
-sudo rm -rf /usr/local/share/flowrt/runtime/rust
-sudo install -d /usr/local/share/flowrt/runtime/rust
-sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
+scripts/package-deb.sh --output-dir dist
+sudo dpkg -i dist/flowrt_*_*.deb
 flowrt --version
 ```
+
+该单包会安装 CLI、Rust runtime crate、C++ runtime header 和 CMake package。安装后用户项目不需要克隆 FlowRT 仓库；只需要自己的 `rsdl/`、`src/` 和可删除重建的 `flowrt/` 生成目录。
 
 检查模块化 RSDL 示例：
 

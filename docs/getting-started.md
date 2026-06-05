@@ -1,6 +1,6 @@
 # 快速开始
 
-本文从源码构建 `flowrt`，安装为系统命令，并跑通当前仓库中最小的 Rust-only 和 C++ only 示例。
+本文从单包 Debian 包安装 `flowrt`，并跑通当前仓库中最小的 Rust-only 和 C++ only 示例。
 
 ## 前置条件
 
@@ -8,20 +8,17 @@
 - C++20 编译器、CMake 和 CTest，用于构建 C++ runtime 与 C++ 示例。
 - 可选：`iceoryx2-cxx 0.9.1`、基于 `zenoh-c` backend 的 `zenohcxx 1.9.0`。C++ iox2 / zenoh 示例会先查找本机安装；zenoh 找不到本机 `zenohcxx::zenohc` 目标时，CMake 会直接失败，需要先安装 `zenoh-c` / `zenoh-cpp` 1.9.0。
 
-## 安装 CLI
+## 安装 FlowRT
 
 在仓库根目录执行：
 
 ```bash
-cargo build --release -p flowrt-cli
-sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
-sudo rm -rf /usr/local/share/flowrt/runtime/rust
-sudo install -d /usr/local/share/flowrt/runtime/rust
-sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
+scripts/package-deb.sh --output-dir dist
+sudo dpkg -i dist/flowrt_*_*.deb
 flowrt --version
 ```
 
-面向用户的入口是系统安装后的 `flowrt ...`。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此安装时还需要把 FlowRT Rust runtime crate 放到 `/usr/local/share/flowrt/runtime/rust`；后续发布包会把这一步收进安装脚本。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
+面向用户的入口是系统安装后的 `flowrt ...`。单包 `flowrt` 会同时安装 CLI、Rust runtime crate、C++ runtime header 和 CMake package；用户项目不需要克隆 FlowRT 仓库。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此目标机仍需要 Rust toolchain；C++ 用户组件仍需要 C++20 编译器、CMake 和 CTest。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
 
 ## 检查 RSDL
 

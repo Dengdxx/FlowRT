@@ -35,11 +35,8 @@ cargo run -p flowrt-cli -- prepare examples/variable_iox2_demo/rsdl/robot.rsdl
 FlowRT demo smoke：
 
 ```bash
-cargo build --release -p flowrt-cli
-sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
-sudo rm -rf /usr/local/share/flowrt/runtime/rust
-sudo install -d /usr/local/share/flowrt/runtime/rust
-sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
+scripts/package-deb.sh --output-dir dist
+sudo dpkg -i dist/flowrt_*_*.deb
 flowrt --version
 
 flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
@@ -61,6 +58,13 @@ FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable
 test -s /tmp/flowrt-variable-iox2-saw-packet
 flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
 FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+```
+
+Debian 包和安装后用户项目 smoke：
+
+```bash
+scripts/test-package-deb.sh
+scripts/test-deb-installed-user-project.sh
 ```
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：

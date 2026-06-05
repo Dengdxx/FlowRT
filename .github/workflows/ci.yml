@@ -115,29 +115,26 @@ jobs:
       - name: C++ runtime 测试
         run: ctest --test-dir build/cpp --output-on-failure
 
-      - name: 系统安装 C++ runtime
-        run: |
-          sudo cmake --install build/cpp --prefix /usr/local
-          test -f /usr/local/include/flowrt/runtime.hpp
-          test -f /usr/local/lib/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake
-
       - name: C++ runtime zenoh 测试
         run: |
           cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
           cmake --build build/cpp-zenoh
           ctest --test-dir build/cpp-zenoh --output-on-failure
 
-      - name: 构建并系统安装 flowrt
+      - name: 构建并安装 flowrt deb
         run: |
-          cargo build --release -p flowrt-cli
-          sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
-          sudo rm -rf /usr/local/share/flowrt/runtime/rust
-          sudo install -d /usr/local/share/flowrt/runtime/rust
-          sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
-          test -f /usr/local/share/flowrt/runtime/rust/Cargo.toml
-          test -f /usr/local/share/flowrt/runtime/rust/src/lib.rs
+          scripts/package-deb.sh --output-dir dist
+          sudo dpkg -i dist/flowrt_*_*.deb
+          test -x /usr/bin/flowrt
+          test -f /usr/share/flowrt/runtime/rust/Cargo.toml
+          test -f /usr/share/flowrt/runtime/rust/src/lib.rs
+          test -f /usr/include/flowrt/runtime.hpp
+          test -f /usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake
           command -v flowrt
           flowrt --version
+
+      - name: flowrt deb 用户项目 smoke
+        run: scripts/test-deb-installed-user-project.sh
 
       - name: FlowRT demo smoke
         run: |
@@ -164,6 +161,6 @@ jobs:
       - name: 上传 flowrt Linux artifact
         uses: actions/upload-artifact@v7
         with:
-          name: flowrt-linux-x86_64
-          path: target/release/flowrt
+          name: flowrt-linux-deb
+          path: dist/flowrt_*_*.deb
           if-no-files-found: error
