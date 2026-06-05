@@ -14,6 +14,12 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
     if has_language(contract, LanguageKind::Cpp) {
         let shell_target = format!("{}_cpp_shell", package_name.replace('-', "_"));
         let app_target = format!("{}_cpp_app", package_name.replace('-', "_"));
+        output.push_str(
+            "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
+        );
+        output.push_str(
+            "if(FLOWRT_CPP_RUNTIME_DIR)\n    list(PREPEND CMAKE_PREFIX_PATH \"${FLOWRT_CPP_RUNTIME_DIR}\")\n    list(PREPEND CMAKE_BUILD_RPATH \"${FLOWRT_CPP_RUNTIME_DIR}/lib\")\nendif()\n",
+        );
         if selected_backend_name(contract) == "iox2" {
             output.push_str(cmake_iox2_dependency_block());
             output.push_str(&format!(
@@ -31,9 +37,6 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ZENOH_CXX=1)\n"
             ));
         }
-        output.push_str(
-            "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
-        );
         output.push_str(
             "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    find_package(flowrt_runtime 0.1 QUIET)\nendif()\n",
         );
@@ -150,25 +153,9 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
 
 fn cmake_iox2_dependency_block() -> &'static str {
     r#"
-include(FetchContent)
-option(FLOWRT_FETCH_IOX2 "Download and build iceoryx2-cxx v0.9.1 when it is not installed" ON)
 find_package(iceoryx2-cxx 0.9.1 QUIET)
 if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
-  if(NOT FLOWRT_FETCH_IOX2)
-    message(FATAL_ERROR "iceoryx2-cxx 0.9.1 was not found. Install it, set CMAKE_PREFIX_PATH, or enable FLOWRT_FETCH_IOX2.")
-  endif()
-  set(BUILD_CXX ON CACHE BOOL "Build iceoryx2 C++ bindings" FORCE)
-  set(BUILD_EXAMPLES OFF CACHE BOOL "Build iceoryx2 examples" FORCE)
-  FetchContent_Declare(
-    iceoryx2
-    GIT_REPOSITORY https://github.com/eclipse-iceoryx/iceoryx2.git
-    GIT_TAG v0.9.1
-    GIT_SHALLOW TRUE
-  )
-  FetchContent_MakeAvailable(iceoryx2)
-endif()
-if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
-  message(FATAL_ERROR "iceoryx2-cxx::static-lib-cxx target is unavailable after dependency resolution")
+  message(FATAL_ERROR "iceoryx2-cxx 0.9.1 was not found. Install the FlowRT package or set FLOWRT_CPP_RUNTIME_DIR/CMAKE_PREFIX_PATH to a FlowRT private prefix.")
 endif()
 "#
 }

@@ -121,53 +121,35 @@ jobs:
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime
     runs-on: ubuntu-latest
+    needs:
+      - package
 
     steps:
       - name: 检出仓库
         uses: actions/checkout@v6
 
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-deb
+          path: dist
+
       - name: 安装系统构建工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ git
+          sudo apt-get install -y cmake ninja-build g++ dpkg-dev curl git
 
-      - name: 安装 Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 安装 zenoh C++ backend 依赖
+      - name: 安装 flowrt deb
         shell: bash
         run: |
           set -euo pipefail
-
-          FLOWRT_DEPS_ROOT="${RUNNER_TEMP}/flowrt-deps"
-          FLOWRT_DEPS_PREFIX="${FLOWRT_DEPS_ROOT}/prefix"
+          sudo dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           {
-            echo "FLOWRT_DEPS_ROOT=${FLOWRT_DEPS_ROOT}"
-            echo "FLOWRT_DEPS_PREFIX=${FLOWRT_DEPS_PREFIX}"
-            echo "CMAKE_PREFIX_PATH=${FLOWRT_DEPS_PREFIX}"
-            echo "LD_LIBRARY_PATH=${FLOWRT_DEPS_PREFIX}/lib"
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "CMAKE_PREFIX_PATH=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
           } >> "$GITHUB_ENV"
-
-          cargo install cbindgen --locked
-          mkdir -p "$FLOWRT_DEPS_ROOT/src" "$FLOWRT_DEPS_PREFIX"
-
-          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-c.git "$FLOWRT_DEPS_ROOT/src/zenoh-c"
-          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-c" -B "$FLOWRT_DEPS_ROOT/build/zenoh-c" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
-            -DBUILD_SHARED_LIBS=ON
-          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-c" --target install
-
-          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-cpp.git "$FLOWRT_DEPS_ROOT/src/zenoh-cpp"
-          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-cpp" -B "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
-            -DCMAKE_PREFIX_PATH="$FLOWRT_DEPS_PREFIX" \
-            -DZENOHCXX_ZENOHC=ON \
-            -DZENOHCXX_ZENOHPICO=OFF \
-            -DZENOHCXX_ENABLE_TESTS=OFF \
-            -DZENOHCXX_ENABLE_EXAMPLES=OFF
-          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" --target install
 
       - name: C++ runtime zenoh 测试
         run: |
@@ -190,20 +172,26 @@ jobs:
       - name: 安装系统构建工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ dpkg-dev
+          sudo apt-get install -y cmake ninja-build g++ dpkg-dev curl git
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: 构建并安装 flowrt deb
+        shell: bash
         run: |
           scripts/package-deb.sh --output-dir dist
           sudo dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
           test -x /usr/bin/flowrt
-          test -f /usr/share/flowrt/runtime/rust/Cargo.toml
-          test -f /usr/share/flowrt/runtime/rust/src/lib.rs
-          test -f /usr/include/flowrt/runtime.hpp
-          test -f /usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake
+          test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/Cargo.toml"
+          test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/src/lib.rs"
+          test -d "/opt/flowrt/${version}/share/cargo/vendor"
+          test -f "/opt/flowrt/${version}/include/flowrt/runtime.hpp"
+          test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+          test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/lib/cmake/zenohcxx/zenohcxxConfig.cmake"
           command -v flowrt
           flowrt --version
 
@@ -237,50 +225,21 @@ jobs:
       - name: 安装系统构建工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ git dpkg-dev
+          sudo apt-get install -y cmake ninja-build g++ dpkg-dev curl git
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: 安装 flowrt deb
-        run: |
-          sudo dpkg -i dist/flowrt_*_*.deb
-          flowrt --version
-
-      - name: 安装 zenoh C++ backend 依赖
         shell: bash
         run: |
-          set -euo pipefail
-
-          FLOWRT_DEPS_ROOT="${RUNNER_TEMP}/flowrt-deps"
-          FLOWRT_DEPS_PREFIX="${FLOWRT_DEPS_ROOT}/prefix"
+          sudo dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           {
-            echo "FLOWRT_DEPS_ROOT=${FLOWRT_DEPS_ROOT}"
-            echo "FLOWRT_DEPS_PREFIX=${FLOWRT_DEPS_PREFIX}"
-            echo "CMAKE_PREFIX_PATH=${FLOWRT_DEPS_PREFIX}"
-            echo "LD_LIBRARY_PATH=${FLOWRT_DEPS_PREFIX}/lib"
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
           } >> "$GITHUB_ENV"
-
-          cargo install cbindgen --locked
-          mkdir -p "$FLOWRT_DEPS_ROOT/src" "$FLOWRT_DEPS_PREFIX"
-
-          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-c.git "$FLOWRT_DEPS_ROOT/src/zenoh-c"
-          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-c" -B "$FLOWRT_DEPS_ROOT/build/zenoh-c" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
-            -DBUILD_SHARED_LIBS=ON
-          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-c" --target install
-
-          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-cpp.git "$FLOWRT_DEPS_ROOT/src/zenoh-cpp"
-          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-cpp" -B "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
-            -DCMAKE_PREFIX_PATH="$FLOWRT_DEPS_PREFIX" \
-            -DZENOHCXX_ZENOHC=ON \
-            -DZENOHCXX_ZENOHPICO=OFF \
-            -DZENOHCXX_ENABLE_TESTS=OFF \
-            -DZENOHCXX_ENABLE_EXAMPLES=OFF
-          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" --target install
+          flowrt --version
 
       - name: FlowRT demo smoke
         run: |

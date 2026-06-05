@@ -165,7 +165,7 @@ FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable
 test -s /tmp/flowrt-variable-iox2-saw-packet
 ```
 
-含 C++ iox2 组件的生成 CMake 会先查找本机 `iceoryx2-cxx 0.9.1`。未安装时默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1，并调用 Cargo 构建其 Rust FFI 部分；网络不可用时，应预先安装并通过 `CMAKE_PREFIX_PATH` 暴露依赖。
+含 C++ iox2 组件的生成 CMake 会查找 `iceoryx2-cxx 0.9.1`。通过 Debian 包安装 FlowRT 时，该 SDK 已在 `/opt/flowrt/<version>` 私有前缀内，`flowrt build` 会自动传入对应路径；直接调试生成 CMake 时，可以显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
 
 ## zenoh mixed 示例
 
@@ -188,7 +188,7 @@ flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
 FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
-含 C++ zenoh 组件的生成 CMake 会查找本机 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标，并链接该目标。未安装时 configure 会直接失败；应预先安装 `zenoh-c` / `zenoh-cpp` 1.9.0，并通过 `CMAKE_PREFIX_PATH` 暴露依赖。
+含 C++ zenoh 组件的生成 CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标，并链接该目标。通过 Debian 包安装 FlowRT 时，`zenoh-c` / `zenoh-cpp` 已在 `/opt/flowrt/<version>` 私有前缀内，`flowrt build` 会自动传入对应路径；直接调试生成 CMake 时，可以显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
 
 本机 `flowrt launch` 在没有显式 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT` 时，会为同一个 supervisor 启动的 zenoh process 自动分配本地 TCP mesh。跨机器运行时，需要让两个进程分别拿到对应的 zenoh session 配置，例如通过 `FLOWRT_ZENOH_CONNECT` 和 `FLOWRT_ZENOH_LISTEN` 注入端点；如果要在本机观察足够多的样本，`FLOWRT_TICK_SLEEP_MS` 可以把同步 tick 拉长。
 

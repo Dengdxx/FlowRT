@@ -42,7 +42,12 @@ flowrt --version
 - Rust runtime crate
 - C++ runtime header
 - CMake package
+- 私有 Rust crate vendor
+- `iceoryx2-cxx 0.9.1` C++ SDK
+- `zenoh-c` / `zenoh-cpp 1.9.0` C++ SDK
 - 基础文档和 changelog
+
+除 `/usr/bin/flowrt` 入口外，版本锁定的 runtime、C++ backend SDK 和 Rust vendor 都安装在 `/opt/flowrt/<version>` 私有前缀下。生成的 Rust/C++ 应用会优先使用同一安装包内的依赖；用户不需要手动安装 iox2 或 zenoh C++ SDK，也不需要在生成项目构建时联网拉取 backend 依赖。
 
 安装后，应用项目不需要克隆 FlowRT 仓库；用户项目只保留自己的 RSDL、业务代码和可重建的 `flowrt/` 生成目录。
 

@@ -146,14 +146,13 @@ backends = ["iox2"]
     assert!(cpp_messages.contains("static constexpr const char* IOX2_TYPE_NAME = \"Imu\";"));
 
     let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
-    assert!(cmake.contains("include(FetchContent)"));
+    assert!(cmake.contains("list(PREPEND CMAKE_PREFIX_PATH \"${FLOWRT_CPP_RUNTIME_DIR}\")"));
+    assert!(cmake.contains("list(PREPEND CMAKE_BUILD_RPATH \"${FLOWRT_CPP_RUNTIME_DIR}/lib\")"));
     assert!(cmake.contains("find_package(iceoryx2-cxx 0.9.1 QUIET)"));
-    assert!(cmake.contains("FetchContent_Declare("));
-    assert!(cmake.contains("iceoryx2"));
-    assert!(cmake.contains("GIT_TAG v0.9.1"));
-    assert!(cmake.contains("FetchContent_MakeAvailable(iceoryx2)"));
     assert!(cmake.contains("if(NOT TARGET iceoryx2-cxx::static-lib-cxx)"));
     assert!(!cmake.contains("if(NOT iceoryx2-cxx_FOUND AND NOT TARGET"));
+    assert!(!cmake.contains("FetchContent"));
+    assert!(!cmake.contains("GIT_REPOSITORY"));
     assert!(cmake.contains("iceoryx2-cxx::static-lib-cxx"));
     assert!(cmake.contains(
         "target_compile_definitions(robot_demo_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)"

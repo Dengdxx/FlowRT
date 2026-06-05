@@ -205,22 +205,28 @@ test(abi): 补充 C++ 与 Rust 消息布局测试
 - 不把生成物、大型构建输出或未验证半成品混入提交。
 - `docs/` 下被 `.gitignore` 排除的本地设计/规格文件不得加入索引。
 
-## 可选 iox2 依赖
+## backend 依赖与离线包
 
-Rust runtime 的 iox2 支持通过 feature-gated `iceoryx2 = "0.9"` 编译。C++ iox2 binding 只有在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx 0.9.1` 时使用真实 transport。
+Rust runtime 的 iox2 支持通过 feature-gated `iceoryx2 = "0.9"` 编译。C++ iox2 binding 只有在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx 0.9.1` 时使用真实 transport。Rust runtime 的 zenoh 支持通过 feature-gated `zenoh = "1.9"` 编译。C++ zenoh binding 只有在定义 `FLOWRT_HAS_ZENOH_CXX` 并链接基于 `zenoh-c` backend 的 `zenohcxx::zenohc` 时使用真实 transport。
 
-没有安装 `iceoryx2-cxx` 时，基础 Rust/C++ inproc 验证和 `check` smoke 仍应可运行；含 C++ iox2 组件的生成 CMake 会先 `find_package(iceoryx2-cxx 0.9.1 QUIET)`，找不到时默认用 `FetchContent` 拉取 `iceoryx2` v0.9.1。该 fallback 仍需要网络访问和 Cargo，因为 upstream CMake 会构建 iceoryx2 的 Rust FFI。直接调试生成 CMake 或 `runtime/cpp` 时，可以把 `FLOWRT_FETCH_IOX2` 设为 `OFF`，让缺失依赖明确失败；`flowrt build` 的默认路径则使用自动拉取，避免 clean checkout 因没有本机安装而无法跑 iox2 smoke。
+FlowRT Debian 包会把锁定版本的 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0`、`zenoh-cpp 1.9.0` 和第三方 license material 放入 `/opt/flowrt/<version>` 私有前缀。安装后的 `flowrt build` 会自动把该前缀传给 generated CMake，并为 generated Rust app 写入离线 Cargo config。生成项目构建不应通过 `FetchContent`、Cargo registry 或其他外部网络路径临时解析 backend SDK。
 
-可选 C++ iox2 runtime smoke：
+基础 Rust/C++ inproc 验证和 `check` smoke 不要求启用 C++ iox2/zenoh 测试。直接调试 `runtime/cpp` 的 backend smoke 时，需要用 `CMAKE_PREFIX_PATH=/opt/flowrt/<version>` 或等价路径暴露 FlowRT 私有前缀。
+
+C++ iox2 runtime smoke：
 
 ```bash
-cmake -S runtime/cpp -B build/cpp-iox2 -G Ninja -DFLOWRT_CPP_ENABLE_IOX2_TESTS=ON
+CMAKE_PREFIX_PATH=/opt/flowrt/0.1.0 \
+  cmake -S runtime/cpp -B build/cpp-iox2 -G Ninja -DFLOWRT_CPP_ENABLE_IOX2_TESTS=ON
 cmake --build build/cpp-iox2 --target flowrt_runtime_iox2_smoke
 ctest --test-dir build/cpp-iox2 -R flowrt_runtime_iox2_smoke --output-on-failure
 ```
 
-## 可选 zenoh 依赖
+C++ zenoh runtime smoke：
 
-Rust runtime 的 zenoh 支持通过 feature-gated `zenoh = "1.9"` 编译。C++ zenoh binding 只有在定义 `FLOWRT_HAS_ZENOH_CXX` 并链接基于 `zenoh-c` backend 的 `zenohcxx::zenohc` 时使用真实 transport。
-
-没有安装 `zenohcxx` 时，基础 inproc 验证仍应可运行；含 C++ zenoh 组件的生成 CMake 会执行 `find_package(zenohcxx 1.9.0 QUIET)`，并只接受 `zenohcxx::zenohc`。找不到时 configure 直接失败，需要先安装 `zenoh-c` / `zenoh-cpp` 1.9.0 并通过 `CMAKE_PREFIX_PATH` 暴露安装前缀。FlowRT 不在生成 CMake 中源码拉取 zenoh C++ 依赖，避免把上游 C ABI 构建策略和工具链细节变成 FlowRT 语义。
+```bash
+CMAKE_PREFIX_PATH=/opt/flowrt/0.1.0 \
+  cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
+cmake --build build/cpp-zenoh --target flowrt_runtime_zenoh_smoke
+ctest --test-dir build/cpp-zenoh -R flowrt_runtime_zenoh_smoke --output-on-failure
+```

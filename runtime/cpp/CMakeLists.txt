@@ -4,7 +4,6 @@ project(flowrt_runtime_cpp LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-include(FetchContent)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
@@ -58,26 +57,11 @@ add_test(NAME flowrt_runtime_introspection_smoke COMMAND flowrt_runtime_introspe
 
 option(FLOWRT_CPP_ENABLE_IOX2_TESTS "Build FlowRT C++ runtime tests that require iceoryx2-cxx" OFF)
 option(FLOWRT_CPP_ENABLE_ZENOH_TESTS "Build FlowRT C++ runtime tests that require zenoh-cpp" OFF)
-option(FLOWRT_FETCH_IOX2 "Download and build iceoryx2-cxx v0.9.1 when it is not installed" ON)
 
 if(FLOWRT_CPP_ENABLE_IOX2_TESTS)
     find_package(iceoryx2-cxx 0.9.1 QUIET)
     if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
-        if(NOT FLOWRT_FETCH_IOX2)
-            message(FATAL_ERROR "iceoryx2-cxx 0.9.1 was not found. Install it, set CMAKE_PREFIX_PATH, or enable FLOWRT_FETCH_IOX2.")
-        endif()
-        set(BUILD_CXX ON CACHE BOOL "Build iceoryx2 C++ bindings" FORCE)
-        set(BUILD_EXAMPLES OFF CACHE BOOL "Build iceoryx2 examples" FORCE)
-        FetchContent_Declare(
-            iceoryx2
-            GIT_REPOSITORY https://github.com/eclipse-iceoryx/iceoryx2.git
-            GIT_TAG v0.9.1
-            GIT_SHALLOW TRUE
-        )
-        FetchContent_MakeAvailable(iceoryx2)
-    endif()
-    if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
-        message(FATAL_ERROR "iceoryx2-cxx::static-lib-cxx target is unavailable after dependency resolution")
+        message(FATAL_ERROR "iceoryx2-cxx 0.9.1 was not found. Install the FlowRT package or set CMAKE_PREFIX_PATH to the FlowRT private prefix.")
     endif()
 
     add_executable(flowrt_runtime_iox2_smoke tests/iox2_smoke.cpp)

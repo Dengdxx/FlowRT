@@ -6,7 +6,6 @@
 
 - Rust toolchain，支持当前 workspace 使用的 Rust 2024 Edition。
 - C++20 编译器、CMake 和 CTest，用于构建 C++ runtime 与 C++ 示例。
-- 可选：`iceoryx2-cxx 0.9.1`、基于 `zenoh-c` backend 的 `zenohcxx 1.9.0`。C++ iox2 / zenoh 示例会先查找本机安装；zenoh 找不到本机 `zenohcxx::zenohc` 目标时，CMake 会直接失败，需要先安装 `zenoh-c` / `zenoh-cpp` 1.9.0。
 
 ## 安装 FlowRT
 
@@ -18,7 +17,7 @@ sudo dpkg -i dist/flowrt_*_*.deb
 flowrt --version
 ```
 
-面向用户的入口是系统安装后的 `flowrt ...`。单包 `flowrt` 会同时安装 CLI、Rust runtime crate、C++ runtime header 和 CMake package；用户项目不需要克隆 FlowRT 仓库。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此目标机仍需要 Rust toolchain；C++ 用户组件仍需要 C++20 编译器、CMake 和 CTest。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
+面向用户的入口是系统安装后的 `flowrt ...`。单包 `flowrt` 会同时安装 CLI、Rust runtime crate、C++ runtime header、CMake package、私有 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0` 和 `zenoh-cpp 1.9.0`。这些版本锁定依赖位于 `/opt/flowrt/<version>` 私有前缀，用户项目不需要克隆 FlowRT 仓库，也不需要手动安装 iox2 或 zenoh C++ SDK。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此目标机仍需要 Rust toolchain；C++ 用户组件仍需要 C++20 编译器、CMake 和 CTest。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
 
 ## 检查 RSDL
 
@@ -93,7 +92,7 @@ flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` 或 `zenoh` profile 时，Rust 生成物会启用 runtime crate 的对应 feature；含 C++ `iox2` 组件时，生成 CMake 会先使用 `CMAKE_PREFIX_PATH` 中的本机依赖，找不到再自动拉取并构建；含 C++ `zenoh` 组件时，必须预先安装并暴露 `zenohcxx::zenohc`。
+`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` 或 `zenoh` profile 时，Rust 生成物会启用 runtime crate 的对应 feature；含 C++ backend 组件时，生成 CMake 会优先使用 FlowRT 安装包内 `/opt/flowrt/<version>` 的私有 SDK，缺失时才要求显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
 
 ## 查看运行态参数
 
@@ -117,6 +116,6 @@ flowrt params set examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator
 ## 出错时先看什么
 
 - `flowrt check` 失败：优先修正 RSDL 命名、类型、端口、task、bind、target/backend 声明。
-- `flowrt build` 失败：检查用户组件实现是否匹配生成接口，以及 C++ toolchain / CMake / 可选 iox2 依赖是否存在。
+- `flowrt build` 失败：检查用户组件实现是否匹配生成接口，以及 Rust/C++ toolchain、CMake、FlowRT 安装前缀是否存在。
 - `flowrt run --process <name>` 失败：先确认已经执行过匹配 profile 的 `flowrt build`；再确认 process 名称来自 RSDL `instance.<name>.process`；mixed contract 必须选择单语言 process，或使用 `flowrt launch`；`inproc` backend 下不能单独运行带跨 process dataflow 的 process group。
 - `flowrt launch` 失败：先确认已经执行过匹配 profile 的 `flowrt build --launcher`；再检查 `flowrt/launch/launch.json` 是否生成；确认 mixed process group 没有把 C++ 和 Rust component 放在同一 process 内；如果 backend 是 `inproc`，还要确认 dataflow bind 没有跨 RSDL process group。

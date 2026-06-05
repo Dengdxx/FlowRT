@@ -65,10 +65,10 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
-- 选择 `iox2` 且 contract 含 C++ component 时，CMake 会先查找 `iceoryx2-cxx 0.9.1`；找不到时默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1，并调用 Cargo 构建其 Rust FFI 部分。
-- 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标；找不到时 configure 直接失败，需要预先安装 `zenoh-c` / `zenoh-cpp` 1.9.0 并链接 `zenohcxx::zenohc`。
+- 选择 `iox2` 且 contract 含 C++ component 时，CMake 会查找 `iceoryx2-cxx 0.9.1` 的 `iceoryx2-cxx::static-lib-cxx` 目标。
+- 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
 
-如果构建环境禁止联网，可以预先安装 C++ backend 依赖并通过 `CMAKE_PREFIX_PATH` 暴露安装前缀。`iox2` 的生成 CMake 还可以把 `FLOWRT_FETCH_IOX2` 设为 `OFF`，让缺失依赖在 configure 阶段明确失败；`zenoh` 当前始终要求预装 `zenohcxx::zenohc`。
+Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt build` 会把该私有前缀传给生成 CMake，并为生成 Rust app 写入离线 Cargo config；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 
 ## `run`
 

@@ -2492,6 +2492,7 @@ fn cargo_manifest_with_runtime_patch(
     let Some(runtime_dir) = runtime_dir else {
         return Ok(generated_manifest);
     };
+    write_cargo_vendor_config(out_dir, runtime_dir)?;
     let patched = format!(
         "{generated}\n[patch.crates-io]\nflowrt = {{ path = {} }}\n",
         toml_basic_string(runtime_dir)
@@ -2505,6 +2506,39 @@ fn manifest_declares_flowrt_dependency(manifest: &str) -> bool {
     manifest
         .lines()
         .any(|line| line.trim_start().starts_with("flowrt ="))
+}
+
+fn write_cargo_vendor_config(out_dir: &Path, runtime_dir: &Path) -> Result<()> {
+    let Some(private_prefix) = flowrt_private_prefix_from_runtime_dir(runtime_dir) else {
+        return Ok(());
+    };
+    let vendor_dir = private_prefix.join("share").join("cargo").join("vendor");
+    if !vendor_dir.is_dir() {
+        return Ok(());
+    }
+    let cargo_dir = out_dir.join("build").join(".cargo");
+    fs::create_dir_all(&cargo_dir)
+        .with_context(|| format!("failed to create `{}`", cargo_dir.display()))?;
+    let config = format!(
+        "[source.crates-io]\nreplace-with = \"flowrt-vendor\"\n\n[source.flowrt-vendor]\ndirectory = {}\n\n[net]\noffline = true\n",
+        toml_basic_string(&vendor_dir)
+    );
+    let config_path = cargo_dir.join("config.toml");
+    fs::write(&config_path, config)
+        .with_context(|| format!("failed to write `{}`", config_path.display()))?;
+    Ok(())
+}
+
+fn flowrt_private_prefix_from_runtime_dir(runtime_dir: &Path) -> Option<PathBuf> {
+    let share_flowrt = runtime_dir.parent()?.parent()?;
+    if share_flowrt.file_name()? != OsStr::new("flowrt") {
+        return None;
+    }
+    let share = share_flowrt.parent()?;
+    if share.file_name()? != OsStr::new("share") {
+        return None;
+    }
+    Some(share.parent()?.to_path_buf())
 }
 
 fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
@@ -2545,6 +2579,10 @@ fn cmake_configure_args(
     if let Some(runtime_dir) = runtime_dir {
         args.push(format!(
             "-DFLOWRT_CPP_RUNTIME_DIR={}",
+            runtime_dir.to_string_lossy()
+        ));
+        args.push(format!(
+            "-DCMAKE_PREFIX_PATH={}",
             runtime_dir.to_string_lossy()
         ));
     }
@@ -2641,18 +2679,41 @@ fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) ->
 }
 
 fn run_cargo_build_bin(manifest: &Path, bin_name: &str) -> Result<()> {
-    let status = ProcessCommand::new("cargo")
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(manifest)
-        .arg("--bin")
-        .arg(bin_name)
-        .status()
-        .context("failed to spawn cargo")?;
+    let invocation = cargo_build_invocation(manifest, bin_name)?;
+    let mut command = ProcessCommand::new("cargo");
+    command
+        .current_dir(&invocation.current_dir)
+        .args(&invocation.args);
+    let status = command.status().context("failed to spawn cargo")?;
     if !status.success() {
         anyhow::bail!("cargo invocation failed with status {status}");
     }
     Ok(())
+}
+
+struct CargoBuildInvocation {
+    current_dir: PathBuf,
+    args: Vec<String>,
+}
+
+fn cargo_build_invocation(manifest: &Path, bin_name: &str) -> Result<CargoBuildInvocation> {
+    let manifest_dir = manifest
+        .parent()
+        .with_context(|| format!("manifest path has no parent: `{}`", manifest.display()))?;
+    let mut args = vec![
+        "build".to_string(),
+        "--manifest-path".to_string(),
+        manifest.to_string_lossy().into_owned(),
+        "--bin".to_string(),
+        bin_name.to_string(),
+    ];
+    if manifest_dir.join(".cargo").join("config.toml").exists() {
+        args.push("--offline".to_string());
+    }
+    Ok(CargoBuildInvocation {
+        current_dir: manifest_dir.to_path_buf(),
+        args,
+    })
 }
 
 fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> Result<()> {
@@ -2703,11 +2764,7 @@ fn rust_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
 }
 
 fn cpp_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
-    if let Some(runtime_dir) = runtime_dir_from_env(
-        "FLOWRT_CPP_RUNTIME_DIR",
-        "include/flowrt/runtime.hpp",
-        "C++",
-    )? {
+    if let Some(runtime_dir) = cpp_runtime_dir_from_env()? {
         return Ok(Some(runtime_dir));
     }
     if let Some(runtime_dir) = installed_runtime_dir("runtime/cpp", "include/flowrt/runtime.hpp")? {
@@ -2717,6 +2774,31 @@ fn cpp_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
         "runtime/cpp",
         "include/flowrt/runtime.hpp",
     ))
+}
+
+fn cpp_runtime_dir_from_env() -> Result<Option<PathBuf>> {
+    let Some(raw) = env::var_os("FLOWRT_CPP_RUNTIME_DIR") else {
+        return Ok(None);
+    };
+    let runtime_dir = PathBuf::from(raw);
+    if runtime_dir.join("include/flowrt/runtime.hpp").exists() {
+        return Ok(Some(runtime_dir));
+    }
+    let nested_runtime_dir = runtime_dir.join("runtime/cpp");
+    if nested_runtime_dir
+        .join("include/flowrt/runtime.hpp")
+        .exists()
+    {
+        return Ok(Some(nested_runtime_dir));
+    }
+    anyhow::bail!(
+        "FLOWRT_CPP_RUNTIME_DIR points to `{}`, but neither `{}` nor `{}` exists; set it to a valid FlowRT C++ runtime directory or private FlowRT prefix",
+        runtime_dir.display(),
+        runtime_dir.join("include/flowrt/runtime.hpp").display(),
+        nested_runtime_dir
+            .join("include/flowrt/runtime.hpp")
+            .display()
+    );
 }
 
 fn runtime_dir_from_env(
@@ -2740,18 +2822,37 @@ fn runtime_dir_from_env(
 
 fn installed_runtime_dir(relative: &str, marker: &str) -> Result<Option<PathBuf>> {
     let current_exe = env::current_exe().context("failed to resolve current flowrt executable")?;
+    let current_exe = fs::canonicalize(&current_exe).unwrap_or(current_exe);
+    for runtime_dir in installed_runtime_candidates(&current_exe, relative) {
+        if runtime_dir.join(marker).exists() {
+            return Ok(Some(runtime_dir));
+        }
+    }
+    Ok(None)
+}
+
+fn installed_runtime_candidates(current_exe: &Path, relative: &str) -> Vec<PathBuf> {
     let Some(bin_dir) = current_exe.parent() else {
-        return Ok(None);
+        return Vec::new();
     };
     let Some(prefix) = bin_dir.parent() else {
-        return Ok(None);
+        return Vec::new();
     };
-    let runtime_dir = prefix.join("share").join("flowrt").join(relative);
-    if runtime_dir.join(marker).exists() {
-        Ok(Some(runtime_dir))
-    } else {
-        Ok(None)
+    let mut candidates = vec![
+        prefix.join("share").join("flowrt").join(relative),
+        prefix
+            .join("share")
+            .join("flowrt")
+            .join(relative.strip_prefix("runtime/cpp").unwrap_or(relative)),
+        prefix
+            .parent()
+            .map(|usr| usr.join("share").join("flowrt").join(relative))
+            .unwrap_or_else(|| prefix.join("__missing__")),
+    ];
+    if relative == "runtime/cpp" {
+        candidates.insert(0, prefix.to_path_buf());
     }
+    candidates
 }
 
 fn repo_runtime_dir(relative: &str, marker: &str) -> Option<PathBuf> {
@@ -5028,6 +5129,32 @@ flowrt = { version = "0.1" }
     }
 
     #[test]
+    fn cargo_build_invocation_uses_manifest_dir_and_offline_config() {
+        let root = temp_test_dir("cargo-build-offline");
+        let build_dir = root.join("flowrt").join("build");
+        std::fs::create_dir_all(build_dir.join(".cargo")).unwrap();
+        std::fs::write(
+            build_dir.join(".cargo").join("config.toml"),
+            "[net]\noffline = true\n",
+        )
+        .unwrap();
+        let manifest = build_dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"robot\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let invocation = cargo_build_invocation(&manifest, "robot-flowrt-app")
+            .expect("cargo invocation should be derived from manifest");
+
+        assert_eq!(invocation.current_dir, build_dir);
+        assert!(invocation.args.iter().any(|arg| arg == "--offline"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
         let source_dir = Path::new("/tmp/flowrt/build");
         let build_dir = Path::new("/tmp/flowrt/build/cmake");
@@ -5054,6 +5181,20 @@ flowrt = { version = "0.1" }
         let args = cmake_configure_args(source_dir, build_dir, Some(runtime_dir));
 
         assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/opt/flowrt/runtime/cpp".to_string()));
+        assert!(args.contains(&"-DCMAKE_PREFIX_PATH=/opt/flowrt/runtime/cpp".to_string()));
+    }
+
+    #[test]
+    fn installed_runtime_candidates_include_private_prefix_layout() {
+        let current_exe = Path::new("/opt/flowrt/0.1.0/bin/flowrt");
+
+        let candidates = installed_runtime_candidates(current_exe, "runtime/cpp");
+
+        assert!(
+            candidates
+                .iter()
+                .any(|path| path == Path::new("/opt/flowrt/0.1.0"))
+        );
     }
 
     #[test]
