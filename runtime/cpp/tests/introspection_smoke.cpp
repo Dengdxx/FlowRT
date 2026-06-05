@@ -134,9 +134,15 @@ int main() {
             std::vector<std::uint8_t>{std::uint8_t{8}, std::uint8_t{7}}};
         assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->payload ==
                expected_probe_payload);
+        assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->published_count == 0U);
     }
     assert(probe_state.active_probe_count("source.imu_to_sink.imu") ==
            std::optional<std::uint64_t>{0U});
+    const auto probe = probe_state.channel_probe("source.imu_to_sink.imu");
+    assert(probe.has_value());
+    probe->record_publish_event();
+    probe->record_publish_event();
+    assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->published_count == 2U);
 
     flowrt::IntrospectionState bounded_probe_state;
     bounded_probe_state.register_channel_with_probe_capacity("source.packet_to_sink.packet",

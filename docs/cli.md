@@ -19,6 +19,7 @@ flowrt params list <path/to/generated-app-or-selfdesc.json> [--socket <path>]
 flowrt params get <path/to/generated-app-or-selfdesc.json> <instance.param> [--socket <path>]
 flowrt params set <path/to/generated-app-or-selfdesc.json> <instance.param> <json-value> [--socket <path>]
 flowrt status
+flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
 ```
 
 ## `check`
@@ -205,6 +206,18 @@ flowrt status
 当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数、active echo observer 数量和 probe drop 计数写入 live status；payload 只在 echo 数据面 probe 启用期间 best-effort 记录。
 
 runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
+
+## `hz`
+
+```bash
+flowrt hz
+flowrt hz source.imu_to_sink.imu
+flowrt hz source.imu_to_sink.imu --socket /run/user/1000/flowrt/12345.sock --window-ms 500
+```
+
+`hz` 通过 live status 控制面读取 channel `published_count`，等待一个采样窗口后再次读取，并用计数差除以实际 elapsed time 得到发布频率。它不打开 `observe_channel`，不读取 payload，不启用 echo 数据面 probe，因此不会让发布热路径做 payload 拷贝或 frame 编码。
+
+省略 channel 时输出所有 live channel；传入 channel 时只输出完全匹配的 canonical channel 名。省略 `--socket` 时扫描当前用户 runtime socket 目录；多个进程同时存在时会分别输出并带上 socket 路径。`--window-ms` 默认 1000，必须大于 0。
 
 ## `--profile`
 

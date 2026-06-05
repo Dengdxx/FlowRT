@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -161,6 +161,20 @@ enum Command {
 
     /// 扫描当前用户 runtime socket 并输出 live status。
     Status,
+
+    /// 统计 live channel 发布频率。
+    Hz {
+        /// 可选 channel 名称；省略时输出所有 channel。
+        channel: Option<String>,
+
+        /// 显式指定 runtime introspection socket；省略时扫描当前用户全部 runtime socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// 采样窗口，单位毫秒。
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..))]
+        window_ms: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -321,6 +335,16 @@ fn main() -> Result<()> {
         },
         Command::Status => {
             println!("{}", live_status_summary()?);
+        }
+        Command::Hz {
+            channel,
+            socket,
+            window_ms,
+        } => {
+            println!(
+                "{}",
+                live_hz_summary(channel.as_deref(), socket.as_deref(), window_ms)?
+            );
         }
     }
     Ok(())
@@ -1874,6 +1898,128 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
     }
 }
 
+fn live_hz_summary(channel: Option<&str>, socket: Option<&Path>, window_ms: u64) -> Result<String> {
+    let sockets = match socket {
+        Some(socket) => vec![socket.to_path_buf()],
+        None => {
+            flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
+        }
+    };
+    live_hz_summary_for_sockets(channel, sockets, Duration::from_millis(window_ms))
+}
+
+fn live_hz_summary_for_sockets(
+    channel: Option<&str>,
+    sockets: Vec<PathBuf>,
+    window: Duration,
+) -> Result<String> {
+    if sockets.is_empty() {
+        return Ok("no live FlowRT processes".to_string());
+    }
+
+    let mut first = Vec::new();
+    let mut lines = Vec::new();
+    for socket in &sockets {
+        match flowrt::request_status(socket) {
+            Ok(response) => first.push((socket.clone(), response)),
+            Err(error) => lines.push(format!("stale socket={} error={error}", socket.display())),
+        }
+    }
+    if first.is_empty() {
+        return Ok(lines.join("\n"));
+    }
+    let started = Instant::now();
+    std::thread::sleep(window);
+    let elapsed = started.elapsed();
+
+    for (socket, first_status) in first {
+        let second_status = match flowrt::request_status(&socket) {
+            Ok(response) => response,
+            Err(error) => {
+                lines.push(format!("stale socket={} error={error}", socket.display()));
+                continue;
+            }
+        };
+        let summary = format_hz_summary_from_status_pair(&first_status, &second_status, elapsed)?;
+        for line in summary.lines() {
+            if channel.is_none_or(|selected| hz_summary_line_matches_channel(line, selected)) {
+                lines.push(format!("{line} socket={}", socket.display()));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        match channel {
+            Some(channel) => Ok(format!("no live FlowRT channel matched `{channel}`")),
+            None => Ok("no live FlowRT channels".to_string()),
+        }
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
+fn hz_summary_line_matches_channel(line: &str, channel: &str) -> bool {
+    line.split_ascii_whitespace()
+        .any(|field| field.strip_prefix("channel=") == Some(channel))
+}
+
+fn format_hz_summary_from_status_pair(
+    first: &flowrt::IntrospectionResponse,
+    second: &flowrt::IntrospectionResponse,
+    elapsed: Duration,
+) -> Result<String> {
+    let flowrt::IntrospectionResponse::Status {
+        handshake,
+        status: first_status,
+    } = first
+    else {
+        anyhow::bail!("first hz sample returned non-status response");
+    };
+    let flowrt::IntrospectionResponse::Status {
+        status: second_status,
+        ..
+    } = second
+    else {
+        anyhow::bail!("second hz sample returned non-status response");
+    };
+    let elapsed_secs = elapsed.as_secs_f64();
+    if elapsed_secs <= 0.0 {
+        anyhow::bail!("hz sample window must be positive");
+    }
+
+    let first_channels = first_status
+        .channels
+        .iter()
+        .map(|channel| (channel.name.as_str(), channel))
+        .collect::<BTreeMap<_, _>>();
+    let mut lines = Vec::new();
+    for second_channel in &second_status.channels {
+        let Some(first_channel) = first_channels.get(second_channel.name.as_str()) else {
+            continue;
+        };
+        let delta = second_channel
+            .published_count
+            .saturating_sub(first_channel.published_count);
+        let hz = delta as f64 / elapsed_secs;
+        lines.push(format!(
+            "pid={} package={} process={} channel={} type={} delta={} hz={:.2}",
+            handshake.pid,
+            handshake.package,
+            handshake.process,
+            second_channel.name,
+            second_channel.message_type,
+            delta,
+            hz
+        ));
+    }
+
+    if lines.is_empty() {
+        Ok("no live FlowRT channels".to_string())
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
 fn write_contract(contract: &ContractIr, out_dir: &Path) -> Result<PathBuf> {
     let contract_dir = out_dir.join("contract");
     fs::create_dir_all(&contract_dir)
@@ -3403,6 +3549,159 @@ fn main() {}
         assert!(output.contains("channels=1"));
 
         drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cli_parses_hz_command_with_socket_and_window() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "hz",
+            "source.imu_to_sink.imu",
+            "--socket",
+            "/tmp/flowrt-main.sock",
+            "--window-ms",
+            "250",
+        ])
+        .unwrap();
+
+        let Command::Hz {
+            channel,
+            socket,
+            window_ms,
+        } = cli.command
+        else {
+            panic!("hz command should parse into Command::Hz")
+        };
+
+        assert_eq!(channel.as_deref(), Some("source.imu_to_sink.imu"));
+        assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+        assert_eq!(window_ms, 250);
+    }
+
+    #[test]
+    fn cli_rejects_zero_hz_window() {
+        let error = Cli::try_parse_from(["flowrt", "hz", "--window-ms", "0"])
+            .expect_err("zero hz window should be rejected");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn live_hz_summary_formats_channel_delta_rate() {
+        let first = flowrt::IntrospectionResponse::Status {
+            handshake: flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: 77,
+                started_at_unix_ms: 1234,
+                self_description_hash: "feedface".to_string(),
+                package: "robot_demo".to_string(),
+                process: "main".to_string(),
+                runtime: "rust".to_string(),
+            },
+            status: flowrt::IntrospectionStatus {
+                tick_count: 10,
+                channels: vec![flowrt::IntrospectionChannelStatus {
+                    name: "source.imu_to_sink.imu".to_string(),
+                    message_type: "Imu".to_string(),
+                    published_count: 100,
+                    last_payload_len: None,
+                    active_observers: 0,
+                    dropped_samples: 0,
+                }],
+            },
+        };
+        let second = flowrt::IntrospectionResponse::Status {
+            handshake: flowrt::IntrospectionHandshake {
+                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+                pid: 77,
+                started_at_unix_ms: 1234,
+                self_description_hash: "feedface".to_string(),
+                package: "robot_demo".to_string(),
+                process: "main".to_string(),
+                runtime: "rust".to_string(),
+            },
+            status: flowrt::IntrospectionStatus {
+                tick_count: 20,
+                channels: vec![flowrt::IntrospectionChannelStatus {
+                    name: "source.imu_to_sink.imu".to_string(),
+                    message_type: "Imu".to_string(),
+                    published_count: 150,
+                    last_payload_len: None,
+                    active_observers: 0,
+                    dropped_samples: 0,
+                }],
+            },
+        };
+
+        let output =
+            format_hz_summary_from_status_pair(&first, &second, Duration::from_millis(500))
+                .expect("hz summary should format status pair");
+
+        assert!(output.contains("channel=source.imu_to_sink.imu"));
+        assert!(output.contains("type=Imu"));
+        assert!(output.contains("delta=50"));
+        assert!(output.contains("hz=100.00"));
+    }
+
+    #[test]
+    fn live_hz_summary_reads_status_without_enabling_probe() {
+        let root = temp_test_dir("live-hz");
+        let socket = root.join("main.sock");
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 77,
+            started_at_unix_ms: 1234,
+            self_description_hash: "feedface".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        state.record_channel_publish_bytes("source.imu_to_sink.imu", "Imu", vec![0u8; 48], None);
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("status server should start");
+        let publish_state = state.clone();
+        let publisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            for _ in 0..5 {
+                publish_state.record_channel_publish_bytes(
+                    "source.imu_to_sink.imu",
+                    "Imu",
+                    vec![0u8; 48],
+                    None,
+                );
+            }
+        });
+
+        let output = live_hz_summary_for_sockets(
+            Some("source.imu_to_sink.imu"),
+            vec![socket],
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        publisher.join().unwrap();
+
+        assert!(output.contains("channel=source.imu_to_sink.imu"));
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn live_hz_summary_reports_stale_socket_without_failing_scan() {
+        let root = temp_test_dir("live-hz-stale");
+        let socket = root.join("missing.sock");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let output =
+            live_hz_summary_for_sockets(None, vec![socket.clone()], Duration::from_millis(1))
+                .expect("stale socket should be reported as a line");
+
+        assert!(output.contains(&format!("stale socket={}", socket.display())));
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1971,7 +1971,6 @@ struct IntrospectionProbeRecord {
 namespace detail {
 
 struct IntrospectionProbeLatest {
-    std::uint64_t published_count = 0;
     std::optional<std::vector<std::uint8_t>> payload;
     std::optional<std::uint64_t> published_at_ms;
     std::optional<std::size_t> max_payload_len;
@@ -1980,6 +1979,7 @@ struct IntrospectionProbeLatest {
 struct IntrospectionProbeInner {
     std::atomic_uint64_t observer_count{0};
     std::atomic_uint64_t dropped_samples{0};
+    std::atomic_uint64_t published_count{0};
     mutable std::mutex mutex;
     IntrospectionProbeLatest latest;
 };
@@ -2016,6 +2016,17 @@ class IntrospectionChannelProbe {
         return inner_->dropped_samples.load(std::memory_order_acquire);
     }
 
+    void record_publish_event() const noexcept {
+        std::uint64_t current = inner_->published_count.load(std::memory_order_acquire);
+        while (current != UINT64_MAX) {
+            if (inner_->published_count.compare_exchange_weak(current, current + 1,
+                                                              std::memory_order_acq_rel,
+                                                              std::memory_order_acquire)) {
+                break;
+            }
+        }
+    }
+
     IntrospectionObserverGuard observe() const;
 
     IntrospectionProbeRecord try_record_bytes(const std::vector<std::uint8_t> &payload,
@@ -2049,20 +2060,15 @@ class IntrospectionChannelProbe {
         }
         buffer.clear();
         buffer.insert(buffer.end(), payload.begin(), payload.end());
-        if (latest.published_count != UINT64_MAX) {
-            ++latest.published_count;
-        }
         latest.published_at_ms = published_at_ms;
         return IntrospectionProbeRecord{.recorded = true, .dropped = false};
     }
 
     void force_record_bytes(std::vector<std::uint8_t> payload,
                             std::optional<std::uint64_t> published_at_ms) const {
+        record_publish_event();
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto &latest = inner_->latest;
-        if (latest.published_count != UINT64_MAX) {
-            ++latest.published_count;
-        }
         latest.payload = std::move(payload);
         latest.published_at_ms = published_at_ms;
     }
@@ -2070,7 +2076,7 @@ class IntrospectionChannelProbe {
     IntrospectionChannelSnapshot snapshot() const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         return IntrospectionChannelSnapshot{
-            .published_count = inner_->latest.published_count,
+            .published_count = inner_->published_count.load(std::memory_order_acquire),
             .payload = inner_->latest.payload,
             .published_at_ms = inner_->latest.published_at_ms,
         };

@@ -2724,6 +2724,7 @@ void record_introspection_publish_copy(
     const T& value,
     std::uint64_t published_at_ms
 ) {
+    probe.record_publish_event();
     if (!probe.enabled()) {
         return;
     }
@@ -2741,6 +2742,7 @@ void record_introspection_publish_frame(
     const T& value,
     std::uint64_t published_at_ms
 ) {
+    probe.record_publish_event();
     if (!probe.enabled()) {
         return;
     }
@@ -2914,6 +2916,7 @@ fn record_introspection_publish_copy<T: Copy>(
     value: &T,
     published_at_ms: u64,
 ) {
+    probe.record_publish_event();
     if !probe.enabled() {
         return;
     }
@@ -2934,6 +2937,7 @@ fn record_introspection_publish_frame<T: flowrt::FrameCodec>(
     value: &T,
     published_at_ms: u64,
 ) {
+    probe.record_publish_event();
     if !probe.enabled() {
         return;
     }

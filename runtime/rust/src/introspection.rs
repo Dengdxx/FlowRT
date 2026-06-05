@@ -165,12 +165,12 @@ struct ChannelState {
 struct ChannelProbeInner {
     observer_count: AtomicU64,
     dropped_samples: AtomicU64,
+    published_count: AtomicU64,
     latest: Mutex<ChannelProbeLatest>,
 }
 
 #[derive(Debug, Default)]
 struct ChannelProbeLatest {
-    published_count: u64,
     payload: Option<Vec<u8>>,
     published_at_ms: Option<u64>,
     max_payload_len: Option<usize>,
@@ -195,8 +195,8 @@ impl IntrospectionChannelProbe {
             inner: Arc::new(ChannelProbeInner {
                 observer_count: AtomicU64::new(0),
                 dropped_samples: AtomicU64::new(0),
+                published_count: AtomicU64::new(0),
                 latest: Mutex::new(ChannelProbeLatest {
-                    published_count: 0,
                     payload,
                     published_at_ms: None,
                     max_payload_len,
@@ -218,6 +218,15 @@ impl IntrospectionChannelProbe {
     /// 被 probe 丢弃的观测样本数量。
     pub fn dropped_samples(&self) -> u64 {
         self.inner.dropped_samples.load(Ordering::Acquire)
+    }
+
+    /// 记录一次 channel 发布事件；只更新控制面计数，不拷贝 payload。
+    pub fn record_publish_event(&self) {
+        let _ = self.inner.published_count.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| Some(current.saturating_add(1)),
+        );
     }
 
     /// 建立一个 observer guard；guard drop 后自动关闭 probe。
@@ -270,7 +279,6 @@ impl IntrospectionChannelProbe {
         }
         buffer.clear();
         buffer.extend_from_slice(payload);
-        latest.published_count = latest.published_count.saturating_add(1);
         latest.published_at_ms = published_at_ms;
         IntrospectionProbeRecord {
             recorded: true,
@@ -279,12 +287,12 @@ impl IntrospectionChannelProbe {
     }
 
     fn force_record_bytes(&self, payload: Vec<u8>, published_at_ms: Option<u64>) {
+        self.record_publish_event();
         let mut latest = self
             .inner
             .latest
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        latest.published_count = latest.published_count.saturating_add(1);
         latest.payload = Some(payload);
         latest.published_at_ms = published_at_ms;
     }
@@ -296,7 +304,7 @@ impl IntrospectionChannelProbe {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         IntrospectionChannelSnapshot {
-            published_count: latest.published_count,
+            published_count: self.inner.published_count.load(Ordering::Acquire),
             payload: latest.payload.clone(),
             published_at_ms: latest.published_at_ms,
         }
@@ -1419,7 +1427,7 @@ mod tests {
                 .recorded
         );
         let snapshot = state.channel_snapshot("source.imu_to_sink.imu").unwrap();
-        assert_eq!(snapshot.published_count, 1);
+        assert_eq!(snapshot.published_count, 0);
         assert_eq!(snapshot.payload, Some(vec![5, 6, 7, 8]));
         assert_eq!(snapshot.published_at_ms, Some(11));
 
@@ -1436,8 +1444,26 @@ mod tests {
                 .recorded
         );
         let snapshot = state.channel_snapshot("source.imu_to_sink.imu").unwrap();
-        assert_eq!(snapshot.published_count, 1);
+        assert_eq!(snapshot.published_count, 0);
         assert_eq!(snapshot.payload, Some(vec![5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn publish_event_updates_status_count_without_payload_or_observer() {
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        let probe = state
+            .channel_probe("source.imu_to_sink.imu")
+            .expect("registered channel should expose probe");
+
+        probe.record_publish_event();
+        probe.record_publish_event();
+
+        let snapshot = state.channel_snapshot("source.imu_to_sink.imu").unwrap();
+        assert_eq!(snapshot.published_count, 2);
+        assert_eq!(snapshot.payload, None);
+        assert_eq!(snapshot.published_at_ms, None);
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
     }
 
     #[test]
