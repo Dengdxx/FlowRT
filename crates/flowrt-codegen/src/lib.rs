@@ -15,8 +15,12 @@ use flowrt_ir::{
 };
 use flowrt_validate::validate_contract;
 
+mod build_files;
+mod launch_manifest;
 mod selfdesc;
 
+use build_files::{emit_cargo_manifest, emit_cmake};
+use launch_manifest::emit_launch_manifest;
 use selfdesc::{
     emit_cpp_selfdesc_header, emit_cpp_selfdesc_source, emit_rust_selfdesc, emit_self_description,
 };
@@ -203,11 +207,18 @@ fn artifact(path: impl Into<PathBuf>, content: String) -> Artifact {
     }
 }
 
-fn has_language(contract: &ContractIr, language: LanguageKind) -> bool {
+pub(crate) fn has_language(contract: &ContractIr, language: LanguageKind) -> bool {
     contract
         .components
         .iter()
         .any(|component| component.language == language)
+}
+
+pub(crate) fn language_name(language: LanguageKind) -> &'static str {
+    match language {
+        LanguageKind::Cpp => "cpp",
+        LanguageKind::Rust => "rust",
+    }
 }
 
 fn param_value_for_instance<'a>(instance: &'a InstanceIr, param: &'a ParamIr) -> &'a ParamValue {
@@ -1812,7 +1823,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output
 }
 
-fn selected_backend_name(contract: &ContractIr) -> String {
+pub(crate) fn selected_backend_name(contract: &ContractIr) -> String {
     contract
         .profiles
         .iter()
@@ -3249,7 +3260,7 @@ fn zenoh_key_expr(contract: &ContractIr, graph: &GraphIr, bind: &BindRuntimePlan
     )
 }
 
-fn zenoh_key_expr_for_edge(
+pub(crate) fn zenoh_key_expr_for_edge(
     contract: &ContractIr,
     graph: &GraphIr,
     index: usize,
@@ -3294,7 +3305,7 @@ fn zenoh_key_expr_from_parts(
     )
 }
 
-fn iox2_service_name_for_edge(
+pub(crate) fn iox2_service_name_for_edge(
     contract: &ContractIr,
     graph: &GraphIr,
     index: usize,
@@ -3402,7 +3413,9 @@ fn type_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a TypeIr {
         .expect("normalized contract must reference known message types")
 }
 
-fn fixed_message_abi_expectations(contract: &ContractIr) -> Result<Vec<MessageAbiExpectation>> {
+pub(crate) fn fixed_message_abi_expectations(
+    contract: &ContractIr,
+) -> Result<Vec<MessageAbiExpectation>> {
     let mut fixed_contract = contract.clone();
     fixed_contract.types = contract
         .types
@@ -3869,338 +3882,6 @@ fn emit_cpp_message_abi_tests(
         }
     }
     output.push_str("    return 0;\n}\n");
-    output
-}
-
-fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
-    let selected_backend = selected_backend_name(contract);
-    let launch = serde_json::json!({
-        "package": contract.package.name,
-        "ir_version": contract.ir_version,
-        "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
-        "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
-        "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
-            "name": graph.name,
-            "processes": launch_processes(contract, graph, &selected_backend),
-            "channels": launch_channels(contract, graph, &selected_backend),
-            "instances": graph.instances.iter().map(|instance| {
-                let component = component_by_name(contract, &instance.component.name);
-                serde_json::json!({
-                    "name": instance.name,
-                    "component": instance.component.name,
-                    "runtime": language_name(component.language),
-                    "process": instance.process,
-                    "target": instance.target.as_ref().map(|target| &target.name),
-                })
-            }).collect::<Vec<_>>(),
-            "tasks": graph.tasks.iter().map(launch_task).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
-    });
-    let mut output = serde_json::to_string_pretty(&launch)?;
-    output.push('\n');
-    Ok(output)
-}
-
-fn launch_channels(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    backend: &str,
-) -> Vec<serde_json::Value> {
-    graph
-        .binds
-        .iter()
-        .enumerate()
-        .map(|(index, bind)| {
-            let service = (backend == "iox2")
-                .then(|| iox2_service_name_for_edge(contract, graph, index, bind));
-            let key_expr =
-                (backend == "zenoh").then(|| zenoh_key_expr_for_edge(contract, graph, index, bind));
-            serde_json::json!({
-                "from": format!("{}.{}", bind.from.instance.name, bind.from.port),
-                "to": format!("{}.{}", bind.to.instance.name, bind.to.port),
-                "backend": backend,
-                "service": service,
-                "key_expr": key_expr,
-                "channel": bind.channel,
-                "depth": bind.depth,
-                "overflow": bind.overflow,
-                "stale_policy": bind.stale,
-                "max_age_ms": bind.max_age_ms,
-            })
-        })
-        .collect()
-}
-
-fn launch_processes(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    backend: &str,
-) -> Vec<serde_json::Value> {
-    let mut processes = BTreeMap::<String, Vec<&InstanceIr>>::new();
-    for instance in &graph.instances {
-        processes
-            .entry(
-                instance
-                    .process
-                    .clone()
-                    .unwrap_or_else(|| "main".to_string()),
-            )
-            .or_default()
-            .push(instance);
-    }
-
-    processes
-        .into_iter()
-        .map(|(name, instances)| {
-            let instance_names = instances
-                .iter()
-                .map(|instance| instance.name.as_str())
-                .collect::<BTreeSet<_>>();
-            let runtimes = process_runtimes(contract, &instances);
-            let target = common_process_target(&instances);
-            serde_json::json!({
-                "name": name,
-                "backend": backend,
-                "target": target,
-                "runtimes": runtimes,
-                "runtime_kind": process_runtime_kind(&runtimes),
-                "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
-                "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(launch_task).collect::<Vec<_>>(),
-            })
-        })
-        .collect()
-}
-
-fn launch_task(task: &TaskIr) -> serde_json::Value {
-    serde_json::json!({
-        "instance": task.instance.name,
-        "trigger": task.trigger,
-        "period_ms": task.period_ms,
-        "deadline_ms": task.deadline_ms,
-        "priority": task.priority,
-        "inputs": task.inputs,
-        "outputs": task.outputs,
-    })
-}
-
-fn process_runtimes(contract: &ContractIr, instances: &[&InstanceIr]) -> Vec<&'static str> {
-    instances
-        .iter()
-        .map(|instance| component_by_name(contract, &instance.component.name))
-        .map(|component| language_name(component.language))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn process_runtime_kind(runtimes: &[&'static str]) -> &'static str {
-    if runtimes.len() == 1 {
-        runtimes[0]
-    } else {
-        "mixed"
-    }
-}
-
-fn language_name(language: LanguageKind) -> &'static str {
-    match language {
-        LanguageKind::Cpp => "cpp",
-        LanguageKind::Rust => "rust",
-    }
-}
-
-fn common_process_target(instances: &[&InstanceIr]) -> Option<String> {
-    let mut targets = instances
-        .iter()
-        .filter_map(|instance| instance.target.as_ref().map(|target| target.name.clone()))
-        .collect::<BTreeSet<_>>();
-
-    if targets.len() == 1 {
-        targets.pop_first()
-    } else {
-        None
-    }
-}
-
-fn emit_cmake(contract: &ContractIr) -> String {
-    let package_name = sanitize_package_name(&contract.package.name);
-    let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.22)\nproject({}_flowrt_app LANGUAGES CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
-        package_name, package_name, package_name, package_name
-    );
-
-    if has_language(contract, LanguageKind::Cpp) {
-        let shell_target = format!("{}_cpp_shell", package_name.replace('-', "_"));
-        let app_target = format!("{}_cpp_app", package_name.replace('-', "_"));
-        if selected_backend_name(contract) == "iox2" {
-            output.push_str(cmake_iox2_dependency_block());
-            output.push_str(&format!(
-                "target_link_libraries({package_name}_flowrt_app INTERFACE iceoryx2-cxx::static-lib-cxx)\n"
-            ));
-            output.push_str(&format!(
-                "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)\n"
-            ));
-        } else if selected_backend_name(contract) == "zenoh" {
-            output.push_str(cmake_zenoh_dependency_block());
-            output.push_str(&format!(
-                "target_link_libraries({package_name}_flowrt_app INTERFACE ${{FLOWRT_ZENOH_CXX_TARGET}})\n"
-            ));
-            output.push_str(&format!(
-                "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ZENOH_CXX=1)\n"
-            ));
-        }
-        output.push_str(
-            "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
-        );
-        output.push_str(
-            "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    find_package(flowrt_runtime 0.1 QUIET)\nendif()\n",
-        );
-        output.push_str(
-            "if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
-        );
-        output.push_str(
-            "if(FLOWRT_CPP_RUNTIME_DIR)\n    if(NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR does not contain include/flowrt/runtime.hpp: ${FLOWRT_CPP_RUNTIME_DIR}\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nelseif(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install flowrt_runtime, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree.\")\nendif()\n",
-        );
-        output = output.replace("{package_name}", &package_name);
-        output.push_str(&format!(
-            "\nadd_library({shell_target} STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)\n"
-        ));
-        output.push_str(&format!(
-            "target_link_libraries({shell_target} PUBLIC {package_name}_flowrt_app)\n"
-        ));
-        output.push_str(
-            "\nfile(GLOB FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS \"${CMAKE_CURRENT_LIST_DIR}/../../src/cpp/*.cpp\")\nset(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING \"User C++ sources that implement flowrt_user::build_app\")\n",
-        );
-        output.push_str("if(FLOWRT_USER_CPP_SOURCES)\n");
-        let user_target = format!("{}_cpp_user", package_name.replace('-', "_"));
-        output.push_str(&format!(
-            "    add_library({user_target} STATIC ${{FLOWRT_USER_CPP_SOURCES}})\n"
-        ));
-        output.push_str(&format!(
-            "    target_link_libraries({user_target} PUBLIC {package_name}_flowrt_app)\n"
-        ));
-        output.push_str(&format!(
-            "    add_executable({app_target} ../cpp/src/main.cpp)\n"
-        ));
-        output.push_str(&format!(
-            "    target_link_libraries({app_target} PRIVATE {shell_target} {user_target})\n"
-        ));
-        output.push_str("endif()\n");
-    }
-
-    let has_fixed_abi_tests = fixed_message_abi_expectations(contract)
-        .map(|expectations| !expectations.is_empty())
-        .unwrap_or(false);
-    if has_language(contract, LanguageKind::Cpp) && has_fixed_abi_tests {
-        let test_target = format!("{}_message_abi", package_name.replace('-', "_"));
-        output.push_str("\ninclude(CTest)\nif(BUILD_TESTING)\n");
-        output.push_str(&format!(
-            "    add_executable({test_target} ../cpp/tests/message_abi.cpp)\n"
-        ));
-        output.push_str(&format!(
-            "    target_link_libraries({test_target} PRIVATE {package_name}_flowrt_app)\n"
-        ));
-        output.push_str(
-            "    set(FLOWRT_ABI_CPP_FIXTURE_DIR \"${CMAKE_CURRENT_LIST_DIR}/abi-fixtures/cpp\")\n",
-        );
-        output.push_str(&format!(
-            "    target_compile_definitions({test_target} PRIVATE FLOWRT_ABI_FIXTURE_DIR=\"${{FLOWRT_ABI_CPP_FIXTURE_DIR}}\")\n"
-        ));
-        output.push_str(&format!(
-            "    add_custom_command(TARGET {test_target} POST_BUILD\n        COMMAND $<TARGET_FILE:{test_target}>\n        COMMENT \"Generate C++ Message ABI cross-language fixtures\")\n"
-        ));
-        output.push_str(&format!(
-            "    add_test(NAME message_abi COMMAND {test_target})\n"
-        ));
-        output.push_str("endif()\n");
-    }
-
-    output
-}
-
-fn cmake_iox2_dependency_block() -> &'static str {
-    r#"
-include(FetchContent)
-option(FLOWRT_FETCH_IOX2 "Download and build iceoryx2-cxx v0.9.1 when it is not installed" ON)
-find_package(iceoryx2-cxx 0.9.1 QUIET)
-if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
-  if(NOT FLOWRT_FETCH_IOX2)
-    message(FATAL_ERROR "iceoryx2-cxx 0.9.1 was not found. Install it, set CMAKE_PREFIX_PATH, or enable FLOWRT_FETCH_IOX2.")
-  endif()
-  set(BUILD_CXX ON CACHE BOOL "Build iceoryx2 C++ bindings" FORCE)
-  set(BUILD_EXAMPLES OFF CACHE BOOL "Build iceoryx2 examples" FORCE)
-  FetchContent_Declare(
-    iceoryx2
-    GIT_REPOSITORY https://github.com/eclipse-iceoryx/iceoryx2.git
-    GIT_TAG v0.9.1
-    GIT_SHALLOW TRUE
-  )
-  FetchContent_MakeAvailable(iceoryx2)
-endif()
-if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
-  message(FATAL_ERROR "iceoryx2-cxx::static-lib-cxx target is unavailable after dependency resolution")
-endif()
-"#
-}
-
-fn cmake_zenoh_dependency_block() -> &'static str {
-    r#"
-set(FLOWRT_ZENOH_CXX_TARGET "")
-find_package(zenohc 1.9.0 QUIET)
-find_package(zenohcxx 1.9.0 QUIET)
-if(TARGET zenohcxx::zenohc)
-  set(FLOWRT_ZENOH_CXX_TARGET zenohcxx::zenohc)
-endif()
-if(NOT FLOWRT_ZENOH_CXX_TARGET)
-  message(FATAL_ERROR "zenoh C++ target is unavailable. Install zenoh-c and zenoh-cpp 1.9.0 so CMake exposes zenohc::lib and zenohcxx::zenohc, then set CMAKE_PREFIX_PATH if needed.")
-endif()
-"#
-}
-
-fn emit_cargo_manifest(contract: &ContractIr) -> String {
-    let package_name = sanitize_package_name(&contract.package.name).replace('_', "-");
-    let has_rust = has_language(contract, LanguageKind::Rust);
-    let has_supervisor = has_rust || has_language(contract, LanguageKind::Cpp);
-    let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[dependencies]\n",
-        package_name
-    );
-    let mut bins = String::new();
-
-    if has_rust {
-        let flowrt_dependency = match selected_backend_name(contract).as_str() {
-            "iox2" => "flowrt = { version = \"0.1\", features = [\"iox2\"] }",
-            "zenoh" => "flowrt = { version = \"0.1\", features = [\"zenoh\"] }",
-            _ => "flowrt = { version = \"0.1\" }",
-        };
-        output.push_str(flowrt_dependency);
-        output.push('\n');
-        bins.push_str(&format!(
-            "\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n",
-            package_name
-        ));
-    } else if has_supervisor {
-        output.push_str("flowrt = { version = \"0.1\" }\n");
-    }
-
-    if has_supervisor {
-        output
-            .push_str("serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n");
-        bins.push_str(&format!(
-            "\n[[bin]]\nname = \"{}-flowrt-supervisor\"\npath = \"../rust/src/supervisor_main.rs\"\n",
-            package_name
-        ));
-    }
-    output.push_str(&bins);
-
-    let has_fixed_abi_tests = fixed_message_abi_expectations(contract)
-        .map(|expectations| !expectations.is_empty())
-        .unwrap_or(false);
-    if has_rust && has_fixed_abi_tests {
-        output.push_str(
-            "\n[[test]]\nname = \"message_abi\"\npath = \"../rust/tests/message_abi.rs\"\n",
-        );
-    }
-
     output
 }
 
@@ -5364,7 +5045,7 @@ fn pascal_case(name: &str) -> String {
     output
 }
 
-fn sanitize_package_name(name: &str) -> String {
+pub(crate) fn sanitize_package_name(name: &str) -> String {
     let mut output = String::new();
     for ch in name.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
