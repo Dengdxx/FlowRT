@@ -1862,6 +1862,19 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
                     dropped_samples,
                     socket.display()
                 ));
+                for process in status.processes {
+                    lines.push(format!(
+                        "supervisor_process={} state={} pid={} ticks={} last_seen_ms={} tick_stale={} exit_code={} socket={}",
+                        process.name,
+                        process.state,
+                        option_u32(process.pid),
+                        option_u64(process.tick_count),
+                        option_u64(process.last_seen_unix_ms),
+                        process.tick_stale,
+                        option_i32(process.exit_code),
+                        socket.display()
+                    ));
+                }
             }
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
                 lines.push(format!(
@@ -1896,6 +1909,24 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
     } else {
         Ok(lines.join("\n"))
     }
+}
+
+fn option_u32(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn option_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn option_i32(value: Option<i32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn live_hz_summary(channel: Option<&str>, socket: Option<&Path>, window_ms: u64) -> Result<String> {
@@ -3553,6 +3584,44 @@ fn main() {}
     }
 
     #[test]
+    fn live_status_summary_displays_supervisor_process_health() {
+        let root = temp_test_dir("live-status-supervisor-health");
+        let socket = root.join("supervisor.sock");
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 70,
+            started_at_unix_ms: 1234,
+            self_description_hash: "feedface".to_string(),
+            package: "robot_demo".to_string(),
+            process: "flowrt_supervisor".to_string(),
+            runtime: "supervisor".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.record_process_health(flowrt::IntrospectionProcessStatus {
+            name: "sensors".to_string(),
+            state: "stale".to_string(),
+            pid: Some(77),
+            tick_count: Some(10),
+            last_seen_unix_ms: Some(2000),
+            tick_stale: true,
+            exit_code: None,
+        });
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+        assert!(output.contains("supervisor_process=sensors"));
+        assert!(output.contains("state=stale"));
+        assert!(output.contains("pid=77"));
+        assert!(output.contains("ticks=10"));
+        assert!(output.contains("tick_stale=true"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn cli_parses_hz_command_with_socket_and_window() {
         let cli = Cli::try_parse_from([
             "flowrt",
@@ -3609,6 +3678,7 @@ fn main() {}
                     active_observers: 0,
                     dropped_samples: 0,
                 }],
+                processes: Vec::new(),
             },
         };
         let second = flowrt::IntrospectionResponse::Status {
@@ -3631,6 +3701,7 @@ fn main() {}
                     active_observers: 0,
                     dropped_samples: 0,
                 }],
+                processes: Vec::new(),
             },
         };
 

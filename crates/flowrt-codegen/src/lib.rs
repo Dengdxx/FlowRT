@@ -2349,7 +2349,8 @@ fn emit_rust_supervisor_main() -> String {
 fn emit_rust_supervisor(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str(&format!(
-        "\nuse std::collections::HashMap;\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::Command;\n\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\n",
+        "\nuse std::collections::HashMap;\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::{{Child, Command}};\nuse std::time::Duration;\n\nconst PACKAGE_NAME: &str = {};\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\nconst HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);\nconst TICK_STALE_AFTER_MS: u64 = 1_000;\n",
+        rust_string_literal(&contract.package.name),
         rust_string_literal(&rust_app_stem(contract)),
         rust_string_literal(&cpp_app_stem(contract))
     ));
@@ -2380,6 +2381,18 @@ struct ZenohLaunchEnv {
     connect: String,
 }
 
+struct SupervisedChild {
+    name: String,
+    child: Child,
+    socket: PathBuf,
+    finished: bool,
+    last_seen_unix_ms: Option<u64>,
+    last_tick_count: Option<u64>,
+    last_tick_changed_unix_ms: u64,
+    state: String,
+    exit_code: Option<i32>,
+}
+
 pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
     let manifest: LaunchManifest = serde_json::from_str(LAUNCH_MANIFEST)
         .map_err(|error| format!("failed to parse FlowRT launch manifest: {error}"))?;
@@ -2389,6 +2402,18 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
 
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+
+    let supervisor_state = flowrt::IntrospectionState::new();
+    let _supervisor_status_server = flowrt::spawn_status_server(
+        flowrt::IntrospectionIdentity {
+            self_description_hash: crate::selfdesc::self_description_hash().to_string(),
+            package: PACKAGE_NAME.to_string(),
+            process: "flowrt_supervisor".to_string(),
+            runtime: "supervisor".to_string(),
+        },
+        supervisor_state.clone(),
+    )
+    .ok();
 
     let mut children = Vec::new();
     for graph in &manifest.graphs {
@@ -2417,20 +2442,38 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
             let child = command
                 .spawn()
                 .map_err(|error| format!("failed to start FlowRT process `{}`: {error}", process.name))?;
-            children.push((process.name.clone(), child));
+            let socket = flowrt::runtime_socket_path_for_pid(child.id());
+            let child = SupervisedChild {
+                name: process.name.clone(),
+                child,
+                socket,
+                finished: false,
+                last_seen_unix_ms: None,
+                last_tick_count: None,
+                last_tick_changed_unix_ms: unix_time_ms(),
+                state: "starting".to_string(),
+                exit_code: None,
+            };
+            record_child_health(&supervisor_state, &child, false);
+            children.push(child);
         }
     }
     if children.is_empty() {
         return Err("FlowRT launch manifest does not contain process groups".to_string());
     }
 
+    supervise_children(&supervisor_state, &mut children)?;
+
     let mut failures = Vec::new();
-    for (process, mut child) in children {
-        let status = child
-            .wait()
-            .map_err(|error| format!("failed to wait for FlowRT process `{process}`: {error}"))?;
-        if !status.success() {
-            failures.push(format!("{process} exited with {status}"));
+    for child in children {
+        if child.state == "failed" {
+            failures.push(format!(
+                "{} exited with code {}",
+                child.name,
+                child.exit_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ));
         }
     }
 
@@ -2439,6 +2482,87 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
     } else {
         Err(failures.join("; "))
     }
+}
+
+fn supervise_children(
+    supervisor_state: &flowrt::IntrospectionState,
+    children: &mut [SupervisedChild],
+) -> Result<(), String> {
+    while children.iter().any(|child| !child.finished) {
+        for child in children.iter_mut() {
+            if child.finished {
+                continue;
+            }
+            if let Some(status) = child
+                .child
+                .try_wait()
+                .map_err(|error| format!("failed to poll FlowRT process `{}`: {error}", child.name))?
+            {
+                child.finished = true;
+                child.exit_code = status.code();
+                child.state = if status.success() {
+                    "exited".to_string()
+                } else {
+                    "failed".to_string()
+                };
+                record_child_health(supervisor_state, child, false);
+                continue;
+            }
+            refresh_child_health(supervisor_state, child);
+        }
+        std::thread::sleep(HEALTH_POLL_INTERVAL);
+    }
+    Ok(())
+}
+
+fn refresh_child_health(supervisor_state: &flowrt::IntrospectionState, child: &mut SupervisedChild) {
+    let now = unix_time_ms();
+    match flowrt::request_status(&child.socket) {
+        Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
+            child.last_seen_unix_ms = Some(now);
+            if child.last_tick_count != Some(status.tick_count) {
+                child.last_tick_count = Some(status.tick_count);
+                child.last_tick_changed_unix_ms = now;
+            }
+            let tick_stale = now.saturating_sub(child.last_tick_changed_unix_ms) > TICK_STALE_AFTER_MS;
+            child.state = if tick_stale {
+                "stale".to_string()
+            } else {
+                "running".to_string()
+            };
+            record_child_health(supervisor_state, child, tick_stale);
+        }
+        _ => {
+            let tick_stale = now.saturating_sub(child.last_tick_changed_unix_ms) > TICK_STALE_AFTER_MS;
+            if tick_stale {
+                child.state = "stale".to_string();
+            }
+            record_child_health(supervisor_state, child, tick_stale);
+        }
+    }
+}
+
+fn record_child_health(
+    supervisor_state: &flowrt::IntrospectionState,
+    child: &SupervisedChild,
+    tick_stale: bool,
+) {
+    supervisor_state.record_process_health(flowrt::IntrospectionProcessStatus {
+        name: child.name.clone(),
+        state: child.state.clone(),
+        pid: Some(child.child.id()),
+        tick_count: child.last_tick_count,
+        last_seen_unix_ms: child.last_seen_unix_ms,
+        tick_stale,
+        exit_code: child.exit_code,
+    });
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or_default()
 }
 
 fn should_auto_configure_zenoh() -> bool {
@@ -8912,6 +9036,11 @@ backends = ["iox2"]
         assert!(supervisor.contains("backend: String"));
         assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
         assert!(supervisor.contains("Command::new(&app_exe)"));
+        assert!(supervisor.contains("flowrt::spawn_status_server("));
+        assert!(supervisor.contains("record_process_health"));
+        assert!(supervisor.contains("tick_stale"));
+        assert!(supervisor.contains("try_wait()"));
+        assert!(supervisor.contains("flowrt::request_status(&child.socket)"));
         assert!(supervisor.contains("for graph in &manifest.graphs"));
         assert!(supervisor.contains("zenoh_launch_env_for_graph(graph)?"));
         assert!(supervisor.contains("fn should_auto_configure_zenoh()"));

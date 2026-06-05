@@ -2276,7 +2276,7 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(channel_status_json(status.channels[index]));
     }
-    output.append("]}");
+    output.append("],\"processes\":[]}");
     return output;
 }
 

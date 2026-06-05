@@ -98,6 +98,8 @@ pub struct IntrospectionHandshake {
 pub struct IntrospectionStatus {
     pub tick_count: u64,
     pub channels: Vec<IntrospectionChannelStatus>,
+    #[serde(default)]
+    pub processes: Vec<IntrospectionProcessStatus>,
 }
 
 /// 单个 channel 的运行态摘要。
@@ -119,6 +121,18 @@ pub struct IntrospectionChannelSnapshot {
     pub published_count: u64,
     pub payload: Option<Vec<u8>>,
     pub published_at_ms: Option<u64>,
+}
+
+/// supervisor 维护的子进程健康状态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionProcessStatus {
+    pub name: String,
+    pub state: String,
+    pub pid: Option<u32>,
+    pub tick_count: Option<u64>,
+    pub last_seen_unix_ms: Option<u64>,
+    pub tick_stale: bool,
+    pub exit_code: Option<i32>,
 }
 
 /// 数据面 probe 记录结果。
@@ -357,6 +371,7 @@ struct IntrospectionStateInner {
     self_description_json: Option<String>,
     channels: BTreeMap<String, ChannelState>,
     params: BTreeMap<String, ParamState>,
+    processes: BTreeMap<String, IntrospectionProcessStatus>,
 }
 
 impl IntrospectionState {
@@ -544,7 +559,14 @@ impl IntrospectionState {
                     dropped_samples: channel.probe.dropped_samples(),
                 })
                 .collect(),
+            processes: inner.processes.values().cloned().collect(),
         }
+    }
+
+    /// 记录 supervisor 视角下的子进程健康状态。
+    pub fn record_process_health(&self, status: IntrospectionProcessStatus) {
+        let mut inner = self.lock_inner();
+        inner.processes.insert(status.name.clone(), status);
     }
 
     /// 返回指定 channel 的 raw ABI snapshot。
@@ -1307,6 +1329,34 @@ mod tests {
 
         drop(server);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn status_includes_supervisor_process_health() {
+        let state = IntrospectionState::new();
+
+        state.record_process_health(IntrospectionProcessStatus {
+            name: "sensors".to_string(),
+            state: "running".to_string(),
+            pid: Some(42),
+            tick_count: Some(7),
+            last_seen_unix_ms: Some(1000),
+            tick_stale: false,
+            exit_code: None,
+        });
+
+        assert_eq!(
+            state.status().processes,
+            vec![IntrospectionProcessStatus {
+                name: "sensors".to_string(),
+                state: "running".to_string(),
+                pid: Some(42),
+                tick_count: Some(7),
+                last_seen_unix_ms: Some(1000),
+                tick_stale: false,
+                exit_code: None,
+            }]
+        );
     }
 
     #[test]
