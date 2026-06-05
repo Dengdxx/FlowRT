@@ -1,0 +1,558 @@
+#pragma once
+
+#include <cstdint>
+#include <cstdlib>
+#include <flowrt/backend_health.hpp>
+#include <flowrt/channels.hpp>
+#include <flowrt/wire.hpp>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+#include <zenoh.hxx>
+#endif
+
+namespace flowrt {
+
+namespace zenoh {
+
+/**
+ * @brief 打开 zenoh publish-subscribe endpoint 时使用的 FlowRT channel 配置。
+ *
+ * 该类型承载 Contract IR channel policy 归一化后的 depth、overflow 和 freshness intent。
+ * 它不暴露 zenoh-cpp API；generated shell 只通过该配置和 `ZenohPubSub<T>` 绑定 transport。
+ */
+class ZenohChannelConfig {
+   public:
+    /**
+     * @brief channel buffering kind。
+     */
+    enum class Kind : std::uint8_t {
+        Latest = 0,
+        Fifo = 1,
+    };
+
+    /**
+     * @brief 构造 latest channel 的默认配置。
+     *
+     * @return depth 为 1、overflow 为 DropOldest 的配置。
+     */
+    static constexpr ZenohChannelConfig latest() noexcept { return ZenohChannelConfig{}; }
+
+    /**
+     * @brief 构造 FIFO channel 配置。
+     *
+     * @param depth 队列深度；传入 0 时按 1 处理。
+     * @param overflow 队列满时的 FlowRT 语义。
+     * @return 归一化后的配置。
+     */
+    static constexpr ZenohChannelConfig fifo(std::size_t depth, OverflowPolicy overflow) noexcept {
+        return ZenohChannelConfig(Kind::Fifo, depth == 0 ? 1 : depth, overflow, StaleConfig{});
+    }
+
+    /**
+     * @brief 设置 freshness 配置。
+     *
+     * @param stale stale-data policy 和时间窗口。
+     * @return 更新后的配置副本。
+     */
+    constexpr ZenohChannelConfig with_stale_config(StaleConfig stale) const noexcept {
+        return ZenohChannelConfig(kind_, depth_, overflow_, stale);
+    }
+
+    /**
+     * @brief 返回归一化后的 channel depth。
+     */
+    constexpr std::size_t depth() const noexcept { return depth_; }
+
+    /**
+     * @brief 返回 overflow policy。
+     */
+    constexpr OverflowPolicy overflow() const noexcept { return overflow_; }
+
+    /**
+     * @brief 返回 stale-data 配置。
+     */
+    constexpr StaleConfig stale() const noexcept { return stale_; }
+
+    /**
+     * @brief 判断是否为 latest channel。
+     */
+    constexpr bool is_latest() const noexcept { return kind_ == Kind::Latest; }
+
+   private:
+    constexpr ZenohChannelConfig() noexcept = default;
+
+    constexpr ZenohChannelConfig(Kind kind, std::size_t depth, OverflowPolicy overflow,
+                                 StaleConfig stale) noexcept
+        : kind_(kind), depth_(depth), overflow_(overflow), stale_(stale) {}
+
+    Kind kind_ = Kind::Latest;
+    std::size_t depth_ = 1;
+    OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
+    StaleConfig stale_;
+};
+
+/**
+ * @brief canonical wire message 的 zenoh publish-subscribe endpoint。
+ *
+ * @tparam T 满足 `CanonicalTransportMessage` 的 generated message 类型。
+ *
+ * 开启 `FLOWRT_HAS_ZENOH_CXX` 时，该类绑定 zenoh-cpp 1.9 publish-subscribe endpoint，并把
+ * runtime timestamp 与 generated message canonical payload 组合成 wire frame。默认构建不包含或
+ * 依赖 zenoh-cpp，并保持安全失败语义。业务组件接口不应暴露该类型。
+ */
+template <CanonicalTransportMessage T>
+class ZenohPubSub {
+   public:
+    ZenohPubSub(ZenohPubSub &&) noexcept = default;
+    ZenohPubSub(const ZenohPubSub &) = delete;
+    auto operator=(ZenohPubSub &&) noexcept -> ZenohPubSub & = default;
+    auto operator=(const ZenohPubSub &) -> ZenohPubSub & = delete;
+    ~ZenohPubSub() = default;
+
+    /**
+     * @brief 打开一个 canonical zenoh key expression 对应的 endpoint。
+     *
+     * @param key_expr generated shell 提供的 canonical key expression。
+     * @param config 从 Contract IR channel policy 生成的配置。
+     * @return endpoint 对象；未开启 zenoh-cpp 支持时 `ready()` 返回 false。
+     */
+    static ZenohPubSub open_with_config(std::string_view key_expr, ZenohChannelConfig config) {
+        return ZenohPubSub(key_expr, config);
+    }
+
+    /**
+     * @brief 返回 canonical zenoh key expression。
+     */
+    std::string_view key_expr() const noexcept { return key_expr_; }
+
+    /**
+     * @brief 返回 channel 配置。
+     */
+    constexpr ZenohChannelConfig config() const noexcept { return config_; }
+
+    /**
+     * @brief 判断 endpoint 是否已经绑定到底层 zenoh transport 资源。
+     */
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return session_.has_value() && publisher_.has_value() && subscriber_.has_value() &&
+               !session_->is_closed();
+#else
+        return false;
+#endif
+    }
+
+    /**
+     * @brief 返回 endpoint 健康快照。
+     */
+    BackendHealthSnapshot health() const {
+        if (!ready() && health_.snapshot().state == BackendHealthState::Ready) {
+            return BackendHealthSnapshot{
+                .state = BackendHealthState::Degraded,
+                .last_error = std::optional<std::string>{"Zenoh endpoint is not ready"},
+                .attempt = 0,
+                .next_retry_unix_ms = std::nullopt,
+                .recoverable = true,
+            };
+        }
+        return health_.snapshot();
+    }
+
+    /**
+     * @brief 返回 endpoint 重连策略。
+     */
+    ReconnectPolicy reconnect_policy() const noexcept { return health_.policy(); }
+
+#ifdef FLOWRT_ENABLE_TEST_HOOKS
+    /**
+     * @brief 测试钩子：模拟本地 session 被关闭。
+     */
+    void close_session_for_test() {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (session_) {
+            session_->close();
+        }
+#endif
+    }
+#endif
+
+    /**
+     * @brief 带 FlowRT runtime 时间戳发布一个 canonical wire message。
+     *
+     * @param value 要发布的 generated message。
+     * @param published_at_ms 样本发布时间，单位为 runtime 毫秒。
+     * @return 未开启 zenoh-cpp 支持时返回 `ChannelError::Transport`。
+     */
+    ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (!ensure_ready()) {
+            return ChannelError::Transport;
+        }
+
+        auto frame = encode_transport_frame(value, published_at_ms);
+        if (!frame) {
+            return ChannelError::Transport;
+        }
+        if (publish_frame(std::move(*frame))) {
+            health_.mark_ready();
+            return ChannelWriteOutcome::Accepted;
+        }
+        if (!recover_after_transport_error("publish Zenoh sample")) {
+            return ChannelError::Transport;
+        }
+        frame = encode_transport_frame(value, published_at_ms);
+        if (!frame) {
+            return ChannelError::Transport;
+        }
+        if (!publish_frame(std::move(*frame))) {
+            return ChannelError::Transport;
+        }
+        health_.mark_ready();
+        return ChannelWriteOutcome::Accepted;
+#else
+        (void)value;
+        (void)published_at_ms;
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return ChannelError::Transport;
+#endif
+    }
+
+    /**
+     * @brief 非阻塞读取 latest snapshot。
+     *
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 读取成功时返回 latest view；未开启 zenoh-cpp 支持或 transport/codec 失败时返回
+     * `ChannelError::Transport`。
+     *
+     * zenoh subscriber 使用有界 `RingChannel`，callback 在容量满时覆盖旧样本而不阻塞。latest
+     * channel 会排空当前 ring 后暴露最新值；FIFO channel 每次只消费一个最旧可用样本。
+     */
+    std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+        if (!ensure_ready()) {
+            return ChannelError::Transport;
+        }
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        bool retried = false;
+        try {
+            for (;;) {
+                auto result = subscriber_->handler().try_recv();
+                if (std::holds_alternative<::zenoh::Sample>(result)) {
+                    auto sample = std::get<::zenoh::Sample>(std::move(result));
+                    if (!decode_frame(sample.get_payload().as_vector())) {
+                        return ChannelError::Transport;
+                    }
+                    if (!config_.is_latest()) {
+                        break;
+                    }
+                    continue;
+                }
+
+                const auto error = std::get<::zenoh::channels::RecvError>(result);
+                if (error == ::zenoh::channels::RecvError::Z_NODATA) {
+                    health_.mark_ready();
+                    break;
+                }
+                mark_transport_error("receive Zenoh sample");
+                if (retried || !recover_after_transport_error("receive Zenoh sample")) {
+                    return ChannelError::Transport;
+                }
+                retried = true;
+            }
+        } catch (const std::exception &error) {
+            mark_transport_error(error.what());
+            if (retried || !recover_after_transport_error("receive Zenoh sample")) {
+                return ChannelError::Transport;
+            }
+            retried = true;
+        } catch (...) {
+            mark_transport_error("receive Zenoh sample failed");
+            if (retried || !recover_after_transport_error("receive Zenoh sample")) {
+                return ChannelError::Transport;
+            }
+            retried = true;
+        }
+
+        if (retried) {
+            return receive_latest_at(now_ms);
+        }
+
+        const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
+        const bool drop_stale = stale && config_.stale().policy() == StalePolicy::Drop;
+        return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
+#else
+        (void)now_ms;
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return ChannelError::Transport;
+#endif
+    }
+
+   private:
+    ZenohPubSub(std::string_view key_expr, ZenohChannelConfig config)
+        : key_expr_(key_expr), config_(config), health_(ReconnectPolicy{}) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (open_zenoh_endpoint()) {
+            health_.mark_ready();
+        } else {
+            health_.mark_degraded("failed to open Zenoh endpoint");
+        }
+#else
+        health_.mark_degraded("zenoh-cpp support is disabled");
+#endif
+    }
+
+    bool ensure_ready() noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (ready()) {
+            return true;
+        }
+        if (health_.snapshot().state != BackendHealthState::Reconnecting) {
+            mark_transport_error("Zenoh endpoint is not ready");
+        }
+        return recover_after_transport_error("reopen Zenoh endpoint");
+#else
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return false;
+#endif
+    }
+
+    void mark_transport_error(std::string error) { health_.mark_degraded(std::move(error)); }
+
+    bool recover_after_transport_error(std::string error) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (config_.overflow() != OverflowPolicy::DropOldest) {
+            health_.mark_failed("Zenoh channel config is not recoverable",
+                                health_.snapshot().attempt);
+            return false;
+        }
+
+        const auto snapshot = health_.snapshot();
+        if (snapshot.state == BackendHealthState::Reconnecting && snapshot.next_retry_unix_ms &&
+            unix_now_ms() < *snapshot.next_retry_unix_ms) {
+            return false;
+        }
+
+        const auto attempt = snapshot.attempt;
+        if (!health_.policy().can_retry(attempt)) {
+            health_.mark_failed("Zenoh endpoint reconnect budget exhausted", attempt);
+            return false;
+        }
+
+        const auto now_ms = unix_now_ms();
+        health_.mark_reconnecting(attempt, now_ms + health_.policy().delay_for_attempt(attempt));
+        subscriber_.reset();
+        publisher_.reset();
+        session_.reset();
+        if (open_zenoh_endpoint()) {
+            health_.mark_ready();
+            return true;
+        }
+
+        const auto next_attempt = attempt + 1U;
+        if (health_.policy().can_retry(next_attempt)) {
+            health_.mark_reconnecting(next_attempt,
+                                      now_ms + health_.policy().delay_for_attempt(next_attempt));
+        } else {
+            health_.mark_failed(std::move(error), next_attempt);
+        }
+        return false;
+#else
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return false;
+#endif
+    }
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    using ZenohSubscriber =
+        ::zenoh::Subscriber<::zenoh::channels::RingChannel::HandlerType<::zenoh::Sample>>;
+
+    static constexpr std::size_t timestamp_wire_size() noexcept { return sizeof(std::uint64_t); }
+
+    bool open_zenoh_endpoint() noexcept {
+        if (config_.overflow() != OverflowPolicy::DropOldest) {
+            return false;
+        }
+
+        try {
+            session_.emplace(::zenoh::Session::open(config_from_environment()));
+            publisher_.emplace(session_->declare_publisher(::zenoh::KeyExpr(key_expr_)));
+            subscriber_.emplace(session_->declare_subscriber(
+                ::zenoh::KeyExpr(key_expr_), ::zenoh::channels::RingChannel(config_.depth())));
+            return true;
+        } catch (...) {
+            subscriber_.reset();
+            publisher_.reset();
+            session_.reset();
+            return false;
+        }
+    }
+
+    std::optional<std::vector<std::uint8_t>> encode_transport_frame(
+        const T &value, std::uint64_t published_at_ms) noexcept {
+        try {
+            std::vector<std::uint8_t> frame(timestamp_wire_size() +
+                                            detail::encoded_frame_size(value));
+            auto output = std::span<std::uint8_t>{frame};
+            write_wire_le(output, 0, published_at_ms);
+            detail::encode_frame(value, output.subspan(timestamp_wire_size()));
+            return frame;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    bool publish_frame(std::vector<std::uint8_t> frame) noexcept {
+        if (!publisher_) {
+            mark_transport_error("Zenoh publisher is not ready");
+            return false;
+        }
+        try {
+            publisher_->put(::zenoh::Bytes(std::move(frame)));
+            return true;
+        } catch (const std::exception &error) {
+            mark_transport_error(error.what());
+            return false;
+        } catch (...) {
+            mark_transport_error("publish Zenoh sample failed");
+            return false;
+        }
+    }
+
+    bool decode_frame(const std::vector<std::uint8_t> &frame) {
+        if (frame.size() < timestamp_wire_size()) {
+            return false;
+        }
+
+        try {
+            const auto input = std::span<const std::uint8_t>{frame};
+            const auto published_at_ms = read_wire_le<std::uint64_t>(input, 0);
+            auto decoded = detail::decode_frame<T>(input.subspan(timestamp_wire_size()));
+            published_at_ms_ = published_at_ms;
+            received_ = std::move(decoded);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    static ::zenoh::Config config_from_environment() {
+        auto config = ::zenoh::Config::create_default();
+        if (const auto *mode = std::getenv("FLOWRT_ZENOH_MODE")) {
+            config.insert_json5(Z_CONFIG_MODE_KEY, json_string(std::string_view{mode}));
+        }
+        if (const auto *listen = std::getenv("FLOWRT_ZENOH_LISTEN")) {
+            if (const auto json = endpoint_list_json(std::string_view{listen}); !json.empty()) {
+                config.insert_json5(Z_CONFIG_LISTEN_KEY, json);
+            }
+        }
+        if (const auto *connect = std::getenv("FLOWRT_ZENOH_CONNECT")) {
+            if (const auto json = endpoint_list_json(std::string_view{connect}); !json.empty()) {
+                config.insert_json5(Z_CONFIG_CONNECT_KEY, json);
+            }
+        }
+        if (const auto *no_multicast = std::getenv("FLOWRT_ZENOH_NO_MULTICAST");
+            env_flag_enabled(no_multicast)) {
+            config.insert_json5(Z_CONFIG_MULTICAST_SCOUTING_KEY, "false");
+        }
+        return config;
+    }
+
+    static bool env_flag_enabled(const char *value) noexcept {
+        if (value == nullptr) {
+            return false;
+        }
+        const auto flag = std::string_view{value};
+        return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" || flag == "on";
+    }
+
+    static std::vector<std::string> endpoint_list_items(std::string_view raw) {
+        std::vector<std::string> endpoints;
+        std::size_t start = 0;
+        while (start <= raw.size()) {
+            const auto comma = raw.find(',', start);
+            const auto end = comma == std::string_view::npos ? raw.size() : comma;
+            auto item = raw.substr(start, end - start);
+            while (!item.empty() && (item.front() == ' ' || item.front() == '\t')) {
+                item.remove_prefix(1);
+            }
+            while (!item.empty() && (item.back() == ' ' || item.back() == '\t')) {
+                item.remove_suffix(1);
+            }
+            if (!item.empty()) {
+                endpoints.emplace_back(item);
+            }
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
+        return endpoints;
+    }
+
+    static std::string endpoint_list_json(std::string_view raw) {
+        const auto endpoints = endpoint_list_items(raw);
+        if (endpoints.empty()) {
+            return {};
+        }
+
+        std::string json = "[";
+        for (std::size_t index = 0; index < endpoints.size(); ++index) {
+            if (index != 0U) {
+                json += ",";
+            }
+            json += json_string(endpoints[index]);
+        }
+        json += "]";
+        return json;
+    }
+
+    static std::string json_string(std::string_view value) {
+        std::string output = "\"";
+        for (const char ch : value) {
+            switch (ch) {
+                case '\\':
+                    output += "\\\\";
+                    break;
+                case '"':
+                    output += "\\\"";
+                    break;
+                case '\n':
+                    output += "\\n";
+                    break;
+                case '\r':
+                    output += "\\r";
+                    break;
+                case '\t':
+                    output += "\\t";
+                    break;
+                default:
+                    output += ch;
+                    break;
+            }
+        }
+        output += "\"";
+        return output;
+    }
+#endif
+
+    std::string key_expr_;
+    ZenohChannelConfig config_;
+    BackendHealthTracker health_;
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    std::optional<::zenoh::Session> session_;
+    std::optional<::zenoh::Publisher> publisher_;
+    std::optional<ZenohSubscriber> subscriber_;
+    std::optional<T> received_;
+    std::optional<std::uint64_t> published_at_ms_;
+#endif
+};
+
+}  // namespace zenoh
+
+}  // namespace flowrt
