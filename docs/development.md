@@ -34,6 +34,7 @@ cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
 FlowRT demo smoke：
 
 ```bash
+export FLOWRT_RUN_TICKS=5
 cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl

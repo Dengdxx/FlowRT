@@ -1374,7 +1374,11 @@ fn cargo_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
         .join("build")
         .join("target")
         .join("debug")
-        .join(format!("{}{}", app_bin_name(contract), std::env::consts::EXE_SUFFIX))
+        .join(format!(
+            "{}{}",
+            app_bin_name(contract),
+            std::env::consts::EXE_SUFFIX
+        ))
 }
 
 fn run_binary(binary: &Path, process: Option<&str>) -> Result<()> {

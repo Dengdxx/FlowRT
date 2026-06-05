@@ -225,12 +225,17 @@ ctest --test-dir build/cpp --output-on-failure
 FlowRT demo smoke：
 
 ```bash
+export FLOWRT_RUN_TICKS=5
 cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/import_demo/rsdl/robot.rsdl --process main
 cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
 面向用户的文档和示例默认使用安装后的 `flowrt ...` 命令；`cargo run -p flowrt-cli -- ...` 只作为本仓库开发调试方式。

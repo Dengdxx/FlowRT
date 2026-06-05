@@ -81,6 +81,8 @@ jobs:
         run: ctest --test-dir build/cpp --output-on-failure
 
       - name: FlowRT demo smoke
+        env:
+          FLOWRT_RUN_TICKS: "5"
         run: |
           cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control

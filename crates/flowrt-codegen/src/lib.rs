@@ -240,11 +240,14 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         }
     }
 
-    if has_rust {
+    if has_cpp || has_rust {
         artifacts.push(artifact(
             "rust/src/selfdesc.rs",
             emit_rust_selfdesc(contract),
         ));
+    }
+
+    if has_rust {
         artifacts.push(artifact(
             "rust/src/messages.rs",
             emit_rust_messages(contract),
@@ -674,10 +677,13 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <utility>\n#include <variant>\n\n");
+    output.push_str("#include <charconv>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <system_error>\n#include <utility>\n#include <variant>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
+    );
+    output.push_str(
+        "std::optional<std::size_t> flowrt_run_tick_limit() {\n    const auto* raw = std::getenv(\"FLOWRT_RUN_TICKS\");\n    if (raw == nullptr || *raw == '\\0') {\n        return std::nullopt;\n    }\n\n    const auto text = std::string_view{raw};\n    std::size_t ticks = 0;\n    const auto result = std::from_chars(text.data(), text.data() + text.size(), ticks);\n    if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || ticks == 0) {\n        return std::nullopt;\n    }\n    return ticks;\n}\n\n",
     );
     output.push_str(&emit_cpp_introspection_helpers());
     output.push_str("}  // namespace\n\n");
@@ -1244,7 +1250,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.startup_function_name
     ));
     output.push_str(&format!(
-        "    {{\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok) {{\n            status = backend.scheduler().run_ticks(\n                1, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
+        "    {{\n        const auto run_tick_limit = flowrt_run_tick_limit();\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok && (!run_tick_limit.has_value() || tick_base < *run_tick_limit)) {{\n            status = backend.scheduler().run_ticks(\n                1, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
         run.step_function_name
     ));
     output.push_str(&format!(
@@ -1590,6 +1596,9 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str(
         "\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::selfdesc;\nuse crate::user;\n\n",
+    );
+    output.push_str(
+        "fn flowrt_run_tick_limit() -> Option<usize> {\n    std::env::var(\"FLOWRT_RUN_TICKS\")\n        .ok()\n        .and_then(|raw| raw.parse::<usize>().ok())\n        .filter(|ticks| *ticks > 0)\n}\n\n",
     );
     output.push_str(&format!(
         "const SELECTED_BACKEND: &str = {};\n\n",
@@ -2371,7 +2380,7 @@ fn emit_rust_app_run_function(
         startup_function_name = steps.startup
     ));
     output.push_str(&format!(
-        "        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok {{\n            status = backend.scheduler().run_ticks(1, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
+        "        let run_tick_limit = flowrt_run_tick_limit();\n        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok\n            && run_tick_limit\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {{\n            status = backend.scheduler().run_ticks(1, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
         step_function_name = steps.scheduler
     ));
     output.push_str(&format!(
@@ -4398,10 +4407,12 @@ backends = ["inproc"]
         assert!(paths.contains(&"rust/src/supervisor.rs".to_string()));
         assert!(paths.contains(&"rust/src/supervisor_main.rs".to_string()));
         assert!(paths.contains(&"rust/src/lib.rs".to_string()));
+        assert!(paths.contains(&"rust/src/selfdesc.rs".to_string()));
         assert!(!paths.contains(&"rust/src/runtime_shell.rs".to_string()));
         assert!(!paths.contains(&"rust/src/main.rs".to_string()));
 
         let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
+        assert!(rust_lib.contains("pub(crate) mod selfdesc;"));
         assert!(rust_lib.contains("pub mod supervisor;"));
         assert!(!rust_lib.contains("pub mod runtime_shell;"));
         assert!(!rust_lib.contains("pub mod user;"));
