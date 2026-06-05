@@ -164,3 +164,55 @@ jobs:
           name: flowrt-linux-deb
           path: dist/flowrt_*_*.deb
           if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-deb
+          path: dist
+
+      - name: 准备 release 说明和校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          cargo_version="$(
+            awk '
+              $1 == "version" && $2 == "=" {
+                gsub(/"/, "", $3);
+                print $3;
+                exit;
+              }
+            ' Cargo.toml
+          )"
+          if [[ "$version" != "$cargo_version" ]]; then
+            printf 'tag version %s does not match Cargo.toml version %s\n' "$version" "$cargo_version" >&2
+            exit 1
+          fi
+
+          scripts/extract-release-notes.sh "$tag" CHANGELOG.md > dist/release-notes.md
+          (cd dist && sha256sum flowrt_*_*.deb > SHA256SUMS)
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: dist/release-notes.md
+          files: |
+            dist/flowrt_*_*.deb
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true

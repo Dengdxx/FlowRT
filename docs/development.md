@@ -156,6 +156,31 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 文档正文使用中文；代码标识符、命令、配置键、协议名和必要专有名词可以保留英文。
 
+## 发布流程
+
+FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会先跑完整验证和 deb smoke，再创建 GitHub Release，并上传 `.deb` 与 `SHA256SUMS`。
+
+发布前检查：
+
+```bash
+tag=v0.1.0
+scripts/extract-release-notes.sh "$tag" CHANGELOG.md
+```
+
+要求：
+
+- `CHANGELOG.md` 必须包含对应二级标题，格式为 `## vX.Y.Z - YYYY-MM-DD`。
+- tag 名必须是 `vX.Y.Z`，且版本号必须与根 `Cargo.toml` 的 workspace version 一致。
+- 对应版本段不能为空；CI 会把该段原样作为 GitHub Release 说明。
+- `## 未发布` 只放尚未发布的后续变化；正式发版前把本次条目移入版本段。
+
+创建并推送 tag：
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
 ## 提交规则
 
 提交标题使用 Conventional Commits，标题正文使用中文：

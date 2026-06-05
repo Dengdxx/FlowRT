@@ -107,13 +107,28 @@ gzip -9c "$repo_root/CHANGELOG.md" > "$staging/usr/share/doc/flowrt/changelog.gz
 cat > "$staging/usr/share/doc/flowrt/copyright" <<'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: FlowRT
-Source: https://example.invalid/flowrt
+Source: https://github.com/Dengdxx/FlowRT
 
 Files: *
 Copyright: FlowRT contributors
-License: MIT-or-Apache-2.0
- FlowRT is currently packaged from the local source tree. Replace this
- placeholder with the final project license metadata before public release.
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
 EOF
 
 control_dir="$staging/DEBIAN"
@@ -125,7 +140,7 @@ Version: ${version}
 Section: devel
 Priority: optional
 Architecture: ${architecture}
-Maintainer: FlowRT maintainers <maintainers@example.invalid>
+Maintainer: FlowRT maintainers <dengdx@tju.edu.cn>
 Installed-Size: ${installed_size}
 Depends: libc6, libgcc-s1, libstdc++6
 Description: Dataflow-compiled robotics runtime toolchain

@@ -52,4 +52,13 @@ if ! grep -Fq "$cmake_config" "$contents"; then
     exit 1
 fi
 
+copyright="$work_dir/copyright"
+dpkg-deb --fsys-tarfile "$package" | tar -xO ./usr/share/doc/flowrt/copyright > "$copyright"
+grep -q 'License: MIT' "$copyright"
+grep -q 'Source: https://github.com/Dengdxx/FlowRT' "$copyright"
+if grep -Eq 'example\.invalid|placeholder|public release|MIT-or-Apache' "$copyright"; then
+    printf 'package copyright still contains placeholder release metadata\n' >&2
+    exit 1
+fi
+
 printf 'deb package smoke passed: %s\n' "$package"

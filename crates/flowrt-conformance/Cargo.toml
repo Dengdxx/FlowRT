@@ -3,6 +3,7 @@ name = "flowrt-conformance"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 flowrt-ir = { path = "../flowrt-ir" }
