@@ -260,11 +260,14 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         }
     }
 
-    if has_rust {
+    if has_cpp || has_rust {
         artifacts.push(artifact(
             "rust/src/selfdesc.rs",
             emit_rust_selfdesc(contract),
         ));
+    }
+
+    if has_rust {
         artifacts.push(artifact(
             "rust/src/messages.rs",
             emit_rust_messages(contract),
@@ -3929,7 +3932,6 @@ fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     );
     for field in &ty.fields {
         output.push_str(&rust_wire_encode_expr(
-            contract,
             &field.ty,
             &format!("self.{}", field.name),
             "output",
@@ -3941,13 +3943,7 @@ fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
         "    fn decode_wire(input: &[u8]) -> Result<Self, flowrt::WireCodecError> {\n        if input.len() != Self::WIRE_SIZE {\n            return Err(flowrt::WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));\n        }\n        let mut cursor = 0usize;\n",
     );
     for field in &ty.fields {
-        output.push_str(&rust_wire_decode_expr(
-            contract,
-            &field.ty,
-            &field.name,
-            "input",
-            8,
-        ));
+        output.push_str(&rust_wire_decode_expr(&field.ty, &field.name, "input", 8));
     }
     output.push_str("        Ok(Self {\n");
     for field in &ty.fields {
@@ -3977,7 +3973,7 @@ fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
         "        if output.len() != self.encoded_frame_size() {\n            return Err(flowrt::WireCodecError::wrong_size(self.encoded_frame_size(), output.len()));\n        }\n        let mut cursor = 0usize;\n",
     );
     for field in &ty.fields {
-        output.push_str(&rust_frame_encode_header_field(contract, field));
+        output.push_str(&rust_frame_encode_header_field(field));
     }
     output.push_str(&format!(
         "        output[{header_size}..].copy_from_slice(&tail);\n        let _ = cursor;\n        Ok(())\n    }}\n\n"
@@ -3988,7 +3984,7 @@ fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
         "        if input.len() < {header_size} {{\n            return Err(flowrt::WireCodecError::wrong_size({header_size}, input.len()));\n        }}\n        if input.len() > {max_size} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"canonical frame exceeds declared maximum size\"));\n        }}\n        let mut cursor = 0usize;\n"
     ));
     for field in &ty.fields {
-        output.push_str(&rust_frame_decode_header_field(contract, field));
+        output.push_str(&rust_frame_decode_header_field(field));
     }
     output.push_str(&format!(
         "        let _ = cursor;\n        let mut decoder = flowrt::FrameDecoder::new(&input[{header_size}..]);\n"
@@ -4049,7 +4045,6 @@ fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Stri
             );
             code.push_str("            let mut cursor = start;\n");
             code.push_str(&rust_wire_encode_expr(
-                contract,
                 element,
                 "*element",
                 &format!("{}_tail", field.name),
@@ -4066,7 +4061,7 @@ fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Stri
     }
 }
 
-fn rust_frame_encode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
+fn rust_frame_encode_header_field(field: &FieldIr) -> String {
     match &field.ty {
         TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             format!(
@@ -4074,17 +4069,11 @@ fn rust_frame_encode_header_field(contract: &ContractIr, field: &FieldIr) -> Str
                 name = field.name
             )
         }
-        _ => rust_wire_encode_expr(
-            contract,
-            &field.ty,
-            &format!("self.{}", field.name),
-            "output",
-            8,
-        ),
+        _ => rust_wire_encode_expr(&field.ty, &format!("self.{}", field.name), "output", 8),
     }
 }
 
-fn rust_frame_decode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
+fn rust_frame_decode_header_field(field: &FieldIr) -> String {
     match &field.ty {
         TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             format!(
@@ -4092,7 +4081,7 @@ fn rust_frame_decode_header_field(contract: &ContractIr, field: &FieldIr) -> Str
                 name = field.name
             )
         }
-        _ => rust_wire_decode_expr(contract, &field.ty, &field.name, "input", 8),
+        _ => rust_wire_decode_expr(&field.ty, &field.name, "input", 8),
     }
 }
 
@@ -4147,13 +4136,7 @@ fn primitive_wire_size(primitive: PrimitiveType) -> usize {
     }
 }
 
-fn rust_wire_encode_expr(
-    contract: &ContractIr,
-    expr: &TypeExpr,
-    value: &str,
-    output: &str,
-    indent: usize,
-) -> String {
+fn rust_wire_encode_expr(expr: &TypeExpr, value: &str, output: &str, indent: usize) -> String {
     let pad = " ".repeat(indent);
     match expr {
         TypeExpr::Primitive { name } => rust_wire_encode_primitive(*name, value, output, indent),
@@ -4163,7 +4146,6 @@ fn rust_wire_encode_expr(
         TypeExpr::Array { element, .. } => {
             let mut code = format!("{pad}for element in &{value} {{\n");
             code.push_str(&rust_wire_encode_expr(
-                contract,
                 element,
                 "*element",
                 output,
@@ -4213,13 +4195,7 @@ fn rust_wire_encode_primitive(
     }
 }
 
-fn rust_wire_decode_expr(
-    contract: &ContractIr,
-    expr: &TypeExpr,
-    local: &str,
-    input: &str,
-    indent: usize,
-) -> String {
+fn rust_wire_decode_expr(expr: &TypeExpr, local: &str, input: &str, indent: usize) -> String {
     let pad = " ".repeat(indent);
     match expr {
         TypeExpr::Primitive { name } => rust_wire_decode_primitive(*name, local, input, indent),
@@ -4233,7 +4209,6 @@ fn rust_wire_decode_expr(
                 element_ty
             );
             code.push_str(&rust_wire_decode_expr(
-                contract,
                 element,
                 "decoded_element",
                 input,
@@ -4999,11 +4974,9 @@ output = ["packet"]
         assert!(rust_messages.contains("impl flowrt::FrameCodec for Packet"));
         assert!(rust_messages.contains("flowrt::VarSpan::decode"));
         assert!(rust_messages.contains("BoundedString::<64>::try_from_utf8"));
-        assert!(
-            !bundle.artifacts.iter().any(
-                |artifact| artifact.relative_path == PathBuf::from("rust/tests/message_abi.rs")
-            )
-        );
+        assert!(!bundle.artifacts.iter().any(|artifact| {
+            artifact.relative_path == std::path::Path::new("rust/tests/message_abi.rs")
+        }));
 
         let selfdesc = artifact_content(&bundle, "selfdesc/selfdesc.json");
         let json: serde_json::Value = serde_json::from_str(selfdesc).unwrap();
@@ -5582,10 +5555,12 @@ backends = ["inproc"]
         assert!(paths.contains(&"rust/src/supervisor.rs".to_string()));
         assert!(paths.contains(&"rust/src/supervisor_main.rs".to_string()));
         assert!(paths.contains(&"rust/src/lib.rs".to_string()));
+        assert!(paths.contains(&"rust/src/selfdesc.rs".to_string()));
         assert!(!paths.contains(&"rust/src/runtime_shell.rs".to_string()));
         assert!(!paths.contains(&"rust/src/main.rs".to_string()));
 
         let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
+        assert!(rust_lib.contains("pub(crate) mod selfdesc;"));
         assert!(rust_lib.contains("pub mod supervisor;"));
         assert!(!rust_lib.contains("pub mod runtime_shell;"));
         assert!(!rust_lib.contains("pub mod user;"));
