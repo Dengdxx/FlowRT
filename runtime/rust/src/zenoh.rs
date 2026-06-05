@@ -11,7 +11,10 @@ use zenoh::{
     session::Session,
 };
 
-use crate::{FrameCodec, Latest, OverflowPolicy, StaleConfig, StalePolicy, WireCodecError};
+use crate::{
+    BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, FrameCodec, Latest,
+    OverflowPolicy, ReconnectPolicy, StaleConfig, StalePolicy, WireCodecError,
+};
 
 const PUBLISHED_AT_WIRE_SIZE: usize = std::mem::size_of::<u64>();
 const FLOWRT_ZENOH_CONNECT: &str = "FLOWRT_ZENOH_CONNECT";
@@ -26,6 +29,12 @@ where
 {
     published_at_ms: u64,
     payload: T,
+}
+
+struct ZenohEndpointParts {
+    publisher: Publisher<'static>,
+    subscriber: Subscriber<RingChannelHandler<Sample>>,
+    session: Session,
 }
 
 /// Zenoh endpoint 操作失败。
@@ -169,10 +178,12 @@ pub struct ZenohPubSub<T>
 where
     T: FrameCodec + Clone,
 {
+    key_expr: String,
     publisher: Publisher<'static>,
     subscriber: Subscriber<RingChannelHandler<Sample>>,
     session: Session,
     config: ZenohChannelConfig,
+    health: BackendHealthTracker,
     received: Option<ZenohReceived<T>>,
 }
 
@@ -189,35 +200,41 @@ where
         config: ZenohChannelConfig,
     ) -> Result<Self, ZenohError> {
         config.validate()?;
-        let session = zenoh::open(config_from_environment()?)
-            .wait()
-            .map_err(|error| ZenohError::transport("open Zenoh session", error))?;
-        let subscriber = session
-            .declare_subscriber(key_expr.to_owned())
-            .with(RingChannel::new(config.depth()))
-            .wait()
-            .map_err(|error| ZenohError::transport("declare Zenoh subscriber", error))?;
-        let publisher = session
-            .declare_publisher(key_expr.to_owned())
-            .wait()
-            .map_err(|error| ZenohError::transport("declare Zenoh publisher", error))?;
+        let parts = open_zenoh_parts(key_expr, config)?;
 
         Ok(Self {
-            publisher,
-            subscriber,
-            session,
+            key_expr: key_expr.to_string(),
+            publisher: parts.publisher,
+            subscriber: parts.subscriber,
+            session: parts.session,
             config,
+            health: BackendHealthTracker::new(ReconnectPolicy::default()),
             received: None,
         })
     }
 
     /// 带 FlowRT runtime 时间戳发布一个 canonical-wire payload。
-    pub fn publish_at(&self, value: T, published_at_ms: u64) -> Result<(), ZenohError> {
+    pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), ZenohError> {
+        self.ensure_ready("publish Zenoh sample")?;
         let frame = encode_frame(&value, published_at_ms)?;
-        self.publisher
-            .put(frame)
-            .wait()
-            .map_err(|error| ZenohError::transport("publish Zenoh sample", error))
+        match self.publisher.put(frame).wait() {
+            Ok(()) => {
+                self.health.mark_ready();
+                Ok(())
+            }
+            Err(error) => {
+                let original = ZenohError::transport("publish Zenoh sample", error);
+                self.mark_transport_error(&original);
+                self.recover_after_transport_error("publish Zenoh sample")?;
+                let frame = encode_frame(&value, published_at_ms)?;
+                self.publisher
+                    .put(frame)
+                    .wait()
+                    .map_err(|error| ZenohError::transport("publish Zenoh sample", error))
+                    .inspect(|_| self.health.mark_ready())
+                    .inspect_err(|error| self.mark_transport_error(error))
+            }
+        }
     }
 
     /// 非阻塞接收当前可用的最新样本，并按 runtime 时间计算 freshness。
@@ -226,11 +243,12 @@ where
     /// 非阻塞发送。latest channel 排空当前可用样本并保留最新值；FIFO channel 每次只消费
     /// 最旧的一项。两种路径都通过 `try_recv` 读取，不等待网络或新样本到达。
     pub fn receive_latest_at(&mut self, now_ms: u64) -> Result<Latest<'_, T>, ZenohError> {
+        self.ensure_ready("receive Zenoh sample")?;
         if self.config.is_latest() {
-            while let Some(sample) = self.try_receive_sample()? {
+            while let Some(sample) = self.try_receive_sample_with_recovery()? {
                 self.received = Some(decode_sample(sample)?);
             }
-        } else if let Some(sample) = self.try_receive_sample()? {
+        } else if let Some(sample) = self.try_receive_sample_with_recovery()? {
             self.received = Some(decode_sample(sample)?);
         }
 
@@ -259,6 +277,25 @@ where
         !self.session.is_closed()
     }
 
+    /// 返回 endpoint 健康快照。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        if self.session.is_closed() && self.health.snapshot().state == BackendHealthState::Ready {
+            return BackendHealthSnapshot {
+                state: BackendHealthState::Degraded,
+                last_error: Some("Zenoh session is closed".to_string()),
+                attempt: 0,
+                next_retry_unix_ms: None,
+                recoverable: true,
+            };
+        }
+        self.health.snapshot()
+    }
+
+    /// 返回 endpoint 重连策略。
+    pub fn reconnect_policy(&self) -> ReconnectPolicy {
+        self.health.policy()
+    }
+
     /// 返回 endpoint 的 channel 配置。
     pub fn config(&self) -> ZenohChannelConfig {
         self.config
@@ -269,6 +306,110 @@ where
             .try_recv()
             .map_err(|error| ZenohError::transport("receive Zenoh sample", error))
     }
+
+    fn try_receive_sample_with_recovery(&mut self) -> Result<Option<Sample>, ZenohError> {
+        match self.try_receive_sample() {
+            Ok(sample) => {
+                self.health.mark_ready();
+                Ok(sample)
+            }
+            Err(error) => {
+                self.mark_transport_error(&error);
+                self.recover_after_transport_error("receive Zenoh sample")?;
+                self.try_receive_sample()
+                    .inspect(|_| self.health.mark_ready())
+                    .inspect_err(|error| self.mark_transport_error(error))
+            }
+        }
+    }
+
+    fn ensure_ready(&mut self, operation: &'static str) -> Result<(), ZenohError> {
+        if self.ready() {
+            return Ok(());
+        }
+        if self.health.snapshot().state != BackendHealthState::Reconnecting {
+            let error = ZenohError::new(operation, "Zenoh session is closed");
+            self.mark_transport_error(&error);
+        }
+        self.recover_after_transport_error(operation)
+    }
+
+    fn mark_transport_error(&mut self, error: &ZenohError) {
+        self.health.mark_degraded(error.to_string());
+    }
+
+    fn recover_after_transport_error(&mut self, operation: &'static str) -> Result<(), ZenohError> {
+        let snapshot = self.health.snapshot();
+        if let Some(next_retry_unix_ms) = snapshot.next_retry_unix_ms
+            && snapshot.state == BackendHealthState::Reconnecting
+            && unix_now_ms() < next_retry_unix_ms
+        {
+            return Err(ZenohError::new(
+                operation,
+                "Zenoh endpoint reconnect backoff is active",
+            ));
+        }
+
+        let attempt = snapshot.attempt;
+        if !self.health.policy().can_retry(attempt) {
+            self.health
+                .mark_failed("Zenoh endpoint reconnect budget exhausted", attempt);
+            return Err(ZenohError::new(
+                operation,
+                "Zenoh endpoint reconnect budget exhausted",
+            ));
+        }
+
+        let now_ms = unix_now_ms();
+        self.health.mark_reconnecting(
+            attempt,
+            now_ms.saturating_add(self.health.policy().delay_for_attempt(attempt)),
+        );
+        match open_zenoh_parts(&self.key_expr, self.config) {
+            Ok(parts) => {
+                self.publisher = parts.publisher;
+                self.subscriber = parts.subscriber;
+                self.session = parts.session;
+                self.health.mark_ready();
+                Ok(())
+            }
+            Err(error) => {
+                let next_attempt = attempt.saturating_add(1);
+                if self.health.policy().can_retry(next_attempt) {
+                    self.health.mark_reconnecting(
+                        next_attempt,
+                        now_ms.saturating_add(self.health.policy().delay_for_attempt(next_attempt)),
+                    );
+                } else {
+                    self.health.mark_failed(error.to_string(), next_attempt);
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+fn open_zenoh_parts(
+    key_expr: &str,
+    config: ZenohChannelConfig,
+) -> Result<ZenohEndpointParts, ZenohError> {
+    let session = zenoh::open(config_from_environment()?)
+        .wait()
+        .map_err(|error| ZenohError::transport("open Zenoh session", error))?;
+    let subscriber = session
+        .declare_subscriber(key_expr.to_owned())
+        .with(RingChannel::new(config.depth()))
+        .wait()
+        .map_err(|error| ZenohError::transport("declare Zenoh subscriber", error))?;
+    let publisher = session
+        .declare_publisher(key_expr.to_owned())
+        .wait()
+        .map_err(|error| ZenohError::transport("declare Zenoh publisher", error))?;
+    Ok(ZenohEndpointParts {
+        publisher,
+        subscriber,
+        session,
+    })
 }
 
 fn overflow_policy_name(policy: OverflowPolicy) -> &'static str {
@@ -345,6 +486,13 @@ fn env_flag_enabled(raw: &str) -> bool {
     matches!(raw, "1" | "true" | "TRUE" | "yes" | "on")
 }
 
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 fn frame_size(payload_size: usize) -> Result<usize, ZenohError> {
     PUBLISHED_AT_WIRE_SIZE
         .checked_add(payload_size)
@@ -407,7 +555,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::{OverflowPolicy, StaleConfig, StalePolicy, WireCodec, WireCodecError};
+    use crate::{
+        BackendHealthState, OverflowPolicy, StaleConfig, StalePolicy, WireCodec, WireCodecError,
+    };
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +586,31 @@ mod tests {
                 tag: input[0],
                 value: u16::from_le_bytes([input[1], input[2]]),
             })
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct DecodeFailingMessage;
+
+    impl WireCodec for DecodeFailingMessage {
+        const WIRE_SIZE: usize = 1;
+
+        fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+            if output.len() != Self::WIRE_SIZE {
+                return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+            }
+            output[0] = 0xFF;
+            Ok(())
+        }
+
+        fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+            if input.len() != Self::WIRE_SIZE {
+                return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+            }
+            Err(WireCodecError::invalid_frame(
+                "intentional decode failure for health regression",
+            ))
         }
     }
 
@@ -510,6 +685,7 @@ mod tests {
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
                 .expect("zenoh endpoint should open");
         assert!(endpoint.ready());
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
         assert_eq!(endpoint.config(), ZenohChannelConfig::latest());
 
         endpoint
@@ -623,7 +799,7 @@ mod tests {
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
                 .expect("receiver endpoint should open");
         {
-            let sender = ZenohPubSub::<PaddedMessage>::open_with_config(
+            let mut sender = ZenohPubSub::<PaddedMessage>::open_with_config(
                 &key_expr,
                 ZenohChannelConfig::latest(),
             )
@@ -634,13 +810,67 @@ mod tests {
             wait_for_latest(&mut receiver, PaddedMessage { tag: 1, value: 10 }, 101);
         }
 
-        let sender =
+        let mut sender =
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
                 .expect("restarted sender endpoint should open");
         sender
             .publish_at(PaddedMessage { tag: 2, value: 20 }, 110)
             .expect("restarted sender should publish");
         wait_for_latest(&mut receiver, PaddedMessage { tag: 2, value: 20 }, 111);
+    }
+
+    #[test]
+    fn endpoint_recovers_after_local_session_is_closed() {
+        let key_expr = unique_key_expr("local-recovery");
+        let mut endpoint =
+            ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
+                .expect("endpoint should open before forced close");
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+
+        endpoint
+            .session
+            .close()
+            .wait()
+            .expect("test should be able to close the local zenoh session");
+        assert!(!endpoint.ready());
+
+        endpoint
+            .publish_at(PaddedMessage { tag: 7, value: 70 }, 700)
+            .expect("publish should reopen a locally closed zenoh session");
+
+        assert!(endpoint.ready());
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+    }
+
+    #[test]
+    fn decode_errors_do_not_mark_endpoint_reconnecting() {
+        let key_expr = unique_key_expr("decode-error-health");
+        let mut endpoint = ZenohPubSub::<DecodeFailingMessage>::open_with_config(
+            &key_expr,
+            ZenohChannelConfig::latest(),
+        )
+        .expect("endpoint should open");
+
+        endpoint
+            .publish_at(DecodeFailingMessage, 800)
+            .expect("invalid payload should still publish");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match endpoint.receive_latest_at(801) {
+                Ok(_) => {}
+                Err(error) => {
+                    assert_eq!(error.operation(), "decode FlowRT Zenoh payload");
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "local zenoh roundtrip did not deliver invalid payload"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
     }
 
     fn wait_for_latest(

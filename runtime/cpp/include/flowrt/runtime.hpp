@@ -1069,6 +1069,135 @@ class FifoChannel {
     StaleConfig stale_config_;
 };
 
+/**
+ * @brief runtime 当前认识的 backend 类型。
+ */
+enum class BackendKind : std::uint8_t {
+    Inproc = 0,  ///< 单进程内存 backend，主要用于测试、CI 和最小 demo。
+    Iox2 = 1,    ///< iceoryx2 backend，用于本机多进程高性能 dataflow。
+    Zenoh = 2,   ///< zenoh backend，用于跨主机 copy transport dataflow。
+};
+
+/**
+ * @brief backend 或 endpoint 当前健康状态。
+ *
+ * 枚举值保持紧凑、稳定，方便未来 C ABI 直接映射为整数。
+ */
+enum class BackendHealthState : std::uint8_t {
+    Ready = 0,         ///< 本地 endpoint 已打开，最近一次操作未发现错误。
+    Degraded = 1,      ///< 本地 endpoint 可见错误，但仍允许后续恢复。
+    Reconnecting = 2,  ///< runtime 正在按重连策略等待或尝试恢复。
+    Failed = 3,        ///< 重连预算耗尽或错误不可恢复。
+};
+
+/**
+ * @brief backend endpoint 的重连策略。
+ *
+ * 使用毫秒和次数，而不是语言 runtime 特有类型，便于后续映射到 C ABI、Python binding 和其他
+ * 语言 runtime。
+ */
+struct ReconnectPolicy {
+    std::uint64_t initial_delay_ms = 100;
+    std::uint64_t max_delay_ms = 5000;
+    std::optional<std::uint32_t> max_attempts = std::nullopt;
+
+    /**
+     * @brief 指定 attempt 的指数退避延迟，毫秒。
+     */
+    std::uint64_t delay_for_attempt(std::uint32_t attempt) const noexcept {
+        std::uint64_t multiplier = 1U;
+        for (std::uint32_t index = 0; index < attempt && multiplier <= UINT64_MAX / 2U; ++index) {
+            multiplier *= 2U;
+        }
+        if (initial_delay_ms != 0U && multiplier > UINT64_MAX / initial_delay_ms) {
+            return max_delay_ms;
+        }
+        return std::min(initial_delay_ms * multiplier, max_delay_ms);
+    }
+
+    /**
+     * @brief 判断当前 attempt 是否仍允许重试。
+     */
+    bool can_retry(std::uint32_t attempt) const noexcept {
+        return !max_attempts || attempt < *max_attempts;
+    }
+};
+
+/**
+ * @brief backend 或 endpoint 的健康快照。
+ */
+struct BackendHealthSnapshot {
+    BackendHealthState state = BackendHealthState::Ready;
+    std::optional<std::string> last_error = std::nullopt;
+    std::uint32_t attempt = 0;
+    std::optional<std::uint64_t> next_retry_unix_ms = std::nullopt;
+    bool recoverable = false;
+
+    /**
+     * @brief 构造 ready 快照。
+     */
+    static BackendHealthSnapshot ready() { return BackendHealthSnapshot{}; }
+
+    friend bool operator==(const BackendHealthSnapshot &, const BackendHealthSnapshot &) = default;
+};
+
+inline std::uint64_t unix_now_ms() noexcept {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+/**
+ * @brief 通用 backend health 状态机。
+ *
+ * 该 tracker 不直接重连任何 transport，只统一记录状态转换。真实 zenoh/iox2 恢复逻辑会在
+ * endpoint 层调用它。
+ */
+class BackendHealthTracker {
+   public:
+    explicit BackendHealthTracker(ReconnectPolicy policy) : policy_(policy) {}
+
+    ReconnectPolicy policy() const noexcept { return policy_; }
+
+    BackendHealthSnapshot snapshot() const { return snapshot_; }
+
+    void mark_ready() { snapshot_ = BackendHealthSnapshot::ready(); }
+
+    void mark_degraded(std::string error) {
+        snapshot_ = BackendHealthSnapshot{
+            .state = BackendHealthState::Degraded,
+            .last_error = std::move(error),
+            .attempt = snapshot_.attempt,
+            .next_retry_unix_ms = std::nullopt,
+            .recoverable = true,
+        };
+    }
+
+    void mark_reconnecting(std::uint32_t attempt, std::uint64_t next_retry_unix_ms) {
+        snapshot_ = BackendHealthSnapshot{
+            .state = BackendHealthState::Reconnecting,
+            .last_error = snapshot_.last_error,
+            .attempt = attempt,
+            .next_retry_unix_ms = next_retry_unix_ms,
+            .recoverable = policy_.can_retry(attempt),
+        };
+    }
+
+    void mark_failed(std::string error, std::uint32_t attempt) {
+        snapshot_ = BackendHealthSnapshot{
+            .state = BackendHealthState::Failed,
+            .last_error = std::move(error),
+            .attempt = attempt,
+            .next_retry_unix_ms = std::nullopt,
+            .recoverable = false,
+        };
+    }
+
+   private:
+    ReconnectPolicy policy_;
+    BackendHealthSnapshot snapshot_;
+};
+
 namespace iox2 {
 
 /**
@@ -1680,11 +1809,46 @@ class ZenohPubSub {
      */
     bool ready() const noexcept {
 #ifdef FLOWRT_HAS_ZENOH_CXX
-        return session_.has_value() && publisher_.has_value() && subscriber_.has_value();
+        return session_.has_value() && publisher_.has_value() && subscriber_.has_value() &&
+               !session_->is_closed();
 #else
         return false;
 #endif
     }
+
+    /**
+     * @brief 返回 endpoint 健康快照。
+     */
+    BackendHealthSnapshot health() const {
+        if (!ready() && health_.snapshot().state == BackendHealthState::Ready) {
+            return BackendHealthSnapshot{
+                .state = BackendHealthState::Degraded,
+                .last_error = std::optional<std::string>{"Zenoh endpoint is not ready"},
+                .attempt = 0,
+                .next_retry_unix_ms = std::nullopt,
+                .recoverable = true,
+            };
+        }
+        return health_.snapshot();
+    }
+
+    /**
+     * @brief 返回 endpoint 重连策略。
+     */
+    ReconnectPolicy reconnect_policy() const noexcept { return health_.policy(); }
+
+#ifdef FLOWRT_ENABLE_TEST_HOOKS
+    /**
+     * @brief 测试钩子：模拟本地 session 被关闭。
+     */
+    void close_session_for_test() {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (session_) {
+            session_->close();
+        }
+#endif
+    }
+#endif
 
     /**
      * @brief 带 FlowRT runtime 时间戳发布一个 canonical wire message。
@@ -1695,24 +1859,34 @@ class ZenohPubSub {
      */
     ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
 #ifdef FLOWRT_HAS_ZENOH_CXX
-        if (!publisher_) {
+        if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
-        try {
-            std::vector<std::uint8_t> frame(timestamp_wire_size() +
-                                            detail::encoded_frame_size(value));
-            auto output = std::span<std::uint8_t>{frame};
-            write_wire_le(output, 0, published_at_ms);
-            detail::encode_frame(value, output.subspan(timestamp_wire_size()));
-            publisher_->put(::zenoh::Bytes(std::move(frame)));
-            return ChannelWriteOutcome::Accepted;
-        } catch (...) {
+        auto frame = encode_transport_frame(value, published_at_ms);
+        if (!frame) {
             return ChannelError::Transport;
         }
+        if (publish_frame(std::move(*frame))) {
+            health_.mark_ready();
+            return ChannelWriteOutcome::Accepted;
+        }
+        if (!recover_after_transport_error("publish Zenoh sample")) {
+            return ChannelError::Transport;
+        }
+        frame = encode_transport_frame(value, published_at_ms);
+        if (!frame) {
+            return ChannelError::Transport;
+        }
+        if (!publish_frame(std::move(*frame))) {
+            return ChannelError::Transport;
+        }
+        health_.mark_ready();
+        return ChannelWriteOutcome::Accepted;
 #else
         (void)value;
         (void)published_at_ms;
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
         return ChannelError::Transport;
 #endif
     }
@@ -1728,13 +1902,14 @@ class ZenohPubSub {
      * channel 会排空当前 ring 后暴露最新值；FIFO channel 每次只消费一个最旧可用样本。
      */
     std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
-#ifdef FLOWRT_HAS_ZENOH_CXX
-        if (!subscriber_) {
+        if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        bool retried = false;
         try {
-            while (true) {
+            for (;;) {
                 auto result = subscriber_->handler().try_recv();
                 if (std::holds_alternative<::zenoh::Sample>(result)) {
                     auto sample = std::get<::zenoh::Sample>(std::move(result));
@@ -1749,12 +1924,31 @@ class ZenohPubSub {
 
                 const auto error = std::get<::zenoh::channels::RecvError>(result);
                 if (error == ::zenoh::channels::RecvError::Z_NODATA) {
+                    health_.mark_ready();
                     break;
                 }
+                mark_transport_error("receive Zenoh sample");
+                if (retried || !recover_after_transport_error("receive Zenoh sample")) {
+                    return ChannelError::Transport;
+                }
+                retried = true;
+            }
+        } catch (const std::exception &error) {
+            mark_transport_error(error.what());
+            if (retried || !recover_after_transport_error("receive Zenoh sample")) {
                 return ChannelError::Transport;
             }
+            retried = true;
         } catch (...) {
-            return ChannelError::Transport;
+            mark_transport_error("receive Zenoh sample failed");
+            if (retried || !recover_after_transport_error("receive Zenoh sample")) {
+                return ChannelError::Transport;
+            }
+            retried = true;
+        }
+
+        if (retried) {
+            return receive_latest_at(now_ms);
         }
 
         const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
@@ -1762,15 +1956,83 @@ class ZenohPubSub {
         return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
 #else
         (void)now_ms;
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
         return ChannelError::Transport;
 #endif
     }
 
    private:
     ZenohPubSub(std::string_view key_expr, ZenohChannelConfig config)
-        : key_expr_(key_expr), config_(config) {
+        : key_expr_(key_expr), config_(config), health_(ReconnectPolicy{}) {
 #ifdef FLOWRT_HAS_ZENOH_CXX
-        open_zenoh_endpoint();
+        if (open_zenoh_endpoint()) {
+            health_.mark_ready();
+        } else {
+            health_.mark_degraded("failed to open Zenoh endpoint");
+        }
+#else
+        health_.mark_degraded("zenoh-cpp support is disabled");
+#endif
+    }
+
+    bool ensure_ready() noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (ready()) {
+            return true;
+        }
+        if (health_.snapshot().state != BackendHealthState::Reconnecting) {
+            mark_transport_error("Zenoh endpoint is not ready");
+        }
+        return recover_after_transport_error("reopen Zenoh endpoint");
+#else
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return false;
+#endif
+    }
+
+    void mark_transport_error(std::string error) { health_.mark_degraded(std::move(error)); }
+
+    bool recover_after_transport_error(std::string error) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (config_.overflow() != OverflowPolicy::DropOldest) {
+            health_.mark_failed("Zenoh channel config is not recoverable",
+                                health_.snapshot().attempt);
+            return false;
+        }
+
+        const auto snapshot = health_.snapshot();
+        if (snapshot.state == BackendHealthState::Reconnecting && snapshot.next_retry_unix_ms &&
+            unix_now_ms() < *snapshot.next_retry_unix_ms) {
+            return false;
+        }
+
+        const auto attempt = snapshot.attempt;
+        if (!health_.policy().can_retry(attempt)) {
+            health_.mark_failed("Zenoh endpoint reconnect budget exhausted", attempt);
+            return false;
+        }
+
+        const auto now_ms = unix_now_ms();
+        health_.mark_reconnecting(attempt, now_ms + health_.policy().delay_for_attempt(attempt));
+        subscriber_.reset();
+        publisher_.reset();
+        session_.reset();
+        if (open_zenoh_endpoint()) {
+            health_.mark_ready();
+            return true;
+        }
+
+        const auto next_attempt = attempt + 1U;
+        if (health_.policy().can_retry(next_attempt)) {
+            health_.mark_reconnecting(next_attempt,
+                                      now_ms + health_.policy().delay_for_attempt(next_attempt));
+        } else {
+            health_.mark_failed(std::move(error), next_attempt);
+        }
+        return false;
+#else
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return false;
 #endif
     }
 
@@ -1780,9 +2042,9 @@ class ZenohPubSub {
 
     static constexpr std::size_t timestamp_wire_size() noexcept { return sizeof(std::uint64_t); }
 
-    void open_zenoh_endpoint() noexcept {
+    bool open_zenoh_endpoint() noexcept {
         if (config_.overflow() != OverflowPolicy::DropOldest) {
-            return;
+            return false;
         }
 
         try {
@@ -1790,10 +2052,43 @@ class ZenohPubSub {
             publisher_.emplace(session_->declare_publisher(::zenoh::KeyExpr(key_expr_)));
             subscriber_.emplace(session_->declare_subscriber(
                 ::zenoh::KeyExpr(key_expr_), ::zenoh::channels::RingChannel(config_.depth())));
+            return true;
         } catch (...) {
             subscriber_.reset();
             publisher_.reset();
             session_.reset();
+            return false;
+        }
+    }
+
+    std::optional<std::vector<std::uint8_t>> encode_transport_frame(
+        const T &value, std::uint64_t published_at_ms) noexcept {
+        try {
+            std::vector<std::uint8_t> frame(timestamp_wire_size() +
+                                            detail::encoded_frame_size(value));
+            auto output = std::span<std::uint8_t>{frame};
+            write_wire_le(output, 0, published_at_ms);
+            detail::encode_frame(value, output.subspan(timestamp_wire_size()));
+            return frame;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    bool publish_frame(std::vector<std::uint8_t> frame) noexcept {
+        if (!publisher_) {
+            mark_transport_error("Zenoh publisher is not ready");
+            return false;
+        }
+        try {
+            publisher_->put(::zenoh::Bytes(std::move(frame)));
+            return true;
+        } catch (const std::exception &error) {
+            mark_transport_error(error.what());
+            return false;
+        } catch (...) {
+            mark_transport_error("publish Zenoh sample failed");
+            return false;
         }
     }
 
@@ -1802,12 +2097,16 @@ class ZenohPubSub {
             return false;
         }
 
-        const auto input = std::span<const std::uint8_t>{frame};
-        const auto published_at_ms = read_wire_le<std::uint64_t>(input, 0);
-        auto decoded = detail::decode_frame<T>(input.subspan(timestamp_wire_size()));
-        published_at_ms_ = published_at_ms;
-        received_ = std::move(decoded);
-        return true;
+        try {
+            const auto input = std::span<const std::uint8_t>{frame};
+            const auto published_at_ms = read_wire_le<std::uint64_t>(input, 0);
+            auto decoded = detail::decode_frame<T>(input.subspan(timestamp_wire_size()));
+            published_at_ms_ = published_at_ms;
+            received_ = std::move(decoded);
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
 
     static ::zenoh::Config config_from_environment() {
@@ -1912,6 +2211,7 @@ class ZenohPubSub {
 
     std::string key_expr_;
     ZenohChannelConfig config_;
+    BackendHealthTracker health_;
 #ifdef FLOWRT_HAS_ZENOH_CXX
     std::optional<::zenoh::Session> session_;
     std::optional<::zenoh::Publisher> publisher_;
@@ -3472,129 +3772,6 @@ class BackendCapabilities {
 
    private:
     std::span<const std::string_view> items_;
-};
-
-/**
- * @brief runtime 当前认识的 backend 类型。
- */
-enum class BackendKind : std::uint8_t {
-    Inproc = 0,  ///< 单进程内存 backend，主要用于测试、CI 和最小 demo。
-    Iox2 = 1,    ///< iceoryx2 backend，用于本机多进程高性能 dataflow。
-    Zenoh = 2,   ///< zenoh backend，用于跨主机 copy transport dataflow。
-};
-
-/**
- * @brief backend 或 endpoint 当前健康状态。
- *
- * 枚举值保持紧凑、稳定，方便未来 C ABI 直接映射为整数。
- */
-enum class BackendHealthState : std::uint8_t {
-    Ready = 0,         ///< 本地 endpoint 已打开，最近一次操作未发现错误。
-    Degraded = 1,      ///< 本地 endpoint 可见错误，但仍允许后续恢复。
-    Reconnecting = 2,  ///< runtime 正在按重连策略等待或尝试恢复。
-    Failed = 3,        ///< 重连预算耗尽或错误不可恢复。
-};
-
-/**
- * @brief backend endpoint 的重连策略。
- *
- * 使用毫秒和次数，而不是语言 runtime 特有类型，便于后续映射到 C ABI、Python binding 和其他
- * 语言 runtime。
- */
-struct ReconnectPolicy {
-    std::uint64_t initial_delay_ms = 100;
-    std::uint64_t max_delay_ms = 5000;
-    std::optional<std::uint32_t> max_attempts = std::nullopt;
-
-    /**
-     * @brief 指定 attempt 的指数退避延迟，毫秒。
-     */
-    std::uint64_t delay_for_attempt(std::uint32_t attempt) const noexcept {
-        std::uint64_t multiplier = 1U;
-        for (std::uint32_t index = 0; index < attempt && multiplier <= UINT64_MAX / 2U; ++index) {
-            multiplier *= 2U;
-        }
-        if (initial_delay_ms != 0U && multiplier > UINT64_MAX / initial_delay_ms) {
-            return max_delay_ms;
-        }
-        return std::min(initial_delay_ms * multiplier, max_delay_ms);
-    }
-
-    /**
-     * @brief 判断当前 attempt 是否仍允许重试。
-     */
-    bool can_retry(std::uint32_t attempt) const noexcept {
-        return !max_attempts || attempt < *max_attempts;
-    }
-};
-
-/**
- * @brief backend 或 endpoint 的健康快照。
- */
-struct BackendHealthSnapshot {
-    BackendHealthState state = BackendHealthState::Ready;
-    std::optional<std::string> last_error = std::nullopt;
-    std::uint32_t attempt = 0;
-    std::optional<std::uint64_t> next_retry_unix_ms = std::nullopt;
-    bool recoverable = false;
-
-    /**
-     * @brief 构造 ready 快照。
-     */
-    static BackendHealthSnapshot ready() { return BackendHealthSnapshot{}; }
-
-    friend bool operator==(const BackendHealthSnapshot &, const BackendHealthSnapshot &) = default;
-};
-
-/**
- * @brief 通用 backend health 状态机。
- *
- * 该 tracker 不直接重连任何 transport，只统一记录状态转换。真实 zenoh/iox2 恢复逻辑会在后续
- * endpoint 层调用它。
- */
-class BackendHealthTracker {
-   public:
-    explicit BackendHealthTracker(ReconnectPolicy policy) : policy_(policy) {}
-
-    ReconnectPolicy policy() const noexcept { return policy_; }
-
-    BackendHealthSnapshot snapshot() const { return snapshot_; }
-
-    void mark_ready() { snapshot_ = BackendHealthSnapshot::ready(); }
-
-    void mark_degraded(std::string error) {
-        snapshot_ = BackendHealthSnapshot{
-            .state = BackendHealthState::Degraded,
-            .last_error = std::move(error),
-            .attempt = snapshot_.attempt,
-            .next_retry_unix_ms = std::nullopt,
-            .recoverable = true,
-        };
-    }
-
-    void mark_reconnecting(std::uint32_t attempt, std::uint64_t next_retry_unix_ms) {
-        snapshot_ = BackendHealthSnapshot{
-            .state = BackendHealthState::Reconnecting,
-            .last_error = snapshot_.last_error,
-            .attempt = attempt,
-            .next_retry_unix_ms = next_retry_unix_ms,
-            .recoverable = policy_.can_retry(attempt),
-        };
-    }
-
-    void mark_failed(std::string error, std::uint32_t attempt) {
-        snapshot_ = BackendHealthSnapshot{
-            .state = BackendHealthState::Failed,
-            .last_error = std::move(error),
-            .attempt = attempt,
-            .next_retry_unix_ms = std::nullopt,
-            .recoverable = false,
-        };
-    }
-
-   private:
-    ReconnectPolicy policy_;
-    BackendHealthSnapshot snapshot_;
 };
 
 /**

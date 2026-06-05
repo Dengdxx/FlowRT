@@ -422,10 +422,14 @@ int main() {
     assert(zenoh_endpoint.config().depth() == 1U);
     assert(zenoh_endpoint.config().overflow() == flowrt::OverflowPolicy::DropNewest);
     assert(!zenoh_endpoint.ready());
+    assert(zenoh_endpoint.health().state == flowrt::BackendHealthState::Degraded);
+    assert(zenoh_endpoint.health().recoverable);
     const auto zenoh_transport_write = zenoh_endpoint.publish_at(TinyWireMessage{23U}, 10U);
     assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_write));
     assert(std::get<flowrt::ChannelError>(zenoh_transport_write) ==
            flowrt::ChannelError::Transport);
+    assert(zenoh_endpoint.health().state == flowrt::BackendHealthState::Failed);
+    assert(!zenoh_endpoint.health().recoverable);
     const auto zenoh_transport_read = zenoh_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_read));
     assert(std::get<flowrt::ChannelError>(zenoh_transport_read) == flowrt::ChannelError::Transport);

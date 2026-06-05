@@ -46,6 +46,7 @@ int main() {
     auto endpoint = flowrt::zenoh::ZenohPubSub<WireProbe>::open_with_config(
         "flowrt/runtime/cpp/zenoh_smoke", config);
     assert(endpoint.ready());
+    assert(endpoint.health().state == flowrt::BackendHealthState::Ready);
 
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
 
@@ -77,6 +78,16 @@ int main() {
     assert(stale.stale());
     assert(stale.get()->value == 22U);
 
+#ifdef FLOWRT_ENABLE_TEST_HOOKS
+    endpoint.close_session_for_test();
+    assert(!endpoint.ready());
+    assert(endpoint.health().state == flowrt::BackendHealthState::Degraded);
+    const auto recovered_write = endpoint.publish_at(WireProbe{3U, 33U}, 120U);
+    assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(recovered_write));
+    assert(endpoint.ready());
+    assert(endpoint.health().state == flowrt::BackendHealthState::Ready);
+#endif
+
     const auto invalid_write = endpoint.publish_at(WireProbe{0xFFU, 99U}, 500U);
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(invalid_write));
     bool saw_decode_error = false;
@@ -89,6 +100,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds{20});
     }
     assert(saw_decode_error);
+    assert(endpoint.health().state == flowrt::BackendHealthState::Ready);
 
     const auto preserved_read = endpoint.receive_latest_at(108U);
     assert(std::holds_alternative<flowrt::Latest<WireProbe>>(preserved_read));

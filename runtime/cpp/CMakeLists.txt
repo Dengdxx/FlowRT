@@ -99,6 +99,6 @@ if(FLOWRT_CPP_ENABLE_ZENOH_TESTS)
 
     add_executable(flowrt_runtime_zenoh_smoke tests/zenoh_smoke.cpp)
     target_link_libraries(flowrt_runtime_zenoh_smoke PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
-    target_compile_definitions(flowrt_runtime_zenoh_smoke PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
+    target_compile_definitions(flowrt_runtime_zenoh_smoke PRIVATE FLOWRT_HAS_ZENOH_CXX=1 FLOWRT_ENABLE_TEST_HOOKS=1)
     add_test(NAME flowrt_runtime_zenoh_smoke COMMAND flowrt_runtime_zenoh_smoke)
 endif()
