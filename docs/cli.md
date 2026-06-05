@@ -60,7 +60,7 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
-- 选择 `iox2` 且 contract 含 C++ component 时，CMake 会要求 `iceoryx2-cxx 0.9.1`。
+- 选择 `iox2` 且 contract 含 C++ component 时，CMake 会先查找 `iceoryx2-cxx 0.9.1`；找不到时默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1，并调用 Cargo 构建其 Rust FFI 部分。
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会要求 `zenohc 1.9.0` 与 `zenohcxx 1.9.0`；需要通过 `CMAKE_PREFIX_PATH` 指向对应安装前缀。
 
 ## `run`

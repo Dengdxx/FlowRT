@@ -1,4 +1,7 @@
+#include <cstdlib>
+#include <cstdint>
 #include <flowrt_app/runtime_shell.hpp>
+#include <fstream>
 #include <memory>
 
 namespace {
@@ -12,8 +15,19 @@ class Sink final : public flowrt_app::SinkInterface {
         }
 
         const auto &value = *packet.as_ref();
-        if (!value.valid || value.label.empty() || value.payload.empty() || value.samples.empty()) {
+        const auto payload = value.payload.as_span();
+        const auto samples = value.samples.as_span();
+        if (!value.valid || value.label.view().rfind("packet-", 0) != 0 || payload.size() != 3 ||
+            samples.size() != 3 || samples[1] != samples[0] + 1 || samples[2] != samples[0] + 2 ||
+            payload[0] != static_cast<std::uint8_t>(samples[0])) {
             return flowrt::Status::Error;
+        }
+        if (const char *path = std::getenv("FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH")) {
+            std::ofstream marker(path);
+            if (!marker) {
+                return flowrt::Status::Error;
+            }
+            marker << value.label.view() << '\n';
         }
         return flowrt::Status::Ok;
     }

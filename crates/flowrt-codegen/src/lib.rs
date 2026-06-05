@@ -3607,7 +3607,7 @@ fn common_process_target(instances: &[&InstanceIr]) -> Option<String> {
 fn emit_cmake(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name);
     let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.20)\nproject({}_flowrt_app LANGUAGES CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
+        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.22)\nproject({}_flowrt_app LANGUAGES CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
         package_name, package_name, package_name, package_name
     );
 
@@ -3615,7 +3615,7 @@ fn emit_cmake(contract: &ContractIr) -> String {
         let shell_target = format!("{}_cpp_shell", package_name.replace('-', "_"));
         let app_target = format!("{}_cpp_app", package_name.replace('-', "_"));
         if selected_backend_name(contract) == "iox2" {
-            output.push_str("\nfind_package(iceoryx2-cxx 0.9.1 REQUIRED)\n");
+            output.push_str(cmake_iox2_dependency_block());
             output.push_str(&format!(
                 "target_link_libraries({package_name}_flowrt_app INTERFACE iceoryx2-cxx::static-lib-cxx)\n"
             ));
@@ -3697,6 +3697,31 @@ fn emit_cmake(contract: &ContractIr) -> String {
     }
 
     output
+}
+
+fn cmake_iox2_dependency_block() -> &'static str {
+    r#"
+include(FetchContent)
+option(FLOWRT_FETCH_IOX2 "Download and build iceoryx2-cxx v0.9.1 when it is not installed" ON)
+find_package(iceoryx2-cxx 0.9.1 QUIET)
+if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
+  if(NOT FLOWRT_FETCH_IOX2)
+    message(FATAL_ERROR "iceoryx2-cxx 0.9.1 was not found. Install it, set CMAKE_PREFIX_PATH, or enable FLOWRT_FETCH_IOX2.")
+  endif()
+  set(BUILD_CXX ON CACHE BOOL "Build iceoryx2 C++ bindings" FORCE)
+  set(BUILD_EXAMPLES OFF CACHE BOOL "Build iceoryx2 examples" FORCE)
+  FetchContent_Declare(
+    iceoryx2
+    GIT_REPOSITORY https://github.com/eclipse-iceoryx/iceoryx2.git
+    GIT_TAG v0.9.1
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(iceoryx2)
+endif()
+if(NOT TARGET iceoryx2-cxx::static-lib-cxx)
+  message(FATAL_ERROR "iceoryx2-cxx::static-lib-cxx target is unavailable after dependency resolution")
+endif()
+"#
 }
 
 fn emit_cargo_manifest(contract: &ContractIr) -> String {
@@ -5851,7 +5876,14 @@ backends = ["iox2"]
         assert!(cpp_messages.contains("static constexpr const char* IOX2_TYPE_NAME = \"Imu\";"));
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
-        assert!(cmake.contains("find_package(iceoryx2-cxx 0.9.1 REQUIRED)"));
+        assert!(cmake.contains("include(FetchContent)"));
+        assert!(cmake.contains("find_package(iceoryx2-cxx 0.9.1 QUIET)"));
+        assert!(cmake.contains("FetchContent_Declare("));
+        assert!(cmake.contains("iceoryx2"));
+        assert!(cmake.contains("GIT_TAG v0.9.1"));
+        assert!(cmake.contains("FetchContent_MakeAvailable(iceoryx2)"));
+        assert!(cmake.contains("if(NOT TARGET iceoryx2-cxx::static-lib-cxx)"));
+        assert!(!cmake.contains("if(NOT iceoryx2-cxx_FOUND AND NOT TARGET"));
         assert!(cmake.contains("iceoryx2-cxx::static-lib-cxx"));
         assert!(cmake.contains(
             "target_compile_definitions(robot_demo_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)"

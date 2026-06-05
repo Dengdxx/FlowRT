@@ -12,7 +12,7 @@
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体 |
-| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
+| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 ## `import_demo`
@@ -134,7 +134,17 @@ examples/variable_iox2_demo/rsdl/robot.rsdl
 - Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
 - bounded variable frame 会通过 codegen 生成的 fixed-size iox2 slot 承载，用户组件接口仍使用结构化消息。
 
-基础 CI 只对这些示例执行 `check`。构建和运行需要本机安装匹配的 `iceoryx2-cxx 0.9.1`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
+`mixed_iox2_demo` 和 `imu_demo_iox2` 的基础 smoke 仍以 `check` 为主。`variable_iox2_demo` 会在 CI 中构建并有限 tick 运行，用 marker 文件证明 C++ sink 实际收到 Rust source 发出的 bounded variable frame：
+
+```bash
+flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
+rm -f /tmp/flowrt-variable-iox2-saw-packet
+FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
+  flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
+test -s /tmp/flowrt-variable-iox2-saw-packet
+```
+
+含 C++ iox2 组件的生成 CMake 会先查找本机 `iceoryx2-cxx 0.9.1`。未安装时默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1，并调用 Cargo 构建其 Rust FFI 部分；网络不可用时，应预先安装并通过 `CMAKE_PREFIX_PATH` 暴露依赖。
 
 ## zenoh mixed 示例
 

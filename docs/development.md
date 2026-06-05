@@ -44,10 +44,14 @@ cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsd
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/variable_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
+rm -f /tmp/flowrt-variable-iox2-saw-packet
+FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
+  cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
+test -s /tmp/flowrt-variable-iox2-saw-packet
 ```
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：
@@ -163,4 +167,12 @@ test(abi): 补充 C++ 与 Rust 消息布局测试
 
 Rust runtime 的 iox2 支持通过 feature-gated `iceoryx2 = "0.9"` 编译。C++ iox2 binding 只有在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx 0.9.1` 时使用真实 transport。
 
-没有安装 `iceoryx2-cxx` 时，基础 Rust/C++ inproc 验证和 `check` smoke 仍应可运行；含 C++ iox2 组件的构建应由 CMake 依赖解析明确失败，而不是静默退回 inproc。
+没有安装 `iceoryx2-cxx` 时，基础 Rust/C++ inproc 验证和 `check` smoke 仍应可运行；含 C++ iox2 组件的生成 CMake 会先 `find_package(iceoryx2-cxx 0.9.1 QUIET)`，找不到时默认用 `FetchContent` 拉取 `iceoryx2` v0.9.1。该 fallback 仍需要网络访问和 Cargo，因为 upstream CMake 会构建 iceoryx2 的 Rust FFI。直接调试生成 CMake 或 `runtime/cpp` 时，可以把 `FLOWRT_FETCH_IOX2` 设为 `OFF`，让缺失依赖明确失败；`flowrt build` 的默认路径则使用自动拉取，避免 clean checkout 因没有本机安装而无法跑 iox2 smoke。
+
+可选 C++ iox2 runtime smoke：
+
+```bash
+cmake -S runtime/cpp -B build/cpp-iox2 -G Ninja -DFLOWRT_CPP_ENABLE_IOX2_TESTS=ON
+cmake --build build/cpp-iox2 --target flowrt_runtime_iox2_smoke
+ctest --test-dir build/cpp-iox2 -R flowrt_runtime_iox2_smoke --output-on-failure
+```

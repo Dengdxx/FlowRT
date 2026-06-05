@@ -42,7 +42,7 @@ Rust/C++ 生成的 runtime shell 会启动与 Rust wire JSON 兼容的 introspec
 
 - Rust toolchain，支持 workspace 使用的 Rust 2024 Edition。
 - C++20 编译器、CMake 和 CTest，用于 C++ runtime 与 C++ 示例。
-- 可选：`iceoryx2-cxx 0.9.1`，仅在构建或运行含 C++ `iox2` 组件的示例时需要。
+- 可选：`iceoryx2-cxx 0.9.1`。含 C++ `iox2` 组件的构建会先查找本机安装；找不到时，CMake 默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1 并调用 Cargo 构建其 Rust FFI 部分。
 
 从源码安装本机 `flowrt` 命令：
 
@@ -164,7 +164,7 @@ flowrt/
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证 profile 驱动 backend 切换 |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 的 iox2 分进程 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的 language-separated iox2 变体 |
-| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
+| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 完整示例说明见 [示例矩阵](docs/examples.md)。
@@ -237,10 +237,14 @@ cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsd
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/variable_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
+rm -f /tmp/flowrt-variable-iox2-saw-packet
+FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
+  cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
+test -s /tmp/flowrt-variable-iox2-saw-packet
 ```
 
 面向用户的文档和示例默认使用安装后的 `flowrt ...` 命令；`cargo run -p flowrt-cli -- ...` 只作为本仓库开发调试方式。
