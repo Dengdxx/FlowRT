@@ -164,6 +164,16 @@ int main() {
     assert(seen == 3);
     assert(scheduler_status == flowrt::Status::Error);
 
+    std::size_t completed_ticks = 0;
+    const auto completed_status = inproc_backend.scheduler().run_ticks(
+        4, [&completed_ticks](std::size_t tick, flowrt::Context &) -> flowrt::Status {
+            assert(tick == completed_ticks);
+            ++completed_ticks;
+            return flowrt::Status::Ok;
+        });
+    assert(completed_ticks == 4);
+    assert(completed_status == flowrt::Status::Ok);
+
     Sample sample{42U};
     flowrt::Latest<Sample> latest(&sample, true);
     assert(latest.present());

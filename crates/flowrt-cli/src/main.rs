@@ -77,6 +77,10 @@ enum Command {
         #[arg(long)]
         process: Option<String>,
 
+        /// 显式限制生成应用最多运行多少个 tick；省略表示无限运行。
+        #[arg(long, value_parser = parse_positive_usize)]
+        run_ticks: Option<usize>,
+
         /// 选择用于生成和运行的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
@@ -90,6 +94,10 @@ enum Command {
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
         out_dir: PathBuf,
+
+        /// 显式限制生成应用最多运行多少个 tick；省略表示无限运行。
+        #[arg(long, value_parser = parse_positive_usize)]
+        run_ticks: Option<usize>,
 
         /// 选择用于生成和启动的 profile 名称。
         #[arg(long)]
@@ -179,6 +187,7 @@ fn main() -> Result<()> {
             rsdl,
             out_dir,
             process,
+            run_ticks,
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
@@ -192,17 +201,18 @@ fn main() -> Result<()> {
                 );
                 prepared.selected_contract
             };
-            run_workspace(&contract, &out_dir, process.as_deref())?;
+            run_workspace(&contract, &out_dir, process.as_deref(), run_ticks)?;
         }
         Command::Launch {
             rsdl,
             out_dir,
+            run_ticks,
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            launch_workspace(&prepared.selected_contract, &out_dir)?;
+            launch_workspace(&prepared.selected_contract, &out_dir, run_ticks)?;
             println!(
                 "launched {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -245,6 +255,13 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_positive_usize(raw: &str) -> std::result::Result<usize, String> {
+    match raw.parse::<usize>() {
+        Ok(value) if value > 0 => Ok(value),
+        _ => Err("must be a positive integer".to_string()),
+    }
 }
 
 #[derive(Debug)]
@@ -1201,7 +1218,12 @@ fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
+fn run_workspace(
+    contract: &ContractIr,
+    out_dir: &Path,
+    process: Option<&str>,
+    run_ticks: Option<usize>,
+) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
     ensure_backend_runtime_supported(contract, "run")?;
     ensure_run_process_boundaries_supported(contract, process)?;
@@ -1216,16 +1238,16 @@ fn run_workspace(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -
                     bin.display()
                 );
             }
-            run_binary(&bin, process)?;
+            run_binary(&bin, process, run_ticks)?;
         }
         RunMode::CmakeApp => {
-            run_cmake_app(contract, out_dir, process)?;
+            run_cmake_app(contract, out_dir, process, run_ticks)?;
         }
     }
     Ok(())
 }
 
-fn launch_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
+fn launch_workspace(contract: &ContractIr, out_dir: &Path, run_ticks: Option<usize>) -> Result<()> {
     ensure_direct_runtime_supported(contract, "launch")?;
     ensure_backend_runtime_supported(contract, "launch")?;
     ensure_launch_process_boundaries_supported(contract)?;
@@ -1240,7 +1262,7 @@ fn launch_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
             }
             LaunchStep::CargoSupervisor => {
                 let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
-                run_cargo_supervisor(&manifest, &supervisor_bin_name(contract))?;
+                run_cargo_supervisor(&manifest, &supervisor_bin_name(contract), run_ticks)?;
             }
         }
     }
@@ -1411,7 +1433,12 @@ fn run_cmake_build(build_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_cmake_app(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -> Result<()> {
+fn run_cmake_app(
+    contract: &ContractIr,
+    out_dir: &Path,
+    process: Option<&str>,
+    run_ticks: Option<usize>,
+) -> Result<()> {
     let app = cpp_app_executable_path(contract, out_dir);
     if !app.exists() {
         anyhow::bail!(
@@ -1422,6 +1449,9 @@ fn run_cmake_app(contract: &ContractIr, out_dir: &Path, process: Option<&str>) -
     let mut command = ProcessCommand::new(&app);
     if let Some(process) = process {
         command.arg("--process").arg(process);
+    }
+    if let Some(run_ticks) = run_ticks {
+        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
     }
     let status = command
         .status()
@@ -1459,10 +1489,13 @@ fn cargo_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
         ))
 }
 
-fn run_binary(binary: &Path, process: Option<&str>) -> Result<()> {
+fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) -> Result<()> {
     let mut command = ProcessCommand::new(binary);
     if let Some(process) = process {
         command.arg("--process").arg(process);
+    }
+    if let Some(run_ticks) = run_ticks {
+        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
     }
     let status = command
         .status()
@@ -1486,15 +1519,25 @@ fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_cargo_supervisor(manifest: &Path, supervisor_bin: &str) -> Result<()> {
-    let status = ProcessCommand::new("cargo")
+fn run_cargo_supervisor(
+    manifest: &Path,
+    supervisor_bin: &str,
+    run_ticks: Option<usize>,
+) -> Result<()> {
+    let mut command = ProcessCommand::new("cargo");
+    command
         .arg("run")
         .arg("--manifest-path")
         .arg(manifest)
         .arg("--bin")
-        .arg(supervisor_bin)
-        .status()
-        .context("failed to spawn cargo")?;
+        .arg(supervisor_bin);
+    if let Some(run_ticks) = run_ticks {
+        command
+            .arg("--")
+            .arg("--flowrt-run-ticks")
+            .arg(run_ticks.to_string());
+    }
+    let status = command.status().context("failed to spawn cargo")?;
     if !status.success() {
         anyhow::bail!("cargo invocation failed with status {status}");
     }
@@ -2402,6 +2445,55 @@ fn main() {}
             "0",
         ])
         .expect_err("zero follow interval should be rejected");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn cli_parses_run_ticks_for_run_and_launch() {
+        let run_cli = Cli::try_parse_from([
+            "flowrt",
+            "run",
+            "examples/import_demo/rsdl/robot.rsdl",
+            "--process",
+            "main",
+            "--run-ticks",
+            "5",
+        ])
+        .unwrap();
+        let Command::Run {
+            process, run_ticks, ..
+        } = run_cli.command
+        else {
+            panic!("run command should parse into Command::Run")
+        };
+        assert_eq!(process.as_deref(), Some("main"));
+        assert_eq!(run_ticks, Some(5));
+
+        let launch_cli = Cli::try_parse_from([
+            "flowrt",
+            "launch",
+            "examples/import_demo/rsdl/robot.rsdl",
+            "--run-ticks",
+            "7",
+        ])
+        .unwrap();
+        let Command::Launch { run_ticks, .. } = launch_cli.command else {
+            panic!("launch command should parse into Command::Launch")
+        };
+        assert_eq!(run_ticks, Some(7));
+    }
+
+    #[test]
+    fn cli_rejects_zero_run_ticks() {
+        let error = Cli::try_parse_from([
+            "flowrt",
+            "run",
+            "examples/import_demo/rsdl/robot.rsdl",
+            "--run-ticks",
+            "0",
+        ])
+        .expect_err("zero run tick limit should be rejected");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }

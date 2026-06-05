@@ -751,13 +751,10 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <charconv>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <system_error>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
-    );
-    output.push_str(
-        "std::optional<std::size_t> flowrt_run_tick_limit() {\n    const auto* raw = std::getenv(\"FLOWRT_RUN_TICKS\");\n    if (raw == nullptr || *raw == '\\0') {\n        return std::nullopt;\n    }\n\n    const auto text = std::string_view{raw};\n    std::size_t ticks = 0;\n    const auto result = std::from_chars(text.data(), text.data() + text.size(), ticks);\n    if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || ticks == 0) {\n        return std::nullopt;\n    }\n    return ticks;\n}\n\n",
     );
     output.push_str(&emit_cpp_introspection_helpers());
     output.push_str("}  // namespace\n\n");
@@ -844,10 +841,10 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     }
     let backend_factory = cpp_backend_factory(&selected_backend);
     output.push_str(&format!(
-        "flowrt::Status run() {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run(backend);\n}}\n\n"
+        "flowrt::Status run(std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run(backend, run_ticks);\n}}\n\n"
     ));
     output.push_str(&format!(
-        "flowrt::Status run_process(std::string_view process) {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run_process(backend, process);\n}}\n\n"
+        "flowrt::Status run_process(std::string_view process, std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run_process(backend, process, run_ticks);\n}}\n\n"
     ));
     output.push_str("}  // namespace flowrt_app\n");
     output
@@ -865,7 +862,9 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
 
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
-    output.push_str("#include <memory>\n#include <string_view>\n\n");
+    output.push_str(
+        "#include <cstddef>\n#include <memory>\n#include <optional>\n#include <string_view>\n\n",
+    );
     output.push_str("#include <flowrt/runtime.hpp>\n\n");
     output.push_str(
         "#include \"flowrt_app/components.hpp\"\n#include \"flowrt_app/messages.hpp\"\n\n",
@@ -877,7 +876,7 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
     );
     for process in &process_plans {
         output.push_str(&format!(
@@ -895,7 +894,7 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     }
     for process in &process_plans {
         output.push_str(&format!(
-            "    flowrt::Status run_process_{}(const flowrt::Backend& backend);\n",
+            "    flowrt::Status run_process_{}(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n",
             process.method_suffix
         ));
     }
@@ -917,10 +916,10 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     }
     output.push_str("};\n\n");
     output.push_str(
-        "/**\n * @brief 运行默认 C++ inproc 应用。\n *\n * @return runtime shell 执行状态。\n */\nflowrt::Status run();\n\n",
+        "/**\n * @brief 运行默认 C++ inproc 应用。\n *\n * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run(std::optional<std::size_t> run_ticks);\n\n",
     );
     output.push_str(
-        "/**\n * @brief 运行默认 C++ inproc 应用中的指定 process group。\n *\n * @param process process group 名称。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process);\n\n",
+        "/**\n * @brief 运行默认 C++ inproc 应用中的指定 process group。\n *\n * @param process process group 名称。\n * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process, std::optional<std::size_t> run_ticks);\n\n",
     );
     output.push_str("}  // namespace flowrt_app\n");
     output.push_str(
@@ -1262,11 +1261,11 @@ fn rust_nested_step_indent(nested: bool) -> &'static str {
 fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
     let mut output = String::new();
     output.push_str(
-        "flowrt::Status App::run_process(const flowrt::Backend& backend, std::string_view process) {\n",
+        "flowrt::Status App::run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks) {\n",
     );
     for process in processes {
         output.push_str(&format!(
-            "    if (process == {}) {{\n        return run_process_{}(backend);\n    }}\n",
+            "    if (process == {}) {{\n        return run_process_{}(backend, run_ticks);\n    }}\n",
             cpp_string_literal(&process.name),
             process.method_suffix
         ));
@@ -1289,7 +1288,7 @@ struct CppRunEmission<'a> {
 fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "flowrt::Status App::{}(const flowrt::Backend& backend) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
+        "flowrt::Status App::{}(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
         run.function_name
     ));
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
@@ -1324,7 +1323,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.startup_function_name
     ));
     output.push_str(&format!(
-        "    {{\n        const auto run_tick_limit = flowrt_run_tick_limit();\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok && (!run_tick_limit.has_value() || tick_base < *run_tick_limit)) {{\n            status = backend.scheduler().run_ticks(\n                1, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
+        "    {{\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok && (!run_ticks.has_value() || tick_base < *run_ticks)) {{\n            status = backend.scheduler().run_ticks(\n                1, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
         run.step_function_name
     ));
     output.push_str(&format!(
@@ -1581,9 +1580,9 @@ fn cpp_runtime_stale_policy(policy: IrStalePolicy) -> &'static str {
 fn emit_cpp_main() -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
-    output.push_str("#include <string_view>\n\n");
+    output.push_str("#include <charconv>\n#include <cstddef>\n#include <optional>\n#include <string_view>\n#include <system_error>\n\n");
     output.push_str(
-        "int main(int argc, char** argv) {\n    std::string_view process;\n    for (int index = 1; index < argc; ++index) {\n        const std::string_view arg(argv[index]);\n        if (arg == \"--process\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            process = argv[++index];\n        } else {\n            return 2;\n        }\n    }\n\n    const auto status = process.empty() ? flowrt_app::run() : flowrt_app::run_process(process);\n    return status == flowrt::Status::Ok ? 0 : 1;\n}\n",
+        "int main(int argc, char** argv) {\n    std::string_view process;\n    std::optional<std::size_t> run_ticks;\n    for (int index = 1; index < argc; ++index) {\n        const std::string_view arg(argv[index]);\n        if (arg == \"--process\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            process = argv[++index];\n        } else if (arg == \"--flowrt-run-ticks\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            const std::string_view raw(argv[++index]);\n            std::size_t ticks = 0;\n            const auto result = std::from_chars(raw.data(), raw.data() + raw.size(), ticks);\n            if (result.ec != std::errc{} || result.ptr != raw.data() + raw.size() || ticks == 0) {\n                return 2;\n            }\n            run_ticks = ticks;\n        } else {\n            return 2;\n        }\n    }\n\n    const auto status = process.empty() ? flowrt_app::run(run_ticks) : flowrt_app::run_process(process, run_ticks);\n    return status == flowrt::Status::Ok ? 0 : 1;\n}\n",
     );
     output
 }
@@ -1741,9 +1740,6 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output.push_str(
         "\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::selfdesc;\nuse crate::user;\n\n",
     );
-    output.push_str(
-        "fn flowrt_run_tick_limit() -> Option<usize> {\n    std::env::var(\"FLOWRT_RUN_TICKS\")\n        .ok()\n        .and_then(|raw| raw.parse::<usize>().ok())\n        .filter(|ticks| *ticks > 0)\n}\n\n",
-    );
     output.push_str(&format!(
         "const SELECTED_BACKEND: &str = {};\n\n",
         rust_string_literal(&selected_backend)
@@ -1847,7 +1843,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     }
     output.push_str("}\n\n");
     output.push_str(
-        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"inproc\" => Box::new(flowrt::inproc_backend()),\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        \"zenoh\" => Box::new(flowrt::zenoh_backend()),\n        other => panic!(\"unsupported generated FlowRT backend `{other}`\"),\n    }\n}\n\npub fn run() -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref())\n}\n\npub fn run_process(process: &str) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process)\n}\n",
+        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"inproc\" => Box::new(flowrt::inproc_backend()),\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        \"zenoh\" => Box::new(flowrt::zenoh_backend()),\n        other => panic!(\"unsupported generated FlowRT backend `{other}`\"),\n    }\n}\n\npub fn run(run_ticks: Option<usize>) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref(), run_ticks)\n}\n\npub fn run_process(process: &str, run_ticks: Option<usize>) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process, run_ticks)\n}\n",
     );
     output
 }
@@ -1903,7 +1899,7 @@ fn emit_rust_lib(include_runtime_shell: bool) -> String {
 fn emit_rust_main() -> String {
     let mut output = managed_header();
     output.push_str(
-        "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut process = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--process\" => process = args.next(),\n            _ => {\n                eprintln!(\"unknown FlowRT app argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    let status = match process.as_deref() {\n        Some(process) => flowrt_app::runtime_shell::run_process(process),\n        None => flowrt_app::runtime_shell::run(),\n    };\n    let code = match status {\n        flowrt::Status::Ok => 0,\n        _ => 1,\n    };\n    std::process::exit(code);\n}\n",
+        "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut process = None;\n    let mut run_ticks = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--process\" => process = args.next(),\n            \"--flowrt-run-ticks\" => {\n                let Some(raw_ticks) = args.next() else {\n                    eprintln!(\"missing value for --flowrt-run-ticks\");\n                    std::process::exit(2);\n                };\n                match raw_ticks.parse::<usize>() {\n                    Ok(ticks) if ticks > 0 => run_ticks = Some(ticks),\n                    _ => {\n                        eprintln!(\"invalid value for --flowrt-run-ticks: {raw_ticks}\");\n                        std::process::exit(2);\n                    }\n                }\n            }\n            _ => {\n                eprintln!(\"unknown FlowRT app argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    let status = match process.as_deref() {\n        Some(process) => flowrt_app::runtime_shell::run_process(process, run_ticks),\n        None => flowrt_app::runtime_shell::run(run_ticks),\n    };\n    let code = match status {\n        flowrt::Status::Ok => 0,\n        _ => 1,\n    };\n    std::process::exit(code);\n}\n",
     );
     output
 }
@@ -1911,7 +1907,7 @@ fn emit_rust_main() -> String {
 fn emit_rust_supervisor_main() -> String {
     let mut output = managed_header();
     output.push_str(
-        "\nfn main() {\n    match flowrt_app::supervisor::launch() {\n        Ok(()) => std::process::exit(0),\n        Err(error) => {\n            eprintln!(\"FlowRT supervisor failed: {error}\");\n            std::process::exit(1);\n        }\n    }\n}\n",
+        "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut run_ticks = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--flowrt-run-ticks\" => {\n                let Some(raw_ticks) = args.next() else {\n                    eprintln!(\"missing value for --flowrt-run-ticks\");\n                    std::process::exit(2);\n                };\n                match raw_ticks.parse::<usize>() {\n                    Ok(ticks) if ticks > 0 => run_ticks = Some(ticks),\n                    _ => {\n                        eprintln!(\"invalid value for --flowrt-run-ticks: {raw_ticks}\");\n                        std::process::exit(2);\n                    }\n                }\n            }\n            _ => {\n                eprintln!(\"unknown FlowRT supervisor argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    match flowrt_app::supervisor::launch(run_ticks) {\n        Ok(()) => std::process::exit(0),\n        Err(error) => {\n            eprintln!(\"FlowRT supervisor failed: {error}\");\n            std::process::exit(1);\n        }\n    }\n}\n",
     );
     output
 }
@@ -1943,7 +1939,7 @@ struct LaunchProcess {
     runtime_kind: String,
 }
 
-pub fn launch() -> Result<(), String> {
+pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
     let manifest: LaunchManifest = serde_json::from_str(LAUNCH_MANIFEST)
         .map_err(|error| format!("failed to parse FlowRT launch manifest: {error}"))?;
     if manifest.graphs.is_empty() {
@@ -1957,9 +1953,12 @@ pub fn launch() -> Result<(), String> {
     for graph in &manifest.graphs {
         for process in &graph.processes {
             let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
-            let child = Command::new(&app_exe)
-                .arg("--process")
-                .arg(&process.name)
+            let mut command = Command::new(&app_exe);
+            command.arg("--process").arg(&process.name);
+            if let Some(run_ticks) = run_ticks {
+                command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+            }
+            let child = command
                 .spawn()
                 .map_err(|error| format!("failed to start FlowRT process `{}`: {error}", process.name))?;
             children.push((process.name.clone(), child));
@@ -2499,11 +2498,11 @@ fn emit_rust_app_run(order: &[&InstanceIr], binds: &[BindRuntimePlan]) -> String
 fn emit_rust_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
     let mut output = String::new();
     output.push_str(
-        "    pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str) -> flowrt::Status {\n        match process {\n",
+        "    pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str, run_ticks: Option<usize>) -> flowrt::Status {\n        match process {\n",
     );
     for process in processes {
         output.push_str(&format!(
-            "            {} => self.run_process_{}(backend),\n",
+            "            {} => self.run_process_{}(backend, run_ticks),\n",
             rust_string_literal(&process.name),
             process.method_suffix
         ));
@@ -2530,7 +2529,7 @@ fn emit_rust_app_run_function(
     let mut output = String::new();
     let visibility = if public { "pub " } else { "" };
     output.push_str(&format!(
-        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
+        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
     ));
     output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
     output.push_str(&emit_rust_introspection_channel_registration(order, binds));
@@ -2562,7 +2561,7 @@ fn emit_rust_app_run_function(
         startup_function_name = steps.startup
     ));
     output.push_str(&format!(
-        "        let run_tick_limit = flowrt_run_tick_limit();\n        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok\n            && run_tick_limit\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {{\n            status = backend.scheduler().run_ticks(1, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
+        "        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {{\n            status = backend.scheduler().run_ticks(1, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
         step_function_name = steps.scheduler
     ));
     output.push_str(&format!(
@@ -5469,7 +5468,9 @@ channel = "latest"
         assert!(runtime_header.contains("#include <memory>"));
         assert!(runtime_header.contains("class App"));
         assert!(runtime_header.contains("std::unique_ptr<SourceInterface> source"));
-        assert!(runtime_header.contains("flowrt::Status run(const flowrt::Backend& backend);"));
+        assert!(runtime_header.contains(
+            "flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);"
+        ));
         assert!(runtime_header.contains("namespace flowrt_user"));
         assert!(runtime_header.contains("flowrt_app::App build_app();"));
 
@@ -5483,12 +5484,13 @@ channel = "latest"
         );
         assert!(runtime_shell.contains("source_->on_tick(source_odom)"));
         assert!(runtime_shell.contains("controller_->on_tick(controller_odom, controller_cmd)"));
-        assert!(runtime_shell.contains("flowrt_user::build_app().run(backend);"));
+        assert!(runtime_shell.contains("flowrt_user::build_app().run(backend, run_ticks);"));
 
         let main = artifact_content(&bundle, "cpp/src/main.cpp");
         assert!(main.contains("#include \"flowrt_app/runtime_shell.hpp\""));
         assert!(main.contains("std::string_view process;"));
-        assert!(main.contains("flowrt_app::run_process(process)"));
+        assert!(main.contains("--flowrt-run-ticks"));
+        assert!(main.contains("flowrt_app::run_process(process, run_ticks)"));
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
         assert!(cmake.contains("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)"));
@@ -7429,12 +7431,15 @@ backends = ["iox2"]
         let rust_main = artifact_content(&bundle, "rust/src/main.rs");
         let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
 
-        assert!(rust_shell.contains("pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str) -> flowrt::Status"));
-        assert!(rust_shell.contains("\"control\" => self.run_process_control(backend)"));
-        assert!(rust_shell.contains("\"sensors\" => self.run_process_sensors(backend)"));
-        assert!(rust_shell.contains("pub fn run_process(process: &str) -> flowrt::Status"));
+        assert!(rust_shell.contains("pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str, run_ticks: Option<usize>) -> flowrt::Status"));
+        assert!(rust_shell.contains("\"control\" => self.run_process_control(backend, run_ticks)"));
+        assert!(rust_shell.contains("\"sensors\" => self.run_process_sensors(backend, run_ticks)"));
+        assert!(rust_shell.contains(
+            "pub fn run_process(process: &str, run_ticks: Option<usize>) -> flowrt::Status"
+        ));
         assert!(rust_main.contains("--process"));
-        assert!(rust_main.contains("flowrt_app::runtime_shell::run_process(process)"));
+        assert!(rust_main.contains("--flowrt-run-ticks"));
+        assert!(rust_main.contains("flowrt_app::runtime_shell::run_process(process, run_ticks)"));
         assert!(rust_lib.contains("pub use runtime_shell::{run, run_process, App};"));
     }
 
@@ -7497,14 +7502,15 @@ backends = ["inproc"]
         ));
         assert!(
             cpp_header
-                .contains("flowrt::Status run_process_control(const flowrt::Backend& backend);")
+                .contains("flowrt::Status run_process_control(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);")
         );
         assert!(cpp_shell.contains("flowrt::Status App::step_process_control"));
         assert!(cpp_shell.contains("flowrt::Status App::run_process_control"));
         assert!(cpp_shell.contains("if (process == \"control\")"));
-        assert!(cpp_shell.contains("return run_process_control(backend);"));
+        assert!(cpp_shell.contains("return run_process_control(backend, run_ticks);"));
         assert!(cpp_main.contains("--process"));
-        assert!(cpp_main.contains("flowrt_app::run_process(process)"));
+        assert!(cpp_main.contains("--flowrt-run-ticks"));
+        assert!(cpp_main.contains("flowrt_app::run_process(process, run_ticks)"));
     }
 
     #[test]
@@ -7583,7 +7589,9 @@ backends = ["iox2"]
         );
         assert!(supervisor.contains(".arg(\"--process\")"));
         assert!(supervisor.contains(".arg(&process.name)"));
-        assert!(supervisor_main.contains("flowrt_app::supervisor::launch()"));
+        assert!(supervisor.contains(".arg(\"--flowrt-run-ticks\")"));
+        assert!(supervisor_main.contains("--flowrt-run-ticks"));
+        assert!(supervisor_main.contains("flowrt_app::supervisor::launch(run_ticks)"));
         assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
         assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
         assert!(cargo_manifest.contains("serde = { version = \"1\", features = [\"derive\"] }"));

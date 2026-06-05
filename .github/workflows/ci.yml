@@ -81,21 +81,19 @@ jobs:
         run: ctest --test-dir build/cpp --output-on-failure
 
       - name: FlowRT demo smoke
-        env:
-          FLOWRT_RUN_TICKS: "5"
         run: |
           cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-          cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl
+          cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+          cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- build examples/import_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run examples/import_demo/rsdl/robot.rsdl --process main
-          cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
+          cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
+          cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
           cargo run -p flowrt-cli -- build examples/profile_switch_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+          cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 
       - name: 构建 release 版 flowrt
         run: cargo build --release -p flowrt-cli

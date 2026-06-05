@@ -2460,9 +2460,8 @@ class InprocScheduler final : public Scheduler {
      */
     Status run_ticks(std::size_t ticks, StepFn step) const override {
         Context context;
-        const auto tick_count = configured_run_ticks(ticks);
         const auto tick_sleep = configured_tick_sleep();
-        for (std::size_t tick = 0; tick < tick_count; ++tick) {
+        for (std::size_t tick = 0; tick < ticks; ++tick) {
             const auto status = step(tick, context);
             if (status != Status::Ok) {
                 return status;
@@ -2475,20 +2474,6 @@ class InprocScheduler final : public Scheduler {
     }
 
    private:
-    static std::size_t configured_run_ticks(std::size_t default_ticks) noexcept {
-        const auto *raw = std::getenv("FLOWRT_RUN_TICKS");
-        if (raw == nullptr) {
-            return default_ticks;
-        }
-        char *end = nullptr;
-        errno = 0;
-        const auto value = std::strtoull(raw, &end, 10);
-        if (errno != 0 || end == raw || *end != '\0' || value == 0U) {
-            return default_ticks;
-        }
-        return static_cast<std::size_t>(value);
-    }
-
     static std::chrono::milliseconds configured_tick_sleep() noexcept {
         const auto *raw = std::getenv("FLOWRT_TICK_SLEEP_MS");
         if (raw == nullptr) {

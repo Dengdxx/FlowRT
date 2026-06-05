@@ -34,19 +34,18 @@ cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
 FlowRT demo smoke：
 
 ```bash
-export FLOWRT_RUN_TICKS=5
 cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/import_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run examples/import_demo/rsdl/robot.rsdl --process main
-cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
+cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：

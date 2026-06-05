@@ -55,9 +55,8 @@ impl Scheduler for InprocScheduler {
         step: &mut dyn FnMut(usize, &mut Context) -> Status,
     ) -> Status {
         let mut context = Context::default();
-        let tick_count = configured_run_ticks(ticks);
         let tick_sleep = configured_tick_sleep();
-        for tick in 0..tick_count {
+        for tick in 0..ticks {
             match step(tick, &mut context) {
                 Status::Ok => {}
                 status => return status,
@@ -68,14 +67,6 @@ impl Scheduler for InprocScheduler {
         }
         Status::Ok
     }
-}
-
-fn configured_run_ticks(default_ticks: usize) -> usize {
-    std::env::var("FLOWRT_RUN_TICKS")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|ticks| *ticks > 0)
-        .unwrap_or(default_ticks)
 }
 
 fn configured_tick_sleep() -> Option<std::time::Duration> {
@@ -316,6 +307,20 @@ mod tests {
         });
         assert_eq!(seen, 3);
         assert_eq!(status, Status::Error);
+    }
+
+    #[test]
+    fn inproc_scheduler_honors_requested_tick_count() {
+        let scheduler = InprocScheduler;
+        let mut seen = 0usize;
+        let status = scheduler.run_ticks(4, &mut |tick, _| {
+            assert_eq!(tick, seen);
+            seen += 1;
+            Status::Ok
+        });
+
+        assert_eq!(seen, 4);
+        assert_eq!(status, Status::Ok);
     }
 
     #[test]

@@ -8,8 +8,8 @@
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
-flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>]
-flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
+flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-ticks <N>]
+flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-ticks <N>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
@@ -73,6 +73,8 @@ flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 
 `--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 
+`--run-ticks <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到用户终止进程或 runtime shell 返回非 `Ok` 状态。该选项会被 CLI 转换为生成应用的内部 `--flowrt-run-ticks` 参数；核心 runtime scheduler 只服从调用方传入的 tick 数，不读取 CLI 环境变量。
+
 mixed contract 规则：
 
 - 同一 process group 内混合 C++/Rust 会被拒绝。
@@ -94,6 +96,8 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 含 C++ component 的 contract 会先构建生成的 CMake app；C++ only contract 只生成 supervisor 所需的最小 Rust crate，不生成 Rust runtime shell 或 Rust app binary。
 
 `inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` 或 `zenoh` backend，或把相关 instance 放回同一 process group。
+
+`--run-ticks <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动。
 
 launch manifest 的关键字段包括：
 
@@ -153,10 +157,9 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 - `FLOWRT_ZENOH_LISTEN`
 - `FLOWRT_ZENOH_MODE`
 - `FLOWRT_ZENOH_NO_MULTICAST`
-- `FLOWRT_RUN_TICKS`
 - `FLOWRT_TICK_SLEEP_MS`
 
-前三个用于给 runtime session 注入 zenoh 网络配置，后两个用于把 demo 的同步 tick 拉长到可观察窗口。它们都不进入用户组件 API。
+前四个用于给 runtime session 注入 zenoh 网络配置，`FLOWRT_TICK_SLEEP_MS` 用于把 demo 的同步 tick 间隔拉长到可观察窗口。tick 数上限由 `flowrt run --run-ticks <N>` 或 `flowrt launch --run-ticks <N>` 显式传入，不进入核心 runtime scheduler。
 
 ## `status`
 

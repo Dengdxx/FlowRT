@@ -163,7 +163,7 @@ flowrt/
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证 profile 驱动 backend 切换 |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 的 iox2 分进程 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的 language-separated iox2 变体 |
-| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `FLOWRT_RUN_TICKS=200 FLOWRT_TICK_SLEEP_MS=5 flowrt launch examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
+| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 完整示例说明见 [示例矩阵](docs/examples.md)。
 
@@ -226,19 +226,18 @@ ctest --test-dir build/cpp --output-on-failure
 FlowRT demo smoke：
 
 ```bash
-export FLOWRT_RUN_TICKS=5
 cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/import_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run examples/import_demo/rsdl/robot.rsdl --process main
-cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
+cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
 面向用户的文档和示例默认使用安装后的 `flowrt ...` 命令；`cargo run -p flowrt-cli -- ...` 只作为本仓库开发调试方式。
