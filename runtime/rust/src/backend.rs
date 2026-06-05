@@ -1,4 +1,4 @@
-use crate::{Context, Status, channel::BackendCapabilities};
+use crate::{Context, ShutdownToken, Status, channel::BackendCapabilities};
 
 /// runtime 当前认识的 backend 类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,18 @@ pub trait Scheduler {
     fn run_ticks(
         &self,
         ticks: usize,
+        step: &mut dyn FnMut(usize, &mut Context) -> Status,
+    ) -> Status {
+        self.run_ticks_until_shutdown(ticks, &ShutdownToken::new(), step)
+    }
+
+    /// 连续运行固定数量的 tick，但在 shutdown token 触发后提前停止。
+    ///
+    /// 提前停止不是错误；调用方仍应在返回 `Status::Ok` 后执行 shutdown task 和生命周期清理。
+    fn run_ticks_until_shutdown(
+        &self,
+        ticks: usize,
+        shutdown: &ShutdownToken,
         step: &mut dyn FnMut(usize, &mut Context) -> Status,
     ) -> Status;
 }
@@ -54,9 +66,21 @@ impl Scheduler for InprocScheduler {
         ticks: usize,
         step: &mut dyn FnMut(usize, &mut Context) -> Status,
     ) -> Status {
+        self.run_ticks_until_shutdown(ticks, &ShutdownToken::new(), step)
+    }
+
+    fn run_ticks_until_shutdown(
+        &self,
+        ticks: usize,
+        shutdown: &ShutdownToken,
+        step: &mut dyn FnMut(usize, &mut Context) -> Status,
+    ) -> Status {
         let mut context = Context::default();
         let tick_sleep = configured_tick_sleep();
         for tick in 0..ticks {
+            if shutdown.is_requested() {
+                break;
+            }
             match step(tick, &mut context) {
                 Status::Ok => {}
                 status => return status,
@@ -313,6 +337,22 @@ mod tests {
         });
         assert_eq!(seen, 3);
         assert_eq!(status, Status::Error);
+    }
+
+    #[test]
+    fn inproc_scheduler_stops_when_shutdown_is_requested() {
+        let scheduler = InprocScheduler;
+        let shutdown = ShutdownToken::new_for_test();
+        let mut seen = 0usize;
+
+        let status = scheduler.run_ticks_until_shutdown(10, &shutdown, &mut |_tick, _context| {
+            seen += 1;
+            shutdown.request();
+            Status::Ok
+        });
+
+        assert_eq!(seen, 1);
+        assert_eq!(status, Status::Ok);
     }
 
     #[test]

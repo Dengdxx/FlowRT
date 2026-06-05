@@ -10,6 +10,7 @@ pub mod inproc;
 pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
+pub mod shutdown;
 pub mod wire;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
@@ -36,6 +37,7 @@ pub use introspection::{
     request_param_list, request_param_set, request_status, runtime_socket_dir,
     runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
 };
+pub use shutdown::{ShutdownToken, install_signal_shutdown_token};
 pub use wire::{WireCodec, WireCodecError};
 
 /// 生成组件接口返回的执行状态。

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
@@ -330,6 +331,7 @@ fn parse_positive_usize(raw: &str) -> std::result::Result<usize, String> {
 #[derive(Debug)]
 struct WorkspaceLock {
     path: PathBuf,
+    file: File,
 }
 
 impl WorkspaceLock {
@@ -337,33 +339,53 @@ impl WorkspaceLock {
         fs::create_dir_all(out_dir)
             .with_context(|| format!("failed to create `{}`", out_dir.display()))?;
         let path = out_dir.join(".flowrt.lock");
-        match fs::OpenOptions::new()
+        let mut file = fs::OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
-        {
-            Ok(mut file) => {
-                writeln!(file, "pid={}", std::process::id())
-                    .with_context(|| format!("failed to write `{}`", path.display()))?;
-                Ok(Self { path })
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                anyhow::bail!(
-                    "FlowRT output directory `{}` is already in use by another flowrt command; retry after it finishes, or remove `{}` if no FlowRT command is running",
-                    out_dir.display(),
-                    path.display()
-                )
-            }
-            Err(error) => {
-                Err(error).with_context(|| format!("failed to create lock `{}`", path.display()))
-            }
+            .with_context(|| format!("failed to open lock `{}`", path.display()))?;
+        if !try_lock_file(&file)? {
+            anyhow::bail!(
+                "FlowRT output directory `{}` is already in use by another flowrt command; retry after it finishes, or remove `{}` if no FlowRT command is running",
+                out_dir.display(),
+                path.display()
+            )
         }
+        file.set_len(0)
+            .with_context(|| format!("failed to truncate lock `{}`", path.display()))?;
+        writeln!(file, "pid={}", std::process::id())
+            .with_context(|| format!("failed to write `{}`", path.display()))?;
+        Ok(Self { path, file })
     }
 }
 
 impl Drop for WorkspaceLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        let _ = unlock_file(&self.file);
+    }
+}
+
+fn try_lock_file(file: &File) -> Result<bool> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => Ok(false),
+        _ => Err(error).context("failed to lock FlowRT output directory"),
+    }
+}
+
+fn unlock_file(file: &File) -> Result<()> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).context("failed to unlock FlowRT output directory")
     }
 }
 
@@ -3587,6 +3609,22 @@ language = "rust"
         drop(first);
         WorkspaceLock::acquire(&out_dir).expect("lock should be released on drop");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn workspace_lock_reclaims_lock_owned_by_dead_pid() {
+        let root = temp_test_dir("workspace-lock-stale");
+        let out_dir = root.join("flowrt");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join(".flowrt.lock"), "pid=99999999\nold=metadata\n").unwrap();
+
+        let lock =
+            WorkspaceLock::acquire(&out_dir).expect("unlocked stale lock file should be reclaimed");
+
+        let contents = std::fs::read_to_string(out_dir.join(".flowrt.lock")).unwrap();
+        assert_eq!(contents, format!("pid={}\n", std::process::id()));
+        drop(lock);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
@@ -166,13 +166,16 @@ impl IntrospectionState {
         Self::default()
     }
 
+    fn lock_inner(&self) -> MutexGuard<'_, IntrospectionStateInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// 预注册一个 channel，使其在尚未发布样本时也出现在 status 中。
     pub fn register_channel(&self, name: impl Into<String>, message_type: impl Into<String>) {
         let name = name.into();
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.channels.entry(name).or_insert_with(|| ChannelState {
             message_type: message_type.into(),
             published_count: 0,
@@ -183,10 +186,7 @@ impl IntrospectionState {
 
     /// 注册一个 runtime 参数，使 CLI 能查询并提交 pending 更新。
     pub fn register_param(&self, schema: IntrospectionParamSchema) {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         inner
             .params
             .entry(schema.name)
@@ -203,10 +203,7 @@ impl IntrospectionState {
 
     /// 增加 scheduler tick 计数。
     pub fn record_tick(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.tick_count = inner.tick_count.saturating_add(1);
     }
 
@@ -231,10 +228,7 @@ impl IntrospectionState {
     ) {
         let name = name.into();
         let message_type = message_type.into();
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         let channel = inner.channels.entry(name).or_insert_with(|| ChannelState {
             message_type: message_type.clone(),
             published_count: 0,
@@ -249,10 +243,7 @@ impl IntrospectionState {
 
     /// 返回当前 status 快照。
     pub fn status(&self) -> IntrospectionStatus {
-        let inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let inner = self.lock_inner();
         IntrospectionStatus {
             tick_count: inner.tick_count,
             channels: inner
@@ -270,10 +261,7 @@ impl IntrospectionState {
 
     /// 返回指定 channel 的 raw ABI snapshot。
     pub fn channel_snapshot(&self, name: &str) -> Option<IntrospectionChannelSnapshot> {
-        let inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let inner = self.lock_inner();
         inner
             .channels
             .get(name)
@@ -286,10 +274,7 @@ impl IntrospectionState {
 
     /// 返回参数状态列表。
     pub fn params(&self) -> Vec<IntrospectionParamStatus> {
-        let inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let inner = self.lock_inner();
         inner
             .params
             .iter()
@@ -299,10 +284,7 @@ impl IntrospectionState {
 
     /// 返回单个参数状态。
     pub fn param(&self, name: &str) -> Option<IntrospectionParamStatus> {
-        let inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let inner = self.lock_inner();
         inner
             .params
             .get(name)
@@ -315,10 +297,7 @@ impl IntrospectionState {
         name: &str,
         value: serde_json::Value,
     ) -> std::result::Result<IntrospectionParamStatus, String> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         let Some(param) = inner.params.get_mut(name) else {
             return Err(format!("unknown FlowRT parameter `{name}`"));
         };
@@ -332,10 +311,7 @@ impl IntrospectionState {
 
     /// 读取并清空参数 pending 值，供 generated shell 在 tick 边界应用。
     pub fn take_pending_param(&self, name: &str) -> Option<serde_json::Value> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         inner
             .params
             .get_mut(name)
@@ -344,10 +320,7 @@ impl IntrospectionState {
 
     /// 查询参数 pending 值，主要用于测试和 generated shell 快速检查。
     pub fn pending_param(&self, name: &str) -> Option<serde_json::Value> {
-        let inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let inner = self.lock_inner();
         inner
             .params
             .get(name)
@@ -356,10 +329,7 @@ impl IntrospectionState {
 
     /// 记录参数已经由 generated shell 应用为当前值。
     pub fn record_param_applied(&self, name: &str, value: serde_json::Value) {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("introspection state mutex poisoned");
+        let mut inner = self.lock_inner();
         if let Some(param) = inner.params.get_mut(name) {
             param.current = value;
             param.pending = None;
@@ -450,9 +420,7 @@ pub fn spawn_status_server_at(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    if path.exists() {
-        fs::remove_file(&path)?;
-    }
+    reclaim_stale_socket_path(&path)?;
     let listener = UnixListener::bind(&path)?;
     listener.set_nonblocking(true)?;
     let server_path = path.clone();
@@ -476,6 +444,19 @@ pub fn spawn_status_server_at(
         handle: Some(handle),
         stop,
     })
+}
+
+fn reclaim_stale_socket_path(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    match UnixStream::connect(path) {
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("FlowRT runtime socket `{}` is already live", path.display()),
+        )),
+        Err(_) => fs::remove_file(path),
+    }
 }
 
 /// 已启动的 introspection 服务。
@@ -864,6 +845,116 @@ mod tests {
         };
         assert_eq!(message, "unknown FlowRT channel");
 
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn state_recovers_after_mutex_poison() {
+        let state = IntrospectionState::new();
+        let poison_state = state.clone();
+        let poison_thread = thread::spawn(move || {
+            let _guard = poison_state.inner.lock().unwrap();
+            panic!("poison introspection state for test");
+        });
+        assert!(poison_thread.join().is_err());
+
+        state.register_channel("source.count_to_sink.count", "Count");
+        state.record_tick();
+        state.record_channel_publish_bytes("source.count_to_sink.count", "Count", vec![7], Some(1));
+        state.register_param(IntrospectionParamSchema {
+            name: "controller.kp".to_string(),
+            ty: "f32".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(1.0),
+            min: None,
+            max: None,
+            choices: Vec::new(),
+        });
+
+        let status = state.status();
+        assert_eq!(status.tick_count, 1);
+        assert_eq!(status.channels.len(), 1);
+        assert_eq!(
+            state
+                .channel_snapshot("source.count_to_sink.count")
+                .unwrap()
+                .payload,
+            Some(vec![7])
+        );
+        assert!(
+            state
+                .set_param_pending("controller.kp", serde_json::json!(2.0))
+                .is_ok()
+        );
+        assert_eq!(
+            state.pending_param("controller.kp"),
+            Some(serde_json::json!(2.0))
+        );
+        assert_eq!(
+            state.take_pending_param("controller.kp"),
+            Some(serde_json::json!(2.0))
+        );
+        state.record_param_applied("controller.kp", serde_json::json!(2.0));
+        assert_eq!(
+            state.param("controller.kp").unwrap().current,
+            serde_json::json!(2.0)
+        );
+    }
+
+    #[test]
+    fn status_server_refuses_to_replace_live_socket() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-live-socket-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let first =
+            spawn_status_server_at(socket.clone(), handshake.clone(), IntrospectionState::new())
+                .expect("first server should start");
+
+        let error = spawn_status_server_at(socket.clone(), handshake, IntrospectionState::new())
+            .expect_err("live socket must not be replaced by a second server");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(request_status(first.path()).is_ok());
+
+        drop(first);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn status_server_removes_stale_socket_file_before_binding() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-stale-socket-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&socket, b"stale").unwrap();
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+
+        let server = spawn_status_server_at(socket.clone(), handshake, IntrospectionState::new())
+            .expect("stale socket path should be reclaimed");
+
+        assert!(request_status(server.path()).is_ok());
         drop(server);
         let _ = fs::remove_dir_all(root);
     }

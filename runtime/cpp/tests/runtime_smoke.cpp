@@ -194,6 +194,18 @@ int main() {
     assert(completed_ticks == 4);
     assert(completed_status == flowrt::Status::Ok);
 
+    std::size_t shutdown_ticks = 0;
+    auto shutdown = flowrt::ShutdownToken::new_for_test();
+    const auto shutdown_status = inproc_backend.scheduler().run_ticks_until_shutdown(
+        10, shutdown,
+        [&shutdown_ticks, &shutdown](std::size_t, flowrt::Context &) -> flowrt::Status {
+            ++shutdown_ticks;
+            shutdown.request();
+            return flowrt::Status::Ok;
+        });
+    assert(shutdown_ticks == 1);
+    assert(shutdown_status == flowrt::Status::Ok);
+
     Sample sample{42U};
     flowrt::Latest<Sample> latest(&sample, true);
     assert(latest.present());

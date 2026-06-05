@@ -138,6 +138,19 @@ int main() {
     {
         auto server =
             flowrt::spawn_status_server_at(socket_path, std::move(handshake), state).value();
+        const auto duplicate_server = flowrt::spawn_status_server_at(
+            socket_path,
+            flowrt::IntrospectionHandshake{
+                .protocol_version = flowrt::INTROSPECTION_PROTOCOL_VERSION,
+                .pid = 43,
+                .started_at_unix_ms = 1001,
+                .self_description_hash = "duplicate",
+                .package = "robot_demo",
+                .process = "main",
+                .runtime = "cpp",
+            },
+            state);
+        assert(!duplicate_server.has_value());
 
         const auto status_response = request_line(socket_path, R"({"command":"status"})");
         assert_contains(status_response, R"("response":"status")");

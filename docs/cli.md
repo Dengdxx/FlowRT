@@ -47,7 +47,7 @@ flowrt prepare examples/import_demo/rsdl/robot.rsdl
 
 默认输出目录是 RSDL 所在项目根目录下的 `flowrt/`。可以用 `--out-dir <dir>` 改写。
 
-`prepare` 和 `build` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并在命令结束时释放；如果另一个写命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。`run` 和 `launch` 只读取已生成产物，不写输出目录，也不获取该锁。
+`prepare` 和 `build` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并持有 OS advisory lock；如果另一个写命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。锁文件可以在进程崩溃后残留，后续命令会重新打开该文件并用 OS 锁判断是否仍被占用；文件中的 PID 只作为诊断信息。`run` 和 `launch` 只读取已生成产物，不写输出目录，也不获取该锁。
 
 ## `build`
 
@@ -79,7 +79,7 @@ flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 
 `--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 
-`--run-ticks <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到用户终止进程或 runtime shell 返回非 `Ok` 状态。该选项会被 CLI 转换为生成应用的内部 `--flowrt-run-ticks` 参数；核心 runtime scheduler 只服从调用方传入的 tick 数，不读取 CLI 环境变量。
+`--run-ticks <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到收到 SIGINT/SIGTERM 或 runtime shell 返回非 `Ok` 状态。SIGINT/SIGTERM 会触发 runtime shutdown token，生成应用退出 tick loop 后继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。该选项会被 CLI 转换为生成应用的内部 `--flowrt-run-ticks` 参数；核心 runtime scheduler 只服从调用方传入的 tick 数，不读取 CLI 环境变量。
 
 如果传入 `--profile <name>`，`run` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --profile <name>`。
 
@@ -105,7 +105,7 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 `inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` 或 `zenoh` backend，或把相关 instance 放回同一 process group。
 
-`--run-ticks <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动。
+`--run-ticks <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动，并通过生成应用自己的 shutdown token 响应 SIGINT/SIGTERM。
 
 如果传入 `--profile <name>`，`launch` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --launcher --profile <name>`。
 
@@ -199,6 +199,8 @@ flowrt status
 `status` 扫描当前用户 runtime socket 目录中的 FlowRT 进程，并通过 handshake 验证 PID、package、process、runtime、静态自描述 hash 和 tick/channel 摘要。socket 路径只作为发现入口；CLI 不把文件名当作进程身份事实。
 
 当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数和 latest raw ABI payload 写入 live status/snapshot。
+
+runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
 
 ## `--profile`
 

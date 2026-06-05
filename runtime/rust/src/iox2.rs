@@ -591,4 +591,54 @@ mod tests {
         assert_eq!(endpoint.config().depth(), 1);
         assert_eq!(endpoint.config().overflow(), crate::OverflowPolicy::Block);
     }
+
+    #[test]
+    fn typed_pubsub_endpoint_receives_after_peer_endpoint_restarts() {
+        let service_name = "FlowRT/Smoke/PeerRestart";
+        let mut receiver = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+            .expect("receiver endpoint should open");
+        {
+            let sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+                .expect("first sender endpoint should open");
+            let message = Iox2SmokeMessage {
+                timestamp: 21,
+                x: 1.0,
+                y: 2.0,
+            };
+            sender
+                .publish_at(message, 100)
+                .expect("first sender should publish");
+            receiver
+                .poll_once(Duration::from_millis(1))
+                .expect("receiver node should poll after first publish");
+            assert_eq!(
+                receiver
+                    .receive_latest_at(101)
+                    .expect("receiver should receive from first sender")
+                    .as_ref(),
+                Some(&message)
+            );
+        }
+
+        let sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+            .expect("restarted sender endpoint should open");
+        let message = Iox2SmokeMessage {
+            timestamp: 22,
+            x: 3.0,
+            y: 4.0,
+        };
+        sender
+            .publish_at(message, 110)
+            .expect("restarted sender should publish");
+        receiver
+            .poll_once(Duration::from_millis(1))
+            .expect("receiver node should poll after restarted publish");
+        assert_eq!(
+            receiver
+                .receive_latest_at(111)
+                .expect("receiver should receive from restarted sender")
+                .as_ref(),
+            Some(&message)
+        );
+    }
 }

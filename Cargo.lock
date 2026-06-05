@@ -604,6 +604,7 @@ name = "flowrt"
 version = "0.1.0"
 dependencies = [
  "iceoryx2",
+ "libc",
  "serde",
  "serde_json",
  "zenoh",
@@ -620,6 +621,7 @@ dependencies = [
  "flowrt-ir",
  "flowrt-rsdl",
  "flowrt-validate",
+ "libc",
  "object",
  "serde",
  "serde_json",

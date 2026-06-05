@@ -1522,6 +1522,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         "flowrt::Status App::{}(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
         run.function_name
     ));
+    output.push_str("    auto shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
     output.push_str(&emit_cpp_introspection_channel_registration(
         run.order, run.binds,
@@ -1558,7 +1559,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.startup_function_name
     ));
     output.push_str(&format!(
-        "    {{\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok && (!run_ticks.has_value() || tick_base < *run_ticks)) {{\n            status = backend.scheduler().run_ticks(\n                1, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
+        "    {{\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {{\n            status = backend.scheduler().run_ticks_until_shutdown(\n                1, shutdown, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
         run.step_function_name
     ));
     output.push_str(&format!(
@@ -3158,6 +3159,7 @@ fn emit_rust_app_run_function(
     output.push_str(&format!(
         "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
     ));
+    output.push_str("        let shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
     output.push_str(&emit_rust_introspection_channel_registration(order, binds));
     output.push_str(&emit_rust_introspection_param_registration(contract, order));
@@ -3189,7 +3191,7 @@ fn emit_rust_app_run_function(
         startup_function_name = steps.startup
     ));
     output.push_str(&format!(
-        "        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {{\n            status = backend.scheduler().run_ticks(1, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
+        "        let mut tick_base: usize = 0;\n        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {{\n            status = backend.scheduler().run_ticks_until_shutdown(1, &shutdown, &mut |tick, tick_context| {{\n                introspection_state.record_tick();\n                self.{step_function_name}(tick_base + tick, tick_context, &introspection_state)\n            }});\n            tick_base += 1;\n        }}\n",
         step_function_name = steps.scheduler
     ));
     output.push_str(&format!(
@@ -8085,6 +8087,9 @@ period_ms = 5
 
         assert!(startup_call < scheduler_call);
         assert!(scheduler_call < shutdown_call);
+        assert!(run.contains("let shutdown = flowrt::install_signal_shutdown_token();"));
+        assert!(run.contains("&& !shutdown.is_requested()"));
+        assert!(run.contains("backend.scheduler().run_ticks_until_shutdown("));
         assert!(startup_step.contains("if self.boot.on_tick()"));
         assert!(shutdown_step.contains("if self.cleanup.on_tick()"));
         assert!(!scheduler_step.contains("if self.boot.on_tick()"));
@@ -8139,6 +8144,9 @@ period_ms = 5
 
         assert!(startup_call < scheduler_call);
         assert!(scheduler_call < shutdown_call);
+        assert!(run.contains("auto shutdown = flowrt::install_signal_shutdown_token();"));
+        assert!(run.contains("!shutdown.is_requested()"));
+        assert!(run.contains("backend.scheduler().run_ticks_until_shutdown("));
         assert!(cpp_shell.contains("flowrt::Status App::step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (boot_ && boot_->on_tick()"));
         assert!(cpp_shell.contains("flowrt::Status App::step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (cleanup_ && cleanup_->on_tick()"));
         assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (boot_ && boot_->on_tick()"));

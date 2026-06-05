@@ -615,4 +615,52 @@ mod tests {
             .expect("second nonblocking FIFO receive should succeed");
         assert_eq!(second.as_ref(), Some(&PaddedMessage { tag: 2, value: 20 }));
     }
+
+    #[test]
+    fn endpoint_can_receive_after_peer_endpoint_restarts() {
+        let key_expr = unique_key_expr("peer-restart");
+        let mut receiver =
+            ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
+                .expect("receiver endpoint should open");
+        {
+            let sender = ZenohPubSub::<PaddedMessage>::open_with_config(
+                &key_expr,
+                ZenohChannelConfig::latest(),
+            )
+            .expect("first sender endpoint should open");
+            sender
+                .publish_at(PaddedMessage { tag: 1, value: 10 }, 100)
+                .expect("first sender should publish");
+            wait_for_latest(&mut receiver, PaddedMessage { tag: 1, value: 10 }, 101);
+        }
+
+        let sender =
+            ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
+                .expect("restarted sender endpoint should open");
+        sender
+            .publish_at(PaddedMessage { tag: 2, value: 20 }, 110)
+            .expect("restarted sender should publish");
+        wait_for_latest(&mut receiver, PaddedMessage { tag: 2, value: 20 }, 111);
+    }
+
+    fn wait_for_latest(
+        endpoint: &mut ZenohPubSub<PaddedMessage>,
+        expected: PaddedMessage,
+        now_ms: u64,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let latest = endpoint
+                .receive_latest_at(now_ms)
+                .expect("nonblocking latest receive should succeed");
+            if latest.as_ref() == Some(&expected) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "local zenoh roundtrip did not deliver expected sample after peer restart"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
