@@ -158,7 +158,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 ## 发布流程
 
-FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会先跑完整验证和 deb smoke，再创建 GitHub Release，并上传 `.deb` 与 `SHA256SUMS`。
+FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待 `guard-generated`、Rust fmt/test/clippy、C++ runtime、C++ zenoh runtime、deb package 和 demo smoke 全部通过，再创建 GitHub Release，并上传 `.deb` 与 `SHA256SUMS`。
 
 发布前检查：
 

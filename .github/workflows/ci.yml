@@ -11,8 +11,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
-    name: Linux CI
+  guard-generated:
+    name: Guard Generated Files
     runs-on: ubuntu-latest
 
     steps:
@@ -44,23 +44,95 @@ jobs:
 
           echo "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
+  rust-fmt:
+    name: Rust Fmt
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Rust 格式检查
+        run: cargo fmt --check
+
+  rust-test:
+    name: Rust Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust 测试
+        run: cargo test
+
+  rust-clippy:
+    name: Rust Clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  cpp-runtime:
+    name: C++ Runtime
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
       - name: 安装系统构建工具
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build g++
 
-      - name: 安装 Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
       - name: 确认工具链版本
         run: |
-          rustc --version
-          cargo --version
           cmake --version
           ninja --version
           g++ --version
+
+      - name: C++ runtime 配置
+        run: cmake -S runtime/cpp -B build/cpp -G Ninja
+
+      - name: C++ runtime 构建
+        run: cmake --build build/cpp
+
+      - name: C++ runtime 测试
+        run: ctest --test-dir build/cpp --output-on-failure
+
+  cpp-zenoh-runtime:
+    name: C++ Zenoh Runtime
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ git
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: 安装 zenoh C++ backend 依赖
         shell: bash
@@ -97,29 +169,31 @@ jobs:
             -DZENOHCXX_ENABLE_EXAMPLES=OFF
           cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" --target install
 
-      - name: Rust 格式检查
-        run: cargo fmt --check
-
-      - name: Rust 测试
-        run: cargo test
-
-      - name: Rust Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: C++ runtime 配置
-        run: cmake -S runtime/cpp -B build/cpp -G Ninja
-
-      - name: C++ runtime 构建
-        run: cmake --build build/cpp
-
-      - name: C++ runtime 测试
-        run: ctest --test-dir build/cpp --output-on-failure
-
       - name: C++ runtime zenoh 测试
         run: |
           cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
           cmake --build build/cpp-zenoh
           ctest --test-dir build/cpp-zenoh --output-on-failure
+
+  package:
+    name: Debian Package
+    runs-on: ubuntu-latest
+    needs:
+      - guard-generated
+      - rust-test
+      - cpp-runtime
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ dpkg-dev
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: 构建并安装 flowrt deb
         run: |
@@ -135,6 +209,78 @@ jobs:
 
       - name: flowrt deb 用户项目 smoke
         run: scripts/test-deb-installed-user-project.sh
+
+      - name: 上传 flowrt Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: flowrt-linux-deb
+          path: dist/flowrt_*_*.deb
+          if-no-files-found: error
+
+  demo-smoke:
+    name: Demo Smoke
+    runs-on: ubuntu-latest
+    needs:
+      - package
+      - cpp-zenoh-runtime
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-deb
+          path: dist
+
+      - name: 安装系统构建工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ git dpkg-dev
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 flowrt deb
+        run: |
+          sudo dpkg -i dist/flowrt_*_*.deb
+          flowrt --version
+
+      - name: 安装 zenoh C++ backend 依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FLOWRT_DEPS_ROOT="${RUNNER_TEMP}/flowrt-deps"
+          FLOWRT_DEPS_PREFIX="${FLOWRT_DEPS_ROOT}/prefix"
+          {
+            echo "FLOWRT_DEPS_ROOT=${FLOWRT_DEPS_ROOT}"
+            echo "FLOWRT_DEPS_PREFIX=${FLOWRT_DEPS_PREFIX}"
+            echo "CMAKE_PREFIX_PATH=${FLOWRT_DEPS_PREFIX}"
+            echo "LD_LIBRARY_PATH=${FLOWRT_DEPS_PREFIX}/lib"
+          } >> "$GITHUB_ENV"
+
+          cargo install cbindgen --locked
+          mkdir -p "$FLOWRT_DEPS_ROOT/src" "$FLOWRT_DEPS_PREFIX"
+
+          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-c.git "$FLOWRT_DEPS_ROOT/src/zenoh-c"
+          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-c" -B "$FLOWRT_DEPS_ROOT/build/zenoh-c" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
+            -DBUILD_SHARED_LIBS=ON
+          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-c" --target install
+
+          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-cpp.git "$FLOWRT_DEPS_ROOT/src/zenoh-cpp"
+          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-cpp" -B "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
+            -DCMAKE_PREFIX_PATH="$FLOWRT_DEPS_PREFIX" \
+            -DZENOHCXX_ZENOHC=ON \
+            -DZENOHCXX_ZENOHPICO=OFF \
+            -DZENOHCXX_ENABLE_TESTS=OFF \
+            -DZENOHCXX_ENABLE_EXAMPLES=OFF
+          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" --target install
 
       - name: FlowRT demo smoke
         run: |
@@ -158,17 +304,18 @@ jobs:
           flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
           FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
-      - name: 上传 flowrt Linux artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: flowrt-linux-deb
-          path: dist/flowrt_*_*.deb
-          if-no-files-found: error
-
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: ci
+    needs:
+      - guard-generated
+      - rust-fmt
+      - rust-test
+      - rust-clippy
+      - cpp-runtime
+      - cpp-zenoh-runtime
+      - package
+      - demo-smoke
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       actions: read
