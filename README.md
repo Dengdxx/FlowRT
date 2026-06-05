@@ -236,6 +236,7 @@ cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
