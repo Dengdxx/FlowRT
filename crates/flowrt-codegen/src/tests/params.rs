@@ -1,0 +1,171 @@
+use super::*;
+
+#[test]
+fn generated_rust_components_receive_typed_params_and_register_runtime_params() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "rust"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = 2.0
+mode = "safe"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(components.contains("pub struct ControllerParams"));
+    assert!(components.contains("pub kp: f32"));
+    assert!(components.contains("pub mode: String"));
+    assert!(components.contains("params: &ControllerParams"));
+    assert!(components.contains("fn on_params_update("));
+    assert!(shell.contains("controller_params: ControllerParams"));
+    assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
+    assert!(shell.contains("name: \"controller.kp\".to_string()"));
+    assert!(shell.contains("take_pending_param(\"controller.kp\")"));
+    assert!(shell.contains("self.controller.on_params_update("));
+    assert_eq!(
+        selfdesc["graphs"][0]["instances"][0]["params"][0]["name"],
+        "kp"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["instances"][0]["params"][0]["type"],
+        "f32"
+    );
+    assert!(
+        selfdesc["graphs"][0]["instances"][0]["params"][0]
+            .get("ty")
+            .is_none()
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["instances"][0]["params"][0]["update"],
+        "on_tick"
+    );
+}
+
+#[test]
+fn generated_rust_shell_omits_param_decoder_for_no_param_contracts() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "no_param_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(!shell.contains("fn decode_flowrt_param_value"));
+}
+
+#[test]
+fn generated_rust_shell_includes_param_decoder_for_runtime_params() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[component.estimator]
+language = "rust"
+
+[component.estimator.params.gain]
+type = "f64"
+default = 1.0
+update = "on_tick"
+
+[instance.estimator]
+component = "estimator"
+
+[instance.estimator.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(shell.contains("fn decode_flowrt_param_value"));
+}
+
+#[test]
+fn generated_cpp_components_receive_typed_params_and_register_runtime_params() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "cpp"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = 2.0
+mode = "safe"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(components.contains("struct ControllerParams"));
+    assert!(components.contains("float kp"));
+    assert!(components.contains("std::string mode"));
+    assert!(components.contains("const ControllerParams& params"));
+    assert!(components.contains("virtual flowrt::Status on_params_update("));
+    assert!(shell.contains("controller_params_(ControllerParams{"));
+    assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
+    assert!(shell.contains(".name = \"controller.kp\""));
+    assert!(shell.contains("take_pending_param(\"controller.kp\")"));
+    assert!(shell.contains("controller_->on_params_update("));
+}

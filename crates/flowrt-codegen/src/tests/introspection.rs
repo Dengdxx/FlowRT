@@ -1,0 +1,342 @@
+use super::*;
+
+#[test]
+fn rust_shell_registers_active_channels_and_records_publish_snapshots() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor_source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sensor_sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.aux_source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.aux_sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.sensor_source]
+component = "sensor_source"
+process = "sensors"
+target = "linux"
+
+[instance.sensor_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sensor_sink]
+component = "sensor_sink"
+process = "control"
+target = "linux"
+
+[instance.sensor_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.aux_source]
+component = "aux_source"
+process = "aux"
+target = "linux"
+
+[instance.aux_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.aux_sink]
+component = "aux_sink"
+process = "aux"
+target = "linux"
+
+[instance.aux_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "sensor_source.sample"
+to = "sensor_sink.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "aux_source.sample"
+to = "aux_sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let sensor_channel = "sensor_source.sample_to_sensor_sink.sample";
+    let aux_channel = "aux_source.sample_to_aux_sink.sample";
+
+    let sensors_run = generated_function_block(rust_shell, "fn run_process_sensors");
+    let sensor_register_marker = format!(
+        " = register_introspection_channel(&introspection_state, {}, \"Sample\", 4);",
+        rust_string_literal(sensor_channel)
+    );
+    let sensor_probe = extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
+        .expect("sensors process should register sensor channel");
+    let aux_register_marker = format!(
+        "register_introspection_channel(&introspection_state, {}, \"Sample\", 4);",
+        rust_string_literal(aux_channel)
+    );
+    assert!(
+        !sensors_run.contains(&aux_register_marker),
+        "sensors process should not register aux channel:\n{sensors_run}"
+    );
+    let sensor_record =
+        format!("record_introspection_publish_copy(&self.{sensor_probe}, &value, tick_time_ms);");
+    assert!(rust_shell.contains(&sensor_record));
+    let sensor_record_at = rust_shell.find(&sensor_record).unwrap();
+    let sensor_before_record = &rust_shell[..sensor_record_at];
+    assert!(sensor_before_record.contains(".publish_at(value.clone(), tick_time_ms)"));
+}
+
+#[test]
+fn probe_capacity_uses_message_abi_size_including_padding() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "padding_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+ay = "f32"
+az = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains(
+            "register_introspection_channel(&introspection_state, \"source.imu_to_sink.imu\", \"Imu\", 24);"
+        ));
+}
+
+#[test]
+fn rust_shell_omits_channel_helpers_when_process_has_no_channels() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "no_channel_demo"
+rsdl_version = "0.1"
+
+[type.Counter]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["count:Counter"]
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+output = ["count"]
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("flowrt::spawn_status_server("));
+    assert!(!rust_shell.contains("fn register_introspection_channel("));
+    assert!(!rust_shell.contains("fn record_introspection_publish_copy"));
+    assert!(!rust_shell.contains("fn record_introspection_publish_frame"));
+}
+
+#[test]
+fn cpp_shell_registers_active_channels_and_records_publish_snapshots() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor_source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sensor_sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[component.aux_source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.aux_sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.sensor_source]
+component = "sensor_source"
+process = "sensors"
+target = "linux"
+
+[instance.sensor_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sensor_sink]
+component = "sensor_sink"
+process = "sensors"
+target = "linux"
+
+[instance.sensor_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.aux_source]
+component = "aux_source"
+process = "aux"
+target = "linux"
+
+[instance.aux_source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.aux_sink]
+component = "aux_sink"
+process = "aux"
+target = "linux"
+
+[instance.aux_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "sensor_source.sample"
+to = "sensor_sink.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "aux_source.sample"
+to = "aux_sink.sample"
+channel = "fifo"
+depth = 2
+overflow = "drop_oldest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+    let sensor_channel = "sensor_source.sample_to_sensor_sink.sample";
+    let aux_channel = "aux_source.sample_to_aux_sink.sample";
+
+    assert!(cpp_shell.contains("flowrt::IntrospectionState introspection_state;"));
+    assert!(cpp_shell.contains(
+            "introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});"
+        ));
+    assert!(cpp_header.contains("flowrt::IntrospectionChannelProbe introspection_probe_bind_"));
+    assert!(cpp_shell.contains("flowrt::spawn_status_server("));
+    assert!(cpp_shell.contains("flowrt_app::self_description_hash()"));
+    assert!(cpp_shell.contains("runtime = \"cpp\""));
+    assert!(cpp_shell.contains("introspection_state.record_tick();"));
+
+    let sensors_run = generated_function_block(cpp_shell, "App::run_process_sensors");
+    let sensor_register_marker = format!(
+        " = register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+        cpp_string_literal(sensor_channel)
+    );
+    let sensor_probe = extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
+        .expect("sensors process should register sensor channel");
+    let aux_register_marker = format!(
+        "register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+        cpp_string_literal(aux_channel)
+    );
+    assert!(
+        !sensors_run.contains(&aux_register_marker),
+        "sensors process should not register aux channel:\n{sensors_run}"
+    );
+    let sensor_record =
+        format!("record_introspection_publish_copy(this->{sensor_probe}, *value, tick_time_ms);");
+    assert!(cpp_shell.contains(&sensor_record));
+    let sensor_record_at = cpp_shell.find(&sensor_record).unwrap();
+    let sensor_before_record = &cpp_shell[..sensor_record_at];
+    assert!(sensor_before_record.contains("publish_at(*value, tick_time_ms)"));
+
+    let aux_run = generated_function_block(cpp_shell, "App::run_process_aux");
+    let aux_register_marker = format!(
+        " = register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+        cpp_string_literal(aux_channel)
+    );
+    let aux_probe = extract_probe_field_for_registration(aux_run, &aux_register_marker)
+        .expect("aux process should register aux channel");
+    let aux_record =
+        format!("record_introspection_publish_copy(this->{aux_probe}, *value, tick_time_ms);");
+    assert!(cpp_shell.contains(&aux_record));
+    let aux_record_at = cpp_shell.find(&aux_record).unwrap();
+    let aux_before_record = &cpp_shell[..aux_record_at];
+    assert!(aux_before_record.contains("push_at(*value, tick_time_ms)"));
+    assert!(aux_before_record.contains("ChannelWriteOutcome::DroppedOldest"));
+}
