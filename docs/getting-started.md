@@ -62,6 +62,7 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 ## 运行 Rust-only 示例
 
 ```bash
+flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
 flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 ```
 
@@ -76,25 +77,26 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 ## 运行 C++ only 示例
 
 ```bash
-flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-C++ only contract 的 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。`launch` 会先构建 CMake app，再用生成的 supervisor 启动对应 process。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
+C++ only contract 的普通 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。需要 `launch` 时，先用 `build --launcher` 显式构建 generated supervisor，再由 `launch` 执行已有 supervisor。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
 
 ## 切换 profile
 
 ```bash
 flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`--profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。选择 `iox2` profile 时，Rust 生成物会启用 runtime crate 的 `iox2` feature；含 C++ iox2 组件的构建需要本机提供 `iceoryx2-cxx 0.9.1`。
+`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` profile 时，Rust 生成物会启用 runtime crate 的 `iox2` feature；含 C++ iox2 组件的构建需要本机提供 `iceoryx2-cxx 0.9.1`。
 
 ## 出错时先看什么
 
 - `flowrt check` 失败：优先修正 RSDL 命名、类型、端口、task、bind、target/backend 声明。
 - `flowrt build` 失败：检查用户组件实现是否匹配生成接口，以及 C++ toolchain / CMake / 可选 iox2 依赖是否存在。
-- `flowrt run --process <name>` 失败：确认 process 名称来自 RSDL `instance.<name>.process`；mixed contract 必须选择单语言 process，或使用 `flowrt launch`；`inproc` backend 下不能单独运行带跨 process dataflow 的 process group。
-- `flowrt launch` 失败：检查 `flowrt/launch/launch.json` 是否生成；确认 mixed process group 没有把 C++ 和 Rust component 放在同一 process 内；如果 backend 是 `inproc`，还要确认 dataflow bind 没有跨 RSDL process group。
+- `flowrt run --process <name>` 失败：先确认已经执行过匹配 profile 的 `flowrt build`；再确认 process 名称来自 RSDL `instance.<name>.process`；mixed contract 必须选择单语言 process，或使用 `flowrt launch`；`inproc` backend 下不能单独运行带跨 process dataflow 的 process group。
+- `flowrt launch` 失败：先确认已经执行过匹配 profile 的 `flowrt build --launcher`；再检查 `flowrt/launch/launch.json` 是否生成；确认 mixed process group 没有把 C++ 和 Rust component 放在同一 process 内；如果 backend 是 `inproc`，还要确认 dataflow bind 没有跨 RSDL process group。

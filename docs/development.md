@@ -34,17 +34,17 @@ cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
 FlowRT demo smoke：
 
 ```bash
-cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build examples/import_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --launcher examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
@@ -89,9 +89,10 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - 静态自描述产物必须来自已验证、已投影的 Contract IR。`flowrt/selfdesc/selfdesc.json` 只作为可读 sidecar 和测试辅助；部署后的事实源是生成应用二进制中的 `.flowrt.selfdesc` section。自描述 JSON 要包含静态拓扑、process、channel、profile/target/deployment 和 Message ABI layout，供后续 CLI 在没有 RSDL 源文件时自查。
 - runtime introspection socket 路径只用于发现候选进程，真实身份必须来自 handshake。默认路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，fallback 要按当前用户隔离；CLI status 连接后再验证 PID、process、runtime 和 self-description hash。Rust runtime 的 live state 是 `IntrospectionState`，status 响应从该 state 取 tick/channel 摘要；生成的 Rust runtime shell 要为当前 process 的 active channel 注册 canonical channel 名和 message type，并在成功发布输出后用同一 tick timestamp 记录 raw ABI payload。channel snapshot 请求返回 raw ABI bytes，CLI 展示必须结合静态 self-description 的 Message ABI layout，不要在 runtime 层重复定义业务 payload schema。
 - C++ runtime introspection API 要保持与 Rust JSON-line wire 格式兼容：`status` 返回 handshake、tick 和 channel 摘要，`channel_snapshot` 只返回 raw ABI bytes、发布计数和发布时间，未知 channel 返回结构化 error。generated Rust/C++ shell 都应启动 PID 命名 socket、注册当前 process active channel，并在成功发布输出后记录 live state。
-- C++ only contract 的 `flowrt build` / `flowrt run` 走 CMake app 路径，不依赖 Cargo app。
-- C++ only contract 的 `flowrt launch` 会生成 supervisor-only Rust crate；该 crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
-- 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有输出目录锁；`check` 和 `inspect` 不写生成物，不应获取该锁。
+- C++ only contract 的普通 `flowrt build` / `flowrt run` 走 CMake app 路径，不依赖 Cargo app。
+- C++ only contract 的 `flowrt build --launcher` 会生成并构建 supervisor-only Rust crate；该 crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
+- `flowrt run` 和 `flowrt launch` 只读取已生成产物，不执行 prepare/build，不写 `flowrt/` 输出目录。
+- 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有输出目录锁；`check`、`inspect`、`run` 和 `launch` 不写生成物，不应获取该锁。
 - Runtime 与 codegen 不能吞掉 bind-level channel 语义：`latest` 和 `fifo` 都要保留 `overflow`、`max_age_ms` 与 `stale_policy`，inproc shell 也应使用 timestamped read/write 路径传递 freshness。
 - 跨 process group 的 bind 会在 Contract IR capability 派生中要求 `topology:multi_process`；validator、normalizer 和 CLI 必须共享同一套 deployment 判定，不要再各自手写 process-boundary 特判。
 - Task-level execution intent 也必须映射到 runtime 行为：`deadline_ms` 要进入 required capabilities，并由生成 shell 在用户回调和输出发布边界执行检查。

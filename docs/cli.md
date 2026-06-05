@@ -7,7 +7,7 @@
 ```bash
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
-flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
+flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--launcher]
 flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-ticks <N>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-ticks <N>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
@@ -25,7 +25,7 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 `check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。
 
-Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>` 这类 bounded variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare`、`build`、`run`、`launch` 和 conformance 生成会输出 canonical frame codec；`iox2` 仍只接受 fixed-size plain data。
+Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>` 这类 bounded variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec；`iox2` 仍只接受 fixed-size plain data。
 
 `u128` 和 `i128` 属于 fixed-size primitive，但它们需要额外的 `abi:int128` capability。当前 `inproc` 和 `iox2` backend 不提供该能力，因此使用这些类型的 contract 会在 deployment capability 校验阶段被判定为不满足。
 
@@ -44,7 +44,7 @@ flowrt prepare examples/import_demo/rsdl/robot.rsdl
 
 默认输出目录是 RSDL 所在项目根目录下的 `flowrt/`。可以用 `--out-dir <dir>` 改写。
 
-`prepare`、`build`、`run` 和 `launch` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并在命令结束时释放；如果另一个 `flowrt` 命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。
+`prepare` 和 `build` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并在命令结束时释放；如果另一个写命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。`run` 和 `launch` 只读取已生成产物，不写输出目录，也不获取该锁。
 
 ## `build`
 
@@ -58,6 +58,7 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 
 - Rust-only 或含 Rust component 的 contract 当前会触发 Cargo app 构建。
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
+- `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会要求 `iceoryx2-cxx 0.9.1`。
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会要求 `zenohc 1.9.0` 与 `zenohcxx 1.9.0`；需要通过 `CMAKE_PREFIX_PATH` 指向对应安装前缀。
@@ -69,11 +70,13 @@ flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 ```
 
-`run` 先执行 `prepare` 和必要的构建，再运行生成应用。
+`run` 只读取 `flowrt/contract/contract.ir.json` 和已构建的 generated app，然后运行单个 process group。它不会执行 `prepare`、不会构建、不会写 `flowrt/` 目录。首次运行或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build`。
 
 `--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 
 `--run-ticks <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到用户终止进程或 runtime shell 返回非 `Ok` 状态。该选项会被 CLI 转换为生成应用的内部 `--flowrt-run-ticks` 参数；核心 runtime scheduler 只服从调用方传入的 tick 数，不读取 CLI 环境变量。
+
+如果传入 `--profile <name>`，`run` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --profile <name>`。
 
 mixed contract 规则：
 
@@ -91,13 +94,15 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-`launch` 会准备、构建运行所需的 generated app，并运行生成的 process supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable 或 C++ app executable。
+`launch` 只运行已构建的 generated supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable 或 C++ app executable。首次 launch 或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build --launcher`。
 
-含 C++ component 的 contract 会先构建生成的 CMake app；C++ only contract 只生成 supervisor 所需的最小 Rust crate，不生成 Rust runtime shell 或 Rust app binary。
+含 C++ component 的 contract 需要先通过 `flowrt build --launcher` 显式构建 CMake app 和 generated supervisor；C++ only contract 的 supervisor-only Rust crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
 
 `inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` 或 `zenoh` backend，或把相关 instance 放回同一 process group。
 
 `--run-ticks <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动。
+
+如果传入 `--profile <name>`，`launch` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --launcher --profile <name>`。
 
 launch manifest 的关键字段包括：
 
@@ -174,10 +179,11 @@ flowrt status
 ## `--profile`
 
 ```bash
+flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`--profile <name>` 适用于 `prepare`、`build`、`run` 和 `launch`。CLI 会先按显式或默认选定的 profile 投影 Contract IR，只保留对应 deployment 视图，再校验和生成产物。省略 `--profile` 不会把全部 profile 一起写入生成产物。
+`--profile <name>` 适用于 `prepare`、`build`、`run` 和 `launch`。`prepare` 和 `build` 会按显式或默认选定的 profile 投影 Contract IR，只保留对应 deployment 视图，再校验和生成产物。`run` 和 `launch` 不投影、不生成，只校验已生成产物的 profile 是否与显式参数匹配。
 
 默认 profile 选择规则是：
 
@@ -195,6 +201,6 @@ profile 投影还会重算来自 profile default 的 bind-level policy：未在 
 - 可以重新生成。
 - 不应放用户算法代码。
 - 不应手写维护生成 runtime shell。
-- 不应由多个 `flowrt prepare` / `build` / `run` / `launch` 命令同时写入同一个输出目录；CLI 会通过 `.flowrt.lock` 做 fail-fast 保护。
+- 不应由多个 `flowrt prepare` / `build` 命令同时写入同一个输出目录；CLI 会通过 `.flowrt.lock` 做 fail-fast 保护。
 
 用户代码应放在项目自己的 `src/` 目录。C++ 用户代码通过生成接口和 `flowrt_user::build_app()` 接入；Rust 用户代码通过生成 trait 和用户模块接入。

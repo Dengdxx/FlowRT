@@ -59,6 +59,10 @@ enum Command {
         #[arg(long, default_value = "flowrt")]
         out_dir: PathBuf,
 
+        /// 同时构建 `flowrt launch` 需要的 generated supervisor。
+        #[arg(long)]
+        launcher: bool,
+
         /// 选择用于生成产物的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
@@ -171,12 +175,13 @@ fn main() -> Result<()> {
         Command::Build {
             rsdl,
             out_dir,
+            launcher,
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            build_workspace(&prepared.selected_contract, &out_dir)?;
+            build_workspace(&prepared.selected_contract, &out_dir, launcher)?;
             println!(
                 "built {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -191,16 +196,9 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let contract = {
-                let _lock = WorkspaceLock::acquire(&out_dir)?;
-                let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-                println!(
-                    "prepared {} and {} artifact(s)",
-                    prepared.contract_path.display(),
-                    prepared.artifact_count
-                );
-                prepared.selected_contract
-            };
+            let build_hint = build_command_hint(&rsdl, profile.as_deref(), false);
+            let contract = load_prepared_contract(&out_dir, &build_hint)?;
+            ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
             run_workspace(&contract, &out_dir, process.as_deref(), run_ticks)?;
         }
         Command::Launch {
@@ -210,14 +208,10 @@ fn main() -> Result<()> {
             profile,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let _lock = WorkspaceLock::acquire(&out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            launch_workspace(&prepared.selected_contract, &out_dir, run_ticks)?;
-            println!(
-                "launched {} and {} artifact(s)",
-                prepared.contract_path.display(),
-                prepared.artifact_count
-            );
+            let build_hint = build_command_hint(&rsdl, profile.as_deref(), true);
+            let contract = load_prepared_contract(&out_dir, &build_hint)?;
+            ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
+            launch_workspace(&contract, &out_dir, run_ticks)?;
         }
         Command::Inspect { ir } => {
             let contract = load_contract_from_json(&ir)?;
@@ -325,6 +319,60 @@ fn load_contract_from_json(path: &Path) -> Result<ContractIr> {
         .with_context(|| format!("failed to parse Contract IR `{}`", path.display()))?;
     validate_contract(&contract).context("contract validation failed")?;
     Ok(contract)
+}
+
+fn prepared_contract_path(out_dir: &Path) -> PathBuf {
+    out_dir.join("contract").join("contract.ir.json")
+}
+
+fn load_prepared_contract(out_dir: &Path, build_hint: &str) -> Result<ContractIr> {
+    let path = prepared_contract_path(out_dir);
+    if !path.exists() {
+        anyhow::bail!(
+            "FlowRT generated contract `{}` not found; run `{build_hint}` first",
+            path.display(),
+        );
+    }
+    load_contract_from_json(&path)
+}
+
+fn ensure_prepared_profile_matches(
+    contract: &ContractIr,
+    requested_profile: Option<&str>,
+    build_hint: &str,
+) -> Result<()> {
+    let Some(requested_profile) = requested_profile else {
+        return Ok(());
+    };
+    let prepared_profile = selected_prepared_profile_name(contract);
+    if prepared_profile == Some(requested_profile) {
+        return Ok(());
+    }
+    let prepared = prepared_profile.unwrap_or("<none>");
+    anyhow::bail!(
+        "prepared FlowRT artifacts use profile `{prepared}`, but command requested profile `{requested_profile}`; run `{build_hint}` first"
+    );
+}
+
+fn selected_prepared_profile_name(contract: &ContractIr) -> Option<&str> {
+    contract
+        .profiles
+        .first()
+        .map(|profile| profile.name.as_str())
+}
+
+fn build_command_hint(rsdl: &Path, profile: Option<&str>, launcher: bool) -> String {
+    let mut command = "flowrt build".to_string();
+    if launcher {
+        command.push_str(" --launcher");
+    }
+    if let Some(profile) = profile {
+        command.push_str(" --profile ");
+        command.push_str(profile);
+    }
+    command.push(' ');
+    command.push_str(&rsdl.display().to_string());
+    command
 }
 
 #[derive(Debug, Deserialize)]
@@ -985,14 +1033,9 @@ fn write_artifacts(bundle: &ArtifactBundle, out_dir: &Path) -> Result<usize> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildStep {
-    Cargo,
-    Cmake,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LaunchStep {
-    Build(BuildStep),
+    CargoApp,
     CargoSupervisor,
+    CmakeApp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1001,23 +1044,17 @@ enum RunMode {
     CmakeApp,
 }
 
-fn build_steps(contract: &ContractIr) -> Vec<BuildStep> {
+fn build_steps(contract: &ContractIr, include_launcher: bool) -> Vec<BuildStep> {
     let mut steps = Vec::new();
     if has_component_language(contract, LanguageKind::Rust) {
-        steps.push(BuildStep::Cargo);
+        steps.push(BuildStep::CargoApp);
     }
     if has_component_language(contract, LanguageKind::Cpp) {
-        steps.push(BuildStep::Cmake);
+        steps.push(BuildStep::CmakeApp);
     }
-    steps
-}
-
-fn launch_steps(contract: &ContractIr) -> Vec<LaunchStep> {
-    let mut steps = build_steps(contract)
-        .into_iter()
-        .map(LaunchStep::Build)
-        .collect::<Vec<_>>();
-    steps.push(LaunchStep::CargoSupervisor);
+    if include_launcher {
+        steps.push(BuildStep::CargoSupervisor);
+    }
     steps
 }
 
@@ -1202,15 +1239,19 @@ fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> R
     Ok(())
 }
 
-fn build_workspace(contract: &ContractIr, out_dir: &Path) -> Result<()> {
+fn build_workspace(contract: &ContractIr, out_dir: &Path, include_launcher: bool) -> Result<()> {
     ensure_backend_runtime_supported(contract, "build")?;
-    for step in build_steps(contract) {
+    for step in build_steps(contract, include_launcher) {
         match step {
-            BuildStep::Cargo => {
+            BuildStep::CargoApp => {
                 let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
-                run_cargo("build", &manifest)?;
+                run_cargo_build_bin(&manifest, &app_bin_name(contract))?;
             }
-            BuildStep::Cmake => {
+            BuildStep::CargoSupervisor => {
+                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+                run_cargo_build_bin(&manifest, &supervisor_bin_name(contract))?;
+            }
+            BuildStep::CmakeApp => {
                 run_cmake_configure_and_build(out_dir)?;
             }
         }
@@ -1251,21 +1292,14 @@ fn launch_workspace(contract: &ContractIr, out_dir: &Path, run_ticks: Option<usi
     ensure_direct_runtime_supported(contract, "launch")?;
     ensure_backend_runtime_supported(contract, "launch")?;
     ensure_launch_process_boundaries_supported(contract)?;
-    for step in launch_steps(contract) {
-        match step {
-            LaunchStep::Build(BuildStep::Cargo) => {
-                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
-                run_cargo("build", &manifest)?;
-            }
-            LaunchStep::Build(BuildStep::Cmake) => {
-                run_cmake_configure_and_build(out_dir)?;
-            }
-            LaunchStep::CargoSupervisor => {
-                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
-                run_cargo_supervisor(&manifest, &supervisor_bin_name(contract), run_ticks)?;
-            }
-        }
+    let supervisor = cargo_supervisor_executable_path(contract, out_dir);
+    if !supervisor.exists() {
+        anyhow::bail!(
+            "FlowRT supervisor `{}` not found; run `flowrt build --launcher` first",
+            supervisor.display()
+        );
     }
+    run_supervisor_binary(&supervisor, run_ticks)?;
     Ok(())
 }
 
@@ -1442,7 +1476,7 @@ fn run_cmake_app(
     let app = cpp_app_executable_path(contract, out_dir);
     if !app.exists() {
         anyhow::bail!(
-            "C++ app executable `{}` was not produced; implement `flowrt_user::build_app()` in `src/cpp/*.cpp` or set `FLOWRT_USER_CPP_SOURCES`",
+            "C++ app executable `{}` not found; run `flowrt build` first",
             app.display()
         );
     }
@@ -1478,15 +1512,19 @@ fn cpp_app_executable_name(contract: &ContractIr) -> String {
 }
 
 fn cargo_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
+    cargo_bin_executable_path(out_dir, &app_bin_name(contract))
+}
+
+fn cargo_supervisor_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
+    cargo_bin_executable_path(out_dir, &supervisor_bin_name(contract))
+}
+
+fn cargo_bin_executable_path(out_dir: &Path, bin_name: &str) -> PathBuf {
     out_dir
         .join("build")
         .join("target")
         .join("debug")
-        .join(format!(
-            "{}{}",
-            app_bin_name(contract),
-            std::env::consts::EXE_SUFFIX
-        ))
+        .join(format!("{bin_name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) -> Result<()> {
@@ -1506,11 +1544,13 @@ fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) ->
     Ok(())
 }
 
-fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
+fn run_cargo_build_bin(manifest: &Path, bin_name: &str) -> Result<()> {
     let status = ProcessCommand::new("cargo")
-        .arg(subcommand)
+        .arg("build")
         .arg("--manifest-path")
         .arg(manifest)
+        .arg("--bin")
+        .arg(bin_name)
         .status()
         .context("failed to spawn cargo")?;
     if !status.success() {
@@ -1519,27 +1559,16 @@ fn run_cargo(subcommand: &str, manifest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_cargo_supervisor(
-    manifest: &Path,
-    supervisor_bin: &str,
-    run_ticks: Option<usize>,
-) -> Result<()> {
-    let mut command = ProcessCommand::new("cargo");
-    command
-        .arg("run")
-        .arg("--manifest-path")
-        .arg(manifest)
-        .arg("--bin")
-        .arg(supervisor_bin);
+fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> Result<()> {
+    let mut command = ProcessCommand::new(binary);
     if let Some(run_ticks) = run_ticks {
-        command
-            .arg("--")
-            .arg("--flowrt-run-ticks")
-            .arg(run_ticks.to_string());
+        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
     }
-    let status = command.status().context("failed to spawn cargo")?;
+    let status = command
+        .status()
+        .with_context(|| format!("failed to spawn `{}`", binary.display()))?;
     if !status.success() {
-        anyhow::bail!("cargo invocation failed with status {status}");
+        anyhow::bail!("FlowRT supervisor invocation failed with status {status}");
     }
     Ok(())
 }
@@ -1675,7 +1704,11 @@ language = "rust"
 "#,
         );
 
-        assert_eq!(build_steps(&contract), vec![BuildStep::Cargo]);
+        assert_eq!(build_steps(&contract, false), vec![BuildStep::CargoApp]);
+        assert_eq!(
+            build_steps(&contract, true),
+            vec![BuildStep::CargoApp, BuildStep::CargoSupervisor]
+        );
     }
 
     #[test]
@@ -1691,11 +1724,15 @@ language = "cpp"
 "#,
         );
 
-        assert_eq!(build_steps(&contract), vec![BuildStep::Cmake]);
+        assert_eq!(build_steps(&contract, false), vec![BuildStep::CmakeApp]);
+        assert_eq!(
+            build_steps(&contract, true),
+            vec![BuildStep::CmakeApp, BuildStep::CargoSupervisor]
+        );
     }
 
     #[test]
-    fn launch_plan_builds_cpp_app_before_running_supervisor() {
+    fn default_build_plan_does_not_build_launcher() {
         let contract = contract_from_source(
             r#"
 [package]
@@ -1707,13 +1744,8 @@ language = "cpp"
 "#,
         );
 
-        assert_eq!(
-            launch_steps(&contract),
-            vec![
-                LaunchStep::Build(BuildStep::Cmake),
-                LaunchStep::CargoSupervisor
-            ]
-        );
+        assert!(!build_steps(&contract, false).contains(&BuildStep::CargoSupervisor));
+        assert!(build_steps(&contract, true).contains(&BuildStep::CargoSupervisor));
     }
 
     #[test]
@@ -1733,8 +1765,16 @@ language = "rust"
         );
 
         assert_eq!(
-            build_steps(&contract),
-            vec![BuildStep::Cargo, BuildStep::Cmake]
+            build_steps(&contract, false),
+            vec![BuildStep::CargoApp, BuildStep::CmakeApp]
+        );
+        assert_eq!(
+            build_steps(&contract, true),
+            vec![
+                BuildStep::CargoApp,
+                BuildStep::CmakeApp,
+                BuildStep::CargoSupervisor
+            ]
         );
     }
 
@@ -2485,6 +2525,22 @@ fn main() {}
     }
 
     #[test]
+    fn cli_parses_build_launcher_flag() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "build",
+            "examples/import_demo/rsdl/robot.rsdl",
+            "--launcher",
+        ])
+        .unwrap();
+
+        let Command::Build { launcher, .. } = cli.command else {
+            panic!("build command should parse into Command::Build")
+        };
+        assert!(launcher);
+    }
+
+    #[test]
     fn cli_rejects_zero_run_ticks() {
         let error = Cli::try_parse_from([
             "flowrt",
@@ -2496,6 +2552,90 @@ fn main() {}
         .expect_err("zero run tick limit should be rejected");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn load_prepared_contract_reports_build_required() {
+        let root = temp_test_dir("missing-prepared-contract");
+        let out_dir = root.join("flowrt");
+        let rsdl = root.join("rsdl/robot.rsdl");
+
+        let build_hint = build_command_hint(&rsdl, None, false);
+        let error = load_prepared_contract(&out_dir, &build_hint).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("generated contract"));
+        assert!(message.contains("flowrt build"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepared_profile_must_match_explicit_run_profile() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+        );
+
+        let build_hint = build_command_hint(
+            Path::new("examples/profile_switch_demo/rsdl/robot.rsdl"),
+            Some("iox2"),
+            false,
+        );
+        let error =
+            ensure_prepared_profile_matches(&contract, Some("iox2"), &build_hint).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("prepared FlowRT artifacts use profile `default`"));
+        assert!(message.contains("flowrt build --profile iox2"));
+    }
+
+    #[test]
+    fn build_command_hint_includes_launcher_when_launch_needs_profile() {
+        let hint = build_command_hint(
+            Path::new("examples/profile_switch_demo/rsdl/robot.rsdl"),
+            Some("iox2"),
+            true,
+        );
+
+        assert_eq!(
+            hint,
+            "flowrt build --launcher --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl"
+        );
+    }
+
+    #[test]
+    fn launch_workspace_requires_prebuilt_supervisor() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "launcher_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+"#,
+        );
+        let root = temp_test_dir("missing-launcher");
+
+        let error = launch_workspace(&contract, &root.join("flowrt"), Some(1)).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("FlowRT supervisor"));
+        assert!(message.contains("flowrt build --launcher"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

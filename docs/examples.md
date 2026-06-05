@@ -6,13 +6,13 @@
 
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
-| `examples/import_demo` | Rust | `inproc` | `flowrt run examples/import_demo/rsdl/robot.rsdl --process main` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
-| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
+| `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
+| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
 | `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息和生成物边界；不伪装为 mixed inproc 可运行 |
-| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
+| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体 |
-| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
+| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 ## `import_demo`
 
@@ -39,6 +39,7 @@ targets = ["targets/*.rsdl"]
 
 ```bash
 flowrt check examples/import_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
 flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 flowrt launch examples/import_demo/rsdl/robot.rsdl
 ```
@@ -63,13 +64,13 @@ counter_source.count -> counter_sink.count
 - C++ interface codegen。
 - C++ inproc runtime shell。
 - `flowrt_user::build_app()` 用户工厂入口。
-- C++ only `flowrt build` / `flowrt run` 走 CMake app 路径。
-- C++ only `flowrt launch` 会先构建 CMake app，再由生成 supervisor 启动 process。
+- C++ only 普通 `flowrt build` / `flowrt run` 走 CMake app 路径。
+- C++ only `flowrt build --launcher` 会显式构建 generated supervisor；`flowrt launch` 只执行已有 supervisor。
 
 常用命令：
 
 ```bash
-flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
@@ -108,10 +109,11 @@ examples/profile_switch_demo/rsdl/robot.rsdl
 
 ```bash
 flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-选择 profile 后，CLI 会先投影 Contract IR，再做 validation 和 codegen。默认 profile 仍是 `default` 或首个 profile。未在 `bind.dataflow` 上显式声明的 channel policy 会随选中 profile 的默认值一起投影；显式 bind policy 不会被 profile 覆盖。
+`build --profile <name>` 会先投影 Contract IR，再做 validation 和 codegen。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。默认 profile 仍是 `default` 或首个 profile。未在 `bind.dataflow` 上显式声明的 channel policy 会随选中 profile 的默认值一起投影；显式 bind policy 不会被 profile 覆盖。
 
 ## iox2 mixed 示例
 
@@ -148,6 +150,7 @@ examples/mixed_zenoh_demo/rsdl/robot.rsdl
 推荐命令：
 
 ```bash
+flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
 FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 

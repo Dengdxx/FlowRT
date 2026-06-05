@@ -20,9 +20,9 @@ FlowRT 还处在 MVP 工具链和 runtime shell 打通阶段，适合做本机�
 
 - `flowrt check`：解析 RSDL、展开 imports、归一化 Contract IR 并运行 validator。
 - `flowrt prepare`：生成 `flowrt/` 管理产物。
-- `flowrt build`：构建生成应用；C++ only contract 走 CMake app 路径。
-- `flowrt run`：运行单个 process group。
-- `flowrt launch`：通过生成 supervisor 启动全部 process group。
+- `flowrt build`：生成并构建应用；需要 `launch` 时用 `--launcher` 显式构建 generated supervisor。
+- `flowrt run`：读取已构建应用并运行单个 process group，不重新生成或构建。
+- `flowrt launch`：读取已构建 supervisor 并启动全部 process group，不重新生成或构建。
 - `flowrt inspect`：查看已落盘 Contract IR 摘要。
 - `flowrt list` / `flowrt nodes`：从生成应用二进制或 `selfdesc.json` 读取静态自描述拓扑。
 - `flowrt status`：扫描当前用户 runtime socket 并输出 live process handshake、scheduler tick 与 channel 摘要。
@@ -60,6 +60,7 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 运行 Rust-only inproc 示例：
 
 ```bash
+flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
 flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 flowrt launch examples/import_demo/rsdl/robot.rsdl
 ```
@@ -67,7 +68,7 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 构建并运行 C++ only inproc 示例：
 
 ```bash
-flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
@@ -135,7 +136,7 @@ backends = ["inproc"]
 
 ## FlowRT 生成什么
 
-运行 `flowrt prepare` / `flowrt build` / `flowrt run` 后，FlowRT 会在项目下生成 `flowrt/` 管理目录：
+运行 `flowrt prepare` 或 `flowrt build` 后，FlowRT 会在项目下生成 `flowrt/` 管理目录：
 
 ```text
 flowrt/
@@ -157,13 +158,13 @@ flowrt/
 
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
-| `examples/import_demo` | Rust | `inproc` | `flowrt run examples/import_demo/rsdl/robot.rsdl --process main` | 验证 RSDL imports、Rust codegen、inproc run 和 launch |
-| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control` | 验证 C++ only CMake app 路径 |
+| `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 RSDL imports、Rust codegen、inproc run 和 launch |
+| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径 |
 | `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口和生成物边界 |
-| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证 profile 驱动 backend 切换 |
+| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证 profile 驱动 backend 切换 |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 的 iox2 分进程 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的 language-separated iox2 变体 |
-| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
+| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 完整示例说明见 [示例矩阵](docs/examples.md)。
 
@@ -226,17 +227,17 @@ ctest --test-dir build/cpp --output-on-failure
 FlowRT demo smoke：
 
 ```bash
-cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build examples/import_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --launcher examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build examples/profile_switch_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
