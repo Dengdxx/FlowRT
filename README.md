@@ -1,8 +1,8 @@
 # FlowRT
 
-FlowRT 是一个数据流编译型机器人运行时。用户用 `.rsdl` 声明消息、组件端口、任务、数据流连接、部署目标和通信 backend；工具链把这些声明归一化为 Contract IR，校验后生成 C++/Rust 的薄 runtime shell、消息类型、启动配置和构建文件。
+FlowRT 是一个数据流编译型机器人运行时。应用开发者用 `.rsdl` 声明系统结构：消息、组件端口、实例、任务、数据流连接、部署目标和通信 backend；FlowRT 把这些声明编译成 Contract IR，校验后生成 C++/Rust 的薄 runtime shell、消息类型、启动配置和构建文件。
 
-FlowRT 的边界很明确：
+FlowRT 的边界：
 
 ```text
 RSDL controls system structure.
@@ -10,83 +10,93 @@ Runtime controls execution.
 User code controls algorithms.
 ```
 
-这意味着 FlowRT 关注的是“系统结构能否被编译、校验和重新生成”，而不是把系统事实散落到运行时动态对象里。用户算法代码仍由用户自己写；FlowRT 负责把 RSDL 契约变成可构建、可运行、可验证的应用骨架。
+也就是：你写业务算法，FlowRT 管系统结构、构建、调度、通信、生命周期和运行态观测。
 
-## 当前状态
+## 面向谁
 
-FlowRT 处于 v0.1 alpha 阶段：核心工具链、Rust/C++ runtime shell、跨进程 backend 和单包安装路径已经闭环，适合做本机示例、Contract IR 语义验证、生成代码边界验证、跨语言 demo 和早期集成试用。它还不是长期稳定的生产运行时。
+本文主要面向 **基于 FlowRT 开发机器人应用的人**。你通常只需要关心：
 
-当前已经可用的主路径：
+- 在 `rsdl/` 中声明系统契约。
+- 在 `src/` 中实现组件算法。
+- 用 `flowrt build` 生成并构建应用。
+- 用 `flowrt run` 或 `flowrt launch` 运行应用。
+- 用 `flowrt status`、`flowrt echo`、`flowrt hz` 和 `flowrt params` 观察运行状态。
 
-- `flowrt check`：解析 RSDL、展开 imports、归一化 Contract IR 并运行 validator。
-- `flowrt prepare`：生成 `flowrt/` 管理产物。
-- `flowrt build`：生成并构建应用；需要 `launch` 时用 `--launcher` 显式构建 generated supervisor。
-- `flowrt run`：读取已构建应用并运行单个 process group，不重新生成或构建。
-- `flowrt launch`：读取已构建 supervisor 并启动全部 process group，不重新生成或构建。
-- `flowrt inspect`：查看已落盘 Contract IR 摘要。
-- `flowrt list` / `flowrt nodes`：从生成应用二进制或 `selfdesc.json` 读取静态自描述拓扑。
-- `flowrt status`：扫描当前用户 runtime socket 并输出 live process handshake、scheduler tick 与 channel 摘要。
-- `flowrt hz`：通过 live status 控制面按采样窗口统计 channel 发布频率，不启用 echo 数据面 probe。
-- `flowrt echo`：从 live runtime 自动读取 self-description，按消息 layout 格式化单个 channel 的 latest 快照；也可用 `--image` 指定离线 self-description。
-- `flowrt params`：结合静态自描述和 live runtime socket，列出、读取或提交 runtime 参数 pending 更新。
+FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/development.md)。
 
-已覆盖的核心能力包括 RSDL v0.1 TOML 子集、模块化 imports、canonical Contract IR、profile 投影、acyclic dataflow 校验、Rust/C++ 消息与组件接口生成、ABI conformance 测试生成、Rust/C++ inproc runtime、latest/FIFO channel、overflow policy、stale data policy、task lifecycle、task deadline 检查，以及 language-separated mixed contract over `iox2` 的生成和启动边界。
+## 安装
 
-当前 Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线；同时，FlowRT 已经把 `bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 作为 bounded variable frame 进入 codegen/runtime，生成固定 header + 尾部变长区的 canonical frame codec。`inproc` 和 `zenoh` 直接传递 canonical frame；`iox2` 会为每个变长消息生成固定容量 transport slot，在 typed IPC payload 中承载 canonical frame bytes，用户组件接口仍只看到结构化消息。
-
-当前仍未完成多 graph / 多 task 完整语义、Artifact ABI、外部进程组件语义，以及 Rust 用户组件免 Cargo 分发。`zenoh` 已作为跨主机 copy backend 进入 capability catalog、Rust/C++ runtime backend、真实 transport endpoint 和 mixed demo 路径；生成物会输出 deterministic channel key expression，并对 bounded variable frame 生成 canonical codec。
-
-Rust/C++ 生成的 runtime shell 会启动与 Rust wire JSON 兼容的 introspection socket，控制面常驻暴露 status、self-description、参数和 PID 命名 socket 路径；channel 数据面 probe 只在 `flowrt echo` 建立观察连接期间启用。无观察者时发布热路径只做 channel-local 原子检查，不编码、不拷贝、不写 socket。
-generated supervisor 也会启动自己的 introspection socket，并轮询子进程 PID socket，把子进程 `starting` / `running` / `stale` / `restarting` / `exited` / `failed`、PID、重启次数、tick 计数、最后一次可见时间和退出状态暴露给 `flowrt status`。子进程异常退出时，supervisor 会按内置 `on-failure` policy 最多重启 3 次；正常退出不重启。
-Rust/C++ runtime 已有 backend health 和 reconnect 基础抽象，用稳定状态、毫秒退避和 attempt 计数表达恢复过程。`iox2` 和 `zenoh` endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败后，endpoint 会按策略重建本地 publisher/subscriber/session；codec/schema 错误仍按 payload 错误返回，不触发重连。该抽象保持 C ABI 友好的数据形状，便于后续接入 C、Python 和更多语言 runtime；当前尚未提供 C API。
-组件参数现在有显式 schema 和更新策略：`startup` 参数只在启动时生效，`on_tick` 参数可以通过 `flowrt params set` 写入 pending 值，并由生成 shell 在 tick 边界调用用户组件的 `on_params_update` 后提交。
-长期运行的生成应用会在收到 SIGINT/SIGTERM 时触发 runtime shutdown token，退出同步 tick loop 后继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。runtime introspection socket 会拒绝覆盖仍可连接的 live socket，并自动回收 SIGKILL 后残留且不可连接的 socket 文件。
-
-## 快速体验
-
-前置条件：
-
-- Rust toolchain，支持 workspace 使用的 Rust 2024 Edition。
-- C++20 编译器、CMake 和 CTest，用于 C++ runtime 与 C++ 示例。
-- 可选：`iceoryx2-cxx 0.9.1`、基于 `zenoh-c` backend 的 `zenohcxx 1.9.0`。含 C++ `iox2` 组件的构建会先查找本机安装；`zenoh` 组件要求本机提供 `zenohcxx::zenohc` 目标，找不到时 configure 直接失败。
-
-构建并安装单包 Debian 包：
+推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-scripts/package-deb.sh --output-dir dist
-sudo dpkg -i dist/flowrt_*_*.deb
+curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.1.0/flowrt_0.1.0_amd64.deb
+curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.1.0/SHA256SUMS
+sha256sum -c SHA256SUMS
+sudo dpkg -i flowrt_0.1.0_amd64.deb
 flowrt --version
 ```
 
-该单包会安装 CLI、Rust runtime crate、C++ runtime header 和 CMake package。安装后用户项目不需要克隆 FlowRT 仓库；只需要自己的 `rsdl/`、`src/` 和可删除重建的 `flowrt/` 生成目录。
+安装包提供：
 
-检查模块化 RSDL 示例：
+- `/usr/bin/flowrt`
+- Rust runtime crate
+- C++ runtime header
+- CMake package
+- 基础文档和 changelog
 
-```bash
-flowrt check examples/import_demo/rsdl/robot.rsdl
+安装后，应用项目不需要克隆 FlowRT 仓库；用户项目只保留自己的 RSDL、业务代码和可重建的 `flowrt/` 生成目录。
+
+## 核心概念
+
+| 概念 | 含义 |
+| --- | --- |
+| RSDL | FlowRT 的源语言，声明系统结构，不写业务算法。 |
+| Contract IR | RSDL 归一化、校验后的语义合同，是 codegen 和 runtime 的共同输入。 |
+| message type | 数据 schema，例如 IMU、控制指令、检测结果。 |
+| component | 可复用组件类型，声明输入、输出、参数和语言绑定。 |
+| instance | graph 中的组件实例，绑定 component、参数、target 和 process。 |
+| task | instance 的执行单元，描述 trigger、输入、输出、周期和 deadline。 |
+| channel route | 从一个输出端口到一个输入端口的 typed dataflow 边。 |
+| profile | 一套构建/部署选择，例如默认 backend、channel policy。 |
+| target | 部署目标能力，例如 runtime 语言和可用 backend。 |
+| backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
+| runtime shell | FlowRT 生成的胶水代码，负责调度、通信、生命周期和观测。 |
+
+核心模型：
+
+```text
+component -> instance -> task -> channel route
 ```
 
-运行 Rust-only inproc 示例：
+FlowRT 的核心对象是可编译、可校验、可重新生成的数据流系统契约。
 
-```bash
-flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
-flowrt run examples/import_demo/rsdl/robot.rsdl --process main
-flowrt launch examples/import_demo/rsdl/robot.rsdl
+## 应用目录
+
+推荐的应用目录：
+
+```text
+my_robot/
+  rsdl/
+    robot.rsdl
+  src/
+    cpp/
+      components.cpp
+    rust/
+      mod.rs
+  flowrt/              # FlowRT 生成目录，可删除、可重建，不放业务代码
 ```
 
-构建并运行 C++ only inproc 示例：
+约定：
 
-```bash
-flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
-```
+- `rsdl/` 放系统契约。
+- `src/` 放用户业务算法。
+- `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑。
 
-更多步骤见 [快速开始](docs/getting-started.md)。
+`flowrt/` 删除后可以通过 `flowrt build` 重新生成。
 
-## 用户写什么
+## 最小 RSDL
 
-RSDL v0.1 使用 TOML 表面语法。一个最小 contract 会描述 package、message type、component、instance、task、dataflow bind、profile 和 target：
+RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例：
 
 ```toml
 [package]
@@ -141,124 +151,215 @@ runtime = ["cpp"]
 backends = ["inproc"]
 ```
 
-`component` 是可复用组件类型，`instance` 是 graph 中的实例，`instance.<name>.task` 是执行单元，`bind.dataflow` 是 typed channel。Contract IR v0.1 当前要求恰好一个 graph，且 dataflow graph 必须无环。
+这份 RSDL 表达：
 
-## FlowRT 生成什么
+- `Count` 是消息类型。
+- `counter_source` 和 `counter_sink` 是组件类型。
+- 两个 `instance` 放在同一个 `control` process。
+- `counter_source` 每 10ms 发布一次 `count`。
+- `counter_sink` 在收到 `count` 时被调度。
+- `bind.dataflow` 把 source 输出接到 sink 输入。
+- `profile.default` 选择 `inproc` backend。
 
-运行 `flowrt prepare` 或 `flowrt build` 后，FlowRT 会在项目下生成 `flowrt/` 管理目录：
+## 构建和运行
 
-```text
-flowrt/
-  contract/contract.ir.json
-  launch/launch.json
-  build/
-  src/
+检查契约：
+
+```bash
+flowrt check rsdl/robot.rsdl
 ```
 
-这个目录可以删除、可以重新生成，不应放用户算法代码。用户代码应放在项目自己的 `src/` 目录中：
+生成并构建应用：
 
-- C++ 用户组件通过生成接口和 `flowrt_user::build_app()` 注入。
-- Rust 用户组件通过生成 trait 和用户模块接入。
-- 业务代码只依赖 FlowRT runtime API，不直接依赖 iox2 publisher/subscriber API。
+```bash
+flowrt build --launcher rsdl/robot.rsdl
+```
 
-生成代码只做 glue：消息定义、组件接口、runtime shell、backend 绑定、启动配置和构建文件。
+运行单个 process group：
+
+```bash
+flowrt run rsdl/robot.rsdl --process control
+```
+
+由 generated supervisor 启动全部 process group：
+
+```bash
+flowrt launch rsdl/robot.rsdl
+```
+
+`run` 和 `launch` 只读取已生成、已构建产物；修改 RSDL、profile、生成模板或用户代码后，需要重新执行 `flowrt build`。
+
+## 用户组件
+
+FlowRT 生成 component interface，用户只实现算法。
+
+C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入：
+
+```cpp
+namespace flowrt_user {
+
+flowrt_app::App build_app() {
+    flowrt_app::App app;
+    app.set_counter_source(std::make_unique<CounterSource>());
+    app.set_counter_sink(std::make_unique<CounterSink>());
+    return app;
+}
+
+}  // namespace flowrt_user
+```
+
+Rust 组件通过生成 trait 和用户模块接入。
+
+业务代码只依赖 FlowRT runtime API，不直接依赖 backend 的 publisher/subscriber API。通信、调度、生命周期和观测由生成的 runtime shell 负责。
+
+## 参数
+
+RSDL 可以声明 component 参数和 instance 覆盖值。生成代码会把参数变成 typed params，用户组件在 tick 边界读取参数快照。
+
+运行时可用 CLI 查看或提交参数：
+
+```bash
+flowrt params list
+flowrt params get controller.kp
+flowrt params set controller.kp 2.0
+```
+
+`startup` 参数只在启动时生效；支持热更新的参数会先进入 pending 状态，再由生成 shell 在安全边界提交给用户组件。
+
+## 消息
+
+v0.1 的 native ABI 基线是 fixed-size plain data：
+
+- integers
+- floats
+- bool
+- fixed arrays
+- nested structs
+
+当前也支持 bounded variable frame：
+
+- `bytes<max=N>`
+- `string<max=N>`
+- `sequence<T,max=N>`
+
+`inproc` 和 `zenoh` 直接传递 canonical frame。`iox2` 因为共享内存 slot 固定大小，当前使用固定容量 transport slot 承载 bounded variable frame，因此变长字段必须声明上限。
+
+## Channel Policy
+
+基础 channel policy：
+
+```text
+latest(depth = 1)
+fifo(depth = N)
+```
+
+overflow policy：
+
+```text
+drop_oldest
+drop_newest
+error
+block
+```
+
+stale data policy：
+
+```text
+max_age_ms = N
+stale_policy = "warn" | "drop" | "hold_last" | "error"
+```
+
+overflow 表示队列满，stale 表示数据过期。两者是不同问题。
+
+## Backend
+
+v0.1 支持：
+
+| Backend | 用途 |
+| --- | --- |
+| `inproc` | 单进程、本机 demo、测试、低依赖路径。 |
+| `iox2` | 同机多进程、固定大小 slot、高性能 IPC。 |
+| `zenoh` | 跨进程/跨主机 copy transport，适合变长序列化。 |
+
+当前 backend 主要由 profile 选择：
+
+```toml
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["zenoh"]
+```
+
+message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约和 profile 生成。
+
+## 运行态观测
+
+生成应用会启动 introspection socket。部署后，即使没有 RSDL 源文件，也可以用 CLI 自查。
+
+查看静态拓扑：
+
+```bash
+flowrt list path/to/generated/app
+flowrt nodes path/to/generated/app
+```
+
+查看运行状态：
+
+```bash
+flowrt status
+```
+
+查看发布频率：
+
+```bash
+flowrt hz channel_name --window-ms 1000
+```
+
+查看 channel 最新值：
+
+```bash
+flowrt echo channel_name
+flowrt echo channel_name --follow
+```
+
+`flowrt echo` 的数据面 probe 按需启用。没有 observer 时，发布路径不会编码 payload、不会拷贝 payload、不会写 socket。
+
+## Supervisor
+
+`flowrt launch` 会运行 generated supervisor。Supervisor 会：
+
+- 读取 `flowrt/launch/launch.json`。
+- 按 process group 启动 Rust 或 C++ generated app。
+- 启动自己的 introspection socket。
+- 轮询子进程 PID socket。
+- 把子进程 `starting`、`running`、`stale`、`restarting`、`exited`、`failed` 展示给 `flowrt status`。
+- 对异常退出的子进程按内置 `on-failure` policy 最多重启 3 次。
+
+正常退出不会重启。
 
 ## 示例
 
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
-| `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 RSDL imports、Rust codegen、inproc run 和 launch |
-| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径 |
-| `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口和生成物边界 |
-| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证 profile 驱动 backend 切换 |
-| `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 的 iox2 分进程 contract |
-| `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的 language-separated iox2 变体 |
-| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
-| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
+| `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | RSDL imports、Rust codegen、inproc run 和 launch。 |
+| `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | C++ only CMake app 路径。 |
+| `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | mixed contract 的接口和生成物边界。 |
+| `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | profile 驱动 backend 切换。 |
+| `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | Rust source 与 C++ sink 的 iox2 分进程 contract。 |
+| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl` | bounded variable frame 经 iox2 fixed slot 跨语言传递。 |
+| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | bounded variable frame、zenoh 跨主机 transport 和 mixed launch。 |
 
-完整示例说明见 [示例矩阵](docs/examples.md)。
+完整说明见 [示例矩阵](docs/examples.md)。
 
-## 文档边界
+## 文档
 
-配套文档需要随代码入库；只有本地架构计划和语义规格草案不入库。
-
-已入库的配套文档：
-
-- [docs/README.md](docs/README.md)：文档索引和入库边界。
-- [docs/getting-started.md](docs/getting-started.md)：从安装到跑通示例的最短路径。
-- [docs/cli.md](docs/cli.md)：`flowrt` 命令、参数和生成物说明。
-- [docs/examples.md](docs/examples.md)：示例目录、backend、runtime 和运行要求矩阵。
-- [docs/development.md](docs/development.md)：开发验证、文档维护和提交规则。
-
-默认不入库的本地设计和规格草案：
-
-- `docs/architecture-plan.md`
-- `docs/rsdl-v0.1.md`
-- `docs/contract-ir-v0.1.md`
-- `docs/message-abi-v0.1.md`
-- `docs/backend-contract.md`
-- `docs/project-layout.md`
-
-## 仓库结构
-
-```text
-crates/
-  flowrt-cli/          # flowrt 命令入口
-  flowrt-rsdl/         # RSDL parser 和源 AST
-  flowrt-ir/           # Contract IR 模型、归一化和 profile 投影
-  flowrt-validate/     # Contract IR validation passes
-  flowrt-codegen/      # Rust/C++ runtime shell、接口、构建和 launch manifest 生成
-  flowrt-conformance/  # message ABI conformance 期望生成
-runtime/
-  rust/                # Rust runtime core 和可选 iox2 backend
-  cpp/                 # C++20 runtime core 和可选 iox2 binding
-examples/              # RSDL 和用户组件示例
-docs/                  # 入库配套文档；本地设计/规格草案按 .gitignore 排除
-```
-
-## 开发验证
-
-Rust workspace：
-
-```bash
-cargo fmt --check
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-C++ runtime：
-
-```bash
-cmake -S runtime/cpp -B build/cpp
-cmake --build build/cpp
-ctest --test-dir build/cpp --output-on-failure
-```
-
-FlowRT demo smoke：
-
-```bash
-flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-flowrt run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-flowrt launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
-flowrt build examples/imu_demo/rsdl/robot.rsdl
-flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
-flowrt run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
-flowrt launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
-flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
-flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
-flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
-flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
-rm -f /tmp/flowrt-variable-iox2-saw-packet
-FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-  flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
-test -s /tmp/flowrt-variable-iox2-saw-packet
-flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
-FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
-```
-
-面向用户的文档和示例默认使用系统安装后的 `flowrt ...` 命令；`cargo run -p flowrt-cli -- ...` 只作为本仓库开发调试方式。
+- [文档索引](docs/README.md)
+- [快速开始](docs/getting-started.md)
+- [CLI 参考](docs/cli.md)
+- [示例矩阵](docs/examples.md)
+- [开发维护](docs/development.md)
 
 ## 许可证
 
