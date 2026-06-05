@@ -1,0 +1,574 @@
+use super::*;
+
+#[test]
+fn build_plan_selects_cargo_for_rust_contract() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "rust_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+"#,
+    );
+
+    assert_eq!(build_steps(&contract, false), vec![BuildStep::CargoApp]);
+    assert_eq!(
+        build_steps(&contract, true),
+        vec![BuildStep::CargoApp, BuildStep::CargoSupervisor]
+    );
+}
+
+#[test]
+fn build_plan_selects_cmake_for_cpp_contract() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "cpp_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+"#,
+    );
+
+    assert_eq!(build_steps(&contract, false), vec![BuildStep::CmakeApp]);
+    assert_eq!(
+        build_steps(&contract, true),
+        vec![BuildStep::CmakeApp, BuildStep::CargoSupervisor]
+    );
+}
+
+#[test]
+fn default_build_plan_does_not_build_launcher() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "cpp_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+"#,
+    );
+
+    assert!(!build_steps(&contract, false).contains(&BuildStep::CargoSupervisor));
+    assert!(build_steps(&contract, true).contains(&BuildStep::CargoSupervisor));
+}
+
+#[test]
+fn build_plan_selects_cargo_and_cmake_for_mixed_contract() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[component.cpp_worker]
+language = "cpp"
+
+[component.rust_worker]
+language = "rust"
+"#,
+    );
+
+    assert_eq!(
+        build_steps(&contract, false),
+        vec![BuildStep::CargoApp, BuildStep::CmakeApp]
+    );
+    assert_eq!(
+        build_steps(&contract, true),
+        vec![
+            BuildStep::CargoApp,
+            BuildStep::CmakeApp,
+            BuildStep::CargoSupervisor
+        ]
+    );
+}
+
+#[test]
+fn run_mode_selects_cmake_app_only_for_cpp_only_contracts() {
+    let cpp_contract = contract_from_source(
+        r#"
+[package]
+name = "cpp_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+"#,
+    );
+    assert_eq!(run_mode(&cpp_contract), Some(RunMode::CmakeApp));
+
+    let rust_contract = contract_from_source(
+        r#"
+[package]
+name = "rust_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+"#,
+    );
+    assert_eq!(run_mode(&rust_contract), Some(RunMode::CargoApp));
+
+    let mixed_contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[component.cpp_worker]
+language = "cpp"
+
+[component.rust_worker]
+language = "rust"
+"#,
+    );
+    assert_eq!(run_mode(&mixed_contract), None);
+    assert!(is_mixed_language_contract(&mixed_contract));
+    let error = ensure_direct_runtime_supported(&mixed_contract, "run").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("mixed-language `run` requires backend `iox2` or `zenoh`")
+    );
+}
+
+#[test]
+fn run_mode_selects_app_by_process_for_mixed_iox2_contracts() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    assert_eq!(
+        run_mode_for_process(&contract, Some("rust_main")).unwrap(),
+        RunMode::CargoApp
+    );
+    assert_eq!(
+        run_mode_for_process(&contract, Some("cpp_main")).unwrap(),
+        RunMode::CmakeApp
+    );
+    assert!(run_mode_for_process(&contract, None).is_err());
+}
+
+#[test]
+fn mixed_runtime_readiness_rejects_same_process_mixed_components() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("process `main`"));
+    assert!(message.contains("contains both C++ and Rust components"));
+    assert!(message.contains("split them into language-specific RSDL process groups"));
+}
+
+#[test]
+fn mixed_runtime_readiness_rejects_inproc_cross_process_components() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("mixed-language `launch` requires backend `iox2` or `zenoh`"));
+    assert!(message.contains("selected backend `inproc`"));
+}
+
+#[test]
+fn mixed_runtime_readiness_allows_iox2_cross_process_components() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    ensure_direct_runtime_supported(&contract, "launch").unwrap();
+}
+
+#[test]
+fn mixed_runtime_readiness_allows_zenoh_cross_process_components() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+
+[target.pi_host]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+    );
+
+    ensure_direct_runtime_supported(&contract, "launch").unwrap();
+    ensure_launch_process_boundaries_supported(&contract).unwrap();
+}
+
+#[test]
+fn launch_readiness_rejects_inproc_dataflow_across_process_groups() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "split_rust_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_process"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "sink_process"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    let error = ensure_launch_process_boundaries_supported(&contract).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("backend `inproc`"));
+    assert!(message.contains("source_process"));
+    assert!(message.contains("sink_process"));
+}
+
+#[test]
+fn run_process_readiness_rejects_inproc_dataflow_across_process_groups() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "split_rust_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_process"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "sink_process"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    let error =
+        ensure_run_process_boundaries_supported(&contract, Some("sink_process")).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("backend `inproc`"));
+    assert!(message.contains("source_process"));
+    assert!(message.contains("sink_process"));
+    assert!(message.contains("run --process"));
+    ensure_run_process_boundaries_supported(&contract, None).unwrap();
+}
+
+#[test]
+fn backend_runtime_readiness_allows_cpp_iox2_contracts() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "cpp_iox2_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    ensure_backend_runtime_supported(&contract, "build").unwrap();
+    ensure_backend_runtime_supported(&contract, "run").unwrap();
+}
+
+#[test]
+fn backend_runtime_readiness_allows_rust_iox2_contracts() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "rust_iox2_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    ensure_backend_runtime_supported(&contract, "build").unwrap();
+}
