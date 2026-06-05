@@ -9,9 +9,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  FLOWRT_DEPS_PREFIX: ${{ github.workspace }}/.flowrt-deps/prefix
-  CMAKE_PREFIX_PATH: ${{ github.workspace }}/.flowrt-deps/prefix
-  LD_LIBRARY_PATH: ${{ github.workspace }}/.flowrt-deps/prefix/lib
 
 jobs:
   ci:
@@ -70,18 +67,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          cargo install cbindgen --locked
-          mkdir -p .flowrt-deps/src "$FLOWRT_DEPS_PREFIX"
+          FLOWRT_DEPS_ROOT="${RUNNER_TEMP}/flowrt-deps"
+          FLOWRT_DEPS_PREFIX="${FLOWRT_DEPS_ROOT}/prefix"
+          {
+            echo "FLOWRT_DEPS_ROOT=${FLOWRT_DEPS_ROOT}"
+            echo "FLOWRT_DEPS_PREFIX=${FLOWRT_DEPS_PREFIX}"
+            echo "CMAKE_PREFIX_PATH=${FLOWRT_DEPS_PREFIX}"
+            echo "LD_LIBRARY_PATH=${FLOWRT_DEPS_PREFIX}/lib"
+          } >> "$GITHUB_ENV"
 
-          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-c.git .flowrt-deps/src/zenoh-c
-          cmake -S .flowrt-deps/src/zenoh-c -B .flowrt-deps/build/zenoh-c -G Ninja \
+          cargo install cbindgen --locked
+          mkdir -p "$FLOWRT_DEPS_ROOT/src" "$FLOWRT_DEPS_PREFIX"
+
+          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-c.git "$FLOWRT_DEPS_ROOT/src/zenoh-c"
+          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-c" -B "$FLOWRT_DEPS_ROOT/build/zenoh-c" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
             -DBUILD_SHARED_LIBS=ON
-          cmake --build .flowrt-deps/build/zenoh-c --target install
+          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-c" --target install
 
-          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-cpp.git .flowrt-deps/src/zenoh-cpp
-          cmake -S .flowrt-deps/src/zenoh-cpp -B .flowrt-deps/build/zenoh-cpp -G Ninja \
+          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-cpp.git "$FLOWRT_DEPS_ROOT/src/zenoh-cpp"
+          cmake -S "$FLOWRT_DEPS_ROOT/src/zenoh-cpp" -B "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
             -DCMAKE_PREFIX_PATH="$FLOWRT_DEPS_PREFIX" \
@@ -89,7 +95,7 @@ jobs:
             -DZENOHCXX_ZENOHPICO=OFF \
             -DZENOHCXX_ENABLE_TESTS=OFF \
             -DZENOHCXX_ENABLE_EXAMPLES=OFF
-          cmake --build .flowrt-deps/build/zenoh-cpp --target install
+          cmake --build "$FLOWRT_DEPS_ROOT/build/zenoh-cpp" --target install
 
       - name: Rust 格式检查
         run: cargo fmt --check
