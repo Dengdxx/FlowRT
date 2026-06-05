@@ -1,8 +1,8 @@
 [package]
 name = "flowrt"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
 
 [features]
 default = []
@@ -11,6 +11,6 @@ zenoh = ["dep:zenoh"]
 
 [dependencies]
 iceoryx2 = { version = "0.9", optional = true }
-serde.workspace = true
-serde_json.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 zenoh = { version = "1.9", default-features = false, features = ["transport_tcp"], optional = true }

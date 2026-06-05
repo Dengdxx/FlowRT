@@ -106,6 +106,19 @@ imu_sim -> estimator -> controller -> monitor
 flowrt build examples/imu_demo/rsdl/robot.rsdl
 ```
 
+需要实际观察参数热更新控制面时，使用语言分离的 `examples/imu_demo_iox2`：
+
+```bash
+flowrt build --launcher examples/imu_demo_iox2/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-ticks 500 examples/imu_demo_iox2/rsdl/robot.rsdl
+```
+
+另开一个终端查看 live 参数：
+
+```bash
+flowrt params list examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json
+```
+
 ## `profile_switch_demo`
 
 入口文件：

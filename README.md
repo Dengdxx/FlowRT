@@ -46,10 +46,14 @@ Rust/C++ 生成的 runtime shell 会启动与 Rust wire JSON 兼容的 introspec
 - C++20 编译器、CMake 和 CTest，用于 C++ runtime 与 C++ 示例。
 - 可选：`iceoryx2-cxx 0.9.1`、基于 `zenoh-c` backend 的 `zenohcxx 1.9.0`。含 C++ `iox2` 组件的构建会先查找本机安装；`zenoh` 组件要求本机提供 `zenohcxx::zenohc` 目标，找不到时 configure 直接失败。
 
-从源码安装本机 `flowrt` 命令：
+从源码构建并安装系统级 `flowrt` 命令：
 
 ```bash
-cargo install --path crates/flowrt-cli --locked
+/usr/bin/env cargo build --release -p flowrt-cli
+sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
+sudo rm -rf /usr/local/share/flowrt/runtime/rust
+sudo install -d /usr/local/share/flowrt/runtime/rust
+sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
 flowrt --version
 ```
 
@@ -230,23 +234,25 @@ ctest --test-dir build/cpp --output-on-failure
 FlowRT demo smoke：
 
 ```bash
-cargo run -p flowrt-cli -- build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build --launcher examples/import_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
-cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+flowrt launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build examples/imu_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
+flowrt run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
+flowrt launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
+flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
+flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
+flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
 rm -f /tmp/flowrt-variable-iox2-saw-packet
 FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-  cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
+  flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
 test -s /tmp/flowrt-variable-iox2-saw-packet
+flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
-面向用户的文档和示例默认使用安装后的 `flowrt ...` 命令；`cargo run -p flowrt-cli -- ...` 只作为本仓库开发调试方式。
+面向用户的文档和示例默认使用系统安装后的 `flowrt ...` 命令；`cargo run -p flowrt-cli -- ...` 只作为本仓库开发调试方式。

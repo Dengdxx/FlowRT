@@ -5,13 +5,46 @@ project(flowrt_runtime_cpp LANGUAGES CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 
 find_package(Threads REQUIRED)
 
 add_library(flowrt_runtime INTERFACE)
-target_include_directories(flowrt_runtime INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(flowrt::runtime ALIAS flowrt_runtime)
+set_target_properties(flowrt_runtime PROPERTIES EXPORT_NAME runtime)
+target_include_directories(
+    flowrt_runtime
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 target_compile_features(flowrt_runtime INTERFACE cxx_std_20)
 target_link_libraries(flowrt_runtime INTERFACE Threads::Threads)
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(TARGETS flowrt_runtime EXPORT flowrt_runtimeTargets)
+install(
+    EXPORT flowrt_runtimeTargets
+    NAMESPACE flowrt::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/flowrt_runtime
+)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/flowrt_runtimeConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/flowrt_runtimeConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/flowrt_runtime
+)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/flowrt_runtimeConfigVersion.cmake
+    VERSION 0.1.0
+    COMPATIBILITY SameMajorVersion
+)
+install(
+    FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/flowrt_runtimeConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/flowrt_runtimeConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/flowrt_runtime
+)
 
 enable_testing()
 

@@ -35,31 +35,38 @@ cargo run -p flowrt-cli -- prepare examples/variable_iox2_demo/rsdl/robot.rsdl
 FlowRT demo smoke：
 
 ```bash
-cargo run -p flowrt-cli -- build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build --launcher examples/import_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
-cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
+cargo build --release -p flowrt-cli
+sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
+sudo rm -rf /usr/local/share/flowrt/runtime/rust
+sudo install -d /usr/local/share/flowrt/runtime/rust
+sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
+flowrt --version
+
+flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+flowrt launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build examples/imu_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
+flowrt run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
+flowrt launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
+flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
+flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
+flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
 rm -f /tmp/flowrt-variable-iox2-saw-packet
 FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-  cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
+  flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
 test -s /tmp/flowrt-variable-iox2-saw-packet
-cargo run -p flowrt-cli -- build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
-FLOWRT_TICK_SLEEP_MS=5 cargo run -p flowrt-cli -- launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：
 
 ```bash
-cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
+flowrt build examples/imu_demo/rsdl/robot.rsdl
 cargo test --manifest-path examples/imu_demo/flowrt/build/Cargo.toml --test message_abi
 ```
 
@@ -85,7 +92,7 @@ fi
 printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 ```
 
-仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但面向用户的 README、文档、示例和最终说明应使用安装后的 `flowrt ...`。
+仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但完整 smoke、面向用户的 README、文档、示例和最终说明应使用系统安装后的 `flowrt ...`。
 
 ## 代码与生成物边界
 

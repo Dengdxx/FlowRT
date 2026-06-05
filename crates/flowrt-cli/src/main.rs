@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
@@ -1518,14 +1519,17 @@ fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> R
 
 fn build_workspace(contract: &ContractIr, out_dir: &Path, include_launcher: bool) -> Result<()> {
     ensure_backend_runtime_supported(contract, "build")?;
+    let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
     for step in build_steps(contract, include_launcher) {
         match step {
             BuildStep::CargoApp => {
-                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+                let manifest =
+                    cargo_manifest_with_runtime_patch(out_dir, rust_runtime_dir.as_deref())?;
                 run_cargo_build_bin(&manifest, &app_bin_name(contract))?;
             }
             BuildStep::CargoSupervisor => {
-                let manifest = cargo_manifest_with_local_runtime_patch(out_dir)?;
+                let manifest =
+                    cargo_manifest_with_runtime_patch(out_dir, rust_runtime_dir.as_deref())?;
                 run_cargo_build_bin(&manifest, &supervisor_bin_name(contract))?;
             }
             BuildStep::CmakeApp => {
@@ -1683,17 +1687,22 @@ fn first_cross_process_bind_matching(
     None
 }
 
-fn cargo_manifest_with_local_runtime_patch(out_dir: &Path) -> Result<PathBuf> {
+fn cargo_manifest_with_runtime_patch(
+    out_dir: &Path,
+    runtime_dir: Option<&Path>,
+) -> Result<PathBuf> {
     let generated_manifest = out_dir.join("build").join("Cargo.toml");
     let generated = fs::read_to_string(&generated_manifest)
         .with_context(|| format!("failed to read `{}`", generated_manifest.display()))?;
     if generated.contains("[patch.crates-io]") || !manifest_declares_flowrt_dependency(&generated) {
         return Ok(generated_manifest);
     }
-    let repo_runtime = repo_root_dir()?.join("runtime/rust");
+    let Some(runtime_dir) = runtime_dir else {
+        return Ok(generated_manifest);
+    };
     let patched = format!(
         "{generated}\n[patch.crates-io]\nflowrt = {{ path = {} }}\n",
-        toml_basic_string(&repo_runtime)
+        toml_basic_string(runtime_dir)
     );
     fs::write(&generated_manifest, patched)
         .with_context(|| format!("failed to write `{}`", generated_manifest.display()))?;
@@ -1709,27 +1718,45 @@ fn manifest_declares_flowrt_dependency(manifest: &str) -> bool {
 fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
     let source_dir = out_dir.join("build");
     let build_dir = source_dir.join("cmake");
-    let runtime_dir = repo_root_dir()?.join("runtime/cpp");
-    run_cmake_configure(&source_dir, &build_dir, &runtime_dir)?;
+    let runtime_dir = cpp_runtime_dir_for_generated_build()?;
+    run_cmake_configure(&source_dir, &build_dir, runtime_dir.as_deref())?;
     run_cmake_build(&build_dir)
 }
 
-fn run_cmake_configure(source_dir: &Path, build_dir: &Path, runtime_dir: &Path) -> Result<()> {
+fn run_cmake_configure(
+    source_dir: &Path,
+    build_dir: &Path,
+    runtime_dir: Option<&Path>,
+) -> Result<()> {
+    let args = cmake_configure_args(source_dir, build_dir, runtime_dir);
     let status = ProcessCommand::new("cmake")
-        .arg("-S")
-        .arg(source_dir)
-        .arg("-B")
-        .arg(build_dir)
-        .arg(format!(
-            "-DFLOWRT_CPP_RUNTIME_DIR={}",
-            runtime_dir.to_string_lossy()
-        ))
+        .args(args)
         .status()
         .context("failed to spawn cmake configure")?;
     if !status.success() {
         anyhow::bail!("cmake configure failed with status {status}");
     }
     Ok(())
+}
+
+fn cmake_configure_args(
+    source_dir: &Path,
+    build_dir: &Path,
+    runtime_dir: Option<&Path>,
+) -> Vec<String> {
+    let mut args = vec![
+        "-S".to_string(),
+        source_dir.to_string_lossy().into_owned(),
+        "-B".to_string(),
+        build_dir.to_string_lossy().into_owned(),
+    ];
+    if let Some(runtime_dir) = runtime_dir {
+        args.push(format!(
+            "-DFLOWRT_CPP_RUNTIME_DIR={}",
+            runtime_dir.to_string_lossy()
+        ));
+    }
+    args
 }
 
 fn run_cmake_build(build_dir: &Path) -> Result<()> {
@@ -1869,6 +1896,67 @@ fn application_root_from_rsdl(rsdl: &Path) -> Result<PathBuf> {
     rsdl.parent()
         .map(Path::to_path_buf)
         .context("failed to resolve application root from RSDL path")
+}
+
+fn rust_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
+    if let Some(runtime_dir) =
+        runtime_dir_from_env("FLOWRT_RUST_RUNTIME_DIR", "Cargo.toml", "Rust")?
+    {
+        return Ok(Some(runtime_dir));
+    }
+    if let Some(runtime_dir) = installed_runtime_dir("runtime/rust", "Cargo.toml")? {
+        return Ok(Some(runtime_dir));
+    }
+    Ok(repo_runtime_dir("runtime/rust", "Cargo.toml"))
+}
+
+fn cpp_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
+    runtime_dir_from_env(
+        "FLOWRT_CPP_RUNTIME_DIR",
+        "include/flowrt/runtime.hpp",
+        "C++",
+    )
+}
+
+fn runtime_dir_from_env(
+    var_name: &str,
+    marker: &str,
+    runtime_name: &str,
+) -> Result<Option<PathBuf>> {
+    let Some(raw) = env::var_os(var_name) else {
+        return Ok(None);
+    };
+    let runtime_dir = PathBuf::from(raw);
+    if runtime_dir.join(marker).exists() {
+        return Ok(Some(runtime_dir));
+    }
+    anyhow::bail!(
+        "{var_name} points to `{}`, but `{}` is missing; set it to a valid FlowRT {runtime_name} runtime directory",
+        runtime_dir.display(),
+        runtime_dir.join(marker).display()
+    );
+}
+
+fn installed_runtime_dir(relative: &str, marker: &str) -> Result<Option<PathBuf>> {
+    let current_exe = env::current_exe().context("failed to resolve current flowrt executable")?;
+    let Some(bin_dir) = current_exe.parent() else {
+        return Ok(None);
+    };
+    let Some(prefix) = bin_dir.parent() else {
+        return Ok(None);
+    };
+    let runtime_dir = prefix.join("share").join("flowrt").join(relative);
+    if runtime_dir.join(marker).exists() {
+        Ok(Some(runtime_dir))
+    } else {
+        Ok(None)
+    }
+}
+
+fn repo_runtime_dir(relative: &str, marker: &str) -> Option<PathBuf> {
+    let repo_root = repo_root_dir().ok()?;
+    let runtime_dir = repo_root.join(relative);
+    runtime_dir.join(marker).exists().then_some(runtime_dir)
 }
 
 fn repo_root_dir() -> Result<PathBuf> {
@@ -3522,13 +3610,106 @@ serde_json = "1"
         )
         .unwrap();
 
-        let patched_manifest = cargo_manifest_with_local_runtime_patch(&root.join("flowrt"))
-            .expect("manifest without flowrt dependency should still be accepted");
+        let patched_manifest =
+            cargo_manifest_with_runtime_patch(&root.join("flowrt"), Some(Path::new("/tmp/unused")))
+                .expect("manifest without flowrt dependency should still be accepted");
         let content = std::fs::read_to_string(&patched_manifest).unwrap();
 
         assert!(!content.contains("[patch.crates-io]"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cargo_manifest_patch_uses_available_rust_runtime_dir() {
+        let root = temp_test_dir("cargo-patch-runtime");
+        let build_dir = root.join("flowrt").join("build");
+        let runtime_dir = root.join("installed").join("runtime").join("rust");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        let manifest = build_dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            r#"[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flowrt = { version = "0.1" }
+"#,
+        )
+        .unwrap();
+
+        let patched_manifest =
+            cargo_manifest_with_runtime_patch(&root.join("flowrt"), Some(&runtime_dir))
+                .expect("manifest with flowrt dependency should be patched to available runtime");
+        let content = std::fs::read_to_string(&patched_manifest).unwrap();
+
+        assert!(content.contains("[patch.crates-io]"));
+        assert!(content.contains(&format!(
+            "flowrt = {{ path = {} }}",
+            toml_basic_string(&runtime_dir)
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cargo_manifest_patch_is_skipped_when_no_runtime_dir_is_available() {
+        let root = temp_test_dir("cargo-patch-no-runtime");
+        let build_dir = root.join("flowrt").join("build");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        let manifest = build_dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            r#"[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flowrt = { version = "0.1" }
+"#,
+        )
+        .unwrap();
+
+        let patched_manifest = cargo_manifest_with_runtime_patch(&root.join("flowrt"), None)
+            .expect("manifest should remain usable for registry-resolved flowrt");
+        let content = std::fs::read_to_string(&patched_manifest).unwrap();
+
+        assert!(!content.contains("[patch.crates-io]"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
+        let source_dir = Path::new("/tmp/flowrt/build");
+        let build_dir = Path::new("/tmp/flowrt/build/cmake");
+
+        let args = cmake_configure_args(source_dir, build_dir, None);
+
+        assert_eq!(
+            args,
+            vec![
+                "-S".to_string(),
+                "/tmp/flowrt/build".to_string(),
+                "-B".to_string(),
+                "/tmp/flowrt/build/cmake".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn cmake_configure_args_can_pass_explicit_runtime_dir() {
+        let source_dir = Path::new("/tmp/flowrt/build");
+        let build_dir = Path::new("/tmp/flowrt/build/cmake");
+        let runtime_dir = Path::new("/opt/flowrt/runtime/cpp");
+
+        let args = cmake_configure_args(source_dir, build_dir, Some(runtime_dir));
+
+        assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/opt/flowrt/runtime/cpp".to_string()));
     }
 
     #[test]

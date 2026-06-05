@@ -156,6 +156,7 @@ struct SelfDescriptionInstance<'a> {
 #[derive(Debug, Serialize)]
 struct SelfDescriptionParam {
     name: String,
+    #[serde(rename = "type")]
     ty: &'static str,
     update: &'static str,
     current: serde_json::Value,
@@ -4238,17 +4239,15 @@ fn emit_cmake(contract: &ContractIr) -> String {
             ));
         }
         output.push_str(
-            "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
+            "\nfind_package(flowrt_runtime 0.1 QUIET)\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
         );
         output.push_str(
-            "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
+            "if(NOT TARGET flowrt::runtime)\n    if(NOT FLOWRT_CPP_RUNTIME_DIR)\n        get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n        if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n            set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n        endif()\n    endif()\nendif()\n",
         );
         output.push_str(
-            "if(NOT FLOWRT_CPP_RUNTIME_DIR OR NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n    message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR must point to FlowRT runtime/cpp\")\nendif()\n",
+            "if(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    if(NOT FLOWRT_CPP_RUNTIME_DIR OR NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install flowrt_runtime, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree.\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nendif()\n",
         );
-        output.push_str(&format!(
-            "target_include_directories({package_name}_flowrt_app INTERFACE ${{FLOWRT_CPP_RUNTIME_DIR}}/include)\n"
-        ));
+        output = output.replace("{package_name}", &package_name);
         output.push_str(&format!(
             "\nadd_library({shell_target} STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)\n"
         ));
@@ -6425,7 +6424,13 @@ channel = "latest"
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
         assert!(cmake.contains("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)"));
+        assert!(cmake.contains("find_package(flowrt_runtime 0.1 QUIET)"));
+        assert!(
+            cmake
+                .contains("target_link_libraries(robot_demo_flowrt_app INTERFACE flowrt::runtime)")
+        );
         assert!(cmake.contains("FLOWRT_CPP_RUNTIME_DIR"));
+        assert!(cmake.contains("FlowRT C++ runtime was not found"));
         assert!(cmake.contains(
             "add_library(robot_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)"
         ));
@@ -6490,6 +6495,15 @@ output = ["cmd"]
         assert_eq!(
             selfdesc["graphs"][0]["instances"][0]["params"][0]["name"],
             "kp"
+        );
+        assert_eq!(
+            selfdesc["graphs"][0]["instances"][0]["params"][0]["type"],
+            "f32"
+        );
+        assert!(
+            selfdesc["graphs"][0]["instances"][0]["params"][0]
+                .get("ty")
+                .is_none()
         );
         assert_eq!(
             selfdesc["graphs"][0]["instances"][0]["params"][0]["update"],

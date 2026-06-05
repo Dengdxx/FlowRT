@@ -1,6 +1,6 @@
 # 快速开始
 
-本文从源码安装 `flowrt`，并跑通当前仓库中最小的 Rust-only 和 C++ only 示例。
+本文从源码构建 `flowrt`，安装为系统命令，并跑通当前仓库中最小的 Rust-only 和 C++ only 示例。
 
 ## 前置条件
 
@@ -13,11 +13,15 @@
 在仓库根目录执行：
 
 ```bash
-cargo install --path crates/flowrt-cli --locked
+cargo build --release -p flowrt-cli
+sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
+sudo rm -rf /usr/local/share/flowrt/runtime/rust
+sudo install -d /usr/local/share/flowrt/runtime/rust
+sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
 flowrt --version
 ```
 
-面向用户的入口是安装后的 `flowrt ...`。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用 `flowrt ...`。
+面向用户的入口是系统安装后的 `flowrt ...`。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此安装时还需要把 FlowRT Rust runtime crate 放到 `/usr/local/share/flowrt/runtime/rust`；后续发布包会把这一步收进安装脚本。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
 
 ## 检查 RSDL
 
@@ -99,9 +103,16 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 含参数的应用运行时会启动 introspection socket。可以在另一个终端用静态 self-description 匹配 live process，并查看或提交参数 pending 更新：
 
 ```bash
-flowrt params list examples/imu_demo/flowrt/selfdesc/selfdesc.json
-flowrt params get examples/imu_demo/flowrt/selfdesc/selfdesc.json estimator.gravity
-flowrt params set examples/imu_demo/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7
+flowrt build --launcher examples/imu_demo_iox2/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-ticks 500 examples/imu_demo_iox2/rsdl/robot.rsdl
+```
+
+另开一个终端查询或提交参数：
+
+```bash
+flowrt params list examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json
+flowrt params get examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity
+flowrt params set examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7
 ```
 
 `params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。

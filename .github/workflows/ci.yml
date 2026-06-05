@@ -115,36 +115,51 @@ jobs:
       - name: C++ runtime 测试
         run: ctest --test-dir build/cpp --output-on-failure
 
+      - name: 系统安装 C++ runtime
+        run: |
+          sudo cmake --install build/cpp --prefix /usr/local
+          test -f /usr/local/include/flowrt/runtime.hpp
+          test -f /usr/local/lib/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake
+
       - name: C++ runtime zenoh 测试
         run: |
           cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
           cmake --build build/cpp-zenoh
           ctest --test-dir build/cpp-zenoh --output-on-failure
 
+      - name: 构建并系统安装 flowrt
+        run: |
+          cargo build --release -p flowrt-cli
+          sudo install -D -m 0755 target/release/flowrt /usr/local/bin/flowrt
+          sudo rm -rf /usr/local/share/flowrt/runtime/rust
+          sudo install -d /usr/local/share/flowrt/runtime/rust
+          sudo cp -a runtime/rust/Cargo.toml runtime/rust/src /usr/local/share/flowrt/runtime/rust/
+          test -f /usr/local/share/flowrt/runtime/rust/Cargo.toml
+          test -f /usr/local/share/flowrt/runtime/rust/src/lib.rs
+          command -v flowrt
+          flowrt --version
+
       - name: FlowRT demo smoke
         run: |
-          cargo run -p flowrt-cli -- build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-          cargo run -p flowrt-cli -- launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- build --launcher examples/import_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
-          cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-          cargo run -p flowrt-cli -- build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
+          flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
+          flowrt run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+          flowrt launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
+          flowrt build examples/imu_demo/rsdl/robot.rsdl
+          flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
+          flowrt run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
+          flowrt launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
+          flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
+          flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
+          flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
           rm -f /tmp/flowrt-variable-iox2-saw-packet
           FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-            cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
+            flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
           test -s /tmp/flowrt-variable-iox2-saw-packet
-          cargo run -p flowrt-cli -- build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
-          FLOWRT_TICK_SLEEP_MS=5 cargo run -p flowrt-cli -- launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
-
-      - name: 构建 release 版 flowrt
-        run: cargo build --release -p flowrt-cli
+          flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+          FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
       - name: 上传 flowrt Linux artifact
         uses: actions/upload-artifact@v7
