@@ -7,21 +7,39 @@ pub struct WireCodecError {
     pub expected: usize,
     /// 调用方提供的字节数。
     pub actual: usize,
+    /// 稳定错误说明。
+    message: &'static str,
 }
 
 impl WireCodecError {
     /// 构造 payload size mismatch 错误。
     pub const fn wrong_size(expected: usize, actual: usize) -> Self {
-        Self { expected, actual }
+        Self {
+            expected,
+            actual,
+            message: "wire payload size mismatch",
+        }
+    }
+
+    /// 构造 canonical frame 内容错误。
+    pub const fn invalid_frame(message: &'static str) -> Self {
+        Self {
+            expected: 0,
+            actual: 0,
+            message,
+        }
     }
 }
 
 impl std::fmt::Display for WireCodecError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.expected == 0 && self.actual == 0 {
+            return formatter.write_str(self.message);
+        }
         write!(
             formatter,
-            "wire payload size mismatch: expected {} bytes, got {} bytes",
-            self.expected, self.actual
+            "{}: expected {} bytes, got {} bytes",
+            self.message, self.expected, self.actual
         )
     }
 }

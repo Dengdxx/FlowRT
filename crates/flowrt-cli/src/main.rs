@@ -314,6 +314,8 @@ struct SelfDescription {
     package: SelfDescriptionPackage,
     graphs: Vec<SelfDescriptionGraph>,
     message_abi: Vec<SelfDescriptionMessageAbi>,
+    #[serde(default)]
+    message_frames: Vec<SelfDescriptionMessageFrame>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,6 +356,13 @@ struct SelfDescriptionChannel {
 struct SelfDescriptionMessageAbi {
     type_name: String,
     size_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionMessageFrame {
+    type_name: String,
+    max_size_bytes: usize,
+    variable: bool,
 }
 
 fn load_self_description(path: &Path) -> Result<SelfDescription> {
@@ -494,7 +503,18 @@ fn self_description_nodes(self_description: &SelfDescription) -> String {
 struct EchoChannelSpec {
     name: String,
     message_type: String,
-    message_size_bytes: usize,
+    payload_shape: EchoPayloadShape,
+}
+
+#[derive(Debug, Clone)]
+enum EchoPayloadShape {
+    FixedAbi {
+        size_bytes: usize,
+    },
+    CanonicalFrame {
+        max_size_bytes: usize,
+        variable: bool,
+    },
 }
 
 fn echo_channel(image: &Path, channel: &str, socket: Option<&Path>) -> Result<String> {
@@ -661,8 +681,9 @@ fn find_echo_channel(
                 matches.push(EchoChannelSpec {
                     name,
                     message_type: channel.message_type.clone(),
-                    message_size_bytes: message_abi_size(
+                    payload_shape: echo_payload_shape(
                         &self_description.message_abi,
+                        &self_description.message_frames,
                         &channel.message_type,
                     )?,
                 });
@@ -683,17 +704,47 @@ fn echo_channel_name(channel: &SelfDescriptionChannel) -> String {
     format!("{}_to_{}", channel.from, channel.to)
 }
 
-fn message_abi_size(messages: &[SelfDescriptionMessageAbi], message_type: &str) -> Result<usize> {
+fn echo_payload_shape(
+    messages: &[SelfDescriptionMessageAbi],
+    frames: &[SelfDescriptionMessageFrame],
+    message_type: &str,
+) -> Result<EchoPayloadShape> {
+    if let Some(size_bytes) = message_abi_size(messages, message_type)? {
+        return Ok(EchoPayloadShape::FixedAbi { size_bytes });
+    }
+    let mut frame_matches = frames
+        .iter()
+        .filter(|message| message.type_name == message_type)
+        .collect::<Vec<_>>();
+    match frame_matches.len() {
+        0 => anyhow::bail!(
+            "FlowRT self-description does not contain Message ABI or frame layout for `{message_type}`"
+        ),
+        1 => {
+            let frame = frame_matches.remove(0);
+            Ok(EchoPayloadShape::CanonicalFrame {
+                max_size_bytes: frame.max_size_bytes,
+                variable: frame.variable,
+            })
+        }
+        _ => anyhow::bail!(
+            "FlowRT self-description contains multiple Message frame layouts for `{message_type}`"
+        ),
+    }
+}
+
+fn message_abi_size(
+    messages: &[SelfDescriptionMessageAbi],
+    message_type: &str,
+) -> Result<Option<usize>> {
     let mut sizes = messages
         .iter()
         .filter(|message| message.type_name == message_type)
         .map(|message| message.size_bytes)
         .collect::<Vec<_>>();
     match sizes.len() {
-        0 => anyhow::bail!(
-            "FlowRT self-description does not contain Message ABI layout for `{message_type}`"
-        ),
-        1 => Ok(sizes.remove(0)),
+        0 => Ok(None),
+        1 => Ok(Some(sizes.remove(0))),
         _ => anyhow::bail!(
             "FlowRT self-description contains multiple Message ABI layouts for `{message_type}`"
         ),
@@ -743,43 +794,70 @@ fn format_echo_snapshot(
         .map_or_else(|| "none".to_string(), |value| value.to_string());
     let Some(payload) = &snapshot.payload else {
         return Ok(format!(
-            "channel={} type={} abi_size={} published_count={} published_at_ms={} payload_len=0 no payload",
+            "channel={} type={} {} published_count={} published_at_ms={} payload_len=0 no payload",
             channel.name,
             channel.message_type,
-            channel.message_size_bytes,
+            echo_payload_shape_label(&channel.payload_shape),
             snapshot.published_count,
             published_at_ms
         ));
     };
     if payload.is_empty() {
         return Ok(format!(
-            "channel={} type={} abi_size={} published_count={} published_at_ms={} payload_len=0 no payload",
+            "channel={} type={} {} published_count={} published_at_ms={} payload_len=0 no payload",
             channel.name,
             channel.message_type,
-            channel.message_size_bytes,
+            echo_payload_shape_label(&channel.payload_shape),
             snapshot.published_count,
             published_at_ms
         ));
     }
-    if payload.len() != channel.message_size_bytes {
-        anyhow::bail!(
-            "channel `{}` payload length {} does not match Message ABI size {} for `{}`",
-            channel.name,
-            payload.len(),
-            channel.message_size_bytes,
-            channel.message_type
-        );
+    match &channel.payload_shape {
+        EchoPayloadShape::FixedAbi { size_bytes } => {
+            if payload.len() != *size_bytes {
+                anyhow::bail!(
+                    "channel `{}` payload length {} does not match Message ABI size {} for `{}`",
+                    channel.name,
+                    payload.len(),
+                    size_bytes,
+                    channel.message_type
+                );
+            }
+        }
+        EchoPayloadShape::CanonicalFrame { max_size_bytes, .. } => {
+            if payload.len() > *max_size_bytes {
+                anyhow::bail!(
+                    "channel `{}` payload length {} exceeds canonical frame max size {} for `{}`",
+                    channel.name,
+                    payload.len(),
+                    max_size_bytes,
+                    channel.message_type
+                );
+            }
+        }
     }
     Ok(format!(
-        "channel={} type={} abi_size={} published_count={} published_at_ms={} payload_len={} raw={}",
+        "channel={} type={} {} published_count={} published_at_ms={} payload_len={} raw={}",
         channel.name,
         channel.message_type,
-        channel.message_size_bytes,
+        echo_payload_shape_label(&channel.payload_shape),
         snapshot.published_count,
         published_at_ms,
         payload.len(),
         hex_bytes(payload)
     ))
+}
+
+fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
+    match shape {
+        EchoPayloadShape::FixedAbi { size_bytes } => format!("abi_size={size_bytes}"),
+        EchoPayloadShape::CanonicalFrame {
+            max_size_bytes,
+            variable,
+        } => {
+            format!("frame_max_size={max_size_bytes} variable={variable}")
+        }
+    }
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -1015,9 +1093,9 @@ fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Resu
     }
 
     let backend = selected_runtime_backend_name(contract);
-    if backend != "iox2" {
+    if !matches!(backend, "iox2" | "zenoh") {
         anyhow::bail!(
-            "mixed-language `{command}` requires backend `iox2`; selected backend `{backend}` cannot carry cross-language process boundaries"
+            "mixed-language `{command}` requires backend `iox2` or `zenoh`; selected backend `{backend}` cannot carry cross-language process boundaries"
         );
     }
 
@@ -1169,7 +1247,7 @@ fn ensure_launch_process_boundaries_supported(contract: &ContractIr) -> Result<(
 
     if let Some(boundary) = first_cross_process_bind(contract) {
         anyhow::bail!(
-            "backend `inproc` cannot launch dataflow `{}` -> `{}` across process groups `{}` -> `{}`; use backend `iox2` or place both instances in the same RSDL process group",
+            "backend `inproc` cannot launch dataflow `{}` -> `{}` across process groups `{}` -> `{}`; use backend `iox2` or `zenoh`, or place both instances in the same RSDL process group",
             boundary.from,
             boundary.to,
             boundary.from_process,
@@ -1195,7 +1273,7 @@ fn ensure_run_process_boundaries_supported(
 
     if let Some(boundary) = first_cross_process_bind_for_process(contract, process) {
         anyhow::bail!(
-            "backend `inproc` cannot run --process `{}` because dataflow `{}` -> `{}` crosses process groups `{}` -> `{}`; use backend `iox2`, run the whole inproc app, or place both instances in the same RSDL process group",
+            "backend `inproc` cannot run --process `{}` because dataflow `{}` -> `{}` crosses process groups `{}` -> `{}`; use backend `iox2` or `zenoh`, run the whole inproc app, or place both instances in the same RSDL process group",
             process,
             boundary.from,
             boundary.to,
@@ -1646,7 +1724,7 @@ language = "rust"
         assert!(
             error
                 .to_string()
-                .contains("mixed-language `run` requires backend `iox2`")
+                .contains("mixed-language `run` requires backend `iox2` or `zenoh`")
         );
     }
 
@@ -1814,7 +1892,7 @@ default_stale_policy = "warn"
 
         let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("mixed-language `launch` requires backend `iox2`"));
+        assert!(message.contains("mixed-language `launch` requires backend `iox2` or `zenoh`"));
         assert!(message.contains("selected backend `inproc`"));
     }
 
@@ -1867,6 +1945,68 @@ default_stale_policy = "warn"
         );
 
         ensure_direct_runtime_supported(&contract, "launch").unwrap();
+    }
+
+    #[test]
+    fn mixed_runtime_readiness_allows_zenoh_cross_process_components() {
+        let contract = contract_from_source(
+            r#"
+[package]
+name = "mixed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "rust_main"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_main"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+
+[target.pi_host]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+        );
+
+        ensure_direct_runtime_supported(&contract, "launch").unwrap();
+        ensure_launch_process_boundaries_supported(&contract).unwrap();
     }
 
     #[test]
