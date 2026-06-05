@@ -66,6 +66,10 @@ std::filesystem::path temp_socket_path(std::string_view name) {
 }
 
 void assert_contains(const std::string &value, const std::string &expected) {
+    if (value.find(expected) == std::string::npos) {
+        std::fprintf(stderr, "expected substring: %s\nactual value: %s\n", expected.c_str(),
+                     value.c_str());
+    }
     assert(value.find(expected) != std::string::npos);
 }
 
@@ -105,6 +109,57 @@ int main() {
         .process = "main",
         .runtime = "cpp",
     };
+
+    flowrt::IntrospectionState probe_state;
+    probe_state.register_channel("source.imu_to_sink.imu", "Imu");
+    assert(!probe_state
+                .try_probe_channel_publish_bytes(
+                    "source.imu_to_sink.imu", "Imu",
+                    std::vector<std::uint8_t>{std::uint8_t{9}, std::uint8_t{9}},
+                    std::optional<std::uint64_t>{1U})
+                .recorded);
+    assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->published_count == 0U);
+    {
+        const auto guard = probe_state.observe_channel("source.imu_to_sink.imu");
+        assert(guard.has_value());
+        assert(probe_state.active_probe_count("source.imu_to_sink.imu") ==
+               std::optional<std::uint64_t>{1U});
+        assert(probe_state
+                   .try_probe_channel_publish_bytes(
+                       "source.imu_to_sink.imu", "Imu",
+                       std::vector<std::uint8_t>{std::uint8_t{8}, std::uint8_t{7}},
+                       std::optional<std::uint64_t>{2U})
+                   .recorded);
+        const auto expected_probe_payload = std::optional<std::vector<std::uint8_t>>{
+            std::vector<std::uint8_t>{std::uint8_t{8}, std::uint8_t{7}}};
+        assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->payload ==
+               expected_probe_payload);
+    }
+    assert(probe_state.active_probe_count("source.imu_to_sink.imu") ==
+           std::optional<std::uint64_t>{0U});
+
+    flowrt::IntrospectionState bounded_probe_state;
+    bounded_probe_state.register_channel_with_probe_capacity("source.packet_to_sink.packet",
+                                                             "Packet", std::size_t{4});
+    {
+        const auto guard = bounded_probe_state.observe_channel("source.packet_to_sink.packet");
+        assert(guard.has_value());
+        const auto record = bounded_probe_state.try_probe_channel_publish_bytes(
+            "source.packet_to_sink.packet", "Packet",
+            std::vector<std::uint8_t>{std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3},
+                                      std::uint8_t{4}},
+            std::optional<std::uint64_t>{3U});
+        assert(record.recorded);
+        assert(!record.dropped);
+        const auto expected_bounded_payload =
+            std::optional<std::vector<std::uint8_t>>{std::vector<std::uint8_t>{
+                std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}, std::uint8_t{4}}};
+        assert(bounded_probe_state.channel_snapshot("source.packet_to_sink.packet")->payload ==
+               expected_bounded_payload);
+        assert(
+            bounded_probe_state.channel_status("source.packet_to_sink.packet")->dropped_samples ==
+            0U);
+    }
 
     flowrt::IntrospectionState state;
     state.register_channel("source.imu_to_sink.imu", "Imu");
@@ -178,6 +233,60 @@ int main() {
             socket_path, R"({"command":"channel_snapshot","channel":"missing.channel"})");
         assert_contains(unknown_response, R"("response":"error")");
         assert_contains(unknown_response, R"("message":"unknown FlowRT channel")");
+
+        const auto selfdesc_missing_response =
+            request_line(socket_path, R"({"command":"self_description"})");
+        assert_contains(selfdesc_missing_response, R"("response":"error")");
+        assert_contains(selfdesc_missing_response,
+                        R"("message":"FlowRT self-description is not registered")");
+        state.set_self_description_json(R"({"package":{"name":"robot_demo"}})");
+        const auto selfdesc_response =
+            request_line(socket_path, R"({"command":"self_description"})");
+        assert_contains(selfdesc_response, R"("response":"self_description")");
+        assert_contains(selfdesc_response, R"("json":"{\"package\":{\"name\":\"robot_demo\"}}")");
+
+        {
+            const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+            assert(fd >= 0);
+            sockaddr_un address{};
+            address.sun_family = AF_UNIX;
+            const auto path = socket_path.string();
+            std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
+            assert(::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+            const std::string request =
+                R"({"command":"observe_channel","channel":"source.imu_to_sink.imu","mode":"latest"})"
+                "\n";
+            assert(::write(fd, request.data(), request.size()) ==
+                   static_cast<ssize_t>(request.size()));
+            char byte = '\0';
+            std::string observe_response;
+            while (::read(fd, &byte, 1) == 1) {
+                if (byte == '\n') {
+                    break;
+                }
+                observe_response.push_back(byte);
+            }
+            assert_contains(observe_response, R"("response":"observe_ready")");
+            assert(state.active_probe_count("source.imu_to_sink.imu") ==
+                   std::optional<std::uint64_t>{1U});
+            assert(state
+                       .try_probe_channel_publish_bytes(
+                           "source.imu_to_sink.imu", "Imu",
+                           std::vector<std::uint8_t>{std::uint8_t{4}, std::uint8_t{5}},
+                           std::optional<std::uint64_t>{10U})
+                       .recorded);
+            assert(::shutdown(fd, SHUT_RDWR) == 0);
+            ::close(fd);
+            for (std::size_t attempt = 0; attempt < 100; ++attempt) {
+                if (state.active_probe_count("source.imu_to_sink.imu") ==
+                    std::optional<std::uint64_t>{0U}) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            assert(state.active_probe_count("source.imu_to_sink.imu") ==
+                   std::optional<std::uint64_t>{0U});
+        }
 
         const auto param_list_response = request_line(socket_path, R"({"command":"param_list"})");
         assert_contains(param_list_response, R"("response":"param_list")");

@@ -30,12 +30,14 @@ pub use frame::{
 #[cfg(feature = "iox2")]
 pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{
-    INTROSPECTION_PROTOCOL_VERSION, IntrospectionChannelStatus, IntrospectionHandshake,
-    IntrospectionIdentity, IntrospectionParamSchema, IntrospectionParamStatus,
+    INTROSPECTION_PROTOCOL_VERSION, IntrospectionChannelProbe, IntrospectionChannelStatus,
+    IntrospectionHandshake, IntrospectionIdentity, IntrospectionObserverGuard,
+    IntrospectionParamSchema, IntrospectionParamStatus, IntrospectionProbeRecord,
     IntrospectionRequest, IntrospectionResponse, IntrospectionServer, IntrospectionState,
-    IntrospectionStatus, discover_runtime_sockets, request_channel_snapshot, request_param_get,
-    request_param_list, request_param_set, request_status, runtime_socket_dir,
-    runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
+    IntrospectionStatus, discover_runtime_sockets, observe_channel_stream,
+    request_channel_snapshot, request_param_get, request_param_list, request_param_set,
+    request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
+    spawn_status_server, spawn_status_server_at,
 };
 pub use shutdown::{ShutdownToken, install_signal_shutdown_token};
 pub use wire::{WireCodec, WireCodecError};

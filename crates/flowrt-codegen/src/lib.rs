@@ -202,6 +202,8 @@ struct SelfDescriptionMessageAbi {
 #[derive(Debug, Serialize)]
 struct SelfDescriptionFieldAbi {
     name: String,
+    #[serde(rename = "type")]
+    ty: String,
     offset_bytes: usize,
     size_bytes: usize,
     align_bytes: usize,
@@ -220,6 +222,8 @@ struct SelfDescriptionMessageFrame {
 #[derive(Debug, Serialize)]
 struct SelfDescriptionFrameField {
     name: String,
+    #[serde(rename = "type")]
+    ty: String,
     header_offset_bytes: usize,
     header_size_bytes: usize,
     tail_max_bytes: Option<usize>,
@@ -408,7 +412,7 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
             .collect(),
         message_abi: fixed_message_abi_expectations(contract)?
             .into_iter()
-            .map(self_description_message_abi)
+            .map(|expectation| self_description_message_abi(contract, expectation))
             .collect(),
         message_frames: contract
             .types
@@ -476,7 +480,21 @@ fn self_description_graph<'a>(
     }
 }
 
-fn self_description_message_abi(expectation: MessageAbiExpectation) -> SelfDescriptionMessageAbi {
+fn self_description_message_abi(
+    contract: &ContractIr,
+    expectation: MessageAbiExpectation,
+) -> SelfDescriptionMessageAbi {
+    let type_fields = contract
+        .types
+        .iter()
+        .find(|ty| ty.name == expectation.type_name)
+        .map(|ty| {
+            ty.fields
+                .iter()
+                .map(|field| (field.name.as_str(), field.ty.canonical_syntax()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     SelfDescriptionMessageAbi {
         type_name: expectation.type_name,
         size_bytes: expectation.size_bytes,
@@ -485,6 +503,10 @@ fn self_description_message_abi(expectation: MessageAbiExpectation) -> SelfDescr
             .fields
             .into_iter()
             .map(|field| SelfDescriptionFieldAbi {
+                ty: type_fields
+                    .get(field.name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 name: field.name,
                 offset_bytes: field.offset_bytes,
                 size_bytes: field.size_bytes,
@@ -505,6 +527,7 @@ fn self_description_message_frame(
         let tail_max = variable_tail_max_size(contract, &field.ty);
         fields.push(SelfDescriptionFrameField {
             name: field.name.clone(),
+            ty: field.ty.canonical_syntax(),
             header_offset_bytes: header_offset,
             header_size_bytes: header_size,
             tail_max_bytes: tail_max,
@@ -953,7 +976,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <cerrno>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <cerrno>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -1123,6 +1146,10 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             "    {} {}_;\n",
             cpp_runtime_channel_type(bind, &selected_backend),
             bind.field_name
+        ));
+        output.push_str(&format!(
+            "    flowrt::IntrospectionChannelProbe {};\n",
+            bind.probe_field_name
         ));
     }
     output.push_str("};\n\n");
@@ -1524,8 +1551,13 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     ));
     output.push_str("    auto shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
+    output.push_str(
+        "    introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});\n",
+    );
     output.push_str(&emit_cpp_introspection_channel_registration(
-        run.order, run.binds,
+        run.contract,
+        run.order,
+        run.binds,
     ));
     output.push_str(&emit_cpp_introspection_param_registration(
         run.contract,
@@ -1767,9 +1799,8 @@ fn cpp_introspection_publish_record(bind: &BindRuntimePlan, selected_backend: &s
         "record_introspection_publish_copy"
     };
     format!(
-        "        {helper}(introspection_state, {}, {}, *value, tick_time_ms);\n",
-        cpp_string_literal(&runtime_channel_name(bind)),
-        cpp_string_literal(&runtime_channel_message_type(bind))
+        "        {helper}(this->{probe}, *value, tick_time_ms);\n",
+        probe = bind.probe_field_name
     )
 }
 
@@ -2162,6 +2193,10 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             bind.field_name,
             runtime_channel_type(bind, &selected_backend)
         ));
+        output.push_str(&format!(
+            "    {}: flowrt::IntrospectionChannelProbe,\n",
+            bind.probe_field_name
+        ));
     }
     output.push_str("}\n\n");
 
@@ -2504,6 +2539,7 @@ fn cpp_app_stem(contract: &ContractIr) -> String {
 struct BindRuntimePlan {
     index: usize,
     field_name: String,
+    probe_field_name: String,
     channel: ChannelKind,
     overflow: IrOverflowPolicy,
     stale: IrStalePolicy,
@@ -2572,6 +2608,7 @@ fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<BindRuntime
             BindRuntimePlan {
                 index,
                 field_name: format!("bind_{index}"),
+                probe_field_name: format!("introspection_probe_bind_{index}"),
                 channel: bind.channel,
                 overflow: bind.overflow,
                 stale: bind.stale,
@@ -2638,35 +2675,61 @@ fn runtime_channel_message_type(bind: &BindRuntimePlan) -> String {
     bind.source_type.canonical_syntax()
 }
 
+fn runtime_channel_probe_capacity(contract: &ContractIr, bind: &BindRuntimePlan) -> usize {
+    match &bind.source_type {
+        TypeExpr::Named { name } if bind.source_uses_variable_frame => {
+            frame_max_size_for_type(contract, type_by_name(contract, name))
+        }
+        TypeExpr::Named { name } => fixed_message_abi_size(contract, name)
+            .unwrap_or_else(|| rust_wire_size(contract, &bind.source_type)),
+        other => rust_wire_size(contract, other),
+    }
+}
+
+fn fixed_message_abi_size(contract: &ContractIr, type_name: &str) -> Option<usize> {
+    fixed_message_abi_expectations(contract)
+        .ok()?
+        .into_iter()
+        .find(|expectation| expectation.type_name == type_name)
+        .map(|expectation| expectation.size_bytes)
+}
+
 fn runtime_param_name(instance: &InstanceIr, param: &ParamIr) -> String {
     format!("{}.{}", instance.name, param.name)
 }
 
 fn emit_cpp_introspection_helpers() -> String {
-    r#"void register_introspection_channel(
+    r#"flowrt::IntrospectionChannelProbe register_introspection_channel(
     flowrt::IntrospectionState& state,
     std::string_view name,
-    std::string_view message_type
+    std::string_view message_type,
+    std::size_t max_payload_len
 ) {
     try {
-        state.register_channel(std::string{name}, std::string{message_type});
+        state.register_channel_with_probe_capacity(
+            std::string{name},
+            std::string{message_type},
+            std::optional<std::size_t>{max_payload_len});
+        if (const auto probe = state.channel_probe(name); probe.has_value()) {
+            return *probe;
+        }
     } catch (...) {
     }
+    return flowrt::IntrospectionChannelProbe{};
 }
 
 template <typename T>
 void record_introspection_publish_copy(
-    flowrt::IntrospectionState& state,
-    std::string_view name,
-    std::string_view message_type,
+    const flowrt::IntrospectionChannelProbe& probe,
     const T& value,
     std::uint64_t published_at_ms
 ) {
+    if (!probe.enabled()) {
+        return;
+    }
     try {
-        state.record_channel_publish(
-            std::string{name},
-            std::string{message_type},
-            value,
+        probe.try_record_bytes(
+            std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(&value), sizeof(T)},
             std::optional<std::uint64_t>{published_at_ms});
     } catch (...) {
     }
@@ -2674,20 +2737,17 @@ void record_introspection_publish_copy(
 
 template <typename T>
 void record_introspection_publish_frame(
-    flowrt::IntrospectionState& state,
-    std::string_view name,
-    std::string_view message_type,
+    const flowrt::IntrospectionChannelProbe& probe,
     const T& value,
     std::uint64_t published_at_ms
 ) {
+    if (!probe.enabled()) {
+        return;
+    }
     try {
         std::vector<std::uint8_t> payload(flowrt::detail::encoded_frame_size(value));
         flowrt::detail::encode_frame(value, payload);
-        state.record_channel_publish_bytes(
-            std::string{name},
-            std::string{message_type},
-            std::move(payload),
-            std::optional<std::uint64_t>{published_at_ms});
+        probe.try_record_bytes(payload, std::optional<std::uint64_t>{published_at_ms});
     } catch (...) {
     }
 }
@@ -2795,15 +2855,18 @@ inline bool decode_flowrt_param_value(std::string_view value, std::string& outpu
 }
 
 fn emit_cpp_introspection_channel_registration(
+    contract: &ContractIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for bind in active_binds_for_instances(binds, order) {
         output.push_str(&format!(
-            "    register_introspection_channel(introspection_state, {}, {});\n",
+            "    this->{probe} = register_introspection_channel(introspection_state, {}, {}, {});\n",
             cpp_string_literal(&runtime_channel_name(bind)),
-            cpp_string_literal(&runtime_channel_message_type(bind))
+            cpp_string_literal(&runtime_channel_message_type(bind)),
+            runtime_channel_probe_capacity(contract, bind),
+            probe = bind.probe_field_name
         ));
     }
     output
@@ -2820,10 +2883,13 @@ fn emit_rust_introspection_helpers(
     state: &flowrt::IntrospectionState,
     name: &'static str,
     message_type: &'static str,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.register_channel(name, message_type);
-    }));
+    max_payload_len: usize,
+) -> flowrt::IntrospectionChannelProbe {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.register_channel_with_probe_capacity(name, message_type, Some(max_payload_len));
+        state.channel_probe(name).unwrap_or_default()
+    }))
+    .unwrap_or_default()
 }
 
 "#,
@@ -2844,28 +2910,36 @@ fn emit_rust_introspection_helpers(
         output.push_str(
             r#"#[allow(dead_code)]
 fn record_introspection_publish_copy<T: Copy>(
-    state: &flowrt::IntrospectionState,
-    name: &'static str,
-    message_type: &'static str,
+    probe: &flowrt::IntrospectionChannelProbe,
     value: &T,
     published_at_ms: u64,
 ) {
+    if !probe.enabled() {
+        return;
+    }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.record_channel_publish(name, message_type, value, Some(published_at_ms));
+        let payload = unsafe {
+            std::slice::from_raw_parts(
+                (value as *const T).cast::<u8>(),
+                std::mem::size_of::<T>(),
+            )
+        };
+        probe.try_record_bytes(payload, Some(published_at_ms));
     }));
 }
 
 #[allow(dead_code)]
 fn record_introspection_publish_frame<T: flowrt::FrameCodec>(
-    state: &flowrt::IntrospectionState,
-    name: &'static str,
-    message_type: &'static str,
+    probe: &flowrt::IntrospectionChannelProbe,
     value: &T,
     published_at_ms: u64,
 ) {
+    if !probe.enabled() {
+        return;
+    }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let Ok(payload) = value.to_frame_vec() {
-            state.record_channel_publish_bytes(name, message_type, payload, Some(published_at_ms));
+            probe.try_record_bytes(&payload, Some(published_at_ms));
         }
     }));
 }
@@ -2887,15 +2961,18 @@ fn contract_has_runtime_params_for_language(contract: &ContractIr, language: Lan
 }
 
 fn emit_rust_introspection_channel_registration(
+    contract: &ContractIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for bind in active_binds_for_instances(binds, order) {
         output.push_str(&format!(
-            "        register_introspection_channel(&introspection_state, {}, {});\n",
+            "        self.{probe} = register_introspection_channel(&introspection_state, {}, {}, {});\n",
             rust_string_literal(&runtime_channel_name(bind)),
-            rust_string_literal(&runtime_channel_message_type(bind))
+            rust_string_literal(&runtime_channel_message_type(bind)),
+            runtime_channel_probe_capacity(contract, bind),
+            probe = bind.probe_field_name
         ));
     }
     output
@@ -2935,6 +3012,10 @@ fn emit_rust_app_new(
             "            {}: {},\n",
             bind.field_name,
             runtime_channel_initializer(contract, graph, bind, selected_backend)
+        ));
+        output.push_str(&format!(
+            "            {}: flowrt::IntrospectionChannelProbe::default(),\n",
+            bind.probe_field_name
         ));
     }
     output.push_str("        }\n    }\n");
@@ -3161,7 +3242,12 @@ fn emit_rust_app_run_function(
     ));
     output.push_str("        let shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
-    output.push_str(&emit_rust_introspection_channel_registration(order, binds));
+    output.push_str(
+        "        introspection_state.set_self_description_json(selfdesc::self_description_json());\n",
+    );
+    output.push_str(&emit_rust_introspection_channel_registration(
+        contract, order, binds,
+    ));
     output.push_str(&emit_rust_introspection_param_registration(contract, order));
     output.push_str(&format!(
         "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",
@@ -3384,9 +3470,8 @@ fn runtime_introspection_publish_record(bind: &BindRuntimePlan, selected_backend
         "record_introspection_publish_copy"
     };
     format!(
-        "            {helper}(introspection_state, {}, {}, &value, tick_time_ms);\n",
-        rust_string_literal(&runtime_channel_name(bind)),
-        rust_string_literal(&runtime_channel_message_type(bind))
+        "            {helper}(&self.{probe}, &value, tick_time_ms);\n",
+        probe = bind.probe_field_name
     )
 }
 
@@ -4241,13 +4326,16 @@ fn emit_cmake(contract: &ContractIr) -> String {
             ));
         }
         output.push_str(
-            "\nfind_package(flowrt_runtime 0.1 QUIET)\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
+            "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
         );
         output.push_str(
-            "if(NOT TARGET flowrt::runtime)\n    if(NOT FLOWRT_CPP_RUNTIME_DIR)\n        get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n        if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n            set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n        endif()\n    endif()\nendif()\n",
+            "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    find_package(flowrt_runtime 0.1 QUIET)\nendif()\n",
         );
         output.push_str(
-            "if(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    if(NOT FLOWRT_CPP_RUNTIME_DIR OR NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install flowrt_runtime, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree.\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nendif()\n",
+            "if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
+        );
+        output.push_str(
+            "if(FLOWRT_CPP_RUNTIME_DIR)\n    if(NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR does not contain include/flowrt/runtime.hpp: ${FLOWRT_CPP_RUNTIME_DIR}\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nelseif(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install flowrt_runtime, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree.\")\nendif()\n",
         );
         output = output.replace("{package_name}", &package_name);
         output.push_str(&format!(
@@ -5987,6 +6075,9 @@ input = ["imu:Imu"]
         assert!(
             rust_shell.contains("let introspection_state = flowrt::IntrospectionState::new();")
         );
+        assert!(rust_shell.contains(
+            "introspection_state.set_self_description_json(selfdesc::self_description_json());"
+        ));
         assert!(rust_shell.contains("introspection_state.record_tick();"));
         assert!(!rust_shell.contains("flowrt::IntrospectionStatus {"));
         assert!(rust_shell.contains("selfdesc::self_description_hash().to_string()"));
@@ -6003,6 +6094,7 @@ input = ["imu:Imu"]
                 .is_empty()
         );
         assert_eq!(sidecar["message_abi"][0]["type_name"], "Cmd");
+        assert_eq!(sidecar["message_abi"][0]["fields"][0]["type"], "f32");
 
         let rust_selfdesc = artifact_content(&bundle, "rust/src/selfdesc.rs");
         assert!(rust_selfdesc.contains("#[unsafe(link_section = \".flowrt.selfdesc\")]"));
@@ -7337,27 +7429,81 @@ backends = ["iox2"]
         let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
         let sensor_channel = "sensor_source.sample_to_sensor_sink.sample";
         let aux_channel = "aux_source.sample_to_aux_sink.sample";
-        let sensor_register = format!(
-            "register_introspection_channel(&introspection_state, {}, \"Sample\");",
-            rust_string_literal(sensor_channel)
-        );
-        let aux_register = format!(
-            "register_introspection_channel(&introspection_state, {}, \"Sample\");",
-            rust_string_literal(aux_channel)
-        );
-        let sensor_record = format!(
-            "record_introspection_publish_copy(introspection_state, {}, \"Sample\", &value, tick_time_ms);",
-            rust_string_literal(sensor_channel)
-        );
 
         let sensors_run = generated_function_block(rust_shell, "fn run_process_sensors");
-        assert!(sensors_run.contains(&sensor_register));
-        assert!(!sensors_run.contains(&aux_register));
-        assert!(rust_shell.contains(&sensor_record));
-        let sensor_publish = "self.bind_0.publish_at(value.clone(), tick_time_ms)";
-        assert!(
-            rust_shell.find(sensor_publish).unwrap() < rust_shell.find(&sensor_record).unwrap()
+        let sensor_register_marker = format!(
+            " = register_introspection_channel(&introspection_state, {}, \"Sample\", 4);",
+            rust_string_literal(sensor_channel)
         );
+        let sensor_probe =
+            extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
+                .expect("sensors process should register sensor channel");
+        let aux_register_marker = format!(
+            "register_introspection_channel(&introspection_state, {}, \"Sample\", 4);",
+            rust_string_literal(aux_channel)
+        );
+        assert!(
+            !sensors_run.contains(&aux_register_marker),
+            "sensors process should not register aux channel:\n{sensors_run}"
+        );
+        let sensor_record = format!(
+            "record_introspection_publish_copy(&self.{sensor_probe}, &value, tick_time_ms);"
+        );
+        assert!(rust_shell.contains(&sensor_record));
+        let sensor_record_at = rust_shell.find(&sensor_record).unwrap();
+        let sensor_before_record = &rust_shell[..sensor_record_at];
+        assert!(sensor_before_record.contains(".publish_at(value.clone(), tick_time_ms)"));
+    }
+
+    #[test]
+    fn probe_capacity_uses_message_abi_size_including_padding() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "padding_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+ay = "f32"
+az = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(rust_shell.contains(
+            "register_introspection_channel(&introspection_state, \"source.imu_to_sink.imu\", \"Imu\", 24);"
+        ));
     }
 
     #[test]
@@ -7487,41 +7633,53 @@ backends = ["inproc"]
         );
         let bundle = emit_artifacts(&ir).unwrap();
         let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+        let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
         let sensor_channel = "sensor_source.sample_to_sensor_sink.sample";
         let aux_channel = "aux_source.sample_to_aux_sink.sample";
-        let sensor_register = format!(
-            "register_introspection_channel(introspection_state, {}, \"Sample\");",
-            cpp_string_literal(sensor_channel)
-        );
-        let aux_register = format!(
-            "register_introspection_channel(introspection_state, {}, \"Sample\");",
-            cpp_string_literal(aux_channel)
-        );
-        let sensor_record = format!(
-            "record_introspection_publish_copy(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
-            cpp_string_literal(sensor_channel)
-        );
-        let aux_record = format!(
-            "record_introspection_publish_copy(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
-            cpp_string_literal(aux_channel)
-        );
 
         assert!(cpp_shell.contains("flowrt::IntrospectionState introspection_state;"));
+        assert!(cpp_shell.contains(
+            "introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});"
+        ));
+        assert!(cpp_header.contains("flowrt::IntrospectionChannelProbe introspection_probe_bind_"));
         assert!(cpp_shell.contains("flowrt::spawn_status_server("));
         assert!(cpp_shell.contains("flowrt_app::self_description_hash()"));
         assert!(cpp_shell.contains("runtime = \"cpp\""));
         assert!(cpp_shell.contains("introspection_state.record_tick();"));
 
         let sensors_run = generated_function_block(cpp_shell, "App::run_process_sensors");
-        assert!(sensors_run.contains(&sensor_register));
-        assert!(!sensors_run.contains(&aux_register));
+        let sensor_register_marker = format!(
+            " = register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+            cpp_string_literal(sensor_channel)
+        );
+        let sensor_probe =
+            extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
+                .expect("sensors process should register sensor channel");
+        let aux_register_marker = format!(
+            "register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+            cpp_string_literal(aux_channel)
+        );
+        assert!(
+            !sensors_run.contains(&aux_register_marker),
+            "sensors process should not register aux channel:\n{sensors_run}"
+        );
+        let sensor_record = format!(
+            "record_introspection_publish_copy(this->{sensor_probe}, *value, tick_time_ms);"
+        );
         assert!(cpp_shell.contains(&sensor_record));
         let sensor_record_at = cpp_shell.find(&sensor_record).unwrap();
         let sensor_before_record = &cpp_shell[..sensor_record_at];
         assert!(sensor_before_record.contains("publish_at(*value, tick_time_ms)"));
 
         let aux_run = generated_function_block(cpp_shell, "App::run_process_aux");
-        assert!(aux_run.contains(&aux_register));
+        let aux_register_marker = format!(
+            " = register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+            cpp_string_literal(aux_channel)
+        );
+        let aux_probe = extract_probe_field_for_registration(aux_run, &aux_register_marker)
+            .expect("aux process should register aux channel");
+        let aux_record =
+            format!("record_introspection_publish_copy(this->{aux_probe}, *value, tick_time_ms);");
         assert!(cpp_shell.contains(&aux_record));
         let aux_record_at = cpp_shell.find(&aux_record).unwrap();
         let aux_before_record = &cpp_shell[..aux_record_at];
@@ -8869,5 +9027,29 @@ backends = ["iox2"]
             .map(|offset| function.len() + offset)
             .unwrap_or(rest.len());
         &rest[..next]
+    }
+
+    fn extract_probe_field_for_registration<'a>(
+        source: &'a str,
+        registration_marker: &str,
+    ) -> Option<&'a str> {
+        let marker_at = source.find(registration_marker)?;
+        let before = &source[..marker_at];
+        before
+            .rsplit_once(|ch: char| ch.is_whitespace())
+            .map(|(_, probe)| probe.trim())
+            .filter(|probe| probe.starts_with("introspection_probe_bind_"))
+            .or_else(|| {
+                before
+                    .rsplit_once("self.")
+                    .map(|(_, probe)| probe.trim())
+                    .filter(|probe| probe.starts_with("introspection_probe_bind_"))
+            })
+            .or_else(|| {
+                before
+                    .rsplit_once("this->")
+                    .map(|(_, probe)| probe.trim())
+                    .filter(|probe| probe.starts_with("introspection_probe_bind_"))
+            })
     }
 }

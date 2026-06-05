@@ -128,13 +128,17 @@ enum Command {
         image: PathBuf,
     },
 
-    /// 读取 live runtime 中一个 channel 的 latest raw ABI 快照。
+    /// 读取 live runtime 中一个 channel 的 latest 快照。
     Echo {
-        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
-        image: PathBuf,
+        /// channel 名称；旧式兼容用法中这是 FlowRT 应用二进制或 selfdesc.json。
+        target: String,
 
-        /// channel 名称；可用完整 channel 名，或唯一的 `<instance>.<port>` 端点名。
-        channel: String,
+        /// 旧式兼容用法：channel 名称。
+        channel: Option<String>,
+
+        /// 显式提供 FlowRT 应用二进制或 selfdesc.json；省略时从 live runtime 请求 self-description。
+        #[arg(long)]
+        image: Option<PathBuf>,
 
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
@@ -276,22 +280,23 @@ fn main() -> Result<()> {
             println!("{}", self_description_nodes(&self_description));
         }
         Command::Echo {
-            image,
+            target,
             channel,
+            image,
             socket,
             follow,
             interval_ms,
         } => {
+            let echo_target = EchoTarget::from_cli(target, channel, image)?;
             if follow {
                 echo_channel_follow(
-                    &image,
-                    &channel,
+                    &echo_target,
                     socket.as_deref(),
                     Duration::from_millis(interval_ms),
                     &mut io::stdout(),
                 )?;
             } else {
-                println!("{}", echo_channel(&image, &channel, socket.as_deref())?);
+                println!("{}", echo_channel(&echo_target, socket.as_deref())?);
             }
         }
         Command::Params { command } => match command {
@@ -525,13 +530,38 @@ struct SelfDescriptionChannel {
 struct SelfDescriptionMessageAbi {
     type_name: String,
     size_bytes: usize,
+    #[serde(default)]
+    fields: Vec<SelfDescriptionFieldAbi>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SelfDescriptionFieldAbi {
+    name: String,
+    #[serde(rename = "type", default)]
+    ty: String,
+    offset_bytes: usize,
+    size_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct SelfDescriptionMessageFrame {
     type_name: String,
+    #[serde(default)]
+    header_size_bytes: usize,
     max_size_bytes: usize,
     variable: bool,
+    #[serde(default)]
+    fields: Vec<SelfDescriptionFrameField>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SelfDescriptionFrameField {
+    name: String,
+    #[serde(rename = "type", default)]
+    ty: String,
+    header_offset_bytes: usize,
+    header_size_bytes: usize,
+    tail_max_bytes: Option<usize>,
 }
 
 fn load_self_description(path: &Path) -> Result<SelfDescription> {
@@ -679,43 +709,218 @@ struct EchoChannelSpec {
 enum EchoPayloadShape {
     FixedAbi {
         size_bytes: usize,
+        fields: Vec<SelfDescriptionFieldAbi>,
     },
     CanonicalFrame {
+        header_size_bytes: usize,
         max_size_bytes: usize,
         variable: bool,
+        fields: Vec<SelfDescriptionFrameField>,
     },
 }
 
-fn echo_channel(image: &Path, channel: &str, socket: Option<&Path>) -> Result<String> {
-    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
-    let channel_spec = find_echo_channel(&self_description, channel)?;
-    let socket = select_echo_socket(socket, &self_description_hash)?;
-    let snapshot = request_echo_snapshot(&socket, &channel_spec, &self_description_hash)?;
+#[derive(Debug, Clone)]
+struct EchoTarget {
+    image: Option<PathBuf>,
+    channel: String,
+}
+
+impl EchoTarget {
+    fn from_cli(target: String, channel: Option<String>, image: Option<PathBuf>) -> Result<Self> {
+        match (channel, image) {
+            (Some(channel), None) => Ok(Self {
+                image: Some(PathBuf::from(target)),
+                channel,
+            }),
+            (Some(_), Some(_)) => anyhow::bail!(
+                "flowrt echo accepts either `<image> <channel>` or `--image <path> <channel>`, not both"
+            ),
+            (None, image) => Ok(Self {
+                image,
+                channel: target,
+            }),
+        }
+    }
+}
+
+fn echo_channel(target: &EchoTarget, socket: Option<&Path>) -> Result<String> {
+    let (self_description, self_description_hash, socket) = load_echo_context(target, socket)?;
+    let channel_spec = find_echo_channel(&self_description, &target.channel)?;
+    let _observe = open_echo_observer(&socket, &channel_spec, &self_description_hash)?;
+    let snapshot = wait_for_echo_snapshot(
+        &socket,
+        &channel_spec,
+        &self_description_hash,
+        Duration::from_millis(1000),
+        Duration::from_millis(50),
+    )?;
 
     format_echo_snapshot(&channel_spec, &snapshot)
 }
 
-fn echo_channel_follow(
+#[cfg(test)]
+fn echo_channel_from_image(image: &Path, channel: &str, socket: Option<&Path>) -> Result<String> {
+    echo_channel(
+        &EchoTarget {
+            image: Some(image.to_path_buf()),
+            channel: channel.to_string(),
+        },
+        socket,
+    )
+}
+
+#[cfg(test)]
+fn echo_channel_snapshot_from_image(
     image: &Path,
     channel: &str,
+    socket: Option<&Path>,
+) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let channel_spec = find_echo_channel(&self_description, channel)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let snapshot = request_echo_snapshot(&socket, &channel_spec, &self_description_hash)?;
+    format_echo_snapshot(&channel_spec, &snapshot)
+}
+
+fn load_echo_context(
+    target: &EchoTarget,
+    socket: Option<&Path>,
+) -> Result<(SelfDescription, String, PathBuf)> {
+    match &target.image {
+        Some(image) => {
+            let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+            let socket = select_echo_socket(socket, &self_description_hash)?;
+            Ok((self_description, self_description_hash, socket))
+        }
+        None => load_echo_context_from_live_socket(socket),
+    }
+}
+
+fn load_echo_context_from_live_socket(
+    socket: Option<&Path>,
+) -> Result<(SelfDescription, String, PathBuf)> {
+    let socket = select_live_self_description_socket(socket)?;
+    let response = flowrt::request_self_description(&socket).with_context(|| {
+        format!(
+            "failed to request FlowRT self-description from `{}`",
+            socket.display()
+        )
+    })?;
+    let (handshake, json) = match response {
+        flowrt::IntrospectionResponse::SelfDescription { handshake, json } => (handshake, json),
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to read FlowRT self-description from `{}`: {message}",
+                socket.display()
+            );
+        }
+        _ => anyhow::bail!(
+            "runtime socket `{}` returned an unexpected introspection response",
+            socket.display()
+        ),
+    };
+    let hash = self_description_hash(json.as_bytes());
+    if handshake.self_description_hash != hash {
+        anyhow::bail!(
+            "runtime socket `{}` self-description hash `{}` does not match served self-description `{}`",
+            socket.display(),
+            handshake.self_description_hash,
+            hash
+        );
+    }
+    let self_description = serde_json::from_str(&json).with_context(|| {
+        format!(
+            "failed to parse FlowRT self-description served by `{}`",
+            socket.display()
+        )
+    })?;
+    Ok((self_description, hash, socket))
+}
+
+fn select_live_self_description_socket(socket: Option<&Path>) -> Result<PathBuf> {
+    if let Some(socket) = socket {
+        return Ok(socket.to_path_buf());
+    }
+    let mut matches = Vec::new();
+    for socket in
+        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
+    {
+        let Ok(flowrt::IntrospectionResponse::SelfDescription { .. }) =
+            flowrt::request_self_description(&socket)
+        else {
+            continue;
+        };
+        matches.push(socket);
+    }
+    match matches.len() {
+        0 => anyhow::bail!(
+            "no live FlowRT process exposes self-description; pass `--socket <path>` or `--image <path>`"
+        ),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let sockets = matches
+                .iter()
+                .map(|socket| socket.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "multiple live FlowRT processes expose self-description: {sockets}; pass `--socket <path>` to choose one"
+            )
+        }
+    }
+}
+
+fn open_echo_observer(
+    socket: &Path,
+    channel_spec: &EchoChannelSpec,
+    self_description_hash: &str,
+) -> Result<Option<std::os::unix::net::UnixStream>> {
+    let (stream, response) = flowrt::observe_channel_stream(socket, &channel_spec.name)
+        .with_context(|| {
+            format!(
+                "failed to observe channel `{}` via `{}`",
+                channel_spec.name,
+                socket.display()
+            )
+        })?;
+    match response {
+        flowrt::IntrospectionResponse::ObserveReady { handshake, .. } => {
+            ensure_handshake_hash(&handshake, self_description_hash, socket)?;
+            Ok(Some(stream))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to observe FlowRT channel `{}` via `{}`: {message}",
+                channel_spec.name,
+                socket.display()
+            );
+        }
+        _ => anyhow::bail!(
+            "runtime socket `{}` returned an unexpected introspection response",
+            socket.display()
+        ),
+    }
+}
+
+fn echo_channel_follow(
+    target: &EchoTarget,
     socket: Option<&Path>,
     interval: Duration,
     output: &mut dyn Write,
 ) -> Result<()> {
-    echo_channel_follow_for_polls(image, channel, socket, interval, usize::MAX, output)
+    echo_channel_follow_for_polls(target, socket, interval, usize::MAX, output)
 }
 
 fn echo_channel_follow_for_polls(
-    image: &Path,
-    channel: &str,
+    target: &EchoTarget,
     socket: Option<&Path>,
     interval: Duration,
     max_polls: usize,
     output: &mut dyn Write,
 ) -> Result<()> {
-    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
-    let channel_spec = find_echo_channel(&self_description, channel)?;
-    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let (self_description, self_description_hash, socket) = load_echo_context(target, socket)?;
+    let channel_spec = find_echo_channel(&self_description, &target.channel)?;
+    let _observe = open_echo_observer(&socket, &channel_spec, &self_description_hash)?;
     let mut last_snapshot_key = None;
 
     for index in 0..max_polls {
@@ -784,6 +989,13 @@ fn request_echo_snapshot(
                 socket.display()
             );
         }
+        flowrt::IntrospectionResponse::SelfDescription { .. }
+        | flowrt::IntrospectionResponse::ObserveReady { .. } => {
+            anyhow::bail!(
+                "runtime socket `{}` returned an unexpected introspection response",
+                socket.display()
+            );
+        }
         flowrt::IntrospectionResponse::ParamList { .. }
         | flowrt::IntrospectionResponse::ParamValue { .. } => {
             anyhow::bail!(
@@ -803,6 +1015,30 @@ fn request_echo_snapshot(
     }
 
     Ok(snapshot)
+}
+
+fn wait_for_echo_snapshot(
+    socket: &Path,
+    channel_spec: &EchoChannelSpec,
+    self_description_hash: &str,
+    timeout: Duration,
+    interval: Duration,
+) -> Result<flowrt::introspection::IntrospectionChannelSnapshot> {
+    let started = std::time::Instant::now();
+    loop {
+        let snapshot = request_echo_snapshot(socket, channel_spec, self_description_hash)?;
+        if snapshot
+            .payload
+            .as_ref()
+            .is_some_and(|payload| !payload.is_empty())
+        {
+            return Ok(snapshot);
+        }
+        if started.elapsed() >= timeout {
+            return Ok(snapshot);
+        }
+        std::thread::sleep(interval);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -885,8 +1121,11 @@ fn echo_payload_shape(
     frames: &[SelfDescriptionMessageFrame],
     message_type: &str,
 ) -> Result<EchoPayloadShape> {
-    if let Some(size_bytes) = message_abi_size(messages, message_type)? {
-        return Ok(EchoPayloadShape::FixedAbi { size_bytes });
+    if let Some(message) = message_abi_layout(messages, message_type)? {
+        return Ok(EchoPayloadShape::FixedAbi {
+            size_bytes: message.size_bytes,
+            fields: message.fields.clone(),
+        });
     }
     let mut frame_matches = frames
         .iter()
@@ -899,8 +1138,10 @@ fn echo_payload_shape(
         1 => {
             let frame = frame_matches.remove(0);
             Ok(EchoPayloadShape::CanonicalFrame {
+                header_size_bytes: frame.header_size_bytes,
                 max_size_bytes: frame.max_size_bytes,
                 variable: frame.variable,
+                fields: frame.fields.clone(),
             })
         }
         _ => anyhow::bail!(
@@ -909,18 +1150,17 @@ fn echo_payload_shape(
     }
 }
 
-fn message_abi_size(
-    messages: &[SelfDescriptionMessageAbi],
+fn message_abi_layout<'a>(
+    messages: &'a [SelfDescriptionMessageAbi],
     message_type: &str,
-) -> Result<Option<usize>> {
-    let mut sizes = messages
+) -> Result<Option<&'a SelfDescriptionMessageAbi>> {
+    let mut layouts = messages
         .iter()
         .filter(|message| message.type_name == message_type)
-        .map(|message| message.size_bytes)
         .collect::<Vec<_>>();
-    match sizes.len() {
+    match layouts.len() {
         0 => Ok(None),
-        1 => Ok(Some(sizes.remove(0))),
+        1 => Ok(Some(layouts.remove(0))),
         _ => anyhow::bail!(
             "FlowRT self-description contains multiple Message ABI layouts for `{message_type}`"
         ),
@@ -989,7 +1229,7 @@ fn format_echo_snapshot(
         ));
     }
     match &channel.payload_shape {
-        EchoPayloadShape::FixedAbi { size_bytes } => {
+        EchoPayloadShape::FixedAbi { size_bytes, fields } => {
             if payload.len() != *size_bytes {
                 anyhow::bail!(
                     "channel `{}` payload length {} does not match Message ABI size {} for `{}`",
@@ -999,8 +1239,27 @@ fn format_echo_snapshot(
                     channel.message_type
                 );
             }
+            let fields = format_fixed_abi_fields(fields, payload)?;
+            if !fields.is_empty() {
+                return Ok(format!(
+                    "channel={} type={} {} published_count={} published_at_ms={} payload_len={} fields={{{}}} raw={}",
+                    channel.name,
+                    channel.message_type,
+                    echo_payload_shape_label(&channel.payload_shape),
+                    snapshot.published_count,
+                    published_at_ms,
+                    payload.len(),
+                    fields,
+                    hex_bytes(payload)
+                ));
+            }
         }
-        EchoPayloadShape::CanonicalFrame { max_size_bytes, .. } => {
+        EchoPayloadShape::CanonicalFrame {
+            header_size_bytes,
+            max_size_bytes,
+            fields,
+            ..
+        } => {
             if payload.len() > *max_size_bytes {
                 anyhow::bail!(
                     "channel `{}` payload length {} exceeds canonical frame max size {} for `{}`",
@@ -1009,6 +1268,20 @@ fn format_echo_snapshot(
                     max_size_bytes,
                     channel.message_type
                 );
+            }
+            let fields = format_frame_fields(fields, *header_size_bytes, payload)?;
+            if !fields.is_empty() {
+                return Ok(format!(
+                    "channel={} type={} {} published_count={} published_at_ms={} payload_len={} fields={{{}}} raw={}",
+                    channel.name,
+                    channel.message_type,
+                    echo_payload_shape_label(&channel.payload_shape),
+                    snapshot.published_count,
+                    published_at_ms,
+                    payload.len(),
+                    fields,
+                    hex_bytes(payload)
+                ));
             }
         }
     }
@@ -1026,14 +1299,314 @@ fn format_echo_snapshot(
 
 fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
     match shape {
-        EchoPayloadShape::FixedAbi { size_bytes } => format!("abi_size={size_bytes}"),
+        EchoPayloadShape::FixedAbi { size_bytes, .. } => format!("abi_size={size_bytes}"),
         EchoPayloadShape::CanonicalFrame {
             max_size_bytes,
             variable,
+            ..
         } => {
             format!("frame_max_size={max_size_bytes} variable={variable}")
         }
     }
+}
+
+fn format_fixed_abi_fields(fields: &[SelfDescriptionFieldAbi], payload: &[u8]) -> Result<String> {
+    let mut formatted = Vec::new();
+    for field in fields {
+        if field.offset_bytes > payload.len()
+            || field.size_bytes > payload.len().saturating_sub(field.offset_bytes)
+        {
+            anyhow::bail!(
+                "field `{}` range {}..{} exceeds payload length {}",
+                field.name,
+                field.offset_bytes,
+                field.offset_bytes.saturating_add(field.size_bytes),
+                payload.len()
+            );
+        }
+        let bytes = &payload[field.offset_bytes..field.offset_bytes + field.size_bytes];
+        formatted.push(format!(
+            "{}={}",
+            field.name,
+            format_fixed_abi_value(&field.ty, bytes)?
+        ));
+    }
+    Ok(formatted.join(","))
+}
+
+fn format_frame_fields(
+    fields: &[SelfDescriptionFrameField],
+    header_size_bytes: usize,
+    payload: &[u8],
+) -> Result<String> {
+    if payload.len() < header_size_bytes {
+        anyhow::bail!(
+            "canonical frame header size {} exceeds payload length {}",
+            header_size_bytes,
+            payload.len()
+        );
+    }
+    let (header, tail) = payload.split_at(header_size_bytes);
+    let mut formatted = Vec::new();
+    for field in fields {
+        if field.header_offset_bytes > header.len()
+            || field.header_size_bytes > header.len().saturating_sub(field.header_offset_bytes)
+        {
+            anyhow::bail!(
+                "field `{}` header range {}..{} exceeds frame header length {}",
+                field.name,
+                field.header_offset_bytes,
+                field
+                    .header_offset_bytes
+                    .saturating_add(field.header_size_bytes),
+                header.len()
+            );
+        }
+        let bytes =
+            &header[field.header_offset_bytes..field.header_offset_bytes + field.header_size_bytes];
+        let value = format_frame_field_value(field, bytes, tail)?;
+        formatted.push(format!("{}={value}", field.name));
+    }
+    Ok(formatted.join(","))
+}
+
+fn format_frame_field_value(
+    field: &SelfDescriptionFrameField,
+    header_bytes: &[u8],
+    tail: &[u8],
+) -> Result<String> {
+    let ty = field.ty.trim();
+    if let Some(max_len) = parse_bounded_type_max(ty, "string")? {
+        let block = frame_tail_block(field, header_bytes, tail, max_len)?;
+        let text = std::str::from_utf8(block)
+            .with_context(|| format!("field `{}` is not valid UTF-8", field.name))?;
+        return serde_json::to_string(text)
+            .with_context(|| format!("failed to format string field `{}`", field.name));
+    }
+    if let Some(max_len) = parse_bounded_type_max(ty, "bytes")? {
+        let block = frame_tail_block(field, header_bytes, tail, max_len)?;
+        return Ok(format!("0x{}", hex_bytes(block)));
+    }
+    if let Some((element_ty, max_len)) = parse_sequence_type(ty)? {
+        let element_size = required_fixed_wire_size(element_ty)
+            .with_context(|| format!("unsupported sequence element type `{element_ty}`"))?;
+        let max_tail_bytes = element_size
+            .checked_mul(max_len)
+            .with_context(|| format!("sequence `{ty}` max length overflows"))?;
+        let block = frame_tail_block(field, header_bytes, tail, max_tail_bytes)?;
+        if block.len() % element_size != 0 {
+            anyhow::bail!(
+                "field `{}` byte length {} is not divisible by element size {}",
+                field.name,
+                block.len(),
+                element_size
+            );
+        }
+        let element_count = block.len() / element_size;
+        if element_count > max_len {
+            anyhow::bail!(
+                "field `{}` contains {} sequence elements, exceeding max {}",
+                field.name,
+                element_count,
+                max_len
+            );
+        }
+        let mut values = Vec::with_capacity(element_count);
+        for chunk in block.chunks_exact(element_size) {
+            values.push(format_fixed_abi_value(element_ty, chunk)?);
+        }
+        return Ok(format!("[{}]", values.join(",")));
+    }
+    format_fixed_abi_value(ty, header_bytes)
+}
+
+fn frame_tail_block<'a>(
+    field: &SelfDescriptionFrameField,
+    header_bytes: &[u8],
+    tail: &'a [u8],
+    declared_max_len: usize,
+) -> Result<&'a [u8]> {
+    if header_bytes.len() != 8 {
+        anyhow::bail!(
+            "variable field `{}` header expects 8-byte VarSpan but has {} bytes",
+            field.name,
+            header_bytes.len()
+        );
+    }
+    let offset = read_u32_le(&header_bytes[0..4])? as usize;
+    let len = read_u32_le(&header_bytes[4..8])? as usize;
+    if len > declared_max_len {
+        anyhow::bail!(
+            "field `{}` length {} exceeds declared max {}",
+            field.name,
+            len,
+            declared_max_len
+        );
+    }
+    if let Some(tail_max_bytes) = field.tail_max_bytes
+        && len > tail_max_bytes
+    {
+        anyhow::bail!(
+            "field `{}` length {} exceeds self-description tail max {}",
+            field.name,
+            len,
+            tail_max_bytes
+        );
+    }
+    if offset > tail.len() || len > tail.len().saturating_sub(offset) {
+        anyhow::bail!(
+            "field `{}` tail range {}..{} exceeds tail length {}",
+            field.name,
+            offset,
+            offset.saturating_add(len),
+            tail.len()
+        );
+    }
+    Ok(&tail[offset..offset + len])
+}
+
+fn read_u32_le(bytes: &[u8]) -> Result<u32> {
+    let array: [u8; 4] = bytes
+        .try_into()
+        .context("u32 wire value must contain exactly 4 bytes")?;
+    Ok(u32::from_le_bytes(array))
+}
+
+fn parse_bounded_type_max(ty: &str, prefix: &str) -> Result<Option<usize>> {
+    let Some(inner) = ty
+        .strip_prefix(prefix)
+        .and_then(|value| value.strip_prefix("<max="))
+        .and_then(|value| value.strip_suffix('>'))
+    else {
+        return Ok(None);
+    };
+    let max = inner
+        .trim()
+        .parse::<usize>()
+        .with_context(|| format!("invalid bounded type max in `{ty}`"))?;
+    Ok(Some(max))
+}
+
+fn parse_sequence_type(ty: &str) -> Result<Option<(&str, usize)>> {
+    let Some(inner) = ty
+        .strip_prefix("sequence<")
+        .and_then(|value| value.strip_suffix('>'))
+    else {
+        return Ok(None);
+    };
+    let Some((element, max_len)) = inner.rsplit_once(",max=") else {
+        anyhow::bail!("invalid sequence type `{ty}`");
+    };
+    let max_len = max_len
+        .trim()
+        .parse::<usize>()
+        .with_context(|| format!("invalid sequence max length in `{ty}`"))?;
+    Ok(Some((element.trim(), max_len)))
+}
+
+fn format_fixed_abi_value(ty: &str, bytes: &[u8]) -> Result<String> {
+    let ty = ty.trim();
+    if let Some((element, len)) = parse_fixed_array_type(ty)? {
+        let element_size = required_fixed_wire_size(element)
+            .with_context(|| format!("unsupported fixed array element type `{element}`"))?;
+        if bytes.len() != element_size * len {
+            anyhow::bail!(
+                "fixed array `{ty}` expects {} bytes but payload field has {} bytes",
+                element_size * len,
+                bytes.len()
+            );
+        }
+        let mut values = Vec::with_capacity(len);
+        for index in 0..len {
+            let start = index * element_size;
+            values.push(format_fixed_abi_value(
+                element,
+                &bytes[start..start + element_size],
+            )?);
+        }
+        return Ok(format!("[{}]", values.join(",")));
+    }
+    format_primitive_value(ty, bytes)
+}
+
+fn required_fixed_wire_size(ty: &str) -> Result<usize> {
+    fixed_wire_size(ty)?.with_context(|| format!("unsupported fixed wire type `{ty}`"))
+}
+
+fn fixed_wire_size(ty: &str) -> Result<Option<usize>> {
+    let ty = ty.trim();
+    if let Some(size) = primitive_size(ty) {
+        return Ok(Some(size));
+    }
+    if let Some((element, len)) = parse_fixed_array_type(ty)? {
+        let Some(element_size) = fixed_wire_size(element)? else {
+            return Ok(None);
+        };
+        return Ok(element_size.checked_mul(len));
+    }
+    Ok(None)
+}
+
+fn parse_fixed_array_type(ty: &str) -> Result<Option<(&str, usize)>> {
+    let Some(inner) = ty
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return Ok(None);
+    };
+    let Some((element, len)) = inner.split_once(';') else {
+        anyhow::bail!("invalid fixed array type `{ty}`");
+    };
+    let len = len
+        .trim()
+        .parse::<usize>()
+        .with_context(|| format!("invalid fixed array length in `{ty}`"))?;
+    Ok(Some((element.trim(), len)))
+}
+
+fn primitive_size(ty: &str) -> Option<usize> {
+    Some(match ty {
+        "bool" | "u8" | "i8" => 1,
+        "u16" | "i16" => 2,
+        "u32" | "i32" | "f32" => 4,
+        "u64" | "i64" | "f64" => 8,
+        "u128" | "i128" => 16,
+        _ => return None,
+    })
+}
+
+fn format_primitive_value(ty: &str, bytes: &[u8]) -> Result<String> {
+    let expected = primitive_size(ty).with_context(|| format!("unsupported field type `{ty}`"))?;
+    if bytes.len() != expected {
+        anyhow::bail!(
+            "primitive `{ty}` expects {expected} bytes but payload field has {} bytes",
+            bytes.len()
+        );
+    }
+    Ok(match ty {
+        "bool" => (bytes[0] != 0).to_string(),
+        "u8" => bytes[0].to_string(),
+        "i8" => (bytes[0] as i8).to_string(),
+        "u16" => u16::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "i16" => i16::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "u32" => u32::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "i32" => i32::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "u64" => u64::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "i64" => i64::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "u128" => u128::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "i128" => i128::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        "f32" => format_float(f32::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        "f64" => format_float(f64::from_le_bytes(bytes.try_into().unwrap())),
+        _ => unreachable!("primitive_size already accepted type"),
+    })
+}
+
+fn format_float(value: f64) -> String {
+    let mut formatted = value.to_string();
+    if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E') {
+        formatted.push_str(".0");
+    }
+    formatted
 }
 
 fn params_list(image: &Path, socket: Option<&Path>) -> Result<String> {
@@ -1242,8 +1815,18 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
     for socket in sockets {
         match flowrt::request_status(&socket) {
             Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
+                let active_observers = status
+                    .channels
+                    .iter()
+                    .map(|channel| channel.active_observers)
+                    .sum::<u64>();
+                let dropped_samples = status
+                    .channels
+                    .iter()
+                    .map(|channel| channel.dropped_samples)
+                    .sum::<u64>();
                 lines.push(format!(
-                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} socket={}",
+                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} observers={} dropped_samples={} socket={}",
                     handshake.pid,
                     handshake.package,
                     handshake.process,
@@ -1251,12 +1834,21 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
                     handshake.self_description_hash,
                     status.tick_count,
                     status.channels.len(),
+                    active_observers,
+                    dropped_samples,
                     socket.display()
                 ));
             }
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
                 lines.push(format!(
                     "stale socket={} error=unexpected channel snapshot response",
+                    socket.display()
+                ));
+            }
+            Ok(flowrt::IntrospectionResponse::SelfDescription { .. })
+            | Ok(flowrt::IntrospectionResponse::ObserveReady { .. }) => {
+                lines.push(format!(
+                    "stale socket={} error=unexpected introspection response",
                     socket.display()
                 ));
             }
@@ -1933,11 +2525,20 @@ fn rust_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
 }
 
 fn cpp_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
-    runtime_dir_from_env(
+    if let Some(runtime_dir) = runtime_dir_from_env(
         "FLOWRT_CPP_RUNTIME_DIR",
         "include/flowrt/runtime.hpp",
         "C++",
-    )
+    )? {
+        return Ok(Some(runtime_dir));
+    }
+    if let Some(runtime_dir) = installed_runtime_dir("runtime/cpp", "include/flowrt/runtime.hpp")? {
+        return Ok(Some(runtime_dir));
+    }
+    Ok(repo_runtime_dir(
+        "runtime/cpp",
+        "include/flowrt/runtime.hpp",
+    ))
 }
 
 fn runtime_dir_from_env(
@@ -2818,6 +3419,7 @@ fn main() {}
         .unwrap();
 
         let Command::Echo {
+            target,
             image,
             channel,
             socket,
@@ -2828,11 +3430,66 @@ fn main() {}
             panic!("echo command should parse into Command::Echo")
         };
 
-        assert_eq!(image, PathBuf::from("flowrt/selfdesc/selfdesc.json"));
-        assert_eq!(channel, "source.imu_to_sink.imu");
+        assert_eq!(target, "flowrt/selfdesc/selfdesc.json");
+        assert_eq!(image, None);
+        assert_eq!(channel.as_deref(), Some("source.imu_to_sink.imu"));
         assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
         assert!(!follow);
         assert_eq!(interval_ms, 250);
+    }
+
+    #[test]
+    fn cli_parses_echo_channel_without_image() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "echo",
+            "source.imu_to_sink.imu",
+            "--socket",
+            "/tmp/flowrt-main.sock",
+        ])
+        .unwrap();
+
+        let Command::Echo {
+            target,
+            image,
+            channel,
+            socket,
+            ..
+        } = cli.command
+        else {
+            panic!("echo command should parse into Command::Echo")
+        };
+
+        assert_eq!(target, "source.imu_to_sink.imu");
+        assert_eq!(image, None);
+        assert_eq!(channel, None);
+        assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    }
+
+    #[test]
+    fn cli_parses_echo_image_option() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "echo",
+            "source.imu_to_sink.imu",
+            "--image",
+            "flowrt/selfdesc/selfdesc.json",
+        ])
+        .unwrap();
+
+        let Command::Echo {
+            target,
+            image,
+            channel,
+            ..
+        } = cli.command
+        else {
+            panic!("echo command should parse into Command::Echo")
+        };
+
+        assert_eq!(target, "source.imu_to_sink.imu");
+        assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+        assert_eq!(channel, None);
     }
 
     #[test]
@@ -3108,7 +3765,7 @@ language = "rust"
         let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
             .expect("status server should start");
 
-        let output = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap();
+        let output = echo_channel_from_image(&selfdesc, "source.imu", Some(&socket)).unwrap();
 
         assert!(output.contains("channel=source.imu_to_sink.imu"));
         assert!(output.contains("type=Imu"));
@@ -3116,6 +3773,273 @@ language = "rust"
         assert!(output.contains("published_at_ms=123"));
         assert!(output.contains("payload_len=4"));
         assert!(output.contains("raw=01020aff"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_formats_fixed_abi_fields_from_self_description_layout() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.count",
+      "to": "sink.count",
+      "message_type": "Count"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Count",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+        let root = temp_test_dir("echo-format-fields");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 88,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.record_channel_publish_bytes(
+            "source.count_to_sink.count",
+            "Count",
+            vec![0x01, 0x02, 0x03, 0x04],
+            Some(123),
+        );
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let output = echo_channel_from_image(&selfdesc, "source.count", Some(&socket)).unwrap();
+
+        assert!(output.contains("fields={value=67305985}"));
+        assert!(output.contains("raw=01020304"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_formats_variable_frame_fields_from_self_description_layout() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.packet",
+      "to": "sink.packet",
+      "message_type": "Packet"
+    }]
+  }],
+  "message_abi": [],
+  "message_frames": [{
+    "type_name": "Packet",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 17,
+    "max_size_bytes": 64,
+    "variable": true,
+    "fields": [{
+      "name": "valid",
+      "type": "bool",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 1,
+      "tail_max_bytes": null
+    }, {
+      "name": "label",
+      "type": "string<max=8>",
+      "header_offset_bytes": 1,
+      "header_size_bytes": 8,
+      "tail_max_bytes": 8
+    }, {
+      "name": "samples",
+      "type": "sequence<u32,max=2>",
+      "header_offset_bytes": 9,
+      "header_size_bytes": 8,
+      "tail_max_bytes": 8
+    }]
+  }]
+}
+"#;
+        let root = temp_test_dir("echo-format-frame");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 89,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let mut payload = Vec::new();
+        payload.push(1);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&8u32.to_le_bytes());
+        payload.extend_from_slice(b"ok");
+        payload.extend_from_slice(&10u32.to_le_bytes());
+        payload.extend_from_slice(&20u32.to_le_bytes());
+
+        let state = flowrt::IntrospectionState::new();
+        state.record_channel_publish_bytes(
+            "source.packet_to_sink.packet",
+            "Packet",
+            payload,
+            Some(123),
+        );
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let output = echo_channel_from_image(&selfdesc, "source.packet", Some(&socket)).unwrap();
+
+        assert!(output.contains("fields={valid=true,label=\"ok\",samples=[10,20]}"));
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn echo_online_loads_self_description_and_enables_probe() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.count",
+      "to": "sink.count",
+      "message_type": "Count"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Count",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+        let root = temp_test_dir("echo-online-selfdesc");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 90,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.set_self_description_json(source);
+        state.register_channel("source.count_to_sink.count", "Count");
+        assert!(
+            !state
+                .try_probe_channel_publish_bytes(
+                    "source.count_to_sink.count",
+                    "Count",
+                    &[0, 0, 0, 0],
+                    Some(100)
+                )
+                .recorded
+        );
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("status server should start");
+
+        let publisher = std::thread::spawn({
+            let state = state.clone();
+            move || {
+                for _ in 0..100 {
+                    if state.active_probe_count("source.count_to_sink.count") == Some(1) {
+                        let record = state.try_probe_channel_publish_bytes(
+                            "source.count_to_sink.count",
+                            "Count",
+                            &[0x2a, 0x00, 0x00, 0x00],
+                            Some(124),
+                        );
+                        assert!(record.recorded);
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                panic!("echo did not enable channel probe");
+            }
+        });
+
+        let output = echo_channel(
+            &EchoTarget {
+                image: None,
+                channel: "source.count".to_string(),
+            },
+            Some(&socket),
+        )
+        .unwrap();
+        publisher.join().unwrap();
+
+        assert!(output.contains("fields={value=42}"));
+        assert!(output.contains("published_at_ms=124"));
+        assert!(output.contains("raw=2a000000"));
 
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
@@ -3173,8 +4097,10 @@ language = "rust"
         let mut output = Vec::new();
 
         echo_channel_follow_for_polls(
-            &selfdesc,
-            "source.imu",
+            &EchoTarget {
+                image: Some(selfdesc.clone()),
+                channel: "source.imu".to_string(),
+            },
             Some(&socket),
             std::time::Duration::from_millis(0),
             1,
@@ -3188,8 +4114,10 @@ language = "rust"
             Some(11),
         );
         echo_channel_follow_for_polls(
-            &selfdesc,
-            "source.imu",
+            &EchoTarget {
+                image: Some(selfdesc.clone()),
+                channel: "source.imu".to_string(),
+            },
             Some(&socket),
             std::time::Duration::from_millis(0),
             2,
@@ -3424,7 +4352,9 @@ language = "rust"
         let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
             .expect("status server should start");
 
-        let output = echo_channel(&selfdesc, "source.imu_to_sink.imu", Some(&socket)).unwrap();
+        let output =
+            echo_channel_snapshot_from_image(&selfdesc, "source.imu_to_sink.imu", Some(&socket))
+                .unwrap();
 
         assert!(output.contains("payload_len=0"));
         assert!(output.contains("no payload"));
@@ -3478,7 +4408,8 @@ language = "rust"
         let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
             .expect("status server should start");
 
-        let error = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
+        let error =
+            echo_channel_snapshot_from_image(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
 
         let message = error.to_string();
         assert!(message.contains("payload length 2"));
@@ -3532,7 +4463,8 @@ language = "rust"
         let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
             .expect("status server should start");
 
-        let error = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
+        let error =
+            echo_channel_snapshot_from_image(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
 
         let message = error.to_string();
         assert!(message.contains("self-description hash `different_hash` does not match"));
@@ -3586,7 +4518,8 @@ language = "rust"
         let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
             .expect("status server should start");
 
-        let error = echo_channel(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
+        let error =
+            echo_channel_snapshot_from_image(&selfdesc, "source.imu", Some(&socket)).unwrap_err();
 
         let message = error.to_string();
         assert!(message.contains("failed to read channel snapshot `source.imu_to_sink.imu`"));

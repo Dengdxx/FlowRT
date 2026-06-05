@@ -5,12 +5,12 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex, MutexGuard,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,8 +26,16 @@ pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
 pub enum IntrospectionRequest {
     /// 返回进程 handshake 与当前 live status。
     Status,
+    /// 返回编译期 self-description JSON。
+    SelfDescription,
     /// 返回指定 channel 的 latest raw ABI snapshot。
     ChannelSnapshot { channel: String },
+    /// 为指定 channel 建立连接作用域的数据面观测。
+    ObserveChannel {
+        channel: String,
+        #[serde(default)]
+        mode: Option<String>,
+    },
     /// 返回当前进程内可观察的参数列表。
     ParamList,
     /// 返回指定参数的当前值与 pending 值。
@@ -47,9 +55,17 @@ pub enum IntrospectionResponse {
         handshake: IntrospectionHandshake,
         status: IntrospectionStatus,
     },
+    SelfDescription {
+        handshake: IntrospectionHandshake,
+        json: String,
+    },
     ChannelSnapshot {
         handshake: IntrospectionHandshake,
         channel: IntrospectionChannelSnapshot,
+    },
+    ObserveReady {
+        handshake: IntrospectionHandshake,
+        channel: IntrospectionChannelStatus,
     },
     ParamList {
         handshake: IntrospectionHandshake,
@@ -91,6 +107,10 @@ pub struct IntrospectionChannelStatus {
     pub message_type: String,
     pub published_count: u64,
     pub last_payload_len: Option<usize>,
+    #[serde(default)]
+    pub active_observers: u64,
+    #[serde(default)]
+    pub dropped_samples: u64,
 }
 
 /// 单个 channel 的 latest raw ABI snapshot。
@@ -99,6 +119,13 @@ pub struct IntrospectionChannelSnapshot {
     pub published_count: u64,
     pub payload: Option<Vec<u8>>,
     pub published_at_ms: Option<u64>,
+}
+
+/// 数据面 probe 记录结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntrospectionProbeRecord {
+    pub recorded: bool,
+    pub dropped: bool,
 }
 
 /// generated shell 注册到 runtime 控制面的参数 schema。
@@ -131,9 +158,172 @@ pub struct IntrospectionParamStatus {
 #[derive(Debug, Clone)]
 struct ChannelState {
     message_type: String,
+    probe: IntrospectionChannelProbe,
+}
+
+#[derive(Debug)]
+struct ChannelProbeInner {
+    observer_count: AtomicU64,
+    dropped_samples: AtomicU64,
+    latest: Mutex<ChannelProbeLatest>,
+}
+
+#[derive(Debug, Default)]
+struct ChannelProbeLatest {
     published_count: u64,
     payload: Option<Vec<u8>>,
     published_at_ms: Option<u64>,
+    max_payload_len: Option<usize>,
+}
+
+/// 单个 channel 的按需数据面 probe。
+#[derive(Debug, Clone)]
+pub struct IntrospectionChannelProbe {
+    inner: Arc<ChannelProbeInner>,
+}
+
+impl Default for IntrospectionChannelProbe {
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl IntrospectionChannelProbe {
+    fn new(max_payload_len: Option<usize>) -> Self {
+        let payload = max_payload_len.map(Vec::with_capacity);
+        Self {
+            inner: Arc::new(ChannelProbeInner {
+                observer_count: AtomicU64::new(0),
+                dropped_samples: AtomicU64::new(0),
+                latest: Mutex::new(ChannelProbeLatest {
+                    published_count: 0,
+                    payload,
+                    published_at_ms: None,
+                    max_payload_len,
+                }),
+            }),
+        }
+    }
+
+    /// 判断当前 channel 是否有 active echo observer。
+    pub fn enabled(&self) -> bool {
+        self.inner.observer_count.load(Ordering::Acquire) != 0
+    }
+
+    /// active observer 数量。
+    pub fn active_count(&self) -> u64 {
+        self.inner.observer_count.load(Ordering::Acquire)
+    }
+
+    /// 被 probe 丢弃的观测样本数量。
+    pub fn dropped_samples(&self) -> u64 {
+        self.inner.dropped_samples.load(Ordering::Acquire)
+    }
+
+    /// 建立一个 observer guard；guard drop 后自动关闭 probe。
+    pub fn observe(&self) -> IntrospectionObserverGuard {
+        self.inner.observer_count.fetch_add(1, Ordering::AcqRel);
+        IntrospectionObserverGuard {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// 非阻塞记录观测 payload。无观察者时只做原子读取；锁繁忙或超出上界时丢弃观测样本。
+    pub fn try_record_bytes(
+        &self,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+    ) -> IntrospectionProbeRecord {
+        if !self.enabled() {
+            return IntrospectionProbeRecord {
+                recorded: false,
+                dropped: false,
+            };
+        }
+        let Ok(mut latest) = self.inner.latest.try_lock() else {
+            self.inner.dropped_samples.fetch_add(1, Ordering::Relaxed);
+            return IntrospectionProbeRecord {
+                recorded: false,
+                dropped: true,
+            };
+        };
+        if latest
+            .max_payload_len
+            .is_some_and(|max_payload_len| payload.len() > max_payload_len)
+        {
+            self.inner.dropped_samples.fetch_add(1, Ordering::Relaxed);
+            return IntrospectionProbeRecord {
+                recorded: false,
+                dropped: true,
+            };
+        }
+        let max_payload_len = latest.max_payload_len;
+        let buffer = latest.payload.get_or_insert_with(Vec::new);
+        if let Some(max_payload_len) = max_payload_len
+            && buffer.capacity() < max_payload_len
+        {
+            self.inner.dropped_samples.fetch_add(1, Ordering::Relaxed);
+            return IntrospectionProbeRecord {
+                recorded: false,
+                dropped: true,
+            };
+        }
+        buffer.clear();
+        buffer.extend_from_slice(payload);
+        latest.published_count = latest.published_count.saturating_add(1);
+        latest.published_at_ms = published_at_ms;
+        IntrospectionProbeRecord {
+            recorded: true,
+            dropped: false,
+        }
+    }
+
+    fn force_record_bytes(&self, payload: Vec<u8>, published_at_ms: Option<u64>) {
+        let mut latest = self
+            .inner
+            .latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        latest.published_count = latest.published_count.saturating_add(1);
+        latest.payload = Some(payload);
+        latest.published_at_ms = published_at_ms;
+    }
+
+    fn snapshot(&self) -> IntrospectionChannelSnapshot {
+        let latest = self
+            .inner
+            .latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        IntrospectionChannelSnapshot {
+            published_count: latest.published_count,
+            payload: latest.payload.clone(),
+            published_at_ms: latest.published_at_ms,
+        }
+    }
+}
+
+/// 连接作用域 observer guard。
+#[derive(Debug)]
+pub struct IntrospectionObserverGuard {
+    inner: Arc<ChannelProbeInner>,
+}
+
+impl Drop for IntrospectionObserverGuard {
+    fn drop(&mut self) {
+        let mut current = self.inner.observer_count.load(Ordering::Acquire);
+        while current != 0 {
+            match self.inner.observer_count.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +346,7 @@ pub struct IntrospectionState {
 #[derive(Debug, Default)]
 struct IntrospectionStateInner {
     tick_count: u64,
+    self_description_json: Option<String>,
     channels: BTreeMap<String, ChannelState>,
     params: BTreeMap<String, ParamState>,
 }
@@ -174,13 +365,21 @@ impl IntrospectionState {
 
     /// 预注册一个 channel，使其在尚未发布样本时也出现在 status 中。
     pub fn register_channel(&self, name: impl Into<String>, message_type: impl Into<String>) {
+        self.register_channel_with_probe_capacity(name, message_type, None);
+    }
+
+    /// 预注册一个带有有界 probe snapshot 容量的 channel。
+    pub fn register_channel_with_probe_capacity(
+        &self,
+        name: impl Into<String>,
+        message_type: impl Into<String>,
+        max_payload_len: Option<usize>,
+    ) {
         let name = name.into();
         let mut inner = self.lock_inner();
         inner.channels.entry(name).or_insert_with(|| ChannelState {
             message_type: message_type.into(),
-            published_count: 0,
-            payload: None,
-            published_at_ms: None,
+            probe: IntrospectionChannelProbe::new(max_payload_len),
         });
     }
 
@@ -199,6 +398,18 @@ impl IntrospectionState {
                 max: schema.max,
                 choices: schema.choices,
             });
+    }
+
+    /// 注册编译期 self-description JSON，供在线 CLI 自动发现和格式化。
+    pub fn set_self_description_json(&self, json: impl Into<String>) {
+        let mut inner = self.lock_inner();
+        inner.self_description_json = Some(json.into());
+    }
+
+    /// 返回当前 runtime 暴露的 self-description JSON。
+    pub fn self_description_json(&self) -> Option<String> {
+        let inner = self.lock_inner();
+        inner.self_description_json.clone()
     }
 
     /// 增加 scheduler tick 计数。
@@ -231,14 +442,81 @@ impl IntrospectionState {
         let mut inner = self.lock_inner();
         let channel = inner.channels.entry(name).or_insert_with(|| ChannelState {
             message_type: message_type.clone(),
-            published_count: 0,
-            payload: None,
-            published_at_ms: None,
+            probe: IntrospectionChannelProbe::new(None),
         });
         channel.message_type = message_type;
-        channel.published_count = channel.published_count.saturating_add(1);
-        channel.payload = Some(payload);
-        channel.published_at_ms = published_at_ms;
+        channel.probe.force_record_bytes(payload, published_at_ms);
+    }
+
+    /// 获取指定 channel 的 probe handle。
+    pub fn channel_probe(&self, name: &str) -> Option<IntrospectionChannelProbe> {
+        let inner = self.lock_inner();
+        inner
+            .channels
+            .get(name)
+            .map(|channel| channel.probe.clone())
+    }
+
+    /// 为指定 channel 建立连接作用域 observer guard。
+    pub fn observe_channel(&self, name: &str) -> Option<IntrospectionObserverGuard> {
+        self.channel_probe(name).map(|probe| probe.observe())
+    }
+
+    /// 返回指定 channel 当前 active observer 数量。
+    pub fn active_probe_count(&self, name: &str) -> Option<u64> {
+        self.channel_probe(name).map(|probe| probe.active_count())
+    }
+
+    /// 按需记录 channel 发布的 raw ABI bytes。
+    pub fn try_probe_channel_publish_bytes(
+        &self,
+        name: &str,
+        message_type: impl Into<String>,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+    ) -> IntrospectionProbeRecord {
+        let message_type = message_type.into();
+        let probe = {
+            let mut inner = self.lock_inner();
+            let channel = inner
+                .channels
+                .entry(name.to_string())
+                .or_insert_with(|| ChannelState {
+                    message_type: message_type.clone(),
+                    probe: IntrospectionChannelProbe::new(None),
+                });
+            channel.message_type = message_type;
+            channel.probe.clone()
+        };
+        probe.try_record_bytes(payload, published_at_ms)
+    }
+
+    /// 按需记录 channel 发布的 Message ABI 对象表示。
+    pub fn try_probe_channel_publish<T: Copy>(
+        &self,
+        name: &str,
+        message_type: impl Into<String>,
+        value: &T,
+        published_at_ms: Option<u64>,
+    ) -> IntrospectionProbeRecord {
+        let Some(probe) = self.channel_probe(name) else {
+            return IntrospectionProbeRecord {
+                recorded: false,
+                dropped: false,
+            };
+        };
+        if !probe.enabled() {
+            return IntrospectionProbeRecord {
+                recorded: false,
+                dropped: false,
+            };
+        }
+        self.try_probe_channel_publish_bytes(
+            name,
+            message_type,
+            bytes_of(value).as_slice(),
+            published_at_ms,
+        )
     }
 
     /// 返回当前 status 快照。
@@ -252,8 +530,10 @@ impl IntrospectionState {
                 .map(|(name, channel)| IntrospectionChannelStatus {
                     name: name.clone(),
                     message_type: channel.message_type.clone(),
-                    published_count: channel.published_count,
-                    last_payload_len: channel.payload.as_ref().map(Vec::len),
+                    published_count: channel.probe.snapshot().published_count,
+                    last_payload_len: channel.probe.snapshot().payload.as_ref().map(Vec::len),
+                    active_observers: channel.probe.active_count(),
+                    dropped_samples: channel.probe.dropped_samples(),
                 })
                 .collect(),
         }
@@ -265,11 +545,22 @@ impl IntrospectionState {
         inner
             .channels
             .get(name)
-            .map(|channel| IntrospectionChannelSnapshot {
-                published_count: channel.published_count,
-                payload: channel.payload.clone(),
-                published_at_ms: channel.published_at_ms,
-            })
+            .map(|channel| channel.probe.snapshot())
+    }
+
+    fn channel_status(&self, name: &str) -> Option<IntrospectionChannelStatus> {
+        let inner = self.lock_inner();
+        inner.channels.get(name).map(|channel| {
+            let snapshot = channel.probe.snapshot();
+            IntrospectionChannelStatus {
+                name: name.to_string(),
+                message_type: channel.message_type.clone(),
+                published_count: snapshot.published_count,
+                last_payload_len: snapshot.payload.as_ref().map(Vec::len),
+                active_observers: channel.probe.active_count(),
+                dropped_samples: channel.probe.dropped_samples(),
+            }
+        })
     }
 
     /// 返回参数状态列表。
@@ -430,7 +721,13 @@ pub fn spawn_status_server_at(
         while !thread_stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _addr)) => {
-                    let _ = handle_connection(stream, &handshake, &state);
+                    let handshake = handshake.clone();
+                    let state = state.clone();
+                    let _ = thread::Builder::new()
+                        .name("flowrt-introspection-client".to_string())
+                        .spawn(move || {
+                            let _ = handle_connection(stream, &handshake, &state);
+                        });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(10));
@@ -502,6 +799,49 @@ pub fn request_channel_snapshot(
     )
 }
 
+/// 向 introspection socket 请求 self-description JSON。
+pub fn request_self_description(path: &Path) -> std::io::Result<IntrospectionResponse> {
+    request(path, &IntrospectionRequest::SelfDescription)
+}
+
+/// 向 introspection socket 打开 observe channel 连接。
+pub fn observe_channel_stream(
+    path: &Path,
+    channel: impl Into<String>,
+) -> std::io::Result<(UnixStream, IntrospectionResponse)> {
+    let mut stream = UnixStream::connect(path)?;
+    let request = serde_json::to_string(&IntrospectionRequest::ObserveChannel {
+        channel: channel.into(),
+        mode: Some("latest".to_string()),
+    })
+    .map_err(std::io::Error::other)?;
+    stream.write_all(request.as_bytes())?;
+    stream.write_all(b"\n")?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if line.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "FlowRT observe channel response was empty",
+        ));
+    }
+    let response = serde_json::from_slice(&line).map_err(std::io::Error::other)?;
+    Ok((stream, response))
+}
+
 /// 向 introspection socket 请求参数列表。
 pub fn request_param_list(path: &Path) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::ParamList)
@@ -564,6 +904,25 @@ fn handle_connection(
             )?;
             writer.write_all(b"\n")?;
         }
+        IntrospectionRequest::SelfDescription => {
+            let response = match state.self_description_json() {
+                Some(json) => IntrospectionResponse::SelfDescription {
+                    handshake: handshake.clone(),
+                    json,
+                },
+                None => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message: "FlowRT self-description is not registered".to_string(),
+                },
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
         IntrospectionRequest::ChannelSnapshot { channel } => {
             let Some(channel) = state.channel_snapshot(&channel) else {
                 let response = IntrospectionResponse::Error {
@@ -590,6 +949,60 @@ fn handle_connection(
                     .as_bytes(),
             )?;
             writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::ObserveChannel { channel, .. } => {
+            let Some(guard) = state.observe_channel(&channel) else {
+                let response = IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message: "unknown FlowRT channel".to_string(),
+                };
+                let mut writer = stream;
+                writer.write_all(
+                    serde_json::to_string(&response)
+                        .map_err(std::io::Error::other)?
+                        .as_bytes(),
+                )?;
+                writer.write_all(b"\n")?;
+                return Ok(());
+            };
+            let Some(channel_status) = state.channel_status(&channel) else {
+                drop(guard);
+                let response = IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message: "unknown FlowRT channel".to_string(),
+                };
+                let mut writer = stream;
+                writer.write_all(
+                    serde_json::to_string(&response)
+                        .map_err(std::io::Error::other)?
+                        .as_bytes(),
+                )?;
+                writer.write_all(b"\n")?;
+                return Ok(());
+            };
+            let response = IntrospectionResponse::ObserveReady {
+                handshake: handshake.clone(),
+                channel: channel_status,
+            };
+            let mut writer = stream.try_clone()?;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut keepalive = String::new();
+                match reader.read_line(&mut keepalive) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+            drop(guard);
         }
         IntrospectionRequest::ParamList => {
             let response = IntrospectionResponse::ParamList {
@@ -813,6 +1226,8 @@ mod tests {
                 message_type: "Imu".to_string(),
                 published_count: 3,
                 last_payload_len: Some(48),
+                active_observers: 0,
+                dropped_samples: 0,
             }]
         );
 
@@ -900,6 +1315,179 @@ mod tests {
             state.param("controller.kp").unwrap().current,
             serde_json::json!(2.0)
         );
+    }
+
+    #[test]
+    fn probe_recording_is_disabled_until_observer_guard_is_active() {
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+
+        assert!(
+            !state
+                .try_probe_channel_publish_bytes(
+                    "source.imu_to_sink.imu",
+                    "Imu",
+                    &[1, 2, 3, 4],
+                    Some(10)
+                )
+                .recorded
+        );
+        let snapshot = state.channel_snapshot("source.imu_to_sink.imu").unwrap();
+        assert_eq!(snapshot.published_count, 0);
+        assert_eq!(snapshot.payload, None);
+
+        let guard = state
+            .observe_channel("source.imu_to_sink.imu")
+            .expect("registered channel should be observable");
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(1));
+        assert!(
+            state
+                .try_probe_channel_publish_bytes(
+                    "source.imu_to_sink.imu",
+                    "Imu",
+                    &[5, 6, 7, 8],
+                    Some(11)
+                )
+                .recorded
+        );
+        let snapshot = state.channel_snapshot("source.imu_to_sink.imu").unwrap();
+        assert_eq!(snapshot.published_count, 1);
+        assert_eq!(snapshot.payload, Some(vec![5, 6, 7, 8]));
+        assert_eq!(snapshot.published_at_ms, Some(11));
+
+        drop(guard);
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
+        assert!(
+            !state
+                .try_probe_channel_publish_bytes(
+                    "source.imu_to_sink.imu",
+                    "Imu",
+                    &[9, 10, 11, 12],
+                    Some(12)
+                )
+                .recorded
+        );
+        let snapshot = state.channel_snapshot("source.imu_to_sink.imu").unwrap();
+        assert_eq!(snapshot.published_count, 1);
+        assert_eq!(snapshot.payload, Some(vec![5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn observe_channel_socket_enables_probe_until_connection_closes() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-observe-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        let server = spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("server should start");
+
+        let mut stream = UnixStream::connect(server.path()).unwrap();
+        stream
+            .write_all(
+                br#"{"command":"observe_channel","channel":"source.imu_to_sink.imu","mode":"latest"}
+"#,
+            )
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains(r#""response":"observe_ready""#));
+
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(1));
+        assert!(
+            state
+                .try_probe_channel_publish_bytes(
+                    "source.imu_to_sink.imu",
+                    "Imu",
+                    &[1, 2, 3],
+                    Some(7)
+                )
+                .recorded
+        );
+        assert_eq!(
+            state
+                .channel_snapshot("source.imu_to_sink.imu")
+                .unwrap()
+                .payload,
+            Some(vec![1, 2, 3])
+        );
+
+        drop(reader);
+        drop(stream);
+        for _ in 0..100 {
+            if state.active_probe_count("source.imu_to_sink.imu") == Some(0) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn observe_channel_stream_helper_keeps_probe_enabled_until_stream_drops() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-observe-helper-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 43,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        let server = spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("server should start");
+
+        let (stream, response) =
+            observe_channel_stream(server.path(), "source.imu_to_sink.imu").unwrap();
+        assert!(matches!(
+            response,
+            IntrospectionResponse::ObserveReady { .. }
+        ));
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(1));
+        assert!(
+            state
+                .try_probe_channel_publish_bytes(
+                    "source.imu_to_sink.imu",
+                    "Imu",
+                    &[9, 8, 7],
+                    Some(8)
+                )
+                .recorded
+        );
+
+        drop(stream);
+        for _ in 0..100 {
+            if state.active_probe_count("source.imu_to_sink.imu") == Some(0) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1947,6 +1947,8 @@ struct IntrospectionChannelStatus {
     std::string message_type;
     std::uint64_t published_count = 0;
     std::optional<std::size_t> last_payload_len;
+    std::uint64_t active_observers = 0;
+    std::uint64_t dropped_samples = 0;
 };
 
 /**
@@ -1957,6 +1959,179 @@ struct IntrospectionChannelSnapshot {
     std::optional<std::vector<std::uint8_t>> payload;
     std::optional<std::uint64_t> published_at_ms;
 };
+
+/**
+ * @brief 数据面 probe 的单次记录结果。
+ */
+struct IntrospectionProbeRecord {
+    bool recorded = false;
+    bool dropped = false;
+};
+
+namespace detail {
+
+struct IntrospectionProbeLatest {
+    std::uint64_t published_count = 0;
+    std::optional<std::vector<std::uint8_t>> payload;
+    std::optional<std::uint64_t> published_at_ms;
+    std::optional<std::size_t> max_payload_len;
+};
+
+struct IntrospectionProbeInner {
+    std::atomic_uint64_t observer_count{0};
+    std::atomic_uint64_t dropped_samples{0};
+    mutable std::mutex mutex;
+    IntrospectionProbeLatest latest;
+};
+
+}  // namespace detail
+
+class IntrospectionObserverGuard;
+
+/**
+ * @brief 单个 channel 的按需 echo 数据面 probe。
+ */
+class IntrospectionChannelProbe {
+   public:
+    IntrospectionChannelProbe() : IntrospectionChannelProbe(std::nullopt) {}
+
+    explicit IntrospectionChannelProbe(std::optional<std::size_t> max_payload_len)
+        : inner_(std::make_shared<detail::IntrospectionProbeInner>()) {
+        inner_->latest.max_payload_len = max_payload_len;
+        if (max_payload_len) {
+            inner_->latest.payload = std::vector<std::uint8_t>{};
+            inner_->latest.payload->reserve(*max_payload_len);
+        }
+    }
+
+    bool enabled() const noexcept {
+        return inner_->observer_count.load(std::memory_order_acquire) != 0U;
+    }
+
+    std::uint64_t active_count() const noexcept {
+        return inner_->observer_count.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t dropped_samples() const noexcept {
+        return inner_->dropped_samples.load(std::memory_order_acquire);
+    }
+
+    IntrospectionObserverGuard observe() const;
+
+    IntrospectionProbeRecord try_record_bytes(const std::vector<std::uint8_t> &payload,
+                                              std::optional<std::uint64_t> published_at_ms) const {
+        return try_record_bytes(std::span<const std::uint8_t>{payload.data(), payload.size()},
+                                published_at_ms);
+    }
+
+    IntrospectionProbeRecord try_record_bytes(std::span<const std::uint8_t> payload,
+                                              std::optional<std::uint64_t> published_at_ms) const {
+        if (!enabled()) {
+            return IntrospectionProbeRecord{};
+        }
+        if (!inner_->mutex.try_lock()) {
+            inner_->dropped_samples.fetch_add(1, std::memory_order_relaxed);
+            return IntrospectionProbeRecord{.recorded = false, .dropped = true};
+        }
+        std::unique_lock<std::mutex> lock(inner_->mutex, std::adopt_lock);
+        auto &latest = inner_->latest;
+        if (latest.max_payload_len && payload.size() > *latest.max_payload_len) {
+            inner_->dropped_samples.fetch_add(1, std::memory_order_relaxed);
+            return IntrospectionProbeRecord{.recorded = false, .dropped = true};
+        }
+        auto &buffer = latest.payload ? *latest.payload : latest.payload.emplace();
+        if (latest.max_payload_len && buffer.capacity() < *latest.max_payload_len) {
+            buffer.reserve(*latest.max_payload_len);
+        }
+        if (latest.max_payload_len && buffer.capacity() < *latest.max_payload_len) {
+            inner_->dropped_samples.fetch_add(1, std::memory_order_relaxed);
+            return IntrospectionProbeRecord{.recorded = false, .dropped = true};
+        }
+        buffer.clear();
+        buffer.insert(buffer.end(), payload.begin(), payload.end());
+        if (latest.published_count != UINT64_MAX) {
+            ++latest.published_count;
+        }
+        latest.published_at_ms = published_at_ms;
+        return IntrospectionProbeRecord{.recorded = true, .dropped = false};
+    }
+
+    void force_record_bytes(std::vector<std::uint8_t> payload,
+                            std::optional<std::uint64_t> published_at_ms) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &latest = inner_->latest;
+        if (latest.published_count != UINT64_MAX) {
+            ++latest.published_count;
+        }
+        latest.payload = std::move(payload);
+        latest.published_at_ms = published_at_ms;
+    }
+
+    IntrospectionChannelSnapshot snapshot() const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return IntrospectionChannelSnapshot{
+            .published_count = inner_->latest.published_count,
+            .payload = inner_->latest.payload,
+            .published_at_ms = inner_->latest.published_at_ms,
+        };
+    }
+
+   private:
+    friend class IntrospectionObserverGuard;
+
+    std::shared_ptr<detail::IntrospectionProbeInner> inner_;
+};
+
+/**
+ * @brief 连接作用域 observer guard，析构时自动关闭 probe。
+ */
+class IntrospectionObserverGuard {
+   public:
+    IntrospectionObserverGuard() = default;
+    explicit IntrospectionObserverGuard(std::shared_ptr<detail::IntrospectionProbeInner> inner)
+        : inner_(std::move(inner)) {
+        if (inner_) {
+            inner_->observer_count.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+
+    IntrospectionObserverGuard(const IntrospectionObserverGuard &) = delete;
+    auto operator=(const IntrospectionObserverGuard &) -> IntrospectionObserverGuard & = delete;
+
+    IntrospectionObserverGuard(IntrospectionObserverGuard &&other) noexcept
+        : inner_(std::move(other.inner_)) {}
+
+    auto operator=(IntrospectionObserverGuard &&other) noexcept -> IntrospectionObserverGuard & {
+        if (this != std::addressof(other)) {
+            release();
+            inner_ = std::move(other.inner_);
+        }
+        return *this;
+    }
+
+    ~IntrospectionObserverGuard() { release(); }
+
+   private:
+    void release() noexcept {
+        if (inner_) {
+            std::uint64_t current = inner_->observer_count.load(std::memory_order_acquire);
+            while (current != 0U) {
+                if (inner_->observer_count.compare_exchange_weak(current, current - 1U,
+                                                                 std::memory_order_acq_rel,
+                                                                 std::memory_order_acquire)) {
+                    break;
+                }
+            }
+            inner_.reset();
+        }
+    }
+
+    std::shared_ptr<detail::IntrospectionProbeInner> inner_;
+};
+
+inline IntrospectionObserverGuard IntrospectionChannelProbe::observe() const {
+    return IntrospectionObserverGuard{inner_};
+}
 
 /**
  * @brief 运行态 status 快照。
@@ -2076,6 +2251,10 @@ inline std::string channel_status_json(const IntrospectionChannelStatus &channel
     output.append(std::to_string(channel.published_count));
     output.append(",\"last_payload_len\":");
     output.append(channel.last_payload_len ? std::to_string(*channel.last_payload_len) : "null");
+    output.append(",\"active_observers\":");
+    output.append(std::to_string(channel.active_observers));
+    output.append(",\"dropped_samples\":");
+    output.append(std::to_string(channel.dropped_samples));
     output.push_back('}');
     return output;
 }
@@ -2161,6 +2340,17 @@ inline std::string param_value_response_json(const IntrospectionHandshake &hands
     return output;
 }
 
+inline std::string self_description_response_json(const IntrospectionHandshake &handshake,
+                                                  std::string_view json) {
+    std::string output;
+    output.append("{\"response\":\"self_description\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"json\":");
+    output.append(json_string(json));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string payload_json(const std::optional<std::vector<std::uint8_t>> &payload) {
     if (!payload) {
         return "null";
@@ -2207,6 +2397,17 @@ inline std::string channel_snapshot_response_json(const IntrospectionHandshake &
     output.append(handshake_json(handshake));
     output.append(",\"channel\":");
     output.append(channel_snapshot_json(channel));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string observe_ready_response_json(const IntrospectionHandshake &handshake,
+                                               const IntrospectionChannelStatus &channel) {
+    std::string output;
+    output.append("{\"response\":\"observe_ready\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"channel\":");
+    output.append(channel_status_json(channel));
     output.push_back('}');
     return output;
 }
@@ -2293,10 +2494,12 @@ inline std::optional<std::size_t> find_json_string_value(std::string_view input,
 
 enum class IntrospectionRequestKind : std::uint8_t {
     Status = 0,
-    ChannelSnapshot = 1,
-    ParamList = 2,
-    ParamGet = 3,
-    ParamSet = 4,
+    SelfDescription = 1,
+    ChannelSnapshot = 2,
+    ObserveChannel = 3,
+    ParamList = 4,
+    ParamGet = 5,
+    ParamSet = 6,
 };
 
 struct ParsedIntrospectionRequest {
@@ -2383,6 +2586,9 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
     if (command == "status") {
         return ParsedIntrospectionRequest{IntrospectionRequestKind::Status, {}};
     }
+    if (command == "self_description") {
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::SelfDescription, {}};
+    }
     if (command == "channel_snapshot") {
         std::string channel;
         if (!find_json_string_value(line, "channel", channel)) {
@@ -2390,6 +2596,14 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
         }
         return ParsedIntrospectionRequest{
             IntrospectionRequestKind::ChannelSnapshot, std::move(channel), {}, {}};
+    }
+    if (command == "observe_channel") {
+        std::string channel;
+        if (!find_json_string_value(line, "channel", channel)) {
+            return std::nullopt;
+        }
+        return ParsedIntrospectionRequest{
+            IntrospectionRequestKind::ObserveChannel, std::move(channel), {}, {}};
     }
     if (command == "param_list") {
         return ParsedIntrospectionRequest{IntrospectionRequestKind::ParamList, {}, {}, {}};
@@ -2509,13 +2723,21 @@ class IntrospectionState {
      * @brief 预注册 channel，使其在尚未发布样本时也出现在 status 中。
      */
     void register_channel(std::string name, std::string message_type) const {
+        register_channel_with_probe_capacity(std::move(name), std::move(message_type),
+                                             std::nullopt);
+    }
+
+    /**
+     * @brief 预注册带有有界 probe snapshot 容量的 channel。
+     */
+    void register_channel_with_probe_capacity(std::string name, std::string message_type,
+                                              std::optional<std::size_t> max_payload_len) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
-        inner_->channels.try_emplace(std::move(name), ChannelState{
-                                                          .message_type = std::move(message_type),
-                                                          .published_count = 0,
-                                                          .payload = std::nullopt,
-                                                          .published_at_ms = std::nullopt,
-                                                      });
+        inner_->channels.try_emplace(std::move(name),
+                                     ChannelState{
+                                         .message_type = std::move(message_type),
+                                         .probe = IntrospectionChannelProbe{max_payload_len},
+                                     });
     }
 
     /**
@@ -2532,6 +2754,22 @@ class IntrospectionState {
                                                                .max = std::move(schema.max),
                                                                .choices = std::move(schema.choices),
                                                            });
+    }
+
+    /**
+     * @brief 注册编译期 self-description JSON，供在线 CLI 自动发现和格式化。
+     */
+    void set_self_description_json(std::string json) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->self_description_json = std::move(json);
+    }
+
+    /**
+     * @brief 返回当前 runtime 暴露的 self-description JSON。
+     */
+    std::optional<std::string> self_description_json() const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return inner_->self_description_json;
     }
 
     /**
@@ -2554,17 +2792,11 @@ class IntrospectionState {
         auto [iterator, _inserted] =
             inner_->channels.try_emplace(std::move(name), ChannelState{
                                                               .message_type = message_type,
-                                                              .published_count = 0,
-                                                              .payload = std::nullopt,
-                                                              .published_at_ms = std::nullopt,
+                                                              .probe = IntrospectionChannelProbe{},
                                                           });
         auto &channel = iterator->second;
         channel.message_type = std::move(message_type);
-        if (channel.published_count != UINT64_MAX) {
-            ++channel.published_count;
-        }
-        channel.payload = std::move(payload);
-        channel.published_at_ms = published_at_ms;
+        channel.probe.force_record_bytes(std::move(payload), published_at_ms);
     }
 
     /**
@@ -2584,6 +2816,91 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 获取指定 channel 的 probe handle。
+     */
+    std::optional<IntrospectionChannelProbe> channel_probe(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto channel = inner_->channels.find(std::string{name});
+        if (channel == inner_->channels.end()) {
+            return std::nullopt;
+        }
+        return channel->second.probe;
+    }
+
+    /**
+     * @brief 为指定 channel 建立连接作用域 observer guard。
+     */
+    std::optional<IntrospectionObserverGuard> observe_channel(std::string_view name) const {
+        const auto probe = channel_probe(name);
+        if (!probe) {
+            return std::nullopt;
+        }
+        return probe->observe();
+    }
+
+    /**
+     * @brief 返回指定 channel 的 active observer 数量。
+     */
+    std::optional<std::uint64_t> active_probe_count(std::string_view name) const {
+        const auto probe = channel_probe(name);
+        if (!probe) {
+            return std::nullopt;
+        }
+        return probe->active_count();
+    }
+
+    /**
+     * @brief 按需记录 channel 发布的 raw ABI bytes。
+     */
+    IntrospectionProbeRecord try_probe_channel_publish_bytes(
+        std::string name, std::string message_type, const std::vector<std::uint8_t> &payload,
+        std::optional<std::uint64_t> published_at_ms) const {
+        return try_probe_channel_publish_bytes(
+            std::move(name), std::move(message_type),
+            std::span<const std::uint8_t>{payload.data(), payload.size()}, published_at_ms);
+    }
+
+    /**
+     * @brief 按需记录 channel 发布的 raw ABI bytes。
+     */
+    IntrospectionProbeRecord try_probe_channel_publish_bytes(
+        std::string name, std::string message_type, std::span<const std::uint8_t> payload,
+        std::optional<std::uint64_t> published_at_ms) const {
+        IntrospectionChannelProbe probe;
+        {
+            std::lock_guard<std::mutex> lock(inner_->mutex);
+            auto [iterator, _inserted] = inner_->channels.try_emplace(
+                std::move(name), ChannelState{
+                                     .message_type = message_type,
+                                     .probe = IntrospectionChannelProbe{},
+                                 });
+            iterator->second.message_type = std::move(message_type);
+            probe = iterator->second.probe;
+        }
+        return probe.try_record_bytes(payload, published_at_ms);
+    }
+
+    /**
+     * @brief 按需记录 channel 发布的 Message ABI 对象表示。
+     */
+    template <typename T>
+    IntrospectionProbeRecord try_probe_channel_publish(
+        std::string_view name, std::string message_type, const T &value,
+        std::optional<std::uint64_t> published_at_ms) const {
+        static_assert(std::is_trivially_copyable_v<T>,
+                      "FlowRT introspection payload snapshot requires trivially copyable values");
+        const auto probe = channel_probe(name);
+        if (!probe || !probe->enabled()) {
+            return IntrospectionProbeRecord{};
+        }
+        return try_probe_channel_publish_bytes(
+            std::string{name}, std::move(message_type),
+            std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t *>(&value),
+                                          sizeof(T)},
+            published_at_ms);
+    }
+
+    /**
      * @brief 返回当前 status 快照。
      */
     IntrospectionStatus status() const {
@@ -2592,13 +2909,17 @@ class IntrospectionState {
         snapshot.tick_count = inner_->tick_count;
         snapshot.channels.reserve(inner_->channels.size());
         for (const auto &[name, channel] : inner_->channels) {
+            const auto channel_snapshot = channel.probe.snapshot();
             snapshot.channels.push_back(IntrospectionChannelStatus{
                 .name = name,
                 .message_type = channel.message_type,
-                .published_count = channel.published_count,
-                .last_payload_len = channel.payload
-                                        ? std::optional<std::size_t>{channel.payload->size()}
-                                        : std::nullopt,
+                .published_count = channel_snapshot.published_count,
+                .last_payload_len =
+                    channel_snapshot.payload
+                        ? std::optional<std::size_t>{channel_snapshot.payload->size()}
+                        : std::nullopt,
+                .active_observers = channel.probe.active_count(),
+                .dropped_samples = channel.probe.dropped_samples(),
             });
         }
         return snapshot;
@@ -2613,10 +2934,28 @@ class IntrospectionState {
         if (channel == inner_->channels.end()) {
             return std::nullopt;
         }
-        return IntrospectionChannelSnapshot{
-            .published_count = channel->second.published_count,
-            .payload = channel->second.payload,
-            .published_at_ms = channel->second.published_at_ms,
+        return channel->second.probe.snapshot();
+    }
+
+    /**
+     * @brief 返回指定 channel 的运行态摘要。
+     */
+    std::optional<IntrospectionChannelStatus> channel_status(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto channel = inner_->channels.find(std::string{name});
+        if (channel == inner_->channels.end()) {
+            return std::nullopt;
+        }
+        const auto snapshot = channel->second.probe.snapshot();
+        return IntrospectionChannelStatus{
+            .name = std::string{name},
+            .message_type = channel->second.message_type,
+            .published_count = snapshot.published_count,
+            .last_payload_len = snapshot.payload
+                                    ? std::optional<std::size_t>{snapshot.payload->size()}
+                                    : std::nullopt,
+            .active_observers = channel->second.probe.active_count(),
+            .dropped_samples = channel->second.probe.dropped_samples(),
         };
     }
 
@@ -2706,9 +3045,7 @@ class IntrospectionState {
    private:
     struct ChannelState {
         std::string message_type;
-        std::uint64_t published_count = 0;
-        std::optional<std::vector<std::uint8_t>> payload;
-        std::optional<std::uint64_t> published_at_ms;
+        IntrospectionChannelProbe probe;
     };
 
     struct ParamState {
@@ -2724,6 +3061,7 @@ class IntrospectionState {
     struct Inner {
         std::mutex mutex;
         std::uint64_t tick_count = 0;
+        std::optional<std::string> self_description_json;
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
     };
@@ -2845,11 +3183,36 @@ inline void handle_introspection_connection(int client_fd, const IntrospectionHa
             case IntrospectionRequestKind::Status:
                 response = status_response_json(handshake, state.status());
                 break;
+            case IntrospectionRequestKind::SelfDescription: {
+                const auto json = state.self_description_json();
+                response = json ? self_description_response_json(handshake, *json)
+                                : error_response_json(handshake,
+                                                      "FlowRT self-description is not registered");
+                break;
+            }
             case IntrospectionRequestKind::ChannelSnapshot: {
                 const auto channel = state.channel_snapshot(request->channel);
                 response = channel ? channel_snapshot_response_json(handshake, *channel)
                                    : error_response_json(handshake, "unknown FlowRT channel");
                 break;
+            }
+            case IntrospectionRequestKind::ObserveChannel: {
+                auto guard = state.observe_channel(request->channel);
+                const auto channel = state.channel_status(request->channel);
+                if (!guard || !channel) {
+                    response = error_response_json(handshake, "unknown FlowRT channel");
+                    break;
+                }
+                response = observe_ready_response_json(handshake, *channel);
+                response.push_back('\n');
+                (void)write_all(client_fd, response);
+                while (true) {
+                    const auto keepalive = read_line(client_fd);
+                    if (!keepalive) {
+                        break;
+                    }
+                }
+                return;
             }
             case IntrospectionRequestKind::ParamList:
                 response = param_list_response_json(handshake, state.params());
@@ -3031,8 +3394,14 @@ inline std::optional<IntrospectionServer> spawn_status_server_at(std::filesystem
                 const int client_fd = ::accept(listener_fd, nullptr, nullptr);
                 if (client_fd >= 0) {
                     detail::set_socket_timeout(client_fd);
-                    detail::handle_introspection_connection(client_fd, handshake, state);
-                    ::close(client_fd);
+                    try {
+                        std::thread([client_fd, handshake, state]() {
+                            detail::handle_introspection_connection(client_fd, handshake, state);
+                            ::close(client_fd);
+                        }).detach();
+                    } catch (...) {
+                        ::close(client_fd);
+                    }
                     continue;
                 }
                 if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
