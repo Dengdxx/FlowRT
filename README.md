@@ -230,6 +230,7 @@ cargo run -p flowrt-cli -- build examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 cargo run -p flowrt-cli -- launch examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build examples/imu_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- build examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run examples/import_demo/rsdl/robot.rsdl --process main
 cargo run -p flowrt-cli -- launch examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
