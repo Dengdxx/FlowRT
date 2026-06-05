@@ -16,7 +16,8 @@ pub mod wire;
 pub mod zenoh;
 
 pub use backend::{
-    Backend, BackendKind, InprocBackend, InprocScheduler, Iox2Backend, Scheduler, ZenohBackend,
+    Backend, BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, BackendKind,
+    InprocBackend, InprocScheduler, Iox2Backend, ReconnectPolicy, Scheduler, ZenohBackend,
     inproc_backend, iox2_backend, zenoh_backend,
 };
 pub use channel::{

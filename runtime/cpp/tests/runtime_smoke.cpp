@@ -171,6 +171,41 @@ int main() {
                                                                 "transfer:copy",
                                                                 "observability:health",
                                                             });
+    flowrt::ReconnectPolicy policy{100U, 1000U, std::optional<std::uint32_t>{3U}};
+    assert(policy.initial_delay_ms == 100U);
+    assert(policy.max_delay_ms == 1000U);
+    assert(policy.max_attempts == std::optional<std::uint32_t>{3U});
+    assert(policy.delay_for_attempt(0U) == 100U);
+    assert(policy.delay_for_attempt(1U) == 200U);
+    assert(policy.delay_for_attempt(4U) == 1000U);
+    assert(policy.can_retry(2U));
+    assert(!policy.can_retry(3U));
+
+    flowrt::BackendHealthTracker tracker{policy};
+    assert(tracker.snapshot().state == flowrt::BackendHealthState::Ready);
+    assert(tracker.snapshot().attempt == 0U);
+    assert(!tracker.snapshot().recoverable);
+    tracker.mark_degraded("receive failed");
+    assert(tracker.snapshot().state == flowrt::BackendHealthState::Degraded);
+    assert(tracker.snapshot().last_error == std::optional<std::string>{"receive failed"});
+    assert(tracker.snapshot().recoverable);
+    tracker.mark_reconnecting(1U, 500U);
+    assert(tracker.snapshot().state == flowrt::BackendHealthState::Reconnecting);
+    assert(tracker.snapshot().attempt == 1U);
+    assert(tracker.snapshot().next_retry_unix_ms == std::optional<std::uint64_t>{500U});
+    tracker.mark_ready();
+    assert(tracker.snapshot() == flowrt::BackendHealthSnapshot::ready());
+    tracker.mark_failed("retry budget exhausted", 3U);
+    assert(tracker.snapshot().state == flowrt::BackendHealthState::Failed);
+    assert(tracker.snapshot().attempt == 3U);
+    assert(tracker.snapshot().last_error ==
+           std::optional<std::string>{"retry budget exhausted"});
+    assert(!tracker.snapshot().recoverable);
+
+    assert(zenoh_backend.health().state == flowrt::BackendHealthState::Ready);
+    assert(zenoh_backend.reconnect_policy().initial_delay_ms == 100U);
+    assert(zenoh_backend.reconnect_policy().max_delay_ms == 5000U);
+    assert(!zenoh_backend.reconnect_policy().max_attempts.has_value());
 
     std::size_t seen = 0;
     const auto scheduler_status = inproc_backend.scheduler().run_ticks(

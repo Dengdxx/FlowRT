@@ -11,6 +11,185 @@ pub enum BackendKind {
     Zenoh,
 }
 
+/// backend 或 endpoint 当前健康状态。
+///
+/// 枚举值保持紧凑、稳定，方便未来 C ABI 直接映射为整数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendHealthState {
+    /// 本地 endpoint 已打开，最近一次操作未发现错误。
+    Ready,
+    /// 本地 endpoint 可见错误，但仍允许后续恢复。
+    Degraded,
+    /// runtime 正在按重连策略等待或尝试恢复。
+    Reconnecting,
+    /// 重连预算耗尽或错误不可恢复。
+    Failed,
+}
+
+/// backend 或 endpoint 的健康快照。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendHealthSnapshot {
+    /// 当前健康状态。
+    pub state: BackendHealthState,
+    /// 最近一次稳定错误文本。
+    pub last_error: Option<String>,
+    /// 当前重连尝试序号，从 0 开始。
+    pub attempt: u32,
+    /// 下一次重试的 Unix 毫秒时间戳。
+    pub next_retry_unix_ms: Option<u64>,
+    /// 当前状态是否允许继续恢复。
+    pub recoverable: bool,
+}
+
+impl BackendHealthSnapshot {
+    /// 构造 ready 快照。
+    pub fn ready() -> Self {
+        Self {
+            state: BackendHealthState::Ready,
+            last_error: None,
+            attempt: 0,
+            next_retry_unix_ms: None,
+            recoverable: false,
+        }
+    }
+}
+
+/// backend endpoint 的重连策略。
+///
+/// 使用毫秒和次数，而不是语言 runtime 特有类型，便于后续映射到 C ABI、Python binding 和其他
+/// 语言 runtime。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconnectPolicy {
+    initial_delay_ms: u64,
+    max_delay_ms: u64,
+    max_attempts: Option<u32>,
+}
+
+impl ReconnectPolicy {
+    /// 构造指数退避策略。
+    pub const fn new(initial_delay_ms: u64, max_delay_ms: u64, max_attempts: u32) -> Self {
+        Self {
+            initial_delay_ms,
+            max_delay_ms,
+            max_attempts: Some(max_attempts),
+        }
+    }
+
+    /// 构造无限重试指数退避策略。
+    pub const fn forever(initial_delay_ms: u64, max_delay_ms: u64) -> Self {
+        Self {
+            initial_delay_ms,
+            max_delay_ms,
+            max_attempts: None,
+        }
+    }
+
+    /// 初次重试延迟，毫秒。
+    pub const fn initial_delay_ms(&self) -> u64 {
+        self.initial_delay_ms
+    }
+
+    /// 最大重试延迟，毫秒。
+    pub const fn max_delay_ms(&self) -> u64 {
+        self.max_delay_ms
+    }
+
+    /// 最大尝试次数；`None` 表示无限重试。
+    pub const fn max_attempts(&self) -> Option<u32> {
+        self.max_attempts
+    }
+
+    /// 指定 attempt 的退避延迟，毫秒。
+    pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
+        let shift = attempt.min(63);
+        let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+        self.initial_delay_ms
+            .saturating_mul(multiplier)
+            .min(self.max_delay_ms)
+    }
+
+    /// 判断当前 attempt 是否仍允许重试。
+    pub fn can_retry(&self, attempt: u32) -> bool {
+        self.max_attempts
+            .map(|max_attempts| attempt < max_attempts)
+            .unwrap_or(true)
+    }
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self::forever(100, 5_000)
+    }
+}
+
+/// 通用 backend health 状态机。
+///
+/// 该 tracker 不直接重连任何 transport，只统一记录状态转换。真实 zenoh/iox2 恢复逻辑会在后续
+/// endpoint 层调用它。
+#[derive(Debug, Clone)]
+pub struct BackendHealthTracker {
+    policy: ReconnectPolicy,
+    snapshot: BackendHealthSnapshot,
+}
+
+impl BackendHealthTracker {
+    /// 构造 ready 状态 tracker。
+    pub fn new(policy: ReconnectPolicy) -> Self {
+        Self {
+            policy,
+            snapshot: BackendHealthSnapshot::ready(),
+        }
+    }
+
+    /// 返回重连策略。
+    pub fn policy(&self) -> ReconnectPolicy {
+        self.policy
+    }
+
+    /// 返回健康快照。
+    pub fn snapshot(&self) -> BackendHealthSnapshot {
+        self.snapshot.clone()
+    }
+
+    /// 标记 endpoint 恢复 ready。
+    pub fn mark_ready(&mut self) {
+        self.snapshot = BackendHealthSnapshot::ready();
+    }
+
+    /// 标记 endpoint 出现可恢复退化。
+    pub fn mark_degraded(&mut self, error: impl Into<String>) {
+        self.snapshot = BackendHealthSnapshot {
+            state: BackendHealthState::Degraded,
+            last_error: Some(error.into()),
+            attempt: self.snapshot.attempt,
+            next_retry_unix_ms: None,
+            recoverable: true,
+        };
+    }
+
+    /// 标记 endpoint 正在等待或尝试重连。
+    pub fn mark_reconnecting(&mut self, attempt: u32, next_retry_unix_ms: u64) {
+        self.snapshot = BackendHealthSnapshot {
+            state: BackendHealthState::Reconnecting,
+            last_error: self.snapshot.last_error.clone(),
+            attempt,
+            next_retry_unix_ms: Some(next_retry_unix_ms),
+            recoverable: self.policy.can_retry(attempt),
+        };
+    }
+
+    /// 标记 endpoint 恢复失败。
+    pub fn mark_failed(&mut self, error: impl Into<String>, attempt: u32) {
+        self.snapshot = BackendHealthSnapshot {
+            state: BackendHealthState::Failed,
+            last_error: Some(error.into()),
+            attempt,
+            next_retry_unix_ms: None,
+            recoverable: false,
+        };
+    }
+}
+
 /// 调度器抽象边界。
 ///
 /// 调度器负责驱动 generated runtime shell 的 tick，不负责用户算法逻辑。v0.1 使用同步 tick
@@ -51,6 +230,16 @@ pub trait Backend {
 
     /// 返回 backend 提供的调度器。
     fn scheduler(&self) -> &dyn Scheduler;
+
+    /// 返回 backend 自身的健康快照。
+    fn health(&self) -> BackendHealthSnapshot {
+        BackendHealthSnapshot::ready()
+    }
+
+    /// 返回 backend endpoint 默认重连策略。
+    fn reconnect_policy(&self) -> ReconnectPolicy {
+        ReconnectPolicy::default()
+    }
 }
 
 /// 单进程同步调度器。
@@ -367,6 +556,66 @@ mod tests {
 
         assert_eq!(seen, 4);
         assert_eq!(status, Status::Ok);
+    }
+
+    #[test]
+    fn reconnect_policy_uses_bounded_exponential_backoff() {
+        let policy = ReconnectPolicy::new(100, 1_000, 3);
+
+        assert_eq!(policy.initial_delay_ms(), 100);
+        assert_eq!(policy.max_delay_ms(), 1_000);
+        assert_eq!(policy.max_attempts(), Some(3));
+        assert_eq!(policy.delay_for_attempt(0), 100);
+        assert_eq!(policy.delay_for_attempt(1), 200);
+        assert_eq!(policy.delay_for_attempt(4), 1_000);
+        assert!(policy.can_retry(2));
+        assert!(!policy.can_retry(3));
+    }
+
+    #[test]
+    fn backend_health_tracker_records_reconnect_progress() {
+        let policy = ReconnectPolicy::new(100, 1_000, 3);
+        let mut tracker = BackendHealthTracker::new(policy);
+
+        assert_eq!(tracker.snapshot().state, BackendHealthState::Ready);
+        assert_eq!(tracker.snapshot().attempt, 0);
+        assert!(!tracker.snapshot().recoverable);
+
+        tracker.mark_degraded("receive failed");
+        assert_eq!(tracker.snapshot().state, BackendHealthState::Degraded);
+        assert_eq!(
+            tracker.snapshot().last_error.as_deref(),
+            Some("receive failed")
+        );
+        assert!(tracker.snapshot().recoverable);
+
+        tracker.mark_reconnecting(1, 500);
+        assert_eq!(tracker.snapshot().state, BackendHealthState::Reconnecting);
+        assert_eq!(tracker.snapshot().attempt, 1);
+        assert_eq!(tracker.snapshot().next_retry_unix_ms, Some(500));
+        assert!(tracker.snapshot().recoverable);
+
+        tracker.mark_ready();
+        assert_eq!(tracker.snapshot(), BackendHealthSnapshot::ready());
+
+        tracker.mark_failed("retry budget exhausted", 3);
+        assert_eq!(tracker.snapshot().state, BackendHealthState::Failed);
+        assert_eq!(tracker.snapshot().attempt, 3);
+        assert_eq!(
+            tracker.snapshot().last_error.as_deref(),
+            Some("retry budget exhausted")
+        );
+        assert!(!tracker.snapshot().recoverable);
+    }
+
+    #[test]
+    fn backends_report_default_health_and_reconnect_policy() {
+        let backend = zenoh_backend();
+
+        assert_eq!(backend.health().state, BackendHealthState::Ready);
+        assert_eq!(backend.reconnect_policy().initial_delay_ms(), 100);
+        assert_eq!(backend.reconnect_policy().max_delay_ms(), 5_000);
+        assert_eq!(backend.reconnect_policy().max_attempts(), None);
     }
 
     #[test]
