@@ -201,6 +201,8 @@ const INPROC_BACKEND_CAPABILITIES: &[Capability] = &[
 ];
 
 const IOX2_BACKEND_CAPABILITIES: &[Capability] = &[
+    Capability::AbiVariablePayloadFrame,
+    Capability::AllocationBoundedDynamic,
     Capability::OverflowDropNewest,
     Capability::OverflowError,
     Capability::OverflowBlock,
@@ -568,8 +570,8 @@ mod tests {
     }
 
     #[test]
-    fn inproc_and_zenoh_support_bounded_variable_frames_but_iox2_does_not() {
-        for backend in ["inproc", "zenoh"] {
+    fn inproc_iox2_and_zenoh_support_bounded_variable_frames() {
+        for backend in ["inproc", "iox2", "zenoh"] {
             let capabilities = backend_capabilities(backend).unwrap();
             assert!(
                 capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string()))
@@ -578,10 +580,6 @@ mod tests {
                 capabilities.contains(&CapabilityAtom("allocation:bounded_dynamic".to_string()))
             );
         }
-
-        let iox2 = backend_capabilities("iox2").unwrap();
-        assert!(!iox2.contains(&CapabilityAtom("abi:variable_payload_frame".to_string())));
-        assert!(!iox2.contains(&CapabilityAtom("allocation:bounded_dynamic".to_string())));
     }
 
     #[test]
@@ -594,8 +592,10 @@ mod tests {
             capabilities,
             vec![
                 Capability::AbiFixedSizePlainData.atom(),
+                Capability::AbiVariablePayloadFrame.atom(),
                 Capability::LayoutNativeLayout.atom(),
                 Capability::AllocationBounded.atom(),
+                Capability::AllocationBoundedDynamic.atom(),
                 Capability::GraphStaticGraph.atom(),
                 Capability::TriggerPeriodic.atom(),
                 Capability::TriggerOnMessage.atom(),

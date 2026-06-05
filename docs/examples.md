@@ -12,6 +12,7 @@
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体 |
+| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 ## `import_demo`
@@ -122,16 +123,18 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```text
 examples/mixed_iox2_demo/rsdl/robot.rsdl
 examples/imu_demo_iox2/rsdl/robot.rsdl
+examples/variable_iox2_demo/rsdl/robot.rsdl
 ```
 
-这两个示例验证 language-separated mixed contract over `iox2`：
+这些示例验证 language-separated mixed contract over `iox2`：
 
 - process group 必须按语言拆分。
 - selected backend 必须是 `iox2`。
 - launch manifest 中的 channel 必须暴露 canonical service name。
 - Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
+- bounded variable frame 会通过 codegen 生成的 fixed-size iox2 slot 承载，用户组件接口仍使用结构化消息。
 
-基础 CI 只对这两个示例执行 `check`。构建和运行需要本机安装匹配的 `iceoryx2-cxx 0.9.1`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
+基础 CI 只对这些示例执行 `check`。构建和运行需要本机安装匹配的 `iceoryx2-cxx 0.9.1`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
 
 ## zenoh mixed 示例
 

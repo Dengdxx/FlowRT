@@ -1,0 +1,55 @@
+[package]
+name = "variable_iox2_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.Packet]
+valid = "bool"
+label = "string<max=64>"
+payload = "bytes<max=32>"
+samples = "sequence<u32,max=8>"
+temperature = "f32"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "rust_source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 10
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+max_age_ms = 100
+stale_policy = "warn"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[target.linux]
+platform = "linux-x86_64"
+runtime = ["cpp", "rust"]
+backends = ["iox2"]

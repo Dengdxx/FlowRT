@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use iceoryx2::prelude::*;
 
-use crate::{Latest, OverflowPolicy, StaleConfig, StalePolicy};
+use crate::{Latest, OverflowPolicy, StaleConfig, StalePolicy, WireCodecError};
 
 type IpcNode = Node<ipc::Service>;
 type IpcPublisher<T> = iceoryx2::port::publisher::Publisher<ipc::Service, T, FlowrtIox2Header>;
@@ -24,6 +24,15 @@ struct FlowrtIox2Header {
 struct Iox2Received<T>
 where
     T: Copy,
+{
+    published_at_ms: u64,
+    payload: T,
+}
+
+#[derive(Debug, Clone)]
+struct Iox2FrameReceived<T>
+where
+    T: Clone,
 {
     published_at_ms: u64,
     payload: T,
@@ -55,6 +64,19 @@ impl std::fmt::Display for Iox2Error {
 }
 
 impl std::error::Error for Iox2Error {}
+
+/// iox2 有界变长消息 transport slot。
+///
+/// 生成的变长消息本体可以包含 `Vec`/`String` 等动态所有权字段，不能直接作为 iox2 typed
+/// payload。codegen 会为每个变长消息生成一个固定最大容量的 slot，并通过该 trait 在用户
+/// 消息和 canonical frame bytes 之间转换。
+pub trait Iox2FrameSlot<T>: Copy {
+    /// 将用户消息编码成固定容量 slot。
+    fn try_from_message(value: &T) -> Result<Self, WireCodecError>;
+
+    /// 将 slot 中的 canonical frame 解码回用户消息。
+    fn decode_message(&self) -> Result<T, WireCodecError>;
+}
 
 /// 打开 iceoryx2 publish-subscribe endpoint 时使用的 QoS 配置。
 ///
@@ -141,6 +163,134 @@ where
     config: Iox2ChannelConfig,
     stale: StaleConfig,
     received: Option<Iox2Received<T>>,
+}
+
+/// 使用固定容量 canonical frame slot 的 iox2 publish-subscribe endpoint。
+///
+/// `T` 是用户组件看到的结构化消息类型；`S` 是 codegen 生成的 fixed-size iox2 payload slot。
+/// 该类型保持用户 API 与 transport ABI 解耦，并让 bounded variable frame 可以继续走 iox2
+/// typed IPC service。
+pub struct Iox2FramePubSub<T, S>
+where
+    T: Clone,
+    S: Iox2FrameSlot<T> + std::fmt::Debug + Copy + ZeroCopySend + 'static,
+{
+    publisher: IpcPublisher<S>,
+    subscriber: IpcSubscriber<S>,
+    node: IpcNode,
+    config: Iox2ChannelConfig,
+    stale: StaleConfig,
+    received: Option<Iox2FrameReceived<T>>,
+}
+
+impl<T, S> Iox2FramePubSub<T, S>
+where
+    T: Clone,
+    S: Iox2FrameSlot<T> + std::fmt::Debug + Copy + ZeroCopySend + 'static,
+{
+    /// 使用显式 QoS 配置打开或创建一个本机 IPC publish-subscribe service。
+    pub fn open_with_config(
+        service_name: &str,
+        config: Iox2ChannelConfig,
+    ) -> Result<Self, Iox2Error> {
+        let service_name = service_name
+            .try_into()
+            .map_err(|error| Iox2Error::new("invalid iceoryx2 service name", error))?;
+        let node = NodeBuilder::new()
+            .create::<ipc::Service>()
+            .map_err(|error| Iox2Error::new("failed to create iceoryx2 node", error))?;
+        let service = node
+            .service_builder(&service_name)
+            .publish_subscribe::<S>()
+            .user_header::<FlowrtIox2Header>()
+            .enable_safe_overflow(config.safe_overflow())
+            .history_size(config.depth())
+            .subscriber_max_buffer_size(config.depth())
+            .open_or_create()
+            .map_err(|error| {
+                Iox2Error::new(
+                    "failed to open or create iceoryx2 frame pubsub service",
+                    error,
+                )
+            })?;
+        let publisher = service
+            .publisher_builder()
+            .backpressure_strategy(config.backpressure_strategy())
+            .create()
+            .map_err(|error| Iox2Error::new("failed to create iceoryx2 frame publisher", error))?;
+        let subscriber = service
+            .subscriber_builder()
+            .buffer_size(config.depth())
+            .create()
+            .map_err(|error| Iox2Error::new("failed to create iceoryx2 frame subscriber", error))?;
+
+        Ok(Self {
+            publisher,
+            subscriber,
+            node,
+            config,
+            stale: config.stale(),
+            received: None,
+        })
+    }
+
+    /// 带 FlowRT runtime 时间戳发布一个结构化变长消息。
+    pub fn publish_at(&self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
+        let slot = S::try_from_message(&value)
+            .map_err(|error| Iox2Error::new("encode FlowRT iox2 frame payload", error))?;
+        let sample = self
+            .publisher
+            .loan_uninit()
+            .map_err(|error| Iox2Error::new("failed to loan iceoryx2 frame sample", error))?;
+        let mut sample = sample;
+        sample.user_header_mut().published_at_ms = published_at_ms;
+        sample
+            .write_payload(slot)
+            .send()
+            .map_err(|error| Iox2Error::new("failed to send iceoryx2 frame sample", error))?;
+        Ok(())
+    }
+
+    /// 接收一个结构化消息，并根据 transport 时间戳暴露 freshness 状态。
+    pub fn receive_latest_at(&mut self, now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
+        if let Some(sample) = self
+            .subscriber
+            .receive()
+            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 frame sample", error))?
+        {
+            self.received = Some(Iox2FrameReceived {
+                published_at_ms: sample.user_header().published_at_ms,
+                payload: (*sample)
+                    .decode_message()
+                    .map_err(|error| Iox2Error::new("decode FlowRT iox2 frame payload", error))?,
+            });
+        }
+
+        let stale = self
+            .received
+            .as_ref()
+            .map(|sample| self.stale.stale_at(Some(sample.published_at_ms), now_ms))
+            .unwrap_or(false);
+        let value = if stale && self.stale.policy() == StalePolicy::Drop {
+            None
+        } else {
+            self.received.as_ref().map(|sample| &sample.payload)
+        };
+
+        Ok(Latest::new(value, stale))
+    }
+
+    /// 返回 endpoint 的 QoS 配置。
+    pub fn config(&self) -> Iox2ChannelConfig {
+        self.config
+    }
+
+    /// 短暂等待，让 iceoryx2 推进本机 endpoint 状态。
+    pub fn poll_once(&self, timeout: Duration) -> Result<(), Iox2Error> {
+        self.node
+            .wait(timeout)
+            .map_err(|error| Iox2Error::new("failed to poll iceoryx2 frame node", error))
+    }
 }
 
 impl<T> Iox2PubSub<T>

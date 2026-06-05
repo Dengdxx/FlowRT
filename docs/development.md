@@ -27,6 +27,7 @@ cmake -S runtime/cpp -B build/cpp
 cargo run -p flowrt-cli -- prepare examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- prepare examples/variable_iox2_demo/rsdl/robot.rsdl
 ```
 
 仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让 `examples/*/src/cpp/**` 读取本示例自己的 `flowrt/cpp/include` 生成头。`flowrt/` 和 `examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行对应示例的 `prepare` 或 `build`，再重启 clangd。
@@ -43,6 +44,7 @@ cargo run -p flowrt-cli -- run --run-ticks 5 examples/import_demo/rsdl/robot.rsd
 cargo run -p flowrt-cli -- launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/imu_demo_iox2/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- check examples/variable_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- check examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
@@ -96,7 +98,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - Runtime 与 codegen 不能吞掉 bind-level channel 语义：`latest` 和 `fifo` 都要保留 `overflow`、`max_age_ms` 与 `stale_policy`，inproc shell 也应使用 timestamped read/write 路径传递 freshness。
 - 跨 process group 的 bind 会在 Contract IR capability 派生中要求 `topology:multi_process`；validator、normalizer 和 CLI 必须共享同一套 deployment 判定，不要再各自手写 process-boundary 特判。
 - Task-level execution intent 也必须映射到 runtime 行为：`deadline_ms` 要进入 required capabilities，并由生成 shell 在用户回调和输出发布边界执行检查。
-- Message ABI v0.1 必须保持 fixed-size plain data。未来 `bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 可以进入 Contract IR 表达层，但 validator、conformance helper 和 codegen public 入口必须明确拒绝，直到 Variable Frame ABI runtime 语义落地。
+- Message ABI v0.1 的 native ABI 基线仍是 fixed-size plain data；`bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 已作为 bounded variable frame 落地。backend 支持必须通过 `abi:variable_payload_frame` 与 `allocation:bounded_dynamic` capability 明确声明；`iox2` 路径通过 codegen 生成的 fixed-size transport slot 承载 canonical frame bytes。
 - Mixed contract 的 Message ABI conformance 不能只依赖同一生成器内嵌的 expected bytes；C++ test 写出的 fixture 和 Rust test 读取后的 typed roundtrip 都应保持可运行。
 - 扩展 backend capability 时，先在 `flowrt-ir` 的 typed capability catalog 中维护全局 canonical 顺序，再由 `backend_capabilities`、`channel_capabilities`、`trigger_capability` 或 message ABI 推导函数输出既有 `CapabilityAtom` 字符串。凡是 backend、target、deployment、channel 的 capability 组合，都要先去重再按该 catalog 顺序输出，不能依赖声明顺序或首次出现顺序；新增或重排 catalog 都会改变 canonical IR 顺序，因此必须同步补顺序独立测试。不要在 validator、normalizer 或 codegen 中散落新 capability 字符串。
 - Rust/C++ runtime 的 backend capability 报告顺序也必须跟随同一个 catalog；runtime smoke test 应精确断言顺序，避免自描述、诊断和跨语言对比输出出现漂移。

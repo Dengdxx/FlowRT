@@ -3060,27 +3060,8 @@ backends = ["{backend}"]
 
     #[test]
     fn bounded_variable_fields_follow_selected_backend_capabilities() {
+        validate_contract(&bounded_variable_contract("iox2")).unwrap();
         validate_contract(&bounded_variable_contract("zenoh")).unwrap();
-
-        let report = validate_contract(&bounded_variable_contract("iox2"))
-            .expect_err("iox2 must reject bounded variable frames by capability");
-        assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "backend `iox2` selected by profile `default` cannot satisfy required capabilities for graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
-        assert!(
-            !report
-                .errors
-                .iter()
-                .any(|error| error.message.contains("future Variable Frame ABI")),
-            "{:?}",
-            report.errors
-        );
     }
 
     #[test]

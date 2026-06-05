@@ -625,7 +625,7 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str(
-        "#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <span>\n\n#include <flowrt/runtime.hpp>\n\n",
+        "#include <algorithm>\n#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <limits>\n#include <span>\n#include <vector>\n\n#include <flowrt/runtime.hpp>\n\n",
     );
     output.push_str("namespace flowrt_app {\n\n");
     let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
@@ -639,7 +639,7 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
             },
         );
         output.push_str(&format!("struct {} {{\n", ty.name));
-        if needs_iox2_type_name {
+        if needs_iox2_type_name && !variable_message {
             output.push_str(&format!(
                 "    static constexpr const char* IOX2_TYPE_NAME = \"{}\";\n",
                 ty.name
@@ -658,6 +658,9 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
             output.push_str(&cpp_wire_codec_methods(contract, ty));
         }
         output.push_str("};\n\n");
+        if needs_iox2_type_name && variable_message {
+            output.push_str(&cpp_iox2_frame_slot_type(ty));
+        }
     }
     output.push_str("}  // namespace flowrt_app\n");
     output
@@ -1353,6 +1356,12 @@ fn cpp_string_literal(value: &str) -> String {
 fn cpp_runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> String {
     let ty = cpp_type(&bind.source_type);
     if selected_backend == "iox2" {
+        if bind.source_uses_variable_frame {
+            return format!(
+                "flowrt::iox2::Iox2FramePubSub<{ty}, {}>",
+                iox2_frame_slot_type_for_expr(&bind.source_type)
+            );
+        }
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
     if selected_backend == "zenoh" {
@@ -1372,6 +1381,15 @@ fn cpp_runtime_channel_initializer(
     selected_backend: &str,
 ) -> String {
     if selected_backend == "iox2" {
+        if bind.source_uses_variable_frame {
+            return format!(
+                "flowrt::iox2::Iox2FramePubSub<{}, {}>::open_with_config({}, {})",
+                cpp_type(&bind.source_type),
+                iox2_frame_slot_type_for_expr(&bind.source_type),
+                cpp_string_literal(&iox2_service_name(contract, graph, bind)),
+                cpp_iox2_channel_config_expr(bind)
+            );
+        }
         return format!(
             "flowrt::iox2::Iox2PubSub<{}>::open_with_config({}, {})",
             cpp_type(&bind.source_type),
@@ -1618,7 +1636,7 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "#[derive(Clone{copy_derive}, Debug, PartialEq{zero_copy_derive})]\n"
         ));
-        if needs_iox2_type_name {
+        if needs_iox2_type_name && !variable_message {
             output.push_str(&format!(
                 "#[type_name({})]\n",
                 rust_string_literal(&ty.name)
@@ -1636,6 +1654,9 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
         output.push_str(&rust_default_impl(ty, variable_message));
         if variable_message {
             output.push_str(&rust_frame_codec_impl(contract, ty));
+            if needs_iox2_type_name {
+                output.push_str(&rust_iox2_frame_slot_type(contract, ty));
+            }
         } else if needs_wire_codec {
             output.push_str(&rust_wire_codec_impl(contract, ty));
         }
@@ -2594,6 +2615,12 @@ fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str
 fn runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> String {
     let ty = rust_type(&bind.source_type);
     if selected_backend == "iox2" {
+        if bind.source_uses_variable_frame {
+            return format!(
+                "flowrt::iox2::Iox2FramePubSub<{ty}, {}>",
+                iox2_frame_slot_type_for_expr(&bind.source_type)
+            );
+        }
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
     if selected_backend == "zenoh" {
@@ -2613,6 +2640,15 @@ fn runtime_channel_initializer(
     selected_backend: &str,
 ) -> String {
     if selected_backend == "iox2" {
+        if bind.source_uses_variable_frame {
+            return format!(
+                "flowrt::iox2::Iox2FramePubSub::<{}, {}>::open_with_config({}, {}).expect(\"failed to open FlowRT iox2 frame channel\")",
+                rust_type(&bind.source_type),
+                iox2_frame_slot_type_for_expr(&bind.source_type),
+                rust_string_literal(&iox2_service_name(contract, graph, bind)),
+                iox2_channel_config_expr(bind),
+            );
+        }
         return format!(
             "flowrt::iox2::Iox2PubSub::open_with_config({}, {}).expect(\"failed to open FlowRT iox2 channel\")",
             rust_string_literal(&iox2_service_name(contract, graph, bind)),
@@ -4005,6 +4041,30 @@ fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     output
 }
 
+fn iox2_frame_slot_type_name(type_name: &str) -> String {
+    format!("{type_name}Iox2Frame")
+}
+
+fn iox2_frame_slot_type_for_expr(expr: &TypeExpr) -> String {
+    match expr {
+        TypeExpr::Named { name } => iox2_frame_slot_type_name(name),
+        other => panic!(
+            "validated iox2 variable frame channel must use a named message type, got `{}`",
+            other.canonical_syntax()
+        ),
+    }
+}
+
+fn rust_iox2_frame_slot_type(contract: &ContractIr, ty: &TypeIr) -> String {
+    let slot_name = iox2_frame_slot_type_name(&ty.name);
+    let max_size = frame_max_size_for_type(contract, ty);
+    format!(
+        "#[repr(C)]\n#[derive(Clone, Copy, Debug, PartialEq, flowrt::ZeroCopySend)]\n#[type_name({type_name})]\npub struct {slot_name} {{\n    len: u32,\n    bytes: [u8; {max_size}],\n}}\n\nimpl Default for {slot_name} {{\n    fn default() -> Self {{\n        Self {{\n            len: 0,\n            bytes: [0u8; {max_size}],\n        }}\n    }}\n}}\n\nimpl flowrt::iox2::Iox2FrameSlot<{message_name}> for {slot_name} {{\n    fn try_from_message(value: &{message_name}) -> Result<Self, flowrt::WireCodecError> {{\n        let frame = flowrt::FrameCodec::to_frame_vec(value)?;\n        if frame.len() > {max_size} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"iox2 frame exceeds fixed slot capacity\"));\n        }}\n        let len = u32::try_from(frame.len())\n            .map_err(|_| flowrt::WireCodecError::invalid_frame(\"iox2 frame length exceeds u32\"))?;\n        let mut slot = Self::default();\n        slot.len = len;\n        slot.bytes[..frame.len()].copy_from_slice(&frame);\n        Ok(slot)\n    }}\n\n    fn decode_message(&self) -> Result<{message_name}, flowrt::WireCodecError> {{\n        let len = self.len as usize;\n        if len > {max_size} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"iox2 frame slot length exceeds fixed capacity\"));\n        }}\n        <{message_name} as flowrt::FrameCodec>::decode_frame(&self.bytes[..len])\n    }}\n}}\n\n",
+        type_name = rust_string_literal(&ty.name),
+        message_name = ty.name,
+    )
+}
+
 fn rust_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
     let mut output = String::new();
     for field in &ty.fields {
@@ -4360,6 +4420,14 @@ fn cpp_frame_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
     output
 }
 
+fn cpp_iox2_frame_slot_type(ty: &TypeIr) -> String {
+    let slot_name = iox2_frame_slot_type_name(&ty.name);
+    format!(
+        "struct {slot_name} {{\n    static constexpr const char* IOX2_TYPE_NAME = \"{message_name}\";\n\n    std::uint32_t len{{}};\n    std::array<std::uint8_t, {message_name}::max_frame_size()> bytes{{}};\n\n    static {slot_name} from_message(const {message_name}& value) {{\n        {slot_name} slot{{}};\n        const auto size = value.encoded_frame_size();\n        if (size > slot.bytes.size()) {{\n            throw flowrt::WireCodecError(\"iox2 frame exceeds fixed slot capacity\");\n        }}\n        if (size > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {{\n            throw flowrt::WireCodecError(\"iox2 frame length exceeds u32\");\n        }}\n        slot.len = static_cast<std::uint32_t>(size);\n        value.encode_frame(std::span<std::uint8_t>{{slot.bytes.data(), size}});\n        return slot;\n    }}\n\n    {message_name} decode_message() const {{\n        if (len > bytes.size()) {{\n            throw flowrt::WireCodecError(\"iox2 frame slot length exceeds fixed capacity\");\n        }}\n        return {message_name}::decode_frame(std::span<const std::uint8_t>{{bytes.data(), len}});\n    }}\n}};\n\n",
+        message_name = ty.name,
+    )
+}
+
 fn cpp_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
     let mut output = String::new();
     for field in &ty.fields {
@@ -4396,7 +4464,7 @@ fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Strin
         TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
             let mut code = format!(
-                "        std::vector<std::uint8_t> {name}_tail;\n        {name}_tail.resize({name}.size() * {element_size});\n        for (const auto& element : {name}.as_span()) {{\n            std::size_t cursor = 0;\n",
+                "        std::vector<std::uint8_t> {name}_tail;\n        {name}_tail.resize({name}.size() * {element_size});\n        std::size_t {name}_cursor = 0;\n        for (const auto& element : {name}.as_span()) {{\n            std::size_t cursor = {name}_cursor;\n",
                 name = field.name
             );
             code.push_str(&cpp_wire_encode_expr(
@@ -4410,7 +4478,7 @@ fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Strin
                 12,
             ));
             code.push_str(&format!(
-                "        }}\n        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{{name}_tail.data(), {name}_tail.size()}});\n",
+                "            {name}_cursor += {element_size};\n        }}\n        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{{name}_tail.data(), {name}_tail.size()}});\n",
                 name = field.name
             ));
             code
@@ -4990,6 +5058,85 @@ output = ["packet"]
         assert_eq!(json["message_frames"][0]["encoding"], "canonical_frame_v1");
         assert_eq!(json["message_frames"][0]["variable"], true);
         assert_eq!(json["message_frames"][0]["header_size_bytes"], 24);
+    }
+
+    #[test]
+    fn emits_iox2_frame_slots_for_variable_messages() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "variable_iox2_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=32>"
+label = "string<max=16>"
+samples = "sequence<u32,max=4>"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+target = "linux"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["iox2"]
+"#,
+        );
+
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+        let cpp_shell_header =
+            artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+
+        assert!(rust_messages.contains("pub struct PacketIox2Frame"));
+        assert!(rust_messages.contains("#[type_name(\"Packet\")]"));
+        assert!(
+            rust_messages.contains("impl flowrt::iox2::Iox2FrameSlot<Packet> for PacketIox2Frame")
+        );
+        assert!(rust_shell.contains("flowrt::iox2::Iox2FramePubSub<Packet, PacketIox2Frame>"));
+
+        assert!(cpp_messages.contains("struct PacketIox2Frame"));
+        assert!(cpp_messages.contains("std::size_t samples_cursor = 0;"));
+        assert!(cpp_messages.contains("samples_cursor += 4;"));
+        assert!(cpp_messages.contains("static constexpr const char* IOX2_TYPE_NAME = \"Packet\";"));
+        assert!(cpp_messages.contains("static PacketIox2Frame from_message(const Packet& value)"));
+        assert!(
+            cpp_shell_header
+                .contains("flowrt::iox2::Iox2FramePubSub<Packet, PacketIox2Frame> bind_0_;")
+        );
     }
 
     #[test]

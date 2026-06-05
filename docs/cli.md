@@ -25,7 +25,7 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 `check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。
 
-Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>` 这类 bounded variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec；`iox2` 仍只接受 fixed-size plain data。
+Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>` 这类 bounded variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec；`iox2` 路径会额外生成固定容量 transport slot，在 typed IPC payload 中承载 canonical frame bytes。
 
 `u128` 和 `i128` 属于 fixed-size primitive，但它们需要额外的 `abi:int128` capability。当前 `inproc` 和 `iox2` backend 不提供该能力，因此使用这些类型的 contract 会在 deployment capability 校验阶段被判定为不满足。
 

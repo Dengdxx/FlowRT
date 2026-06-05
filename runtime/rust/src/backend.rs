@@ -79,8 +79,10 @@ fn configured_tick_sleep() -> Option<std::time::Duration> {
 
 const INPROC_CAPABILITIES: &[&str] = &[
     "abi:fixed_size_plain_data",
+    "abi:variable_payload_frame",
     "layout:native_layout",
     "allocation:bounded",
+    "allocation:bounded_dynamic",
     "graph:static_graph",
     "trigger:periodic",
     "trigger:on_message",
@@ -104,8 +106,10 @@ const INPROC_CAPABILITIES: &[&str] = &[
 
 const IOX2_CAPABILITIES: &[&str] = &[
     "abi:fixed_size_plain_data",
+    "abi:variable_payload_frame",
     "layout:native_layout",
     "allocation:bounded",
+    "allocation:bounded_dynamic",
     "graph:static_graph",
     "trigger:periodic",
     "trigger:on_message",
@@ -272,8 +276,10 @@ mod tests {
             capabilities.as_slice(),
             &[
                 "abi:fixed_size_plain_data",
+                "abi:variable_payload_frame",
                 "layout:native_layout",
                 "allocation:bounded",
+                "allocation:bounded_dynamic",
                 "graph:static_graph",
                 "trigger:periodic",
                 "trigger:on_message",
@@ -334,8 +340,10 @@ mod tests {
             capabilities.as_slice(),
             &[
                 "abi:fixed_size_plain_data",
+                "abi:variable_payload_frame",
                 "layout:native_layout",
                 "allocation:bounded",
+                "allocation:bounded_dynamic",
                 "graph:static_graph",
                 "trigger:periodic",
                 "trigger:on_message",

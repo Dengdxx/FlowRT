@@ -1,5 +1,5 @@
-#include <cassert>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/runtime.hpp>
@@ -25,6 +25,30 @@ struct TinyWireMessage {
         TinyWireMessage value{};
         value.value = flowrt::read_wire_le<std::uint16_t>(input, 0);
         return value;
+    }
+};
+
+struct FrameSmokeMessage {
+    std::uint32_t value{};
+};
+
+struct FrameSmokeSlot {
+    static constexpr const char *IOX2_TYPE_NAME = "FlowRTCppIox2FrameSmoke";
+
+    std::uint32_t len{};
+    std::array<std::uint8_t, 4> bytes{};
+
+    static FrameSmokeSlot from_message(const FrameSmokeMessage &value) {
+        FrameSmokeSlot slot{};
+        slot.len = 4;
+        flowrt::write_wire_le(std::span<std::uint8_t>{slot.bytes}, 0, value.value);
+        return slot;
+    }
+
+    FrameSmokeMessage decode_message() const {
+        assert(len == 4U);
+        return FrameSmokeMessage{
+            flowrt::read_wire_le<std::uint32_t>(std::span<const std::uint8_t>{bytes}, 0)};
     }
 };
 
@@ -63,94 +87,90 @@ int main() {
     assert(inproc_backend.capabilities().contains("channel:latest"));
     assert(inproc_backend.capabilities().contains("graph:static_graph"));
     assert(inproc_backend.capabilities().contains("timing:deadline_aware"));
-    assert_capabilities_equal(
-        inproc_backend.capabilities(),
-        std::array<std::string_view, 22>{
-            "abi:fixed_size_plain_data",
-            "layout:native_layout",
-            "allocation:bounded",
-            "graph:static_graph",
-            "trigger:periodic",
-            "trigger:on_message",
-            "trigger:startup",
-            "trigger:shutdown",
-            "timing:deadline_aware",
-            "channel:latest",
-            "channel:fifo",
-            "overflow:drop_oldest",
-            "overflow:drop_newest",
-            "overflow:error",
-            "overflow:block",
-            "stale:warn",
-            "stale:drop",
-            "stale:hold_last",
-            "stale:error",
-            "topology:single_process",
-            "transfer:copy",
-            "observability:health",
-        });
+    assert_capabilities_equal(inproc_backend.capabilities(), std::array<std::string_view, 22>{
+                                                                 "abi:fixed_size_plain_data",
+                                                                 "layout:native_layout",
+                                                                 "allocation:bounded",
+                                                                 "graph:static_graph",
+                                                                 "trigger:periodic",
+                                                                 "trigger:on_message",
+                                                                 "trigger:startup",
+                                                                 "trigger:shutdown",
+                                                                 "timing:deadline_aware",
+                                                                 "channel:latest",
+                                                                 "channel:fifo",
+                                                                 "overflow:drop_oldest",
+                                                                 "overflow:drop_newest",
+                                                                 "overflow:error",
+                                                                 "overflow:block",
+                                                                 "stale:warn",
+                                                                 "stale:drop",
+                                                                 "stale:hold_last",
+                                                                 "stale:error",
+                                                                 "topology:single_process",
+                                                                 "transfer:copy",
+                                                                 "observability:health",
+                                                             });
 
     flowrt::Iox2Backend iox2_backend;
     assert(iox2_backend.kind() == flowrt::BackendKind::Iox2);
     assert(iox2_backend.capabilities().contains("topology:multi_process"));
-    assert_capabilities_equal(
-        iox2_backend.capabilities(),
-        std::array<std::string_view, 24>{
-            "abi:fixed_size_plain_data",
-            "layout:native_layout",
-            "allocation:bounded",
-            "graph:static_graph",
-            "trigger:periodic",
-            "trigger:on_message",
-            "trigger:startup",
-            "trigger:shutdown",
-            "timing:deadline_aware",
-            "channel:latest",
-            "channel:fifo",
-            "overflow:drop_oldest",
-            "overflow:drop_newest",
-            "overflow:error",
-            "overflow:block",
-            "stale:warn",
-            "stale:drop",
-            "stale:hold_last",
-            "stale:error",
-            "topology:multi_process",
-            "topology:single_host",
-            "transfer:zero_copy",
-            "transfer:loaned",
-            "observability:health",
-        });
+    assert_capabilities_equal(iox2_backend.capabilities(), std::array<std::string_view, 26>{
+                                                               "abi:fixed_size_plain_data",
+                                                               "abi:variable_payload_frame",
+                                                               "layout:native_layout",
+                                                               "allocation:bounded",
+                                                               "allocation:bounded_dynamic",
+                                                               "graph:static_graph",
+                                                               "trigger:periodic",
+                                                               "trigger:on_message",
+                                                               "trigger:startup",
+                                                               "trigger:shutdown",
+                                                               "timing:deadline_aware",
+                                                               "channel:latest",
+                                                               "channel:fifo",
+                                                               "overflow:drop_oldest",
+                                                               "overflow:drop_newest",
+                                                               "overflow:error",
+                                                               "overflow:block",
+                                                               "stale:warn",
+                                                               "stale:drop",
+                                                               "stale:hold_last",
+                                                               "stale:error",
+                                                               "topology:multi_process",
+                                                               "topology:single_host",
+                                                               "transfer:zero_copy",
+                                                               "transfer:loaned",
+                                                               "observability:health",
+                                                           });
 
     flowrt::ZenohBackend zenoh_backend;
     assert(zenoh_backend.kind() == flowrt::BackendKind::Zenoh);
     assert(zenoh_backend.capabilities().contains("topology:multi_process"));
     assert(zenoh_backend.capabilities().contains("topology:multi_host"));
     assert(zenoh_backend.capabilities().contains("transfer:copy"));
-    assert_capabilities_equal(
-        zenoh_backend.capabilities(),
-        std::array<std::string_view, 20>{
-            "abi:fixed_size_plain_data",
-            "layout:native_layout",
-            "allocation:bounded",
-            "graph:static_graph",
-            "trigger:periodic",
-            "trigger:on_message",
-            "trigger:startup",
-            "trigger:shutdown",
-            "timing:deadline_aware",
-            "channel:latest",
-            "channel:fifo",
-            "overflow:drop_oldest",
-            "stale:warn",
-            "stale:drop",
-            "stale:hold_last",
-            "stale:error",
-            "topology:multi_process",
-            "topology:multi_host",
-            "transfer:copy",
-            "observability:health",
-        });
+    assert_capabilities_equal(zenoh_backend.capabilities(), std::array<std::string_view, 20>{
+                                                                "abi:fixed_size_plain_data",
+                                                                "layout:native_layout",
+                                                                "allocation:bounded",
+                                                                "graph:static_graph",
+                                                                "trigger:periodic",
+                                                                "trigger:on_message",
+                                                                "trigger:startup",
+                                                                "trigger:shutdown",
+                                                                "timing:deadline_aware",
+                                                                "channel:latest",
+                                                                "channel:fifo",
+                                                                "overflow:drop_oldest",
+                                                                "stale:warn",
+                                                                "stale:drop",
+                                                                "stale:hold_last",
+                                                                "stale:error",
+                                                                "topology:multi_process",
+                                                                "topology:multi_host",
+                                                                "transfer:copy",
+                                                                "observability:health",
+                                                            });
 
     std::size_t seen = 0;
     const auto scheduler_status = inproc_backend.scheduler().run_ticks(
@@ -322,6 +342,17 @@ int main() {
     const auto transport_read = iox2_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_read));
     assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Transport);
+
+    auto iox2_frame_endpoint =
+        flowrt::iox2::Iox2FramePubSub<FrameSmokeMessage, FrameSmokeSlot>::open_with_config(
+            "FlowRT/Cpp/FrameSmoke", iox2_config);
+    assert(iox2_frame_endpoint.service_name() == "FlowRT/Cpp/FrameSmoke");
+    assert(iox2_frame_endpoint.config().depth() == 1U);
+    assert(!iox2_frame_endpoint.ready());
+    const auto frame_transport_write = iox2_frame_endpoint.publish_at(FrameSmokeMessage{42U}, 10U);
+    assert(std::holds_alternative<flowrt::ChannelError>(frame_transport_write));
+    const auto frame_transport_read = iox2_frame_endpoint.receive_latest_at(10U);
+    assert(std::holds_alternative<flowrt::ChannelError>(frame_transport_read));
 
     auto zenoh_config =
         flowrt::zenoh::ZenohChannelConfig::fifo(0, flowrt::OverflowPolicy::DropNewest)

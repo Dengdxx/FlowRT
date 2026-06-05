@@ -86,9 +86,7 @@ class WireCodecError final : public std::runtime_error {
      * @param actual 调用方提供的字节数。
      */
     WireCodecError(std::size_t expected, std::size_t actual)
-        : std::runtime_error("wire payload size mismatch"),
-          expected_(expected),
-          actual_(actual) {}
+        : std::runtime_error("wire payload size mismatch"), expected_(expected), actual_(actual) {}
 
     /**
      * @brief 构造 canonical frame 内容错误。
@@ -132,8 +130,8 @@ struct WireStorageSelector {
 
 template <typename T>
 struct WireStorageSelector<T, std::enable_if_t<std::is_floating_point_v<T>>> {
-    using Type = std::
-        conditional_t<sizeof(T) == sizeof(std::uint32_t), std::uint32_t, std::uint64_t>;
+    using Type =
+        std::conditional_t<sizeof(T) == sizeof(std::uint32_t), std::uint32_t, std::uint64_t>;
 };
 
 template <>
@@ -238,6 +236,13 @@ concept CanonicalFrameMessage =
 template <typename T>
 concept CanonicalTransportMessage = CanonicalFrameMessage<T> || CanonicalFixedWireMessage<T>;
 
+template <typename Slot, typename Message>
+concept Iox2FrameSlot =
+    std::is_trivially_copyable_v<Slot> && requires(const Message &value, const Slot &slot) {
+        { Slot::from_message(value) } -> std::same_as<Slot>;
+        { slot.decode_message() } -> std::same_as<Message>;
+    };
+
 namespace detail {
 
 template <CanonicalTransportMessage T>
@@ -311,8 +316,8 @@ class BoundedString {
         if (bytes.empty()) {
             return BoundedString{};
         }
-        return BoundedString(std::string_view{reinterpret_cast<const char *>(bytes.data()),
-                                             bytes.size()});
+        return BoundedString(
+            std::string_view{reinterpret_cast<const char *>(bytes.data()), bytes.size()});
     }
 
     void assign(std::string_view value) {
@@ -1282,6 +1287,210 @@ class Iox2PubSub {
 #endif
 };
 
+/**
+ * @brief 固定容量 canonical frame slot 的 iox2 publish-subscribe endpoint。
+ *
+ * @tparam T 用户组件看到的结构化消息类型。
+ * @tparam Slot codegen 生成的 fixed-size iox2 payload slot。
+ *
+ * 该类型把动态消息本体与 iox2 typed payload 解耦。generated shell 在发布时把 `T` 编码到
+ * `Slot`，接收时再从 `Slot` 解码回 `T`；用户组件接口仍只暴露结构化消息。
+ */
+template <typename T, typename Slot>
+    requires Iox2FrameSlot<Slot, T>
+class Iox2FramePubSub {
+   public:
+    Iox2FramePubSub(Iox2FramePubSub &&) noexcept = default;
+    Iox2FramePubSub(const Iox2FramePubSub &) = delete;
+    auto operator=(Iox2FramePubSub &&) noexcept -> Iox2FramePubSub & = default;
+    auto operator=(const Iox2FramePubSub &) -> Iox2FramePubSub & = delete;
+    ~Iox2FramePubSub() = default;
+
+    /**
+     * @brief 打开或创建一个 FlowRT iox2 frame service endpoint。
+     */
+    static Iox2FramePubSub open_with_config(std::string_view service_name,
+                                            Iox2ChannelConfig config) {
+        return Iox2FramePubSub(service_name, config);
+    }
+
+    /**
+     * @brief 返回 canonical service name。
+     */
+    std::string_view service_name() const noexcept { return service_name_; }
+
+    /**
+     * @brief 返回 channel QoS 配置。
+     */
+    constexpr Iox2ChannelConfig config() const noexcept { return config_; }
+
+    /**
+     * @brief 判断 transport endpoint 是否已经绑定到底层 iceoryx2 资源。
+     */
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        return publisher_.has_value() && subscriber_.has_value();
+#else
+        return false;
+#endif
+    }
+
+    /**
+     * @brief 带 FlowRT runtime 时间戳发布一个结构化变长消息。
+     */
+    ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        if (!publisher_) {
+            return ChannelError::Transport;
+        }
+
+        try {
+            auto sample = publisher_->loan_uninit();
+            if (!sample.has_value()) {
+                return ChannelError::Transport;
+            }
+
+            auto loaned_sample = std::move(sample).value();
+            loaned_sample.user_header_mut().published_at_ms = published_at_ms;
+            auto initialized_sample = loaned_sample.write_payload(Slot::from_message(value));
+            auto sent = ::iox2::send(std::move(initialized_sample));
+            if (!sent.has_value()) {
+                return ChannelError::Transport;
+            }
+            return ChannelWriteOutcome::Accepted;
+        } catch (...) {
+            return ChannelError::Transport;
+        }
+#else
+        (void)value;
+        (void)published_at_ms;
+        return ChannelError::Transport;
+#endif
+    }
+
+    /**
+     * @brief 读取 latest snapshot，并把固定 slot 解码回结构化消息。
+     */
+    std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        if (!subscriber_) {
+            return ChannelError::Transport;
+        }
+
+        try {
+            while (true) {
+                auto received = subscriber_->receive();
+                if (!received.has_value()) {
+                    return ChannelError::Transport;
+                }
+
+                auto sample = std::move(received).value();
+                if (!sample.has_value()) {
+                    break;
+                }
+
+                received_ = sample->payload().decode_message();
+                published_at_ms_ = sample->user_header().published_at_ms;
+            }
+        } catch (...) {
+            return ChannelError::Transport;
+        }
+
+        const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
+        const bool drop_stale = stale && config_.stale().policy() == StalePolicy::Drop;
+        return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
+#else
+        (void)now_ms;
+        return ChannelError::Transport;
+#endif
+    }
+
+   private:
+    Iox2FramePubSub(std::string_view service_name, Iox2ChannelConfig config)
+        : service_name_(service_name), config_(config) {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        open_iox2_endpoint();
+#endif
+    }
+
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+    using Iox2Node = ::iox2::Node<::iox2::ServiceType::Ipc>;
+    using Iox2Service =
+        ::iox2::PortFactoryPublishSubscribe<::iox2::ServiceType::Ipc, Slot, FlowrtIox2Header>;
+    using Iox2Publisher = ::iox2::Publisher<::iox2::ServiceType::Ipc, Slot, FlowrtIox2Header>;
+    using Iox2Subscriber = ::iox2::Subscriber<::iox2::ServiceType::Ipc, Slot, FlowrtIox2Header>;
+
+    static constexpr bool safe_overflow(Iox2ChannelConfig config) noexcept {
+        return config.overflow() != OverflowPolicy::Block;
+    }
+
+    static constexpr ::iox2::BackpressureStrategy backpressure_strategy(
+        Iox2ChannelConfig config) noexcept {
+        return config.overflow() == OverflowPolicy::Block
+                   ? ::iox2::BackpressureStrategy::RetryUntilDelivered
+                   : ::iox2::BackpressureStrategy::DiscardData;
+    }
+
+    void open_iox2_endpoint() {
+        auto name = ::iox2::ServiceName::create(service_name_.c_str());
+        if (!name.has_value()) {
+            return;
+        }
+
+        auto node = ::iox2::NodeBuilder().create<::iox2::ServiceType::Ipc>();
+        if (!node.has_value()) {
+            return;
+        }
+        node_.emplace(std::move(node).value());
+
+        const auto depth = static_cast<std::uint64_t>(config_.depth());
+        auto service = node_->service_builder(std::move(name).value())
+                           .publish_subscribe<Slot>()
+                           .template user_header<FlowrtIox2Header>()
+                           .enable_safe_overflow(safe_overflow(config_))
+                           .history_size(depth)
+                           .subscriber_max_buffer_size(depth)
+                           .open_or_create();
+        if (!service.has_value()) {
+            node_.reset();
+            return;
+        }
+        service_.emplace(std::move(service).value());
+
+        auto subscriber = service_->subscriber_builder().buffer_size(depth).create();
+        if (!subscriber.has_value()) {
+            service_.reset();
+            node_.reset();
+            return;
+        }
+        subscriber_.emplace(std::move(subscriber).value());
+
+        auto publisher = service_->publisher_builder()
+                             .backpressure_strategy(backpressure_strategy(config_))
+                             .max_loaned_samples(depth)
+                             .create();
+        if (!publisher.has_value()) {
+            subscriber_.reset();
+            service_.reset();
+            node_.reset();
+            return;
+        }
+        publisher_.emplace(std::move(publisher).value());
+    }
+#endif
+
+    std::string service_name_;
+    Iox2ChannelConfig config_;
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+    std::optional<Iox2Node> node_;
+    std::optional<Iox2Service> service_;
+    std::optional<Iox2Publisher> publisher_;
+    std::optional<Iox2Subscriber> subscriber_;
+    std::optional<T> received_;
+    std::optional<std::uint64_t> published_at_ms_;
+#endif
+};
+
 }  // namespace iox2
 
 namespace zenoh {
@@ -1564,8 +1773,7 @@ class ZenohPubSub {
             return false;
         }
         const auto flag = std::string_view{value};
-        return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" ||
-               flag == "on";
+        return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" || flag == "on";
     }
 
     static std::string endpoint_list_json(std::string_view raw) {
@@ -2045,7 +2253,12 @@ class IntrospectionState {
      */
     void register_channel(std::string name, std::string message_type) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
-        inner_->channels.try_emplace(std::move(name), ChannelState{std::move(message_type)});
+        inner_->channels.try_emplace(std::move(name), ChannelState{
+                                                          .message_type = std::move(message_type),
+                                                          .published_count = 0,
+                                                          .payload = std::nullopt,
+                                                          .published_at_ms = std::nullopt,
+                                                      });
     }
 
     /**
@@ -2066,7 +2279,12 @@ class IntrospectionState {
                                       std::optional<std::uint64_t> published_at_ms) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto [iterator, _inserted] =
-            inner_->channels.try_emplace(std::move(name), ChannelState{message_type});
+            inner_->channels.try_emplace(std::move(name), ChannelState{
+                                                              .message_type = message_type,
+                                                              .published_count = 0,
+                                                              .payload = std::nullopt,
+                                                              .published_at_ms = std::nullopt,
+                                                          });
         auto &channel = iterator->second;
         channel.message_type = std::move(message_type);
         if (channel.published_count != UINT64_MAX) {
@@ -2569,10 +2787,12 @@ class Iox2Backend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 24> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 26> kCapabilities = {
         "abi:fixed_size_plain_data",
+        "abi:variable_payload_frame",
         "layout:native_layout",
         "allocation:bounded",
+        "allocation:bounded_dynamic",
         "graph:static_graph",
         "trigger:periodic",
         "trigger:on_message",
