@@ -2381,11 +2381,42 @@ struct ZenohLaunchEnv {
     connect: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RestartPolicy {
+    max_restarts: u32,
+    initial_delay_ms: u64,
+    max_delay_ms: u64,
+}
+
+const DEFAULT_RESTART_POLICY: RestartPolicy = RestartPolicy {
+    max_restarts: 3,
+    initial_delay_ms: 100,
+    max_delay_ms: 1_000,
+};
+
+impl RestartPolicy {
+    fn can_restart(self, restart_count: u32) -> bool {
+        restart_count < self.max_restarts
+    }
+
+    fn delay_ms_for(self, restart_count: u32) -> u64 {
+        let shift = restart_count.min(63);
+        let multiplier = 1_u64.checked_shl(shift).unwrap_or(u64::MAX);
+        self.initial_delay_ms
+            .saturating_mul(multiplier)
+            .min(self.max_delay_ms)
+    }
+}
+
 struct SupervisedChild {
     name: String,
+    app_exe: PathBuf,
+    zenoh_env: Option<ZenohLaunchEnv>,
     child: Child,
     socket: PathBuf,
     finished: bool,
+    restart_count: u32,
+    next_restart_unix_ms: Option<u64>,
     last_seen_unix_ms: Option<u64>,
     last_tick_count: Option<u64>,
     last_tick_changed_unix_ms: u64,
@@ -2424,30 +2455,18 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
         };
         for process in &graph.processes {
             let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
-            let mut command = Command::new(&app_exe);
-            command.arg("--process").arg(&process.name);
-            if let Some(run_ticks) = run_ticks {
-                command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
-            }
-            if let Some(env) = zenoh_env.get(&process.name) {
-                command.env("FLOWRT_ZENOH_MODE", "peer");
-                if !env.listen.is_empty() {
-                    command.env("FLOWRT_ZENOH_LISTEN", &env.listen);
-                }
-                if !env.connect.is_empty() {
-                    command.env("FLOWRT_ZENOH_CONNECT", &env.connect);
-                }
-                command.env("FLOWRT_ZENOH_NO_MULTICAST", "1");
-            }
-            let child = command
-                .spawn()
-                .map_err(|error| format!("failed to start FlowRT process `{}`: {error}", process.name))?;
+            let process_zenoh_env = zenoh_env.get(&process.name).cloned();
+            let child = spawn_flowrt_process(&app_exe, &process.name, run_ticks, process_zenoh_env.as_ref())?;
             let socket = flowrt::runtime_socket_path_for_pid(child.id());
             let child = SupervisedChild {
                 name: process.name.clone(),
+                app_exe,
+                zenoh_env: process_zenoh_env,
                 child,
                 socket,
                 finished: false,
+                restart_count: 0,
+                next_restart_unix_ms: None,
                 last_seen_unix_ms: None,
                 last_tick_count: None,
                 last_tick_changed_unix_ms: unix_time_ms(),
@@ -2462,7 +2481,7 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
         return Err("FlowRT launch manifest does not contain process groups".to_string());
     }
 
-    supervise_children(&supervisor_state, &mut children)?;
+    supervise_children(&supervisor_state, &mut children, run_ticks)?;
 
     let mut failures = Vec::new();
     for child in children {
@@ -2487,10 +2506,19 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
 fn supervise_children(
     supervisor_state: &flowrt::IntrospectionState,
     children: &mut [SupervisedChild],
+    run_ticks: Option<usize>,
 ) -> Result<(), String> {
     while children.iter().any(|child| !child.finished) {
         for child in children.iter_mut() {
             if child.finished {
+                continue;
+            }
+            if let Some(next_restart_unix_ms) = child.next_restart_unix_ms {
+                if unix_time_ms() >= next_restart_unix_ms {
+                    restart_child(supervisor_state, child, run_ticks)?;
+                } else {
+                    record_child_health(supervisor_state, child, false);
+                }
                 continue;
             }
             if let Some(status) = child
@@ -2498,13 +2526,21 @@ fn supervise_children(
                 .try_wait()
                 .map_err(|error| format!("failed to poll FlowRT process `{}`: {error}", child.name))?
             {
-                child.finished = true;
                 child.exit_code = status.code();
-                child.state = if status.success() {
-                    "exited".to_string()
+                if status.success() {
+                    child.finished = true;
+                    child.state = "exited".to_string();
+                } else if DEFAULT_RESTART_POLICY.can_restart(child.restart_count) {
+                    child.state = "restarting".to_string();
+                    child.next_restart_unix_ms = Some(
+                        unix_time_ms().saturating_add(
+                            DEFAULT_RESTART_POLICY.delay_ms_for(child.restart_count),
+                        ),
+                    );
                 } else {
-                    "failed".to_string()
-                };
+                    child.finished = true;
+                    child.state = "failed".to_string();
+                }
                 record_child_health(supervisor_state, child, false);
                 continue;
             }
@@ -2512,6 +2548,56 @@ fn supervise_children(
         }
         std::thread::sleep(HEALTH_POLL_INTERVAL);
     }
+    Ok(())
+}
+
+fn spawn_flowrt_process(
+    app_exe: &Path,
+    process_name: &str,
+    run_ticks: Option<usize>,
+    zenoh_env: Option<&ZenohLaunchEnv>,
+) -> Result<Child, String> {
+    let mut command = Command::new(app_exe);
+    command.arg("--process").arg(process_name);
+    if let Some(run_ticks) = run_ticks {
+        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+    }
+    if let Some(env) = zenoh_env {
+        command.env("FLOWRT_ZENOH_MODE", "peer");
+        if !env.listen.is_empty() {
+            command.env("FLOWRT_ZENOH_LISTEN", &env.listen);
+        }
+        if !env.connect.is_empty() {
+            command.env("FLOWRT_ZENOH_CONNECT", &env.connect);
+        }
+        command.env("FLOWRT_ZENOH_NO_MULTICAST", "1");
+    }
+    command
+        .spawn()
+        .map_err(|error| format!("failed to start FlowRT process `{process_name}`: {error}"))
+}
+
+fn restart_child(
+    supervisor_state: &flowrt::IntrospectionState,
+    child: &mut SupervisedChild,
+    run_ticks: Option<usize>,
+) -> Result<(), String> {
+    let restarted = spawn_flowrt_process(
+        &child.app_exe,
+        &child.name,
+        run_ticks,
+        child.zenoh_env.as_ref(),
+    )?;
+    child.child = restarted;
+    child.socket = flowrt::runtime_socket_path_for_pid(child.child.id());
+    child.restart_count = child.restart_count.saturating_add(1);
+    child.next_restart_unix_ms = None;
+    child.last_seen_unix_ms = None;
+    child.last_tick_count = None;
+    child.last_tick_changed_unix_ms = unix_time_ms();
+    child.exit_code = None;
+    child.state = "starting".to_string();
+    record_child_health(supervisor_state, child, false);
     Ok(())
 }
 
@@ -2551,6 +2637,7 @@ fn record_child_health(
         name: child.name.clone(),
         state: child.state.clone(),
         pid: Some(child.child.id()),
+        restart_count: child.restart_count,
         tick_count: child.last_tick_count,
         last_seen_unix_ms: child.last_seen_unix_ms,
         tick_stale,
@@ -4583,6 +4670,8 @@ fn emit_cargo_manifest(contract: &ContractIr) -> String {
             "\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n",
             package_name
         ));
+    } else if has_supervisor {
+        output.push_str("flowrt = { version = \"0.1\" }\n");
     }
 
     if has_supervisor {
@@ -6905,6 +6994,7 @@ backends = ["inproc"]
         assert!(rust_selfdesc.contains("#[allow(dead_code)]\npub fn self_description_hash()"));
 
         let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+        assert!(cargo_manifest.contains("flowrt = { version = \"0.1\" }"));
         assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
         assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
         assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
@@ -9035,12 +9125,20 @@ backends = ["iox2"]
         assert!(supervisor.contains("runtime_kind: String"));
         assert!(supervisor.contains("backend: String"));
         assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
-        assert!(supervisor.contains("Command::new(&app_exe)"));
+        assert!(supervisor.contains("Command::new(app_exe)"));
         assert!(supervisor.contains("flowrt::spawn_status_server("));
         assert!(supervisor.contains("record_process_health"));
         assert!(supervisor.contains("tick_stale"));
         assert!(supervisor.contains("try_wait()"));
         assert!(supervisor.contains("flowrt::request_status(&child.socket)"));
+        assert!(supervisor.contains("struct RestartPolicy"));
+        assert!(supervisor.contains("const DEFAULT_RESTART_POLICY: RestartPolicy"));
+        assert!(supervisor.contains("restart_count: u32"));
+        assert!(supervisor.contains("child.state = \"restarting\".to_string();"));
+        assert!(supervisor.contains("restart_child(supervisor_state, child, run_ticks)?"));
+        assert!(supervisor.contains("restart_count: child.restart_count"));
+        assert!(supervisor.contains("if status.success()"));
+        assert!(supervisor.contains("child.finished = true;"));
         assert!(supervisor.contains("for graph in &manifest.graphs"));
         assert!(supervisor.contains("zenoh_launch_env_for_graph(graph)?"));
         assert!(supervisor.contains("fn should_auto_configure_zenoh()"));
@@ -9055,7 +9153,7 @@ backends = ["iox2"]
             supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
         );
         assert!(supervisor.contains(".arg(\"--process\")"));
-        assert!(supervisor.contains(".arg(&process.name)"));
+        assert!(supervisor.contains(".arg(process_name)"));
         assert!(supervisor.contains(".arg(\"--flowrt-run-ticks\")"));
         assert!(supervisor_main.contains("--flowrt-run-ticks"));
         assert!(supervisor_main.contains("flowrt_app::supervisor::launch(run_ticks)"));

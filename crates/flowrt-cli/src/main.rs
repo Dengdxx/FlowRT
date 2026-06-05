@@ -1864,10 +1864,11 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
                 ));
                 for process in status.processes {
                     lines.push(format!(
-                        "supervisor_process={} state={} pid={} ticks={} last_seen_ms={} tick_stale={} exit_code={} socket={}",
+                        "supervisor_process={} state={} pid={} restarts={} ticks={} last_seen_ms={} tick_stale={} exit_code={} socket={}",
                         process.name,
                         process.state,
                         option_u32(process.pid),
+                        process.restart_count,
                         option_u64(process.tick_count),
                         option_u64(process.last_seen_unix_ms),
                         process.tick_stale,
@@ -3601,6 +3602,7 @@ fn main() {}
             name: "sensors".to_string(),
             state: "stale".to_string(),
             pid: Some(77),
+            restart_count: 2,
             tick_count: Some(10),
             last_seen_unix_ms: Some(2000),
             tick_stale: true,
@@ -3614,6 +3616,7 @@ fn main() {}
         assert!(output.contains("supervisor_process=sensors"));
         assert!(output.contains("state=stale"));
         assert!(output.contains("pid=77"));
+        assert!(output.contains("restarts=2"));
         assert!(output.contains("ticks=10"));
         assert!(output.contains("tick_stale=true"));
 

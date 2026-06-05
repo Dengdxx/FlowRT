@@ -205,7 +205,7 @@ flowrt status
 
 当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数、active echo observer 数量和 probe drop 计数写入 live status；payload 只在 echo 数据面 probe 启用期间 best-effort 记录。
 
-generated supervisor 会启动自己的 status socket，`runtime=supervisor`，`process=flowrt_supervisor`。它会按子进程 PID socket 轮询 live status，并额外输出 `supervisor_process=<name>` 行，字段包括 `state`、`pid`、`ticks`、`last_seen_ms`、`tick_stale` 和 `exit_code`。`state` 当前取值为 `starting`、`running`、`stale`、`exited` 或 `failed`；restart policy 尚未接入前，supervisor 只报告健康基线，不自动拉起失败进程。
+generated supervisor 会启动自己的 status socket，`runtime=supervisor`，`process=flowrt_supervisor`。它会按子进程 PID socket 轮询 live status，并额外输出 `supervisor_process=<name>` 行，字段包括 `state`、`pid`、`restarts`、`ticks`、`last_seen_ms`、`tick_stale` 和 `exit_code`。`state` 当前取值为 `starting`、`running`、`stale`、`restarting`、`exited` 或 `failed`。内置 restart policy 是 `on-failure`：子进程异常退出时最多重启 3 次，退避 100ms 起步、上限 1000ms；正常退出不重启。
 
 runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
 
