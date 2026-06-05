@@ -7,6 +7,8 @@ pub enum BackendKind {
     Inproc,
     /// iceoryx2 backend，用于本机多进程高性能 dataflow。
     Iox2,
+    /// zenoh backend，用于跨主机 copy transport dataflow。
+    Zenoh,
 }
 
 /// 调度器抽象边界。
@@ -53,14 +55,35 @@ impl Scheduler for InprocScheduler {
         step: &mut dyn FnMut(usize, &mut Context) -> Status,
     ) -> Status {
         let mut context = Context::default();
-        for tick in 0..ticks {
+        let tick_count = configured_run_ticks(ticks);
+        let tick_sleep = configured_tick_sleep();
+        for tick in 0..tick_count {
             match step(tick, &mut context) {
                 Status::Ok => {}
                 status => return status,
             }
+            if let Some(duration) = tick_sleep {
+                std::thread::sleep(duration);
+            }
         }
         Status::Ok
     }
+}
+
+fn configured_run_ticks(default_ticks: usize) -> usize {
+    std::env::var("FLOWRT_RUN_TICKS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|ticks| *ticks > 0)
+        .unwrap_or(default_ticks)
+}
+
+fn configured_tick_sleep() -> Option<std::time::Duration> {
+    std::env::var("FLOWRT_TICK_SLEEP_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(std::time::Duration::from_millis)
 }
 
 const INPROC_CAPABILITIES: &[&str] = &[
@@ -112,6 +135,29 @@ const IOX2_CAPABILITIES: &[&str] = &[
     "topology:single_host",
     "transfer:zero_copy",
     "transfer:loaned",
+    "observability:health",
+];
+
+const ZENOH_CAPABILITIES: &[&str] = &[
+    "abi:fixed_size_plain_data",
+    "layout:native_layout",
+    "allocation:bounded",
+    "graph:static_graph",
+    "trigger:periodic",
+    "trigger:on_message",
+    "trigger:startup",
+    "trigger:shutdown",
+    "timing:deadline_aware",
+    "channel:latest",
+    "channel:fifo",
+    "overflow:drop_oldest",
+    "stale:warn",
+    "stale:drop",
+    "stale:hold_last",
+    "stale:error",
+    "topology:multi_process",
+    "topology:multi_host",
+    "transfer:copy",
     "observability:health",
 ];
 
@@ -182,6 +228,41 @@ impl Backend for Iox2Backend {
 /// 构造 iox2 backend capability 骨架。
 pub fn iox2_backend() -> Iox2Backend {
     Iox2Backend::default()
+}
+
+/// zenoh backend 的 capability 骨架。
+///
+/// zenoh 用于跨主机 dataflow。该对象只表达 runtime 层的 backend 种类、capability 和调度边界；
+/// 具体 channel transport 由 generated shell 内部绑定，业务组件仍只依赖 FlowRT runtime API。
+#[derive(Debug, Default)]
+pub struct ZenohBackend {
+    scheduler: InprocScheduler,
+}
+
+impl ZenohBackend {
+    /// 构造 zenoh backend capability 骨架。
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Backend for ZenohBackend {
+    fn kind(&self) -> BackendKind {
+        BackendKind::Zenoh
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(ZENOH_CAPABILITIES)
+    }
+
+    fn scheduler(&self) -> &dyn Scheduler {
+        &self.scheduler
+    }
+}
+
+/// 构造 zenoh backend capability 骨架。
+pub fn zenoh_backend() -> ZenohBackend {
+    ZenohBackend::default()
 }
 
 #[cfg(test)]
@@ -270,6 +351,45 @@ mod tests {
                 "topology:single_host",
                 "transfer:zero_copy",
                 "transfer:loaned",
+                "observability:health",
+            ]
+        );
+    }
+
+    #[test]
+    fn zenoh_backend_reports_expected_capabilities() {
+        let backend = zenoh_backend();
+        assert_eq!(backend.kind(), BackendKind::Zenoh);
+        let capabilities = backend.capabilities();
+        assert!(capabilities.contains("topology:multi_process"));
+        assert!(capabilities.contains("topology:multi_host"));
+        assert!(capabilities.contains("transfer:copy"));
+        assert!(capabilities.contains("overflow:drop_oldest"));
+        assert!(!capabilities.contains("overflow:drop_newest"));
+        assert!(!capabilities.contains("overflow:error"));
+        assert!(!capabilities.contains("overflow:block"));
+        assert_eq!(
+            capabilities.as_slice(),
+            &[
+                "abi:fixed_size_plain_data",
+                "layout:native_layout",
+                "allocation:bounded",
+                "graph:static_graph",
+                "trigger:periodic",
+                "trigger:on_message",
+                "trigger:startup",
+                "trigger:shutdown",
+                "timing:deadline_aware",
+                "channel:latest",
+                "channel:fifo",
+                "overflow:drop_oldest",
+                "stale:warn",
+                "stale:drop",
+                "stale:hold_last",
+                "stale:error",
+                "topology:multi_process",
+                "topology:multi_host",
+                "transfer:copy",
                 "observability:health",
             ]
         );

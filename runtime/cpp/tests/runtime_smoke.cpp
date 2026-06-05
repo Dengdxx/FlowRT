@@ -4,9 +4,28 @@
 #include <cstdint>
 #include <flowrt/runtime.hpp>
 #include <string_view>
+#include <vector>
 
 struct Sample {
     std::uint32_t value;
+};
+
+struct TinyWireMessage {
+    std::uint16_t value{};
+
+    static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint16_t); }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        flowrt::ensure_wire_size(wire_size(), output.size());
+        flowrt::write_wire_le(output, 0, value);
+    }
+
+    static TinyWireMessage decode_wire(std::span<const std::uint8_t> input) {
+        flowrt::ensure_wire_size(wire_size(), input.size());
+        TinyWireMessage value{};
+        value.value = flowrt::read_wire_le<std::uint16_t>(input, 0);
+        return value;
+    }
 };
 
 template <std::size_t N>
@@ -24,6 +43,20 @@ int main() {
 
     flowrt::Context context;
     (void)context;
+
+    std::array<std::uint8_t, TinyWireMessage::wire_size()> tiny_wire{};
+    TinyWireMessage{0x1234U}.encode_wire(tiny_wire);
+    assert((tiny_wire == std::array<std::uint8_t, 2>{0x34U, 0x12U}));
+    assert(TinyWireMessage::decode_wire(tiny_wire).value == 0x1234U);
+    bool saw_wire_size_error = false;
+    try {
+        TinyWireMessage{7U}.encode_wire(std::span<std::uint8_t>{tiny_wire.data(), 1});
+    } catch (const flowrt::WireCodecError &error) {
+        saw_wire_size_error = true;
+        assert(error.expected() == 2U);
+        assert(error.actual() == 1U);
+    }
+    assert(saw_wire_size_error);
 
     flowrt::InprocBackend inproc_backend;
     assert(inproc_backend.kind() == flowrt::BackendKind::Inproc);
@@ -86,6 +119,36 @@ int main() {
             "topology:single_host",
             "transfer:zero_copy",
             "transfer:loaned",
+            "observability:health",
+        });
+
+    flowrt::ZenohBackend zenoh_backend;
+    assert(zenoh_backend.kind() == flowrt::BackendKind::Zenoh);
+    assert(zenoh_backend.capabilities().contains("topology:multi_process"));
+    assert(zenoh_backend.capabilities().contains("topology:multi_host"));
+    assert(zenoh_backend.capabilities().contains("transfer:copy"));
+    assert_capabilities_equal(
+        zenoh_backend.capabilities(),
+        std::array<std::string_view, 20>{
+            "abi:fixed_size_plain_data",
+            "layout:native_layout",
+            "allocation:bounded",
+            "graph:static_graph",
+            "trigger:periodic",
+            "trigger:on_message",
+            "trigger:startup",
+            "trigger:shutdown",
+            "timing:deadline_aware",
+            "channel:latest",
+            "channel:fifo",
+            "overflow:drop_oldest",
+            "stale:warn",
+            "stale:drop",
+            "stale:hold_last",
+            "stale:error",
+            "topology:multi_process",
+            "topology:multi_host",
+            "transfer:copy",
             "observability:health",
         });
 
@@ -249,6 +312,35 @@ int main() {
     const auto transport_read = iox2_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_read));
     assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Transport);
+
+    auto zenoh_config =
+        flowrt::zenoh::ZenohChannelConfig::fifo(0, flowrt::OverflowPolicy::DropNewest)
+            .with_stale_config(
+                flowrt::StaleConfig{std::chrono::milliseconds{5}, flowrt::StalePolicy::Drop});
+    auto zenoh_latest_config = flowrt::zenoh::ZenohChannelConfig::latest();
+    assert(zenoh_config.depth() == 1U);
+    assert(zenoh_config.overflow() == flowrt::OverflowPolicy::DropNewest);
+    assert(!zenoh_config.is_latest());
+    assert(zenoh_latest_config.is_latest());
+    assert(zenoh_config.stale().policy() == flowrt::StalePolicy::Drop);
+    assert(zenoh_config.stale().max_age() ==
+           std::optional<flowrt::StaleConfig::Duration>{std::chrono::milliseconds{5}});
+    assert(zenoh_latest_config.depth() == 1U);
+    assert(zenoh_latest_config.overflow() == flowrt::OverflowPolicy::DropOldest);
+
+    auto zenoh_endpoint = flowrt::zenoh::ZenohPubSub<TinyWireMessage>::open_with_config(
+        "flowrt/cpp/smoke", zenoh_config);
+    assert(zenoh_endpoint.key_expr() == "flowrt/cpp/smoke");
+    assert(zenoh_endpoint.config().depth() == 1U);
+    assert(zenoh_endpoint.config().overflow() == flowrt::OverflowPolicy::DropNewest);
+    assert(!zenoh_endpoint.ready());
+    const auto zenoh_transport_write = zenoh_endpoint.publish_at(TinyWireMessage{23U}, 10U);
+    assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_write));
+    assert(std::get<flowrt::ChannelError>(zenoh_transport_write) ==
+           flowrt::ChannelError::Transport);
+    const auto zenoh_transport_read = zenoh_endpoint.receive_latest_at(10U);
+    assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_read));
+    assert(std::get<flowrt::ChannelError>(zenoh_transport_read) == flowrt::ChannelError::Transport);
 
     return 0;
 }
