@@ -1,0 +1,60 @@
+[package]
+name = "mixed_zenoh_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.CrossHostFrame]
+valid = "bool"
+label = "string<max=64>"
+payload = "bytes<max=32>"
+samples = "sequence<u32,max=8>"
+temperature = "f32"
+
+[component.source]
+language = "rust"
+output = ["frame:CrossHostFrame"]
+
+[component.sink]
+language = "cpp"
+input = ["frame:CrossHostFrame"]
+
+[instance.source]
+component = "source"
+process = "rust_source"
+target = "rust_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 100
+output = ["frame"]
+
+[instance.sink]
+component = "sink"
+process = "cpp_sink"
+target = "cpp_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["frame"]
+
+[[bind.dataflow]]
+from = "source.frame"
+to = "sink.frame"
+channel = "latest"
+max_age_ms = 1000
+stale_policy = "warn"
+
+[profile.default]
+backend = "zenoh"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[target.rust_host]
+platform = "linux-x86_64"
+runtime = ["rust"]
+backends = ["zenoh"]
+
+[target.cpp_host]
+platform = "linux-aarch64"
+runtime = ["cpp"]
+backends = ["zenoh"]

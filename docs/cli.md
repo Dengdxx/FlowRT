@@ -25,7 +25,7 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 `check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。
 
-Message ABI v0.1 只接受 fixed-size plain data。RSDL type expression 可以解析未来有界变长语法，例如 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>`，但 `check` 会拒绝包含这些字段的 v0.1 contract，并提示需要未来 Variable Frame ABI；当前 `prepare`、`build`、`run`、`launch` 和 conformance 生成都不会继续处理这些字段。
+Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>` 这类 bounded variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare`、`build`、`run`、`launch` 和 conformance 生成会输出 canonical frame codec；`iox2` 仍只接受 fixed-size plain data。
 
 `u128` 和 `i128` 属于 fixed-size primitive，但它们需要额外的 `abi:int128` capability。当前 `inproc` 和 `iox2` backend 不提供该能力，因此使用这些类型的 contract 会在 deployment capability 校验阶段被判定为不满足。
 
@@ -60,6 +60,7 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会要求 `iceoryx2-cxx 0.9.1`。
+- 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会要求 `zenohc 1.9.0` 与 `zenohcxx 1.9.0`；需要通过 `CMAKE_PREFIX_PATH` 指向对应安装前缀。
 
 ## `run`
 
@@ -76,8 +77,8 @@ mixed contract 规则：
 
 - 同一 process group 内混合 C++/Rust 会被拒绝。
 - mixed contract 使用 `inproc` 跨进程组合会被拒绝。
-- language-separated mixed contract 在 `iox2` backend 下可以使用 `flowrt run --process <name>` 运行某个单语言 process。
-- 未指定 process 的 mixed iox2 contract 应使用 `flowrt launch` 启动全部 process group。
+- language-separated mixed contract 在 `iox2` 或 `zenoh` backend 下可以使用 `flowrt run --process <name>` 运行某个单语言 process。
+- 未指定 process 的 mixed iox2/zenoh contract 应使用 `flowrt launch` 启动全部 process group。
 
 `inproc` backend 下，`run --process <name>` 只能运行没有跨 process dataflow 依赖的 process group；如果该 process 与其他 process 之间存在 bind，CLI 会拒绝单独运行它。此时应运行完整 inproc app，改用 `iox2`，或调整 RSDL process group。
 
@@ -92,7 +93,7 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 含 C++ component 的 contract 会先构建生成的 CMake app；C++ only contract 只生成 supervisor 所需的最小 Rust crate，不生成 Rust runtime shell 或 Rust app binary。
 
-`inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` backend，或把相关 instance 放回同一 process group。
+`inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` 或 `zenoh` backend，或把相关 instance 放回同一 process group。
 
 launch manifest 的关键字段包括：
 
@@ -145,6 +146,17 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 默认情况下，`echo` 只读取一次 latest snapshot。传入 `--follow` 后，CLI 会按 `--interval-ms <ms>` 指定的间隔持续轮询同一 runtime socket；第一条 snapshot 一定输出，后续只在 `published_count`、`published_at_ms` 或 raw payload 变化时输出，避免没有新发布时重复刷屏。默认轮询间隔是 250 ms。
 
 生成的 Rust/C++ runtime shell 会为当前 process 的 active channel 预注册 live 摘要，并在成功发布输出后记录 raw ABI payload 和 `published_at_ms`。因此 Rust 与 C++ 示例都可以通过 `flowrt status` 查看 live channel 摘要，并通过 `flowrt echo` / `flowrt echo --follow` 读取 live snapshot。
+
+`zenoh` 示例在跨机时通常需要为两个进程分别注入连接信息。常用环境变量是：
+
+- `FLOWRT_ZENOH_CONNECT`
+- `FLOWRT_ZENOH_LISTEN`
+- `FLOWRT_ZENOH_MODE`
+- `FLOWRT_ZENOH_NO_MULTICAST`
+- `FLOWRT_RUN_TICKS`
+- `FLOWRT_TICK_SLEEP_MS`
+
+前三个用于给 runtime session 注入 zenoh 网络配置，后两个用于把 demo 的同步 tick 拉长到可观察窗口。它们都不进入用户组件 API。
 
 ## `status`
 

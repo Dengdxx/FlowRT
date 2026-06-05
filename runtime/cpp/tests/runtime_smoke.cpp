@@ -129,7 +129,7 @@ int main() {
     assert(zenoh_backend.capabilities().contains("transfer:copy"));
     assert_capabilities_equal(
         zenoh_backend.capabilities(),
-        std::array<std::string_view, 23>{
+        std::array<std::string_view, 20>{
             "abi:fixed_size_plain_data",
             "layout:native_layout",
             "allocation:bounded",
@@ -142,9 +142,6 @@ int main() {
             "channel:latest",
             "channel:fifo",
             "overflow:drop_oldest",
-            "overflow:drop_newest",
-            "overflow:error",
-            "overflow:block",
             "stale:warn",
             "stale:drop",
             "stale:hold_last",
@@ -315,6 +312,35 @@ int main() {
     const auto transport_read = iox2_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_read));
     assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Transport);
+
+    auto zenoh_config =
+        flowrt::zenoh::ZenohChannelConfig::fifo(0, flowrt::OverflowPolicy::DropNewest)
+            .with_stale_config(
+                flowrt::StaleConfig{std::chrono::milliseconds{5}, flowrt::StalePolicy::Drop});
+    auto zenoh_latest_config = flowrt::zenoh::ZenohChannelConfig::latest();
+    assert(zenoh_config.depth() == 1U);
+    assert(zenoh_config.overflow() == flowrt::OverflowPolicy::DropNewest);
+    assert(!zenoh_config.is_latest());
+    assert(zenoh_latest_config.is_latest());
+    assert(zenoh_config.stale().policy() == flowrt::StalePolicy::Drop);
+    assert(zenoh_config.stale().max_age() ==
+           std::optional<flowrt::StaleConfig::Duration>{std::chrono::milliseconds{5}});
+    assert(zenoh_latest_config.depth() == 1U);
+    assert(zenoh_latest_config.overflow() == flowrt::OverflowPolicy::DropOldest);
+
+    auto zenoh_endpoint = flowrt::zenoh::ZenohPubSub<TinyWireMessage>::open_with_config(
+        "flowrt/cpp/smoke", zenoh_config);
+    assert(zenoh_endpoint.key_expr() == "flowrt/cpp/smoke");
+    assert(zenoh_endpoint.config().depth() == 1U);
+    assert(zenoh_endpoint.config().overflow() == flowrt::OverflowPolicy::DropNewest);
+    assert(!zenoh_endpoint.ready());
+    const auto zenoh_transport_write = zenoh_endpoint.publish_at(TinyWireMessage{23U}, 10U);
+    assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_write));
+    assert(std::get<flowrt::ChannelError>(zenoh_transport_write) ==
+           flowrt::ChannelError::Transport);
+    const auto zenoh_transport_read = zenoh_endpoint.receive_latest_at(10U);
+    assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_read));
+    assert(std::get<flowrt::ChannelError>(zenoh_transport_read) == flowrt::ChannelError::Transport);
 
     return 0;
 }

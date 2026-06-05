@@ -55,14 +55,35 @@ impl Scheduler for InprocScheduler {
         step: &mut dyn FnMut(usize, &mut Context) -> Status,
     ) -> Status {
         let mut context = Context::default();
-        for tick in 0..ticks {
+        let tick_count = configured_run_ticks(ticks);
+        let tick_sleep = configured_tick_sleep();
+        for tick in 0..tick_count {
             match step(tick, &mut context) {
                 Status::Ok => {}
                 status => return status,
             }
+            if let Some(duration) = tick_sleep {
+                std::thread::sleep(duration);
+            }
         }
         Status::Ok
     }
+}
+
+fn configured_run_ticks(default_ticks: usize) -> usize {
+    std::env::var("FLOWRT_RUN_TICKS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|ticks| *ticks > 0)
+        .unwrap_or(default_ticks)
+}
+
+fn configured_tick_sleep() -> Option<std::time::Duration> {
+    std::env::var("FLOWRT_TICK_SLEEP_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(std::time::Duration::from_millis)
 }
 
 const INPROC_CAPABILITIES: &[&str] = &[
@@ -130,9 +151,6 @@ const ZENOH_CAPABILITIES: &[&str] = &[
     "channel:latest",
     "channel:fifo",
     "overflow:drop_oldest",
-    "overflow:drop_newest",
-    "overflow:error",
-    "overflow:block",
     "stale:warn",
     "stale:drop",
     "stale:hold_last",
@@ -346,6 +364,10 @@ mod tests {
         assert!(capabilities.contains("topology:multi_process"));
         assert!(capabilities.contains("topology:multi_host"));
         assert!(capabilities.contains("transfer:copy"));
+        assert!(capabilities.contains("overflow:drop_oldest"));
+        assert!(!capabilities.contains("overflow:drop_newest"));
+        assert!(!capabilities.contains("overflow:error"));
+        assert!(!capabilities.contains("overflow:block"));
         assert_eq!(
             capabilities.as_slice(),
             &[
@@ -361,9 +383,6 @@ mod tests {
                 "channel:latest",
                 "channel:fifo",
                 "overflow:drop_oldest",
-                "overflow:drop_newest",
-                "overflow:error",
-                "overflow:block",
                 "stale:warn",
                 "stale:drop",
                 "stale:hold_last",

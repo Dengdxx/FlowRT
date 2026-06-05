@@ -5,11 +5,14 @@
 
 pub mod backend;
 pub mod channel;
+pub mod frame;
 pub mod inproc;
 pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
 pub mod wire;
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
 
 pub use backend::{
     Backend, BackendKind, InprocBackend, InprocScheduler, Iox2Backend, Scheduler, ZenohBackend,
@@ -18,6 +21,10 @@ pub use backend::{
 pub use channel::{
     BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,
     OverflowPolicy, StaleConfig, StalePolicy,
+};
+pub use frame::{
+    BoundedBytes, BoundedSequence, BoundedString, FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE,
+    VarSpan, append_tail_block,
 };
 #[cfg(feature = "iox2")]
 pub use iceoryx2::prelude::ZeroCopySend;

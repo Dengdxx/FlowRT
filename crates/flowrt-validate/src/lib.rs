@@ -84,6 +84,8 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_channel_policy_sources(ir, &mut errors);
     validate_names(ir, &mut errors);
     validate_message_types(ir, &type_names, &mut errors);
+    validate_variable_frame_shapes(ir, &mut errors);
+    validate_message_type_cycles(ir, &mut errors);
     validate_message_abi(ir, &mut errors);
     validate_components(ir, &type_names, &mut errors);
     validate_graphs(ir, &mut errors);
@@ -822,7 +824,10 @@ fn validate_unique_names<'a>(
 
 fn validate_message_abi(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     if let Err(error) = message_abi_expectations(ir) {
-        if matches!(error, AbiError::UnsupportedFutureType { .. }) {
+        if matches!(
+            error,
+            AbiError::UnsupportedFutureType { .. } | AbiError::RecursiveType { .. }
+        ) {
             return;
         }
         errors.push(ValidationError::new(format!(
@@ -1029,11 +1034,165 @@ fn validate_message_types(
     }
 }
 
+fn validate_variable_frame_shapes(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let types_by_name = ir
+        .types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+
+    for ty in &ir.types {
+        for field in &ty.fields {
+            let context = format!("type `{}` field `{}`", ty.name, field.name);
+            match &field.ty {
+                TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
+                TypeExpr::VarSequence { element, .. } => {
+                    if type_expr_contains_variable_data(element, &types_by_name) {
+                        errors.push(ValidationError::new(format!(
+                            "{context} has a variable-length sequence element; sequence elements must be fixed-size"
+                        )));
+                    }
+                }
+                expr if type_expr_contains_variable_data(expr, &types_by_name) => {
+                    errors.push(ValidationError::new(format!(
+                        "{context} nests bounded variable data; variable data is only supported as a top-level message field"
+                    )));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn type_expr_contains_variable_data(
+    expr: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &flowrt_ir::TypeIr>,
+) -> bool {
+    type_expr_contains_variable_data_inner(expr, types_by_name, &mut BTreeSet::new())
+}
+
+fn type_expr_contains_variable_data_inner(
+    expr: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &flowrt_ir::TypeIr>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match expr {
+        TypeExpr::Primitive { .. } => false,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
+        TypeExpr::Array { element, .. } => {
+            type_expr_contains_variable_data_inner(element, types_by_name, visiting)
+        }
+        TypeExpr::Named { name } => {
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let contains_variable = types_by_name.get(name.as_str()).is_some_and(|ty| {
+                ty.fields.iter().any(|field| {
+                    type_expr_contains_variable_data_inner(&field.ty, types_by_name, visiting)
+                })
+            });
+            visiting.remove(name);
+            contains_variable
+        }
+    }
+}
+
+fn validate_message_type_cycles(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let types_by_name = ir
+        .types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let mut visited = BTreeSet::new();
+    let mut visiting = Vec::new();
+    let mut recursive_types = BTreeSet::new();
+
+    for ty in &ir.types {
+        collect_recursive_message_types(
+            &ty.name,
+            &types_by_name,
+            &mut visited,
+            &mut visiting,
+            &mut recursive_types,
+        );
+    }
+
+    for type_name in recursive_types {
+        errors.push(ValidationError::new(format!(
+            "message ABI v0.1 violation: recursive message type `{type_name}` detected"
+        )));
+    }
+}
+
+fn collect_recursive_message_types(
+    type_name: &str,
+    types_by_name: &BTreeMap<&str, &flowrt_ir::TypeIr>,
+    visited: &mut BTreeSet<String>,
+    visiting: &mut Vec<String>,
+    recursive_types: &mut BTreeSet<String>,
+) {
+    if let Some(cycle_start) = visiting.iter().position(|name| name == type_name) {
+        recursive_types.extend(visiting[cycle_start..].iter().cloned());
+        return;
+    }
+    if visited.contains(type_name) {
+        return;
+    }
+
+    let Some(ty) = types_by_name.get(type_name) else {
+        return;
+    };
+    visiting.push(type_name.to_string());
+    for field in &ty.fields {
+        collect_recursive_types_from_expr(
+            &field.ty,
+            types_by_name,
+            visited,
+            visiting,
+            recursive_types,
+        );
+    }
+    visiting.pop();
+    visited.insert(type_name.to_string());
+}
+
+fn collect_recursive_types_from_expr(
+    expr: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &flowrt_ir::TypeIr>,
+    visited: &mut BTreeSet<String>,
+    visiting: &mut Vec<String>,
+    recursive_types: &mut BTreeSet<String>,
+) {
+    match expr {
+        TypeExpr::Named { name } => {
+            collect_recursive_message_types(name, types_by_name, visited, visiting, recursive_types)
+        }
+        TypeExpr::Array { element, .. } | TypeExpr::VarSequence { element, .. } => {
+            collect_recursive_types_from_expr(
+                element,
+                types_by_name,
+                visited,
+                visiting,
+                recursive_types,
+            );
+        }
+        TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
+    }
+}
+
 fn validate_components(
     ir: &ContractIr,
     type_names: &BTreeSet<&str>,
     errors: &mut Vec<ValidationError>,
 ) {
+    let types_by_name = ir
+        .types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+
     for component in &ir.components {
         if component.kind == ComponentKind::External {
             errors.push(ValidationError::new(format!(
@@ -1056,6 +1215,14 @@ fn validate_components(
                 &format!("component `{}` port `{}`", component.name, port.name),
                 errors,
             );
+            if !matches!(port.ty, TypeExpr::Named { .. })
+                && type_expr_contains_variable_data(&port.ty, &types_by_name)
+            {
+                errors.push(ValidationError::new(format!(
+                    "component `{}` port `{}` uses bounded variable data directly; variable data must be declared as a top-level field of a named message type",
+                    component.name, port.name
+                )));
+            }
         }
 
         let mut params = BTreeSet::new();
@@ -1686,20 +1853,19 @@ fn validate_type_expr(
             }
             validate_type_expr(element, type_names, context, errors);
         }
-        TypeExpr::VarBytes { max_len } => {
-            errors.push(ValidationError::new(format!(
-                "{context} uses bytes<max={max_len}>, which requires the future Variable Frame ABI"
-            )));
-        }
-        TypeExpr::VarString { max_len, .. } => {
-            errors.push(ValidationError::new(format!(
-                "{context} uses string<max={max_len}>, which requires the future Variable Frame ABI"
-            )));
+        TypeExpr::VarBytes { max_len } | TypeExpr::VarString { max_len, .. } => {
+            if *max_len == 0 {
+                errors.push(ValidationError::new(format!(
+                    "{context} has zero maximum length for bounded variable type"
+                )));
+            }
         }
         TypeExpr::VarSequence { element, max_len } => {
-            errors.push(ValidationError::new(format!(
-                "{context} uses sequence<...,max={max_len}>, which requires the future Variable Frame ABI"
-            )));
+            if *max_len == 0 {
+                errors.push(ValidationError::new(format!(
+                    "{context} has zero maximum length for bounded variable type"
+                )));
+            }
             validate_type_expr(element, type_names, context, errors);
         }
     }
@@ -2714,6 +2880,77 @@ backends = ["zenoh"]
     }
 
     #[test]
+    fn rejects_zenoh_overflow_policy_without_runtime_capability() {
+        let source = r#"
+[package]
+name = "distributed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "fifo"
+depth = 2
+
+[profile.default]
+backend = "zenoh"
+default_overflow = "drop_newest"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+
+[target.pi_host]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir)
+            .expect_err("zenoh must reject overflow policies it does not advertise");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "backend `zenoh` selected by profile `default` cannot satisfy required capabilities for graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn rejects_recursive_message_type() {
         let source = r#"
 [package]
@@ -2763,42 +3000,211 @@ payload = "[u8; 1]"
     }
 
     #[test]
-    fn rejects_variable_frame_message_fields_in_v0_1() {
-        let source = r#"
+    fn accepts_top_level_bounded_variable_fields_with_inproc() {
+        validate_contract(&bounded_variable_contract("inproc")).unwrap();
+    }
+
+    fn bounded_variable_contract(backend: &str) -> ContractIr {
+        let source = format!(
+            r#"
 [package]
-name = "bad"
+name = "variable_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
 payload = "bytes<max=262144>"
 label = "string<max=64>"
 samples = "sequence<u32,max=16>"
+
+[component.producer]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.consumer]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "producer.packet"
+to = "consumer.packet"
+channel = "latest"
+
+[profile.default]
+backend = "{backend}"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["{backend}"]
+"#
+        );
+        let raw = parse_str(&source).unwrap();
+        normalize_document(&raw, hash_source(&source)).unwrap()
+    }
+
+    #[test]
+    fn bounded_variable_fields_follow_selected_backend_capabilities() {
+        validate_contract(&bounded_variable_contract("zenoh")).unwrap();
+
+        let report = validate_contract(&bounded_variable_contract("iox2"))
+            .expect_err("iox2 must reject bounded variable frames by capability");
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "backend `iox2` selected by profile `default` cannot satisfy required capabilities for graph `default`",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("future Variable Frame ABI")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rejects_bounded_variable_data_below_top_level_message_fields() {
+        let source = r#"
+[package]
+name = "bad_variable_shapes"
+rsdl_version = "0.1"
+
+[type.ArrayHolder]
+items = "[bytes<max=8>; 2]"
+
+[type.Inner]
+payload = "bytes<max=8>"
+
+[type.Outer]
+inner = "Inner"
+
+[type.SequenceHolder]
+items = "sequence<bytes<max=8>,max=2>"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report =
+            validate_contract(&ir).expect_err("nested bounded variable data must be rejected");
+
+        for expected in [
+            "type `ArrayHolder` field `items` nests bounded variable data; variable data is only supported as a top-level message field",
+            "type `Outer` field `inner` nests bounded variable data; variable data is only supported as a top-level message field",
+            "type `SequenceHolder` field `items` has a variable-length sequence element; sequence elements must be fixed-size",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}; got {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_recursive_message_type_when_variable_frame_types_are_present() {
+        let source = r#"
+[package]
+name = "bad_recursive_variable"
+rsdl_version = "0.1"
+
+[type.APacket]
+payload = "bytes<max=8>"
+
+[type.ZNode]
+next = "ZNode"
 "#;
         let raw = parse_str(source).unwrap();
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
         let report = validate_contract(&ir)
-            .expect_err("Variable Frame ABI fields should fail validation in v0.1");
+            .expect_err("variable frame types must not mask recursive message types");
 
-        assert!(report.errors.iter().any(|error| {
-            error.message.contains(
-                "type `Packet` field `payload` uses bytes<max=262144>, which requires the future Variable Frame ABI",
-            )
-        }));
-        assert!(report.errors.iter().any(|error| {
-            error.message.contains(
-                "type `Packet` field `label` uses string<max=64>, which requires the future Variable Frame ABI",
-            )
-        }));
-        assert!(report.errors.iter().any(|error| {
-            error.message.contains(
-                "type `Packet` field `samples` uses sequence<...,max=16>, which requires the future Variable Frame ABI",
-            )
-        }));
-        assert!(!report.errors.iter().any(|error| {
-            error
-                .message
-                .contains("message ABI v0.1 violation: type expression `bytes<max=262144>`")
-        }));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains("recursive message type `ZNode`")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rejects_zero_bounded_variable_lengths_in_contract_ir() {
+        let mut ir = bounded_variable_contract("inproc");
+        for field in &mut ir.types[0].fields {
+            match &mut field.ty {
+                TypeExpr::VarBytes { max_len }
+                | TypeExpr::VarString { max_len, .. }
+                | TypeExpr::VarSequence { max_len, .. } => *max_len = 0,
+                _ => {}
+            }
+        }
+
+        let report =
+            validate_contract(&ir).expect_err("zero bounded variable lengths must be rejected");
+        for field_name in ["payload", "label", "samples"] {
+            let expected = format!(
+                "type `Packet` field `{field_name}` has zero maximum length for bounded variable type"
+            );
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(&expected)),
+                "missing validation error: {expected}; got {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_bounded_variable_data_used_directly_as_component_port_type() {
+        let source = r#"
+[package]
+name = "bad_variable_port"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["payload:bytes<max=8>"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let report = validate_contract(&ir)
+            .expect_err("bounded variable data must be wrapped in a named message type");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "component `producer` port `payload` uses bounded variable data directly; variable data must be declared as a top-level field of a named message type",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -3635,6 +4041,28 @@ backends = ["inproc"]
             report.errors.iter().any(|error| {
                 error.message.contains(
                     "deployment `default / default / linux` has inconsistent satisfied flag",
+                )
+            }),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rejects_forged_variable_frame_capability_metadata() {
+        let mut ir = bounded_variable_contract("inproc");
+        validate_contract(&ir).unwrap();
+
+        ir.deployments[0]
+            .required_capabilities
+            .retain(|capability| capability.0 != "abi:variable_payload_frame");
+
+        let report =
+            validate_contract(&ir).expect_err("forged variable frame capability must fail");
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "deployment `default / default / linux` required capabilities do not match graph `default`",
                 )
             }),
             "{:?}",

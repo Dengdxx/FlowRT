@@ -101,6 +101,7 @@ struct SelfDescription<'a> {
     deployments: Vec<SelfDescriptionDeployment<'a>>,
     graphs: Vec<SelfDescriptionGraph<'a>>,
     message_abi: Vec<SelfDescriptionMessageAbi>,
+    message_frames: Vec<SelfDescriptionMessageFrame>,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,6 +193,24 @@ struct SelfDescriptionFieldAbi {
     align_bytes: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct SelfDescriptionMessageFrame {
+    type_name: String,
+    encoding: &'static str,
+    header_size_bytes: usize,
+    max_size_bytes: usize,
+    variable: bool,
+    fields: Vec<SelfDescriptionFrameField>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionFrameField {
+    name: String,
+    header_offset_bytes: usize,
+    header_size_bytes: usize,
+    tail_max_bytes: Option<usize>,
+}
+
 /// 生成首批 FlowRT 管理的应用产物。
 pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     validate_contract(contract)?;
@@ -203,7 +222,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     }
 
     let mut artifacts = Vec::new();
-    let abi_expectations = message_abi_expectations(contract)?;
+    let abi_expectations = fixed_message_abi_expectations(contract)?;
     let has_cpp = has_language(contract, LanguageKind::Cpp);
     let has_rust = has_language(contract, LanguageKind::Rust);
 
@@ -370,9 +389,14 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
             .iter()
             .map(|graph| self_description_graph(contract, graph, selected_backend.clone()))
             .collect(),
-        message_abi: message_abi_expectations(contract)?
+        message_abi: fixed_message_abi_expectations(contract)?
             .into_iter()
             .map(self_description_message_abi)
+            .collect(),
+        message_frames: contract
+            .types
+            .iter()
+            .map(|ty| self_description_message_frame(contract, ty))
             .collect(),
     })
 }
@@ -449,6 +473,38 @@ fn self_description_message_abi(expectation: MessageAbiExpectation) -> SelfDescr
                 align_bytes: field.align_bytes,
             })
             .collect(),
+    }
+}
+
+fn self_description_message_frame(
+    contract: &ContractIr,
+    ty: &TypeIr,
+) -> SelfDescriptionMessageFrame {
+    let mut header_offset = 0usize;
+    let mut fields = Vec::with_capacity(ty.fields.len());
+    for field in &ty.fields {
+        let header_size = frame_header_size_for_expr(contract, &field.ty);
+        let tail_max = variable_tail_max_size(contract, &field.ty);
+        fields.push(SelfDescriptionFrameField {
+            name: field.name.clone(),
+            header_offset_bytes: header_offset,
+            header_size_bytes: header_size,
+            tail_max_bytes: tail_max,
+        });
+        header_offset += header_size;
+    }
+    SelfDescriptionMessageFrame {
+        type_name: ty.name.clone(),
+        encoding: "canonical_frame_v1",
+        header_size_bytes: frame_header_size_for_type(contract, ty),
+        max_size_bytes: frame_max_size_for_type(contract, ty),
+        variable: type_contains_variable_data(
+            contract,
+            &TypeExpr::Named {
+                name: ty.name.clone(),
+            },
+        ),
+        fields,
     }
 }
 
@@ -570,8 +626,15 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
     );
     output.push_str("namespace flowrt_app {\n\n");
     let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
-    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
+    let needs_wire_codec =
+        selected_backend_name(contract) == "zenoh" || contract_has_variable_messages(contract);
     for ty in ordered_types(contract) {
+        let variable_message = type_contains_variable_data(
+            contract,
+            &TypeExpr::Named {
+                name: ty.name.clone(),
+            },
+        );
         output.push_str(&format!("struct {} {{\n", ty.name));
         if needs_iox2_type_name {
             output.push_str(&format!(
@@ -586,7 +649,9 @@ fn emit_cpp_messages(contract: &ContractIr) -> String {
                 field.name
             ));
         }
-        if needs_wire_codec {
+        if variable_message {
+            output.push_str(&cpp_frame_codec_methods(contract, ty));
+        } else if needs_wire_codec {
             output.push_str(&cpp_wire_codec_methods(contract, ty));
         }
         output.push_str("};\n\n");
@@ -683,7 +748,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <utility>\n#include <variant>\n\n");
+    output.push_str("#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -1439,16 +1504,21 @@ fn cpp_step_local_name(instance: &str, port: &str) -> String {
     format!("{instance}_{port}")
 }
 
-fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
+fn cpp_introspection_publish_record(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    let helper = if bind.source_uses_variable_frame || selected_backend == "zenoh" {
+        "record_introspection_publish_frame"
+    } else {
+        "record_introspection_publish_copy"
+    };
     format!(
-        "        record_introspection_publish(introspection_state, {}, {}, *value, tick_time_ms);\n",
+        "        {helper}(introspection_state, {}, {}, *value, tick_time_ms);\n",
         cpp_string_literal(&runtime_channel_name(bind)),
         cpp_string_literal(&runtime_channel_message_type(bind))
     )
 }
 
 fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    let introspection_record = cpp_introspection_publish_record(bind);
+    let introspection_record = cpp_introspection_publish_record(bind, selected_backend);
     if matches!(selected_backend, "iox2" | "zenoh") {
         return format!(
             "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n{introspection_record}",
@@ -1516,7 +1586,8 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push('\n');
     let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
-    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
+    let needs_wire_codec =
+        selected_backend_name(contract) == "zenoh" || contract_has_variable_messages(contract);
     let zero_copy_derive = if needs_iox2_type_name {
         output.push_str("use flowrt::ZeroCopySend;\n\n");
         ", flowrt::ZeroCopySend"
@@ -1524,9 +1595,23 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
         ""
     };
     for ty in ordered_types(contract) {
-        output.push_str("#[repr(C)]\n");
+        let variable_message = type_contains_variable_data(
+            contract,
+            &TypeExpr::Named {
+                name: ty.name.clone(),
+            },
+        );
+        if !variable_message {
+            output.push_str("#[repr(C)]\n");
+        }
+        let copy_derive = if variable_message { "" } else { ", Copy" };
+        let zero_copy_derive = if variable_message {
+            ""
+        } else {
+            zero_copy_derive
+        };
         output.push_str(&format!(
-            "#[derive(Clone, Copy, Debug, PartialEq{zero_copy_derive})]\n"
+            "#[derive(Clone{copy_derive}, Debug, PartialEq{zero_copy_derive})]\n"
         ));
         if needs_iox2_type_name {
             output.push_str(&format!(
@@ -1543,15 +1628,10 @@ fn emit_rust_messages(contract: &ContractIr) -> String {
             ));
         }
         output.push_str("}\n\n");
-        output.push_str(&format!("impl Default for {} {{\n", ty.name));
-        output.push_str("    fn default() -> Self {\n");
-        output.push_str(
-            "        // Safety：FlowRT Message ABI v0.1 只允许拥有有效全零位模式的 plain-data 类型。\n",
-        );
-        output.push_str("        unsafe { std::mem::zeroed() }\n");
-        output.push_str("    }\n");
-        output.push_str("}\n\n");
-        if needs_wire_codec {
+        output.push_str(&rust_default_impl(ty, variable_message));
+        if variable_message {
+            output.push_str(&rust_frame_codec_impl(contract, ty));
+        } else if needs_wire_codec {
             output.push_str(&rust_wire_codec_impl(contract, ty));
         }
     }
@@ -1576,6 +1656,30 @@ fn emit_rust_selfdesc(contract: &ContractIr) -> String {
         "\npub fn self_description_hash() -> &'static str {{\n    {}\n}}\n",
         rust_string_literal(&hash)
     ));
+    output
+}
+
+fn rust_default_impl(ty: &TypeIr, variable_message: bool) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("impl Default for {} {{\n", ty.name));
+    output.push_str("    fn default() -> Self {\n");
+    if variable_message {
+        output.push_str("        Self {\n");
+        for field in &ty.fields {
+            output.push_str(&format!(
+                "            {}: Default::default(),\n",
+                field.name
+            ));
+        }
+        output.push_str("        }\n");
+    } else {
+        output.push_str(
+            "        // Safety：FlowRT Message ABI v0.1 只允许拥有有效全零位模式的 plain-data 类型。\n",
+        );
+        output.push_str("        unsafe { std::mem::zeroed() }\n");
+    }
+    output.push_str("    }\n");
+    output.push_str("}\n\n");
     output
 }
 
@@ -1931,6 +2035,7 @@ struct BindRuntimePlan {
     max_age_ms: Option<u64>,
     depth: Option<u32>,
     source_type: TypeExpr,
+    source_uses_variable_frame: bool,
     source_instance: String,
     source_port: String,
     target_instance: String,
@@ -1998,6 +2103,7 @@ fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<BindRuntime
                 max_age_ms: bind.max_age_ms,
                 depth: bind.depth,
                 source_type: source_port.ty.clone(),
+                source_uses_variable_frame: type_contains_variable_data(contract, &source_port.ty),
                 source_instance: source_instance.name.clone(),
                 source_port: bind.from.port.clone(),
                 target_instance: bind.to.instance.name.clone(),
@@ -2070,7 +2176,7 @@ fn emit_cpp_introspection_helpers() -> String {
 }
 
 template <typename T>
-void record_introspection_publish(
+void record_introspection_publish_copy(
     flowrt::IntrospectionState& state,
     std::string_view name,
     std::string_view message_type,
@@ -2082,6 +2188,26 @@ void record_introspection_publish(
             std::string{name},
             std::string{message_type},
             value,
+            std::optional<std::uint64_t>{published_at_ms});
+    } catch (...) {
+    }
+}
+
+template <typename T>
+void record_introspection_publish_frame(
+    flowrt::IntrospectionState& state,
+    std::string_view name,
+    std::string_view message_type,
+    const T& value,
+    std::uint64_t published_at_ms
+) {
+    try {
+        std::vector<std::uint8_t> payload(flowrt::detail::encoded_frame_size(value));
+        flowrt::detail::encode_frame(value, payload);
+        state.record_channel_publish_bytes(
+            std::string{name},
+            std::string{message_type},
+            std::move(payload),
             std::optional<std::uint64_t>{published_at_ms});
     } catch (...) {
     }
@@ -2117,7 +2243,8 @@ fn emit_rust_introspection_helpers() -> String {
     }));
 }
 
-fn record_introspection_publish<T: Copy>(
+#[allow(dead_code)]
+fn record_introspection_publish_copy<T: Copy>(
     state: &flowrt::IntrospectionState,
     name: &'static str,
     message_type: &'static str,
@@ -2126,6 +2253,21 @@ fn record_introspection_publish<T: Copy>(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state.record_channel_publish(name, message_type, value, Some(published_at_ms));
+    }));
+}
+
+#[allow(dead_code)]
+fn record_introspection_publish_frame<T: flowrt::FrameCodec>(
+    state: &flowrt::IntrospectionState,
+    name: &'static str,
+    message_type: &'static str,
+    value: &T,
+    published_at_ms: u64,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Ok(payload) = value.to_frame_vec() {
+            state.record_channel_publish_bytes(name, message_type, payload, Some(published_at_ms));
+        }
     }));
 }
 
@@ -2304,7 +2446,7 @@ fn emit_rust_app_step(
                 continue;
             }
             output.push_str(&format!(
-                "{indent}if let Some(value) = {port}.as_ref().copied() {{\n",
+                "{indent}if let Some(value) = {port}.as_ref().cloned() {{\n",
                 indent = rust_step_indent(trigger_guard.is_some()),
                 port = port.name
             ));
@@ -2582,19 +2724,24 @@ fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
     )
 }
 
-fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
+fn runtime_introspection_publish_record(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+    let helper = if bind.source_uses_variable_frame || selected_backend == "zenoh" {
+        "record_introspection_publish_frame"
+    } else {
+        "record_introspection_publish_copy"
+    };
     format!(
-        "            record_introspection_publish(introspection_state, {}, {}, &value, tick_time_ms);\n",
+        "            {helper}(introspection_state, {}, {}, &value, tick_time_ms);\n",
         rust_string_literal(&runtime_channel_name(bind)),
         rust_string_literal(&runtime_channel_message_type(bind))
     )
 }
 
 fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    let introspection_record = runtime_introspection_publish_record(bind);
+    let introspection_record = runtime_introspection_publish_record(bind, selected_backend);
     if matches!(selected_backend, "iox2" | "zenoh") {
         return format!(
-            "            if self.{field}.publish_at(value, tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n{introspection_record}",
+            "            if self.{field}.publish_at(value.clone(), tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n{introspection_record}",
             field = bind.field_name
         );
     }
@@ -2602,13 +2749,13 @@ fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> Stri
     match bind.channel {
         ChannelKind::Latest => {
             format!(
-                "            self.{field}.publish_at(value, tick_time_ms);\n{introspection_record}",
+                "            self.{field}.publish_at(value.clone(), tick_time_ms);\n{introspection_record}",
                 field = bind.field_name
             )
         }
         ChannelKind::Fifo => {
             format!(
-                "            match self.{field}.push_at(value, tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,\n                Err(flowrt::ChannelError::Overflow) => return flowrt::Status::Error,\n            }}\n",
+                "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,\n                Err(flowrt::ChannelError::Overflow) => return flowrt::Status::Error,\n            }}\n",
                 field = bind.field_name
             )
         }
@@ -2792,6 +2939,100 @@ fn type_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a TypeIr {
         .iter()
         .find(|ty| ty.name == name)
         .expect("normalized contract must reference known message types")
+}
+
+fn fixed_message_abi_expectations(contract: &ContractIr) -> Result<Vec<MessageAbiExpectation>> {
+    let mut fixed_contract = contract.clone();
+    fixed_contract.types = contract
+        .types
+        .iter()
+        .filter(|ty| {
+            !type_contains_variable_data(
+                contract,
+                &TypeExpr::Named {
+                    name: ty.name.clone(),
+                },
+            )
+        })
+        .cloned()
+        .collect();
+    Ok(message_abi_expectations(&fixed_contract)?)
+}
+
+fn contract_has_variable_messages(contract: &ContractIr) -> bool {
+    contract.types.iter().any(|ty| {
+        type_contains_variable_data(
+            contract,
+            &TypeExpr::Named {
+                name: ty.name.clone(),
+            },
+        )
+    })
+}
+
+fn type_contains_variable_data(contract: &ContractIr, expr: &TypeExpr) -> bool {
+    type_contains_variable_data_inner(contract, expr, &mut BTreeSet::new())
+}
+
+fn type_contains_variable_data_inner(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match expr {
+        TypeExpr::Primitive { .. } => false,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
+        TypeExpr::Array { element, .. } => {
+            type_contains_variable_data_inner(contract, element, visiting)
+        }
+        TypeExpr::Named { name } => {
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let contains = type_by_name(contract, name)
+                .fields
+                .iter()
+                .any(|field| type_contains_variable_data_inner(contract, &field.ty, visiting));
+            visiting.remove(name);
+            contains
+        }
+    }
+}
+
+fn frame_header_size_for_type(contract: &ContractIr, ty: &TypeIr) -> usize {
+    ty.fields
+        .iter()
+        .map(|field| frame_header_size_for_expr(contract, &field.ty))
+        .sum()
+}
+
+fn frame_header_size_for_expr(contract: &ContractIr, expr: &TypeExpr) -> usize {
+    match expr {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => 8,
+        _ => rust_wire_size(contract, expr),
+    }
+}
+
+fn frame_max_size_for_type(contract: &ContractIr, ty: &TypeIr) -> usize {
+    frame_header_size_for_type(contract, ty)
+        + ty.fields
+            .iter()
+            .filter_map(|field| variable_tail_max_size(contract, &field.ty))
+            .sum::<usize>()
+}
+
+fn variable_tail_max_size(contract: &ContractIr, expr: &TypeExpr) -> Option<usize> {
+    match expr {
+        TypeExpr::VarBytes { max_len } | TypeExpr::VarString { max_len, .. } => {
+            Some(*max_len as usize)
+        }
+        TypeExpr::VarSequence { element, max_len } => {
+            Some(rust_wire_size(contract, element) * (*max_len as usize))
+        }
+        _ => None,
+    }
 }
 
 fn message_sample_bytes(
@@ -3384,7 +3625,10 @@ fn emit_cmake(contract: &ContractIr) -> String {
         output.push_str("endif()\n");
     }
 
-    if has_language(contract, LanguageKind::Cpp) && !contract.types.is_empty() {
+    let has_fixed_abi_tests = fixed_message_abi_expectations(contract)
+        .map(|expectations| !expectations.is_empty())
+        .unwrap_or(false);
+    if has_language(contract, LanguageKind::Cpp) && has_fixed_abi_tests {
         let test_target = format!("{}_message_abi", package_name.replace('-', "_"));
         output.push_str("\ninclude(CTest)\nif(BUILD_TESTING)\n");
         output.push_str(&format!(
@@ -3445,7 +3689,10 @@ fn emit_cargo_manifest(contract: &ContractIr) -> String {
     }
     output.push_str(&bins);
 
-    if has_rust && !contract.types.is_empty() {
+    let has_fixed_abi_tests = fixed_message_abi_expectations(contract)
+        .map(|expectations| !expectations.is_empty())
+        .unwrap_or(false);
+    if has_rust && has_fixed_abi_tests {
         output.push_str(
             "\n[[test]]\nname = \"message_abi\"\npath = \"../rust/tests/message_abi.rs\"\n",
         );
@@ -3610,10 +3857,17 @@ fn cpp_type(expr: &TypeExpr) -> String {
         TypeExpr::Array { element, len } => {
             format!("std::array<{}, {}>", cpp_type(element), len)
         }
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
-            panic!(
-                "validated Message ABI v0.1 contract must not contain {}",
-                expr.canonical_syntax()
+        TypeExpr::VarBytes { max_len } => {
+            format!("flowrt::BoundedBytes<{max_len}>")
+        }
+        TypeExpr::VarString { max_len, .. } => {
+            format!("flowrt::BoundedString<{max_len}>")
+        }
+        TypeExpr::VarSequence { element, max_len } => {
+            format!(
+                "flowrt::BoundedSequence<{}, {}>",
+                cpp_type(element),
+                max_len
             )
         }
     }
@@ -3642,10 +3896,17 @@ fn rust_type(expr: &TypeExpr) -> String {
         TypeExpr::Primitive { name } => rust_primitive(*name).to_string(),
         TypeExpr::Named { name } => name.clone(),
         TypeExpr::Array { element, len } => format!("[{}; {}]", rust_type(element), len),
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
-            panic!(
-                "validated Message ABI v0.1 contract must not contain {}",
-                expr.canonical_syntax()
+        TypeExpr::VarBytes { max_len } => {
+            format!("flowrt::BoundedBytes<{max_len}>")
+        }
+        TypeExpr::VarString { max_len, .. } => {
+            format!("flowrt::BoundedString<{max_len}>")
+        }
+        TypeExpr::VarSequence { element, max_len } => {
+            format!(
+                "flowrt::BoundedSequence<{}, {}>",
+                rust_type(element),
+                max_len
             )
         }
     }
@@ -3694,6 +3955,168 @@ fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     }
     output.push_str("        })\n    }\n}\n\n");
     output
+}
+
+fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
+    let header_size = frame_header_size_for_type(contract, ty);
+    let max_size = frame_max_size_for_type(contract, ty);
+    let mut output = String::new();
+    output.push_str(&format!("impl flowrt::FrameCodec for {} {{\n", ty.name));
+    output.push_str(&format!(
+        "    fn encoded_frame_size(&self) -> usize {{\n        {header_size}{}    }}\n\n",
+        rust_dynamic_tail_size_exprs(contract, ty)
+    ));
+    output.push_str(
+        "    fn encode_frame(&self, output: &mut [u8]) -> Result<(), flowrt::WireCodecError> {\n",
+    );
+    output.push_str("        let mut tail = Vec::<u8>::new();\n");
+    for field in &ty.fields {
+        output.push_str(&rust_frame_prepare_tail_field(contract, field));
+    }
+    output.push_str(
+        "        if output.len() != self.encoded_frame_size() {\n            return Err(flowrt::WireCodecError::wrong_size(self.encoded_frame_size(), output.len()));\n        }\n        let mut cursor = 0usize;\n",
+    );
+    for field in &ty.fields {
+        output.push_str(&rust_frame_encode_header_field(contract, field));
+    }
+    output.push_str(&format!(
+        "        output[{header_size}..].copy_from_slice(&tail);\n        let _ = cursor;\n        Ok(())\n    }}\n\n"
+    ));
+    output
+        .push_str("    fn decode_frame(input: &[u8]) -> Result<Self, flowrt::WireCodecError> {\n");
+    output.push_str(&format!(
+        "        if input.len() < {header_size} {{\n            return Err(flowrt::WireCodecError::wrong_size({header_size}, input.len()));\n        }}\n        if input.len() > {max_size} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"canonical frame exceeds declared maximum size\"));\n        }}\n        let mut cursor = 0usize;\n"
+    ));
+    for field in &ty.fields {
+        output.push_str(&rust_frame_decode_header_field(contract, field));
+    }
+    output.push_str(&format!(
+        "        let _ = cursor;\n        let mut decoder = flowrt::FrameDecoder::new(&input[{header_size}..]);\n"
+    ));
+    for field in &ty.fields {
+        output.push_str(&rust_frame_decode_tail_field(contract, field));
+    }
+    output.push_str("        decoder.finish()?;\n        Ok(Self {\n");
+    for field in &ty.fields {
+        output.push_str(&format!("            {},\n", field.name));
+    }
+    output.push_str("        })\n    }\n}\n\n");
+    output
+}
+
+fn rust_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
+    let mut output = String::new();
+    for field in &ty.fields {
+        match &field.ty {
+            TypeExpr::VarBytes { .. } => {
+                output.push_str(&format!(" + self.{}.len()\n", field.name));
+            }
+            TypeExpr::VarString { .. } => {
+                output.push_str(&format!(" + self.{}.len()\n", field.name));
+            }
+            TypeExpr::VarSequence { element, .. } => {
+                output.push_str(&format!(
+                    " + self.{}.len() * {}\n",
+                    field.name,
+                    rust_wire_size(contract, element)
+                ));
+            }
+            _ => {}
+        }
+    }
+    if output.is_empty() {
+        "\n".to_string()
+    } else {
+        output
+    }
+}
+
+fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { .. } => format!(
+            "        let {name}_span = flowrt::append_tail_block(&mut tail, self.{name}.as_slice())?;\n",
+            name = field.name
+        ),
+        TypeExpr::VarString { .. } => format!(
+            "        let {name}_span = flowrt::append_tail_block(&mut tail, self.{name}.as_bytes())?;\n",
+            name = field.name
+        ),
+        TypeExpr::VarSequence { element, .. } => {
+            let element_size = rust_wire_size(contract, element);
+            let mut code = format!(
+                "        let mut {name}_tail = Vec::<u8>::with_capacity(self.{name}.len() * {element_size});\n        for element in self.{name}.as_slice() {{\n            let start = {name}_tail.len();\n            {name}_tail.resize(start + {element_size}, 0);\n",
+                name = field.name
+            );
+            code.push_str("            let mut cursor = start;\n");
+            code.push_str(&rust_wire_encode_expr(
+                contract,
+                element,
+                "*element",
+                &format!("{}_tail", field.name),
+                12,
+            ));
+            code.push_str("            let _ = cursor;\n");
+            code.push_str(&format!(
+                "        }}\n        let {name}_span = flowrt::append_tail_block(&mut tail, &{name}_tail)?;\n",
+                name = field.name
+            ));
+            code
+        }
+        _ => String::new(),
+    }
+}
+
+fn rust_frame_encode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            format!(
+                "        {name}_span.encode(&mut output[cursor..cursor + flowrt::VAR_SPAN_WIRE_SIZE])?;\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
+                name = field.name
+            )
+        }
+        _ => rust_wire_encode_expr(
+            contract,
+            &field.ty,
+            &format!("self.{}", field.name),
+            "output",
+            8,
+        ),
+    }
+}
+
+fn rust_frame_decode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            format!(
+                "        let {name}_span = flowrt::VarSpan::decode(&input[cursor..cursor + flowrt::VAR_SPAN_WIRE_SIZE])?;\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
+                name = field.name
+            )
+        }
+        _ => rust_wire_decode_expr(contract, &field.ty, &field.name, "input", 8),
+    }
+}
+
+fn rust_frame_decode_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { max_len } => format!(
+            "        let {name} = flowrt::BoundedBytes::<{max_len}>::try_from_slice(decoder.read_block({name}_span, {max_len})?)?;\n",
+            name = field.name
+        ),
+        TypeExpr::VarString { max_len, .. } => format!(
+            "        let {name} = flowrt::BoundedString::<{max_len}>::try_from_utf8(decoder.read_block({name}_span, {max_len})?)?;\n",
+            name = field.name
+        ),
+        TypeExpr::VarSequence { element, max_len } => {
+            let element_size = rust_wire_size(contract, element);
+            let element_ty = rust_type(element);
+            let max_tail = element_size * (*max_len as usize);
+            format!(
+                "        let {name}_block = decoder.read_block({name}_span, {max_tail})?;\n        if {name}_block.len() % {element_size} != 0 {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"bounded sequence byte length is not divisible by element wire size\"));\n        }}\n        let mut {name}_values = Vec::<{element_ty}>::with_capacity({name}_block.len() / {element_size});\n        for chunk in {name}_block.chunks_exact({element_size}) {{\n            {name}_values.push(<{element_ty} as flowrt::WireCodec>::decode_wire(chunk)?);\n        }}\n        let {name} = flowrt::BoundedSequence::<{element_ty}, {max_len}>::try_from_vec({name}_values)?;\n",
+                name = field.name
+            )
+        }
+        _ => String::new(),
+    }
 }
 
 fn rust_wire_size(contract: &ContractIr, expr: &TypeExpr) -> usize {
@@ -3784,7 +4207,7 @@ fn rust_wire_encode_primitive(
         | PrimitiveType::F64 => {
             let size = primitive_wire_size(primitive);
             format!(
-                "{pad}{output}[cursor..cursor + {size}].copy_from_slice(&{value}.to_le_bytes());\n{pad}cursor += {size};\n"
+                "{pad}{output}[cursor..cursor + {size}].copy_from_slice(&({value}).to_le_bytes());\n{pad}cursor += {size};\n"
             )
         }
     }
@@ -3912,6 +4335,175 @@ fn cpp_wire_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
     }
     output.push_str("        return value;\n    }\n");
     output
+}
+
+fn cpp_frame_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
+    let header_size = frame_header_size_for_type(contract, ty);
+    let max_size = frame_max_size_for_type(contract, ty);
+    let mut output = String::new();
+    output.push_str(&format!(
+        "\n    std::size_t encoded_frame_size() const noexcept {{ return {header_size}{}; }}\n\n",
+        cpp_dynamic_tail_size_exprs(contract, ty)
+    ));
+    output.push_str(&format!(
+        "    static constexpr std::size_t max_frame_size() noexcept {{ return {max_size}; }}\n\n"
+    ));
+    output.push_str(
+        "    void encode_frame(std::span<std::uint8_t> output) const {\n        std::vector<std::uint8_t> tail;\n",
+    );
+    for field in &ty.fields {
+        output.push_str(&cpp_frame_prepare_tail_field(contract, field));
+    }
+    output.push_str(
+        "        flowrt::ensure_wire_size(encoded_frame_size(), output.size());\n        std::size_t cursor = 0;\n",
+    );
+    for field in &ty.fields {
+        output.push_str(&cpp_frame_encode_header_field(contract, field));
+    }
+    output.push_str(&format!(
+        "        std::copy(tail.begin(), tail.end(), output.begin() + {header_size});\n    }}\n\n"
+    ));
+    output.push_str(&format!(
+        "    static {} decode_frame(std::span<const std::uint8_t> input) {{\n        if (input.size() < {header_size}) {{\n            throw flowrt::WireCodecError({header_size}, input.size());\n        }}\n        if (input.size() > max_frame_size()) {{\n            throw flowrt::WireCodecError(\"canonical frame exceeds declared maximum size\");\n        }}\n        std::size_t cursor = 0;\n        {} value{{}};\n",
+        ty.name, ty.name
+    ));
+    for field in &ty.fields {
+        output.push_str(&cpp_frame_decode_header_field(contract, field));
+    }
+    output.push_str(&format!(
+        "        flowrt::FrameDecoder decoder(input.subspan({header_size}));\n"
+    ));
+    for field in &ty.fields {
+        output.push_str(&cpp_frame_decode_tail_field(contract, field));
+    }
+    output.push_str("        decoder.finish();\n        return value;\n    }\n");
+    output
+}
+
+fn cpp_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
+    let mut output = String::new();
+    for field in &ty.fields {
+        match &field.ty {
+            TypeExpr::VarBytes { .. } => {
+                output.push_str(&format!(" + {}.size()", field.name));
+            }
+            TypeExpr::VarString { .. } => {
+                output.push_str(&format!(" + {}.size()", field.name));
+            }
+            TypeExpr::VarSequence { element, .. } => {
+                output.push_str(&format!(
+                    " + {}.size() * {}",
+                    field.name,
+                    rust_wire_size(contract, element)
+                ));
+            }
+            _ => {}
+        }
+    }
+    output
+}
+
+fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { .. } => format!(
+            "        const auto {name}_span = flowrt::append_tail_block(tail, {name}.as_span());\n",
+            name = field.name
+        ),
+        TypeExpr::VarString { .. } => format!(
+            "        const auto {name}_span = flowrt::append_tail_block(tail, {name}.bytes());\n",
+            name = field.name
+        ),
+        TypeExpr::VarSequence { element, .. } => {
+            let element_size = rust_wire_size(contract, element);
+            let mut code = format!(
+                "        std::vector<std::uint8_t> {name}_tail;\n        {name}_tail.resize({name}.size() * {element_size});\n        for (const auto& element : {name}.as_span()) {{\n            std::size_t cursor = 0;\n",
+                name = field.name
+            );
+            code.push_str(&cpp_wire_encode_expr(
+                contract,
+                element,
+                "element",
+                &format!(
+                    "std::span<std::uint8_t>{{{}_tail.data(), {}_tail.size()}}",
+                    field.name, field.name
+                ),
+                12,
+            ));
+            code.push_str(&format!(
+                "        }}\n        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{{name}_tail.data(), {name}_tail.size()}});\n",
+                name = field.name
+            ));
+            code
+        }
+        _ => String::new(),
+    }
+}
+
+fn cpp_frame_encode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            format!(
+                "        flowrt::write_var_span(output.subspan(cursor, flowrt::VAR_SPAN_WIRE_SIZE), {name}_span);\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
+                name = field.name
+            )
+        }
+        _ => cpp_wire_encode_expr(contract, &field.ty, &field.name, "output", 8),
+    }
+}
+
+fn cpp_frame_decode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            format!(
+                "        const auto {name}_span = flowrt::read_var_span(input.subspan(cursor, flowrt::VAR_SPAN_WIRE_SIZE));\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
+                name = field.name
+            )
+        }
+        _ => cpp_wire_decode_expr(
+            contract,
+            &field.ty,
+            &format!("value.{}", field.name),
+            "input",
+            8,
+        ),
+    }
+}
+
+fn cpp_frame_decode_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
+    match &field.ty {
+        TypeExpr::VarBytes { max_len } => format!(
+            "        value.{name} = flowrt::BoundedBytes<{max_len}>::from(decoder.read_block({name}_span, {max_len}));\n",
+            name = field.name
+        ),
+        TypeExpr::VarString { max_len, .. } => format!(
+            "        value.{name} = flowrt::BoundedString<{max_len}>::from_utf8(decoder.read_block({name}_span, {max_len}));\n",
+            name = field.name
+        ),
+        TypeExpr::VarSequence { element, max_len } => {
+            let element_size = rust_wire_size(contract, element);
+            let element_ty = cpp_type(element);
+            let max_tail = element_size * (*max_len as usize);
+            let decode_element = if matches!(**element, TypeExpr::Primitive { .. }) {
+                format!(
+                    "flowrt::read_wire_le<{element_ty}>({name}_block, index)",
+                    element_ty = element_ty,
+                    name = field.name
+                )
+            } else {
+                format!(
+                    "{element_ty}::decode_wire({name}_block.subspan(index, {element_size}))",
+                    element_ty = element_ty,
+                    name = field.name
+                )
+            };
+            format!(
+                "        const auto {name}_block = decoder.read_block({name}_span, {max_tail});\n        if ({name}_block.size() % {element_size} != 0) {{\n            throw flowrt::WireCodecError(\"bounded sequence byte length is not divisible by element wire size\");\n        }}\n        std::vector<{element_ty}> {name}_values;\n        {name}_values.reserve({name}_block.size() / {element_size});\n        for (std::size_t index = 0; index < {name}_block.size(); index += {element_size}) {{\n            {name}_values.push_back({decode_element});\n        }}\n        value.{name} = flowrt::BoundedSequence<{element_ty}, {max_len}>::from(std::span<const {element_ty}>{{{name}_values.data(), {name}_values.size()}});\n",
+                name = field.name,
+                decode_element = decode_element
+            )
+        }
+        _ => String::new(),
+    }
 }
 
 fn cpp_wire_encode_expr(
@@ -4372,15 +4964,17 @@ channel = "latest"
     }
 
     #[test]
-    fn rejects_variable_frame_message_fields_before_emitting_artifacts() {
+    fn emits_variable_frame_message_artifacts() {
         let ir = contract_from_source(
             r#"
 [package]
-name = "bad"
+name = "variable_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
 payload = "bytes<max=262144>"
+label = "string<max=64>"
+samples = "sequence<u32,max=16>"
 
 [component.source]
 language = "rust"
@@ -4396,19 +4990,28 @@ output = ["packet"]
 "#,
         );
 
-        let result = std::panic::catch_unwind(|| emit_artifacts(&ir));
-
-        assert!(result.is_ok(), "codegen should return an error, not panic");
-        let error = result
-            .expect("codegen invocation should not panic")
-            .expect_err("Variable Frame ABI fields should fail validation before emission");
-        assert!(matches!(&error, CodegenError::Validation(_)));
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+        assert!(rust_messages.contains("#[derive(Clone, Debug, PartialEq)]"));
+        assert!(rust_messages.contains("pub payload: flowrt::BoundedBytes<262144>"));
+        assert!(rust_messages.contains("pub label: flowrt::BoundedString<64>"));
+        assert!(rust_messages.contains("pub samples: flowrt::BoundedSequence<u32, 16>"));
+        assert!(rust_messages.contains("impl flowrt::FrameCodec for Packet"));
+        assert!(rust_messages.contains("flowrt::VarSpan::decode"));
+        assert!(rust_messages.contains("BoundedString::<64>::try_from_utf8"));
         assert!(
-            error.to_string().contains(
-                "type `Packet` field `payload` uses bytes<max=262144>, which requires the future Variable Frame ABI",
-            ),
-            "{error}"
+            !bundle.artifacts.iter().any(
+                |artifact| artifact.relative_path == PathBuf::from("rust/tests/message_abi.rs")
+            )
         );
+
+        let selfdesc = artifact_content(&bundle, "selfdesc/selfdesc.json");
+        let json: serde_json::Value = serde_json::from_str(selfdesc).unwrap();
+        assert_eq!(json["message_abi"], serde_json::json!([]));
+        assert_eq!(json["message_frames"][0]["type_name"], "Packet");
+        assert_eq!(json["message_frames"][0]["encoding"], "canonical_frame_v1");
+        assert_eq!(json["message_frames"][0]["variable"], true);
+        assert_eq!(json["message_frames"][0]["header_size_bytes"], 24);
     }
 
     #[test]
@@ -5226,7 +5829,7 @@ backends = ["iox2"]
         assert!(
             rust_shell.contains("flowrt::StaleConfig::new(Some(20), flowrt::StalePolicy::Drop)")
         );
-        assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
+        assert!(rust_shell.contains("publish_at(value.clone(), tick_time_ms)"));
         assert!(rust_shell.contains("receive_latest_at(tick_time_ms)"));
     }
 
@@ -5297,7 +5900,7 @@ backends = ["zenoh"]
             "flowrt::zenoh::ZenohPubSub::open_with_config(\"flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu\""
         ));
         assert!(rust_shell.contains("flowrt::zenoh::ZenohChannelConfig::latest()"));
-        assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
+        assert!(rust_shell.contains("publish_at(value.clone(), tick_time_ms)"));
 
         let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
         assert!(cpp_shell.contains("auto backend = flowrt::zenoh_backend();"));
@@ -5388,8 +5991,9 @@ backends = ["zenoh"]
         assert!(rust_messages.contains("const WIRE_SIZE: usize = 11;"));
         assert!(rust_messages.contains("output[cursor] = self.flag as u8;"));
         assert!(
-            rust_messages
-                .contains("output[cursor..cursor + 4].copy_from_slice(&self.count.to_le_bytes());")
+            rust_messages.contains(
+                "output[cursor..cursor + 4].copy_from_slice(&(self.count).to_le_bytes());"
+            )
         );
         assert!(
             rust_messages.contains(
@@ -5538,7 +6142,7 @@ backends = ["inproc"]
         assert!(rust_shell.contains(
             "flowrt::LatestChannel::with_stale_config(flowrt::StaleConfig::new(Some(20), flowrt::StalePolicy::Drop))"
         ));
-        assert!(rust_shell.contains("publish_at(value, tick_time_ms)"));
+        assert!(rust_shell.contains("publish_at(value.clone(), tick_time_ms)"));
         assert!(rust_shell.contains("view_at(tick_time_ms)"));
     }
 
@@ -5638,7 +6242,7 @@ backends = ["iox2"]
             rust_string_literal(aux_channel)
         );
         let sensor_record = format!(
-            "record_introspection_publish(introspection_state, {}, \"Sample\", &value, tick_time_ms);",
+            "record_introspection_publish_copy(introspection_state, {}, \"Sample\", &value, tick_time_ms);",
             rust_string_literal(sensor_channel)
         );
 
@@ -5646,7 +6250,7 @@ backends = ["iox2"]
         assert!(sensors_run.contains(&sensor_register));
         assert!(!sensors_run.contains(&aux_register));
         assert!(rust_shell.contains(&sensor_record));
-        let sensor_publish = "self.bind_0.publish_at(value, tick_time_ms)";
+        let sensor_publish = "self.bind_0.publish_at(value.clone(), tick_time_ms)";
         assert!(
             rust_shell.find(sensor_publish).unwrap() < rust_shell.find(&sensor_record).unwrap()
         );
@@ -5750,11 +6354,11 @@ backends = ["inproc"]
             cpp_string_literal(aux_channel)
         );
         let sensor_record = format!(
-            "record_introspection_publish(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
+            "record_introspection_publish_copy(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
             cpp_string_literal(sensor_channel)
         );
         let aux_record = format!(
-            "record_introspection_publish(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
+            "record_introspection_publish_copy(introspection_state, {}, \"Sample\", *value, tick_time_ms);",
             cpp_string_literal(aux_channel)
         );
 
@@ -5843,7 +6447,7 @@ backends = ["inproc"]
         ));
         assert!(rust_shell.contains("let imu_read = self.bind_0.pop_at(tick_time_ms);"));
         assert!(rust_shell.contains("let imu = imu_read.view();"));
-        assert!(rust_shell.contains("push_at(value, tick_time_ms)"));
+        assert!(rust_shell.contains("push_at(value.clone(), tick_time_ms)"));
         assert!(
             rust_shell
                 .contains("if imu.stale() {\n            return flowrt::Status::Error;\n        }")
@@ -6281,11 +6885,11 @@ channel = "latest"
             sink_step
                 .contains("self.sink.on_tick(used_in, unused_in, &mut used_out, &mut unused_out)")
         );
-        assert!(sink_step.contains("if let Some(value) = used_out.as_ref().copied()"));
+        assert!(sink_step.contains("if let Some(value) = used_out.as_ref().cloned()"));
         assert!(!sink_step.contains(&format!(
             "self.bind_{sink_unused_bind}.view_at(tick_time_ms)"
         )));
-        assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().copied()"));
+        assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().cloned()"));
     }
 
     #[test]
@@ -6452,7 +7056,7 @@ channel = "latest"
             .find("source_deadline_started_at.elapsed() > std::time::Duration::from_millis(10)")
             .unwrap();
         let publish = rust_shell
-            .find("if let Some(value) = sample.as_ref().copied()")
+            .find("if let Some(value) = sample.as_ref().cloned()")
             .unwrap();
 
         assert!(deadline_start < source_call);

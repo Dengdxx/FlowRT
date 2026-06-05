@@ -12,6 +12,7 @@
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体 |
+| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `FLOWRT_RUN_TICKS=200 FLOWRT_TICK_SLEEP_MS=5 flowrt launch examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 ## `import_demo`
 
@@ -129,6 +130,30 @@ examples/imu_demo_iox2/rsdl/robot.rsdl
 - Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
 
 基础 CI 只对这两个示例执行 `check`。构建和运行需要本机安装匹配的 `iceoryx2-cxx 0.9.1`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
+
+## zenoh mixed 示例
+
+入口文件：
+
+```text
+examples/mixed_zenoh_demo/rsdl/robot.rsdl
+```
+
+该示例验证 language-separated mixed contract over `zenoh`，同时覆盖 bounded variable frame：
+
+- `bytes<max=N>`
+- `string<max=N>`
+- `sequence<T,max=N>`
+
+推荐命令：
+
+```bash
+FLOWRT_RUN_TICKS=200 FLOWRT_TICK_SLEEP_MS=5 flowrt launch examples/mixed_zenoh_demo/rsdl/robot.rsdl
+```
+
+构建前提是本机已安装 `zenohc 1.9.0` 和 `zenohcxx 1.9.0`，并通过 `CMAKE_PREFIX_PATH` 暴露给生成的 CMake 工程。
+
+如果要跨机器运行，需要让两个进程分别拿到对应的 zenoh session 配置，例如通过 `FLOWRT_ZENOH_CONNECT` 和 `FLOWRT_ZENOH_LISTEN` 注入端点；如果要在本机观察足够多的样本，`FLOWRT_TICK_SLEEP_MS` 可以把同步 tick 拉长。
 
 ## 添加新示例
 

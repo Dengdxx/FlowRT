@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -14,14 +15,15 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <stdexcept>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -35,6 +37,10 @@
 
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
 #include <iox2/iceoryx2.hpp>
+#endif
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+#include <zenoh.hxx>
 #endif
 
 namespace flowrt {
@@ -83,6 +89,13 @@ class WireCodecError final : public std::runtime_error {
         : std::runtime_error("wire payload size mismatch"),
           expected_(expected),
           actual_(actual) {}
+
+    /**
+     * @brief 构造 canonical frame 内容错误。
+     *
+     * @param message 稳定错误说明。
+     */
+    explicit WireCodecError(const char *message) : std::runtime_error(message) {}
 
     /**
      * @brief 返回期望字节数。
@@ -180,6 +193,265 @@ T read_wire_le(std::span<const std::uint8_t> input, std::size_t offset) {
         storage |= static_cast<detail::WireStorageT<T>>(input[offset + index]) << (index * 8U);
     }
     return detail::wire_from_storage<T>(storage);
+}
+
+inline constexpr std::size_t VAR_SPAN_WIRE_SIZE = 8U;
+
+/**
+ * @brief canonical frame 中一个变长字段的 tail-relative 描述符。
+ */
+struct VarSpan {
+    std::uint32_t offset = 0;
+    std::uint32_t len = 0;
+
+    constexpr bool empty() const noexcept { return len == 0; }
+};
+
+inline void write_var_span(std::span<std::uint8_t> output, VarSpan span) {
+    ensure_wire_size(VAR_SPAN_WIRE_SIZE, output.size());
+    write_wire_le(output, 0, span.offset);
+    write_wire_le(output, 4, span.len);
+}
+
+inline VarSpan read_var_span(std::span<const std::uint8_t> input) {
+    ensure_wire_size(VAR_SPAN_WIRE_SIZE, input.size());
+    return VarSpan{read_wire_le<std::uint32_t>(input, 0), read_wire_le<std::uint32_t>(input, 4)};
+}
+
+template <typename T>
+concept CanonicalFixedWireMessage =
+    requires(const T &value, std::span<std::uint8_t> output, std::span<const std::uint8_t> input) {
+        { T::wire_size() } -> std::convertible_to<std::size_t>;
+        { value.encode_wire(output) } -> std::same_as<void>;
+        { T::decode_wire(input) } -> std::same_as<T>;
+    };
+
+template <typename T>
+concept CanonicalFrameMessage =
+    requires(const T &value, std::span<std::uint8_t> output, std::span<const std::uint8_t> input) {
+        { value.encoded_frame_size() } -> std::convertible_to<std::size_t>;
+        { T::max_frame_size() } -> std::convertible_to<std::size_t>;
+        { value.encode_frame(output) } -> std::same_as<void>;
+        { T::decode_frame(input) } -> std::same_as<T>;
+    };
+
+template <typename T>
+concept CanonicalTransportMessage = CanonicalFrameMessage<T> || CanonicalFixedWireMessage<T>;
+
+namespace detail {
+
+template <CanonicalTransportMessage T>
+std::size_t encoded_frame_size(const T &value) {
+    if constexpr (CanonicalFrameMessage<T>) {
+        return value.encoded_frame_size();
+    } else {
+        (void)value;
+        return T::wire_size();
+    }
+}
+
+template <CanonicalTransportMessage T>
+void encode_frame(const T &value, std::span<std::uint8_t> output) {
+    if constexpr (CanonicalFrameMessage<T>) {
+        value.encode_frame(output);
+    } else {
+        value.encode_wire(output);
+    }
+}
+
+template <CanonicalTransportMessage T>
+T decode_frame(std::span<const std::uint8_t> input) {
+    if constexpr (CanonicalFrameMessage<T>) {
+        return T::decode_frame(input);
+    } else {
+        return T::decode_wire(input);
+    }
+}
+
+}  // namespace detail
+
+template <std::size_t MAX>
+class BoundedBytes {
+   public:
+    BoundedBytes() = default;
+
+    explicit BoundedBytes(std::span<const std::uint8_t> bytes) { assign(bytes); }
+
+    static BoundedBytes from(std::span<const std::uint8_t> bytes) { return BoundedBytes(bytes); }
+
+    void assign(std::span<const std::uint8_t> bytes) {
+        if (bytes.size() > MAX) {
+            throw WireCodecError("bounded bytes length exceeds declared maximum");
+        }
+        bytes_.assign(bytes.begin(), bytes.end());
+    }
+
+    std::span<const std::uint8_t> as_span() const noexcept { return bytes_; }
+    const std::vector<std::uint8_t> &vector() const noexcept { return bytes_; }
+    std::size_t size() const noexcept { return bytes_.size(); }
+    bool empty() const noexcept { return bytes_.empty(); }
+
+   private:
+    std::vector<std::uint8_t> bytes_;
+};
+
+template <std::size_t MAX>
+class BoundedString {
+   public:
+    BoundedString() = default;
+
+    explicit BoundedString(std::string_view value) { assign(value); }
+
+    static BoundedString from(std::string_view value) { return BoundedString(value); }
+
+    static BoundedString from_utf8(std::span<const std::uint8_t> bytes) {
+        if (!valid_utf8(bytes)) {
+            throw WireCodecError("bounded string is not valid UTF-8");
+        }
+        if (bytes.empty()) {
+            return BoundedString{};
+        }
+        return BoundedString(std::string_view{reinterpret_cast<const char *>(bytes.data()),
+                                             bytes.size()});
+    }
+
+    void assign(std::string_view value) {
+        if (value.size() > MAX) {
+            throw WireCodecError("bounded string length exceeds declared maximum");
+        }
+        value_.assign(value);
+    }
+
+    std::string_view view() const noexcept { return value_; }
+    std::span<const std::uint8_t> bytes() const noexcept {
+        return {reinterpret_cast<const std::uint8_t *>(value_.data()), value_.size()};
+    }
+    std::size_t size() const noexcept { return value_.size(); }
+    bool empty() const noexcept { return value_.empty(); }
+
+   private:
+    static bool valid_utf8(std::span<const std::uint8_t> bytes) noexcept {
+        std::size_t index = 0;
+        while (index < bytes.size()) {
+            const auto byte = bytes[index];
+            std::size_t extra = 0;
+            std::uint32_t codepoint = 0;
+            if (byte <= 0x7FU) {
+                ++index;
+                continue;
+            }
+            if ((byte & 0xE0U) == 0xC0U) {
+                extra = 1;
+                codepoint = byte & 0x1FU;
+                if (codepoint == 0) {
+                    return false;
+                }
+            } else if ((byte & 0xF0U) == 0xE0U) {
+                extra = 2;
+                codepoint = byte & 0x0FU;
+            } else if ((byte & 0xF8U) == 0xF0U) {
+                extra = 3;
+                codepoint = byte & 0x07U;
+            } else {
+                return false;
+            }
+            if (index + extra >= bytes.size()) {
+                return false;
+            }
+            for (std::size_t offset = 1; offset <= extra; ++offset) {
+                const auto continuation = bytes[index + offset];
+                if ((continuation & 0xC0U) != 0x80U) {
+                    return false;
+                }
+                codepoint = (codepoint << 6U) | (continuation & 0x3FU);
+            }
+            if ((extra == 2 && codepoint < 0x800U) || (extra == 3 && codepoint < 0x10000U) ||
+                codepoint > 0x10FFFFU || (codepoint >= 0xD800U && codepoint <= 0xDFFFU)) {
+                return false;
+            }
+            index += extra + 1;
+        }
+        return true;
+    }
+
+    std::string value_;
+};
+
+template <typename T, std::size_t MAX>
+class BoundedSequence {
+   public:
+    BoundedSequence() = default;
+
+    explicit BoundedSequence(std::span<const T> values) { assign(values); }
+
+    static BoundedSequence from(std::span<const T> values) { return BoundedSequence(values); }
+
+    void assign(std::span<const T> values) {
+        if (values.size() > MAX) {
+            throw WireCodecError("bounded sequence length exceeds declared maximum");
+        }
+        values_.assign(values.begin(), values.end());
+    }
+
+    std::span<const T> as_span() const noexcept { return values_; }
+    const std::vector<T> &vector() const noexcept { return values_; }
+    std::size_t size() const noexcept { return values_.size(); }
+    bool empty() const noexcept { return values_.empty(); }
+
+   private:
+    std::vector<T> values_;
+};
+
+class FrameDecoder {
+   public:
+    explicit FrameDecoder(std::span<const std::uint8_t> tail) noexcept : tail_(tail) {}
+
+    std::span<const std::uint8_t> read_block(VarSpan span, std::size_t max_len) {
+        const auto len = static_cast<std::size_t>(span.len);
+        if (len == 0U) {
+            if (span.offset != 0U) {
+                throw WireCodecError("empty variable span must use zero offset");
+            }
+            return {};
+        }
+        if (len > max_len) {
+            throw WireCodecError("variable field length exceeds declared maximum");
+        }
+        const auto offset = static_cast<std::size_t>(span.offset);
+        if (offset != cursor_) {
+            throw WireCodecError("variable tail blocks are not canonical");
+        }
+        if (offset > tail_.size() || len > tail_.size() - offset) {
+            throw WireCodecError("variable span exceeds frame tail length");
+        }
+        cursor_ = offset + len;
+        return tail_.subspan(offset, len);
+    }
+
+    void finish() const {
+        if (cursor_ != tail_.size()) {
+            throw WireCodecError("variable frame contains trailing tail bytes");
+        }
+    }
+
+   private:
+    std::span<const std::uint8_t> tail_;
+    std::size_t cursor_ = 0;
+};
+
+inline VarSpan append_tail_block(std::vector<std::uint8_t> &tail,
+                                 std::span<const std::uint8_t> bytes) {
+    if (bytes.empty()) {
+        return VarSpan{};
+    }
+    if (tail.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
+        bytes.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+        throw WireCodecError("variable tail span exceeds u32");
+    }
+    const auto offset = static_cast<std::uint32_t>(tail.size());
+    const auto len = static_cast<std::uint32_t>(bytes.size());
+    tail.insert(tail.end(), bytes.begin(), bytes.end());
+    return VarSpan{offset, len};
 }
 
 /**
@@ -1012,6 +1284,369 @@ class Iox2PubSub {
 
 }  // namespace iox2
 
+namespace zenoh {
+
+/**
+ * @brief 打开 zenoh publish-subscribe endpoint 时使用的 FlowRT channel 配置。
+ *
+ * 该类型承载 Contract IR channel policy 归一化后的 depth、overflow 和 freshness intent。
+ * 它不暴露 zenoh-cpp API；generated shell 只通过该配置和 `ZenohPubSub<T>` 绑定 transport。
+ */
+class ZenohChannelConfig {
+   public:
+    /**
+     * @brief channel buffering kind。
+     */
+    enum class Kind : std::uint8_t {
+        Latest = 0,
+        Fifo = 1,
+    };
+
+    /**
+     * @brief 构造 latest channel 的默认配置。
+     *
+     * @return depth 为 1、overflow 为 DropOldest 的配置。
+     */
+    static constexpr ZenohChannelConfig latest() noexcept { return ZenohChannelConfig{}; }
+
+    /**
+     * @brief 构造 FIFO channel 配置。
+     *
+     * @param depth 队列深度；传入 0 时按 1 处理。
+     * @param overflow 队列满时的 FlowRT 语义。
+     * @return 归一化后的配置。
+     */
+    static constexpr ZenohChannelConfig fifo(std::size_t depth, OverflowPolicy overflow) noexcept {
+        return ZenohChannelConfig(Kind::Fifo, depth == 0 ? 1 : depth, overflow, StaleConfig{});
+    }
+
+    /**
+     * @brief 设置 freshness 配置。
+     *
+     * @param stale stale-data policy 和时间窗口。
+     * @return 更新后的配置副本。
+     */
+    constexpr ZenohChannelConfig with_stale_config(StaleConfig stale) const noexcept {
+        return ZenohChannelConfig(kind_, depth_, overflow_, stale);
+    }
+
+    /**
+     * @brief 返回归一化后的 channel depth。
+     */
+    constexpr std::size_t depth() const noexcept { return depth_; }
+
+    /**
+     * @brief 返回 overflow policy。
+     */
+    constexpr OverflowPolicy overflow() const noexcept { return overflow_; }
+
+    /**
+     * @brief 返回 stale-data 配置。
+     */
+    constexpr StaleConfig stale() const noexcept { return stale_; }
+
+    /**
+     * @brief 判断是否为 latest channel。
+     */
+    constexpr bool is_latest() const noexcept { return kind_ == Kind::Latest; }
+
+   private:
+    constexpr ZenohChannelConfig() noexcept = default;
+
+    constexpr ZenohChannelConfig(Kind kind, std::size_t depth, OverflowPolicy overflow,
+                                 StaleConfig stale) noexcept
+        : kind_(kind), depth_(depth), overflow_(overflow), stale_(stale) {}
+
+    Kind kind_ = Kind::Latest;
+    std::size_t depth_ = 1;
+    OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
+    StaleConfig stale_;
+};
+
+/**
+ * @brief canonical wire message 的 zenoh publish-subscribe endpoint。
+ *
+ * @tparam T 满足 `CanonicalTransportMessage` 的 generated message 类型。
+ *
+ * 开启 `FLOWRT_HAS_ZENOH_CXX` 时，该类绑定 zenoh-cpp 1.9 publish-subscribe endpoint，并把
+ * runtime timestamp 与 generated message canonical payload 组合成 wire frame。默认构建不包含或
+ * 依赖 zenoh-cpp，并保持安全失败语义。业务组件接口不应暴露该类型。
+ */
+template <CanonicalTransportMessage T>
+class ZenohPubSub {
+   public:
+    ZenohPubSub(ZenohPubSub &&) noexcept = default;
+    ZenohPubSub(const ZenohPubSub &) = delete;
+    auto operator=(ZenohPubSub &&) noexcept -> ZenohPubSub & = default;
+    auto operator=(const ZenohPubSub &) -> ZenohPubSub & = delete;
+    ~ZenohPubSub() = default;
+
+    /**
+     * @brief 打开一个 canonical zenoh key expression 对应的 endpoint。
+     *
+     * @param key_expr generated shell 提供的 canonical key expression。
+     * @param config 从 Contract IR channel policy 生成的配置。
+     * @return endpoint 对象；未开启 zenoh-cpp 支持时 `ready()` 返回 false。
+     */
+    static ZenohPubSub open_with_config(std::string_view key_expr, ZenohChannelConfig config) {
+        return ZenohPubSub(key_expr, config);
+    }
+
+    /**
+     * @brief 返回 canonical zenoh key expression。
+     */
+    std::string_view key_expr() const noexcept { return key_expr_; }
+
+    /**
+     * @brief 返回 channel 配置。
+     */
+    constexpr ZenohChannelConfig config() const noexcept { return config_; }
+
+    /**
+     * @brief 判断 endpoint 是否已经绑定到底层 zenoh transport 资源。
+     */
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return session_.has_value() && publisher_.has_value() && subscriber_.has_value();
+#else
+        return false;
+#endif
+    }
+
+    /**
+     * @brief 带 FlowRT runtime 时间戳发布一个 canonical wire message。
+     *
+     * @param value 要发布的 generated message。
+     * @param published_at_ms 样本发布时间，单位为 runtime 毫秒。
+     * @return 未开启 zenoh-cpp 支持时返回 `ChannelError::Transport`。
+     */
+    ChannelPushResult publish_at(T value, std::uint64_t published_at_ms) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (!publisher_) {
+            return ChannelError::Transport;
+        }
+
+        try {
+            std::vector<std::uint8_t> frame(timestamp_wire_size() +
+                                            detail::encoded_frame_size(value));
+            auto output = std::span<std::uint8_t>{frame};
+            write_wire_le(output, 0, published_at_ms);
+            detail::encode_frame(value, output.subspan(timestamp_wire_size()));
+            publisher_->put(::zenoh::Bytes(std::move(frame)));
+            return ChannelWriteOutcome::Accepted;
+        } catch (...) {
+            return ChannelError::Transport;
+        }
+#else
+        (void)value;
+        (void)published_at_ms;
+        return ChannelError::Transport;
+#endif
+    }
+
+    /**
+     * @brief 非阻塞读取 latest snapshot。
+     *
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 读取成功时返回 latest view；未开启 zenoh-cpp 支持或 transport/codec 失败时返回
+     * `ChannelError::Transport`。
+     *
+     * zenoh subscriber 使用有界 `RingChannel`，callback 在容量满时覆盖旧样本而不阻塞。latest
+     * channel 会排空当前 ring 后暴露最新值；FIFO channel 每次只消费一个最旧可用样本。
+     */
+    std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (!subscriber_) {
+            return ChannelError::Transport;
+        }
+
+        try {
+            while (true) {
+                auto result = subscriber_->handler().try_recv();
+                if (std::holds_alternative<::zenoh::Sample>(result)) {
+                    auto sample = std::get<::zenoh::Sample>(std::move(result));
+                    if (!decode_frame(sample.get_payload().as_vector())) {
+                        return ChannelError::Transport;
+                    }
+                    if (!config_.is_latest()) {
+                        break;
+                    }
+                    continue;
+                }
+
+                const auto error = std::get<::zenoh::channels::RecvError>(result);
+                if (error == ::zenoh::channels::RecvError::Z_NODATA) {
+                    break;
+                }
+                return ChannelError::Transport;
+            }
+        } catch (...) {
+            return ChannelError::Transport;
+        }
+
+        const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
+        const bool drop_stale = stale && config_.stale().policy() == StalePolicy::Drop;
+        return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
+#else
+        (void)now_ms;
+        return ChannelError::Transport;
+#endif
+    }
+
+   private:
+    ZenohPubSub(std::string_view key_expr, ZenohChannelConfig config)
+        : key_expr_(key_expr), config_(config) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        open_zenoh_endpoint();
+#endif
+    }
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    using ZenohSubscriber =
+        ::zenoh::Subscriber<::zenoh::channels::RingChannel::HandlerType<::zenoh::Sample>>;
+
+    static constexpr std::size_t timestamp_wire_size() noexcept { return sizeof(std::uint64_t); }
+
+    void open_zenoh_endpoint() noexcept {
+        if (config_.overflow() != OverflowPolicy::DropOldest) {
+            return;
+        }
+
+        try {
+            session_.emplace(::zenoh::Session::open(config_from_environment()));
+            publisher_.emplace(session_->declare_publisher(::zenoh::KeyExpr(key_expr_)));
+            subscriber_.emplace(session_->declare_subscriber(
+                ::zenoh::KeyExpr(key_expr_), ::zenoh::channels::RingChannel(config_.depth())));
+        } catch (...) {
+            subscriber_.reset();
+            publisher_.reset();
+            session_.reset();
+        }
+    }
+
+    bool decode_frame(const std::vector<std::uint8_t> &frame) {
+        if (frame.size() < timestamp_wire_size()) {
+            return false;
+        }
+
+        const auto input = std::span<const std::uint8_t>{frame};
+        const auto published_at_ms = read_wire_le<std::uint64_t>(input, 0);
+        auto decoded = detail::decode_frame<T>(input.subspan(timestamp_wire_size()));
+        published_at_ms_ = published_at_ms;
+        received_ = std::move(decoded);
+        return true;
+    }
+
+    static ::zenoh::Config config_from_environment() {
+        auto config = ::zenoh::Config::create_default();
+        if (const auto *mode = std::getenv("FLOWRT_ZENOH_MODE")) {
+            config.insert_json5(Z_CONFIG_MODE_KEY, json_string(std::string_view{mode}));
+        }
+        if (const auto *listen = std::getenv("FLOWRT_ZENOH_LISTEN")) {
+            if (const auto json = endpoint_list_json(std::string_view{listen}); !json.empty()) {
+                config.insert_json5(Z_CONFIG_LISTEN_KEY, json);
+            }
+        }
+        if (const auto *connect = std::getenv("FLOWRT_ZENOH_CONNECT")) {
+            if (const auto json = endpoint_list_json(std::string_view{connect}); !json.empty()) {
+                config.insert_json5(Z_CONFIG_CONNECT_KEY, json);
+            }
+        }
+        if (const auto *no_multicast = std::getenv("FLOWRT_ZENOH_NO_MULTICAST");
+            env_flag_enabled(no_multicast)) {
+            config.insert_json5(Z_CONFIG_MULTICAST_SCOUTING_KEY, "false");
+        }
+        return config;
+    }
+
+    static bool env_flag_enabled(const char *value) noexcept {
+        if (value == nullptr) {
+            return false;
+        }
+        const auto flag = std::string_view{value};
+        return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" ||
+               flag == "on";
+    }
+
+    static std::string endpoint_list_json(std::string_view raw) {
+        std::vector<std::string_view> endpoints;
+        std::size_t start = 0;
+        while (start <= raw.size()) {
+            const auto comma = raw.find(',', start);
+            const auto end = comma == std::string_view::npos ? raw.size() : comma;
+            auto item = raw.substr(start, end - start);
+            while (!item.empty() && (item.front() == ' ' || item.front() == '\t')) {
+                item.remove_prefix(1);
+            }
+            while (!item.empty() && (item.back() == ' ' || item.back() == '\t')) {
+                item.remove_suffix(1);
+            }
+            if (!item.empty()) {
+                endpoints.push_back(item);
+            }
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
+
+        if (endpoints.empty()) {
+            return {};
+        }
+
+        std::string json = "[";
+        for (std::size_t index = 0; index < endpoints.size(); ++index) {
+            if (index != 0U) {
+                json += ",";
+            }
+            json += json_string(endpoints[index]);
+        }
+        json += "]";
+        return json;
+    }
+
+    static std::string json_string(std::string_view value) {
+        std::string output = "\"";
+        for (const char ch : value) {
+            switch (ch) {
+                case '\\':
+                    output += "\\\\";
+                    break;
+                case '"':
+                    output += "\\\"";
+                    break;
+                case '\n':
+                    output += "\\n";
+                    break;
+                case '\r':
+                    output += "\\r";
+                    break;
+                case '\t':
+                    output += "\\t";
+                    break;
+                default:
+                    output += ch;
+                    break;
+            }
+        }
+        output += "\"";
+        return output;
+    }
+#endif
+
+    std::string key_expr_;
+    ZenohChannelConfig config_;
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    std::optional<::zenoh::Session> session_;
+    std::optional<::zenoh::Publisher> publisher_;
+    std::optional<ZenohSubscriber> subscriber_;
+    std::optional<T> received_;
+    std::optional<std::uint64_t> published_at_ms_;
+#endif
+};
+
+}  // namespace zenoh
+
 /// 当前 runtime introspection JSON-line 协议版本。
 inline constexpr const char *INTROSPECTION_PROTOCOL_VERSION = "0.1";
 
@@ -1825,13 +2460,47 @@ class InprocScheduler final : public Scheduler {
      */
     Status run_ticks(std::size_t ticks, StepFn step) const override {
         Context context;
-        for (std::size_t tick = 0; tick < ticks; ++tick) {
+        const auto tick_count = configured_run_ticks(ticks);
+        const auto tick_sleep = configured_tick_sleep();
+        for (std::size_t tick = 0; tick < tick_count; ++tick) {
             const auto status = step(tick, context);
             if (status != Status::Ok) {
                 return status;
             }
+            if (tick_sleep.count() > 0) {
+                std::this_thread::sleep_for(tick_sleep);
+            }
         }
         return Status::Ok;
+    }
+
+   private:
+    static std::size_t configured_run_ticks(std::size_t default_ticks) noexcept {
+        const auto *raw = std::getenv("FLOWRT_RUN_TICKS");
+        if (raw == nullptr) {
+            return default_ticks;
+        }
+        char *end = nullptr;
+        errno = 0;
+        const auto value = std::strtoull(raw, &end, 10);
+        if (errno != 0 || end == raw || *end != '\0' || value == 0U) {
+            return default_ticks;
+        }
+        return static_cast<std::size_t>(value);
+    }
+
+    static std::chrono::milliseconds configured_tick_sleep() noexcept {
+        const auto *raw = std::getenv("FLOWRT_TICK_SLEEP_MS");
+        if (raw == nullptr) {
+            return std::chrono::milliseconds{0};
+        }
+        char *end = nullptr;
+        errno = 0;
+        const auto value = std::strtoull(raw, &end, 10);
+        if (errno != 0 || end == raw || *end != '\0' || value == 0U) {
+            return std::chrono::milliseconds{0};
+        }
+        return std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(value)};
     }
 };
 
@@ -1972,7 +2641,7 @@ class ZenohBackend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 23> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 20> kCapabilities = {
         "abi:fixed_size_plain_data",
         "layout:native_layout",
         "allocation:bounded",
@@ -1985,9 +2654,6 @@ class ZenohBackend final : public Backend {
         "channel:latest",
         "channel:fifo",
         "overflow:drop_oldest",
-        "overflow:drop_newest",
-        "overflow:error",
-        "overflow:block",
         "stale:warn",
         "stale:drop",
         "stale:hold_last",
