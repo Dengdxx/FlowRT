@@ -7,9 +7,9 @@ use crate::{
     BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelEdgeIr, ChannelKind,
     ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr, EntityId,
     EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind, LifecycleSurface,
-    OverflowPolicy, PackageIr, ParamIr, ParamValue, ParamValueIr, PolicyDefaults,
-    PolicyValueSource, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr, TaskIr,
-    TriggerKind, TypeIr, channel_capabilities, deployment_capability_decision,
+    OverflowPolicy, PackageIr, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, ParamValueIr,
+    PolicyDefaults, PolicyValueSource, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr,
+    TaskIr, TriggerKind, TypeIr, channel_capabilities, deployment_capability_decision,
     graph_required_capabilities, parse_type_expr, target_capabilities,
 };
 
@@ -248,7 +248,7 @@ fn normalize_components(
                 },
                 inputs: normalize_ports(&raw.input)?,
                 outputs: normalize_ports(&raw.output)?,
-                params: normalize_component_params(raw),
+                params: normalize_component_params(name, raw)?,
                 lifecycle: LifecycleSurface::reserved_v0_1(),
             })
         })
@@ -267,14 +267,94 @@ fn normalize_ports(ports: &[RawPort]) -> Result<Vec<PortIr>> {
         .collect()
 }
 
-fn normalize_component_params(raw: &RawComponent) -> Vec<ParamIr> {
+fn normalize_component_params(component_name: &str, raw: &RawComponent) -> Result<Vec<ParamIr>> {
     raw.params
         .iter()
-        .map(|(name, value)| ParamIr {
-            name: name.clone(),
-            default: convert_param_value(value),
-        })
+        .map(|(name, value)| normalize_component_param(component_name, name, value))
         .collect()
+}
+
+fn normalize_component_param(
+    component_name: &str,
+    name: &str,
+    value: &RawValue,
+) -> Result<ParamIr> {
+    if let Some(schema) = try_normalize_param_schema(component_name, name, value)? {
+        return Ok(schema);
+    }
+    let default = convert_param_value(value);
+    Ok(ParamIr {
+        name: name.to_string(),
+        ty: infer_param_type(&default),
+        default,
+        update: ParamUpdatePolicy::Startup,
+        min: None,
+        max: None,
+        choices: Vec::new(),
+    })
+}
+
+fn try_normalize_param_schema(
+    component_name: &str,
+    name: &str,
+    value: &RawValue,
+) -> Result<Option<ParamIr>> {
+    let RawValue::Table(table) = value else {
+        return Ok(None);
+    };
+    if !table.contains_key("type") && !table.contains_key("default") {
+        return Ok(None);
+    }
+
+    validate_param_schema_keys(component_name, name, table)?;
+    let declared_ty = table
+        .get("type")
+        .and_then(raw_string)
+        .map(|value| parse_param_type_schema(component_name, name, value))
+        .transpose()?;
+    let default = table
+        .get("default")
+        .map(convert_param_value)
+        .unwrap_or_else(|| default_for_param_type(declared_ty.unwrap_or(ParamType::String)));
+    let ty = declared_ty.unwrap_or_else(|| infer_param_type(&default));
+    let update = table
+        .get("update")
+        .and_then(raw_string)
+        .map(|value| parse_param_update_policy(component_name, name, value))
+        .transpose()?
+        .unwrap_or(ParamUpdatePolicy::Startup);
+    let choices = table
+        .get("enum")
+        .map(convert_param_value)
+        .and_then(|value| match value {
+            ParamValue::Array(values) => Some(values),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let min = table.get("min").map(convert_param_value);
+    let max = table.get("max").map(convert_param_value);
+
+    let schema = ParamIr {
+        name: name.to_string(),
+        ty,
+        default,
+        update,
+        min,
+        max,
+        choices,
+    };
+    validate_param_schema_value(component_name, name, &schema, &schema.default)?;
+    if let Some(min) = &schema.min {
+        validate_param_schema_value(component_name, name, &schema, min)?;
+    }
+    if let Some(max) = &schema.max {
+        validate_param_schema_value(component_name, name, &schema, max)?;
+    }
+    for choice in &schema.choices {
+        validate_param_schema_value(component_name, name, &schema, choice)?;
+    }
+    validate_param_value_constraints(component_name, name, &schema, &schema.default)?;
+    Ok(Some(schema))
 }
 
 fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr>> {
@@ -364,6 +444,14 @@ fn normalize_instances(
 ) -> Result<(Vec<InstanceIr>, Vec<TaskIr>)> {
     let mut instances = Vec::with_capacity(document.instances.len());
     let mut tasks = Vec::new();
+    let mut component_param_schemas = BTreeMap::new();
+    for (name, component) in &document.components {
+        let params = normalize_component_params(name, component)?
+            .into_iter()
+            .map(|param| (param.name.clone(), param))
+            .collect::<BTreeMap<_, _>>();
+        component_param_schemas.insert(name.as_str(), params);
+    }
 
     for (name, raw) in &document.instances {
         let component_id = component_ids.get(&raw.component).cloned().ok_or_else(|| {
@@ -376,8 +464,10 @@ fn normalize_instances(
             id: component_id,
             name: raw.component.clone(),
         };
-        let raw_component = &document.components[&raw.component];
-        let params = merge_instance_params(name, raw, raw_component)?;
+        let component = component_param_schemas
+            .get(raw.component.as_str())
+            .expect("component IDs and normalized components must be built from the same document");
+        let params = merge_instance_params(name, raw, component)?;
         let target = raw
             .target
             .as_ref()
@@ -433,35 +523,32 @@ fn normalize_instances(
 fn merge_instance_params(
     instance_name: &str,
     raw: &flowrt_rsdl::RawInstance,
-    component: &RawComponent,
+    component: &BTreeMap<String, ParamIr>,
 ) -> Result<Vec<ParamValueIr>> {
     for (param, override_value) in &raw.params {
-        let Some(default_value) = component.params.get(param) else {
+        let Some(schema) = component.get(param) else {
             return Err(IrError::UnknownParamOverride {
                 instance: instance_name.to_string(),
                 component: raw.component.clone(),
                 param: param.clone(),
             });
         };
-        validate_param_override_type(
-            instance_name,
-            &raw.component,
-            param,
-            default_value,
-            override_value,
-        )?;
+        validate_param_override_type(instance_name, &raw.component, param, schema, override_value)?;
     }
 
-    let mut merged = component.params.clone();
+    let mut merged = component
+        .iter()
+        .map(|(name, param)| (name.clone(), param.default.clone()))
+        .collect::<BTreeMap<_, _>>();
     for (name, value) in &raw.params {
-        merged.insert(name.clone(), value.clone());
+        merged.insert(name.clone(), convert_param_value(value));
     }
 
     Ok(merged
         .iter()
         .map(|(name, value)| ParamValueIr {
             name: name.clone(),
-            value: convert_param_value(value),
+            value: value.clone(),
         })
         .collect())
 }
@@ -470,21 +557,20 @@ fn validate_param_override_type(
     instance_name: &str,
     component_name: &str,
     param_name: &str,
-    default_value: &RawValue,
+    schema: &ParamIr,
     override_value: &RawValue,
 ) -> Result<()> {
-    let default_value = convert_param_value(default_value);
     let override_value = convert_param_value(override_value);
-    if param_value_compatible(&default_value, &override_value) {
-        Ok(())
-    } else {
+    if !param_value_compatible(&schema.default, &override_value) {
         Err(IrError::IncompatibleParamOverride {
             instance: instance_name.to_string(),
             component: component_name.to_string(),
             param: param_name.to_string(),
-            expected: param_value_kind(&default_value),
+            expected: param_value_kind(&schema.default),
             actual: param_value_kind(&override_value),
         })
+    } else {
+        validate_param_value_constraints(component_name, param_name, schema, &override_value)
     }
 }
 
@@ -704,6 +790,212 @@ fn convert_param_value(value: &RawValue) -> ParamValue {
     }
 }
 
+fn raw_string(value: &RawValue) -> Option<&str> {
+    match value {
+        RawValue::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn validate_param_schema_keys(
+    component: &str,
+    param: &str,
+    table: &BTreeMap<String, RawValue>,
+) -> Result<()> {
+    for key in table.keys() {
+        if !matches!(
+            key.as_str(),
+            "type" | "default" | "update" | "min" | "max" | "enum"
+        ) {
+            return Err(IrError::InvalidParamSchema {
+                component: component.to_string(),
+                param: param.to_string(),
+                message: format!("unknown schema key `{key}`"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_param_schema_value(
+    component: &str,
+    param: &str,
+    schema: &ParamIr,
+    value: &ParamValue,
+) -> Result<()> {
+    if param_type_accepts_value(schema.ty, value) {
+        Ok(())
+    } else {
+        Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: format!(
+                "value kind `{}` does not match declared type `{}`",
+                param_value_kind(value),
+                param_type_name(schema.ty)
+            ),
+        })
+    }
+}
+
+fn validate_param_value_constraints(
+    component: &str,
+    param: &str,
+    schema: &ParamIr,
+    value: &ParamValue,
+) -> Result<()> {
+    if let Some(min) = &schema.min
+        && compare_param_values(value, min).is_some_and(|ordering| ordering.is_lt())
+    {
+        return Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: "value is below declared minimum".to_string(),
+        });
+    }
+    if let Some(max) = &schema.max
+        && compare_param_values(value, max).is_some_and(|ordering| ordering.is_gt())
+    {
+        return Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: "value is above declared maximum".to_string(),
+        });
+    }
+    if !schema.choices.is_empty() && !schema.choices.iter().any(|choice| choice == value) {
+        return Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: "value is not in declared enum choices".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn param_type_accepts_value(ty: ParamType, value: &ParamValue) -> bool {
+    matches!(
+        (ty, value),
+        (ParamType::Bool, ParamValue::Bool(_))
+            | (
+                ParamType::U8
+                    | ParamType::U16
+                    | ParamType::U32
+                    | ParamType::U64
+                    | ParamType::I8
+                    | ParamType::I16
+                    | ParamType::I32
+                    | ParamType::I64,
+                ParamValue::Integer(_)
+            )
+            | (
+                ParamType::F32 | ParamType::F64,
+                ParamValue::Float(_) | ParamValue::Integer(_)
+            )
+            | (ParamType::String, ParamValue::String(_))
+            | (ParamType::Array, ParamValue::Array(_))
+            | (ParamType::Table, ParamValue::Table(_))
+    )
+}
+
+fn compare_param_values(left: &ParamValue, right: &ParamValue) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (ParamValue::Integer(left), ParamValue::Integer(right)) => Some(left.cmp(right)),
+        (ParamValue::Float(left), ParamValue::Float(right)) => left.partial_cmp(right),
+        (ParamValue::Float(left), ParamValue::Integer(right)) => left.partial_cmp(&(*right as f64)),
+        (ParamValue::Integer(left), ParamValue::Float(right)) => (*left as f64).partial_cmp(right),
+        (ParamValue::String(left), ParamValue::String(right)) => Some(left.cmp(right)),
+        _ => None,
+    }
+}
+
+fn param_type_name(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Bool => "bool",
+        ParamType::U8 => "u8",
+        ParamType::U16 => "u16",
+        ParamType::U32 => "u32",
+        ParamType::U64 => "u64",
+        ParamType::I8 => "i8",
+        ParamType::I16 => "i16",
+        ParamType::I32 => "i32",
+        ParamType::I64 => "i64",
+        ParamType::F32 => "f32",
+        ParamType::F64 => "f64",
+        ParamType::String => "string",
+        ParamType::Array => "array",
+        ParamType::Table => "table",
+    }
+}
+
+fn parse_param_type_schema(component: &str, param: &str, value: &str) -> Result<ParamType> {
+    match value {
+        "bool" => Ok(ParamType::Bool),
+        "u8" => Ok(ParamType::U8),
+        "u16" => Ok(ParamType::U16),
+        "u32" => Ok(ParamType::U32),
+        "u64" => Ok(ParamType::U64),
+        "i8" => Ok(ParamType::I8),
+        "i16" => Ok(ParamType::I16),
+        "i32" => Ok(ParamType::I32),
+        "i64" => Ok(ParamType::I64),
+        "f32" => Ok(ParamType::F32),
+        "f64" => Ok(ParamType::F64),
+        "string" => Ok(ParamType::String),
+        "array" => Ok(ParamType::Array),
+        "table" => Ok(ParamType::Table),
+        _ => Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: format!("unknown parameter type `{value}`"),
+        }),
+    }
+}
+
+fn parse_param_update_policy(
+    component: &str,
+    param: &str,
+    value: &str,
+) -> Result<ParamUpdatePolicy> {
+    match value {
+        "startup" => Ok(ParamUpdatePolicy::Startup),
+        "on_tick" => Ok(ParamUpdatePolicy::OnTick),
+        _ => Err(IrError::InvalidEnum {
+            context: format!("component.{component}.params.{param}.update"),
+            kind: "parameter update policy",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn default_for_param_type(ty: ParamType) -> ParamValue {
+    match ty {
+        ParamType::Bool => ParamValue::Bool(false),
+        ParamType::U8
+        | ParamType::U16
+        | ParamType::U32
+        | ParamType::U64
+        | ParamType::I8
+        | ParamType::I16
+        | ParamType::I32
+        | ParamType::I64 => ParamValue::Integer(0),
+        ParamType::F32 | ParamType::F64 => ParamValue::Float(0.0),
+        ParamType::String => ParamValue::String(String::new()),
+        ParamType::Array => ParamValue::Array(Vec::new()),
+        ParamType::Table => ParamValue::Table(BTreeMap::new()),
+    }
+}
+
+fn infer_param_type(value: &ParamValue) -> ParamType {
+    match value {
+        ParamValue::Bool(_) => ParamType::Bool,
+        ParamValue::Integer(_) => ParamType::I64,
+        ParamValue::Float(_) => ParamType::F64,
+        ParamValue::String(_) => ParamType::String,
+        ParamValue::Array(_) => ParamType::Array,
+        ParamValue::Table(_) => ParamType::Table,
+    }
+}
+
 fn entity_id(kind: &str, qualified_name: &str) -> EntityId {
     let mut hasher = Sha256::new();
     hasher.update(kind.as_bytes());
@@ -790,7 +1082,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CapabilityAtom, ChannelKind, PrimitiveType, TypeExpr, deployment_capability_decision,
+        CapabilityAtom, ChannelKind, ParamType, ParamUpdatePolicy, PrimitiveType, TypeExpr,
+        deployment_capability_decision,
     };
 
     #[test]
@@ -1363,6 +1656,120 @@ gains = [true]
                 param,
                 ..
             } if instance == "controller" && component == "controller" && param == "gains"
+        ));
+    }
+
+    #[test]
+    fn normalizes_parameter_schema_and_legacy_defaults() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "on_tick" }
+legacy_gain = 2.0
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = 2.5
+mode = "safe"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let component = &ir.components[0];
+
+        assert_eq!(component.params[0].name, "kp");
+        assert_eq!(component.params[0].ty, ParamType::F32);
+        assert_eq!(component.params[0].default, ParamValue::Float(1.0));
+        assert_eq!(component.params[0].update, ParamUpdatePolicy::OnTick);
+        assert_eq!(component.params[0].min, Some(ParamValue::Float(0.0)));
+        assert_eq!(component.params[0].max, Some(ParamValue::Float(10.0)));
+
+        assert_eq!(component.params[1].name, "legacy_gain");
+        assert_eq!(component.params[1].ty, ParamType::F64);
+        assert_eq!(component.params[1].update, ParamUpdatePolicy::Startup);
+
+        assert_eq!(component.params[2].name, "mode");
+        assert_eq!(component.params[2].ty, ParamType::String);
+        assert_eq!(component.params[2].choices.len(), 2);
+        assert_eq!(component.params[2].update, ParamUpdatePolicy::OnTick);
+
+        let instance = &ir.graphs[0].instances[0];
+        assert_eq!(instance.params[0].value, ParamValue::Float(2.5));
+        assert_eq!(instance.params[1].value, ParamValue::Float(2.0));
+        assert_eq!(
+            instance.params[2].value,
+            ParamValue::String("safe".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_parameter_override_outside_schema_range() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = 12.0
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("out-of-range parameter override should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidParamSchema {
+                component,
+                param,
+                ..
+            } if component == "controller" && param == "kp"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_parameter_update_policy() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, update = "immediate" }
+
+[instance.controller]
+component = "controller"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("unknown parameter update policy should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                context,
+                kind: "parameter update policy",
+                value
+            } if context == "component.controller.params.kp.update" && value == "immediate"
         ));
     }
 

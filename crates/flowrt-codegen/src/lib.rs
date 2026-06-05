@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr,
-    LanguageKind, OverflowPolicy as IrOverflowPolicy, PortIr, PrimitiveType,
-    StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr, TypeIr,
+    LanguageKind, OverflowPolicy as IrOverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy,
+    ParamValue, PortIr, PrimitiveType, StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr,
+    TypeIr,
 };
 use flowrt_validate::validate_contract;
 use serde::Serialize;
@@ -149,6 +150,18 @@ struct SelfDescriptionInstance<'a> {
     process: &'a str,
     target: Option<&'a str>,
     runtime: &'static str,
+    params: Vec<SelfDescriptionParam>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionParam {
+    name: String,
+    ty: &'static str,
+    update: &'static str,
+    current: serde_json::Value,
+    min: Option<serde_json::Value>,
+    max: Option<serde_json::Value>,
+    choices: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -422,6 +435,7 @@ fn self_description_graph<'a>(
                     process: instance.process.as_deref().unwrap_or("main"),
                     target: instance.target.as_ref().map(|target| target.name.as_str()),
                     runtime: language_name(component.language),
+                    params: self_description_params(component, instance),
                 }
             })
             .collect(),
@@ -560,6 +574,185 @@ fn trigger_name(trigger: TriggerKind) -> &'static str {
         TriggerKind::OnMessage => "on_message",
         TriggerKind::Startup => "startup",
         TriggerKind::Shutdown => "shutdown",
+    }
+}
+
+fn self_description_params(
+    component: &ComponentIr,
+    instance: &InstanceIr,
+) -> Vec<SelfDescriptionParam> {
+    component
+        .params
+        .iter()
+        .map(|param| SelfDescriptionParam {
+            name: param.name.clone(),
+            ty: param_type_name(param.ty),
+            update: param_update_name(param.update),
+            current: param_value_json(param_value_for_instance(instance, param)),
+            min: param.min.as_ref().map(param_value_json),
+            max: param.max.as_ref().map(param_value_json),
+            choices: param.choices.iter().map(param_value_json).collect(),
+        })
+        .collect()
+}
+
+fn param_value_for_instance<'a>(instance: &'a InstanceIr, param: &'a ParamIr) -> &'a ParamValue {
+    instance
+        .params
+        .iter()
+        .find(|value| value.name == param.name)
+        .map(|value| &value.value)
+        .unwrap_or(&param.default)
+}
+
+fn param_type_name(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Bool => "bool",
+        ParamType::U8 => "u8",
+        ParamType::U16 => "u16",
+        ParamType::U32 => "u32",
+        ParamType::U64 => "u64",
+        ParamType::I8 => "i8",
+        ParamType::I16 => "i16",
+        ParamType::I32 => "i32",
+        ParamType::I64 => "i64",
+        ParamType::F32 => "f32",
+        ParamType::F64 => "f64",
+        ParamType::String => "string",
+        ParamType::Array => "array",
+        ParamType::Table => "table",
+    }
+}
+
+fn param_update_name(update: ParamUpdatePolicy) -> &'static str {
+    match update {
+        ParamUpdatePolicy::Startup => "startup",
+        ParamUpdatePolicy::OnTick => "on_tick",
+    }
+}
+
+fn param_value_json(value: &ParamValue) -> serde_json::Value {
+    match value {
+        ParamValue::Bool(value) => serde_json::Value::Bool(*value),
+        ParamValue::Integer(value) => serde_json::json!(value),
+        ParamValue::Float(value) => serde_json::json!(value),
+        ParamValue::String(value) => serde_json::Value::String(value.clone()),
+        ParamValue::Array(values) => {
+            serde_json::Value::Array(values.iter().map(param_value_json).collect())
+        }
+        ParamValue::Table(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(name, value)| (name.clone(), param_value_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn param_json_literal(value: &ParamValue) -> String {
+    serde_json::to_string(&param_value_json(value))
+        .expect("FlowRT parameter values should always serialize as JSON")
+}
+
+fn param_json_value_literal(value: &ParamValue) -> String {
+    format!("serde_json::json!({})", param_json_literal(value))
+}
+
+fn rust_param_type(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Bool => "bool",
+        ParamType::U8 => "u8",
+        ParamType::U16 => "u16",
+        ParamType::U32 => "u32",
+        ParamType::U64 => "u64",
+        ParamType::I8 => "i8",
+        ParamType::I16 => "i16",
+        ParamType::I32 => "i32",
+        ParamType::I64 => "i64",
+        ParamType::F32 => "f32",
+        ParamType::F64 => "f64",
+        ParamType::String => "String",
+        ParamType::Array | ParamType::Table => "serde_json::Value",
+    }
+}
+
+fn cpp_param_type(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Bool => "bool",
+        ParamType::U8 => "std::uint8_t",
+        ParamType::U16 => "std::uint16_t",
+        ParamType::U32 => "std::uint32_t",
+        ParamType::U64 => "std::uint64_t",
+        ParamType::I8 => "std::int8_t",
+        ParamType::I16 => "std::int16_t",
+        ParamType::I32 => "std::int32_t",
+        ParamType::I64 => "std::int64_t",
+        ParamType::F32 => "float",
+        ParamType::F64 => "double",
+        ParamType::String => "std::string",
+        ParamType::Array | ParamType::Table => "std::string",
+    }
+}
+
+fn rust_param_literal(param: &ParamIr, value: &ParamValue) -> String {
+    match (param.ty, value) {
+        (ParamType::Bool, ParamValue::Bool(value)) => value.to_string(),
+        (
+            ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64,
+            ParamValue::Integer(value),
+        ) => format!("{} as {}", value, rust_param_type(param.ty)),
+        (ParamType::F32, ParamValue::Float(value)) => format!("{}f32", float_literal(*value)),
+        (ParamType::F32, ParamValue::Integer(value)) => format!("{}f32", value),
+        (ParamType::F64, ParamValue::Float(value)) => format!("{}f64", float_literal(*value)),
+        (ParamType::F64, ParamValue::Integer(value)) => format!("{}f64", value),
+        (ParamType::String, ParamValue::String(value)) => {
+            format!("{}.to_string()", rust_string_literal(value))
+        }
+        (ParamType::Array | ParamType::Table, _) => param_json_value_literal(value),
+        _ => param_json_value_literal(value),
+    }
+}
+
+fn cpp_param_literal(param: &ParamIr, value: &ParamValue) -> String {
+    match (param.ty, value) {
+        (ParamType::Bool, ParamValue::Bool(value)) => value.to_string(),
+        (
+            ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64,
+            ParamValue::Integer(value),
+        ) => format!("{}{{{value}}}", cpp_param_type(param.ty)),
+        (ParamType::F32, ParamValue::Float(value)) => format!("{}F", float_literal(*value)),
+        (ParamType::F32, ParamValue::Integer(value)) => format!("{}.0F", value),
+        (ParamType::F64, ParamValue::Float(value)) => float_literal(*value),
+        (ParamType::F64, ParamValue::Integer(value)) => format!("{}.0", value),
+        (ParamType::String, ParamValue::String(value)) => cpp_string_literal(value),
+        (ParamType::Array | ParamType::Table, _) => cpp_string_literal(&param_json_literal(value)),
+        _ => cpp_string_literal(&param_json_literal(value)),
+    }
+}
+
+fn float_literal(value: f64) -> String {
+    if value.is_finite() {
+        let mut output = value.to_string();
+        if !output.contains('.') && !output.contains('e') && !output.contains('E') {
+            output.push_str(".0");
+        }
+        output
+    } else {
+        "0.0".to_string()
     }
 }
 
@@ -708,6 +901,7 @@ fn emit_cpp_selfdesc_source(contract: &ContractIr) -> String {
 fn emit_cpp_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
+    output.push_str("#include <cstdint>\n#include <string>\n\n");
     output.push_str("#include <flowrt/runtime.hpp>\n\n");
     output.push_str("#include \"flowrt_app/messages.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
@@ -717,6 +911,9 @@ fn emit_cpp_components(contract: &ContractIr) -> String {
         .iter()
         .filter(|component| component.language == LanguageKind::Cpp)
     {
+        if !component.params.is_empty() {
+            output.push_str(&cpp_params_struct(component));
+        }
         output.push_str(&cpp_component_interface_doc(component));
         output.push_str(&format!(
             "class {}Interface {{\n",
@@ -731,6 +928,7 @@ fn emit_cpp_components(contract: &ContractIr) -> String {
         output.push_str(&cpp_lifecycle_method("on_start"));
         output.push_str(&cpp_lifecycle_method("on_stop"));
         output.push_str(&cpp_lifecycle_method("on_shutdown"));
+        output.push_str(&cpp_params_update_signature(component));
         output.push_str(&cpp_tick_signature(component));
         output.push_str("};\n\n");
     }
@@ -754,7 +952,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <cerrno>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <string>\n#include <string_view>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -816,6 +1014,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         ));
     }
     output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
+        contract,
         function_name: "run",
         step_function_name: "step",
         startup_function_name: "step_startup",
@@ -832,6 +1031,7 @@ fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         let startup_function_name = format!("step_process_{}_startup", process.method_suffix);
         let shutdown_function_name = format!("step_process_{}_shutdown", process.method_suffix);
         output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
+            contract,
             function_name: &function_name,
             step_function_name: &step_function_name,
             startup_function_name: &startup_function_name,
@@ -909,6 +1109,13 @@ fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             pascal_case(&component.name),
             instance.name
         ));
+        if !component.params.is_empty() {
+            output.push_str(&format!(
+                "    {}Params {}_params_;\n",
+                pascal_case(&component.name),
+                instance.name
+            ));
+        }
     }
     for bind in &bind_plans {
         output.push_str(&format!(
@@ -987,7 +1194,15 @@ fn emit_cpp_app_constructor(
 
     let mut initializers = Vec::new();
     for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
         initializers.push(format!("{}_(std::move({}))", instance.name, instance.name));
+        if !component.params.is_empty() {
+            initializers.push(format!(
+                "{}_params_({})",
+                instance.name,
+                cpp_params_initializer(component, instance)
+            ));
+        }
     }
     for bind in binds {
         initializers.push(format!(
@@ -1031,7 +1246,7 @@ struct CppStepEmission<'a> {
     selected_backend: &'a str,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TaskEmissionPhase {
     Scheduler,
     Startup,
@@ -1126,6 +1341,14 @@ fn emit_cpp_app_step(
             output.push_str(&format!("    if ({guard}) {{\n"));
         }
 
+        if !component.params.is_empty() && phase == TaskEmissionPhase::Scheduler {
+            output.push_str(&cpp_apply_pending_params(
+                instance,
+                component,
+                trigger_guard.is_some(),
+            ));
+        }
+
         if task.deadline_ms.is_some() {
             output.push_str(&format!(
                 "{indent}const auto {instance}_deadline_started_at = std::chrono::steady_clock::now();\n",
@@ -1147,6 +1370,9 @@ fn emit_cpp_app_step(
         let mut call_args = Vec::new();
         for input in &component.inputs {
             call_args.push(cpp_step_local_name(&instance.name, &input.name));
+        }
+        if !component.params.is_empty() {
+            call_args.push(format!("{}_params_", instance.name));
         }
         for port in &component.outputs {
             call_args.push(cpp_step_local_name(&instance.name, &port.name));
@@ -1278,6 +1504,7 @@ fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> St
 }
 
 struct CppRunEmission<'a> {
+    contract: &'a ContractIr,
     function_name: &'a str,
     step_function_name: &'a str,
     startup_function_name: &'a str,
@@ -1297,6 +1524,10 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
     output.push_str(&emit_cpp_introspection_channel_registration(
         run.order, run.binds,
+    ));
+    output.push_str(&emit_cpp_introspection_param_registration(
+        run.contract,
+        run.order,
     ));
     output.push_str(&format!(
         "    auto introspection_server = flowrt::spawn_status_server(\n        flowrt::IntrospectionIdentity{{\n            .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n            .package = {},\n            .process = {},\n            .runtime = \"cpp\",\n        }},\n        introspection_state);\n    (void)introspection_server;\n",
@@ -1595,6 +1826,135 @@ fn cpp_runtime_stale_policy(policy: IrStalePolicy) -> &'static str {
     }
 }
 
+fn cpp_params_struct(component: &ComponentIr) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "struct {}Params {{\n",
+        pascal_case(&component.name)
+    ));
+    for param in &component.params {
+        output.push_str(&format!(
+            "    {} {}{{}};\n",
+            cpp_param_type(param.ty),
+            param.name
+        ));
+    }
+    output.push_str("};\n\n");
+    output
+}
+
+fn cpp_params_initializer(component: &ComponentIr, instance: &InstanceIr) -> String {
+    let mut output = format!("{}Params{{", pascal_case(&component.name));
+    for param in &component.params {
+        let value = param_value_for_instance(instance, param);
+        output.push_str(&format!(
+            "\n        .{} = {},",
+            param.name,
+            cpp_param_literal(param, value)
+        ));
+    }
+    output.push_str("\n    }");
+    output
+}
+
+fn cpp_params_update_signature(component: &ComponentIr) -> String {
+    if component.params.is_empty() {
+        return String::new();
+    }
+    let params_ty = format!("{}Params", pascal_case(&component.name));
+    format!(
+        "    /**\n     * @brief 参数 pending 值在 tick 边界通过校验后调用。\n     *\n     * @param old_params 当前已生效参数快照。\n     * @param new_params 即将生效的新参数快照。\n     * @param context runtime 上下文。\n     * @return 返回 `Ok` 后 shell 才会提交新参数。\n     */\n    virtual flowrt::Status on_params_update(\n        const {params_ty}& old_params,\n        const {params_ty}& new_params,\n        flowrt::Context& context) {{\n        (void)old_params;\n        (void)new_params;\n        (void)context;\n        return flowrt::ok();\n    }}\n"
+    )
+}
+
+fn emit_cpp_introspection_param_registration(
+    contract: &ContractIr,
+    order: &[&InstanceIr],
+) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        for param in &component.params {
+            output.push_str(&format!(
+                "    introspection_state.register_param(flowrt::IntrospectionParamSchema{{\n        .name = {},\n        .ty = {},\n        .update = {},\n        .current = {},\n        .min = {},\n        .max = {},\n        .choices = {},\n    }});\n",
+                cpp_string_literal(&runtime_param_name(instance, param)),
+                cpp_string_literal(param_type_name(param.ty)),
+                cpp_string_literal(param_update_name(param.update)),
+                cpp_string_literal(&param_json_literal(param_value_for_instance(instance, param))),
+                cpp_optional_json_literal(param.min.as_ref()),
+                cpp_optional_json_literal(param.max.as_ref()),
+                cpp_json_fragment_vector_literal(&param.choices),
+            ));
+        }
+    }
+    output
+}
+
+fn cpp_apply_pending_params(
+    instance: &InstanceIr,
+    component: &ComponentIr,
+    nested: bool,
+) -> String {
+    let mut output = String::new();
+    let indent = step_indent(nested);
+    let inner_indent = nested_step_indent(nested);
+    for param in &component.params {
+        if param.update != ParamUpdatePolicy::OnTick {
+            continue;
+        }
+        let runtime_name = runtime_param_name(instance, param);
+        let pending = format!("{}_{}_pending", instance.name, param.name);
+        let next = format!("{}_{}_next_params", instance.name, param.name);
+        output.push_str(&format!(
+            "{indent}if (const auto {pending} = introspection_state.take_pending_param({runtime_name}); {pending}.has_value()) {{\n",
+            runtime_name = cpp_string_literal(&runtime_name)
+        ));
+        output.push_str(&format!(
+            "{inner_indent}auto {next} = {instance}_params_;\n",
+            instance = instance.name
+        ));
+        output.push_str(&format!(
+            "{inner_indent}if (!decode_flowrt_param_value(*{pending}, {next}.{field})) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            field = param.name,
+            deep_indent = if nested { "                " } else { "            " }
+        ));
+        output.push_str(&format!(
+            "{inner_indent}if ({instance}_ && {instance}_->on_params_update({instance}_params_, {next}, tick_context) != flowrt::Status::Ok) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            instance = instance.name,
+            deep_indent = if nested { "                " } else { "            " }
+        ));
+        output.push_str(&format!(
+            "{inner_indent}{instance}_params_ = std::move({next});\n{inner_indent}introspection_state.record_param_applied({runtime_name}, *{pending});\n",
+            instance = instance.name,
+            runtime_name = cpp_string_literal(&runtime_name)
+        ));
+        output.push_str(&format!("{indent}}}\n"));
+    }
+    output
+}
+
+fn cpp_optional_json_literal(value: Option<&ParamValue>) -> String {
+    match value {
+        Some(value) => format!(
+            "std::optional<std::string>{{{}}}",
+            cpp_string_literal(&param_json_literal(value))
+        ),
+        None => "std::nullopt".to_string(),
+    }
+}
+
+fn cpp_json_fragment_vector_literal(values: &[ParamValue]) -> String {
+    if values.is_empty() {
+        return "{}".to_string();
+    }
+    let values = values
+        .iter()
+        .map(|value| cpp_string_literal(&param_json_literal(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("std::vector<std::string>{{{values}}}")
+}
+
 fn emit_cpp_main() -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
@@ -1679,7 +2039,7 @@ fn emit_rust_selfdesc(contract: &ContractIr) -> String {
         "#[allow(dead_code)]\npub fn self_description_json() -> &'static str {\n    std::str::from_utf8(&FLOWRT_SELF_DESCRIPTION).expect(\"generated FlowRT self-description is UTF-8\")\n}\n",
     );
     output.push_str(&format!(
-        "\npub fn self_description_hash() -> &'static str {{\n    {}\n}}\n",
+        "\n#[allow(dead_code)]\npub fn self_description_hash() -> &'static str {{\n    {}\n}}\n",
         rust_string_literal(&hash)
     ));
     output
@@ -1717,6 +2077,9 @@ fn emit_rust_components(contract: &ContractIr) -> String {
         .iter()
         .filter(|component| component.language == LanguageKind::Rust)
     {
+        if !component.params.is_empty() {
+            output.push_str(&rust_params_struct(component));
+        }
         output.push_str(&rust_component_trait_doc(component));
         output.push_str(&format!("pub trait {} {{\n", pascal_case(&component.name)));
         output.push_str(&rust_lifecycle_doc("组件初始化钩子"));
@@ -1739,6 +2102,7 @@ fn emit_rust_components(contract: &ContractIr) -> String {
             "    fn on_shutdown(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
         );
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
+        output.push_str(&rust_params_update_signature(component));
         output.push_str(&rust_tick_signature(component));
         output.push_str("}\n\n");
     }
@@ -1769,7 +2133,11 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         "const PACKAGE_NAME: &str = {};\n\n",
         rust_string_literal(&contract.package.name)
     ));
-    output.push_str(&emit_rust_introspection_helpers());
+    let has_active_rust_channels = !active_binds_for_instances(&bind_plans, &order).is_empty();
+    output.push_str(&emit_rust_introspection_helpers(
+        has_active_rust_channels,
+        contract_has_runtime_params_for_language(contract, LanguageKind::Rust),
+    ));
     output.push_str("pub struct App {\n");
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
@@ -1778,6 +2146,13 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             instance.name,
             pascal_case(&component.name)
         ));
+        if !component.params.is_empty() {
+            output.push_str(&format!(
+                "    {}_params: {}Params,\n",
+                instance.name,
+                pascal_case(&component.name)
+            ));
+        }
     }
     for bind in &bind_plans {
         output.push_str(&format!(
@@ -1843,13 +2218,14 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             TaskEmissionPhase::Shutdown,
         ));
     }
-    output.push_str(&emit_rust_app_run(&order, &bind_plans));
+    output.push_str(&emit_rust_app_run(contract, &order, &bind_plans));
     output.push_str(&emit_rust_app_run_process_dispatch(&process_plans));
     for process in &process_plans {
         let step_function_name = format!("step_process_{}", process.method_suffix);
         let startup_function_name = format!("step_process_{}_startup", process.method_suffix);
         let shutdown_function_name = format!("step_process_{}_shutdown", process.method_suffix);
         output.push_str(&emit_rust_app_run_function(
+            contract,
             &format!("run_process_{}", process.method_suffix),
             RustRunStepFunctions {
                 scheduler: &step_function_name,
@@ -1936,7 +2312,7 @@ fn emit_rust_supervisor_main() -> String {
 fn emit_rust_supervisor(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str(&format!(
-        "\nuse std::path::{{Path, PathBuf}};\nuse std::process::Command;\n\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\n",
+        "\nuse std::collections::HashMap;\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::Command;\n\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\n",
         rust_string_literal(&rust_app_stem(contract)),
         rust_string_literal(&cpp_app_stem(contract))
     ));
@@ -1957,7 +2333,14 @@ struct LaunchGraph {
 #[derive(Debug, serde::Deserialize)]
 struct LaunchProcess {
     name: String,
+    backend: String,
     runtime_kind: String,
+}
+
+#[derive(Debug, Clone)]
+struct ZenohLaunchEnv {
+    listen: String,
+    connect: String,
 }
 
 pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
@@ -1972,12 +2355,27 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
 
     let mut children = Vec::new();
     for graph in &manifest.graphs {
+        let zenoh_env = if should_auto_configure_zenoh() {
+            zenoh_launch_env_for_graph(graph)?
+        } else {
+            HashMap::new()
+        };
         for process in &graph.processes {
             let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
             let mut command = Command::new(&app_exe);
             command.arg("--process").arg(&process.name);
             if let Some(run_ticks) = run_ticks {
                 command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+            }
+            if let Some(env) = zenoh_env.get(&process.name) {
+                command.env("FLOWRT_ZENOH_MODE", "peer");
+                if !env.listen.is_empty() {
+                    command.env("FLOWRT_ZENOH_LISTEN", &env.listen);
+                }
+                if !env.connect.is_empty() {
+                    command.env("FLOWRT_ZENOH_CONNECT", &env.connect);
+                }
+                command.env("FLOWRT_ZENOH_NO_MULTICAST", "1");
             }
             let child = command
                 .spawn()
@@ -2004,6 +2402,52 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
     } else {
         Err(failures.join("; "))
     }
+}
+
+fn should_auto_configure_zenoh() -> bool {
+    std::env::var_os("FLOWRT_ZENOH_MODE").is_none()
+        && std::env::var_os("FLOWRT_ZENOH_LISTEN").is_none()
+        && std::env::var_os("FLOWRT_ZENOH_CONNECT").is_none()
+}
+
+fn zenoh_launch_env_for_graph(graph: &LaunchGraph) -> Result<HashMap<String, ZenohLaunchEnv>, String> {
+    let zenoh_processes = graph
+        .processes
+        .iter()
+        .filter(|process| process.backend == "zenoh")
+        .collect::<Vec<_>>();
+    if zenoh_processes.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let hub = zenoh_processes[0];
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("failed to reserve local zenoh port for `{}`: {error}", hub.name))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("failed to read local zenoh port for `{}`: {error}", hub.name))?
+        .port();
+    let hub_locator = format!("tcp/127.0.0.1:{port}");
+    drop(listener);
+
+    let mut env = HashMap::new();
+    for process in zenoh_processes {
+        let listen = if process.name == hub.name {
+            hub_locator.clone()
+        } else {
+            String::new()
+        };
+        let connect = if process.name == hub.name {
+            String::new()
+        } else {
+            hub_locator.clone()
+        };
+        env.insert(
+            process.name.clone(),
+            ZenohLaunchEnv { listen, connect },
+        );
+    }
+    Ok(env)
 }
 
 fn app_executable_for_runtime(current_exe: &Path, runtime_kind: &str) -> Result<PathBuf, String> {
@@ -2192,6 +2636,10 @@ fn runtime_channel_message_type(bind: &BindRuntimePlan) -> String {
     bind.source_type.canonical_syntax()
 }
 
+fn runtime_param_name(instance: &InstanceIr, param: &ParamIr) -> String {
+    format!("{}.{}", instance.name, param.name)
+}
+
 fn emit_cpp_introspection_helpers() -> String {
     r#"void register_introspection_channel(
     flowrt::IntrospectionState& state,
@@ -2242,6 +2690,104 @@ void record_introspection_publish_frame(
     }
 }
 
+inline bool decode_json_string_fragment(std::string_view value, std::string& output) {
+    if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
+        return false;
+    }
+    output.clear();
+    for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+        const char byte = value[index];
+        if (byte != '\\') {
+            output.push_back(byte);
+            continue;
+        }
+        if (index + 1 >= value.size() - 1) {
+            return false;
+        }
+        const char escape = value[++index];
+        switch (escape) {
+            case '"':
+            case '\\':
+            case '/':
+                output.push_back(escape);
+                break;
+            case 'b':
+                output.push_back('\b');
+                break;
+            case 'f':
+                output.push_back('\f');
+                break;
+            case 'n':
+                output.push_back('\n');
+                break;
+            case 'r':
+                output.push_back('\r');
+                break;
+            case 't':
+                output.push_back('\t');
+                break;
+            default:
+                return false;
+        }
+    }
+    return true;
+}
+
+inline bool decode_flowrt_param_value(std::string_view value, bool& output) {
+    if (value == "true") {
+        output = true;
+        return true;
+    }
+    if (value == "false") {
+        output = false;
+        return true;
+    }
+    return false;
+}
+
+template <typename T>
+bool decode_flowrt_param_value(std::string_view value, T& output)
+    requires(std::is_integral_v<T> && !std::is_same_v<T, bool>)
+{
+    std::string owned{value};
+    char* end = nullptr;
+    errno = 0;
+    const long long parsed = std::strtoll(owned.c_str(), &end, 10);
+    if (errno != 0 || end == owned.c_str() || *end != '\0') {
+        return false;
+    }
+    output = static_cast<T>(parsed);
+    return true;
+}
+
+inline bool decode_flowrt_param_value(std::string_view value, float& output) {
+    std::string owned{value};
+    char* end = nullptr;
+    errno = 0;
+    const float parsed = std::strtof(owned.c_str(), &end);
+    if (errno != 0 || end == owned.c_str() || *end != '\0') {
+        return false;
+    }
+    output = parsed;
+    return true;
+}
+
+inline bool decode_flowrt_param_value(std::string_view value, double& output) {
+    std::string owned{value};
+    char* end = nullptr;
+    errno = 0;
+    const double parsed = std::strtod(owned.c_str(), &end);
+    if (errno != 0 || end == owned.c_str() || *end != '\0') {
+        return false;
+    }
+    output = parsed;
+    return true;
+}
+
+inline bool decode_flowrt_param_value(std::string_view value, std::string& output) {
+    return decode_json_string_fragment(value, output);
+}
+
 "#
     .to_string()
 }
@@ -2261,8 +2807,14 @@ fn emit_cpp_introspection_channel_registration(
     output
 }
 
-fn emit_rust_introspection_helpers() -> String {
-    r#"fn register_introspection_channel(
+fn emit_rust_introspection_helpers(
+    include_channel_helpers: bool,
+    include_param_decode: bool,
+) -> String {
+    let mut output = String::new();
+    if include_channel_helpers {
+        output.push_str(
+            r#"fn register_introspection_channel(
     state: &flowrt::IntrospectionState,
     name: &'static str,
     message_type: &'static str,
@@ -2272,7 +2824,23 @@ fn emit_rust_introspection_helpers() -> String {
     }));
 }
 
-#[allow(dead_code)]
+"#,
+        );
+    }
+    if include_param_decode {
+        output.push_str(
+            r#"fn decode_flowrt_param_value<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, serde_json::Error> {
+    serde_json::from_value(value)
+}
+
+"#,
+        );
+    }
+    if include_channel_helpers {
+        output.push_str(
+            r#"#[allow(dead_code)]
 fn record_introspection_publish_copy<T: Copy>(
     state: &flowrt::IntrospectionState,
     name: &'static str,
@@ -2300,8 +2868,20 @@ fn record_introspection_publish_frame<T: flowrt::FrameCodec>(
     }));
 }
 
-"#
-    .to_string()
+"#,
+        );
+    }
+    output
+}
+
+fn contract_has_runtime_params_for_language(contract: &ContractIr, language: LanguageKind) -> bool {
+    contract.components.iter().any(|component| {
+        component.language == language
+            && component
+                .params
+                .iter()
+                .any(|param| param.update == ParamUpdatePolicy::OnTick)
+    })
 }
 
 fn emit_rust_introspection_channel_registration(
@@ -2338,7 +2918,15 @@ fn emit_rust_app_new(
     }
     output.push_str("    ) -> Self {\n        Self {\n");
     for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
         output.push_str(&format!("            {},\n", instance.name));
+        if !component.params.is_empty() {
+            output.push_str(&format!(
+                "            {}_params: {},\n",
+                instance.name,
+                rust_params_initializer(component, instance)
+            ));
+        }
     }
     for bind in binds {
         output.push_str(&format!(
@@ -2421,6 +3009,14 @@ fn emit_rust_app_step(
             output.push_str(&format!("        if {guard} {{\n"));
         }
 
+        if !component.params.is_empty() && phase == TaskEmissionPhase::Scheduler {
+            output.push_str(&rust_apply_pending_params(
+                instance,
+                component,
+                trigger_guard.is_some(),
+            ));
+        }
+
         if task.deadline_ms.is_some() {
             output.push_str(&format!(
                 "{indent}let {name}_deadline_started_at = std::time::Instant::now();\n",
@@ -2441,6 +3037,9 @@ fn emit_rust_app_step(
         let mut call_args = Vec::new();
         for input in &component.inputs {
             call_args.push(input.name.clone());
+        }
+        if !component.params.is_empty() {
+            call_args.push(format!("&self.{}_params", instance.name));
         }
         for port in &component.outputs {
             call_args.push(format!("&mut {}", port.name));
@@ -2501,8 +3100,13 @@ fn emit_rust_app_step(
     output
 }
 
-fn emit_rust_app_run(order: &[&InstanceIr], binds: &[BindRuntimePlan]) -> String {
+fn emit_rust_app_run(
+    contract: &ContractIr,
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+) -> String {
     emit_rust_app_run_function(
+        contract,
         "run",
         RustRunStepFunctions {
             scheduler: "step",
@@ -2540,6 +3144,7 @@ struct RustRunStepFunctions<'a> {
 }
 
 fn emit_rust_app_run_function(
+    contract: &ContractIr,
     function_name: &str,
     steps: RustRunStepFunctions<'_>,
     order: &[&InstanceIr],
@@ -2554,6 +3159,7 @@ fn emit_rust_app_run_function(
     ));
     output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
     output.push_str(&emit_rust_introspection_channel_registration(order, binds));
+    output.push_str(&emit_rust_introspection_param_registration(contract, order));
     output.push_str(&format!(
         "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",
         "PACKAGE_NAME",
@@ -3623,9 +4229,9 @@ fn emit_cmake(contract: &ContractIr) -> String {
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)\n"
             ));
         } else if selected_backend_name(contract) == "zenoh" {
-            output.push_str("\nfind_package(zenohc REQUIRED)\nfind_package(zenohcxx REQUIRED)\n");
+            output.push_str(cmake_zenoh_dependency_block());
             output.push_str(&format!(
-                "target_link_libraries({package_name}_flowrt_app INTERFACE zenohcxx::zenohc)\n"
+                "target_link_libraries({package_name}_flowrt_app INTERFACE ${{FLOWRT_ZENOH_CXX_TARGET}})\n"
             ));
             output.push_str(&format!(
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ZENOH_CXX=1)\n"
@@ -3724,6 +4330,20 @@ endif()
 "#
 }
 
+fn cmake_zenoh_dependency_block() -> &'static str {
+    r#"
+set(FLOWRT_ZENOH_CXX_TARGET "")
+find_package(zenohc 1.9.0 QUIET)
+find_package(zenohcxx 1.9.0 QUIET)
+if(TARGET zenohcxx::zenohc)
+  set(FLOWRT_ZENOH_CXX_TARGET zenohcxx::zenohc)
+endif()
+if(NOT FLOWRT_ZENOH_CXX_TARGET)
+  message(FATAL_ERROR "zenoh C++ target is unavailable. Install zenoh-c and zenoh-cpp 1.9.0 so CMake exposes zenohc::lib and zenohcxx::zenohc, then set CMAKE_PREFIX_PATH if needed.")
+endif()
+"#
+}
+
 fn emit_cargo_manifest(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name).replace('_', "-");
     let has_rust = has_language(contract, LanguageKind::Rust);
@@ -3777,6 +4397,12 @@ fn cpp_callback_args(component: &ComponentIr) -> Vec<String> {
             "const flowrt::Latest<{}>& {}",
             cpp_type(&input.ty),
             input.name
+        ));
+    }
+    if !component.params.is_empty() {
+        args.push(format!(
+            "const {}Params& params",
+            pascal_case(&component.name)
         ));
     }
     for output in &component.outputs {
@@ -3857,6 +4483,9 @@ fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
             rust_type(&input.ty)
         ));
     }
+    if !component.params.is_empty() {
+        args.push(format!("params: &{}Params", pascal_case(&component.name)));
+    }
     for output in &component.outputs {
         args.push(format!(
             "{}: &mut flowrt::Output<{}>",
@@ -3916,6 +4545,136 @@ fn rust_tick_doc(component: &ComponentIr) -> String {
         ));
     }
     output.push_str("    /// 返回本次回调的 FlowRT 执行状态。\n");
+    output
+}
+
+fn rust_params_struct(component: &ComponentIr) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "#[derive(Clone, Debug, PartialEq)]\npub struct {}Params {{\n",
+        pascal_case(&component.name)
+    ));
+    for param in &component.params {
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            param.name,
+            rust_param_type(param.ty)
+        ));
+    }
+    output.push_str("}\n\n");
+    output
+}
+
+fn rust_params_initializer(component: &ComponentIr, instance: &InstanceIr) -> String {
+    let mut output = format!("{}Params {{", pascal_case(&component.name));
+    for param in &component.params {
+        let value = param_value_for_instance(instance, param);
+        output.push_str(&format!(
+            "\n                {}: {},",
+            param.name,
+            rust_param_literal(param, value)
+        ));
+    }
+    output.push_str("\n            }");
+    output
+}
+
+fn rust_params_update_signature(component: &ComponentIr) -> String {
+    if component.params.is_empty() {
+        return String::new();
+    }
+    let params_ty = format!("{}Params", pascal_case(&component.name));
+    format!(
+        "    /// 参数 pending 值在 tick 边界通过校验后调用。\n    ///\n    /// 返回 `Ok` 后 shell 才会提交新参数。\n    fn on_params_update(\n        &mut self,\n        _old: &{params_ty},\n        _new: &{params_ty},\n        _context: &mut flowrt::Context,\n    ) -> flowrt::Status {{\n        flowrt::Status::ok()\n    }}\n\n"
+    )
+}
+
+fn emit_rust_introspection_param_registration(
+    contract: &ContractIr,
+    order: &[&InstanceIr],
+) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        for param in &component.params {
+            output.push_str(&format!(
+                "        introspection_state.register_param(flowrt::IntrospectionParamSchema {{\n            name: {}.to_string(),\n            ty: {}.to_string(),\n            update: {}.to_string(),\n            current: {},\n            min: {},\n            max: {},\n            choices: {},\n        }});\n",
+                rust_string_literal(&runtime_param_name(instance, param)),
+                rust_string_literal(param_type_name(param.ty)),
+                rust_string_literal(param_update_name(param.update)),
+                param_json_value_literal(param_value_for_instance(instance, param)),
+                rust_optional_param_json_value(param.min.as_ref()),
+                rust_optional_param_json_value(param.max.as_ref()),
+                rust_param_json_vec(&param.choices),
+            ));
+        }
+    }
+    output
+}
+
+fn rust_optional_param_json_value(value: Option<&ParamValue>) -> String {
+    match value {
+        Some(value) => format!("Some({})", param_json_value_literal(value)),
+        None => "None".to_string(),
+    }
+}
+
+fn rust_param_json_vec(values: &[ParamValue]) -> String {
+    if values.is_empty() {
+        return "Vec::new()".to_string();
+    }
+    let values = values
+        .iter()
+        .map(param_json_value_literal)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("vec![{values}]")
+}
+
+fn rust_apply_pending_params(
+    instance: &InstanceIr,
+    component: &ComponentIr,
+    nested: bool,
+) -> String {
+    let mut output = String::new();
+    let indent = rust_step_indent(nested);
+    let inner_indent = rust_nested_step_indent(nested);
+    let deep_indent = if nested {
+        "                    "
+    } else {
+        "                "
+    };
+    for param in &component.params {
+        if param.update != ParamUpdatePolicy::OnTick {
+            continue;
+        }
+        let runtime_name = runtime_param_name(instance, param);
+        let pending = format!("{}_{}_pending", instance.name, param.name);
+        let next = format!("{}_{}_next_params", instance.name, param.name);
+        output.push_str(&format!(
+            "{indent}if let Some({pending}) = introspection_state.take_pending_param({}) {{\n",
+            rust_string_literal(&runtime_name)
+        ));
+        output.push_str(&format!(
+            "{inner_indent}let mut {next} = self.{}_params.clone();\n",
+            instance.name
+        ));
+        output.push_str(&format!(
+            "{inner_indent}{next}.{field} = match decode_flowrt_param_value::<{}>({pending}.clone()) {{\n{deep_indent}Ok(value) => value,\n{deep_indent}Err(_) => return flowrt::Status::Error,\n{inner_indent}}};\n",
+            rust_param_type(param.ty),
+            field = param.name
+        ));
+        output.push_str(&format!(
+            "{inner_indent}if self.{instance}.on_params_update(&self.{instance}_params, &{next}, _tick_context) != flowrt::Status::Ok {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            instance = instance.name
+        ));
+        output.push_str(&format!(
+            "{inner_indent}self.{instance}_params = {next};\n{inner_indent}introspection_state.record_param_applied({}, {pending});\n",
+            rust_string_literal(&runtime_name),
+            instance = instance.name
+        ));
+        output.push_str(&format!("{indent}}}\n"));
+    }
     output
 }
 
@@ -5681,6 +6440,167 @@ channel = "latest"
     }
 
     #[test]
+    fn generated_rust_components_receive_typed_params_and_register_runtime_params() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "rust"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = 2.0
+mode = "safe"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let components = artifact_content(&bundle, "rust/src/components.rs");
+        let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        let selfdesc: serde_json::Value =
+            serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+        assert!(components.contains("pub struct ControllerParams"));
+        assert!(components.contains("pub kp: f32"));
+        assert!(components.contains("pub mode: String"));
+        assert!(components.contains("params: &ControllerParams"));
+        assert!(components.contains("fn on_params_update("));
+        assert!(shell.contains("controller_params: ControllerParams"));
+        assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
+        assert!(shell.contains("name: \"controller.kp\".to_string()"));
+        assert!(shell.contains("take_pending_param(\"controller.kp\")"));
+        assert!(shell.contains("self.controller.on_params_update("));
+        assert_eq!(
+            selfdesc["graphs"][0]["instances"][0]["params"][0]["name"],
+            "kp"
+        );
+        assert_eq!(
+            selfdesc["graphs"][0]["instances"][0]["params"][0]["update"],
+            "on_tick"
+        );
+    }
+
+    #[test]
+    fn generated_rust_shell_omits_param_decoder_for_no_param_contracts() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "no_param_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(!shell.contains("fn decode_flowrt_param_value"));
+    }
+
+    #[test]
+    fn generated_rust_shell_includes_param_decoder_for_runtime_params() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[component.estimator]
+language = "rust"
+
+[component.estimator.params.gain]
+type = "f64"
+default = 1.0
+update = "on_tick"
+
+[instance.estimator]
+component = "estimator"
+
+[instance.estimator.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+        assert!(shell.contains("fn decode_flowrt_param_value"));
+    }
+
+    #[test]
+    fn generated_cpp_components_receive_typed_params_and_register_runtime_params() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "cpp"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+kp = 2.0
+mode = "safe"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+        let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+        assert!(components.contains("struct ControllerParams"));
+        assert!(components.contains("float kp"));
+        assert!(components.contains("std::string mode"));
+        assert!(components.contains("const ControllerParams& params"));
+        assert!(components.contains("virtual flowrt::Status on_params_update("));
+        assert!(shell.contains("controller_params_(ControllerParams{"));
+        assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
+        assert!(shell.contains(".name = \"controller.kp\""));
+        assert!(shell.contains("take_pending_param(\"controller.kp\")"));
+        assert!(shell.contains("controller_->on_params_update("));
+    }
+
+    #[test]
     fn emits_supervisor_only_rust_crate_for_cpp_only_launch() {
         let ir = contract_from_source(
             r#"
@@ -5744,6 +6664,9 @@ backends = ["inproc"]
         assert!(rust_lib.contains("pub mod supervisor;"));
         assert!(!rust_lib.contains("pub mod runtime_shell;"));
         assert!(!rust_lib.contains("pub mod user;"));
+
+        let rust_selfdesc = artifact_content(&bundle, "rust/src/selfdesc.rs");
+        assert!(rust_selfdesc.contains("#[allow(dead_code)]\npub fn self_description_hash()"));
 
         let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
         assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
@@ -6080,9 +7003,12 @@ backends = ["zenoh"]
         assert!(!cargo_manifest.contains("features = [\"iox2\"]"));
 
         let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
-        assert!(cmake.contains("find_package(zenohc REQUIRED)"));
-        assert!(cmake.contains("find_package(zenohcxx REQUIRED)"));
+        assert!(cmake.contains("find_package(zenohc 1.9.0 QUIET)"));
+        assert!(cmake.contains("find_package(zenohcxx 1.9.0 QUIET)"));
         assert!(cmake.contains("zenohcxx::zenohc"));
+        assert!(cmake.contains("${FLOWRT_ZENOH_CXX_TARGET}"));
+        assert!(!cmake.contains("FetchContent"));
+        assert!(!cmake.contains("GIT_REPOSITORY"));
         assert!(cmake.contains("FLOWRT_HAS_ZENOH_CXX=1"));
         assert!(!cmake.contains("find_package(iceoryx2-cxx"));
 
@@ -6416,6 +7342,46 @@ backends = ["iox2"]
         assert!(
             rust_shell.find(sensor_publish).unwrap() < rust_shell.find(&sensor_record).unwrap()
         );
+    }
+
+    #[test]
+    fn rust_shell_omits_channel_helpers_when_process_has_no_channels() {
+        let ir = contract_from_source(
+            r#"
+[package]
+name = "no_channel_demo"
+rsdl_version = "0.1"
+
+[type.Counter]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["count:Counter"]
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+output = ["count"]
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+        );
+        let bundle = emit_artifacts(&ir).unwrap();
+        let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+        assert!(rust_shell.contains("flowrt::spawn_status_server("));
+        assert!(!rust_shell.contains("fn register_introspection_channel("));
+        assert!(!rust_shell.contains("fn record_introspection_publish_copy"));
+        assert!(!rust_shell.contains("fn record_introspection_publish_frame"));
     }
 
     #[test]
@@ -7759,9 +8725,18 @@ backends = ["iox2"]
             )
         );
         assert!(supervisor.contains("runtime_kind: String"));
+        assert!(supervisor.contains("backend: String"));
         assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
         assert!(supervisor.contains("Command::new(&app_exe)"));
         assert!(supervisor.contains("for graph in &manifest.graphs"));
+        assert!(supervisor.contains("zenoh_launch_env_for_graph(graph)?"));
+        assert!(supervisor.contains("fn should_auto_configure_zenoh()"));
+        assert!(supervisor.contains("fn zenoh_launch_env_for_graph("));
+        assert!(supervisor.contains("TcpListener::bind(\"127.0.0.1:0\")"));
+        assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_MODE\", \"peer\")"));
+        assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_LISTEN\", &env.listen)"));
+        assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_CONNECT\", &env.connect)"));
+        assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_NO_MULTICAST\", \"1\")"));
         assert!(!supervisor.contains(".graphs\n        .first()"));
         assert!(
             supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
@@ -7831,6 +8806,7 @@ backends = ["iox2"]
         let supervisor = artifact_content(&bundle, "rust/src/supervisor.rs");
 
         assert!(supervisor.contains("runtime_kind: String"));
+        assert!(supervisor.contains("backend: String"));
         assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
         assert!(supervisor.contains("const CPP_APP_STEM: &str = \"robot_demo_cpp_app\";"));
         assert!(supervisor.contains("fn app_executable_for_runtime("));

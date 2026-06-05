@@ -9,6 +9,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  FLOWRT_DEPS_PREFIX: ${{ github.workspace }}/.flowrt-deps/prefix
+  CMAKE_PREFIX_PATH: ${{ github.workspace }}/.flowrt-deps/prefix
+  LD_LIBRARY_PATH: ${{ github.workspace }}/.flowrt-deps/prefix/lib
 
 jobs:
   ci:
@@ -62,6 +65,32 @@ jobs:
           ninja --version
           g++ --version
 
+      - name: 安装 zenoh C++ backend 依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo install cbindgen --locked
+          mkdir -p .flowrt-deps/src "$FLOWRT_DEPS_PREFIX"
+
+          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-c.git .flowrt-deps/src/zenoh-c
+          cmake -S .flowrt-deps/src/zenoh-c -B .flowrt-deps/build/zenoh-c -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
+            -DBUILD_SHARED_LIBS=ON
+          cmake --build .flowrt-deps/build/zenoh-c --target install
+
+          git clone --branch 1.9.0 --depth 1 https://github.com/eclipse-zenoh/zenoh-cpp.git .flowrt-deps/src/zenoh-cpp
+          cmake -S .flowrt-deps/src/zenoh-cpp -B .flowrt-deps/build/zenoh-cpp -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$FLOWRT_DEPS_PREFIX" \
+            -DCMAKE_PREFIX_PATH="$FLOWRT_DEPS_PREFIX" \
+            -DZENOHCXX_ZENOHC=ON \
+            -DZENOHCXX_ZENOHPICO=OFF \
+            -DZENOHCXX_ENABLE_TESTS=OFF \
+            -DZENOHCXX_ENABLE_EXAMPLES=OFF
+          cmake --build .flowrt-deps/build/zenoh-cpp --target install
+
       - name: Rust 格式检查
         run: cargo fmt --check
 
@@ -79,6 +108,12 @@ jobs:
 
       - name: C++ runtime 测试
         run: ctest --test-dir build/cpp --output-on-failure
+
+      - name: C++ runtime zenoh 测试
+        run: |
+          cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
+          cmake --build build/cpp-zenoh
+          ctest --test-dir build/cpp-zenoh --output-on-failure
 
       - name: FlowRT demo smoke
         run: |
@@ -99,6 +134,8 @@ jobs:
           FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
             cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
           test -s /tmp/flowrt-variable-iox2-saw-packet
+          cargo run -p flowrt-cli -- build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+          FLOWRT_TICK_SLEEP_MS=5 cargo run -p flowrt-cli -- launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
       - name: 构建 release 版 flowrt
         run: cargo build --release -p flowrt-cli

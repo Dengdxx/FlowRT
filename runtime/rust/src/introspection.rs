@@ -28,6 +28,15 @@ pub enum IntrospectionRequest {
     Status,
     /// 返回指定 channel 的 latest raw ABI snapshot。
     ChannelSnapshot { channel: String },
+    /// 返回当前进程内可观察的参数列表。
+    ParamList,
+    /// 返回指定参数的当前值与 pending 值。
+    ParamGet { name: String },
+    /// 设置指定参数的 pending 值，由 generated shell 在 tick 边界应用。
+    ParamSet {
+        name: String,
+        value: serde_json::Value,
+    },
 }
 
 /// runtime introspection 响应。
@@ -41,6 +50,14 @@ pub enum IntrospectionResponse {
     ChannelSnapshot {
         handshake: IntrospectionHandshake,
         channel: IntrospectionChannelSnapshot,
+    },
+    ParamList {
+        handshake: IntrospectionHandshake,
+        params: Vec<IntrospectionParamStatus>,
+    },
+    ParamValue {
+        handshake: IntrospectionHandshake,
+        param: IntrospectionParamStatus,
     },
     Error {
         handshake: IntrospectionHandshake,
@@ -84,12 +101,50 @@ pub struct IntrospectionChannelSnapshot {
     pub published_at_ms: Option<u64>,
 }
 
+/// generated shell 注册到 runtime 控制面的参数 schema。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionParamSchema {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub update: String,
+    pub current: serde_json::Value,
+    pub min: Option<serde_json::Value>,
+    pub max: Option<serde_json::Value>,
+    pub choices: Vec<serde_json::Value>,
+}
+
+/// runtime 参数状态快照。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionParamStatus {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub update: String,
+    pub current: serde_json::Value,
+    pub pending: Option<serde_json::Value>,
+    pub min: Option<serde_json::Value>,
+    pub max: Option<serde_json::Value>,
+    pub choices: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone)]
 struct ChannelState {
     message_type: String,
     published_count: u64,
     payload: Option<Vec<u8>>,
     published_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ParamState {
+    ty: String,
+    update: String,
+    current: serde_json::Value,
+    pending: Option<serde_json::Value>,
+    min: Option<serde_json::Value>,
+    max: Option<serde_json::Value>,
+    choices: Vec<serde_json::Value>,
 }
 
 /// runtime shell 可共享更新的 introspection live 状态。
@@ -102,6 +157,7 @@ pub struct IntrospectionState {
 struct IntrospectionStateInner {
     tick_count: u64,
     channels: BTreeMap<String, ChannelState>,
+    params: BTreeMap<String, ParamState>,
 }
 
 impl IntrospectionState {
@@ -123,6 +179,26 @@ impl IntrospectionState {
             payload: None,
             published_at_ms: None,
         });
+    }
+
+    /// 注册一个 runtime 参数，使 CLI 能查询并提交 pending 更新。
+    pub fn register_param(&self, schema: IntrospectionParamSchema) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        inner
+            .params
+            .entry(schema.name)
+            .or_insert_with(|| ParamState {
+                ty: schema.ty,
+                update: schema.update,
+                current: schema.current,
+                pending: None,
+                min: schema.min,
+                max: schema.max,
+                choices: schema.choices,
+            });
     }
 
     /// 增加 scheduler tick 计数。
@@ -206,6 +282,88 @@ impl IntrospectionState {
                 payload: channel.payload.clone(),
                 published_at_ms: channel.published_at_ms,
             })
+    }
+
+    /// 返回参数状态列表。
+    pub fn params(&self) -> Vec<IntrospectionParamStatus> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        inner
+            .params
+            .iter()
+            .map(|(name, param)| param_status(name, param))
+            .collect()
+    }
+
+    /// 返回单个参数状态。
+    pub fn param(&self, name: &str) -> Option<IntrospectionParamStatus> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        inner
+            .params
+            .get(name)
+            .map(|param| param_status(name, param))
+    }
+
+    /// 设置参数 pending 值。
+    pub fn set_param_pending(
+        &self,
+        name: &str,
+        value: serde_json::Value,
+    ) -> std::result::Result<IntrospectionParamStatus, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        let Some(param) = inner.params.get_mut(name) else {
+            return Err(format!("unknown FlowRT parameter `{name}`"));
+        };
+        if param.update != "on_tick" {
+            return Err(format!("FlowRT parameter `{name}` is startup-only"));
+        }
+        validate_param_json_value(name, param, &value)?;
+        param.pending = Some(value);
+        Ok(param_status(name, param))
+    }
+
+    /// 读取并清空参数 pending 值，供 generated shell 在 tick 边界应用。
+    pub fn take_pending_param(&self, name: &str) -> Option<serde_json::Value> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        inner
+            .params
+            .get_mut(name)
+            .and_then(|param| param.pending.take())
+    }
+
+    /// 查询参数 pending 值，主要用于测试和 generated shell 快速检查。
+    pub fn pending_param(&self, name: &str) -> Option<serde_json::Value> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        inner
+            .params
+            .get(name)
+            .and_then(|param| param.pending.clone())
+    }
+
+    /// 记录参数已经由 generated shell 应用为当前值。
+    pub fn record_param_applied(&self, name: &str, value: serde_json::Value) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("introspection state mutex poisoned");
+        if let Some(param) = inner.params.get_mut(name) {
+            param.current = value;
+            param.pending = None;
+        }
     }
 }
 
@@ -363,6 +521,34 @@ pub fn request_channel_snapshot(
     )
 }
 
+/// 向 introspection socket 请求参数列表。
+pub fn request_param_list(path: &Path) -> std::io::Result<IntrospectionResponse> {
+    request(path, &IntrospectionRequest::ParamList)
+}
+
+/// 向 introspection socket 请求单个参数状态。
+pub fn request_param_get(
+    path: &Path,
+    name: impl Into<String>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(path, &IntrospectionRequest::ParamGet { name: name.into() })
+}
+
+/// 向 introspection socket 写入参数 pending 值。
+pub fn request_param_set(
+    path: &Path,
+    name: impl Into<String>,
+    value: serde_json::Value,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::ParamSet {
+            name: name.into(),
+            value,
+        },
+    )
+}
+
 fn request(path: &Path, request: &IntrospectionRequest) -> std::io::Result<IntrospectionResponse> {
     let mut stream = UnixStream::connect(path)?;
     let request = serde_json::to_string(request).map_err(std::io::Error::other)?;
@@ -424,8 +610,137 @@ fn handle_connection(
             )?;
             writer.write_all(b"\n")?;
         }
+        IntrospectionRequest::ParamList => {
+            let response = IntrospectionResponse::ParamList {
+                handshake: handshake.clone(),
+                params: state.params(),
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::ParamGet { name } => {
+            let Some(param) = state.param(&name) else {
+                let response = IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message: format!("unknown FlowRT parameter `{name}`"),
+                };
+                let mut writer = stream;
+                writer.write_all(
+                    serde_json::to_string(&response)
+                        .map_err(std::io::Error::other)?
+                        .as_bytes(),
+                )?;
+                writer.write_all(b"\n")?;
+                return Ok(());
+            };
+            let response = IntrospectionResponse::ParamValue {
+                handshake: handshake.clone(),
+                param,
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::ParamSet { name, value } => {
+            let response = match state.set_param_pending(&name, value) {
+                Ok(param) => IntrospectionResponse::ParamValue {
+                    handshake: handshake.clone(),
+                    param,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
     }
     Ok(())
+}
+
+fn param_status(name: &str, param: &ParamState) -> IntrospectionParamStatus {
+    IntrospectionParamStatus {
+        name: name.to_string(),
+        ty: param.ty.clone(),
+        update: param.update.clone(),
+        current: param.current.clone(),
+        pending: param.pending.clone(),
+        min: param.min.clone(),
+        max: param.max.clone(),
+        choices: param.choices.clone(),
+    }
+}
+
+fn validate_param_json_value(
+    name: &str,
+    param: &ParamState,
+    value: &serde_json::Value,
+) -> std::result::Result<(), String> {
+    if !json_value_matches_param_type(&param.ty, value) {
+        return Err(format!(
+            "FlowRT parameter `{name}` expects `{}` value",
+            param.ty
+        ));
+    }
+    if let Some(min) = &param.min
+        && compare_json_values(value, min).is_some_and(|ordering| ordering.is_lt())
+    {
+        return Err(format!("FlowRT parameter `{name}` is below minimum"));
+    }
+    if let Some(max) = &param.max
+        && compare_json_values(value, max).is_some_and(|ordering| ordering.is_gt())
+    {
+        return Err(format!("FlowRT parameter `{name}` is above maximum"));
+    }
+    if !param.choices.is_empty() && !param.choices.iter().any(|choice| choice == value) {
+        return Err(format!(
+            "FlowRT parameter `{name}` is not in declared enum choices"
+        ));
+    }
+    Ok(())
+}
+
+fn json_value_matches_param_type(ty: &str, value: &serde_json::Value) -> bool {
+    match ty {
+        "bool" => value.is_boolean(),
+        "string" => value.is_string(),
+        "f32" | "f64" => value.is_number(),
+        "u8" | "u16" | "u32" | "u64" => value.as_u64().is_some(),
+        "i8" | "i16" | "i32" | "i64" => value.as_i64().is_some(),
+        "array" => value.is_array(),
+        "table" => value.is_object(),
+        _ => false,
+    }
+}
+
+fn compare_json_values(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => {
+            left.as_f64()?.partial_cmp(&right.as_f64()?)
+        }
+        (serde_json::Value::String(left), serde_json::Value::String(right)) => {
+            Some(left.cmp(right))
+        }
+        _ => None,
+    }
 }
 
 fn bytes_of<T: Copy>(value: &T) -> Vec<u8> {
@@ -548,6 +863,101 @@ mod tests {
             panic!("missing channel request returned wrong response")
         };
         assert_eq!(message, "unknown FlowRT channel");
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn status_server_handles_runtime_parameter_requests() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-params-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.register_param(IntrospectionParamSchema {
+            name: "controller.kp".to_string(),
+            ty: "f32".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(1.0),
+            min: Some(serde_json::json!(0.0)),
+            max: Some(serde_json::json!(10.0)),
+            choices: Vec::new(),
+        });
+        state.register_param(IntrospectionParamSchema {
+            name: "controller.mode".to_string(),
+            ty: "string".to_string(),
+            update: "startup".to_string(),
+            current: serde_json::json!("normal"),
+            min: None,
+            max: None,
+            choices: vec![serde_json::json!("normal"), serde_json::json!("safe")],
+        });
+
+        let server = spawn_status_server_at(socket.clone(), handshake.clone(), state.clone())
+            .expect("server should start");
+
+        let IntrospectionResponse::ParamList { params, .. } =
+            request_param_list(server.path()).expect("param list request should succeed")
+        else {
+            panic!("param list returned wrong response")
+        };
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "controller.kp");
+        assert_eq!(params[0].current, serde_json::json!(1.0));
+        assert!(params[0].pending.is_none());
+
+        let IntrospectionResponse::ParamValue { param, .. } =
+            request_param_get(server.path(), "controller.kp")
+                .expect("param get request should succeed")
+        else {
+            panic!("param get returned wrong response")
+        };
+        assert_eq!(param.current, serde_json::json!(1.0));
+
+        let IntrospectionResponse::ParamValue { param, .. } =
+            request_param_set(server.path(), "controller.kp", serde_json::json!(2.5))
+                .expect("param set request should succeed")
+        else {
+            panic!("param set returned wrong response")
+        };
+        assert_eq!(param.current, serde_json::json!(1.0));
+        assert_eq!(param.pending, Some(serde_json::json!(2.5)));
+        assert_eq!(
+            state.pending_param("controller.kp"),
+            Some(serde_json::json!(2.5))
+        );
+        state.record_param_applied("controller.kp", serde_json::json!(2.5));
+        assert_eq!(state.pending_param("controller.kp"), None);
+
+        let IntrospectionResponse::Error { message, .. } =
+            request_param_set(server.path(), "controller.mode", serde_json::json!("safe"))
+                .expect("startup param set should return structured error")
+        else {
+            panic!("startup param set returned wrong response")
+        };
+        assert_eq!(
+            message,
+            "FlowRT parameter `controller.mode` is startup-only"
+        );
+
+        let IntrospectionResponse::Error { message, .. } =
+            request_param_set(server.path(), "controller.kp", serde_json::json!(12.0))
+                .expect("out-of-range param set should return structured error")
+        else {
+            panic!("out-of-range param set returned wrong response")
+        };
+        assert_eq!(message, "FlowRT parameter `controller.kp` is above maximum");
 
         drop(server);
         let _ = fs::remove_dir_all(root);

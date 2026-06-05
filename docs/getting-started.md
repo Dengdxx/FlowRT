@@ -6,7 +6,7 @@
 
 - Rust toolchain，支持当前 workspace 使用的 Rust 2024 Edition。
 - C++20 编译器、CMake 和 CTest，用于构建 C++ runtime 与 C++ 示例。
-- 可选：`iceoryx2-cxx 0.9.1`。C++ iox2 示例会先查找本机安装；找不到时，CMake 默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1，并调用 Cargo 构建其 Rust FFI 部分。
+- 可选：`iceoryx2-cxx 0.9.1`、基于 `zenoh-c` backend 的 `zenohcxx 1.9.0`。C++ iox2 / zenoh 示例会先查找本机安装；zenoh 找不到本机 `zenohcxx::zenohc` 目标时，CMake 会直接失败，需要先安装 `zenoh-c` / `zenoh-cpp` 1.9.0。
 
 ## 安装 CLI
 
@@ -92,7 +92,19 @@ flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` profile 时，Rust 生成物会启用 runtime crate 的 `iox2` feature；含 C++ iox2 组件时，生成 CMake 会先使用 `CMAKE_PREFIX_PATH` 中的 `iceoryx2-cxx 0.9.1`，找不到再自动拉取并构建。
+`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` 或 `zenoh` profile 时，Rust 生成物会启用 runtime crate 的对应 feature；含 C++ `iox2` 组件时，生成 CMake 会先使用 `CMAKE_PREFIX_PATH` 中的本机依赖，找不到再自动拉取并构建；含 C++ `zenoh` 组件时，必须预先安装并暴露 `zenohcxx::zenohc`。
+
+## 查看运行态参数
+
+含参数的应用运行时会启动 introspection socket。可以在另一个终端用静态 self-description 匹配 live process，并查看或提交参数 pending 更新：
+
+```bash
+flowrt params list examples/imu_demo/flowrt/selfdesc/selfdesc.json
+flowrt params get examples/imu_demo/flowrt/selfdesc/selfdesc.json estimator.gravity
+flowrt params set examples/imu_demo/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7
+```
+
+`params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。
 
 ## 出错时先看什么
 

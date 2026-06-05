@@ -147,8 +147,56 @@ enum Command {
         interval_ms: u64,
     },
 
+    /// 查询或提交 live runtime 参数。
+    Params {
+        #[command(subcommand)]
+        command: ParamsCommand,
+    },
+
     /// 扫描当前用户 runtime socket 并输出 live status。
     Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum ParamsCommand {
+    /// 列出 live runtime 参数。
+    List {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        image: PathBuf,
+
+        /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
+    /// 读取单个 live runtime 参数。
+    Get {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        image: PathBuf,
+
+        /// 参数名，格式为 `<instance>.<param>`。
+        name: String,
+
+        /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
+    /// 设置单个 live runtime 参数 pending 值。
+    Set {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        image: PathBuf,
+
+        /// 参数名，格式为 `<instance>.<param>`。
+        name: String,
+
+        /// JSON 参数值，例如 `2.5`、`true` 或 `"safe"`。
+        value: String,
+
+        /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -244,6 +292,26 @@ fn main() -> Result<()> {
                 println!("{}", echo_channel(&image, &channel, socket.as_deref())?);
             }
         }
+        Command::Params { command } => match command {
+            ParamsCommand::List { image, socket } => {
+                println!("{}", params_list(&image, socket.as_deref())?);
+            }
+            ParamsCommand::Get {
+                image,
+                name,
+                socket,
+            } => {
+                println!("{}", params_get(&image, &name, socket.as_deref())?);
+            }
+            ParamsCommand::Set {
+                image,
+                name,
+                value,
+                socket,
+            } => {
+                println!("{}", params_set(&image, &name, &value, socket.as_deref())?);
+            }
+        },
         Command::Status => {
             println!("{}", live_status_summary()?);
         }
@@ -405,6 +473,16 @@ struct SelfDescriptionInstance {
     component: String,
     process: String,
     runtime: String,
+    #[serde(default)]
+    params: Vec<SelfDescriptionParam>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelfDescriptionParam {
+    name: String,
+    #[serde(rename = "type")]
+    ty: String,
+    update: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -683,6 +761,13 @@ fn request_echo_snapshot(
                 socket.display()
             );
         }
+        flowrt::IntrospectionResponse::ParamList { .. }
+        | flowrt::IntrospectionResponse::ParamValue { .. } => {
+            anyhow::bail!(
+                "runtime socket `{}` returned an unexpected parameter response",
+                socket.display()
+            );
+        }
     };
 
     if handshake.self_description_hash != self_description_hash {
@@ -928,6 +1013,191 @@ fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
     }
 }
 
+fn params_list(image: &Path, socket: Option<&Path>) -> Result<String> {
+    let (_self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let response = flowrt::request_param_list(&socket).with_context(|| {
+        format!(
+            "failed to request parameter list from `{}`",
+            socket.display()
+        )
+    })?;
+    let params = match response {
+        flowrt::IntrospectionResponse::ParamList { handshake, params } => {
+            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            params
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to list FlowRT parameters from `{}`: {message}",
+                socket.display()
+            );
+        }
+        _ => anyhow::bail!(
+            "runtime socket `{}` returned an unexpected introspection response",
+            socket.display()
+        ),
+    };
+    if params.is_empty() {
+        return Ok("no FlowRT parameters".to_string());
+    }
+    Ok(params
+        .iter()
+        .map(format_param_status)
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn params_get(image: &Path, name: &str, socket: Option<&Path>) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    ensure_param_declared(&self_description, name)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let response = flowrt::request_param_get(&socket, name).with_context(|| {
+        format!(
+            "failed to request parameter `{name}` from `{}`",
+            socket.display()
+        )
+    })?;
+    let param = match response {
+        flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
+            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            param
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to get FlowRT parameter `{name}` from `{}`: {message}",
+                socket.display()
+            );
+        }
+        _ => anyhow::bail!(
+            "runtime socket `{}` returned an unexpected introspection response",
+            socket.display()
+        ),
+    };
+    Ok(format_param_status(&param))
+}
+
+fn params_set(image: &Path, name: &str, raw_value: &str, socket: Option<&Path>) -> Result<String> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    ensure_param_declared(&self_description, name)?;
+    let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
+        format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
+    })?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let response = flowrt::request_param_set(&socket, name, value).with_context(|| {
+        format!(
+            "failed to set parameter `{name}` via `{}`",
+            socket.display()
+        )
+    })?;
+    let param = match response {
+        flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
+            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            param
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!(
+                "failed to set FlowRT parameter `{name}` via `{}`: {message}",
+                socket.display()
+            );
+        }
+        _ => anyhow::bail!(
+            "runtime socket `{}` returned an unexpected introspection response",
+            socket.display()
+        ),
+    };
+    Ok(format_param_status(&param))
+}
+
+fn declared_param<'a>(
+    self_description: &'a SelfDescription,
+    name: &str,
+) -> Option<(&'a SelfDescriptionInstance, &'a SelfDescriptionParam)> {
+    for graph in &self_description.graphs {
+        for instance in &graph.instances {
+            for param in &instance.params {
+                if format!("{}.{}", instance.name, param.name) == name {
+                    return Some((instance, param));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn ensure_param_declared(self_description: &SelfDescription, name: &str) -> Result<()> {
+    let Some((_instance, param)) = declared_param(self_description, name) else {
+        anyhow::bail!("FlowRT self-description does not contain parameter `{name}`")
+    };
+    if param.ty.is_empty() || param.update.is_empty() {
+        anyhow::bail!("FlowRT self-description parameter `{name}` has an incomplete schema")
+    }
+    Ok(())
+}
+
+fn ensure_handshake_hash(
+    handshake: &flowrt::IntrospectionHandshake,
+    self_description_hash: &str,
+    socket: &Path,
+) -> Result<()> {
+    if handshake.self_description_hash == self_description_hash {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "runtime socket `{}` self-description hash `{}` does not match static self-description `{}`",
+            socket.display(),
+            handshake.self_description_hash,
+            self_description_hash
+        )
+    }
+}
+
+fn format_param_status(param: &flowrt::IntrospectionParamStatus) -> String {
+    let pending = param
+        .pending
+        .as_ref()
+        .map(json_inline)
+        .unwrap_or_else(|| "none".to_string());
+    let min = param
+        .min
+        .as_ref()
+        .map(json_inline)
+        .unwrap_or_else(|| "none".to_string());
+    let max = param
+        .max
+        .as_ref()
+        .map(json_inline)
+        .unwrap_or_else(|| "none".to_string());
+    let choices = if param.choices.is_empty() {
+        "[]".to_string()
+    } else {
+        format!(
+            "[{}]",
+            param
+                .choices
+                .iter()
+                .map(json_inline)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    format!(
+        "{} type={} update={} current={} pending={} min={} max={} choices={}",
+        param.name,
+        param.ty,
+        param.update,
+        json_inline(&param.current),
+        pending,
+        min,
+        max,
+        choices
+    )
+}
+
+fn json_inline(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
 fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -964,6 +1234,13 @@ fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
                 lines.push(format!(
                     "stale socket={} error=unexpected channel snapshot response",
+                    socket.display()
+                ));
+            }
+            Ok(flowrt::IntrospectionResponse::ParamList { .. })
+            | Ok(flowrt::IntrospectionResponse::ParamValue { .. }) => {
+                lines.push(format!(
+                    "stale socket={} error=unexpected parameter response",
                     socket.display()
                 ));
             }
@@ -2474,6 +2751,39 @@ fn main() {}
     }
 
     #[test]
+    fn cli_parses_params_set_command() {
+        let cli = Cli::try_parse_from([
+            "flowrt",
+            "params",
+            "set",
+            "flowrt/selfdesc/selfdesc.json",
+            "controller.kp",
+            "2.5",
+            "--socket",
+            "/tmp/flowrt-main.sock",
+        ])
+        .unwrap();
+
+        let Command::Params {
+            command:
+                ParamsCommand::Set {
+                    image,
+                    name,
+                    value,
+                    socket,
+                },
+        } = cli.command
+        else {
+            panic!("params set command should parse into Command::Params")
+        };
+
+        assert_eq!(image, PathBuf::from("flowrt/selfdesc/selfdesc.json"));
+        assert_eq!(name, "controller.kp");
+        assert_eq!(value, "2.5");
+        assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    }
+
+    #[test]
     fn cli_rejects_zero_echo_follow_interval() {
         let error = Cli::try_parse_from([
             "flowrt",
@@ -2843,6 +3153,79 @@ language = "rust"
 
         drop(first);
         drop(second);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn params_commands_use_selfdesc_matched_runtime_socket() {
+        let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "param_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "controller",
+      "component": "controller",
+      "process": "main",
+      "runtime": "rust",
+      "params": [{
+        "name": "kp",
+        "type": "f32",
+        "update": "on_tick"
+      }]
+    }],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+        let root = temp_test_dir("params-cli");
+        let selfdesc = root.join("selfdesc.json");
+        let socket = root.join("main.sock");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&selfdesc, source).unwrap();
+
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 87,
+            started_at_unix_ms: 1234,
+            self_description_hash: self_description_hash(source.as_bytes()),
+            package: "param_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = flowrt::IntrospectionState::new();
+        state.register_param(flowrt::IntrospectionParamSchema {
+            name: "controller.kp".to_string(),
+            ty: "f32".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(1.0),
+            min: Some(serde_json::json!(0.0)),
+            max: Some(serde_json::json!(10.0)),
+            choices: Vec::new(),
+        });
+        let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+            .expect("status server should start");
+
+        let list = params_list(&selfdesc, Some(&socket)).unwrap();
+        assert!(list.contains("controller.kp type=f32 update=on_tick current=1.0"));
+
+        let get = params_get(&selfdesc, "controller.kp", Some(&socket)).unwrap();
+        assert!(get.contains("pending=none"));
+
+        let set = params_set(&selfdesc, "controller.kp", "2.5", Some(&socket)).unwrap();
+        assert!(set.contains("current=1.0"));
+        assert!(set.contains("pending=2.5"));
+
+        drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }
 

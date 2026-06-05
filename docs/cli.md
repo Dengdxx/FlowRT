@@ -14,6 +14,9 @@ flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
 flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>] [--follow] [--interval-ms <ms>]
+flowrt params list <path/to/generated-app-or-selfdesc.json> [--socket <path>]
+flowrt params get <path/to/generated-app-or-selfdesc.json> <instance.param> [--socket <path>]
+flowrt params set <path/to/generated-app-or-selfdesc.json> <instance.param> <json-value> [--socket <path>]
 flowrt status
 ```
 
@@ -61,7 +64,9 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会先查找 `iceoryx2-cxx 0.9.1`；找不到时默认通过 `FetchContent` 拉取 `iceoryx2` v0.9.1，并调用 Cargo 构建其 Rust FFI 部分。
-- 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会要求 `zenohc 1.9.0` 与 `zenohcxx 1.9.0`；需要通过 `CMAKE_PREFIX_PATH` 指向对应安装前缀。
+- 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标；找不到时 configure 直接失败，需要预先安装 `zenoh-c` / `zenoh-cpp` 1.9.0 并链接 `zenohcxx::zenohc`。
+
+如果构建环境禁止联网，可以预先安装 C++ backend 依赖并通过 `CMAKE_PREFIX_PATH` 暴露安装前缀。`iox2` 的生成 CMake 还可以把 `FLOWRT_FETCH_IOX2` 设为 `OFF`，让缺失依赖在 configure 阶段明确失败；`zenoh` 当前始终要求预装 `zenohcxx::zenohc`。
 
 ## `run`
 
@@ -156,6 +161,25 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 
 生成的 Rust/C++ runtime shell 会为当前 process 的 active channel 预注册 live 摘要，并在成功发布输出后记录 raw ABI payload 和 `published_at_ms`。因此 Rust 与 C++ 示例都可以通过 `flowrt status` 查看 live channel 摘要，并通过 `flowrt echo` / `flowrt echo --follow` 读取 live snapshot。
 
+## `params`
+
+```bash
+flowrt params list path/to/generated-app
+flowrt params get path/to/generated-app controller.kp
+flowrt params set path/to/generated-app controller.kp 2.5
+flowrt params set path/to/generated-app controller.mode '"safe"'
+```
+
+`params` 操作运行态参数控制面。静态 self-description 用于确认参数属于该应用，并通过 `self_description_hash` 选择匹配的 live runtime socket；实际值来自 runtime socket。省略 `--socket` 时使用与 `echo` 相同的自动发现规则，多个同 hash 进程同时存在时需要显式传入 `--socket <path>`。
+
+参数不是 dataflow channel。RSDL/Contract IR 声明参数 schema，生成 shell 持有 typed params 快照，并在 scheduler tick 边界把 `on_tick` 参数的 pending 值应用到用户组件。用户组件可以实现默认提供的 `on_params_update(old, new, context)` 钩子；该钩子返回 `Ok` 后，新参数才会提交并反映到后续 `on_tick`。
+
+`set` 的值必须是合法 JSON：数字写 `2.5`，布尔写 `true`，字符串需要带 JSON 引号，例如 shell 中常写成 `'"safe"'`。`startup` 参数运行时不可修改；`on_tick` 参数可以提交 pending 值，由生成 shell 在下一个 tick 边界应用。输出格式是行式摘要：
+
+```text
+controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 choices=[]
+```
+
 `zenoh` 示例在跨机时通常需要为两个进程分别注入连接信息。常用环境变量是：
 
 - `FLOWRT_ZENOH_CONNECT`
@@ -164,7 +188,7 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 - `FLOWRT_ZENOH_NO_MULTICAST`
 - `FLOWRT_TICK_SLEEP_MS`
 
-前四个用于给 runtime session 注入 zenoh 网络配置，`FLOWRT_TICK_SLEEP_MS` 用于把 demo 的同步 tick 间隔拉长到可观察窗口。tick 数上限由 `flowrt run --run-ticks <N>` 或 `flowrt launch --run-ticks <N>` 显式传入，不进入核心 runtime scheduler。
+前四个用于给 runtime session 注入 zenoh 网络配置。`flowrt launch` 在这些变量都未显式设置时，会为同一个 supervisor 本机启动的 zenoh process 自动分配 `127.0.0.1` TCP mesh；只要设置了任一 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT`，就视为用户接管 session 配置。`FLOWRT_TICK_SLEEP_MS` 用于把 demo 的同步 tick 间隔拉长到可观察窗口。tick 数上限由 `flowrt run --run-ticks <N>` 或 `flowrt launch --run-ticks <N>` 显式传入，不进入核心 runtime scheduler。
 
 ## `status`
 

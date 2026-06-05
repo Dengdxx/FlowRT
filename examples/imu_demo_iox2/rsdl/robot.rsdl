@@ -34,7 +34,7 @@ input = ["imu:Imu"]
 output = ["odom:Odom"]
 
 [component.estimator.params]
-gravity = 9.81
+gravity = { type = "f32", default = 9.81, min = 0.0, max = 20.0, update = "on_tick" }
 
 [component.controller]
 language = "cpp"
@@ -42,8 +42,8 @@ input = ["odom:Odom"]
 output = ["cmd:MotorCmd"]
 
 [component.controller.params]
-kp = 1.2
-kd = 0.08
+kp = { type = "f32", default = 1.2, min = 0.0, max = 5.0, update = "on_tick" }
+kd = { type = "f32", default = 0.08, min = 0.0, max = 1.0, update = "on_tick" }
 
 [component.monitor]
 language = "rust"

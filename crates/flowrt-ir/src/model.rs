@@ -102,7 +102,12 @@ pub struct PortIr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParamIr {
     pub name: String,
+    pub ty: ParamType,
     pub default: ParamValue,
+    pub update: ParamUpdatePolicy,
+    pub min: Option<ParamValue>,
+    pub max: Option<ParamValue>,
+    pub choices: Vec<ParamValue>,
 }
 
 /// graph 中的组件实例。
@@ -121,6 +126,34 @@ pub struct InstanceIr {
 pub struct ParamValueIr {
     pub name: String,
     pub value: ParamValue,
+}
+
+/// 参数 schema 支持的标量类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamType {
+    Bool,
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    String,
+    Array,
+    Table,
+}
+
+/// 参数运行时更新策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamUpdatePolicy {
+    Startup,
+    OnTick,
 }
 
 /// 归一化后的 dataflow graph。

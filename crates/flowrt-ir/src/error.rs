@@ -43,6 +43,13 @@ pub enum IrError {
         actual: &'static str,
     },
 
+    #[error("invalid parameter `{param}` schema on component `{component}`: {message}")]
+    InvalidParamSchema {
+        component: String,
+        param: String,
+        message: String,
+    },
+
     #[error("invalid port endpoint `{endpoint}`; expected `<instance>.<port>`")]
     InvalidPortEndpoint { endpoint: String },
 

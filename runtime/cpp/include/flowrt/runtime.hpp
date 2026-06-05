@@ -1776,8 +1776,8 @@ class ZenohPubSub {
         return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" || flag == "on";
     }
 
-    static std::string endpoint_list_json(std::string_view raw) {
-        std::vector<std::string_view> endpoints;
+    static std::vector<std::string> endpoint_list_items(std::string_view raw) {
+        std::vector<std::string> endpoints;
         std::size_t start = 0;
         while (start <= raw.size()) {
             const auto comma = raw.find(',', start);
@@ -1790,14 +1790,18 @@ class ZenohPubSub {
                 item.remove_suffix(1);
             }
             if (!item.empty()) {
-                endpoints.push_back(item);
+                endpoints.emplace_back(item);
             }
             if (comma == std::string_view::npos) {
                 break;
             }
             start = comma + 1;
         }
+        return endpoints;
+    }
 
+    static std::string endpoint_list_json(std::string_view raw) {
+        const auto endpoints = endpoint_list_items(raw);
         if (endpoints.empty()) {
             return {};
         }
@@ -1898,6 +1902,35 @@ struct IntrospectionStatus {
     std::vector<IntrospectionChannelStatus> channels;
 };
 
+/**
+ * @brief generated shell 注册到 runtime 控制面的参数 schema。
+ *
+ * `current`、`min`、`max` 和 `choices` 使用合法 JSON 片段，避免 C++ runtime 依赖完整 JSON 库。
+ */
+struct IntrospectionParamSchema {
+    std::string name;
+    std::string ty;
+    std::string update;
+    std::string current;
+    std::optional<std::string> min;
+    std::optional<std::string> max;
+    std::vector<std::string> choices;
+};
+
+/**
+ * @brief runtime 参数状态快照。
+ */
+struct IntrospectionParamStatus {
+    std::string name;
+    std::string ty;
+    std::string update;
+    std::string current;
+    std::optional<std::string> pending;
+    std::optional<std::string> min;
+    std::optional<std::string> max;
+    std::vector<std::string> choices;
+};
+
 namespace detail {
 
 inline std::uint64_t unix_time_ms() {
@@ -1995,6 +2028,72 @@ inline std::string status_json(const IntrospectionStatus &status) {
         output.append(channel_status_json(status.channels[index]));
     }
     output.append("]}");
+    return output;
+}
+
+inline std::string optional_json_fragment(const std::optional<std::string> &value) {
+    return value ? *value : "null";
+}
+
+inline std::string json_fragment_array(const std::vector<std::string> &values) {
+    std::string output;
+    output.push_back('[');
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(values[index]);
+    }
+    output.push_back(']');
+    return output;
+}
+
+inline std::string param_status_json(const IntrospectionParamStatus &param) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(param.name));
+    output.append(",\"type\":");
+    output.append(json_string(param.ty));
+    output.append(",\"update\":");
+    output.append(json_string(param.update));
+    output.append(",\"current\":");
+    output.append(param.current);
+    output.append(",\"pending\":");
+    output.append(optional_json_fragment(param.pending));
+    output.append(",\"min\":");
+    output.append(optional_json_fragment(param.min));
+    output.append(",\"max\":");
+    output.append(optional_json_fragment(param.max));
+    output.append(",\"choices\":");
+    output.append(json_fragment_array(param.choices));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string param_list_response_json(const IntrospectionHandshake &handshake,
+                                            const std::vector<IntrospectionParamStatus> &params) {
+    std::string output;
+    output.append("{\"response\":\"param_list\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"params\":[");
+    for (std::size_t index = 0; index < params.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(param_status_json(params[index]));
+    }
+    output.append("]}");
+    return output;
+}
+
+inline std::string param_value_response_json(const IntrospectionHandshake &handshake,
+                                             const IntrospectionParamStatus &param) {
+    std::string output;
+    output.append("{\"response\":\"param_value\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"param\":");
+    output.append(param_status_json(param));
+    output.push_back('}');
     return output;
 }
 
@@ -2131,12 +2230,85 @@ inline std::optional<std::size_t> find_json_string_value(std::string_view input,
 enum class IntrospectionRequestKind : std::uint8_t {
     Status = 0,
     ChannelSnapshot = 1,
+    ParamList = 2,
+    ParamGet = 3,
+    ParamSet = 4,
 };
 
 struct ParsedIntrospectionRequest {
     IntrospectionRequestKind kind = IntrospectionRequestKind::Status;
     std::string channel;
+    std::string param_name;
+    std::string param_value;
 };
+
+inline std::optional<std::size_t> find_json_value_fragment(std::string_view input,
+                                                           std::string_view key,
+                                                           std::string &value) {
+    const std::string needle = "\"" + std::string(key) + "\"";
+    const auto key_pos = input.find(needle);
+    if (key_pos == std::string_view::npos) {
+        return std::nullopt;
+    }
+    std::size_t index = key_pos + needle.size();
+    while (index < input.size() && json_whitespace(input[index])) {
+        ++index;
+    }
+    if (index >= input.size() || input[index] != ':') {
+        return std::nullopt;
+    }
+    ++index;
+    while (index < input.size() && json_whitespace(input[index])) {
+        ++index;
+    }
+    if (index >= input.size()) {
+        return std::nullopt;
+    }
+    const std::size_t start = index;
+    bool in_string = false;
+    bool escaped = false;
+    int object_depth = 0;
+    int array_depth = 0;
+    while (index < input.size()) {
+        const char byte = input[index];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_string = false;
+            }
+            ++index;
+            continue;
+        }
+        if (byte == '"') {
+            in_string = true;
+            ++index;
+            continue;
+        }
+        if (byte == '{') {
+            ++object_depth;
+        } else if (byte == '}') {
+            if (object_depth == 0 && array_depth == 0) {
+                break;
+            }
+            --object_depth;
+        } else if (byte == '[') {
+            ++array_depth;
+        } else if (byte == ']') {
+            --array_depth;
+        } else if (byte == ',' && object_depth == 0 && array_depth == 0) {
+            break;
+        }
+        ++index;
+    }
+    value = std::string{input.substr(start, index - start)};
+    while (!value.empty() && json_whitespace(value.back())) {
+        value.pop_back();
+    }
+    return index;
+}
 
 inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
     std::string_view line) {
@@ -2153,7 +2325,28 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
             return std::nullopt;
         }
         return ParsedIntrospectionRequest{IntrospectionRequestKind::ChannelSnapshot,
-                                          std::move(channel)};
+                                          std::move(channel), {}, {}};
+    }
+    if (command == "param_list") {
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::ParamList, {}, {}, {}};
+    }
+    if (command == "param_get") {
+        std::string name;
+        if (!find_json_string_value(line, "name", name)) {
+            return std::nullopt;
+        }
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::ParamGet, {}, std::move(name),
+                                          {}};
+    }
+    if (command == "param_set") {
+        std::string name;
+        std::string value;
+        if (!find_json_string_value(line, "name", name) ||
+            !find_json_value_fragment(line, "value", value)) {
+            return std::nullopt;
+        }
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::ParamSet, {}, std::move(name),
+                                          std::move(value)};
     }
     return std::nullopt;
 }
@@ -2262,6 +2455,24 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 注册一个 runtime 参数，使 CLI 能查询并提交 pending 更新。
+     */
+    void register_param(IntrospectionParamSchema schema) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->params.try_emplace(
+            std::move(schema.name),
+            ParamState{
+                .type = std::move(schema.ty),
+                .update = std::move(schema.update),
+                .current = std::move(schema.current),
+                .pending = std::nullopt,
+                .min = std::move(schema.min),
+                .max = std::move(schema.max),
+                .choices = std::move(schema.choices),
+            });
+    }
+
+    /**
      * @brief 增加 scheduler tick 计数。
      */
     void record_tick() const {
@@ -2347,6 +2558,89 @@ class IntrospectionState {
         };
     }
 
+    /**
+     * @brief 返回参数状态列表。
+     */
+    std::vector<IntrospectionParamStatus> params() const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        std::vector<IntrospectionParamStatus> snapshot;
+        snapshot.reserve(inner_->params.size());
+        for (const auto &[name, param] : inner_->params) {
+            snapshot.push_back(param_status(name, param));
+        }
+        return snapshot;
+    }
+
+    /**
+     * @brief 返回单个参数状态。
+     */
+    std::optional<IntrospectionParamStatus> param(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto param = inner_->params.find(std::string{name});
+        if (param == inner_->params.end()) {
+            return std::nullopt;
+        }
+        return param_status(param->first, param->second);
+    }
+
+    /**
+     * @brief 设置参数 pending 值。
+     */
+    std::variant<IntrospectionParamStatus, std::string> set_param_pending(std::string_view name,
+                                                                          std::string value) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto param = inner_->params.find(std::string{name});
+        if (param == inner_->params.end()) {
+            return "unknown FlowRT parameter `" + std::string{name} + "`";
+        }
+        if (param->second.update != "on_tick") {
+            return "FlowRT parameter `" + std::string{name} + "` is startup-only";
+        }
+        if (const auto error = validate_param_json_value(param->first, param->second, value)) {
+            return *error;
+        }
+        param->second.pending = std::move(value);
+        return param_status(param->first, param->second);
+    }
+
+    /**
+     * @brief 读取参数 pending 值，主要用于测试和 generated shell 快速检查。
+     */
+    std::optional<std::string> pending_param(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto param = inner_->params.find(std::string{name});
+        if (param == inner_->params.end()) {
+            return std::nullopt;
+        }
+        return param->second.pending;
+    }
+
+    /**
+     * @brief 取出并清空参数 pending 值。
+     */
+    std::optional<std::string> take_pending_param(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto param = inner_->params.find(std::string{name});
+        if (param == inner_->params.end()) {
+            return std::nullopt;
+        }
+        auto value = std::move(param->second.pending);
+        param->second.pending = std::nullopt;
+        return value;
+    }
+
+    /**
+     * @brief 记录参数已经由 generated shell 应用为当前值。
+     */
+    void record_param_applied(std::string_view name, std::string value) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto param = inner_->params.find(std::string{name});
+        if (param != inner_->params.end()) {
+            param->second.current = std::move(value);
+            param->second.pending = std::nullopt;
+        }
+    }
+
    private:
     struct ChannelState {
         std::string message_type;
@@ -2355,11 +2649,100 @@ class IntrospectionState {
         std::optional<std::uint64_t> published_at_ms;
     };
 
+    struct ParamState {
+        std::string type;
+        std::string update;
+        std::string current;
+        std::optional<std::string> pending;
+        std::optional<std::string> min;
+        std::optional<std::string> max;
+        std::vector<std::string> choices;
+    };
+
     struct Inner {
         std::mutex mutex;
         std::uint64_t tick_count = 0;
         std::map<std::string, ChannelState> channels;
+        std::map<std::string, ParamState> params;
     };
+
+    static IntrospectionParamStatus param_status(const std::string &name, const ParamState &param) {
+        return IntrospectionParamStatus{
+            .name = name,
+            .ty = param.type,
+            .update = param.update,
+            .current = param.current,
+            .pending = param.pending,
+            .min = param.min,
+            .max = param.max,
+            .choices = param.choices,
+        };
+    }
+
+    static std::optional<std::string> validate_param_json_value(const std::string &name,
+                                                                const ParamState &param,
+                                                                std::string_view value) {
+        if (!json_value_matches_param_type(param.type, value)) {
+            return "FlowRT parameter `" + name + "` expects `" + param.type + "` value";
+        }
+        if (param.min && compare_json_number(value, *param.min).value_or(0) < 0) {
+            return "FlowRT parameter `" + name + "` is below minimum";
+        }
+        if (param.max && compare_json_number(value, *param.max).value_or(0) > 0) {
+            return "FlowRT parameter `" + name + "` is above maximum";
+        }
+        if (!param.choices.empty() &&
+            std::find(param.choices.begin(), param.choices.end(), value) == param.choices.end()) {
+            return "FlowRT parameter `" + name + "` is not in declared enum choices";
+        }
+        return std::nullopt;
+    }
+
+    static bool json_value_matches_param_type(std::string_view type, std::string_view value) {
+        if (type == "string") {
+            return value.size() >= 2U && value.front() == '"' && value.back() == '"';
+        }
+        if (type == "bool") {
+            return value == "true" || value == "false";
+        }
+        if (type == "f32" || type == "f64") {
+            return parse_json_number(value).has_value();
+        }
+        if (type == "u8" || type == "u16" || type == "u32" || type == "u64") {
+            const auto number = parse_json_number(value);
+            return number && *number >= 0.0;
+        }
+        if (type == "i8" || type == "i16" || type == "i32" || type == "i64") {
+            return parse_json_number(value).has_value();
+        }
+        return false;
+    }
+
+    static std::optional<double> parse_json_number(std::string_view value) {
+        std::string owned{value};
+        char *end = nullptr;
+        errno = 0;
+        const double parsed = std::strtod(owned.c_str(), &end);
+        if (errno != 0 || end == owned.c_str() || *end != '\0') {
+            return std::nullopt;
+        }
+        return parsed;
+    }
+
+    static std::optional<int> compare_json_number(std::string_view left, std::string_view right) {
+        const auto left_number = parse_json_number(left);
+        const auto right_number = parse_json_number(right);
+        if (!left_number || !right_number) {
+            return std::nullopt;
+        }
+        if (*left_number < *right_number) {
+            return -1;
+        }
+        if (*left_number > *right_number) {
+            return 1;
+        }
+        return 0;
+    }
 
     std::shared_ptr<Inner> inner_;
 };
@@ -2404,6 +2787,28 @@ inline void handle_introspection_connection(int client_fd, const IntrospectionHa
                 const auto channel = state.channel_snapshot(request->channel);
                 response = channel ? channel_snapshot_response_json(handshake, *channel)
                                    : error_response_json(handshake, "unknown FlowRT channel");
+                break;
+            }
+            case IntrospectionRequestKind::ParamList:
+                response = param_list_response_json(handshake, state.params());
+                break;
+            case IntrospectionRequestKind::ParamGet: {
+                const auto param = state.param(request->param_name);
+                response = param ? param_value_response_json(handshake, *param)
+                                 : error_response_json(
+                                       handshake,
+                                       "unknown FlowRT parameter `" + request->param_name + "`");
+                break;
+            }
+            case IntrospectionRequestKind::ParamSet: {
+                const auto result =
+                    state.set_param_pending(request->param_name, request->param_value);
+                if (std::holds_alternative<IntrospectionParamStatus>(result)) {
+                    response = param_value_response_json(
+                        handshake, std::get<IntrospectionParamStatus>(result));
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
                 break;
             }
         }

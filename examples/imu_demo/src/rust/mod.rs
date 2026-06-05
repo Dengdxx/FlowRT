@@ -1,4 +1,4 @@
-use crate::components::{Estimator, ImuSim, Monitor};
+use crate::components::{Estimator, EstimatorParams, ImuSim, Monitor};
 use crate::messages::{Imu, MotorCmd, Odom};
 use flowrt::{Latest, Output, Status};
 
@@ -38,17 +38,23 @@ struct EstimatorNode {
 }
 
 impl Estimator for EstimatorNode {
-    fn on_tick(&mut self, imu: Latest<'_, Imu>, odom: &mut Output<Odom>) -> Status {
+    fn on_tick(
+        &mut self,
+        imu: Latest<'_, Imu>,
+        params: &EstimatorParams,
+        odom: &mut Output<Odom>,
+    ) -> Status {
         let sample = match imu.as_ref() {
             Some(sample) => *sample,
             None => return Status::Retry, // IMU 尚未到达，等待下一个 tick
         };
         // 加速度积分：ax * 0.05s = 本 tick 的位移增量
         self.distance += sample.ax * 0.05;
+        let vertical_accel = sample.az - params.gravity;
         odom.write(Odom {
             timestamp: sample.timestamp,
             x: self.distance,          // 累计前向位移
-            y: 0.0,
+            y: vertical_accel * 0.05,  // 用热更新 gravity 修正垂直加速度偏差
             theta: sample.gz * 0.1,    // 航向角（角速度 × 增益）
             vx: sample.ax,             // 瞬时前向速度
             wz: sample.gz,             // 瞬时偏航角速度

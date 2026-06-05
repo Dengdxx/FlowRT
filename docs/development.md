@@ -52,6 +52,8 @@ rm -f /tmp/flowrt-variable-iox2-saw-packet
 FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
   cargo run -p flowrt-cli -- launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
 test -s /tmp/flowrt-variable-iox2-saw-packet
+cargo run -p flowrt-cli -- build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=5 cargo run -p flowrt-cli -- launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：
@@ -176,3 +178,9 @@ cmake -S runtime/cpp -B build/cpp-iox2 -G Ninja -DFLOWRT_CPP_ENABLE_IOX2_TESTS=O
 cmake --build build/cpp-iox2 --target flowrt_runtime_iox2_smoke
 ctest --test-dir build/cpp-iox2 -R flowrt_runtime_iox2_smoke --output-on-failure
 ```
+
+## 可选 zenoh 依赖
+
+Rust runtime 的 zenoh 支持通过 feature-gated `zenoh = "1.9"` 编译。C++ zenoh binding 只有在定义 `FLOWRT_HAS_ZENOH_CXX` 并链接基于 `zenoh-c` backend 的 `zenohcxx::zenohc` 时使用真实 transport。
+
+没有安装 `zenohcxx` 时，基础 inproc 验证仍应可运行；含 C++ zenoh 组件的生成 CMake 会执行 `find_package(zenohcxx 1.9.0 QUIET)`，并只接受 `zenohcxx::zenohc`。找不到时 configure 直接失败，需要先安装 `zenoh-c` / `zenoh-cpp` 1.9.0 并通过 `CMAKE_PREFIX_PATH` 暴露安装前缀。FlowRT 不在生成 CMake 中源码拉取 zenoh C++ 依赖，避免把上游 C ABI 构建策略和工具链细节变成 FlowRT 语义。

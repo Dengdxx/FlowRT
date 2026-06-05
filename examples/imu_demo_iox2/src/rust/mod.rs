@@ -1,4 +1,4 @@
-use crate::components::{Estimator, ImuSim, Monitor};
+use crate::components::{Estimator, EstimatorParams, ImuSim, Monitor};
 use crate::messages::{Imu, MotorCmd, Odom};
 use flowrt::{Latest, Output, Status};
 
@@ -37,16 +37,22 @@ struct EstimatorNode {
 }
 
 impl Estimator for EstimatorNode {
-    fn on_tick(&mut self, imu: Latest<'_, Imu>, odom: &mut Output<Odom>) -> Status {
+    fn on_tick(
+        &mut self,
+        imu: Latest<'_, Imu>,
+        params: &EstimatorParams,
+        odom: &mut Output<Odom>,
+    ) -> Status {
         let sample = match imu.as_ref() {
             Some(sample) => *sample,
             None => return Status::Retry,
         };
         self.distance += sample.ax * 0.05; // 加速度积分
+        let vertical_accel = sample.az - params.gravity;
         odom.write(Odom {
             timestamp: sample.timestamp,
             x: self.distance,
-            y: 0.0,
+            y: vertical_accel * 0.05,
             theta: sample.gz * 0.1,
             vx: sample.ax,
             wz: sample.gz,

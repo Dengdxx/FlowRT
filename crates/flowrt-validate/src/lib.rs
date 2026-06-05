@@ -11,9 +11,10 @@ use flowrt_conformance::{AbiError, message_abi_expectations};
 use flowrt_ir::{
     CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, CapabilityAtom, ChannelEdgeIr, ChannelKind,
     ComponentIr, ComponentKind, ContractIr, EntityId, EntityRef, GraphIr, InstanceIr, LanguageKind,
-    PolicyValueSource, PortIr, PortRef, RSDL_VERSION, TaskIr, TriggerKind, TypeExpr,
-    channel_capabilities, deployment_capability_decision, graph_required_capabilities,
-    is_known_backend, param_value_compatible, param_value_kind, target_capabilities,
+    ParamType, ParamUpdatePolicy, PolicyValueSource, PortIr, PortRef, RSDL_VERSION, TaskIr,
+    TriggerKind, TypeExpr, channel_capabilities, deployment_capability_decision,
+    graph_required_capabilities, is_known_backend, param_value_compatible, param_value_kind,
+    target_capabilities,
 };
 
 /// validation passes 返回的结果类型。
@@ -1233,7 +1234,156 @@ fn validate_components(
                     component.name, param.name
                 )));
             }
+            validate_param_schema(component, param, errors);
         }
+    }
+}
+
+fn validate_param_schema(
+    component: &ComponentIr,
+    param: &flowrt_ir::ParamIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    if param.update == ParamUpdatePolicy::OnTick && !param_type_is_hot_update_scalar(param.ty) {
+        errors.push(ValidationError::new(format!(
+            "component `{}` param `{}` uses `on_tick` update with non-scalar type `{}`",
+            component.name,
+            param.name,
+            param_type_name(param.ty)
+        )));
+    }
+    validate_param_value_matches_type(component, param, "default", &param.default, errors);
+    if let Some(min) = &param.min {
+        validate_param_value_matches_type(component, param, "min", min, errors);
+    }
+    if let Some(max) = &param.max {
+        validate_param_value_matches_type(component, param, "max", max, errors);
+    }
+    for choice in &param.choices {
+        validate_param_value_matches_type(component, param, "enum choice", choice, errors);
+    }
+    validate_param_value_constraints(component, param, "default", &param.default, errors);
+}
+
+fn validate_param_value_matches_type(
+    component: &ComponentIr,
+    param: &flowrt_ir::ParamIr,
+    label: &str,
+    value: &flowrt_ir::ParamValue,
+    errors: &mut Vec<ValidationError>,
+) {
+    if param_type_accepts_value(param.ty, value) {
+        return;
+    }
+    errors.push(ValidationError::new(format!(
+        "component `{}` param `{}` {label} has incompatible value kind `{}`; expected `{}`",
+        component.name,
+        param.name,
+        param_value_kind(value),
+        param_type_name(param.ty)
+    )));
+}
+
+fn validate_param_value_constraints(
+    component: &ComponentIr,
+    param: &flowrt_ir::ParamIr,
+    label: &str,
+    value: &flowrt_ir::ParamValue,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(min) = &param.min
+        && compare_param_values(value, min).is_some_and(|ordering| ordering.is_lt())
+    {
+        errors.push(ValidationError::new(format!(
+            "component `{}` param `{}` {label} is below declared minimum",
+            component.name, param.name
+        )));
+    }
+    if let Some(max) = &param.max
+        && compare_param_values(value, max).is_some_and(|ordering| ordering.is_gt())
+    {
+        errors.push(ValidationError::new(format!(
+            "component `{}` param `{}` {label} is above declared maximum",
+            component.name, param.name
+        )));
+    }
+    if !param.choices.is_empty() && !param.choices.iter().any(|choice| choice == value) {
+        errors.push(ValidationError::new(format!(
+            "component `{}` param `{}` {label} is not in declared enum choices",
+            component.name, param.name
+        )));
+    }
+}
+
+fn param_type_is_hot_update_scalar(ty: ParamType) -> bool {
+    !matches!(ty, ParamType::Array | ParamType::Table)
+}
+
+fn param_type_accepts_value(ty: ParamType, value: &flowrt_ir::ParamValue) -> bool {
+    matches!(
+        (ty, value),
+        (ParamType::Bool, flowrt_ir::ParamValue::Bool(_))
+            | (
+                ParamType::U8
+                    | ParamType::U16
+                    | ParamType::U32
+                    | ParamType::U64
+                    | ParamType::I8
+                    | ParamType::I16
+                    | ParamType::I32
+                    | ParamType::I64,
+                flowrt_ir::ParamValue::Integer(_)
+            )
+            | (
+                ParamType::F32 | ParamType::F64,
+                flowrt_ir::ParamValue::Float(_) | flowrt_ir::ParamValue::Integer(_)
+            )
+            | (ParamType::String, flowrt_ir::ParamValue::String(_))
+            | (ParamType::Array, flowrt_ir::ParamValue::Array(_))
+            | (ParamType::Table, flowrt_ir::ParamValue::Table(_))
+    )
+}
+
+fn compare_param_values(
+    left: &flowrt_ir::ParamValue,
+    right: &flowrt_ir::ParamValue,
+) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (flowrt_ir::ParamValue::Integer(left), flowrt_ir::ParamValue::Integer(right)) => {
+            Some(left.cmp(right))
+        }
+        (flowrt_ir::ParamValue::Float(left), flowrt_ir::ParamValue::Float(right)) => {
+            left.partial_cmp(right)
+        }
+        (flowrt_ir::ParamValue::Float(left), flowrt_ir::ParamValue::Integer(right)) => {
+            left.partial_cmp(&(*right as f64))
+        }
+        (flowrt_ir::ParamValue::Integer(left), flowrt_ir::ParamValue::Float(right)) => {
+            (*left as f64).partial_cmp(right)
+        }
+        (flowrt_ir::ParamValue::String(left), flowrt_ir::ParamValue::String(right)) => {
+            Some(left.cmp(right))
+        }
+        _ => None,
+    }
+}
+
+fn param_type_name(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Bool => "bool",
+        ParamType::U8 => "u8",
+        ParamType::U16 => "u16",
+        ParamType::U32 => "u32",
+        ParamType::U64 => "u64",
+        ParamType::I8 => "i8",
+        ParamType::I16 => "i16",
+        ParamType::I32 => "i32",
+        ParamType::I64 => "i64",
+        ParamType::F32 => "f32",
+        ParamType::F64 => "f64",
+        ParamType::String => "string",
+        ParamType::Array => "array",
+        ParamType::Table => "table",
     }
 }
 
@@ -1882,8 +2032,9 @@ fn _language_name(language: LanguageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use flowrt_ir::{
-        CapabilityAtom, ContractIr, OverflowPolicy, ParamIr, ParamValue, ParamValueIr, StalePolicy,
-        backend_capabilities, deployment_capability_decision, hash_source, normalize_document,
+        CapabilityAtom, ContractIr, OverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy,
+        ParamValue, ParamValueIr, StalePolicy, backend_capabilities,
+        deployment_capability_decision, hash_source, normalize_document,
     };
     use flowrt_rsdl::parse_str;
 
@@ -3650,14 +3801,8 @@ backends = ["inproc"]
             .find(|component| component.name == "producer")
             .expect("producer component must exist");
         producer.params = vec![
-            ParamIr {
-                name: "gain".to_string(),
-                default: ParamValue::Float(1.0),
-            },
-            ParamIr {
-                name: "gain".to_string(),
-                default: ParamValue::Float(2.0),
-            },
+            test_param("gain", ParamValue::Float(1.0)),
+            test_param("gain", ParamValue::Float(2.0)),
         ];
 
         let report = validate_contract(&ir).expect_err("duplicate component params should fail");
@@ -3678,14 +3823,8 @@ backends = ["inproc"]
             .find(|component| component.name == "producer")
             .expect("producer component must exist");
         producer.params = vec![
-            ParamIr {
-                name: "gain".to_string(),
-                default: ParamValue::Float(1.0),
-            },
-            ParamIr {
-                name: "mode".to_string(),
-                default: ParamValue::String("auto".to_string()),
-            },
+            test_param("gain", ParamValue::Float(1.0)),
+            test_param("mode", ParamValue::String("auto".to_string())),
         ];
         let producer = ir.graphs[0]
             .instances
@@ -3733,10 +3872,7 @@ backends = ["inproc"]
             .iter_mut()
             .find(|component| component.name == "producer")
             .expect("producer component must exist");
-        producer.params = vec![ParamIr {
-            name: "gain".to_string(),
-            default: ParamValue::Float(1.0),
-        }];
+        producer.params = vec![test_param("gain", ParamValue::Float(1.0))];
         let producer = ir.graphs[0]
             .instances
             .iter_mut()
@@ -3754,6 +3890,50 @@ backends = ["inproc"]
                 .message
                 .contains("instance `producer` param `gain` has incompatible value kind `string`; expected `float`")
         }));
+    }
+
+    #[test]
+    fn rejects_invalid_parameter_schema_in_contract_ir() {
+        let mut ir = valid_reference_contract();
+        let producer = ir
+            .components
+            .iter_mut()
+            .find(|component| component.name == "producer")
+            .expect("producer component must exist");
+        producer.params = vec![ParamIr {
+            name: "hot_state".to_string(),
+            ty: ParamType::Table,
+            default: ParamValue::Table(Default::default()),
+            update: ParamUpdatePolicy::OnTick,
+            min: Some(ParamValue::Integer(0)),
+            max: None,
+            choices: vec![ParamValue::String("safe".to_string())],
+        }];
+        let producer_instance = ir.graphs[0]
+            .instances
+            .iter_mut()
+            .find(|instance| instance.name == "producer")
+            .expect("producer instance must exist");
+        producer_instance.params = vec![ParamValueIr {
+            name: "hot_state".to_string(),
+            value: ParamValue::Table(Default::default()),
+        }];
+
+        let report = validate_contract(&ir).expect_err("invalid param schema should fail");
+
+        for expected in [
+            "component `producer` param `hot_state` uses `on_tick` update with non-scalar type `table`",
+            "component `producer` param `hot_state` min has incompatible value kind `integer`; expected `table`",
+            "component `producer` param `hot_state` enum choice has incompatible value kind `string`; expected `table`",
+        ] {
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "missing validation error: {expected}"
+            );
+        }
     }
 
     #[test]
@@ -4363,5 +4543,24 @@ backends = ["inproc"]
 "#;
         let raw = parse_str(source).unwrap();
         normalize_document(&raw, hash_source(source)).unwrap()
+    }
+
+    fn test_param(name: &str, default: ParamValue) -> ParamIr {
+        ParamIr {
+            name: name.to_string(),
+            ty: match default {
+                ParamValue::Bool(_) => ParamType::Bool,
+                ParamValue::Integer(_) => ParamType::I64,
+                ParamValue::Float(_) => ParamType::F64,
+                ParamValue::String(_) => ParamType::String,
+                ParamValue::Array(_) => ParamType::Array,
+                ParamValue::Table(_) => ParamType::Table,
+            },
+            default,
+            update: ParamUpdatePolicy::Startup,
+            min: None,
+            max: None,
+            choices: Vec::new(),
+        }
     }
 }

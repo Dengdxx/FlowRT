@@ -115,6 +115,24 @@ int main() {
         "source.imu_to_sink.imu", "Imu",
         std::vector<std::uint8_t>{std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}},
         std::optional<std::uint64_t>{9U});
+    state.register_param(flowrt::IntrospectionParamSchema{
+        .name = "controller.kp",
+        .ty = "f32",
+        .update = "on_tick",
+        .current = "1.0",
+        .min = "0.0",
+        .max = "10.0",
+        .choices = {},
+    });
+    state.register_param(flowrt::IntrospectionParamSchema{
+        .name = "controller.mode",
+        .ty = "string",
+        .update = "startup",
+        .current = "\"normal\"",
+        .min = std::nullopt,
+        .max = std::nullopt,
+        .choices = {"\"normal\"", "\"safe\""},
+    });
 
     const auto socket_path = temp_socket_path("worker.sock");
     {
@@ -147,6 +165,33 @@ int main() {
             socket_path, R"({"command":"channel_snapshot","channel":"missing.channel"})");
         assert_contains(unknown_response, R"("response":"error")");
         assert_contains(unknown_response, R"("message":"unknown FlowRT channel")");
+
+        const auto param_list_response = request_line(socket_path, R"({"command":"param_list"})");
+        assert_contains(param_list_response, R"("response":"param_list")");
+        assert_contains(param_list_response, R"("name":"controller.kp")");
+        assert_contains(param_list_response, R"("type":"f32")");
+        assert_contains(param_list_response, R"("update":"on_tick")");
+        assert_contains(param_list_response, R"("current":1.0)");
+
+        const auto param_set_response = request_line(
+            socket_path, R"({"command":"param_set","name":"controller.kp","value":2.5})");
+        assert_contains(param_set_response, R"("response":"param_value")");
+        assert_contains(param_set_response, R"("pending":2.5)");
+        assert(state.pending_param("controller.kp") == std::optional<std::string>{"2.5"});
+        state.record_param_applied("controller.kp", "2.5");
+        assert(!state.pending_param("controller.kp").has_value());
+
+        const auto startup_param_set_response = request_line(
+            socket_path, R"({"command":"param_set","name":"controller.mode","value":"safe"})");
+        assert_contains(startup_param_set_response, R"("response":"error")");
+        assert_contains(startup_param_set_response,
+                        R"("message":"FlowRT parameter `controller.mode` is startup-only")");
+
+        const auto range_param_set_response = request_line(
+            socket_path, R"({"command":"param_set","name":"controller.kp","value":12.0})");
+        assert_contains(range_param_set_response, R"("response":"error")");
+        assert_contains(range_param_set_response,
+                        R"("message":"FlowRT parameter `controller.kp` is above maximum")");
 
         send_line_and_close(socket_path, R"({"command":"status"})");
         const auto status_after_early_close = request_line(socket_path, R"({"command":"status"})");

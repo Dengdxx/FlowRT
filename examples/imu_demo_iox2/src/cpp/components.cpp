@@ -15,8 +15,9 @@ namespace {
 /// 此组件运行在 C++ 进程中，通过 iox2 与 Rust 进程的估计器跨语言通信。
 class Controller final : public flowrt_app::ControllerInterface {
 public:
-    auto on_tick(const flowrt::Latest<flowrt_app::Odom>& odom, flowrt::Output<flowrt_app::MotorCmd>& cmd)
-        -> flowrt::Status override {
+    auto on_tick(const flowrt::Latest<flowrt_app::Odom>& odom,
+                 const flowrt_app::ControllerParams& params,
+                 flowrt::Output<flowrt_app::MotorCmd>& cmd) -> flowrt::Status override {
         if (!odom.present()) {
             // 里程计数据未到达，输出零速度保持静止
             cmd.write(flowrt_app::MotorCmd{
@@ -27,10 +28,10 @@ public:
         }
 
         const auto* sample = odom.as_ref();
-        // 差速控制：基准速度 ± 航向偏差
+        const auto correction = params.kp * sample->theta + params.kd * sample->wz;
         cmd.write(flowrt_app::MotorCmd{
-            .left = 1.0F - sample->theta,   // 左轮 = 基准 - 偏差
-            .right = 1.0F + sample->theta,  // 右轮 = 基准 + 偏差
+            .left = 1.0F - correction,
+            .right = 1.0F + correction,
         });
         return flowrt::Status::Ok;
     }
