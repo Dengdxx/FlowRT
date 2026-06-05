@@ -1,4 +1,5 @@
 use super::*;
+use flowrt_ir::TriggerKind;
 
 #[test]
 fn generated_shells_cleanup_entered_lifecycle_stages_in_reverse_order() {

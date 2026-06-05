@@ -9,13 +9,14 @@ use std::path::PathBuf;
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr,
     LanguageKind, OverflowPolicy as IrOverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy,
-    ParamValue, PortIr, StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr, TypeIr,
+    ParamValue, PortIr, StalePolicy as IrStalePolicy, TaskIr, TypeExpr, TypeIr,
 };
 use flowrt_validate::validate_contract;
 
 mod build_files;
 mod launch_manifest;
 mod messages;
+mod runtime_plan;
 mod selfdesc;
 mod supervisor;
 
@@ -26,6 +27,13 @@ use messages::{
     emit_rust_messages, fixed_message_abi_expectations, frame_header_size_for_expr,
     frame_header_size_for_type, frame_max_size_for_type, iox2_frame_slot_type_for_expr, rust_type,
     rust_wire_size, type_contains_variable_data, variable_tail_max_size,
+};
+use runtime_plan::{
+    BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
+    bind_runtime_plans, incoming_bind_index_map, indent_generated_block, nested_step_indent,
+    on_message_trigger_guard, outgoing_bind_indices_map, process_runtime_plans,
+    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
+    runtime_param_name, rust_nested_step_indent, rust_step_indent, step_indent,
 };
 use selfdesc::{
     emit_cpp_selfdesc_header, emit_cpp_selfdesc_source, emit_rust_selfdesc, emit_self_description,
@@ -740,25 +748,6 @@ struct CppStepEmission<'a> {
     selected_backend: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TaskEmissionPhase {
-    Scheduler,
-    Startup,
-    Shutdown,
-}
-
-impl TaskEmissionPhase {
-    fn includes(self, trigger: TriggerKind) -> bool {
-        match self {
-            TaskEmissionPhase::Scheduler => {
-                matches!(trigger, TriggerKind::Periodic | TriggerKind::OnMessage)
-            }
-            TaskEmissionPhase::Startup => trigger == TriggerKind::Startup,
-            TaskEmissionPhase::Shutdown => trigger == TriggerKind::Shutdown,
-        }
-    }
-}
-
 fn emit_cpp_app_step(
     emission: &CppStepEmission<'_>,
     order: &[&InstanceIr],
@@ -923,62 +912,6 @@ fn emit_cpp_app_step(
 
     output.push_str("    return flowrt::Status::Ok;\n}\n\n");
     output
-}
-
-fn on_message_trigger_guard<F>(task: &TaskIr, input_name: F) -> Option<String>
-where
-    F: Fn(&str) -> String,
-{
-    if task.trigger != TriggerKind::OnMessage || task.inputs.is_empty() {
-        return None;
-    }
-
-    Some(
-        task.inputs
-            .iter()
-            .map(|input| format!("{}.present()", input_name(input)))
-            .collect::<Vec<_>>()
-            .join(" || "),
-    )
-}
-
-fn indent_generated_block(block: &str, nested: bool) -> String {
-    if !nested {
-        return block.to_string();
-    }
-
-    block
-        .lines()
-        .map(|line| {
-            if line.is_empty() {
-                String::new()
-            } else {
-                format!("    {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
-fn step_indent(nested: bool) -> &'static str {
-    if nested { "        " } else { "    " }
-}
-
-fn nested_step_indent(nested: bool) -> &'static str {
-    if nested { "            " } else { "        " }
-}
-
-fn rust_step_indent(nested: bool) -> &'static str {
-    if nested { "            " } else { "        " }
-}
-
-fn rust_nested_step_indent(nested: bool) -> &'static str {
-    if nested {
-        "                "
-    } else {
-        "            "
-    }
 }
 
 fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
@@ -1676,169 +1609,6 @@ fn emit_rust_main() -> String {
         "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut process = None;\n    let mut run_ticks = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--process\" => process = args.next(),\n            \"--flowrt-run-ticks\" => {\n                let Some(raw_ticks) = args.next() else {\n                    eprintln!(\"missing value for --flowrt-run-ticks\");\n                    std::process::exit(2);\n                };\n                match raw_ticks.parse::<usize>() {\n                    Ok(ticks) if ticks > 0 => run_ticks = Some(ticks),\n                    _ => {\n                        eprintln!(\"invalid value for --flowrt-run-ticks: {raw_ticks}\");\n                        std::process::exit(2);\n                    }\n                }\n            }\n            _ => {\n                eprintln!(\"unknown FlowRT app argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    let status = match process.as_deref() {\n        Some(process) => flowrt_app::runtime_shell::run_process(process, run_ticks),\n        None => flowrt_app::runtime_shell::run(run_ticks),\n    };\n    let code = match status {\n        flowrt::Status::Ok => 0,\n        _ => 1,\n    };\n    std::process::exit(code);\n}\n",
     );
     output
-}
-
-#[derive(Debug, Clone)]
-struct BindRuntimePlan {
-    index: usize,
-    field_name: String,
-    probe_field_name: String,
-    channel: ChannelKind,
-    overflow: IrOverflowPolicy,
-    stale: IrStalePolicy,
-    max_age_ms: Option<u64>,
-    depth: Option<u32>,
-    source_type: TypeExpr,
-    source_uses_variable_frame: bool,
-    source_instance: String,
-    source_port: String,
-    target_instance: String,
-    target_port: String,
-}
-
-#[derive(Debug, Clone)]
-struct ProcessRuntimePlan<'a> {
-    name: String,
-    method_suffix: String,
-    instances: Vec<&'a InstanceIr>,
-}
-
-fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<ProcessRuntimePlan<'a>> {
-    let mut by_process = BTreeMap::<String, Vec<&'a InstanceIr>>::new();
-    for &instance in order {
-        by_process
-            .entry(
-                instance
-                    .process
-                    .clone()
-                    .unwrap_or_else(|| "main".to_string()),
-            )
-            .or_default()
-            .push(instance);
-    }
-
-    let mut used_suffixes = BTreeSet::new();
-    by_process
-        .into_iter()
-        .enumerate()
-        .map(|(index, (name, instances))| {
-            let base = snake_identifier(&name);
-            let mut suffix = base.clone();
-            if !used_suffixes.insert(suffix.clone()) {
-                suffix = format!("{}_{}", base, index);
-                while !used_suffixes.insert(suffix.clone()) {
-                    suffix.push('_');
-                }
-            }
-            ProcessRuntimePlan {
-                name,
-                method_suffix: suffix,
-                instances,
-            }
-        })
-        .collect()
-}
-
-fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<BindRuntimePlan> {
-    graph
-        .binds
-        .iter()
-        .enumerate()
-        .map(|(index, bind)| {
-            let source_instance = instance_by_name(graph, &bind.from.instance.name);
-            let source_component = component_by_name(contract, &source_instance.component.name);
-            let source_port = port_by_name(&source_component.outputs, &bind.from.port);
-            BindRuntimePlan {
-                index,
-                field_name: format!("bind_{index}"),
-                probe_field_name: format!("introspection_probe_bind_{index}"),
-                channel: bind.channel,
-                overflow: bind.overflow,
-                stale: bind.stale,
-                max_age_ms: bind.max_age_ms,
-                depth: bind.depth,
-                source_type: source_port.ty.clone(),
-                source_uses_variable_frame: type_contains_variable_data(contract, &source_port.ty),
-                source_instance: source_instance.name.clone(),
-                source_port: bind.from.port.clone(),
-                target_instance: bind.to.instance.name.clone(),
-                target_port: bind.to.port.clone(),
-            }
-        })
-        .collect()
-}
-
-fn incoming_bind_index_map(plans: &[BindRuntimePlan]) -> BTreeMap<(String, String), usize> {
-    plans
-        .iter()
-        .map(|plan| {
-            (
-                (plan.target_instance.clone(), plan.target_port.clone()),
-                plan.index,
-            )
-        })
-        .collect()
-}
-
-fn outgoing_bind_indices_map(plans: &[BindRuntimePlan]) -> BTreeMap<(String, String), Vec<usize>> {
-    let mut map = BTreeMap::new();
-    for plan in plans {
-        map.entry((plan.source_instance.clone(), plan.source_port.clone()))
-            .or_insert_with(Vec::new)
-            .push(plan.index);
-    }
-    map
-}
-
-fn active_binds_for_instances<'a>(
-    binds: &'a [BindRuntimePlan],
-    order: &[&InstanceIr],
-) -> Vec<&'a BindRuntimePlan> {
-    let active_instances = order
-        .iter()
-        .map(|instance| instance.name.as_str())
-        .collect::<BTreeSet<_>>();
-    binds
-        .iter()
-        .filter(|bind| {
-            active_instances.contains(bind.source_instance.as_str())
-                || active_instances.contains(bind.target_instance.as_str())
-        })
-        .collect()
-}
-
-fn runtime_channel_name(bind: &BindRuntimePlan) -> String {
-    format!(
-        "{}.{}_to_{}.{}",
-        bind.source_instance, bind.source_port, bind.target_instance, bind.target_port
-    )
-}
-
-fn runtime_channel_message_type(bind: &BindRuntimePlan) -> String {
-    bind.source_type.canonical_syntax()
-}
-
-fn runtime_channel_probe_capacity(contract: &ContractIr, bind: &BindRuntimePlan) -> usize {
-    match &bind.source_type {
-        TypeExpr::Named { name } if bind.source_uses_variable_frame => {
-            frame_max_size_for_type(contract, type_by_name(contract, name))
-        }
-        TypeExpr::Named { name } => fixed_message_abi_size(contract, name)
-            .unwrap_or_else(|| rust_wire_size(contract, &bind.source_type)),
-        other => rust_wire_size(contract, other),
-    }
-}
-
-fn fixed_message_abi_size(contract: &ContractIr, type_name: &str) -> Option<usize> {
-    fixed_message_abi_expectations(contract)
-        .ok()?
-        .into_iter()
-        .find(|expectation| expectation.type_name == type_name)
-        .map(|expectation| expectation.size_bytes)
-}
-
-fn runtime_param_name(instance: &InstanceIr, param: &ParamIr) -> String {
-    format!("{}.{}", instance.name, param.name)
 }
 
 fn emit_cpp_introspection_helpers() -> String {
