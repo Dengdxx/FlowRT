@@ -65,6 +65,24 @@ struct Iox2WakeListenerParts {
     _node: IpcNode,
 }
 
+struct Iox2RecoveryRequest<'a> {
+    operation: &'static str,
+    service_name: &'a str,
+    config: Iox2ChannelConfig,
+    schedule_waiter: Option<&'a crate::ScheduleWaiter>,
+}
+
+struct Iox2RecoveryParts<'a, T>
+where
+    T: std::fmt::Debug + ZeroCopySend + 'static,
+{
+    publisher: &'a mut Option<IpcPublisher<T>>,
+    subscriber: &'a mut Option<IpcSubscriber<T>>,
+    notifier: &'a mut Option<IpcNotifier>,
+    wake_handle: &'a mut Option<Iox2WakeHandle>,
+    node: &'a mut Option<IpcNode>,
+}
+
 impl Iox2WakeHandle {
     fn start(service_name: String, waiter: crate::ScheduleWaiter) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -454,15 +472,19 @@ where
 
     fn recover_after_transport_error(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
         recover_iox2_endpoint(
-            operation,
-            &self.service_name,
-            self.config,
-            &mut self.publisher,
-            &mut self.subscriber,
-            &mut self.notifier,
-            &mut self.wake_handle,
-            self.schedule_waiter.as_ref(),
-            &mut self.node,
+            Iox2RecoveryRequest {
+                operation,
+                service_name: &self.service_name,
+                config: self.config,
+                schedule_waiter: self.schedule_waiter.as_ref(),
+            },
+            Iox2RecoveryParts {
+                publisher: &mut self.publisher,
+                subscriber: &mut self.subscriber,
+                notifier: &mut self.notifier,
+                wake_handle: &mut self.wake_handle,
+                node: &mut self.node,
+            },
             &mut self.health,
         )
     }
@@ -553,15 +575,8 @@ fn open_iox2_wake_listener(service_name: &str) -> Result<Iox2WakeListenerParts, 
 }
 
 fn recover_iox2_endpoint<T>(
-    operation: &'static str,
-    service_name: &str,
-    config: Iox2ChannelConfig,
-    publisher: &mut Option<IpcPublisher<T>>,
-    subscriber: &mut Option<IpcSubscriber<T>>,
-    notifier: &mut Option<IpcNotifier>,
-    wake_handle: &mut Option<Iox2WakeHandle>,
-    schedule_waiter: Option<&crate::ScheduleWaiter>,
-    node: &mut Option<IpcNode>,
+    request: Iox2RecoveryRequest<'_>,
+    parts: Iox2RecoveryParts<'_, T>,
     health: &mut BackendHealthTracker,
 ) -> Result<(), Iox2Error>
 where
@@ -573,7 +588,7 @@ where
         && unix_now_ms() < next_retry_unix_ms
     {
         return Err(Iox2Error::new(
-            operation,
+            request.operation,
             "iceoryx2 endpoint reconnect backoff is active",
         ));
     }
@@ -582,7 +597,7 @@ where
     if !health.policy().can_retry(attempt) {
         health.mark_failed("iceoryx2 endpoint reconnect budget exhausted", attempt);
         return Err(Iox2Error::new(
-            operation,
+            request.operation,
             "iceoryx2 endpoint reconnect budget exhausted",
         ));
     }
@@ -592,23 +607,23 @@ where
         attempt,
         now_ms.saturating_add(health.policy().delay_for_attempt(attempt)),
     );
-    *wake_handle = None;
-    *publisher = None;
-    *subscriber = None;
-    *notifier = None;
-    *node = None;
-    match open_iox2_parts(service_name, config) {
-        Ok(parts) => {
-            *publisher = Some(parts.publisher);
-            *subscriber = Some(parts.subscriber);
-            *notifier = Some(parts.notifier);
-            if let Some(waiter) = schedule_waiter {
-                *wake_handle = Some(Iox2WakeHandle::start(
-                    service_name.to_string(),
+    *parts.wake_handle = None;
+    *parts.publisher = None;
+    *parts.subscriber = None;
+    *parts.notifier = None;
+    *parts.node = None;
+    match open_iox2_parts(request.service_name, request.config) {
+        Ok(reopened) => {
+            *parts.publisher = Some(reopened.publisher);
+            *parts.subscriber = Some(reopened.subscriber);
+            *parts.notifier = Some(reopened.notifier);
+            if let Some(waiter) = request.schedule_waiter {
+                *parts.wake_handle = Some(Iox2WakeHandle::start(
+                    request.service_name.to_string(),
                     waiter.clone(),
                 ));
             }
-            *node = Some(parts.node);
+            *parts.node = Some(reopened.node);
             health.mark_ready();
             Ok(())
         }
