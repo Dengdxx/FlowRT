@@ -12,6 +12,7 @@ pub mod inproc;
 pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
+pub mod service;
 pub mod shutdown;
 pub mod supervisor;
 pub mod wire;
@@ -43,6 +44,11 @@ pub use introspection::{
     request_channel_snapshot, request_param_get, request_param_list, request_param_set,
     request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
     spawn_status_server, spawn_status_server_at,
+};
+pub use service::{
+    Deadline, RequestId, ServiceError, ServiceFrameHeader, ServiceResult,
+    SERVICE_FRAME_HEADER_SIZE, SERVICE_FRAME_MAGIC, SERVICE_FRAME_VERSION,
+    decode_service_frame, encode_service_frame, fnv1a64,
 };
 pub use shutdown::{ShutdownToken, install_signal_shutdown_token};
 pub use wire::{WireCodec, WireCodecError};
