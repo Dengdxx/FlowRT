@@ -191,6 +191,12 @@ pub struct RawDataflowBind {
 pub struct RawServiceBind {
     pub client: String,
     pub server: String,
+    pub backend: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub queue_depth: Option<u32>,
+    pub overflow: Option<String>,
+    pub lane: Option<String>,
+    pub max_in_flight: Option<u32>,
 }
 
 /// `[[bridge.ros2]]` 表项。

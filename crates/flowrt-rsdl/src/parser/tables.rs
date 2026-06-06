@@ -358,10 +358,29 @@ pub(super) fn parse_service_binds(root: &Table) -> Result<Vec<RawServiceBind>> {
                 field: "service".to_string(),
                 expected: "array of tables",
             })?;
-        validate_known_fields(table, &context, &["client", "server"])?;
+        validate_known_fields(
+            table,
+            &context,
+            &[
+                "client",
+                "server",
+                "backend",
+                "timeout_ms",
+                "queue_depth",
+                "overflow",
+                "lane",
+                "max_in_flight",
+            ],
+        )?;
         parsed.push(RawServiceBind {
             client: required_string(table, &context, "client")?,
             server: required_string(table, &context, "server")?,
+            backend: optional_string(table, &context, "backend")?,
+            timeout_ms: optional_u64(table, &context, "timeout_ms")?,
+            queue_depth: optional_u32(table, &context, "queue_depth")?,
+            overflow: optional_string(table, &context, "overflow")?,
+            lane: optional_string(table, &context, "lane")?,
+            max_in_flight: optional_u32(table, &context, "max_in_flight")?,
         });
     }
     Ok(parsed)
