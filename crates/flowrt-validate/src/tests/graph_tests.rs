@@ -594,6 +594,223 @@ server = "server.plan"
 }
 
 #[test]
+fn rejects_service_bind_with_iox2_backend() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "iox2"
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source))
+        .expect_err("iox2 service backend should fail at normalization");
+
+    assert!(
+        error.to_string().contains("iox2"),
+        "error should mention iox2: {error}"
+    );
+}
+
+#[test]
+fn rejects_service_bind_with_unknown_backend() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "grpc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source))
+        .expect_err("unknown service backend should fail at normalization");
+
+    assert!(
+        error.to_string().contains("grpc"),
+        "error should mention grpc: {error}"
+    );
+}
+
+#[test]
+fn rejects_explicit_inproc_across_processes() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "proc_a"
+
+[instance.server]
+component = "server"
+process = "proc_b"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source))
+        .expect_err("cross-process inproc should fail");
+
+    assert!(
+        error.to_string().contains("inproc"),
+        "error should mention inproc: {error}"
+    );
+}
+
+#[test]
+fn rejects_service_zero_timeout_at_validation() {
+    // 手工构造一个 timeout_ms=0 的 IR，验证 validator 也能拦截。
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    // 手工篡改 policy 字段
+    ir.graphs[0].services[0].policy.timeout_ms = 0;
+    let report = validate_contract(&ir).expect_err("zero timeout should fail validation");
+
+    assert!(report.errors.iter().any(|error| error
+        .message
+        .contains("service bind `client.plan -> server.plan` has zero timeout_ms")));
+}
+
+#[test]
+fn rejects_service_zero_queue_depth_at_validation() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].services[0].policy.queue_depth = 0;
+    let report = validate_contract(&ir).expect_err("zero queue_depth should fail validation");
+
+    assert!(report.errors.iter().any(|error| error
+        .message
+        .contains("service bind `client.plan -> server.plan` has zero queue_depth")));
+}
+
+#[test]
+fn rejects_service_zero_max_in_flight_at_validation() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].services[0].policy.max_in_flight = 0;
+    let report = validate_contract(&ir).expect_err("zero max_in_flight should fail validation");
+
+    assert!(report.errors.iter().any(|error| error
+        .message
+        .contains("service bind `client.plan -> server.plan` has zero max_in_flight")));
+}
+
+#[test]
 fn rejects_reserved_name_prefix_case_insensitively() {
     let source = r#"
 [package]

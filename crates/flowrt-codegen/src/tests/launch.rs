@@ -251,6 +251,12 @@ server = "server.plan"
     assert_eq!(services[0]["server"], "server.plan");
     assert_eq!(services[0]["request"], "PlanRequest");
     assert_eq!(services[0]["response"], "PlanResponse");
+    assert_eq!(services[0]["backend"], "inproc");
+    assert_eq!(services[0]["timeout_ms"], 5000);
+    assert_eq!(services[0]["queue_depth"], 32);
+    assert_eq!(services[0]["overflow"], "busy");
+    assert!(services[0]["lane"].is_null());
+    assert_eq!(services[0]["max_in_flight"], 64);
 }
 
 #[test]
