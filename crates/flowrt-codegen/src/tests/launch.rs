@@ -578,53 +578,14 @@ backends = ["iox2"]
         supervisor
             .contains("const LAUNCH_MANIFEST: &str = include_str!(\"../../launch/launch.json\");")
     );
-    assert!(supervisor.contains("runtime_kind: String"));
-    assert!(supervisor.contains("backend: String"));
-    assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
-    assert!(supervisor.contains("Command::new(app_exe)"));
-    assert!(supervisor.contains("flowrt::spawn_status_server("));
-    assert!(supervisor.contains("record_process_health"));
-    assert!(supervisor.contains("tick_stale"));
-    assert!(supervisor.contains("try_wait()"));
-    assert!(supervisor.contains("flowrt::request_status(&child.socket)"));
-    assert!(supervisor.contains("struct RestartPolicy"));
-    assert!(supervisor.contains("const DEFAULT_RESTART_POLICY: RestartPolicy"));
-    assert!(supervisor.contains("restart_count: u32"));
-    assert!(supervisor.contains("child.state = \"restarting\".to_string();"));
-    assert!(supervisor.contains("restart_child(supervisor_state, child, run_ticks)?"));
-    assert!(supervisor.contains("restart_count: child.restart_count"));
-    assert!(supervisor.contains("if status.success()"));
-    assert!(supervisor.contains("child.finished = true;"));
-    assert!(supervisor.contains("depends_on: Vec<String>"));
-    assert!(supervisor.contains("restart: LaunchRestartPolicy"));
-    assert!(supervisor.contains("failure: String"));
-    assert!(supervisor.contains("policy: RestartPolicyKind"));
-    assert!(supervisor.contains("fn process_dependencies_satisfied("));
-    assert!(supervisor.contains("fn propagate_process_failure("));
-    assert!(supervisor.contains("for graph in &manifest.graphs"));
-    assert!(supervisor.contains("zenoh_launch_env_for_graph(graph)?"));
-    assert!(supervisor.contains("fn should_auto_configure_zenoh()"));
-    assert!(supervisor.contains("fn zenoh_launch_env_for_graph("));
-    assert!(supervisor.contains("TcpListener::bind(\"127.0.0.1:0\")"));
-    assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_MODE\", \"peer\")"));
-    assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_LISTEN\", &env.listen)"));
-    assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_CONNECT\", &env.connect)"));
-    assert!(supervisor.contains("command.env(\"FLOWRT_ZENOH_NO_MULTICAST\", \"1\")"));
-    assert!(!supervisor.contains(".graphs\n        .first()"));
-    assert!(
-        supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
-    );
-    assert!(supervisor.contains(".arg(\"--process\")"));
-    assert!(supervisor.contains(".arg(process_name)"));
-    assert!(supervisor.contains(".arg(\"--flowrt-run-steps\")"));
+    assert!(supervisor.contains("flowrt::supervisor::SupervisorConfig"));
+    assert!(supervisor.contains("rust_app_stem: \"robot-demo-flowrt-app\""));
+    assert!(supervisor.contains("flowrt::supervisor::launch(&SUPERVISOR_CONFIG, run_ticks)"));
     assert!(supervisor_main.contains("--flowrt-run-ticks"));
     assert!(supervisor_main.contains("--flowrt-run-steps"));
     assert!(supervisor_main.contains("flowrt_app::supervisor::launch(run_ticks)"));
     assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
     assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
-    assert!(cargo_manifest.contains("serde = { version = \"1\", features = [\"derive\"] }"));
-    assert!(cargo_manifest.contains("serde_json = \"1\""));
-    assert!(cargo_manifest.find("serde =").unwrap() < cargo_manifest.find("[[bin]]").unwrap());
 }
 
 #[test]
@@ -679,20 +640,8 @@ backends = ["iox2"]
     let bundle = emit_artifacts(&ir).unwrap();
     let supervisor = artifact_content(&bundle, "rust/src/supervisor.rs");
 
-    assert!(supervisor.contains("runtime_kind: String"));
-    assert!(supervisor.contains("backend: String"));
-    assert!(supervisor.contains("const RUST_APP_STEM: &str = \"robot-demo-flowrt-app\";"));
-    assert!(supervisor.contains("const CPP_APP_STEM: &str = \"robot_demo_cpp_app\";"));
-    assert!(supervisor.contains("fn app_executable_for_runtime("));
-    assert!(supervisor.contains("\"rust\" => rust_app_executable(current_exe),"));
-    assert!(supervisor.contains("\"cpp\" => cpp_app_executable(current_exe),"));
-    assert!(supervisor.contains("fn cpp_app_executable("));
-    assert!(supervisor.contains("let mut path = build_dir.join(\"cmake\");"));
-    assert!(supervisor.contains("path.push(binary_name(CPP_APP_STEM));"));
-    assert!(supervisor.contains(
-        "\"mixed\" => Err(\"FlowRT mixed process groups are not launchable yet\".to_string()),"
-    ));
-    assert!(
-        supervisor.contains("app_executable_for_runtime(&current_exe, &process.runtime_kind)?")
-    );
+    assert!(supervisor.contains("flowrt::supervisor::SupervisorConfig"));
+    assert!(supervisor.contains("rust_app_stem: \"robot-demo-flowrt-app\""));
+    assert!(supervisor.contains("cpp_app_stem: \"robot_demo_cpp_app\""));
+    assert!(supervisor.contains("flowrt::supervisor::launch(&SUPERVISOR_CONFIG, run_ticks)"));
 }

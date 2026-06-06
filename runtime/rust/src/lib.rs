@@ -13,6 +13,7 @@ pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
 pub mod shutdown;
+pub mod supervisor;
 pub mod wire;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
