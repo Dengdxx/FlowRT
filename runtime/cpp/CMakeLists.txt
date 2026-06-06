@@ -61,6 +61,10 @@ add_executable(flowrt_service_smoke tests/service_smoke.cpp)
 target_link_libraries(flowrt_service_smoke PRIVATE flowrt_runtime)
 add_test(NAME flowrt_service_smoke COMMAND flowrt_service_smoke)
 
+add_executable(flowrt_inproc_service_smoke tests/inproc_service_smoke.cpp)
+target_link_libraries(flowrt_inproc_service_smoke PRIVATE flowrt_runtime)
+add_test(NAME flowrt_inproc_service_smoke COMMAND flowrt_inproc_service_smoke)
+
 option(FLOWRT_CPP_ENABLE_IOX2_TESTS "Build FlowRT C++ runtime tests that require iceoryx2-cxx" OFF)
 option(FLOWRT_CPP_ENABLE_ZENOH_TESTS "Build FlowRT C++ runtime tests that require zenoh-cpp" OFF)
 
