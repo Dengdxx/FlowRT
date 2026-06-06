@@ -10,10 +10,11 @@ mod normalize;
 mod type_expr;
 
 pub use backend::{
-    DeploymentCapabilityDecision, RouteTopology, backend_capabilities,
+    DeploymentCapabilityDecision, RouteTopology, SERVICE_DEFAULT_MAX_IN_FLIGHT,
+    SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS, backend_capabilities,
     base_deployment_capabilities, channel_capabilities, channel_route_capabilities,
     deployment_capability_decision, graph_required_capabilities, is_known_backend,
-    message_abi_capabilities, target_capabilities, trigger_capability,
+    is_known_service_backend, message_abi_capabilities, target_capabilities, trigger_capability,
 };
 pub use error::{IrError, Result};
 pub use model::*;

@@ -234,6 +234,10 @@ pub struct ServiceEdgeIr {
     pub id: EntityId,
     pub client: ServicePortRef,
     pub server: ServicePortRef,
+    pub backend: BackendName,
+    pub backend_source: ServiceBackendSource,
+    pub policy: ServicePolicyIr,
+    pub policy_source: ServicePolicySourceIr,
 }
 
 /// service 端口引用。
@@ -241,6 +245,47 @@ pub struct ServiceEdgeIr {
 pub struct ServicePortRef {
     pub instance: EntityRef,
     pub port: String,
+}
+
+/// service backend 字段来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceBackendSource {
+    /// 用户在 RSDL 中显式指定了 backend。
+    Explicit,
+    /// 由 auto resolver 根据拓扑自动选择。
+    AutoResolved,
+}
+
+/// service overflow 行为：队列满时的处理策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceOverflowPolicy {
+    /// 返回 busy 错误，不阻塞调用方。
+    Busy,
+    /// 返回 error 错误。
+    Error,
+}
+
+/// 归一化后的 service policy。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServicePolicyIr {
+    pub timeout_ms: u64,
+    pub queue_depth: u32,
+    pub overflow: ServiceOverflowPolicy,
+    pub lane: Option<String>,
+    pub max_in_flight: u32,
+}
+
+/// service policy 各字段是否来自显式 bind 声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicePolicySourceIr {
+    pub backend: PolicyValueSource,
+    pub timeout_ms: PolicyValueSource,
+    pub queue_depth: PolicyValueSource,
+    pub overflow: PolicyValueSource,
+    pub lane: PolicyValueSource,
+    pub max_in_flight: PolicyValueSource,
 }
 
 /// FlowRT 与 ROS2 的静态桥接声明。

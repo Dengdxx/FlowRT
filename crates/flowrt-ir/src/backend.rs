@@ -250,6 +250,22 @@ pub fn is_known_backend(name: &str) -> bool {
     BackendKind::parse(name).is_some()
 }
 
+/// service 默认超时时间（毫秒）。
+pub const SERVICE_DEFAULT_TIMEOUT_MS: u64 = 5000;
+
+/// service 默认队列深度。
+pub const SERVICE_DEFAULT_QUEUE_DEPTH: u32 = 32;
+
+/// service 默认最大并发请求数。
+pub const SERVICE_DEFAULT_MAX_IN_FLIGHT: u32 = 64;
+
+/// 判断某个 backend 名称是否可作为 service backend 使用。
+///
+/// service backend 只支持 `inproc` 和 `zenoh`，不支持 `iox2`。
+pub fn is_known_service_backend(name: &str) -> bool {
+    matches!(name, "inproc" | "zenoh")
+}
+
 /// 返回某个 backend 提供的 capability atoms。
 pub fn backend_capabilities(name: &str) -> Option<Vec<CapabilityAtom>> {
     BackendKind::parse(name).map(|backend| backend.spec().capabilities())
