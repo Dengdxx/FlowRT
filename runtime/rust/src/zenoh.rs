@@ -220,9 +220,9 @@ where
     T: FrameCodec + Clone,
 {
     key_expr: String,
-    publisher: Publisher<'static>,
-    subscriber: Subscriber<()>,
-    session: Session,
+    publisher: Option<Publisher<'static>>,
+    subscriber: Option<Subscriber<()>>,
+    session: Option<Session>,
     inbox: Arc<ZenohInbox>,
     config: ZenohChannelConfig,
     health: BackendHealthTracker,
@@ -248,15 +248,37 @@ where
 
         Ok(Self {
             key_expr: key_expr.to_string(),
-            publisher: parts.publisher,
-            subscriber: parts.subscriber,
-            session: parts.session,
+            publisher: Some(parts.publisher),
+            subscriber: Some(parts.subscriber),
+            session: Some(parts.session),
             inbox,
             config,
             health: BackendHealthTracker::new(ReconnectPolicy::default()),
             received: None,
             revision: 0,
         })
+    }
+
+    /// 构造一个不可用 endpoint，用于 generated shell 在 startup open 失败后保留结构化状态。
+    pub fn unavailable(
+        key_expr: &str,
+        config: ZenohChannelConfig,
+        error: impl Into<String>,
+    ) -> Self {
+        let depth = config.depth();
+        let mut health = BackendHealthTracker::new(ReconnectPolicy::default());
+        health.mark_failed(error.into(), 0);
+        Self {
+            key_expr: key_expr.to_string(),
+            publisher: None,
+            subscriber: None,
+            session: None,
+            inbox: Arc::new(ZenohInbox::new(depth)),
+            config,
+            health,
+            received: None,
+            revision: 0,
+        }
     }
 
     /// 注册 scheduler 数据到达唤醒器。
@@ -271,7 +293,11 @@ where
     pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), ZenohError> {
         self.ensure_ready("publish Zenoh sample")?;
         let frame = encode_frame(&value, published_at_ms)?;
-        match self.publisher.put(frame).wait() {
+        let publisher = self
+            .publisher
+            .as_ref()
+            .ok_or_else(|| ZenohError::new("publish Zenoh sample", "endpoint is not ready"))?;
+        match publisher.put(frame).wait() {
             Ok(()) => {
                 self.health.mark_ready();
                 Ok(())
@@ -281,7 +307,10 @@ where
                 self.mark_transport_error(&original);
                 self.recover_after_transport_error("publish Zenoh sample")?;
                 let frame = encode_frame(&value, published_at_ms)?;
-                self.publisher
+                let publisher = self.publisher.as_ref().ok_or_else(|| {
+                    ZenohError::new("publish Zenoh sample", "endpoint is not ready")
+                })?;
+                publisher
                     .put(frame)
                     .wait()
                     .map_err(|error| ZenohError::transport("publish Zenoh sample", error))
@@ -335,12 +364,14 @@ where
     ///
     /// 返回 `true` 只表示本地 endpoint 可执行操作，不表示当前已有远端 subscriber 或 router。
     pub fn ready(&self) -> bool {
-        !self.session.is_closed()
+        self.session
+            .as_ref()
+            .is_some_and(|session| !session.is_closed())
     }
 
     /// 返回 endpoint 健康快照。
     pub fn health(&self) -> BackendHealthSnapshot {
-        if self.session.is_closed() && self.health.snapshot().state == BackendHealthState::Ready {
+        if !self.ready() && self.health.snapshot().state == BackendHealthState::Ready {
             return BackendHealthSnapshot {
                 state: BackendHealthState::Degraded,
                 last_error: Some("Zenoh session is closed".to_string()),
@@ -431,9 +462,9 @@ where
         );
         match open_zenoh_parts(&self.key_expr, self.config, Arc::clone(&self.inbox)) {
             Ok(parts) => {
-                self.publisher = parts.publisher;
-                self.subscriber = parts.subscriber;
-                self.session = parts.session;
+                self.publisher = Some(parts.publisher);
+                self.subscriber = Some(parts.subscriber);
+                self.session = Some(parts.session);
                 self.health.mark_ready();
                 Ok(())
             }
@@ -903,6 +934,8 @@ mod tests {
 
         endpoint
             .session
+            .as_ref()
+            .expect("endpoint should hold a live session before forced close")
             .close()
             .wait()
             .expect("test should be able to close the local zenoh session");

@@ -106,6 +106,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         contract_has_runtime_params_for_language(contract, LanguageKind::Rust),
     ));
     output.push_str("pub struct App {\n");
+    output.push_str("    startup_status: flowrt::Status,\n");
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
         output.push_str(&format!(

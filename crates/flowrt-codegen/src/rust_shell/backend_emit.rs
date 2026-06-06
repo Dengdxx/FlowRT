@@ -35,17 +35,17 @@ pub(super) fn runtime_channel_initializer(
     bind: &BindRuntimePlan,
 ) -> String {
     if bind_backend(bind) == "iox2" {
+        let service_name = crate::rust_string_literal(&iox2_service_name(contract, graph, bind));
+        let config = iox2_channel_config_expr(bind);
         return format!(
-            "flowrt::iox2::Iox2PubSub::open_with_config({}, {}).expect(\"failed to open FlowRT iox2 channel\")",
-            crate::rust_string_literal(&iox2_service_name(contract, graph, bind)),
-            iox2_channel_config_expr(bind),
+            "match flowrt::iox2::Iox2PubSub::open_with_config({service_name}, {config}) {{\n                Ok(channel) => channel,\n                Err(error) => {{\n                    eprintln!(\"FlowRT: failed to open iox2 channel {{}}: {{error}}\", {service_name});\n                    startup_status = flowrt::Status::Error;\n                    flowrt::iox2::Iox2PubSub::unavailable({service_name}, {config}, error.to_string())\n                }}\n            }}",
         );
     }
     if bind_backend(bind) == "zenoh" {
+        let key_expr = crate::rust_string_literal(&zenoh_key_expr(contract, graph, bind));
+        let config = zenoh_channel_config_expr(bind);
         return format!(
-            "flowrt::zenoh::ZenohPubSub::open_with_config({}, {}).expect(\"failed to open FlowRT zenoh channel\")",
-            crate::rust_string_literal(&zenoh_key_expr(contract, graph, bind)),
-            zenoh_channel_config_expr(bind),
+            "match flowrt::zenoh::ZenohPubSub::open_with_config({key_expr}, {config}) {{\n                Ok(channel) => channel,\n                Err(error) => {{\n                    eprintln!(\"FlowRT: failed to open zenoh channel {{}}: {{error}}\", {key_expr});\n                    startup_status = flowrt::Status::Error;\n                    flowrt::zenoh::ZenohPubSub::unavailable({key_expr}, {config}, error.to_string())\n                }}\n            }}",
         );
     }
 
@@ -63,9 +63,10 @@ pub(super) fn bridge_runtime_channel_initializer(
     graph: &GraphIr,
     bridge: &BridgeRuntimePlan,
 ) -> String {
+    let key_expr = crate::rust_string_literal(&ros2_bridge_key_expr(contract, graph, bridge));
+    let config = "flowrt::zenoh::ZenohChannelConfig::latest()";
     format!(
-        "flowrt::zenoh::ZenohPubSub::open_with_config({}, flowrt::zenoh::ZenohChannelConfig::latest()).expect(\"failed to open FlowRT ROS2 bridge zenoh channel\")",
-        crate::rust_string_literal(&ros2_bridge_key_expr(contract, graph, bridge)),
+        "match flowrt::zenoh::ZenohPubSub::open_with_config({key_expr}, {config}) {{\n            Ok(channel) => channel,\n            Err(error) => {{\n                eprintln!(\"FlowRT: failed to open ROS2 bridge zenoh channel {{}}: {{error}}\", {key_expr});\n                startup_status = flowrt::Status::Error;\n                flowrt::zenoh::ZenohPubSub::unavailable({key_expr}, {config}, error.to_string())\n            }}\n        }}",
     )
 }
 

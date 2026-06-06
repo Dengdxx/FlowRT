@@ -277,6 +277,30 @@ where
         })
     }
 
+    /// 构造一个不可用 endpoint，用于 generated shell 在 startup open 失败后保留结构化状态。
+    pub fn unavailable(
+        service_name: &str,
+        config: Iox2ChannelConfig,
+        error: impl Into<String>,
+    ) -> Self {
+        let mut health = BackendHealthTracker::new(ReconnectPolicy::default());
+        health.mark_failed(error.into(), 0);
+        Self {
+            service_name: service_name.to_string(),
+            publisher: None,
+            subscriber: None,
+            notifier: None,
+            wake_handle: None,
+            schedule_waiter: None,
+            node: None,
+            config,
+            stale: config.stale(),
+            health,
+            received: None,
+            revision: 0,
+        }
+    }
+
     /// 通过 iceoryx2 loaned sample 发布一个值。
     pub fn publish(&mut self, value: T) -> Result<(), Iox2Error> {
         self.publish_at(value, 0)

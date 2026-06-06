@@ -173,6 +173,105 @@ backends = ["iox2"]
 }
 
 #[test]
+fn rust_transport_channel_init_records_startup_error_without_panicking() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "startup_test"
+rsdl_version = "0.1"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.source]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.sink]
+language = "rust"
+input = ["imu:Imu"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["imu"]
+
+[[bind.dataflow]]
+from = "source.imu"
+to = "sink.imu"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(!rust_shell.contains(".expect(\"failed to open FlowRT"));
+    assert!(rust_shell.contains("startup_status: flowrt::Status"));
+    assert!(rust_shell.contains("let mut startup_status = flowrt::Status::Ok;"));
+    assert!(rust_shell.contains("startup_status = flowrt::Status::Error;"));
+    assert!(rust_shell.contains("ZenohPubSub::unavailable("));
+    assert!(
+        rust_shell.contains("if self.startup_status != flowrt::Status::Ok {\n            return self.startup_status;\n        }")
+    );
+}
+
+#[test]
+fn rust_user_factory_still_returns_app_after_transport_startup_hardening() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "factory_test"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 1
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains("pub fn new(\n        worker: Box<dyn Worker>,\n    ) -> Self"));
+    assert!(rust_shell.contains("user::build_app().run(backend.as_ref(), run_ticks)"));
+    assert!(!rust_shell.contains("match user::build_app()"));
+    assert!(!rust_shell.contains("-> Result<Self"));
+}
+
+#[test]
 fn emits_iox2_typed_channels_when_profile_selects_iox2() {
     let ir = contract_from_source(
         r#"

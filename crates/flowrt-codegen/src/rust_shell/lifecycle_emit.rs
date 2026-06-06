@@ -1,6 +1,6 @@
 use flowrt_ir::{ContractIr, GraphIr, InstanceIr};
 
-use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan};
+use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, bind_backend};
 
 use super::backend_emit;
 use super::scheduler_emit;
@@ -22,7 +22,14 @@ pub(super) fn emit_rust_app_new(
             crate::component_rust_name(component)
         ));
     }
-    output.push_str("    ) -> Self {\n        Self {\n");
+    let startup_status_binding = if has_fallible_transport_startup(binds, bridges) {
+        "let mut startup_status = flowrt::Status::Ok;"
+    } else {
+        "let startup_status = flowrt::Status::Ok;"
+    };
+    output.push_str(&format!(
+        "    ) -> Self {{\n        {startup_status_binding}\n        Self {{\n",
+    ));
     for instance in order {
         let component = crate::component_by_name(contract, &instance.component.name);
         output.push_str(&format!("            {},\n", instance.name));
@@ -52,8 +59,19 @@ pub(super) fn emit_rust_app_new(
             backend_emit::bridge_runtime_channel_initializer(contract, graph, bridge)
         ));
     }
+    output.push_str("            startup_status,\n");
     output.push_str("        }\n    }\n");
     output
+}
+
+fn has_fallible_transport_startup(
+    binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
+) -> bool {
+    !bridges.is_empty()
+        || binds
+            .iter()
+            .any(|bind| matches!(bind_backend(bind), "iox2" | "zenoh"))
 }
 
 pub(super) fn emit_rust_app_run(
@@ -148,7 +166,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     let visibility = if emission.public { "pub " } else { "" };
     let function_name = emission.function_name;
     output.push_str(&format!(
-        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {{\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
+        "    {visibility}fn {function_name}(mut self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {{\n        if self.startup_status != flowrt::Status::Ok {{\n            return self.startup_status;\n        }}\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
     ));
     output.push_str("        let _ = backend;\n");
     output.push_str("        let shutdown = flowrt::install_signal_shutdown_token();\n");
