@@ -526,9 +526,9 @@ mod tests {
     #[test]
     fn format_f64_field() {
         let fields = [fixed_field("val", "f64", 0, 8)];
-        let payload = 3.14f64.to_le_bytes();
+        let payload = 3.5f64.to_le_bytes();
         let result = format_fixed_abi_fields(&fields, &payload).unwrap();
-        assert_eq!(result, "val=3.14");
+        assert_eq!(result, "val=3.5");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use object::{Object, ObjectSection};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::schema::{SELF_DESCRIPTION_SECTION, SelfDescription};
+use crate::schema::{SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription};
 
 /// 加载错误。
 #[derive(Debug, Error)]
@@ -26,6 +26,13 @@ pub enum LoadError {
     SectionData,
     #[error("failed to parse FlowRT self-description: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(
+        "unsupported FlowRT self-description version `{actual}`; supported version is `{supported}`"
+    )]
+    UnsupportedVersion {
+        actual: String,
+        supported: &'static str,
+    },
 }
 
 /// 从 `selfdesc.json` 或二进制 `.flowrt.selfdesc` section 读取 self-description。
@@ -42,7 +49,15 @@ pub fn load_self_description(path: &Path) -> Result<SelfDescription, LoadError> 
     } else {
         self_description_section_bytes(&bytes)?
     };
-    serde_json::from_slice(&json).map_err(LoadError::Json)
+    let self_description: SelfDescription =
+        serde_json::from_slice(&json).map_err(LoadError::Json)?;
+    if self_description.self_description_version != SELF_DESCRIPTION_SCHEMA_VERSION {
+        return Err(LoadError::UnsupportedVersion {
+            actual: self_description.self_description_version,
+            supported: SELF_DESCRIPTION_SCHEMA_VERSION,
+        });
+    }
+    Ok(self_description)
 }
 
 /// 计算 self-description JSON 的 SHA-256 哈希（hex 小写）。
@@ -66,7 +81,6 @@ fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>, LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn minimal_selfdesc_json() -> &'static str {
         r#"{
@@ -174,7 +188,7 @@ fn main() {{}}
     }
 
     #[test]
-    fn unsupported_version_loads_without_error() {
+    fn unsupported_version_reports_clear_error() {
         let json = r#"{
   "self_description_version": "99.0",
   "source_hash": "abc",
@@ -187,8 +201,17 @@ fn main() {{}}
         let path = dir.join("selfdesc.json");
         std::fs::write(&path, json).unwrap();
 
-        let sd = load_self_description(&path).unwrap();
-        assert_eq!(sd.self_description_version, "99.0");
+        let err = load_self_description(&path).unwrap_err();
+        assert!(matches!(
+            &err,
+            LoadError::UnsupportedVersion { actual, supported }
+                if actual == "99.0" && *supported == SELF_DESCRIPTION_SCHEMA_VERSION
+        ));
+        assert!(
+            err.to_string()
+                .contains("unsupported FlowRT self-description version"),
+            "error: {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
