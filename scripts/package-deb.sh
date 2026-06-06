@@ -66,6 +66,10 @@ command -v git >/dev/null || {
     printf 'git is required to fetch vendored C++ backend source snapshots\n' >&2
     exit 1
 }
+command -v sha256sum >/dev/null || {
+    printf 'sha256sum is required to verify vendored Debian packages\n' >&2
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # 依赖锁定校验
@@ -101,10 +105,21 @@ while IFS=' ' read -r type name version_val url checksum; do
     esac
 done < "$deps_lock"
 
-if [[ -z "${!lock_git_commit[*]}" ]]; then
-    printf 'deps.lock: no git entries found\n' >&2
-    exit 1
-fi
+require_git_lock() {
+    local name="$1"
+    if [[ -z "${lock_git_url[$name]:-}" || -z "${lock_git_tag[$name]:-}" || -z "${lock_git_commit[$name]:-}" ]]; then
+        printf 'deps.lock: missing git lock entry for %s\n' "$name" >&2
+        exit 1
+    fi
+}
+
+require_deb_lock() {
+    local name="$1"
+    if [[ -z "${lock_deb_url[$name]:-}" || -z "${lock_deb_sha256[$name]:-}" ]]; then
+        printf 'deps.lock: missing deb lock entry for %s\n' "$name" >&2
+        exit 1
+    fi
+}
 
 if [[ -z "$version" ]]; then
     version="$(
@@ -125,7 +140,17 @@ fi
 if [[ -z "$architecture" ]]; then
     architecture="$(dpkg --print-architecture)"
 fi
-multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+case "$architecture" in
+    amd64|arm64)
+        ;;
+    *)
+        printf 'error: --architecture %s is not supported.\n' "$architecture" >&2
+        printf 'supported architectures: amd64 arm64\n' >&2
+        exit 1
+        ;;
+esac
+
+multiarch="$(dpkg-architecture -a"$architecture" -qDEB_HOST_MULTIARCH)"
 
 package_work_parent="$repo_root/build/package-deb"
 mkdir -p "$package_work_parent" "$output_dir"
@@ -170,7 +195,7 @@ fetch_git_snapshot() {
     local name="$1"
     local repo="$2"
     local tag="$3"
-    local expected_commit="${lock_git_commit[$name]}"
+    local expected_commit="${lock_git_commit[$name]:-}"
     local dest="$vendor_src_dir/$name"
     if [[ -d "$dest/.git" ]]; then
         git -C "$dest" fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null
@@ -212,6 +237,7 @@ download_cached() {
 }
 
 for name in iceoryx2 zenoh-c zenoh-cpp; do
+    require_git_lock "$name"
     fetch_git_snapshot "$name" "${lock_git_url[$name]}" "${lock_git_tag[$name]}"
 done
 
@@ -234,7 +260,8 @@ DESTDIR="$staging" cmake --install "$iox2_build"
 
 zenoh_root="$package_work/zenoh-root"
 mkdir -p "$zenoh_root"
-for deb_name in libzenohc_1.9.0_amd64.deb libzenohc-dev_1.9.0_amd64.deb libzenohcpp-dev_1.9.0_all.deb; do
+for deb_name in "libzenohc_1.9.0_${architecture}.deb" "libzenohc-dev_1.9.0_${architecture}.deb" libzenohcpp-dev_1.9.0_all.deb; do
+    require_deb_lock "$deb_name"
     dpkg-deb -x "$(download_cached "${lock_deb_url[$deb_name]}")" "$zenoh_root"
 done
 if [[ -d "$zenoh_root/usr/include" ]]; then

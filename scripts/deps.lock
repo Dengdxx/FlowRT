@@ -9,4 +9,6 @@ git zenoh-c 1.9.0 https://github.com/eclipse-zenoh/zenoh-c.git 499de93af63e6a7d3
 git zenoh-cpp 1.9.0 https://github.com/eclipse-zenoh/zenoh-cpp.git 78a5ab9c0130ed65f44d7bd1958398039fb14163
 deb libzenohc_1.9.0_amd64.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc_1.9.0_amd64.deb e6ae7d652df703793a2dbd96e298bbeb1a5a6eea841ab889ce03548ecf53871a
 deb libzenohc-dev_1.9.0_amd64.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc-dev_1.9.0_amd64.deb 454df37a60a1fc58a1e4efe698b649c962aaf91030e1ab2596930182b2054780
+deb libzenohc_1.9.0_arm64.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc_1.9.0_arm64.deb 7e751af1573ebe1d5151e4254478f1b9bb3ea0f71ad1650c45981c0d945f8c2e
+deb libzenohc-dev_1.9.0_arm64.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc-dev_1.9.0_arm64.deb 67a686377945124235cda3527a4c27dc18cbbf101c456183c5d95eaf4078ace0
 deb libzenohcpp-dev_1.9.0_all.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohcpp-dev_1.9.0_all.deb a6f1fb1ac03ab592384c8ceba3b45d795b62622da69b7549cef4b762bcfef088
