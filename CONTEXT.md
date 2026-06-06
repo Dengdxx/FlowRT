@@ -21,6 +21,21 @@ drain loop 级联唤醒。
 录制回放系统暂不实施，但实现上述能力时应预留 runtime、self-description 或 CLI
 边界，避免后续引入时破坏已发布契约。
 
+下一版本 `v0.4.0` 目标定为 Service runtime 完整化：
+
+- 生成 Rust/C++ service client/server 用户 API。
+- Service transport 支持 `inproc` 与 `zenoh`；`iox2` 暂不作为 Service transport，
+  继续专注 fixed-size shared-memory dataflow。
+- request arrival 直接驱动 server，不靠 tick polling。
+- 补齐 request id、correlation、timeout、server unavailable 和 structured error 语义。
+- self-description、`flowrt list` 和 `flowrt status` 展示 service endpoints 与 health。
+- ROS2 Service bridge 先固定语义和 manifest 边界；external process adapter 先预留
+  process/service 接入边界；`flowrt pub` 与 record/replay 只预留接口。
+
+参数热更新是 runtime control-plane service-like RPC，可复用 schema、validation、
+structured error、pending/apply 和 self-description 经验，但不并入 graph 业务
+Service 语义。
+
 ## 当前仓库状态
 
 仓库已经形成 FlowRT 工具链、Rust/C++ runtime shell、跨进程 backend、ROS2 zenoh
