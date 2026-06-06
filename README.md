@@ -29,10 +29,10 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.3.1/flowrt_0.3.1_amd64.deb
-curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.3.1/SHA256SUMS
+curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.3.2/flowrt_0.3.2_amd64.deb
+curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.3.2/SHA256SUMS
 sha256sum -c SHA256SUMS
-sudo dpkg -i flowrt_0.3.1_amd64.deb
+sudo dpkg -i flowrt_0.3.2_amd64.deb
 flowrt --version
 ```
 

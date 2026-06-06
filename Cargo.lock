@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "iceoryx2",
  "libc",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-codegen"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "flowrt-conformance",
  "flowrt-ir",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-conformance"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "flowrt-ir",
  "flowrt-rsdl",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-ir"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "flowrt-rsdl",
  "serde",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-rsdl"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "thiserror",
  "toml 0.8.23",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-selfdesc"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "object",
  "serde",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "flowrt-validate"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "flowrt-conformance",
  "flowrt-ir",
