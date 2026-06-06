@@ -5,12 +5,12 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.3.0`。`v0.3.0` 已发布，核心主题是 Scheduler v2：
+当前 workspace 版本为 `0.3.1`。`v0.3.0` 已发布，核心主题是 Scheduler v2：
 task-centric scheduler plan、`startup` / `shutdown` task、`on_message` readiness、
 serial lane、worker thread 配置、channel revision/cache 和同一 scheduler step 内的
 drain loop 级联唤醒。
 
-`## 未发布` 中的近期规划聚焦 `v0.3.1`：
+`v0.3.1` 聚焦复杂系统结构能力：
 
 - workspace / module / composition 机制。
 - module name resolver 和跨模块引用。
