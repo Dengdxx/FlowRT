@@ -29,10 +29,10 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.1.0/flowrt_0.1.0_amd64.deb
-curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.1.0/SHA256SUMS
+curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.2.0/flowrt_0.2.0_amd64.deb
+curl -LO https://github.com/Dengdxx/FlowRT/releases/download/v0.2.0/SHA256SUMS
 sha256sum -c SHA256SUMS
-sudo dpkg -i flowrt_0.1.0_amd64.deb
+sudo dpkg -i flowrt_0.2.0_amd64.deb
 flowrt --version
 ```
 
@@ -107,7 +107,7 @@ RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例：
 ```toml
 [package]
 name = "counter_demo"
-version = "0.1.0"
+version = "0.2.0"
 rsdl_version = "0.1"
 
 [type.Count]

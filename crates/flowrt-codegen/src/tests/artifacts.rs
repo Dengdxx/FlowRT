@@ -296,7 +296,7 @@ channel = "latest"
 
     let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
     assert!(cmake.contains("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)"));
-    assert!(cmake.contains("find_package(flowrt_runtime 0.1 QUIET)"));
+    assert!(cmake.contains("find_package(flowrt_runtime 0.2 QUIET)"));
     assert!(
         cmake.contains("target_link_libraries(robot_demo_flowrt_app INTERFACE flowrt::runtime)")
     );
@@ -311,6 +311,36 @@ channel = "latest"
     assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
     assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));
     assert!(cmake.contains("add_executable(robot_demo_cpp_app ../cpp/src/main.cpp)"));
+}
+
+#[test]
+fn generated_cargo_manifest_uses_current_flowrt_minor_version() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 10
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+    assert!(cargo_manifest.contains("flowrt = { version = \"0.2\" }"));
 }
 
 #[test]
@@ -425,7 +455,7 @@ backends = ["inproc"]
     assert!(rust_selfdesc.contains("#[allow(dead_code)]\npub fn self_description_hash()"));
 
     let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
-    assert!(cargo_manifest.contains("flowrt = { version = \"0.1\" }"));
+    assert!(cargo_manifest.contains("flowrt = { version = \"0.2\" }"));
     assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
     assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
     assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));

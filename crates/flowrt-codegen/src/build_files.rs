@@ -6,6 +6,12 @@ use crate::{
     contract_has_ros2_bridge, fixed_message_abi_expectations, has_language, sanitize_package_name,
 };
 
+const FLOWRT_RUNTIME_VERSION_REQ: &str = concat!(
+    env!("CARGO_PKG_VERSION_MAJOR"),
+    ".",
+    env!("CARGO_PKG_VERSION_MINOR")
+);
+
 pub(super) fn emit_cmake(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name);
     let has_cpp_components = has_language(contract, LanguageKind::Cpp);
@@ -44,7 +50,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
             ));
         }
         output.push_str(
-            "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    find_package(flowrt_runtime 0.1 QUIET)\nendif()\n",
+            "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    find_package(flowrt_runtime {flowrt_version_req} QUIET)\nendif()\n",
         );
         output.push_str(
             "if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
@@ -53,6 +59,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
             "if(FLOWRT_CPP_RUNTIME_DIR)\n    if(NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR does not contain include/flowrt/runtime.hpp: ${FLOWRT_CPP_RUNTIME_DIR}\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nelseif(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install flowrt_runtime, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree.\")\nendif()\n",
         );
         output = output.replace("{package_name}", &package_name);
+        output = output.replace("{flowrt_version_req}", FLOWRT_RUNTIME_VERSION_REQ);
         if has_cpp_components {
             output.push_str(&format!(
                 "\nadd_library({shell_target} STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)\n"
@@ -133,16 +140,14 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
     if has_rust {
         let backend_features = contract_backend_features(contract);
         if backend_features.is_empty() {
-            output.push_str("flowrt = { version = \"0.1\" }");
+            output.push_str(&flowrt_dependency(None));
         } else {
             let features = backend_features
                 .iter()
                 .map(|feature| format!("\"{feature}\""))
                 .collect::<Vec<_>>()
                 .join(", ");
-            output.push_str(&format!(
-                "flowrt = {{ version = \"0.1\", features = [{features}] }}"
-            ));
+            output.push_str(&flowrt_dependency(Some(&features)));
         }
         output.push('\n');
         bins.push_str(&format!(
@@ -150,7 +155,8 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
             package_name
         ));
     } else if has_supervisor {
-        output.push_str("flowrt = { version = \"0.1\" }\n");
+        output.push_str(&flowrt_dependency(None));
+        output.push('\n');
     }
 
     if has_supervisor {
@@ -173,6 +179,15 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
     }
 
     output
+}
+
+fn flowrt_dependency(features: Option<&str>) -> String {
+    match features {
+        Some(features) => format!(
+            "flowrt = {{ version = \"{FLOWRT_RUNTIME_VERSION_REQ}\", features = [{features}] }}"
+        ),
+        None => format!("flowrt = {{ version = \"{FLOWRT_RUNTIME_VERSION_REQ}\" }}"),
+    }
 }
 
 fn cmake_iox2_dependency_block() -> &'static str {

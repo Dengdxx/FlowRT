@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.22)
 
 project(flowrt_runtime_cpp LANGUAGES CXX)
 
+set(FLOWRT_RUNTIME_CPP_VERSION "0.2.0")
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(CMakePackageConfigHelpers)
@@ -35,7 +37,7 @@ configure_package_config_file(
 )
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/flowrt_runtimeConfigVersion.cmake
-    VERSION 0.1.0
+    VERSION ${FLOWRT_RUNTIME_CPP_VERSION}
     COMPATIBILITY SameMajorVersion
 )
 install(
