@@ -13,7 +13,7 @@ use crate::{
     Result, component_by_name, fixed_message_abi_expectations, frame_header_size_for_expr,
     frame_header_size_for_type, frame_max_size_for_type, language_name, managed_header,
     param_type_name, param_update_name, param_value_for_instance, param_value_json,
-    selected_backend_name, type_contains_variable_data, variable_tail_max_size,
+    type_contains_variable_data, variable_tail_max_size,
 };
 
 const SELF_DESCRIPTION_SCHEMA_VERSION: &str = "0.1";
@@ -226,7 +226,6 @@ pub(super) fn emit_rust_selfdesc(contract: &ContractIr) -> String {
 }
 
 fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
-    let selected_backend = selected_backend_name(contract);
     Ok(SelfDescription {
         self_description_version: SELF_DESCRIPTION_SCHEMA_VERSION,
         ir_version: &contract.ir_version,
@@ -278,7 +277,7 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
         graphs: contract
             .graphs
             .iter()
-            .map(|graph| self_description_graph(contract, graph, selected_backend.clone()))
+            .map(|graph| self_description_graph(contract, graph))
             .collect(),
         message_abi: fixed_message_abi_expectations(contract)?
             .into_iter()
@@ -295,7 +294,6 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
 fn self_description_graph<'a>(
     contract: &'a ContractIr,
     graph: &'a GraphIr,
-    backend: String,
 ) -> SelfDescriptionGraph<'a> {
     SelfDescriptionGraph {
         name: &graph.name,
@@ -331,20 +329,23 @@ fn self_description_graph<'a>(
             .binds
             .iter()
             .enumerate()
-            .map(|(index, bind)| SelfDescriptionChannel {
-                from: format!("{}.{}", bind.from.instance.name, bind.from.port),
-                to: format!("{}.{}", bind.to.instance.name, bind.to.port),
-                message_type: channel_message_type(contract, graph, bind),
-                backend: backend.clone(),
-                service: (backend == "iox2")
-                    .then(|| crate::iox2_service_name_for_edge(contract, graph, index, bind)),
-                key_expr: (backend == "zenoh")
-                    .then(|| crate::zenoh_key_expr_for_edge(contract, graph, index, bind)),
-                channel: channel_name(bind.channel),
-                depth: bind.depth,
-                overflow: overflow_name(bind.overflow),
-                stale_policy: stale_name(bind.stale),
-                max_age_ms: bind.max_age_ms,
+            .map(|(index, bind)| {
+                let backend = bind.backend.0.as_str();
+                SelfDescriptionChannel {
+                    from: format!("{}.{}", bind.from.instance.name, bind.from.port),
+                    to: format!("{}.{}", bind.to.instance.name, bind.to.port),
+                    message_type: channel_message_type(contract, graph, bind),
+                    backend: backend.to_string(),
+                    service: (backend == "iox2")
+                        .then(|| crate::iox2_service_name_for_edge(contract, graph, index, bind)),
+                    key_expr: (backend == "zenoh")
+                        .then(|| crate::zenoh_key_expr_for_edge(contract, graph, index, bind)),
+                    channel: channel_name(bind.channel),
+                    depth: bind.depth,
+                    overflow: overflow_name(bind.overflow),
+                    stale_policy: stale_name(bind.stale),
+                    max_age_ms: bind.max_age_ms,
+                }
             })
             .collect(),
     }

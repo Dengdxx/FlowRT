@@ -255,11 +255,6 @@ jobs:
           flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
           flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
           flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-          flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
-          rm -f /tmp/flowrt-variable-iox2-saw-packet
-          FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-            flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
-          test -s /tmp/flowrt-variable-iox2-saw-packet
           flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
           FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 

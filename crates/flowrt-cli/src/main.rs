@@ -673,10 +673,12 @@ fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Resu
         );
     }
 
-    let backend = selected_runtime_backend_name(contract);
-    if !matches!(backend, "iox2" | "zenoh") {
+    if let Some(boundary) = first_mixed_language_bind_with_unsupported_backend(contract) {
         anyhow::bail!(
-            "mixed-language `{command}` requires backend `iox2` or `zenoh`; selected backend `{backend}` cannot carry cross-language process boundaries"
+            "mixed-language `{command}` cannot carry dataflow `{}` -> `{}` over backend `{}`; use backend `iox2` or `zenoh` for cross-language process boundaries",
+            boundary.from,
+            boundary.to,
+            boundary.backend
         );
     }
 
@@ -706,6 +708,13 @@ impl ProcessRuntimeFlags {
 struct MixedProcessGroup {
     graph: String,
     process: String,
+}
+
+#[derive(Debug, Clone)]
+struct MixedLanguageBind {
+    from: String,
+    to: String,
+    backend: String,
 }
 
 fn mixed_process_group(contract: &ContractIr) -> Option<MixedProcessGroup> {
@@ -757,6 +766,54 @@ fn selected_runtime_backend_name(contract: &ContractIr) -> &str {
         .or_else(|| contract.profiles.first())
         .map(|profile| profile.backend.0.as_str())
         .unwrap_or("inproc")
+}
+
+fn first_mixed_language_bind_with_unsupported_backend(
+    contract: &ContractIr,
+) -> Option<MixedLanguageBind> {
+    let component_languages = contract
+        .components
+        .iter()
+        .map(|component| (component.name.as_str(), component.language))
+        .collect::<BTreeMap<_, _>>();
+
+    for graph in &contract.graphs {
+        let instance_languages = graph
+            .instances
+            .iter()
+            .filter_map(|instance| {
+                component_languages
+                    .get(instance.component.name.as_str())
+                    .copied()
+                    .map(|language| (instance.name.as_str(), language))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        for bind in &graph.binds {
+            let Some(from_language) = instance_languages
+                .get(bind.from.instance.name.as_str())
+                .copied()
+            else {
+                continue;
+            };
+            let Some(to_language) = instance_languages
+                .get(bind.to.instance.name.as_str())
+                .copied()
+            else {
+                continue;
+            };
+            if from_language == to_language || matches!(bind.backend.0.as_str(), "iox2" | "zenoh") {
+                continue;
+            }
+            return Some(MixedLanguageBind {
+                from: format!("{}.{}", bind.from.instance.name, bind.from.port),
+                to: format!("{}.{}", bind.to.instance.name, bind.to.port),
+                backend: bind.backend.0.clone(),
+            });
+        }
+    }
+
+    None
 }
 
 fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> Result<()> {
@@ -914,6 +971,9 @@ fn first_cross_process_bind_matching(
             .collect::<BTreeMap<_, _>>();
 
         for bind in &graph.binds {
+            if bind.backend.0 != "inproc" {
+                continue;
+            }
             let from_process = processes.get(bind.from.instance.name.as_str())?;
             let to_process = processes.get(bind.to.instance.name.as_str())?;
             if from_process != to_process {

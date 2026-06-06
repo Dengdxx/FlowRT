@@ -540,6 +540,7 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             &[
                 "from",
                 "to",
+                "backend",
                 "channel",
                 "depth",
                 "overflow",
@@ -550,6 +551,7 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
         parsed.push(RawDataflowBind {
             from: required_string(table, &context, "from")?,
             to: required_string(table, &context, "to")?,
+            backend: optional_string(table, &context, "backend")?,
             channel: required_string(table, &context, "channel")?,
             depth: optional_u32(table, &context, "depth")?,
             overflow: optional_string(table, &context, "overflow")?,

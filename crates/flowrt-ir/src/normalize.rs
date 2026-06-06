@@ -4,12 +4,13 @@ use flowrt_rsdl::{RawComponent, RawDocument, RawPort, RawProfile, RawTarget, Raw
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelEdgeIr, ChannelKind,
-    ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr, EntityId,
-    EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind, LifecycleSurface,
-    OverflowPolicy, PackageIr, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, ParamValueIr,
-    PolicyDefaults, PolicyValueSource, PortIr, PortRef, ProfileIr, Result, StalePolicy, TargetIr,
-    TaskIr, TriggerKind, TypeIr, channel_capabilities, deployment_capability_decision,
+    BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelBackendSource, ChannelEdgeIr,
+    ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
+    EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
+    LifecycleSurface, OverflowPolicy, PackageIr, ParamIr, ParamType, ParamUpdatePolicy, ParamValue,
+    ParamValueIr, PolicyDefaults, PolicyValueSource, PortIr, PortRef, ProfileIr, Result,
+    RouteTopology, StalePolicy, TargetIr, TaskIr, TriggerKind, TypeExpr, TypeIr,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
     graph_required_capabilities, parse_type_expr, target_capabilities,
 };
 
@@ -84,7 +85,14 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
         })
         .collect::<BTreeMap<_, _>>();
 
-    let binds = normalize_binds(document, &instance_refs, &profiles)?;
+    let binds = normalize_binds(
+        document,
+        &instance_refs,
+        &types,
+        &components,
+        &instances,
+        &profiles,
+    )?;
     let graph = GraphIr {
         id: graph_id.clone(),
         name: graph_name.clone(),
@@ -148,7 +156,15 @@ pub fn project_contract_to_profile(
 
 fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileIr) {
     for graph in &mut contract.graphs {
+        let type_lookup = source_port_types_by_endpoint(&contract.components, &graph.instances);
+        let topology_lookup = route_topology_by_bind_id(graph);
         for bind in &mut graph.binds {
+            let source_type =
+                type_lookup.get(&(bind.from.instance.name.clone(), bind.from.port.clone()));
+            let topology = topology_lookup
+                .get(&bind.id)
+                .copied()
+                .unwrap_or_else(RouteTopology::local);
             if bind.policy_source.overflow == PolicyValueSource::ProfileDefault {
                 bind.overflow = profile.defaults.default_overflow;
             }
@@ -158,8 +174,26 @@ fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileI
             if bind.policy_source.max_age_ms == PolicyValueSource::ProfileDefault {
                 bind.max_age_ms = profile.defaults.max_age_ms;
             }
-            bind.capability_requirements =
-                channel_capabilities(bind.channel, bind.overflow, bind.stale);
+            if bind.backend_source != ChannelBackendSource::Explicit {
+                let resolved = resolve_channel_backend(
+                    profile.backend.0.as_str(),
+                    source_type,
+                    &contract.types,
+                );
+                bind.backend = BackendName(resolved.backend);
+                bind.backend_source = resolved.source;
+            }
+            bind.capability_requirements = match source_type {
+                Some(source_type) => channel_route_capabilities(
+                    &contract.types,
+                    source_type,
+                    bind.channel,
+                    bind.overflow,
+                    bind.stale,
+                    topology,
+                ),
+                None => channel_capabilities(bind.channel, bind.overflow, bind.stale),
+            };
         }
     }
 }
@@ -624,6 +658,9 @@ pub fn param_value_kind(value: &ParamValue) -> &'static str {
 fn normalize_binds(
     document: &RawDocument,
     instance_refs: &BTreeMap<String, EntityRef>,
+    types: &[TypeIr],
+    components: &[ComponentIr],
+    instances: &[InstanceIr],
     profiles: &[ProfileIr],
 ) -> Result<Vec<ChannelEdgeIr>> {
     let default_policy = profiles
@@ -637,6 +674,14 @@ fn normalize_binds(
         .map(|profile| profile.defaults.default_stale_policy)
         .unwrap_or(StalePolicy::Warn);
     let default_max_age = default_policy.and_then(|profile| profile.defaults.max_age_ms);
+    let default_backend = default_policy
+        .map(|profile| profile.backend.0.as_str())
+        .unwrap_or("inproc");
+    let source_port_types = source_port_types_by_endpoint(components, instances);
+    let instances_by_name = instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
 
     let mut binds = document
         .binds
@@ -661,11 +706,31 @@ fn normalize_binds(
                 }
                 None => default_stale,
             };
+            let from = parse_port_ref(&raw.from, instance_refs)?;
+            let to = parse_port_ref(&raw.to, instance_refs)?;
+            let source_type =
+                source_port_types.get(&(from.instance.name.clone(), from.port.clone()));
+            let topology = route_topology(&instances_by_name, &from, &to);
+            let backend_seed = match raw.backend.as_deref() {
+                Some("auto") | None => default_backend,
+                Some(backend) => backend,
+            };
+            let resolved_backend = resolve_channel_backend(backend_seed, source_type, types);
+            let backend_source = if raw.backend.is_some()
+                && raw.backend.as_deref() != Some("auto")
+                && resolved_backend.source != ChannelBackendSource::AutoFallback
+            {
+                ChannelBackendSource::Explicit
+            } else {
+                resolved_backend.source
+            };
 
             Ok(ChannelEdgeIr {
                 id: entity_id("bind", &format!("{}->{}", raw.from, raw.to)),
-                from: parse_port_ref(&raw.from, instance_refs)?,
-                to: parse_port_ref(&raw.to, instance_refs)?,
+                from,
+                to,
+                backend: BackendName(resolved_backend.backend),
+                backend_source,
                 channel,
                 depth,
                 overflow,
@@ -688,7 +753,17 @@ fn normalize_binds(
                         PolicyValueSource::ProfileDefault
                     },
                 },
-                capability_requirements: channel_capabilities(channel, overflow, stale),
+                capability_requirements: match source_type {
+                    Some(source_type) => channel_route_capabilities(
+                        types,
+                        source_type,
+                        channel,
+                        overflow,
+                        stale,
+                        topology,
+                    ),
+                    None => channel_capabilities(channel, overflow, stale),
+                },
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -707,6 +782,133 @@ fn normalize_binds(
             ))
     });
     Ok(binds)
+}
+
+struct ResolvedChannelBackend {
+    backend: String,
+    source: ChannelBackendSource,
+}
+
+fn resolve_channel_backend(
+    requested_backend: &str,
+    source_type: Option<&TypeExpr>,
+    types: &[TypeIr],
+) -> ResolvedChannelBackend {
+    if requested_backend == "iox2"
+        && source_type.is_some_and(|ty| type_expr_contains_variable_data(ty, types))
+    {
+        return ResolvedChannelBackend {
+            backend: "zenoh".to_string(),
+            source: ChannelBackendSource::AutoFallback,
+        };
+    }
+    ResolvedChannelBackend {
+        backend: requested_backend.to_string(),
+        source: ChannelBackendSource::ProfileDefault,
+    }
+}
+
+fn source_port_types_by_endpoint(
+    components: &[ComponentIr],
+    instances: &[InstanceIr],
+) -> BTreeMap<(String, String), TypeExpr> {
+    let components = components
+        .iter()
+        .map(|component| (component.name.as_str(), component))
+        .collect::<BTreeMap<_, _>>();
+    let mut ports = BTreeMap::new();
+    for instance in instances {
+        let Some(component) = components.get(instance.component.name.as_str()) else {
+            continue;
+        };
+        for output in &component.outputs {
+            ports.insert(
+                (instance.name.clone(), output.name.clone()),
+                output.ty.clone(),
+            );
+        }
+    }
+    ports
+}
+
+fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<EntityId, RouteTopology> {
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    graph
+        .binds
+        .iter()
+        .map(|bind| {
+            (
+                bind.id.clone(),
+                route_topology(&instances, &bind.from, &bind.to),
+            )
+        })
+        .collect()
+}
+
+fn route_topology(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    from: &PortRef,
+    to: &PortRef,
+) -> RouteTopology {
+    let from_instance = instances.get(from.instance.name.as_str()).copied();
+    let to_instance = instances.get(to.instance.name.as_str()).copied();
+    let from_process = from_instance
+        .and_then(|instance| instance.process.as_deref())
+        .unwrap_or("main");
+    let to_process = to_instance
+        .and_then(|instance| instance.process.as_deref())
+        .unwrap_or("main");
+    let from_target = from_instance
+        .and_then(|instance| instance.target.as_ref())
+        .map(|target| target.name.as_str());
+    let to_target = to_instance
+        .and_then(|instance| instance.target.as_ref())
+        .map(|target| target.name.as_str());
+    RouteTopology::new(
+        from_process != to_process,
+        from_target.is_some() && to_target.is_some() && from_target != to_target,
+    )
+}
+
+fn type_expr_contains_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {
+    let types_by_name = types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let mut visiting = std::collections::BTreeSet::new();
+    type_expr_contains_variable_data_inner(expr, &types_by_name, &mut visiting)
+}
+
+fn type_expr_contains_variable_data_inner(
+    expr: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+    visiting: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
+        TypeExpr::Array { element, .. } => {
+            type_expr_contains_variable_data_inner(element, types_by_name, visiting)
+        }
+        TypeExpr::Named { name } => {
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let contains = types_by_name.get(name.as_str()).is_some_and(|ty| {
+                ty.fields.iter().any(|field| {
+                    type_expr_contains_variable_data_inner(&field.ty, types_by_name, visiting)
+                })
+            });
+            visiting.remove(name);
+            contains
+        }
+        TypeExpr::Primitive { .. } => false,
+    }
 }
 
 fn parse_port_ref(endpoint: &str, instance_refs: &BTreeMap<String, EntityRef>) -> Result<PortRef> {
@@ -1083,7 +1285,7 @@ mod tests {
     use super::*;
     use crate::{
         CapabilityAtom, ChannelKind, ParamType, ParamUpdatePolicy, PrimitiveType, TypeExpr,
-        deployment_capability_decision,
+        channel_route_capabilities, deployment_capability_decision,
     };
 
     #[test]
@@ -1339,7 +1541,7 @@ backends = ["inproc"]
     }
 
     #[test]
-    fn int128_component_ports_require_abi_capability() {
+    fn int128_component_ports_require_route_abi_capability() {
         let source = r#"
 [package]
 name = "robot_demo"
@@ -1386,15 +1588,15 @@ backends = ["inproc"]
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
 
         assert!(
-            ir.deployments[0]
-                .required_capabilities
+            ir.graphs[0].binds[0]
+                .capability_requirements
                 .contains(&CapabilityAtom("abi:int128".to_string()))
         );
-        assert!(!ir.deployments[0].satisfied);
+        assert!(ir.deployments[0].satisfied);
     }
 
     #[test]
-    fn declared_int128_message_types_require_abi_capability_even_when_not_port_reachable() {
+    fn declared_int128_message_types_do_not_affect_unused_routes() {
         let source = r#"
 [package]
 name = "robot_demo"
@@ -1447,15 +1649,15 @@ backends = ["inproc"]
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
 
         assert!(
-            ir.deployments[0]
-                .required_capabilities
+            !ir.graphs[0].binds[0]
+                .capability_requirements
                 .contains(&CapabilityAtom("abi:int128".to_string()))
         );
-        assert!(!ir.deployments[0].satisfied);
+        assert!(ir.deployments[0].satisfied);
     }
 
     #[test]
-    fn iox2_does_not_satisfy_int128_abi_capability() {
+    fn iox2_route_records_int128_abi_capability() {
         let source = r#"
 [package]
 name = "robot_demo"
@@ -1502,11 +1704,11 @@ backends = ["iox2"]
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
 
         assert!(
-            ir.deployments[0]
-                .required_capabilities
+            ir.graphs[0].binds[0]
+                .capability_requirements
                 .contains(&CapabilityAtom("abi:int128".to_string()))
         );
-        assert!(!ir.deployments[0].satisfied);
+        assert!(ir.deployments[0].satisfied);
     }
 
     #[test]
@@ -1548,12 +1750,9 @@ backends = ["inproc"]
 
         assert!(decision.selected_backend_known);
         assert!(decision.target_supports_selected_backend);
-        assert_eq!(
-            decision.missing_required_capabilities,
-            vec![CapabilityAtom("abi:int128".to_string())]
-        );
+        assert!(decision.missing_required_capabilities.is_empty());
         assert_eq!(deployment.satisfied, decision.satisfied);
-        assert!(!deployment.satisfied);
+        assert!(deployment.satisfied);
     }
 
     #[test]
@@ -1880,12 +2079,142 @@ backends = ["inproc"]
         assert_eq!(defaulted.max_age_ms, Some(25));
         assert_eq!(
             defaulted.capability_requirements,
-            channel_capabilities(defaulted.channel, defaulted.overflow, defaulted.stale)
+            channel_route_capabilities(
+                &projected.types,
+                &TypeExpr::Primitive {
+                    name: PrimitiveType::U32
+                },
+                defaulted.channel,
+                defaulted.overflow,
+                defaulted.stale,
+                RouteTopology::local()
+            )
         );
 
         assert_eq!(explicit.overflow, OverflowPolicy::DropNewest);
         assert_eq!(explicit.stale, StalePolicy::HoldLast);
         assert_eq!(explicit.max_age_ms, Some(7));
+    }
+
+    #[test]
+    fn projects_auto_route_backend_and_falls_back_for_variable_frames() {
+        let source = r#"
+[package]
+name = "route_backend_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=64>"
+
+[type.Counter]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["packet:Packet", "counter:Counter"]
+
+[component.consumer]
+language = "rust"
+input = ["packet:Packet", "counter:Counter"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[[bind.dataflow]]
+from = "producer.packet"
+to = "consumer.packet"
+channel = "latest"
+backend = "auto"
+
+[[bind.dataflow]]
+from = "producer.counter"
+to = "consumer.counter"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[profile.ipc]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "iox2", "zenoh"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, Some("ipc")).unwrap();
+        let packet = projected.graphs[0]
+            .binds
+            .iter()
+            .find(|bind| bind.from.port == "packet")
+            .unwrap();
+        let counter = projected.graphs[0]
+            .binds
+            .iter()
+            .find(|bind| bind.from.port == "counter")
+            .unwrap();
+
+        assert_eq!(packet.backend.0, "zenoh");
+        assert_eq!(packet.backend_source, ChannelBackendSource::AutoFallback);
+        assert_eq!(counter.backend.0, "iox2");
+        assert_eq!(counter.backend_source, ChannelBackendSource::ProfileDefault);
+    }
+
+    #[test]
+    fn explicit_route_backend_survives_profile_projection() {
+        let source = r#"
+[package]
+name = "explicit_route_backend_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=64>"
+
+[component.producer]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.consumer]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[[bind.dataflow]]
+from = "producer.packet"
+to = "consumer.packet"
+channel = "latest"
+backend = "zenoh"
+
+[profile.default]
+backend = "inproc"
+
+[profile.ipc]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "iox2", "zenoh"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, Some("ipc")).unwrap();
+        let bind = &projected.graphs[0].binds[0];
+
+        assert_eq!(bind.backend.0, "zenoh");
+        assert_eq!(bind.backend_source, ChannelBackendSource::Explicit);
     }
 
     #[test]

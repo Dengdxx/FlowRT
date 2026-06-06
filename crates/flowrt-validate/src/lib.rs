@@ -16,7 +16,7 @@ use std::fmt::{Display, Formatter};
 
 use capabilities::{
     validate_channel_policy_sources, validate_declared_backends, validate_deployment_matrix,
-    validate_deployments, validate_derived_capabilities,
+    validate_deployments, validate_derived_capabilities, validate_route_backends,
 };
 use components::validate_components;
 use contract::{
@@ -106,6 +106,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_components(ir, &type_names, &mut errors);
     validate_graphs(ir, &mut errors);
     validate_declared_backends(ir, &mut errors);
+    validate_route_backends(ir, &mut errors);
     validate_deployments(ir, &mut errors);
 
     if errors.is_empty() {

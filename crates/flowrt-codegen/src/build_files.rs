@@ -1,8 +1,7 @@
 use flowrt_ir::{ContractIr, LanguageKind};
 
-use crate::{
-    fixed_message_abi_expectations, has_language, sanitize_package_name, selected_backend_name,
-};
+use crate::runtime_plan::{contract_backend_features, contract_uses_backend};
+use crate::{fixed_message_abi_expectations, has_language, sanitize_package_name};
 
 pub(super) fn emit_cmake(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name);
@@ -20,7 +19,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
         output.push_str(
             "if(FLOWRT_CPP_RUNTIME_DIR)\n    list(PREPEND CMAKE_PREFIX_PATH \"${FLOWRT_CPP_RUNTIME_DIR}\")\n    list(PREPEND CMAKE_BUILD_RPATH \"${FLOWRT_CPP_RUNTIME_DIR}/lib\")\nendif()\n",
         );
-        if selected_backend_name(contract) == "iox2" {
+        if contract_uses_backend(contract, "iox2") {
             output.push_str(cmake_iox2_dependency_block());
             output.push_str(&format!(
                 "target_link_libraries({package_name}_flowrt_app INTERFACE iceoryx2-cxx::static-lib-cxx)\n"
@@ -28,7 +27,8 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
             output.push_str(&format!(
                 "target_compile_definitions({package_name}_flowrt_app INTERFACE FLOWRT_HAS_ICEORYX2_CXX=1)\n"
             ));
-        } else if selected_backend_name(contract) == "zenoh" {
+        }
+        if contract_uses_backend(contract, "zenoh") {
             output.push_str(cmake_zenoh_dependency_block());
             output.push_str(&format!(
                 "target_link_libraries({package_name}_flowrt_app INTERFACE ${{FLOWRT_ZENOH_CXX_TARGET}})\n"
@@ -114,12 +114,19 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
     let mut bins = String::new();
 
     if has_rust {
-        let flowrt_dependency = match selected_backend_name(contract).as_str() {
-            "iox2" => "flowrt = { version = \"0.1\", features = [\"iox2\"] }",
-            "zenoh" => "flowrt = { version = \"0.1\", features = [\"zenoh\"] }",
-            _ => "flowrt = { version = \"0.1\" }",
-        };
-        output.push_str(flowrt_dependency);
+        let backend_features = contract_backend_features(contract);
+        if backend_features.is_empty() {
+            output.push_str("flowrt = { version = \"0.1\" }");
+        } else {
+            let features = backend_features
+                .iter()
+                .map(|feature| format!("\"{feature}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!(
+                "flowrt = {{ version = \"0.1\", features = [{features}] }}"
+            ));
+        }
         output.push('\n');
         bins.push_str(&format!(
             "\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n",

@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    CapabilityAtom, ChannelEdgeIr, ContractIr, LanguageKind, PolicyValueSource,
-    channel_capabilities, deployment_capability_decision, graph_required_capabilities,
-    is_known_backend, target_capabilities,
+    CapabilityAtom, ChannelEdgeIr, ContractIr, GraphIr, InstanceIr, LanguageKind,
+    PolicyValueSource, PortRef, RouteTopology, channel_route_capabilities,
+    deployment_capability_decision, graph_required_capabilities, is_known_backend,
+    target_capabilities,
 };
 
 use crate::ValidationError;
@@ -61,8 +62,17 @@ pub(crate) fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<Va
         .collect::<BTreeMap<_, _>>();
 
     for graph in &ir.graphs {
+        let source_types = source_types_by_route(ir, graph);
+        let route_topologies = route_topology_by_bind_id(graph);
         for bind in &graph.binds {
-            let expected = expected_bind_capabilities(bind);
+            let Some(source_type) = source_types.get(&bind.id) else {
+                continue;
+            };
+            let topology = route_topologies
+                .get(&bind.id)
+                .copied()
+                .unwrap_or_else(RouteTopology::local);
+            let expected = expected_bind_capabilities(ir, bind, source_type, topology);
             if !capabilities_match(&bind.capability_requirements, &expected) {
                 errors.push(ValidationError::new(format!(
                     "bind `{}.{}` -> `{}.{}` capability requirements do not match channel policy",
@@ -249,8 +259,85 @@ pub(crate) fn validate_declared_backends(ir: &ContractIr, errors: &mut Vec<Valid
     }
 }
 
-pub(crate) fn expected_bind_capabilities(bind: &ChannelEdgeIr) -> Vec<CapabilityAtom> {
-    channel_capabilities(bind.channel, bind.overflow, bind.stale)
+pub(crate) fn validate_route_backends(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    for graph in &ir.graphs {
+        let source_types = source_types_by_route(ir, graph);
+        let route_topologies = route_topology_by_bind_id(graph);
+        for bind in &graph.binds {
+            let mut checked_targets = BTreeSet::new();
+            if !is_known_backend(&bind.backend.0) {
+                errors.push(ValidationError::new(format!(
+                    "bind `{}.{}` -> `{}.{}` selects unknown backend `{}`",
+                    bind.from.instance.name,
+                    bind.from.port,
+                    bind.to.instance.name,
+                    bind.to.port,
+                    bind.backend.0
+                )));
+                continue;
+            }
+            let Some(source_type) = source_types.get(&bind.id) else {
+                continue;
+            };
+            let topology = route_topologies
+                .get(&bind.id)
+                .copied()
+                .unwrap_or_else(RouteTopology::local);
+            let expected = expected_bind_capabilities(ir, bind, source_type, topology);
+            let Some(source_target) = instance_target(ir, graph, &bind.from.instance.name) else {
+                continue;
+            };
+            let Some(target_target) = instance_target(ir, graph, &bind.to.instance.name) else {
+                continue;
+            };
+            for target in [source_target, target_target] {
+                if !checked_targets.insert(target.name.as_str()) {
+                    continue;
+                }
+                let decision =
+                    deployment_capability_decision(&bind.backend, &target.backends, &expected);
+                if !decision.target_supports_selected_backend {
+                    errors.push(ValidationError::new(format!(
+                        "target `{}` does not support backend `{}` selected by bind `{}.{}` -> `{}.{}`",
+                        target.name,
+                        bind.backend.0,
+                        bind.from.instance.name,
+                        bind.from.port,
+                        bind.to.instance.name,
+                        bind.to.port
+                    )));
+                }
+                if decision.selected_backend_known
+                    && !decision.missing_required_capabilities.is_empty()
+                {
+                    errors.push(ValidationError::new(format!(
+                        "backend `{}` selected by bind `{}.{}` -> `{}.{}` cannot satisfy route capabilities",
+                        bind.backend.0,
+                        bind.from.instance.name,
+                        bind.from.port,
+                        bind.to.instance.name,
+                        bind.to.port
+                    )));
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn expected_bind_capabilities(
+    ir: &ContractIr,
+    bind: &ChannelEdgeIr,
+    source_type: &flowrt_ir::TypeExpr,
+    topology: RouteTopology,
+) -> Vec<CapabilityAtom> {
+    channel_route_capabilities(
+        &ir.types,
+        source_type,
+        bind.channel,
+        bind.overflow,
+        bind.stale,
+        topology,
+    )
 }
 
 fn policy_anchor_profile(ir: &ContractIr) -> Option<&flowrt_ir::ProfileIr> {
@@ -269,4 +356,92 @@ fn push_policy_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationErr
 
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
     actual == expected
+}
+
+fn source_types_by_route(
+    ir: &ContractIr,
+    graph: &GraphIr,
+) -> BTreeMap<flowrt_ir::EntityId, flowrt_ir::TypeExpr> {
+    let components = ir
+        .components
+        .iter()
+        .map(|component| (component.name.as_str(), component))
+        .collect::<BTreeMap<_, _>>();
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    graph
+        .binds
+        .iter()
+        .filter_map(|bind| {
+            let instance = instances.get(bind.from.instance.name.as_str())?;
+            let component = components.get(instance.component.name.as_str())?;
+            let port = component
+                .outputs
+                .iter()
+                .find(|port| port.name == bind.from.port)?;
+            Some((bind.id.clone(), port.ty.clone()))
+        })
+        .collect()
+}
+
+fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<flowrt_ir::EntityId, RouteTopology> {
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    graph
+        .binds
+        .iter()
+        .map(|bind| {
+            (
+                bind.id.clone(),
+                route_topology(&instances, &bind.from, &bind.to),
+            )
+        })
+        .collect()
+}
+
+fn route_topology(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    from: &PortRef,
+    to: &PortRef,
+) -> RouteTopology {
+    let from_instance = instances.get(from.instance.name.as_str()).copied();
+    let to_instance = instances.get(to.instance.name.as_str()).copied();
+    let from_process = from_instance
+        .and_then(|instance| instance.process.as_deref())
+        .unwrap_or("main");
+    let to_process = to_instance
+        .and_then(|instance| instance.process.as_deref())
+        .unwrap_or("main");
+    let from_target = from_instance
+        .and_then(|instance| instance.target.as_ref())
+        .map(|target| target.name.as_str());
+    let to_target = to_instance
+        .and_then(|instance| instance.target.as_ref())
+        .map(|target| target.name.as_str());
+    RouteTopology::new(
+        from_process != to_process,
+        from_target.is_some() && to_target.is_some() && from_target != to_target,
+    )
+}
+
+fn instance_target<'a>(
+    ir: &'a ContractIr,
+    graph: &'a GraphIr,
+    instance_name: &str,
+) -> Option<&'a flowrt_ir::TargetIr> {
+    let instance = graph
+        .instances
+        .iter()
+        .find(|instance| instance.name == instance_name)?;
+    let target_name = instance
+        .target
+        .as_ref()
+        .map(|target| target.name.as_str())?;
+    ir.targets.iter().find(|target| target.name == target_name)
 }

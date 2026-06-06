@@ -112,6 +112,7 @@ pub struct RawTask {
 pub struct RawDataflowBind {
     pub from: String,
     pub to: String,
+    pub backend: Option<String>,
     pub channel: String,
     pub depth: Option<u32>,
     pub overflow: Option<String>,

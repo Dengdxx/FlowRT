@@ -6,11 +6,11 @@ use flowrt_ir::{
     StalePolicy as IrStalePolicy,
 };
 
-use crate::messages::{cpp_type, iox2_frame_slot_type_for_expr};
+use crate::messages::cpp_type;
 use crate::runtime_plan::{
     BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
-    bind_runtime_plans, incoming_bind_index_map, indent_generated_block, nested_step_indent,
-    on_message_trigger_guard, outgoing_bind_indices_map, process_runtime_plans,
+    bind_backend, bind_runtime_plans, incoming_bind_index_map, indent_generated_block,
+    nested_step_indent, on_message_trigger_guard, outgoing_bind_indices_map, process_runtime_plans,
     runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
     runtime_param_name, step_indent,
 };
@@ -129,7 +129,6 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         graph,
         &order,
         &bind_plans,
-        &selected_backend,
     ));
     let step_emission = CppStepEmission {
         contract,
@@ -137,7 +136,6 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         binds: &bind_plans,
         incoming_bind_index: &incoming_bind_index,
         outgoing_bind_indices: &outgoing_bind_indices,
-        selected_backend: &selected_backend,
     };
     output.push_str(&emit_cpp_app_step(
         &step_emission,
@@ -225,7 +223,6 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
-    let selected_backend = selected_backend_name(contract);
 
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
@@ -284,7 +281,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     for bind in &bind_plans {
         output.push_str(&format!(
             "    {} {}_;\n",
-            cpp_runtime_channel_type(bind, &selected_backend),
+            cpp_runtime_channel_type(bind),
             bind.field_name
         ));
         output.push_str(&format!(
@@ -348,7 +345,6 @@ fn emit_cpp_app_constructor(
     graph: &GraphIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
-    selected_backend: &str,
 ) -> String {
     let mut params = Vec::new();
     for instance in order {
@@ -376,7 +372,7 @@ fn emit_cpp_app_constructor(
         initializers.push(format!(
             "{}_({})",
             bind.field_name,
-            cpp_runtime_channel_initializer(contract, graph, bind, selected_backend)
+            cpp_runtime_channel_initializer(contract, graph, bind)
         ));
     }
 
@@ -411,7 +407,6 @@ struct CppStepEmission<'a> {
     binds: &'a [BindRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
-    selected_backend: &'a str,
 }
 
 fn emit_cpp_app_step(
@@ -424,7 +419,7 @@ fn emit_cpp_app_step(
     output.push_str(&format!(
         "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {{\n",
     ));
-    if cpp_runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
+    if cpp_runtime_step_uses_tick_time(emission.binds) {
         output.push_str(
             "    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n    (void)tick_time_ms;\n",
         );
@@ -463,12 +458,7 @@ fn emit_cpp_app_step(
                     .get(&(instance.name.clone(), input.name.clone()))
                 {
                     let bind = &emission.binds[*bind_index];
-                    output.push_str(&cpp_runtime_channel_read(
-                        input,
-                        bind,
-                        &input_local,
-                        emission.selected_backend,
-                    ));
+                    output.push_str(&cpp_runtime_channel_read(input, bind, &input_local));
                     output.push_str(&cpp_runtime_stale_error_guard(&input_local, bind));
                 } else {
                     output.push_str(&format!(
@@ -564,7 +554,7 @@ fn emit_cpp_app_step(
             for bind_index in outgoing {
                 let bind = &emission.binds[bind_index];
                 output.push_str(&indent_generated_block(
-                    &cpp_runtime_channel_write(bind, emission.selected_backend),
+                    &cpp_runtime_channel_write(bind),
                     trigger_guard.is_some(),
                 ));
             }
@@ -683,18 +673,12 @@ pub(crate) fn cpp_string_literal(value: &str) -> String {
     format!("{value:?}")
 }
 
-fn cpp_runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+fn cpp_runtime_channel_type(bind: &BindRuntimePlan) -> String {
     let ty = cpp_type(&bind.source_type);
-    if selected_backend == "iox2" {
-        if bind.source_uses_variable_frame {
-            return format!(
-                "flowrt::iox2::Iox2FramePubSub<{ty}, {}>",
-                iox2_frame_slot_type_for_expr(&bind.source_type)
-            );
-        }
+    if bind_backend(bind) == "iox2" {
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
-    if selected_backend == "zenoh" {
+    if bind_backend(bind) == "zenoh" {
         return format!("flowrt::zenoh::ZenohPubSub<{ty}>");
     }
 
@@ -708,18 +692,8 @@ fn cpp_runtime_channel_initializer(
     contract: &ContractIr,
     graph: &GraphIr,
     bind: &BindRuntimePlan,
-    selected_backend: &str,
 ) -> String {
-    if selected_backend == "iox2" {
-        if bind.source_uses_variable_frame {
-            return format!(
-                "flowrt::iox2::Iox2FramePubSub<{}, {}>::open_with_config({}, {})",
-                cpp_type(&bind.source_type),
-                iox2_frame_slot_type_for_expr(&bind.source_type),
-                cpp_string_literal(&iox2_service_name(contract, graph, bind)),
-                cpp_iox2_channel_config_expr(bind)
-            );
-        }
+    if bind_backend(bind) == "iox2" {
         return format!(
             "flowrt::iox2::Iox2PubSub<{}>::open_with_config({}, {})",
             cpp_type(&bind.source_type),
@@ -727,7 +701,7 @@ fn cpp_runtime_channel_initializer(
             cpp_iox2_channel_config_expr(bind)
         );
     }
-    if selected_backend == "zenoh" {
+    if bind_backend(bind) == "zenoh" {
         return format!(
             "flowrt::zenoh::ZenohPubSub<{}>::open_with_config({}, {})",
             cpp_type(&bind.source_type),
@@ -813,13 +787,8 @@ fn cpp_runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
     }
 }
 
-fn cpp_runtime_channel_read(
-    input: &PortIr,
-    bind: &BindRuntimePlan,
-    local_name: &str,
-    selected_backend: &str,
-) -> String {
-    if matches!(selected_backend, "iox2" | "zenoh") {
+fn cpp_runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, local_name: &str) -> String {
+    if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
             "    auto {local}_result = {field}_.receive_latest_at(tick_time_ms);\n    if (std::holds_alternative<flowrt::ChannelError>({local}_result)) {{\n        return flowrt::Status::Error;\n    }}\n    const auto {local} = std::get<flowrt::Latest<{ty}>>({local}_result);\n",
             local = local_name,
@@ -857,8 +826,8 @@ fn cpp_step_local_name(instance: &str, port: &str) -> String {
     format!("{instance}_{port}")
 }
 
-fn cpp_introspection_publish_record(bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    let helper = if bind.source_uses_variable_frame || selected_backend == "zenoh" {
+fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
+    let helper = if bind.source_uses_variable_frame || bind_backend(bind) == "zenoh" {
         "record_introspection_publish_frame"
     } else {
         "record_introspection_publish_copy"
@@ -869,9 +838,9 @@ fn cpp_introspection_publish_record(bind: &BindRuntimePlan, selected_backend: &s
     )
 }
 
-fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    let introspection_record = cpp_introspection_publish_record(bind, selected_backend);
-    if matches!(selected_backend, "iox2" | "zenoh") {
+fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
+    let introspection_record = cpp_introspection_publish_record(bind);
+    if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
             "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n{introspection_record}",
             field = bind.field_name
@@ -890,11 +859,10 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> 
     }
 }
 
-fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
-    (!binds.is_empty() && matches!(selected_backend, "iox2" | "zenoh"))
-        || binds
-            .iter()
-            .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
+fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan]) -> bool {
+    binds
+        .iter()
+        .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
 }
 
 fn cpp_backend_factory(selected_backend: &str) -> &'static str {

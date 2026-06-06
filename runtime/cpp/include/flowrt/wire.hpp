@@ -178,13 +178,6 @@ concept CanonicalFrameMessage =
 template <typename T>
 concept CanonicalTransportMessage = CanonicalFrameMessage<T> || CanonicalFixedWireMessage<T>;
 
-template <typename Slot, typename Message>
-concept Iox2FrameSlot =
-    std::is_trivially_copyable_v<Slot> && requires(const Message &value, const Slot &slot) {
-        { Slot::from_message(value) } -> std::same_as<Slot>;
-        { slot.decode_message() } -> std::same_as<Message>;
-    };
-
 namespace detail {
 
 template <CanonicalTransportMessage T>

@@ -5,6 +5,31 @@ use crate::{
     TriggerKind, TypeExpr, TypeIr,
 };
 
+/// 单条 dataflow route 的拓扑边界。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteTopology {
+    pub crosses_process: bool,
+    pub crosses_target: bool,
+}
+
+impl RouteTopology {
+    /// 构造本进程、本目标内的 route 拓扑。
+    pub const fn local() -> Self {
+        Self {
+            crosses_process: false,
+            crosses_target: false,
+        }
+    }
+
+    /// 构造显式 route 拓扑。
+    pub const fn new(crosses_process: bool, crosses_target: bool) -> Self {
+        Self {
+            crosses_process,
+            crosses_target,
+        }
+    }
+}
+
 // 枚举声明顺序是所有已知 capability 的全局 canonical 顺序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Capability {
@@ -201,8 +226,6 @@ const INPROC_BACKEND_CAPABILITIES: &[Capability] = &[
 ];
 
 const IOX2_BACKEND_CAPABILITIES: &[Capability] = &[
-    Capability::AbiVariablePayloadFrame,
-    Capability::AllocationBoundedDynamic,
     Capability::OverflowDropNewest,
     Capability::OverflowError,
     Capability::OverflowBlock,
@@ -288,55 +311,15 @@ pub fn base_deployment_capabilities() -> Vec<CapabilityAtom> {
     capabilities.into_atoms()
 }
 
-/// 依据 graph 的 process 边界推导 topology capability。
-///
-/// 只有当 bind 跨越不同 process group 时，deployment 才需要 `topology:multi_process`。
-/// 单 process graph 不额外要求 topology capability，避免把 backend 选择和 graph 结构
-/// 绑成一条静态路径。
-fn graph_topology_capabilities(graph: &GraphIr) -> CapabilityList {
+/// 依据单条 route 的 process/target 边界推导 topology capability。
+fn route_topology_capabilities(topology: RouteTopology) -> CapabilityList {
     let mut capabilities = CapabilityList::new();
-    let instances = graph
-        .instances
-        .iter()
-        .map(|instance| {
-            (
-                instance.name.as_str(),
-                (
-                    instance.process.as_deref().unwrap_or("main"),
-                    instance.target.as_ref().map(|target| target.name.as_str()),
-                ),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let has_cross_process_bind = graph.binds.iter().any(|bind| {
-        let from_process = instances
-            .get(bind.from.instance.name.as_str())
-            .map(|(process, _)| *process)
-            .unwrap_or("main");
-        let to_process = instances
-            .get(bind.to.instance.name.as_str())
-            .map(|(process, _)| *process)
-            .unwrap_or("main");
-        from_process != to_process
-    });
-    let has_cross_target_bind = graph.binds.iter().any(|bind| {
-        let from_target = instances
-            .get(bind.from.instance.name.as_str())
-            .and_then(|(_, target)| *target);
-        let to_target = instances
-            .get(bind.to.instance.name.as_str())
-            .and_then(|(_, target)| *target);
-        from_target.is_some() && to_target.is_some() && from_target != to_target
-    });
-
-    if has_cross_process_bind || has_cross_target_bind {
+    if topology.crosses_process || topology.crosses_target {
         capabilities.push(Capability::TopologyMultiProcess);
     }
-    if has_cross_target_bind {
+    if topology.crosses_target {
         capabilities.push(Capability::TopologyMultiHost);
     }
-
     capabilities
 }
 
@@ -381,43 +364,45 @@ pub fn channel_capabilities(
     capabilities.into_atoms()
 }
 
+/// 推导单条 route 的 backend capability requirements。
+///
+/// route backend 必须同时满足消息 ABI 额外能力和 channel policy；deployment backend
+/// 只负责 profile 的调度与进程拓扑，不再为每条消息承担 ABI 能力。
+pub fn channel_route_capabilities(
+    types: &[TypeIr],
+    source_type: &TypeExpr,
+    channel: ChannelKind,
+    overflow: OverflowPolicy,
+    stale: StalePolicy,
+    topology: RouteTopology,
+) -> Vec<CapabilityAtom> {
+    let mut capabilities = CapabilityList::new();
+    capabilities.extend_list(type_expr_abi_capability_list(types, source_type));
+    capabilities.extend([
+        channel_capability(channel),
+        overflow_capability(overflow),
+        stale_capability(stale),
+    ]);
+    capabilities.extend_list(route_topology_capabilities(topology));
+    capabilities.into_atoms()
+}
+
 /// 推导 graph deployment 需要的 capability atoms。
 ///
-/// `types` 用于解析全量生成消息 ABI 能力，`components` 用于解析 graph 可达 port
-/// 的直接 primitive 类型；graph 内 task 与 bind 仍提供调度、deadline 和 channel policy 能力。
+/// 消息 ABI、channel policy 和 dataflow topology 由 `ChannelEdgeIr.capability_requirements`
+/// 绑定到单条 route backend；deployment 只承担 profile backend 的调度和基础 graph 能力。
 pub fn graph_required_capabilities(
     graph: &GraphIr,
-    types: &[TypeIr],
-    components: &[ComponentIr],
+    _types: &[TypeIr],
+    _components: &[ComponentIr],
 ) -> Vec<CapabilityAtom> {
     let mut capabilities = CapabilityList::new();
     capabilities.extend(BASE_DEPLOYMENT_CAPABILITIES);
-    capabilities.extend_list(graph_topology_capabilities(graph));
-    let components_by_name = components
-        .iter()
-        .map(|component| (component.name.as_str(), component))
-        .collect::<BTreeMap<_, _>>();
-
-    capabilities.extend_list(message_abi_capability_list(
-        types,
-        graph
-            .instances
-            .iter()
-            .filter_map(|instance| components_by_name.get(instance.component.name.as_str()))
-            .copied(),
-    ));
     for task in &graph.tasks {
         capabilities.push(trigger_capability_kind(task.trigger));
         if task.deadline_ms.is_some() {
             capabilities.push(Capability::TimingDeadlineAware);
         }
-    }
-    for bind in &graph.binds {
-        capabilities.extend([
-            channel_capability(bind.channel),
-            overflow_capability(bind.overflow),
-            stale_capability(bind.stale),
-        ]);
     }
     capabilities.into_atoms()
 }
@@ -451,6 +436,17 @@ fn message_abi_capability_list<'a>(
         }
     }
 
+    required
+}
+
+fn type_expr_abi_capability_list(types: &[TypeIr], expr: &TypeExpr) -> CapabilityList {
+    let types_by_name = types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let mut required = CapabilityList::new();
+    let mut visiting = BTreeSet::new();
+    collect_type_expr_abi_capabilities_inner(expr, &types_by_name, &mut required, &mut visiting);
     required
 }
 
@@ -570,8 +566,8 @@ mod tests {
     }
 
     #[test]
-    fn inproc_iox2_and_zenoh_support_bounded_variable_frames() {
-        for backend in ["inproc", "iox2", "zenoh"] {
+    fn inproc_and_zenoh_support_bounded_variable_frames_but_iox2_does_not() {
+        for backend in ["inproc", "zenoh"] {
             let capabilities = backend_capabilities(backend).unwrap();
             assert!(
                 capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string()))
@@ -580,6 +576,13 @@ mod tests {
                 capabilities.contains(&CapabilityAtom("allocation:bounded_dynamic".to_string()))
             );
         }
+        let iox2_capabilities = backend_capabilities("iox2").unwrap();
+        assert!(
+            !iox2_capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string()))
+        );
+        assert!(
+            !iox2_capabilities.contains(&CapabilityAtom("allocation:bounded_dynamic".to_string()))
+        );
     }
 
     #[test]
@@ -592,10 +595,8 @@ mod tests {
             capabilities,
             vec![
                 Capability::AbiFixedSizePlainData.atom(),
-                Capability::AbiVariablePayloadFrame.atom(),
                 Capability::LayoutNativeLayout.atom(),
                 Capability::AllocationBounded.atom(),
-                Capability::AllocationBoundedDynamic.atom(),
                 Capability::GraphStaticGraph.atom(),
                 Capability::TriggerPeriodic.atom(),
                 Capability::TriggerOnMessage.atom(),
@@ -786,6 +787,8 @@ mod tests {
                     id: crate::EntityId("bind_0000000000000001".to_string()),
                     from: port("fifo_out"),
                     to: port("fifo_in"),
+                    backend: crate::BackendName("inproc".to_string()),
+                    backend_source: crate::ChannelBackendSource::Explicit,
                     channel: ChannelKind::Fifo,
                     depth: Some(2),
                     overflow: OverflowPolicy::Block,
@@ -798,6 +801,8 @@ mod tests {
                     id: crate::EntityId("bind_0000000000000002".to_string()),
                     from: port("latest_out"),
                     to: port("latest_in"),
+                    backend: crate::BackendName("inproc".to_string()),
+                    backend_source: crate::ChannelBackendSource::Explicit,
                     channel: ChannelKind::Latest,
                     depth: Some(1),
                     overflow: OverflowPolicy::DropNewest,
@@ -841,225 +846,45 @@ mod tests {
             capabilities,
             vec![
                 Capability::AbiFixedSizePlainData.atom(),
-                Capability::AbiInt128.atom(),
                 Capability::LayoutNativeLayout.atom(),
                 Capability::AllocationBounded.atom(),
                 Capability::GraphStaticGraph.atom(),
                 Capability::TriggerPeriodic.atom(),
                 Capability::TriggerShutdown.atom(),
                 Capability::TimingDeadlineAware.atom(),
-                Capability::ChannelLatest.atom(),
-                Capability::ChannelFifo.atom(),
-                Capability::OverflowDropNewest.atom(),
-                Capability::OverflowBlock.atom(),
-                Capability::StaleHoldLast.atom(),
-                Capability::StaleError.atom(),
             ]
         );
     }
 
     #[test]
-    fn graph_required_capabilities_require_multi_process_for_cross_process_binds() {
-        let source_component = crate::ComponentIr {
-            id: crate::EntityId("component_0000000000000001".to_string()),
-            name: "source".to_string(),
-            language: crate::LanguageKind::Rust,
-            kind: crate::ComponentKind::Native,
-            inputs: vec![],
-            outputs: vec![crate::PortIr {
-                name: "sample".to_string(),
-                ty: TypeExpr::Primitive {
-                    name: PrimitiveType::U32,
-                },
-            }],
-            params: vec![],
-            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
-        };
-        let sink_component = crate::ComponentIr {
-            id: crate::EntityId("component_0000000000000002".to_string()),
-            name: "sink".to_string(),
-            language: crate::LanguageKind::Rust,
-            kind: crate::ComponentKind::Native,
-            inputs: vec![crate::PortIr {
-                name: "sample".to_string(),
-                ty: TypeExpr::Primitive {
-                    name: PrimitiveType::U32,
-                },
-            }],
-            outputs: vec![],
-            params: vec![],
-            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
-        };
-        let source = crate::EntityRef {
-            id: crate::EntityId("instance_0000000000000001".to_string()),
-            name: "source".to_string(),
-        };
-        let sink = crate::EntityRef {
-            id: crate::EntityId("instance_0000000000000002".to_string()),
-            name: "sink".to_string(),
-        };
-        let graph = GraphIr {
-            id: crate::EntityId("graph_0000000000000001".to_string()),
-            name: "default".to_string(),
-            instances: vec![
-                crate::InstanceIr {
-                    id: source.id.clone(),
-                    name: source.name.clone(),
-                    component: crate::EntityRef {
-                        id: source_component.id.clone(),
-                        name: source_component.name.clone(),
-                    },
-                    params: vec![],
-                    process: Some("producer".to_string()),
-                    target: None,
-                },
-                crate::InstanceIr {
-                    id: sink.id.clone(),
-                    name: sink.name.clone(),
-                    component: crate::EntityRef {
-                        id: sink_component.id.clone(),
-                        name: sink_component.name.clone(),
-                    },
-                    params: vec![],
-                    process: Some("consumer".to_string()),
-                    target: None,
-                },
-            ],
-            tasks: vec![],
-            binds: vec![crate::ChannelEdgeIr {
-                id: crate::EntityId("bind_0000000000000001".to_string()),
-                from: crate::PortRef {
-                    instance: source.clone(),
-                    port: "sample".to_string(),
-                },
-                to: crate::PortRef {
-                    instance: sink.clone(),
-                    port: "sample".to_string(),
-                },
-                channel: ChannelKind::Latest,
-                depth: Some(1),
-                overflow: OverflowPolicy::DropOldest,
-                stale: StalePolicy::Warn,
-                max_age_ms: None,
-                policy_source: crate::ChannelPolicySourceIr {
-                    overflow: crate::PolicyValueSource::Explicit,
-                    stale: crate::PolicyValueSource::Explicit,
-                    max_age_ms: crate::PolicyValueSource::Explicit,
-                },
-                capability_requirements: vec![],
-            }],
-        };
-
-        let capabilities = graph_required_capabilities(
-            &graph,
+    fn route_capabilities_require_multi_process_for_cross_process_binds() {
+        let capabilities = channel_route_capabilities(
             &[],
-            &[source_component.clone(), sink_component.clone()],
+            &TypeExpr::Primitive {
+                name: PrimitiveType::U32,
+            },
+            ChannelKind::Latest,
+            OverflowPolicy::DropOldest,
+            StalePolicy::Warn,
+            RouteTopology::new(true, false),
         );
 
         assert!(capabilities.contains(&CapabilityAtom("topology:multi_process".to_string())));
-        assert!(!capabilities.contains(&CapabilityAtom("topology:single_process".to_string())));
+        assert!(!capabilities.contains(&CapabilityAtom("topology:multi_host".to_string())));
     }
 
     #[test]
-    fn graph_required_capabilities_require_multi_host_for_cross_target_binds() {
-        let source_component = crate::ComponentIr {
-            id: crate::EntityId("component_0000000000000001".to_string()),
-            name: "source".to_string(),
-            language: crate::LanguageKind::Rust,
-            kind: crate::ComponentKind::Native,
-            inputs: vec![],
-            outputs: vec![crate::PortIr {
-                name: "sample".to_string(),
-                ty: TypeExpr::Primitive {
-                    name: PrimitiveType::U32,
-                },
-            }],
-            params: vec![],
-            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
-        };
-        let sink_component = crate::ComponentIr {
-            id: crate::EntityId("component_0000000000000002".to_string()),
-            name: "sink".to_string(),
-            language: crate::LanguageKind::Rust,
-            kind: crate::ComponentKind::Native,
-            inputs: vec![crate::PortIr {
-                name: "sample".to_string(),
-                ty: TypeExpr::Primitive {
-                    name: PrimitiveType::U32,
-                },
-            }],
-            outputs: vec![],
-            params: vec![],
-            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
-        };
-        let source = crate::EntityRef {
-            id: crate::EntityId("instance_0000000000000001".to_string()),
-            name: "source".to_string(),
-        };
-        let sink = crate::EntityRef {
-            id: crate::EntityId("instance_0000000000000002".to_string()),
-            name: "sink".to_string(),
-        };
-        let graph = GraphIr {
-            id: crate::EntityId("graph_0000000000000001".to_string()),
-            name: "default".to_string(),
-            instances: vec![
-                crate::InstanceIr {
-                    id: source.id.clone(),
-                    name: source.name.clone(),
-                    component: crate::EntityRef {
-                        id: source_component.id.clone(),
-                        name: source_component.name.clone(),
-                    },
-                    params: vec![],
-                    process: Some("producer".to_string()),
-                    target: Some(crate::EntityRef {
-                        id: crate::EntityId("target_0000000000000001".to_string()),
-                        name: "dev_host".to_string(),
-                    }),
-                },
-                crate::InstanceIr {
-                    id: sink.id.clone(),
-                    name: sink.name.clone(),
-                    component: crate::EntityRef {
-                        id: sink_component.id.clone(),
-                        name: sink_component.name.clone(),
-                    },
-                    params: vec![],
-                    process: Some("consumer".to_string()),
-                    target: Some(crate::EntityRef {
-                        id: crate::EntityId("target_0000000000000002".to_string()),
-                        name: "pi_host".to_string(),
-                    }),
-                },
-            ],
-            tasks: vec![],
-            binds: vec![crate::ChannelEdgeIr {
-                id: crate::EntityId("bind_0000000000000001".to_string()),
-                from: crate::PortRef {
-                    instance: source.clone(),
-                    port: "sample".to_string(),
-                },
-                to: crate::PortRef {
-                    instance: sink.clone(),
-                    port: "sample".to_string(),
-                },
-                channel: ChannelKind::Latest,
-                depth: Some(1),
-                overflow: OverflowPolicy::DropOldest,
-                stale: StalePolicy::Warn,
-                max_age_ms: None,
-                policy_source: crate::ChannelPolicySourceIr {
-                    overflow: crate::PolicyValueSource::Explicit,
-                    stale: crate::PolicyValueSource::Explicit,
-                    max_age_ms: crate::PolicyValueSource::Explicit,
-                },
-                capability_requirements: vec![],
-            }],
-        };
-
-        let capabilities =
-            graph_required_capabilities(&graph, &[], &[source_component, sink_component]);
+    fn route_capabilities_require_multi_host_for_cross_target_binds() {
+        let capabilities = channel_route_capabilities(
+            &[],
+            &TypeExpr::Primitive {
+                name: PrimitiveType::U32,
+            },
+            ChannelKind::Latest,
+            OverflowPolicy::DropOldest,
+            StalePolicy::Warn,
+            RouteTopology::new(true, true),
+        );
 
         assert!(capabilities.contains(&CapabilityAtom("topology:multi_process".to_string())));
         assert!(capabilities.contains(&CapabilityAtom("topology:multi_host".to_string())));

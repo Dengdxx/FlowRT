@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_conformance::{MessageAbiExpectation, message_abi_expectations};
 use flowrt_ir::{ContractIr, FieldIr, LanguageKind, PrimitiveType, TypeExpr, TypeIr};
 
+use crate::runtime_plan::contract_uses_backend;
 use crate::{
-    Result, has_language, managed_header, rust_string_literal, selected_backend_name,
-    snake_identifier, type_by_name,
+    Result, has_language, managed_header, rust_string_literal, snake_identifier, type_by_name,
 };
 
 fn ordered_types(contract: &ContractIr) -> Vec<&flowrt_ir::TypeIr> {
@@ -73,9 +73,9 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
         "#include <algorithm>\n#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <limits>\n#include <span>\n#include <vector>\n\n#include <flowrt/runtime.hpp>\n\n",
     );
     output.push_str("namespace flowrt_app {\n\n");
-    let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
+    let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
     let needs_wire_codec =
-        selected_backend_name(contract) == "zenoh" || contract_has_variable_messages(contract);
+        contract_uses_backend(contract, "zenoh") || contract_has_variable_messages(contract);
     for ty in ordered_types(contract) {
         let variable_message = type_contains_variable_data(
             contract,
@@ -103,9 +103,6 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
             output.push_str(&cpp_wire_codec_methods(contract, ty));
         }
         output.push_str("};\n\n");
-        if needs_iox2_type_name && variable_message {
-            output.push_str(&cpp_iox2_frame_slot_type(ty));
-        }
     }
     output.push_str("}  // namespace flowrt_app\n");
     output
@@ -114,9 +111,9 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
 pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push('\n');
-    let needs_iox2_type_name = selected_backend_name(contract) == "iox2";
+    let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
     let needs_wire_codec =
-        selected_backend_name(contract) == "zenoh" || contract_has_variable_messages(contract);
+        contract_uses_backend(contract, "zenoh") || contract_has_variable_messages(contract);
     let zero_copy_derive = if needs_iox2_type_name {
         output.push_str("use flowrt::ZeroCopySend;\n\n");
         ", flowrt::ZeroCopySend"
@@ -160,9 +157,6 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
         output.push_str(&rust_default_impl(ty, variable_message));
         if variable_message {
             output.push_str(&rust_frame_codec_impl(contract, ty));
-            if needs_iox2_type_name {
-                output.push_str(&rust_iox2_frame_slot_type(contract, ty));
-            }
         } else if needs_wire_codec {
             output.push_str(&rust_wire_codec_impl(contract, ty));
         }
@@ -412,7 +406,7 @@ pub(crate) fn emit_rust_message_abi_tests(
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
-    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
+    let needs_wire_codec = contract_uses_backend(contract, "zenoh");
     let reads_cpp_fixtures = has_language(contract, LanguageKind::Cpp);
     let expectations_by_name = expectations
         .iter()
@@ -536,7 +530,7 @@ pub(crate) fn emit_cpp_message_abi_tests(
     expectations: &[MessageAbiExpectation],
 ) -> String {
     let mut output = managed_header();
-    let needs_wire_codec = selected_backend_name(contract) == "zenoh";
+    let needs_wire_codec = contract_uses_backend(contract, "zenoh");
     let expectations_by_name = expectations
         .iter()
         .map(|expectation| (expectation.type_name.as_str(), expectation))
@@ -811,30 +805,6 @@ fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     }
     output.push_str("        })\n    }\n}\n\n");
     output
-}
-
-fn iox2_frame_slot_type_name(type_name: &str) -> String {
-    format!("{type_name}Iox2Frame")
-}
-
-pub(crate) fn iox2_frame_slot_type_for_expr(expr: &TypeExpr) -> String {
-    match expr {
-        TypeExpr::Named { name } => iox2_frame_slot_type_name(name),
-        other => panic!(
-            "validated iox2 variable frame channel must use a named message type, got `{}`",
-            other.canonical_syntax()
-        ),
-    }
-}
-
-fn rust_iox2_frame_slot_type(contract: &ContractIr, ty: &TypeIr) -> String {
-    let slot_name = iox2_frame_slot_type_name(&ty.name);
-    let max_size = frame_max_size_for_type(contract, ty);
-    format!(
-        "#[repr(C)]\n#[derive(Clone, Copy, Debug, PartialEq, flowrt::ZeroCopySend)]\n#[type_name({type_name})]\npub struct {slot_name} {{\n    len: u32,\n    bytes: [u8; {max_size}],\n}}\n\nimpl Default for {slot_name} {{\n    fn default() -> Self {{\n        Self {{\n            len: 0,\n            bytes: [0u8; {max_size}],\n        }}\n    }}\n}}\n\nimpl flowrt::iox2::Iox2FrameSlot<{message_name}> for {slot_name} {{\n    fn try_from_message(value: &{message_name}) -> Result<Self, flowrt::WireCodecError> {{\n        let frame = flowrt::FrameCodec::to_frame_vec(value)?;\n        if frame.len() > {max_size} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"iox2 frame exceeds fixed slot capacity\"));\n        }}\n        let len = u32::try_from(frame.len())\n            .map_err(|_| flowrt::WireCodecError::invalid_frame(\"iox2 frame length exceeds u32\"))?;\n        let mut slot = Self::default();\n        slot.len = len;\n        slot.bytes[..frame.len()].copy_from_slice(&frame);\n        Ok(slot)\n    }}\n\n    fn decode_message(&self) -> Result<{message_name}, flowrt::WireCodecError> {{\n        let len = self.len as usize;\n        if len > {max_size} {{\n            return Err(flowrt::WireCodecError::invalid_frame(\"iox2 frame slot length exceeds fixed capacity\"));\n        }}\n        <{message_name} as flowrt::FrameCodec>::decode_frame(&self.bytes[..len])\n    }}\n}}\n\n",
-        type_name = rust_string_literal(&ty.name),
-        message_name = ty.name,
-    )
 }
 
 fn rust_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
@@ -1190,14 +1160,6 @@ fn cpp_frame_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
     }
     output.push_str("        decoder.finish();\n        return value;\n    }\n");
     output
-}
-
-fn cpp_iox2_frame_slot_type(ty: &TypeIr) -> String {
-    let slot_name = iox2_frame_slot_type_name(&ty.name);
-    format!(
-        "struct {slot_name} {{\n    static constexpr const char* IOX2_TYPE_NAME = \"{message_name}\";\n\n    std::uint32_t len{{}};\n    std::array<std::uint8_t, {message_name}::max_frame_size()> bytes{{}};\n\n    static {slot_name} from_message(const {message_name}& value) {{\n        {slot_name} slot{{}};\n        const auto size = value.encoded_frame_size();\n        if (size > slot.bytes.size()) {{\n            throw flowrt::WireCodecError(\"iox2 frame exceeds fixed slot capacity\");\n        }}\n        if (size > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {{\n            throw flowrt::WireCodecError(\"iox2 frame length exceeds u32\");\n        }}\n        slot.len = static_cast<std::uint32_t>(size);\n        value.encode_frame(std::span<std::uint8_t>{{slot.bytes.data(), size}});\n        return slot;\n    }}\n\n    {message_name} decode_message() const {{\n        if (len > bytes.size()) {{\n            throw flowrt::WireCodecError(\"iox2 frame slot length exceeds fixed capacity\");\n        }}\n        return {message_name}::decode_frame(std::span<const std::uint8_t>{{bytes.data(), len}});\n    }}\n}};\n\n",
-        message_name = ty.name,
-    )
 }
 
 fn cpp_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {

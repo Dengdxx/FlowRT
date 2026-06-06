@@ -260,12 +260,10 @@ class Iox2Backend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 26> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 24> kCapabilities = {
         "abi:fixed_size_plain_data",
-        "abi:variable_payload_frame",
         "layout:native_layout",
         "allocation:bounded",
-        "allocation:bounded_dynamic",
         "graph:static_graph",
         "trigger:periodic",
         "trigger:on_message",

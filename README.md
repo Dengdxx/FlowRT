@@ -247,7 +247,7 @@ v0.1 的 native ABI 基线是 fixed-size plain data：
 - `string<max=N>`
 - `sequence<T,max=N>`
 
-`inproc` 和 `zenoh` 直接传递 canonical frame。`iox2` 因为共享内存 slot 固定大小，当前使用固定容量 transport slot 承载 bounded variable frame，因此变长字段必须声明上限。
+`inproc` 和 `zenoh` 可直接传递 canonical frame。`iox2` 只承载 fixed-size plain data；当 profile 默认选择 `iox2` 且某条 route 使用 bounded variable frame 时，FlowRT 会把该 route 自动降级到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。
 
 ## Channel Policy
 
@@ -286,18 +286,24 @@ v0.1 支持：
 | `iox2` | 同机多进程、固定大小 slot、高性能 IPC。 |
 | `zenoh` | 跨进程/跨主机 copy transport，适合变长序列化。 |
 
-当前 backend 主要由 profile 选择：
+profile 提供默认 backend，单条 route 可显式覆盖或使用 `auto`：
 
 ```toml
 [profile.default]
 backend = "zenoh"
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+backend = "auto"
 
 [target.linux]
 runtime = ["rust", "cpp"]
 backends = ["zenoh"]
 ```
 
-message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约和 profile 生成。
+省略 `backend` 等价于 `auto`。`auto` 默认跟随 profile backend；如果 profile backend 是 `iox2` 且该 route 使用 bounded variable frame，FlowRT 会自动选择 `zenoh`。message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约、profile 和 route 生成。
 
 ## 运行态观测
 
@@ -353,7 +359,6 @@ flowrt echo channel_name --follow
 | `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | mixed contract 的接口和生成物边界。 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | profile 驱动 backend 切换。 |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | Rust source 与 C++ sink 的 iox2 分进程 contract。 |
-| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl` | bounded variable frame 经 iox2 fixed slot 跨语言传递。 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | bounded variable frame、zenoh 跨主机 transport 和 mixed launch。 |
 
 完整说明见 [示例矩阵](docs/examples.md)。

@@ -28,30 +28,6 @@ struct TinyWireMessage {
     }
 };
 
-struct FrameSmokeMessage {
-    std::uint32_t value{};
-};
-
-struct FrameSmokeSlot {
-    static constexpr const char *IOX2_TYPE_NAME = "FlowRTCppIox2FrameSmoke";
-
-    std::uint32_t len{};
-    std::array<std::uint8_t, 4> bytes{};
-
-    static FrameSmokeSlot from_message(const FrameSmokeMessage &value) {
-        FrameSmokeSlot slot{};
-        slot.len = 4;
-        flowrt::write_wire_le(std::span<std::uint8_t>{slot.bytes}, 0, value.value);
-        return slot;
-    }
-
-    FrameSmokeMessage decode_message() const {
-        assert(len == 4U);
-        return FrameSmokeMessage{
-            flowrt::read_wire_le<std::uint32_t>(std::span<const std::uint8_t>{bytes}, 0)};
-    }
-};
-
 template <std::size_t N>
 void assert_capabilities_equal(flowrt::BackendCapabilities capabilities,
                                const std::array<std::string_view, N> &expected) {
@@ -115,12 +91,10 @@ int main() {
     flowrt::Iox2Backend iox2_backend;
     assert(iox2_backend.kind() == flowrt::BackendKind::Iox2);
     assert(iox2_backend.capabilities().contains("topology:multi_process"));
-    assert_capabilities_equal(iox2_backend.capabilities(), std::array<std::string_view, 26>{
+    assert_capabilities_equal(iox2_backend.capabilities(), std::array<std::string_view, 24>{
                                                                "abi:fixed_size_plain_data",
-                                                               "abi:variable_payload_frame",
                                                                "layout:native_layout",
                                                                "allocation:bounded",
-                                                               "allocation:bounded_dynamic",
                                                                "graph:static_graph",
                                                                "trigger:periodic",
                                                                "trigger:on_message",
@@ -392,21 +366,6 @@ int main() {
     const auto transport_read = iox2_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_read));
     assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Transport);
-
-    auto iox2_frame_endpoint =
-        flowrt::iox2::Iox2FramePubSub<FrameSmokeMessage, FrameSmokeSlot>::open_with_config(
-            "FlowRT/Cpp/FrameSmoke", iox2_config);
-    assert(iox2_frame_endpoint.service_name() == "FlowRT/Cpp/FrameSmoke");
-    assert(iox2_frame_endpoint.config().depth() == 1U);
-    assert(!iox2_frame_endpoint.ready());
-    assert(iox2_frame_endpoint.health().state == flowrt::BackendHealthState::Degraded);
-    assert(iox2_frame_endpoint.health().recoverable);
-    const auto frame_transport_write = iox2_frame_endpoint.publish_at(FrameSmokeMessage{42U}, 10U);
-    assert(std::holds_alternative<flowrt::ChannelError>(frame_transport_write));
-    assert(iox2_frame_endpoint.health().state == flowrt::BackendHealthState::Failed);
-    assert(!iox2_frame_endpoint.health().recoverable);
-    const auto frame_transport_read = iox2_frame_endpoint.receive_latest_at(10U);
-    assert(std::holds_alternative<flowrt::ChannelError>(frame_transport_read));
 
     auto zenoh_config =
         flowrt::zenoh::ZenohChannelConfig::fifo(0, flowrt::OverflowPolicy::DropNewest)

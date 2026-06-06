@@ -10,7 +10,7 @@ use iceoryx2::sample::Sample;
 
 use crate::{
     BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, Latest, OverflowPolicy,
-    ReconnectPolicy, StaleConfig, StalePolicy, WireCodecError,
+    ReconnectPolicy, StaleConfig, StalePolicy,
 };
 
 type IpcNode = Node<ipc::Service>;
@@ -28,15 +28,6 @@ struct FlowrtIox2Header {
 struct Iox2Received<T>
 where
     T: Copy,
-{
-    published_at_ms: u64,
-    payload: T,
-}
-
-#[derive(Debug, Clone)]
-struct Iox2FrameReceived<T>
-where
-    T: Clone,
 {
     published_at_ms: u64,
     payload: T,
@@ -77,19 +68,6 @@ impl std::fmt::Display for Iox2Error {
 }
 
 impl std::error::Error for Iox2Error {}
-
-/// iox2 有界变长消息 transport slot。
-///
-/// 生成的变长消息本体可以包含 `Vec`/`String` 等动态所有权字段，不能直接作为 iox2 typed
-/// payload。codegen 会为每个变长消息生成一个固定最大容量的 slot，并通过该 trait 在用户
-/// 消息和 canonical frame bytes 之间转换。
-pub trait Iox2FrameSlot<T>: Copy {
-    /// 将用户消息编码成固定容量 slot。
-    fn try_from_message(value: &T) -> Result<Self, WireCodecError>;
-
-    /// 将 slot 中的 canonical frame 解码回用户消息。
-    fn decode_message(&self) -> Result<T, WireCodecError>;
-}
 
 /// 打开 iceoryx2 publish-subscribe endpoint 时使用的 QoS 配置。
 ///
@@ -178,207 +156,6 @@ where
     stale: StaleConfig,
     health: BackendHealthTracker,
     received: Option<Iox2Received<T>>,
-}
-
-/// 使用固定容量 canonical frame slot 的 iox2 publish-subscribe endpoint。
-///
-/// `T` 是用户组件看到的结构化消息类型；`S` 是 codegen 生成的 fixed-size iox2 payload slot。
-/// 该类型保持用户 API 与 transport ABI 解耦，并让 bounded variable frame 可以继续走 iox2
-/// typed IPC service。
-pub struct Iox2FramePubSub<T, S>
-where
-    T: Clone,
-    S: Iox2FrameSlot<T> + std::fmt::Debug + Copy + ZeroCopySend + 'static,
-{
-    service_name: String,
-    publisher: Option<IpcPublisher<S>>,
-    subscriber: Option<IpcSubscriber<S>>,
-    node: Option<IpcNode>,
-    config: Iox2ChannelConfig,
-    stale: StaleConfig,
-    health: BackendHealthTracker,
-    received: Option<Iox2FrameReceived<T>>,
-}
-
-impl<T, S> Iox2FramePubSub<T, S>
-where
-    T: Clone,
-    S: Iox2FrameSlot<T> + std::fmt::Debug + Copy + ZeroCopySend + 'static,
-{
-    /// 使用显式 QoS 配置打开或创建一个本机 IPC publish-subscribe service。
-    pub fn open_with_config(
-        service_name: &str,
-        config: Iox2ChannelConfig,
-    ) -> Result<Self, Iox2Error> {
-        let parts = open_iox2_parts(service_name, config)?;
-
-        Ok(Self {
-            service_name: service_name.to_string(),
-            publisher: Some(parts.publisher),
-            subscriber: Some(parts.subscriber),
-            node: Some(parts.node),
-            config,
-            stale: config.stale(),
-            health: BackendHealthTracker::new(ReconnectPolicy::default()),
-            received: None,
-        })
-    }
-
-    /// 带 FlowRT runtime 时间戳发布一个结构化变长消息。
-    pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
-        let slot = S::try_from_message(&value)
-            .map_err(|error| Iox2Error::new("encode FlowRT iox2 frame payload", error))?;
-        self.ensure_ready("publish iceoryx2 frame sample")?;
-        match self.publish_slot(slot, published_at_ms) {
-            Ok(()) => {
-                self.health.mark_ready();
-                Ok(())
-            }
-            Err(error) => {
-                self.mark_transport_error(&error);
-                self.recover_after_transport_error("publish iceoryx2 frame sample")?;
-                self.publish_slot(slot, published_at_ms)
-                    .inspect(|_| self.health.mark_ready())
-                    .inspect_err(|error| self.mark_transport_error(error))
-            }
-        }
-    }
-
-    fn publish_slot(&self, slot: S, published_at_ms: u64) -> Result<(), Iox2Error> {
-        let publisher = self.publisher.as_ref().ok_or_else(|| {
-            Iox2Error::new("publish iceoryx2 frame sample", "endpoint is not ready")
-        })?;
-        let sample = publisher
-            .loan_uninit()
-            .map_err(|error| Iox2Error::new("failed to loan iceoryx2 frame sample", error))?;
-        let mut sample = sample;
-        sample.user_header_mut().published_at_ms = published_at_ms;
-        sample
-            .write_payload(slot)
-            .send()
-            .map_err(|error| Iox2Error::new("failed to send iceoryx2 frame sample", error))?;
-        Ok(())
-    }
-
-    /// 接收一个结构化消息，并根据 transport 时间戳暴露 freshness 状态。
-    pub fn receive_latest_at(&mut self, now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
-        self.ensure_ready("receive iceoryx2 frame sample")?;
-        if let Some(sample) = self.try_receive_frame_with_recovery()? {
-            self.received = Some(Iox2FrameReceived {
-                published_at_ms: sample.user_header().published_at_ms,
-                payload: (*sample)
-                    .decode_message()
-                    .map_err(|error| Iox2Error::new("decode FlowRT iox2 frame payload", error))?,
-            });
-        }
-
-        let stale = self
-            .received
-            .as_ref()
-            .map(|sample| self.stale.stale_at(Some(sample.published_at_ms), now_ms))
-            .unwrap_or(false);
-        let value = if stale && self.stale.policy() == StalePolicy::Drop {
-            None
-        } else {
-            self.received.as_ref().map(|sample| &sample.payload)
-        };
-
-        Ok(Latest::new(value, stale))
-    }
-
-    /// 返回 endpoint 的 QoS 配置。
-    pub fn config(&self) -> Iox2ChannelConfig {
-        self.config
-    }
-
-    /// 判断底层 iox2 endpoint 是否已经打开。
-    pub fn ready(&self) -> bool {
-        self.node.is_some() && self.publisher.is_some() && self.subscriber.is_some()
-    }
-
-    /// 返回 endpoint 健康快照。
-    pub fn health(&self) -> BackendHealthSnapshot {
-        if !self.ready() && self.health.snapshot().state == BackendHealthState::Ready {
-            return BackendHealthSnapshot {
-                state: BackendHealthState::Degraded,
-                last_error: Some("iceoryx2 endpoint is not ready".to_string()),
-                attempt: 0,
-                next_retry_unix_ms: None,
-                recoverable: true,
-            };
-        }
-        self.health.snapshot()
-    }
-
-    /// 返回 endpoint 重连策略。
-    pub fn reconnect_policy(&self) -> ReconnectPolicy {
-        self.health.policy()
-    }
-
-    /// 短暂等待，让 iceoryx2 推进本机 endpoint 状态。
-    pub fn poll_once(&self, timeout: Duration) -> Result<(), Iox2Error> {
-        self.node
-            .as_ref()
-            .ok_or_else(|| Iox2Error::new("poll iceoryx2 frame node", "endpoint is not ready"))?
-            .wait(timeout)
-            .map_err(|error| Iox2Error::new("failed to poll iceoryx2 frame node", error))
-    }
-
-    fn try_receive_frame(
-        &self,
-    ) -> Result<Option<Sample<ipc::Service, S, FlowrtIox2Header>>, Iox2Error> {
-        let subscriber = self.subscriber.as_ref().ok_or_else(|| {
-            Iox2Error::new("receive iceoryx2 frame sample", "endpoint is not ready")
-        })?;
-        subscriber
-            .receive()
-            .map_err(|error| Iox2Error::new("failed to receive iceoryx2 frame sample", error))
-    }
-
-    fn try_receive_frame_with_recovery(
-        &mut self,
-    ) -> Result<Option<Sample<ipc::Service, S, FlowrtIox2Header>>, Iox2Error> {
-        match self.try_receive_frame() {
-            Ok(sample) => {
-                self.health.mark_ready();
-                Ok(sample)
-            }
-            Err(error) => {
-                self.mark_transport_error(&error);
-                self.recover_after_transport_error("receive iceoryx2 frame sample")?;
-                self.try_receive_frame()
-                    .inspect(|_| self.health.mark_ready())
-                    .inspect_err(|error| self.mark_transport_error(error))
-            }
-        }
-    }
-
-    fn ensure_ready(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
-        if self.ready() {
-            return Ok(());
-        }
-        if self.health.snapshot().state != BackendHealthState::Reconnecting {
-            self.health
-                .mark_degraded(format!("{operation}: endpoint is not ready"));
-        }
-        self.recover_after_transport_error(operation)
-    }
-
-    fn mark_transport_error(&mut self, error: &Iox2Error) {
-        self.health.mark_degraded(error.to_string());
-    }
-
-    fn recover_after_transport_error(&mut self, operation: &'static str) -> Result<(), Iox2Error> {
-        recover_iox2_endpoint(
-            operation,
-            &self.service_name,
-            self.config,
-            &mut self.publisher,
-            &mut self.subscriber,
-            &mut self.node,
-            &mut self.health,
-        )
-    }
 }
 
 impl<T> Iox2PubSub<T>
@@ -943,48 +720,6 @@ mod tests {
             .publish_at(message, 200)
             .expect("publish should reopen a reset iox2 endpoint");
 
-        assert_eq!(endpoint.health().state, BackendHealthState::Ready);
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    struct FrameSmokeMessage {
-        value: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Debug, Clone, Copy, ZeroCopySend)]
-    #[type_name("FlowRTIox2DecodeFailingSlot")]
-    struct DecodeFailingSlot {
-        value: u32,
-    }
-
-    impl Iox2FrameSlot<FrameSmokeMessage> for DecodeFailingSlot {
-        fn try_from_message(value: &FrameSmokeMessage) -> Result<Self, WireCodecError> {
-            Ok(Self { value: value.value })
-        }
-
-        fn decode_message(&self) -> Result<FrameSmokeMessage, WireCodecError> {
-            Err(WireCodecError::invalid_frame("test decode failure"))
-        }
-    }
-
-    #[test]
-    fn frame_decode_errors_do_not_mark_endpoint_reconnecting() {
-        let mut endpoint =
-            Iox2FramePubSub::<FrameSmokeMessage, DecodeFailingSlot>::open_with_config(
-                "FlowRT/Smoke/FrameDecodeHealth",
-                Iox2ChannelConfig::latest(),
-            )
-            .expect("frame endpoint should open");
-
-        endpoint
-            .publish_at(FrameSmokeMessage { value: 1 }, 300)
-            .expect("invalid frame payload should still publish");
-        let error = endpoint
-            .receive_latest_at(301)
-            .expect_err("decode failure should be returned to caller");
-
-        assert!(error.message().contains("decode FlowRT iox2 frame payload"));
         assert_eq!(endpoint.health().state, BackendHealthState::Ready);
     }
 }

@@ -14,6 +14,14 @@ mod graph_tests;
 mod message_tests;
 
 fn bounded_variable_contract(backend: &str) -> ContractIr {
+    let target_backends = if backend == "iox2" {
+        r#""iox2", "zenoh""#
+    } else {
+        match backend {
+            "zenoh" => r#""zenoh""#,
+            _ => r#""inproc""#,
+        }
+    };
     let source = format!(
         r#"
 [package]
@@ -60,7 +68,7 @@ backend = "{backend}"
 
 [target.linux]
 runtime = ["rust"]
-backends = ["{backend}"]
+backends = [{target_backends}]
 "#
     );
     let raw = parse_str(&source).unwrap();

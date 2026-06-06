@@ -128,12 +128,7 @@ language = "rust"
     );
     assert_eq!(run_mode(&mixed_contract), None);
     assert!(is_mixed_language_contract(&mixed_contract));
-    let error = ensure_direct_runtime_supported(&mixed_contract, "run").unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("mixed-language `run` requires backend `iox2` or `zenoh`")
-    );
+    ensure_direct_runtime_supported(&mixed_contract, "run").unwrap();
 }
 
 #[test]
@@ -300,8 +295,10 @@ default_stale_policy = "warn"
 
     let error = ensure_direct_runtime_supported(&contract, "launch").unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("mixed-language `launch` requires backend `iox2` or `zenoh`"));
-    assert!(message.contains("selected backend `inproc`"));
+    assert!(message.contains("mixed-language `launch` cannot carry dataflow"));
+    assert!(message.contains("backend `inproc`"));
+    assert!(message.contains("source.sample"));
+    assert!(message.contains("sink.sample"));
 }
 
 #[test]
@@ -470,6 +467,59 @@ default_stale_policy = "warn"
     assert!(message.contains("backend `inproc`"));
     assert!(message.contains("source_process"));
     assert!(message.contains("sink_process"));
+}
+
+#[test]
+fn launch_readiness_allows_zenoh_route_across_process_groups_with_inproc_profile() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "split_rust_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_process"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "sink_process"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+backend = "zenoh"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+"#,
+    );
+
+    ensure_launch_process_boundaries_supported(&contract).unwrap();
+    ensure_run_process_boundaries_supported(&contract, Some("sink_process")).unwrap();
 }
 
 #[test]

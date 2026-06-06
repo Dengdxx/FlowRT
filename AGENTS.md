@@ -52,9 +52,6 @@ examples/
   mixed_iox2_demo/rsdl/robot.rsdl
   mixed_iox2_demo/src/rust/mod.rs
   mixed_iox2_demo/src/cpp/components.cpp
-  variable_iox2_demo/rsdl/robot.rsdl
-  variable_iox2_demo/src/rust/mod.rs
-  variable_iox2_demo/src/cpp/components.cpp
   mixed_zenoh_demo/rsdl/robot.rsdl
   mixed_zenoh_demo/src/rust/mod.rs
   mixed_zenoh_demo/src/cpp/components.cpp
@@ -73,11 +70,11 @@ Rust/C++ generated runtime shell 会把 task-level `deadline_ms` 转成 `timing:
 
 profile 选择 `iox2` 时，Rust message codegen 必须生成 `#[type_name("TypeName")]`，C++ message codegen 必须生成同名 `IOX2_TYPE_NAME`；iox2 runtime timestamp 使用两端同名的 `FlowRTIox2Header` user header，payload 必须保持业务消息 `T`，不要重新引入 `Iox2Stamped<T>` 这类 payload envelope。C++ iox2 shell 会使用 `flowrt::iox2::Iox2PubSub<T>`、canonical service name、bind-level channel/stale config、`receive_latest_at` 和 `publish_at`；runtime 中的 C++ `Iox2PubSub<T>` 在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx` 时会绑定真实 publisher/subscriber，默认未启用宏时仍安全返回 `ChannelError::Transport`。
 
-Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 `iox2` 或 `zenoh` backend 下可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及 selected backend 为 `inproc` 的跨语言 process boundary。`examples/imu_demo_iox2` 用于验证主 demo 的 Rust source、C++ controller 和 Rust monitor 通过 iox2 分进程运行，`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接，`examples/mixed_zenoh_demo` 用于验证跨主机 copy backend、bounded variable frame 和 mixed launch 路径。
+Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 route backend 为 `iox2` 或 `zenoh` 时可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及跨语言 route backend 为 `inproc` 的 process boundary。`examples/imu_demo_iox2` 用于验证主 demo 的 Rust source、C++ controller 和 Rust monitor 通过 iox2 分进程运行，`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接，`examples/mixed_zenoh_demo` 用于验证跨主机 copy backend、bounded variable frame 和 mixed launch 路径。
 
 `flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 会遍历 manifest 中的全部 graph，并读取 `runtime_kind`，为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，同时继续拒绝 mixed process group。generated supervisor 还会启动 `runtime=supervisor` 的 introspection socket，轮询子进程 PID socket，把子进程 heartbeat、tick stale、exit 和 restart 状态交给 `flowrt status` 展示；当前内置 `on-failure` policy 对异常退出最多重启 3 次，正常退出不重启。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
-当前已存在 `.github/workflows/ci.yml` CI：Linux 上分 job 运行 `guard-generated`、`rust-fmt`、`rust-test`、`rust-clippy`、`cpp-runtime`、`package`、`cpp-zenoh-runtime`、`demo-smoke` 和 `release`。CI 会上传 `flowrt-linux-deb` artifact；deb 包把 CLI、Rust runtime crate、C++ runtime package、Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0` 和 `zenoh-cpp 1.9.0` 安装到 `/opt/flowrt/<version>` 私有前缀，并通过 `/usr/bin/flowrt` 暴露入口。demo smoke 会先安装 deb，再用安装后的 `flowrt ...` 跑示例；C++ only demo 执行 build/run/launch，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo` 与 `imu_demo_iox2` 执行 check，`profile_switch_demo` 执行 profile 切换 smoke，`variable_iox2_demo` 执行 C++ iox2 mixed launch 和 bounded variable frame marker 验证，`mixed_zenoh_demo` 执行 zenoh build/launch smoke。`cpp-zenoh-runtime` 也使用 deb 包内私有 zenoh SDK，不再单独源码构建 zenoh 依赖。推送 `v*` tag 且全部 gate 成功后，release job 会下载 deb artifact、从 `CHANGELOG.md` 对应版本段抽取 release notes，并创建 GitHub Release 上传 `.deb` 与 `SHA256SUMS`；tag 版本必须匹配 `Cargo.toml`。该 workflow 暂不做 cache 或多平台矩阵；生成 CMake 不得通过 `FetchContent` 联网拉取 backend SDK，缺失依赖应要求安装 FlowRT 包或显式设置 `FLOWRT_CPP_RUNTIME_DIR` / `CMAKE_PREFIX_PATH`。
+当前已存在 `.github/workflows/ci.yml` CI：Linux 上分 job 运行 `guard-generated`、`rust-fmt`、`rust-test`、`rust-clippy`、`cpp-runtime`、`package`、`cpp-zenoh-runtime`、`demo-smoke` 和 `release`。CI 会上传 `flowrt-linux-deb` artifact；deb 包把 CLI、Rust runtime crate、C++ runtime package、Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0` 和 `zenoh-cpp 1.9.0` 安装到 `/opt/flowrt/<version>` 私有前缀，并通过 `/usr/bin/flowrt` 暴露入口。demo smoke 会先安装 deb，再用安装后的 `flowrt ...` 跑示例；C++ only demo 执行 build/run/launch，mixed `imu_demo` 只执行 build，Rust-only `import_demo` 执行 run/launch，`mixed_iox2_demo` 与 `imu_demo_iox2` 执行 check，`profile_switch_demo` 执行 profile 切换 smoke，`mixed_zenoh_demo` 执行 zenoh build/launch smoke。`cpp-zenoh-runtime` 也使用 deb 包内私有 zenoh SDK，不再单独源码构建 zenoh 依赖。推送 `v*` tag 且全部 gate 成功后，release job 会下载 deb artifact、从 `CHANGELOG.md` 对应版本段抽取 release notes，并创建 GitHub Release 上传 `.deb` 与 `SHA256SUMS`；tag 版本必须匹配 `Cargo.toml`。该 workflow 暂不做 cache 或多平台矩阵；生成 CMake 不得通过 `FetchContent` 联网拉取 backend SDK，缺失依赖应要求安装 FlowRT 包或显式设置 `FLOWRT_CPP_RUNTIME_DIR` / `CMAKE_PREFIX_PATH`。
 
 ## 设计原则
 
@@ -242,7 +239,7 @@ FlowRT Message ABI v0.1 的 native ABI 基线支持 fixed-size plain data：
 - `string<max=N>`
 - `sequence<T,max=N>`
 
-bounded variable frame 使用固定 header + 尾部变长区的 canonical frame codec；`inproc` 和 `zenoh` 传递 canonical frame，`iox2` 通过 codegen 生成的固定容量 transport slot 承载 frame bytes。
+bounded variable frame 使用固定 header + 尾部变长区的 canonical frame codec；`inproc` 和 `zenoh` 可以直接传递 canonical frame。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 bounded variable frame 时，normalizer 必须把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。不要重新引入变长 over iox2 的兼容承载层。
 
 暂不支持：
 
@@ -280,8 +277,8 @@ CAN
 MCU static backend
 ```
 
-backend capability 应被显式建模。validator 必须拒绝未知 backend 名称，以及 selected backend 无法满足的 contract。未知 backend 不得因为没有被当前 profile 选中而在 `target.<name>.backends` 中静默保留。
-`ChannelEdgeIr.policy_source`、`ChannelEdgeIr.capability_requirements`、`TargetIr.capabilities`、`DeploymentIr.required_capabilities` 和 `DeploymentIr.satisfied` 都是由 channel policy、backend catalog、graph 和 profile/target 组合派生或记录的字段；validator 必须重新推导并拒绝不一致值，能力列表顺序也必须与推导结果一致，不能信任落盘 IR 中可被手工改写的派生元数据。`ComponentIr.params` 和 `InstanceIr.params` 也必须保持参数名唯一、实例参数集合与 component 默认参数集合一致，且实例覆盖值必须与 component 默认值类型兼容。`TargetIr.runtime` 和 `TargetIr.backends` 也必须保持去重。声明 target 时，每个 graph/profile/target 组合必须恰好有一条 deployment，缺失或重复行都必须被拒绝。
+backend capability 应被显式建模。validator 必须拒绝未知 backend 名称，以及 profile backend 或 route backend 无法满足的 contract。未知 backend 不得因为没有被当前 profile 选中而在 `target.<name>.backends` 中静默保留。
+`ChannelEdgeIr.policy_source`、`ChannelEdgeIr.backend`、`ChannelEdgeIr.backend_source`、`ChannelEdgeIr.capability_requirements`、`TargetIr.capabilities`、`DeploymentIr.required_capabilities` 和 `DeploymentIr.satisfied` 都是由 channel policy、route backend、backend catalog、graph 和 profile/target 组合派生或记录的字段；validator 必须重新推导并拒绝不一致值，能力列表顺序也必须与推导结果一致，不能信任落盘 IR 中可被手工改写的派生元数据。`ComponentIr.params` 和 `InstanceIr.params` 也必须保持参数名唯一、实例参数集合与 component 默认参数集合一致，且实例覆盖值必须与 component 默认值类型兼容。`TargetIr.runtime` 和 `TargetIr.backends` 也必须保持去重。声明 target 时，每个 graph/profile/target 组合必须恰好有一条 deployment，缺失或重复行都必须被拒绝。
 
 ## Codegen 边界
 

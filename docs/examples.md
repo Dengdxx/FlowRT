@@ -12,7 +12,6 @@
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体，并覆盖 Rust/C++ 用户组件参数接口 |
-| `examples/variable_iox2_demo` | Rust + C++ | `iox2` | `flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl` | 验证 bounded variable frame 经 iox2 fixed slot 跨语言传递 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 ## `import_demo`
@@ -144,7 +143,6 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```text
 examples/mixed_iox2_demo/rsdl/robot.rsdl
 examples/imu_demo_iox2/rsdl/robot.rsdl
-examples/variable_iox2_demo/rsdl/robot.rsdl
 ```
 
 这些示例验证 language-separated mixed contract over `iox2`：
@@ -153,16 +151,13 @@ examples/variable_iox2_demo/rsdl/robot.rsdl
 - selected backend 必须是 `iox2`。
 - launch manifest 中的 channel 必须暴露 canonical service name。
 - Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
-- bounded variable frame 会通过 codegen 生成的 fixed-size iox2 slot 承载，用户组件接口仍使用结构化消息。
+- `iox2` 只承载 fixed-size plain data；如果 route 使用 bounded variable frame，Contract IR 会把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），不生成变长 over iox2 的兼容承载层。
 
-`mixed_iox2_demo` 和 `imu_demo_iox2` 的基础 smoke 仍以 `check` 为主。`variable_iox2_demo` 会在 CI 中构建并有限 tick 运行，用 marker 文件证明 C++ sink 实际收到 Rust source 发出的 bounded variable frame：
+`mixed_iox2_demo` 和 `imu_demo_iox2` 的基础 smoke 仍以 `check` 为主：
 
 ```bash
-flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
-rm -f /tmp/flowrt-variable-iox2-saw-packet
-FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-  flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
-test -s /tmp/flowrt-variable-iox2-saw-packet
+flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
+flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
 ```
 
 含 C++ iox2 组件的生成 CMake 会查找 `iceoryx2-cxx 0.9.1`。通过 Debian 包安装 FlowRT 时，该 SDK 已在 `/opt/flowrt/<version>` 私有前缀内，`flowrt build` 会自动传入对应路径；直接调试生成 CMake 时，可以显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。

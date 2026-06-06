@@ -185,6 +185,8 @@ pub struct ChannelEdgeIr {
     pub id: EntityId,
     pub from: PortRef,
     pub to: PortRef,
+    pub backend: BackendName,
+    pub backend_source: ChannelBackendSource,
     pub channel: ChannelKind,
     pub depth: Option<u32>,
     pub overflow: OverflowPolicy,
@@ -192,6 +194,15 @@ pub struct ChannelEdgeIr {
     pub max_age_ms: Option<u64>,
     pub policy_source: ChannelPolicySourceIr,
     pub capability_requirements: Vec<CapabilityAtom>,
+}
+
+/// route backend 字段来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelBackendSource {
+    Explicit,
+    ProfileDefault,
+    AutoFallback,
 }
 
 /// channel policy 字段的来源，用于 profile 投影时只重算默认项。

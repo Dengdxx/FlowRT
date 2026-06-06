@@ -50,11 +50,11 @@ output = ["packet"]
 }
 
 #[test]
-fn emits_iox2_frame_slots_for_variable_messages() {
+fn iox2_profile_routes_variable_messages_over_zenoh_without_frame_slots() {
     let ir = contract_from_source(
         r#"
 [package]
-name = "variable_iox2_demo"
+name = "variable_route_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
@@ -99,7 +99,7 @@ backend = "iox2"
 
 [target.linux]
 runtime = ["rust", "cpp"]
-backends = ["iox2"]
+backends = ["iox2", "zenoh"]
 "#,
     );
 
@@ -109,20 +109,31 @@ backends = ["iox2"]
     let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
     let cpp_shell_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
 
-    assert!(rust_messages.contains("pub struct PacketIox2Frame"));
-    assert!(rust_messages.contains("#[type_name(\"Packet\")]"));
-    assert!(rust_messages.contains("impl flowrt::iox2::Iox2FrameSlot<Packet> for PacketIox2Frame"));
-    assert!(rust_shell.contains("flowrt::iox2::Iox2FramePubSub<Packet, PacketIox2Frame>"));
+    assert!(!rust_messages.contains("PacketIox2"));
+    assert_eq!(
+        rust_shell
+            .matches("flowrt::zenoh::ZenohPubSub<Packet>")
+            .count(),
+        1
+    );
+    assert!(rust_shell.contains("flowrt::zenoh::ZenohPubSub<Packet>"));
 
-    assert!(cpp_messages.contains("struct PacketIox2Frame"));
+    assert!(!cpp_messages.contains("PacketIox2"));
     assert!(cpp_messages.contains("std::size_t samples_cursor = 0;"));
     assert!(cpp_messages.contains("samples_cursor += 4;"));
-    assert!(cpp_messages.contains("static constexpr const char* IOX2_TYPE_NAME = \"Packet\";"));
-    assert!(cpp_messages.contains("static PacketIox2Frame from_message(const Packet& value)"));
-    assert!(
-        cpp_shell_header
-            .contains("flowrt::iox2::Iox2FramePubSub<Packet, PacketIox2Frame> bind_0_;")
-    );
+    assert!(!cpp_messages.contains("IOX2_TYPE_NAME"));
+    assert!(cpp_shell_header.contains("flowrt::zenoh::ZenohPubSub<Packet> bind_0_;"));
+
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    assert_eq!(launch["graphs"][0]["channels"][0]["backend"], "zenoh");
+
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+    assert!(cargo_manifest.contains("features = [\"iox2\", \"zenoh\"]"));
+
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+    assert!(cmake.contains("find_package(iceoryx2-cxx 0.9.1 QUIET)"));
+    assert!(cmake.contains("find_package(zenohc 1.9.0 QUIET)"));
 }
 
 #[test]

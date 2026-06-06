@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy, ParamIr,
-    StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr,
+    BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy,
+    ParamIr, StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -91,6 +91,7 @@ pub(crate) struct BindRuntimePlan {
     pub(crate) field_name: String,
     pub(crate) probe_field_name: String,
     pub(crate) channel: ChannelKind,
+    pub(crate) backend: BackendName,
     pub(crate) overflow: IrOverflowPolicy,
     pub(crate) stale: IrStalePolicy,
     pub(crate) max_age_ms: Option<u64>,
@@ -160,6 +161,7 @@ pub(crate) fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<
                 field_name: format!("bind_{index}"),
                 probe_field_name: format!("introspection_probe_bind_{index}"),
                 channel: bind.channel,
+                backend: bind.backend.clone(),
                 overflow: bind.overflow,
                 stale: bind.stale,
                 max_age_ms: bind.max_age_ms,
@@ -216,6 +218,33 @@ pub(crate) fn active_binds_for_instances<'a>(
                 || active_instances.contains(bind.target_instance.as_str())
         })
         .collect()
+}
+
+pub(crate) fn bind_backend(bind: &BindRuntimePlan) -> &str {
+    bind.backend.0.as_str()
+}
+
+pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> bool {
+    contract
+        .profiles
+        .iter()
+        .any(|profile| profile.backend.0 == backend)
+        || contract
+            .graphs
+            .iter()
+            .flat_map(|graph| &graph.binds)
+            .any(|bind| bind.backend.0 == backend)
+}
+
+pub(crate) fn contract_backend_features(contract: &ContractIr) -> Vec<&'static str> {
+    let mut features = Vec::new();
+    if contract_uses_backend(contract, "iox2") {
+        features.push("iox2");
+    }
+    if contract_uses_backend(contract, "zenoh") {
+        features.push("zenoh");
+    }
+    features
 }
 
 pub(crate) fn runtime_channel_name(bind: &BindRuntimePlan) -> String {

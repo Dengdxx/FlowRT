@@ -27,7 +27,7 @@ cmake -S runtime/cpp -B build/cpp
 cargo run -p flowrt-cli -- prepare examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
-cargo run -p flowrt-cli -- prepare examples/variable_iox2_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- prepare examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
 仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让 `examples/*/src/cpp/**` 读取本示例自己的 `flowrt/cpp/include` 生成头。`flowrt/` 和 `examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行对应示例的 `prepare` 或 `build`，再重启 clangd。
@@ -51,11 +51,6 @@ flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
 flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-flowrt build --launcher examples/variable_iox2_demo/rsdl/robot.rsdl
-rm -f /tmp/flowrt-variable-iox2-saw-packet
-FLOWRT_TICK_SLEEP_MS=5 FLOWRT_VARIABLE_IOX2_SAW_PACKET_PATH=/tmp/flowrt-variable-iox2-saw-packet \
-  flowrt launch --run-ticks 200 examples/variable_iox2_demo/rsdl/robot.rsdl
-test -s /tmp/flowrt-variable-iox2-saw-packet
 flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
 FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
@@ -116,14 +111,14 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有 OS advisory lock；`.flowrt.lock` 文件可以残留，PID 只作为诊断内容，真实占用状态必须由锁判断。`check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`echo` 和 `params` 不写生成物，不应获取该锁。
 - 生成的 Rust/C++ runtime shell 必须把 SIGINT/SIGTERM 转成 runtime `ShutdownToken`，让长期运行的 tick loop 优雅退出，并继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。CLI 的 `--run-ticks` 只是显式运行上限，不是核心 runtime 行为来源。
 - Runtime 与 codegen 不能吞掉 bind-level channel 语义：`latest` 和 `fifo` 都要保留 `overflow`、`max_age_ms` 与 `stale_policy`，inproc shell 也应使用 timestamped read/write 路径传递 freshness。
-- 跨 process group 的 bind 会在 Contract IR capability 派生中要求 `topology:multi_process`；validator、normalizer 和 CLI 必须共享同一套 deployment 判定，不要再各自手写 process-boundary 特判。
+- 跨 process group 的 bind 会在该 route 的 Contract IR capability 派生中要求 `topology:multi_process`；跨 target route 还会要求 `topology:multi_host`。validator、normalizer 和 CLI 必须共享同一套 route topology 判定，不要再各自手写 process-boundary 特判。
 - Task-level execution intent 也必须映射到 runtime 行为：`deadline_ms` 要进入 required capabilities，并由生成 shell 在用户回调和输出发布边界执行检查。
-- Message ABI v0.1 的 native ABI 基线仍是 fixed-size plain data；`bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 已作为 bounded variable frame 落地。backend 支持必须通过 `abi:variable_payload_frame` 与 `allocation:bounded_dynamic` capability 明确声明；`iox2` 路径通过 codegen 生成的 fixed-size transport slot 承载 canonical frame bytes。
+- Message ABI v0.1 的 native ABI 基线仍是 fixed-size plain data；`bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>` 已作为 bounded variable frame 落地。backend 支持必须通过 `abi:variable_payload_frame` 与 `allocation:bounded_dynamic` capability 明确声明；`iox2` 不承载 variable frame。profile 默认 backend 为 `iox2` 且 route 使用 bounded variable frame 时，normalizer 会把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。
 - iox2/zenoh endpoint 需要保持 peer endpoint 重建后的继续收发回归测试。Runtime 提供 C ABI 友好形状的 `BackendHealthState`、`BackendHealthSnapshot`、`ReconnectPolicy` 和 `BackendHealthTracker`：状态只表达 `ready`、`degraded`、`reconnecting`、`failed`，退避策略使用毫秒和 attempt 数，后续 C、Python 或更多语言 runtime 应复用该稳定形状。`iox2` 和 `zenoh` endpoint 已接入自动恢复，本地 transport 资源丢失或操作失败会重建本地 publisher/subscriber/session；codec/schema 错误不触发重连。恢复逻辑必须留在 backend endpoint 层，不要在 generated shell 中临时吞掉错误。
 - Mixed contract 的 Message ABI conformance 不能只依赖同一生成器内嵌的 expected bytes；C++ test 写出的 fixture 和 Rust test 读取后的 typed roundtrip 都应保持可运行。
-- 扩展 backend capability 时，先在 `flowrt-ir` 的 typed capability catalog 中维护全局 canonical 顺序，再由 `backend_capabilities`、`channel_capabilities`、`trigger_capability` 或 message ABI 推导函数输出既有 `CapabilityAtom` 字符串。凡是 backend、target、deployment、channel 的 capability 组合，都要先去重再按该 catalog 顺序输出，不能依赖声明顺序或首次出现顺序；新增或重排 catalog 都会改变 canonical IR 顺序，因此必须同步补顺序独立测试。不要在 validator、normalizer 或 codegen 中散落新 capability 字符串。
+- 扩展 backend capability 时，先在 `flowrt-ir` 的 typed capability catalog 中维护全局 canonical 顺序，再由 `backend_capabilities`、`channel_route_capabilities`、`channel_capabilities`、`trigger_capability` 或 message ABI 推导函数输出既有 `CapabilityAtom` 字符串。凡是 backend、target、deployment、route、channel 的 capability 组合，都要先去重再按该 catalog 顺序输出，不能依赖声明顺序或首次出现顺序；新增或重排 catalog 都会改变 canonical IR 顺序，因此必须同步补顺序独立测试。不要在 validator、normalizer 或 codegen 中散落新 capability 字符串。
 - Rust/C++ runtime 的 backend capability 报告顺序也必须跟随同一个 catalog；runtime smoke test 应精确断言顺序，避免自描述、诊断和跨语言对比输出出现漂移。
-- deployment satisfaction 只能通过 `flowrt-ir` 的集中 typed decision 推导；normalizer 和 validator 必须复用同一 decision 入口，不能各自复制 unknown backend、target 未声明支持、missing required capabilities 或 satisfied 的判断逻辑，也不能把 `TargetIr.capabilities` 或 `DeploymentIr.satisfied` 当作事实源。
+- deployment satisfaction 和 route backend satisfaction 都只能通过 `flowrt-ir` 的集中 typed decision 推导；normalizer 和 validator 必须复用同一 decision 入口，不能各自复制 unknown backend、target 未声明支持、missing required capabilities 或 satisfied 的判断逻辑，也不能把 `TargetIr.capabilities`、`ChannelEdgeIr.capability_requirements` 或 `DeploymentIr.satisfied` 当作事实源。
 
 ## 文档维护
 

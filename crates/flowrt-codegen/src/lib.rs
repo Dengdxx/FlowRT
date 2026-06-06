@@ -30,15 +30,15 @@ use launch_manifest::emit_launch_manifest;
 use messages::{
     emit_cpp_message_abi_tests, emit_cpp_messages, emit_rust_message_abi_tests, emit_rust_messages,
     fixed_message_abi_expectations, frame_header_size_for_expr, frame_header_size_for_type,
-    frame_max_size_for_type, iox2_frame_slot_type_for_expr, rust_type, rust_wire_size,
-    type_contains_variable_data, variable_tail_max_size,
+    frame_max_size_for_type, rust_type, rust_wire_size, type_contains_variable_data,
+    variable_tail_max_size,
 };
 use runtime_plan::{
     BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
-    bind_runtime_plans, incoming_bind_index_map, indent_generated_block, on_message_trigger_guard,
-    outgoing_bind_indices_map, process_runtime_plans, runtime_channel_message_type,
-    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name,
-    rust_nested_step_indent, rust_step_indent,
+    bind_backend, bind_runtime_plans, incoming_bind_index_map, indent_generated_block,
+    on_message_trigger_guard, outgoing_bind_indices_map, process_runtime_plans,
+    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
+    runtime_param_name, rust_nested_step_indent, rust_step_indent,
 };
 use selfdesc::{
     emit_cpp_selfdesc_header, emit_cpp_selfdesc_source, emit_rust_selfdesc, emit_self_description,
@@ -448,7 +448,7 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "    {}: {},\n",
             bind.field_name,
-            runtime_channel_type(bind, &selected_backend)
+            runtime_channel_type(bind)
         ));
         output.push_str(&format!(
             "    {}: flowrt::IntrospectionChannelProbe,\n",
@@ -458,20 +458,13 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output.push_str("}\n\n");
 
     output.push_str("impl App {\n");
-    output.push_str(&emit_rust_app_new(
-        contract,
-        graph,
-        &order,
-        &bind_plans,
-        &selected_backend,
-    ));
+    output.push_str(&emit_rust_app_new(contract, graph, &order, &bind_plans));
     let step_emission = RustStepEmission {
         contract,
         graph,
         binds: &bind_plans,
         incoming_bind_index: &incoming_bind_index,
         outgoing_bind_indices: &outgoing_bind_indices,
-        selected_backend: &selected_backend,
     };
 
     output.push_str(&emit_rust_app_step(
@@ -686,7 +679,6 @@ fn emit_rust_app_new(
     graph: &GraphIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
-    selected_backend: &str,
 ) -> String {
     let mut output = String::new();
     output.push_str("    pub fn new(\n");
@@ -714,7 +706,7 @@ fn emit_rust_app_new(
         output.push_str(&format!(
             "            {}: {},\n",
             bind.field_name,
-            runtime_channel_initializer(contract, graph, bind, selected_backend)
+            runtime_channel_initializer(contract, graph, bind)
         ));
         output.push_str(&format!(
             "            {}: flowrt::IntrospectionChannelProbe::default(),\n",
@@ -731,7 +723,6 @@ struct RustStepEmission<'a> {
     binds: &'a [BindRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
-    selected_backend: &'a str,
 }
 
 fn emit_rust_app_step(
@@ -746,7 +737,7 @@ fn emit_rust_app_step(
     ));
     output.push_str("        let _ = tick;\n");
     output.push_str("        let _ = introspection_state;\n");
-    if runtime_step_uses_tick_time(emission.binds, emission.selected_backend) {
+    if runtime_step_uses_tick_time(emission.binds) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
 
@@ -777,11 +768,7 @@ fn emit_rust_app_step(
                     .get(&(instance.name.clone(), input.name.clone()))
                     .expect("validated graph must provide a bind for each task input");
                 let bind = &emission.binds[*bind_index];
-                output.push_str(&runtime_channel_read(
-                    input,
-                    bind,
-                    emission.selected_backend,
-                ));
+                output.push_str(&runtime_channel_read(input, bind));
                 output.push_str(&runtime_stale_error_guard(input, bind));
             } else {
                 output.push_str(&format!(
@@ -867,7 +854,7 @@ fn emit_rust_app_step(
             for bind_index in outgoing {
                 let bind = &emission.binds[bind_index];
                 output.push_str(&indent_generated_block(
-                    &runtime_channel_write(bind, emission.selected_backend),
+                    &runtime_channel_write(bind),
                     trigger_guard.is_some(),
                 ));
             }
@@ -1003,25 +990,18 @@ fn emit_rust_app_run_function(
     output
 }
 
-fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan], selected_backend: &str) -> bool {
-    (!binds.is_empty() && matches!(selected_backend, "iox2" | "zenoh"))
-        || binds
-            .iter()
-            .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
+fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan]) -> bool {
+    binds
+        .iter()
+        .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
 }
 
-fn runtime_channel_type(bind: &BindRuntimePlan, selected_backend: &str) -> String {
+fn runtime_channel_type(bind: &BindRuntimePlan) -> String {
     let ty = rust_type(&bind.source_type);
-    if selected_backend == "iox2" {
-        if bind.source_uses_variable_frame {
-            return format!(
-                "flowrt::iox2::Iox2FramePubSub<{ty}, {}>",
-                iox2_frame_slot_type_for_expr(&bind.source_type)
-            );
-        }
+    if bind_backend(bind) == "iox2" {
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
-    if selected_backend == "zenoh" {
+    if bind_backend(bind) == "zenoh" {
         return format!("flowrt::zenoh::ZenohPubSub<{ty}>");
     }
 
@@ -1035,25 +1015,15 @@ fn runtime_channel_initializer(
     contract: &ContractIr,
     graph: &GraphIr,
     bind: &BindRuntimePlan,
-    selected_backend: &str,
 ) -> String {
-    if selected_backend == "iox2" {
-        if bind.source_uses_variable_frame {
-            return format!(
-                "flowrt::iox2::Iox2FramePubSub::<{}, {}>::open_with_config({}, {}).expect(\"failed to open FlowRT iox2 frame channel\")",
-                rust_type(&bind.source_type),
-                iox2_frame_slot_type_for_expr(&bind.source_type),
-                rust_string_literal(&iox2_service_name(contract, graph, bind)),
-                iox2_channel_config_expr(bind),
-            );
-        }
+    if bind_backend(bind) == "iox2" {
         return format!(
             "flowrt::iox2::Iox2PubSub::open_with_config({}, {}).expect(\"failed to open FlowRT iox2 channel\")",
             rust_string_literal(&iox2_service_name(contract, graph, bind)),
             iox2_channel_config_expr(bind),
         );
     }
-    if selected_backend == "zenoh" {
+    if bind_backend(bind) == "zenoh" {
         return format!(
             "flowrt::zenoh::ZenohPubSub::open_with_config({}, {}).expect(\"failed to open FlowRT zenoh channel\")",
             rust_string_literal(&zenoh_key_expr(contract, graph, bind)),
@@ -1128,8 +1098,8 @@ fn runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
     }
 }
 
-fn runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    if matches!(selected_backend, "iox2" | "zenoh") {
+fn runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan) -> String {
+    if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
             "        let {input} = match self.{field}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
             input = input.name,
@@ -1166,8 +1136,8 @@ fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
     )
 }
 
-fn runtime_introspection_publish_record(bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    let helper = if bind.source_uses_variable_frame || selected_backend == "zenoh" {
+fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
+    let helper = if bind.source_uses_variable_frame || bind_backend(bind) == "zenoh" {
         "record_introspection_publish_frame"
     } else {
         "record_introspection_publish_copy"
@@ -1178,9 +1148,9 @@ fn runtime_introspection_publish_record(bind: &BindRuntimePlan, selected_backend
     )
 }
 
-fn runtime_channel_write(bind: &BindRuntimePlan, selected_backend: &str) -> String {
-    let introspection_record = runtime_introspection_publish_record(bind, selected_backend);
-    if matches!(selected_backend, "iox2" | "zenoh") {
+fn runtime_channel_write(bind: &BindRuntimePlan) -> String {
+    let introspection_record = runtime_introspection_publish_record(bind);
+    if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
             "            if self.{field}.publish_at(value.clone(), tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n{introspection_record}",
             field = bind.field_name

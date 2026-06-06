@@ -1,6 +1,7 @@
 use super::*;
-use crate::capabilities::expected_bind_capabilities;
-use flowrt_ir::{EntityId, LanguageKind, graph_required_capabilities};
+use flowrt_ir::{
+    EntityId, LanguageKind, RouteTopology, channel_route_capabilities, graph_required_capabilities,
+};
 
 #[test]
 fn rejects_unknown_backend_names_declared_in_profiles() {
@@ -142,7 +143,7 @@ backends = ["iox2"]
     assert!(
             report.errors.iter().any(|error| {
                 error.message.contains(
-                    "backend `iox2` selected by profile `default` cannot satisfy required capabilities for graph `default`",
+                    "backend `iox2` selected by bind `source.sample` -> `sink.sample` cannot satisfy route capabilities",
                 )
             }),
             "{:?}",
@@ -202,6 +203,66 @@ backends = ["zenoh"]
 [target.pi_host]
 runtime = ["rust"]
 backends = ["zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn accepts_explicit_zenoh_route_with_inproc_profile_for_cross_target_dataflow() {
+    let source = r#"
+[package]
+name = "distributed_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "dev_host"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "pi_host"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+backend = "zenoh"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.dev_host]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+
+[target.pi_host]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
@@ -270,14 +331,14 @@ backends = ["zenoh"]
         .expect_err("zenoh must reject overflow policies it does not advertise");
 
     assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "backend `zenoh` selected by profile `default` cannot satisfy required capabilities for graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "backend `zenoh` selected by bind `source.sample` -> `sink.sample` cannot satisfy route capabilities",
+            )
+        }),
+        "{:?}",
+        report.errors
+    );
 }
 
 #[test]
@@ -362,7 +423,7 @@ fn rejects_forged_satisfied_deployment() {
 }
 
 #[test]
-fn deployment_capability_validation_reuses_shared_decision() {
+fn route_capability_validation_reuses_shared_decision() {
     let source = r#"
 [package]
 name = "wide_demo"
@@ -409,11 +470,11 @@ runtime = ["rust"]
 backends = ["inproc"]
 "#;
     let raw = parse_str(source).unwrap();
-    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
     let decision = deployment_capability_decision(
-        &ir.deployments[0].backend,
+        &ir.graphs[0].binds[0].backend,
         &ir.targets[0].backends,
-        &ir.deployments[0].required_capabilities,
+        &ir.graphs[0].binds[0].capability_requirements,
     );
 
     assert!(decision.selected_backend_known);
@@ -423,22 +484,13 @@ backends = ["inproc"]
         vec![CapabilityAtom("abi:int128".to_string())]
     );
 
-    ir.deployments[0].satisfied = true;
-    let report = validate_contract(&ir).expect_err("forged satisfied flag should fail");
-    assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "backend `inproc` selected by profile `default` cannot satisfy required capabilities for graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
+    let report =
+        validate_contract(&ir).expect_err("route backend should fail missing int128 capability");
     assert!(
         report.errors.iter().any(|error| {
-            error
-                .message
-                .contains("deployment `default / default / linux` has inconsistent satisfied flag")
+            error.message.contains(
+                "backend `inproc` selected by bind `producer.sample` -> `consumer.sample` cannot satisfy route capabilities",
+            )
         }),
         "{:?}",
         report.errors
@@ -516,36 +568,17 @@ backends = ["inproc"]
 "#;
     let raw = parse_str(source).unwrap();
     let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
-    ir.deployments[0]
-        .required_capabilities
+    ir.graphs[0].binds[0]
+        .capability_requirements
         .retain(|capability| capability.0 != "abi:int128");
-    ir.deployments[0].satisfied = true;
 
     let report = validate_contract(&ir).expect_err("forged int128 capability metadata should fail");
 
     assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "deployment `default / default / linux` required capabilities do not match graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
-    assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "backend `inproc` selected by profile `default` cannot satisfy required capabilities for graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
-    assert!(
         report.errors.iter().any(|error| {
             error
                 .message
-                .contains("deployment `default / default / linux` has inconsistent satisfied flag")
+                .contains("bind `producer.sample` -> `consumer.sample` capability requirements do not match channel policy")
         }),
         "{:?}",
         report.errors
@@ -557,24 +590,24 @@ fn rejects_forged_variable_frame_capability_metadata() {
     let mut ir = bounded_variable_contract("inproc");
     validate_contract(&ir).unwrap();
 
-    ir.deployments[0]
-        .required_capabilities
+    ir.graphs[0].binds[0]
+        .capability_requirements
         .retain(|capability| capability.0 != "abi:variable_payload_frame");
 
     let report = validate_contract(&ir).expect_err("forged variable frame capability must fail");
     assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "deployment `default / default / linux` required capabilities do not match graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
+        report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("bind `producer.packet` -> `consumer.packet` capability requirements do not match channel policy")
+        }),
+        "{:?}",
+        report.errors
+    );
 }
 
 #[test]
-fn rejects_forged_int128_metadata_for_declared_unreachable_message_type() {
+fn unused_message_abi_does_not_affect_route_backend_capabilities() {
     let source = r#"
 [package]
 name = "wide_demo"
@@ -624,33 +657,8 @@ runtime = ["rust"]
 backends = ["inproc"]
 "#;
     let raw = parse_str(source).unwrap();
-    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
-    ir.deployments[0]
-        .required_capabilities
-        .retain(|capability| capability.0 != "abi:int128");
-    ir.deployments[0].satisfied = true;
-
-    let report =
-        validate_contract(&ir).expect_err("forged unreachable int128 type metadata should fail");
-
-    assert!(
-            report.errors.iter().any(|error| {
-                error.message.contains(
-                    "deployment `default / default / linux` required capabilities do not match graph `default`",
-                )
-            }),
-            "{:?}",
-            report.errors
-        );
-    assert!(
-        report.errors.iter().any(|error| {
-            error
-                .message
-                .contains("deployment `default / default / linux` has inconsistent satisfied flag")
-        }),
-        "{:?}",
-        report.errors
-    );
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    validate_contract(&ir).unwrap();
 }
 
 #[test]
@@ -711,8 +719,23 @@ fn rejects_inconsistent_channel_policy_source_metadata() {
     ir.graphs[0].binds[0].overflow = OverflowPolicy::Error;
     ir.graphs[0].binds[0].stale = StalePolicy::Drop;
     ir.graphs[0].binds[0].max_age_ms = Some(10);
-    ir.graphs[0].binds[0].capability_requirements =
-        expected_bind_capabilities(&ir.graphs[0].binds[0]);
+    let bind = &ir.graphs[0].binds[0];
+    let source_ty = ir
+        .components
+        .iter()
+        .find(|component| component.name == "producer")
+        .unwrap()
+        .outputs[0]
+        .ty
+        .clone();
+    ir.graphs[0].binds[0].capability_requirements = channel_route_capabilities(
+        &ir.types,
+        &source_ty,
+        bind.channel,
+        bind.overflow,
+        bind.stale,
+        RouteTopology::local(),
+    );
     ir.deployments[0].required_capabilities =
         graph_required_capabilities(&ir.graphs[0], &ir.types, &ir.components);
 
@@ -788,8 +811,23 @@ backends = ["inproc"]
     ir.graphs[0].binds[0].overflow = OverflowPolicy::Error;
     ir.graphs[0].binds[0].stale = StalePolicy::Drop;
     ir.graphs[0].binds[0].max_age_ms = Some(10);
-    ir.graphs[0].binds[0].capability_requirements =
-        expected_bind_capabilities(&ir.graphs[0].binds[0]);
+    let bind = &ir.graphs[0].binds[0];
+    let source_ty = ir
+        .components
+        .iter()
+        .find(|component| component.name == "producer")
+        .unwrap()
+        .outputs[0]
+        .ty
+        .clone();
+    ir.graphs[0].binds[0].capability_requirements = channel_route_capabilities(
+        &ir.types,
+        &source_ty,
+        bind.channel,
+        bind.overflow,
+        bind.stale,
+        RouteTopology::local(),
+    );
     let required_capabilities =
         graph_required_capabilities(&ir.graphs[0], &ir.types, &ir.components);
     for deployment in &mut ir.deployments {

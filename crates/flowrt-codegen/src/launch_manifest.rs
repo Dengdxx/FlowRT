@@ -3,12 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{ContractIr, GraphIr, InstanceIr, TaskIr};
 
 use crate::{
-    Result, component_by_name, iox2_service_name_for_edge, language_name, selected_backend_name,
-    zenoh_key_expr_for_edge,
+    Result, component_by_name, iox2_service_name_for_edge, language_name, zenoh_key_expr_for_edge,
 };
 
 pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
-    let selected_backend = selected_backend_name(contract);
     let launch = serde_json::json!({
         "package": contract.package.name,
         "ir_version": contract.ir_version,
@@ -16,8 +14,8 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
         "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
             "name": graph.name,
-            "processes": launch_processes(contract, graph, &selected_backend),
-            "channels": launch_channels(contract, graph, &selected_backend),
+            "processes": launch_processes(contract, graph),
+            "channels": launch_channels(contract, graph),
             "instances": graph.instances.iter().map(|instance| {
                 let component = component_by_name(contract, &instance.component.name);
                 serde_json::json!({
@@ -36,16 +34,13 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     Ok(output)
 }
 
-fn launch_channels(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    backend: &str,
-) -> Vec<serde_json::Value> {
+fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
     graph
         .binds
         .iter()
         .enumerate()
         .map(|(index, bind)| {
+            let backend = bind.backend.0.as_str();
             let service = (backend == "iox2")
                 .then(|| iox2_service_name_for_edge(contract, graph, index, bind));
             let key_expr =
@@ -66,11 +61,7 @@ fn launch_channels(
         .collect()
 }
 
-fn launch_processes(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    backend: &str,
-) -> Vec<serde_json::Value> {
+fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
     let mut processes = BTreeMap::<String, Vec<&InstanceIr>>::new();
     for instance in &graph.instances {
         processes
@@ -95,7 +86,7 @@ fn launch_processes(
             let target = common_process_target(&instances);
             serde_json::json!({
                 "name": name,
-                "backend": backend,
+                "backend": process_backend(graph, &instance_names),
                 "target": target,
                 "runtimes": runtimes,
                 "runtime_kind": process_runtime_kind(&runtimes),
@@ -104,6 +95,24 @@ fn launch_processes(
             })
         })
         .collect()
+}
+
+fn process_backend(graph: &GraphIr, instance_names: &BTreeSet<&str>) -> String {
+    if graph.binds.iter().any(|bind| {
+        bind.backend.0 == "zenoh"
+            && (instance_names.contains(bind.from.instance.name.as_str())
+                || instance_names.contains(bind.to.instance.name.as_str()))
+    }) {
+        return "zenoh".to_string();
+    }
+    if graph.binds.iter().any(|bind| {
+        bind.backend.0 == "iox2"
+            && (instance_names.contains(bind.from.instance.name.as_str())
+                || instance_names.contains(bind.to.instance.name.as_str()))
+    }) {
+        return "iox2".to_string();
+    }
+    "inproc".to_string()
 }
 
 fn launch_task(task: &TaskIr) -> serde_json::Value {
