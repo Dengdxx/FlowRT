@@ -1,0 +1,12 @@
+# FlowRT 发布构建依赖锁定文件
+# 格式: TYPE NAME VERSION URL CHECKSUM
+#   TYPE: git | deb
+#   CHECKSUM: git 为 dereferenced commit SHA，deb 为 sha256
+# 更新本文件后需同步更新 scripts/package-deb.sh 中的验证逻辑。
+
+git iceoryx2 v0.9.1 https://github.com/eclipse-iceoryx/iceoryx2.git 2e64dd8c18d7abe2065760d3d31addfedcd17161
+git zenoh-c 1.9.0 https://github.com/eclipse-zenoh/zenoh-c.git 499de93af63e6a7d3497313f544e666fea1d33fd
+git zenoh-cpp 1.9.0 https://github.com/eclipse-zenoh/zenoh-cpp.git 78a5ab9c0130ed65f44d7bd1958398039fb14163
+deb libzenohc_1.9.0_amd64.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc_1.9.0_amd64.deb e6ae7d652df703793a2dbd96e298bbeb1a5a6eea841ab889ce03548ecf53871a
+deb libzenohc-dev_1.9.0_amd64.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc-dev_1.9.0_amd64.deb 454df37a60a1fc58a1e4efe698b649c962aaf91030e1ab2596930182b2054780
+deb libzenohcpp-dev_1.9.0_all.deb 1.9.0 https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohcpp-dev_1.9.0_all.deb a6f1fb1ac03ab592384c8ceba3b45d795b62622da69b7549cef4b762bcfef088

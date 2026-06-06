@@ -67,6 +67,45 @@ command -v git >/dev/null || {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# 依赖锁定校验
+# ---------------------------------------------------------------------------
+deps_lock="$repo_root/scripts/deps.lock"
+if [[ ! -f "$deps_lock" ]]; then
+    printf 'dependency lock file not found: %s\n' "$deps_lock" >&2
+    exit 1
+fi
+
+declare -A lock_git_commit   # name -> expected commit
+declare -A lock_git_url      # name -> url
+declare -A lock_git_tag      # name -> tag
+declare -A lock_deb_sha256   # basename -> expected sha256
+declare -A lock_deb_url      # basename -> url
+
+while IFS=' ' read -r type name version_val url checksum; do
+    [[ -z "$type" || "$type" == \#* ]] && continue
+    case "$type" in
+        git)
+            lock_git_commit["$name"]="$checksum"
+            lock_git_url["$name"]="$url"
+            lock_git_tag["$name"]="$version_val"
+            ;;
+        deb)
+            lock_deb_sha256["$name"]="$checksum"
+            lock_deb_url["$name"]="$url"
+            ;;
+        *)
+            printf 'deps.lock: unknown type %s\n' "$type" >&2
+            exit 1
+            ;;
+    esac
+done < "$deps_lock"
+
+if [[ -z "${!lock_git_commit[*]}" ]]; then
+    printf 'deps.lock: no git entries found\n' >&2
+    exit 1
+fi
+
 if [[ -z "$version" ]]; then
     version="$(
         awk '
@@ -131,6 +170,7 @@ fetch_git_snapshot() {
     local name="$1"
     local repo="$2"
     local tag="$3"
+    local expected_commit="${lock_git_commit[$name]}"
     local dest="$vendor_src_dir/$name"
     if [[ -d "$dest/.git" ]]; then
         git -C "$dest" fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null
@@ -139,20 +179,41 @@ fetch_git_snapshot() {
         rm -rf "$dest"
         git clone --depth 1 --branch "$tag" "$repo" "$dest"
     fi
+    local actual_commit
+    actual_commit="$(git -C "$dest" rev-parse HEAD)"
+    if [[ "$actual_commit" != "$expected_commit" ]]; then
+        printf 'FATAL: %s tag %s commit mismatch\n  expected: %s\n  actual:   %s\n' \
+            "$name" "$tag" "$expected_commit" "$actual_commit" >&2
+        exit 1
+    fi
 }
 
 download_cached() {
     local url="$1"
-    local dest="$cache_dir/$(basename "$url")"
+    local basename="$(basename "$url")"
+    local dest="$cache_dir/$basename"
+    local expected_sha256="${lock_deb_sha256[$basename]:-}"
+    if [[ -z "$expected_sha256" ]]; then
+        printf 'FATAL: %s not found in deps.lock\n' "$basename" >&2
+        exit 1
+    fi
     if [[ ! -f "$dest" ]]; then
         curl -fsSL "$url" -o "$dest"
+    fi
+    local actual_sha256
+    actual_sha256="$(sha256sum "$dest" | awk '{print $1}')"
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+        printf 'FATAL: %s sha256 mismatch\n  expected: %s\n  actual:   %s\n' \
+            "$basename" "$expected_sha256" "$actual_sha256" >&2
+        rm -f "$dest"
+        exit 1
     fi
     printf '%s\n' "$dest"
 }
 
-fetch_git_snapshot iceoryx2 https://github.com/eclipse-iceoryx/iceoryx2.git v0.9.1
-fetch_git_snapshot zenoh-c https://github.com/eclipse-zenoh/zenoh-c.git 1.9.0
-fetch_git_snapshot zenoh-cpp https://github.com/eclipse-zenoh/zenoh-cpp.git 1.9.0
+for name in iceoryx2 zenoh-c zenoh-cpp; do
+    fetch_git_snapshot "$name" "${lock_git_url[$name]}" "${lock_git_tag[$name]}"
+done
 
 third_party_doc="$private_root/share/doc/flowrt/third-party"
 install -d "$third_party_doc"
@@ -173,12 +234,8 @@ DESTDIR="$staging" cmake --install "$iox2_build"
 
 zenoh_root="$package_work/zenoh-root"
 mkdir -p "$zenoh_root"
-for url in \
-    https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc_1.9.0_amd64.deb \
-    https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohc-dev_1.9.0_amd64.deb \
-    https://mirrors.ibiblio.org/eclipse/zenoh/debian-repo/1.9.0/libzenohcpp-dev_1.9.0_all.deb
-do
-    dpkg-deb -x "$(download_cached "$url")" "$zenoh_root"
+for deb_name in libzenohc_1.9.0_amd64.deb libzenohc-dev_1.9.0_amd64.deb libzenohcpp-dev_1.9.0_all.deb; do
+    dpkg-deb -x "$(download_cached "${lock_deb_url[$deb_name]}")" "$zenoh_root"
 done
 if [[ -d "$zenoh_root/usr/include" ]]; then
     install -d "$private_root/include"
