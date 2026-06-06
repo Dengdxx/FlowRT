@@ -4,9 +4,9 @@ use flowrt_rsdl::RawDocument;
 
 use crate::{
     BackendName, EntityRef, InstanceIr, IrError, PolicyValueSource, Result, Ros2BridgeDirection,
-    Ros2BridgeIr, ServiceBackendSource, ServiceEdgeIr, ServiceOverflowPolicy, ServicePolicyIr,
-    ServicePolicySourceIr, ServicePortRef, SERVICE_DEFAULT_MAX_IN_FLIGHT,
-    SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS,
+    Ros2BridgeIr, SERVICE_DEFAULT_MAX_IN_FLIGHT, SERVICE_DEFAULT_QUEUE_DEPTH,
+    SERVICE_DEFAULT_TIMEOUT_MS, ServiceBackendSource, ServiceEdgeIr, ServiceOverflowPolicy,
+    ServicePolicyIr, ServicePolicySourceIr, ServicePortRef,
 };
 
 use super::ids::entity_id;
@@ -123,8 +123,9 @@ fn resolve_service_backend(
             if crosses_process || crosses_target {
                 Err(IrError::InvalidValue {
                     context: context.to_string(),
-                    message: "explicit `inproc` service backend cannot span process or target boundaries"
-                        .to_string(),
+                    message:
+                        "explicit `inproc` service backend cannot span process or target boundaries"
+                            .to_string(),
                 })
             } else {
                 Ok(("inproc".to_string(), ServiceBackendSource::Explicit))
@@ -145,7 +146,10 @@ fn resolve_service_backend(
 }
 
 /// 解析 service policy 字段，使用默认值填充缺失项。
-fn parse_service_policy(context: &str, raw: &flowrt_rsdl::RawServiceBind) -> Result<ServicePolicyIr> {
+fn parse_service_policy(
+    context: &str,
+    raw: &flowrt_rsdl::RawServiceBind,
+) -> Result<ServicePolicyIr> {
     let timeout_ms = raw.timeout_ms.unwrap_or(SERVICE_DEFAULT_TIMEOUT_MS);
     if raw.timeout_ms.is_some() && timeout_ms == 0 {
         return Err(IrError::InvalidValue {

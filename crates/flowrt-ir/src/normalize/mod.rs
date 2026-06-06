@@ -161,10 +161,10 @@ mod tests {
     use super::*;
     use crate::{
         CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OverflowPolicy, ParamType,
-        ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
-        ProcessFailurePropagation, ProcessRestartPolicyKind, RouteTopology,
-        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness, TypeExpr,
-        channel_route_capabilities, deployment_capability_decision,
+        ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType, ProcessFailurePropagation,
+        ProcessRestartPolicyKind, RouteTopology, ServiceBackendSource, ServiceOverflowPolicy,
+        StalePolicy, TaskReadiness, TypeExpr, channel_route_capabilities,
+        deployment_capability_decision,
     };
 
     #[test]
@@ -1749,10 +1749,7 @@ max_in_flight = 8
         assert_eq!(service.policy.overflow, ServiceOverflowPolicy::Error);
         assert_eq!(service.policy.lane.as_deref(), Some("rpc_lane"));
         assert_eq!(service.policy.max_in_flight, 8);
-        assert_eq!(
-            service.policy_source.backend,
-            PolicyValueSource::Explicit
-        );
+        assert_eq!(service.policy_source.backend, PolicyValueSource::Explicit);
         assert_eq!(
             service.policy_source.timeout_ms,
             PolicyValueSource::Explicit
@@ -1972,8 +1969,8 @@ server = "server.plan"
 timeout_ms = 0
 "#;
         let raw = parse_str(source).unwrap();
-        let error = normalize_document(&raw, hash_source(source))
-            .expect_err("zero timeout should fail");
+        let error =
+            normalize_document(&raw, hash_source(source)).expect_err("zero timeout should fail");
 
         assert!(matches!(error, IrError::InvalidValue { .. }));
     }

@@ -735,9 +735,11 @@ server = "server.plan"
     ir.graphs[0].services[0].policy.timeout_ms = 0;
     let report = validate_contract(&ir).expect_err("zero timeout should fail validation");
 
-    assert!(report.errors.iter().any(|error| error
-        .message
-        .contains("service bind `client.plan -> server.plan` has zero timeout_ms")));
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("service bind `client.plan -> server.plan` has zero timeout_ms")
+    }));
 }
 
 #[test]
@@ -770,9 +772,11 @@ server = "server.plan"
     ir.graphs[0].services[0].policy.queue_depth = 0;
     let report = validate_contract(&ir).expect_err("zero queue_depth should fail validation");
 
-    assert!(report.errors.iter().any(|error| error
-        .message
-        .contains("service bind `client.plan -> server.plan` has zero queue_depth")));
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("service bind `client.plan -> server.plan` has zero queue_depth")
+    }));
 }
 
 #[test]
@@ -805,9 +809,48 @@ server = "server.plan"
     ir.graphs[0].services[0].policy.max_in_flight = 0;
     let report = validate_contract(&ir).expect_err("zero max_in_flight should fail validation");
 
-    assert!(report.errors.iter().any(|error| error
-        .message
-        .contains("service bind `client.plan -> server.plan` has zero max_in_flight")));
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("service bind `client.plan -> server.plan` has zero max_in_flight")
+    }));
+}
+
+#[test]
+fn rejects_service_lane_that_is_not_snake_case() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+lane = "RpcLane"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("invalid service lane should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("service lane name `RpcLane` must be snake_case")
+    }));
 }
 
 #[test]

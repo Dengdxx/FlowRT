@@ -132,6 +132,17 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 validate_name("lane", "lane name", lane, NameStyle::SnakeCase, errors);
             }
         }
+        for service in &graph.services {
+            if let Some(lane) = &service.policy.lane {
+                validate_name(
+                    "lane",
+                    "service lane name",
+                    lane,
+                    NameStyle::SnakeCase,
+                    errors,
+                );
+            }
+        }
         for bridge in &graph.ros2_bridges {
             validate_name(
                 "ROS2 bridge",
