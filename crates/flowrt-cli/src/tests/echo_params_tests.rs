@@ -156,11 +156,11 @@ fn echo_formats_variable_frame_fields_from_self_description_layout() {
     }]
   }],
   "message_abi": [],
-  "message_frames": [{
+    "message_frames": [{
     "type_name": "Packet",
     "encoding": "canonical_frame_v1",
     "header_size_bytes": 17,
-    "max_size_bytes": 64,
+    "max_size_bytes": null,
     "variable": true,
     "fields": [{
       "name": "valid",
@@ -170,16 +170,16 @@ fn echo_formats_variable_frame_fields_from_self_description_layout() {
       "tail_max_bytes": null
     }, {
       "name": "label",
-      "type": "string<max=8>",
+      "type": "string",
       "header_offset_bytes": 1,
       "header_size_bytes": 8,
-      "tail_max_bytes": 8
+      "tail_max_bytes": null
     }, {
       "name": "samples",
-      "type": "sequence<u32,max=2>",
+      "type": "sequence<u32>",
       "header_offset_bytes": 9,
       "header_size_bytes": 8,
-      "tail_max_bytes": 8
+      "tail_max_bytes": null
     }]
   }]
 }

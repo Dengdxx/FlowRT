@@ -1,9 +1,7 @@
-//! FlowRT canonical frame codec 与有界变长消息运行时类型。
+//! FlowRT canonical frame codec 与变长消息运行时工具。
 //!
 //! `WireCodec` 继续表示固定长度 canonical payload。`FrameCodec` 表示可变长度 canonical
 //! frame：固定 header 在前，变长 tail 紧随其后，变长字段用 offset/len 描述 tail 中的块。
-
-use std::convert::TryFrom;
 
 use crate::{WireCodec, WireCodecError};
 
@@ -101,165 +99,6 @@ where
     }
 }
 
-/// 有界 bytes 字段。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BoundedBytes<const MAX: usize> {
-    bytes: Vec<u8>,
-}
-
-impl<const MAX: usize> BoundedBytes<MAX> {
-    /// 从 byte slice 构造，并检查长度上限。
-    pub fn try_from_slice(bytes: &[u8]) -> Result<Self, WireCodecError> {
-        if bytes.len() > MAX {
-            return Err(WireCodecError::invalid_frame(
-                "bounded bytes length exceeds declared maximum",
-            ));
-        }
-        Ok(Self {
-            bytes: bytes.to_vec(),
-        })
-    }
-
-    /// 返回内部 bytes。
-    pub fn as_slice(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// 返回当前长度。
-    pub fn len(&self) -> usize {
-        self.bytes.len()
-    }
-
-    /// 判断是否为空。
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-}
-
-impl<const MAX: usize> TryFrom<Vec<u8>> for BoundedBytes<MAX> {
-    type Error = WireCodecError;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Self::try_from_slice(&value)
-    }
-}
-
-/// 有界 UTF-8 string 字段。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BoundedString<const MAX: usize> {
-    value: String,
-}
-
-impl<const MAX: usize> BoundedString<MAX> {
-    /// 从 `str` 构造，并按 UTF-8 字节数检查上限。
-    pub fn try_from_str(value: &str) -> Result<Self, WireCodecError> {
-        if value.len() > MAX {
-            return Err(WireCodecError::invalid_frame(
-                "bounded string length exceeds declared maximum",
-            ));
-        }
-        Ok(Self {
-            value: value.to_string(),
-        })
-    }
-
-    /// 从 UTF-8 bytes 构造。
-    pub fn try_from_utf8(bytes: &[u8]) -> Result<Self, WireCodecError> {
-        let value = std::str::from_utf8(bytes)
-            .map_err(|_| WireCodecError::invalid_frame("bounded string is not valid UTF-8"))?;
-        Self::try_from_str(value)
-    }
-
-    /// 返回字符串视图。
-    pub fn as_str(&self) -> &str {
-        &self.value
-    }
-
-    /// 返回 UTF-8 bytes。
-    pub fn as_bytes(&self) -> &[u8] {
-        self.value.as_bytes()
-    }
-
-    /// 返回 UTF-8 字节长度。
-    pub fn len(&self) -> usize {
-        self.value.len()
-    }
-
-    /// 判断是否为空。
-    pub fn is_empty(&self) -> bool {
-        self.value.is_empty()
-    }
-}
-
-impl<const MAX: usize> TryFrom<String> for BoundedString<MAX> {
-    type Error = WireCodecError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_from_str(&value)
-    }
-}
-
-impl<const MAX: usize> TryFrom<&str> for BoundedString<MAX> {
-    type Error = WireCodecError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::try_from_str(value)
-    }
-}
-
-/// 有界 sequence 字段。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BoundedSequence<T, const MAX: usize> {
-    values: Vec<T>,
-}
-
-impl<T, const MAX: usize> BoundedSequence<T, MAX> {
-    /// 从 Vec 构造，并检查元素数量上限。
-    pub fn try_from_vec(values: Vec<T>) -> Result<Self, WireCodecError> {
-        if values.len() > MAX {
-            return Err(WireCodecError::invalid_frame(
-                "bounded sequence length exceeds declared maximum",
-            ));
-        }
-        Ok(Self { values })
-    }
-
-    /// 返回元素 slice。
-    pub fn as_slice(&self) -> &[T] {
-        &self.values
-    }
-
-    /// 返回元素数量。
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    /// 判断是否为空。
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    /// 迭代元素。
-    pub fn iter(&self) -> std::slice::Iter<'_, T> {
-        self.values.iter()
-    }
-}
-
-impl<T: Clone, const MAX: usize> BoundedSequence<T, MAX> {
-    /// 从 slice 构造，并检查元素数量上限。
-    pub fn try_from_slice(values: &[T]) -> Result<Self, WireCodecError> {
-        Self::try_from_vec(values.to_vec())
-    }
-}
-
-impl<T, const MAX: usize> TryFrom<Vec<T>> for BoundedSequence<T, MAX> {
-    type Error = WireCodecError;
-
-    fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
-        Self::try_from_vec(value)
-    }
-}
-
 /// 帮助 codegen 顺序验证 variable tail 的 decoder。
 pub struct FrameDecoder<'a> {
     tail: &'a [u8],
@@ -273,11 +112,7 @@ impl<'a> FrameDecoder<'a> {
     }
 
     /// 按 canonical 顺序读取一个变长块。
-    pub fn read_block(
-        &mut self,
-        span: VarSpan,
-        max_len: usize,
-    ) -> Result<&'a [u8], WireCodecError> {
+    pub fn read_block(&mut self, span: VarSpan) -> Result<&'a [u8], WireCodecError> {
         let len = span.len() as usize;
         if len == 0 {
             if span.offset() != 0 {
@@ -286,11 +121,6 @@ impl<'a> FrameDecoder<'a> {
                 ));
             }
             return Ok(&[]);
-        }
-        if len > max_len {
-            return Err(WireCodecError::invalid_frame(
-                "variable field length exceeds declared maximum",
-            ));
         }
         let offset = span.offset() as usize;
         if offset != self.cursor {
@@ -369,26 +199,16 @@ mod tests {
     }
 
     #[test]
-    fn bounded_values_enforce_declared_limits() {
-        assert_eq!(BoundedBytes::<2>::try_from_slice(&[1, 2]).unwrap().len(), 2);
-        assert!(BoundedBytes::<1>::try_from_slice(&[1, 2]).is_err());
-        assert_eq!(BoundedString::<4>::try_from_str("abcd").unwrap().len(), 4);
-        assert!(BoundedString::<1>::try_from_str("ab").is_err());
-        assert!(BoundedString::<8>::try_from_utf8(&[0xff]).is_err());
-        assert!(BoundedSequence::<u8, 1>::try_from_vec(vec![1, 2]).is_err());
-    }
-
-    #[test]
     fn frame_decoder_rejects_noncanonical_tail_layout() {
         let mut tail = Vec::new();
         let first = append_tail_block(&mut tail, &[1, 2]).unwrap();
         let second = append_tail_block(&mut tail, &[3]).unwrap();
         let mut decoder = FrameDecoder::new(&tail);
-        assert_eq!(decoder.read_block(first, 2).unwrap(), [1, 2]);
-        assert_eq!(decoder.read_block(second, 1).unwrap(), [3]);
+        assert_eq!(decoder.read_block(first).unwrap(), [1, 2]);
+        assert_eq!(decoder.read_block(second).unwrap(), [3]);
         decoder.finish().unwrap();
 
         let mut bad = FrameDecoder::new(&tail);
-        assert!(bad.read_block(VarSpan::new(1, 1), 1).is_err());
+        assert!(bad.read_block(VarSpan::new(1, 1)).is_err());
     }
 }

@@ -24,10 +24,7 @@ pub use channel::{
     BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,
     OverflowPolicy, StaleConfig, StalePolicy,
 };
-pub use frame::{
-    BoundedBytes, BoundedSequence, BoundedString, FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE,
-    VarSpan, append_tail_block,
-};
+pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_tail_block};
 #[cfg(feature = "iox2")]
 pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{

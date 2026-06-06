@@ -1,7 +1,7 @@
 use crate::components::Source;
 use crate::messages::CrossHostFrame;
 
-/// 在 Rust 主机上生成有界变长 frame，由 generated shell 通过 zenoh 发布。
+/// 在 Rust 主机上生成变长 frame，由 generated shell 通过 zenoh 发布。
 #[derive(Debug, Default)]
 struct SourceNode {
     sequence: u32,
@@ -10,20 +10,17 @@ struct SourceNode {
 impl Source for SourceNode {
     fn on_tick(&mut self, frame: &mut flowrt::Output<CrossHostFrame>) -> flowrt::Status {
         self.sequence += 1;
-        let label = flowrt::BoundedString::<64>::try_from_str(&format!("frame-{}", self.sequence))
-            .unwrap();
-        let payload = flowrt::BoundedBytes::<32>::try_from_slice(&[
+        let label = format!("frame-{}", self.sequence);
+        let payload = vec![
             self.sequence as u8,
             self.sequence.saturating_add(1) as u8,
             self.sequence.saturating_add(2) as u8,
-        ])
-        .unwrap();
-        let samples = flowrt::BoundedSequence::<u32, 8>::try_from_vec(vec![
+        ];
+        let samples = vec![
             self.sequence,
             self.sequence + 1,
             self.sequence + 2,
-        ])
-        .unwrap();
+        ];
         frame.write(CrossHostFrame {
             valid: true,
             label,

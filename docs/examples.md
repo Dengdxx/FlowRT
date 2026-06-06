@@ -12,7 +12,7 @@
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体，并覆盖 Rust/C++ 用户组件参数接口 |
-| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证 bounded variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
+| `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证无界 variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 
 ## `import_demo`
 
@@ -151,7 +151,7 @@ examples/imu_demo_iox2/rsdl/robot.rsdl
 - selected backend 必须是 `iox2`。
 - launch manifest 中的 channel 必须暴露 canonical service name。
 - Rust 和 C++ shell 消费同一份 Contract IR-derived transport 契约。
-- `iox2` 只承载 fixed-size plain data；如果 route 使用 bounded variable frame，Contract IR 会把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），不生成变长 over iox2 的兼容承载层。
+- `iox2` 只承载 fixed-size plain data；如果 route 使用 variable frame，Contract IR 会把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），不生成变长 over iox2 的兼容承载层。
 
 `mixed_iox2_demo` 和 `imu_demo_iox2` 的基础 smoke 仍以 `check` 为主：
 
@@ -170,11 +170,11 @@ flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
-该示例验证 language-separated mixed contract over `zenoh`，同时覆盖 bounded variable frame：
+该示例验证 language-separated mixed contract over `zenoh`，同时覆盖无界 variable frame：
 
-- `bytes<max=N>`
-- `string<max=N>`
-- `sequence<T,max=N>`
+- `bytes`
+- `string`
+- `sequence<T>`
 
 推荐命令：
 

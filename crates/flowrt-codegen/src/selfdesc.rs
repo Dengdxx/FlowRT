@@ -144,7 +144,7 @@ struct SelfDescriptionMessageFrame {
     type_name: String,
     encoding: &'static str,
     header_size_bytes: usize,
-    max_size_bytes: usize,
+    max_size_bytes: Option<usize>,
     variable: bool,
     fields: Vec<SelfDescriptionFrameField>,
 }

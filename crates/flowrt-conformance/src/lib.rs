@@ -199,7 +199,7 @@ fn type_layout(
                 align_bytes: element_layout.align_bytes,
             })
         }
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             Err(AbiError::UnsupportedFutureType {
                 context: context.to_string(),
                 type_expr: expr.canonical_syntax(),
@@ -336,7 +336,7 @@ name = "demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=1024>"
+payload = "bytes"
 "#;
         let raw = parse_str(source).unwrap();
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
@@ -346,7 +346,7 @@ payload = "bytes<max=1024>"
             error,
             AbiError::UnsupportedFutureType { context, ref type_expr, required_abi }
                 if context == "Packet"
-                    && type_expr == "bytes<max=1024>"
+                    && type_expr == "bytes"
                     && required_abi == "Variable Frame ABI"
         ));
     }
@@ -359,7 +359,7 @@ name = "demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=1024>"
+payload = "bytes"
 "#;
         let raw = parse_str(source).unwrap();
         let ir = normalize_document(&raw, hash_source(source)).unwrap();
@@ -369,7 +369,7 @@ payload = "bytes<max=1024>"
             error,
             AbiError::UnsupportedFutureType { context, ref type_expr, required_abi }
                 if context == "Packet"
-                    && type_expr == "bytes<max=1024>"
+                    && type_expr == "bytes"
                     && required_abi == "Variable Frame ABI"
         ));
     }

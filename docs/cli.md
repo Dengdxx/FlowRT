@@ -30,7 +30,7 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 `check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。
 
-Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes<max=262144>`、`string<max=64>` 和 `sequence<u32,max=16>` 这类 bounded variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 bounded variable frame 时，该 route 会自动选择支持变长消息的 backend（当前为 `zenoh`），其他 fixed-size route 仍继续走 `iox2`。
+Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes`、`string` 和 `sequence<u32>` 这类无界 variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 variable frame 时，该 route 会自动选择支持变长消息的 backend（当前为 `zenoh`），其他 fixed-size route 仍继续走 `iox2`。
 
 `u128` 和 `i128` 属于 fixed-size primitive，但它们需要额外的 `abi:int128` capability。当前 `inproc`、`iox2` 和 `zenoh` backend 不提供该能力，因此把这些类型用于 channel route 的 contract 会在 route backend capability 校验阶段被判定为不满足。
 
@@ -158,7 +158,7 @@ flowrt echo path/to/generated-app source.imu
 channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_at_ms=42 payload_len=24 fields={timestamp=1,ax=0.1,ay=0.0,az=9.81} raw=...
 ```
 
-fixed-size Message ABI 会按 self-description 中的 field offset 和类型格式化整数、浮点、布尔和固定数组。bounded variable frame 会按固定 header + tail layout 格式化 `bytes<max=N>`、`string<max=N>` 和 `sequence<T,max=N>`；runtime socket 仍只暴露 raw/canonical bytes，字段 schema 来自 self-description。
+fixed-size Message ABI 会按 self-description 中的 field offset 和类型格式化整数、浮点、布尔和固定数组。variable frame 会按固定 header + tail layout 格式化 `bytes`、`string` 和 `sequence<T>`；runtime socket 仍只暴露 raw/canonical bytes，字段 schema 来自 self-description。
 
 如果 runtime 还没有该 channel 的 payload，例如当前进程尚未发布该 channel 的样本，输出会包含 `payload_len=0 no payload`。
 
@@ -236,7 +236,7 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 - 没有 `default` 时使用首个 profile。
 - RSDL 未声明任何 profile 时，归一化阶段会插入隐式 `default` profile，backend 为 `inproc`。
 
-profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。未显式声明 `backend` 或声明 `backend = "auto"` 的 bind 会跟随选中 profile backend；如果该 route 使用 bounded variable frame 且 profile backend 为 `iox2`，会自动选择 `zenoh`。投影后的 `contract.ir.json` 会同时刷新 route 和 deployment 的 capability 元数据。
+profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。未显式声明 `backend` 或声明 `backend = "auto"` 的 bind 会跟随选中 profile backend；如果该 route 使用 variable frame 且 profile backend 为 `iox2`，会自动选择 `zenoh`。投影后的 `contract.ir.json` 会同时刷新 route 和 deployment 的 capability 元数据。
 
 ## RSDL task 写法
 

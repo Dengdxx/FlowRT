@@ -70,7 +70,7 @@ Rust/C++ generated runtime shell 会把 task-level `deadline_ms` 转成 `timing:
 
 profile 选择 `iox2` 时，Rust message codegen 必须生成 `#[type_name("TypeName")]`，C++ message codegen 必须生成同名 `IOX2_TYPE_NAME`；iox2 runtime timestamp 使用两端同名的 `FlowRTIox2Header` user header，payload 必须保持业务消息 `T`，不要重新引入 `Iox2Stamped<T>` 这类 payload envelope。C++ iox2 shell 会使用 `flowrt::iox2::Iox2PubSub<T>`、canonical service name、bind-level channel/stale config、`receive_latest_at` 和 `publish_at`；runtime 中的 C++ `Iox2PubSub<T>` 在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx` 时会绑定真实 publisher/subscriber，默认未启用宏时仍安全返回 `ChannelError::Transport`。
 
-Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 route backend 为 `iox2` 或 `zenoh` 时可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及跨语言 route backend 为 `inproc` 的 process boundary。`examples/imu_demo_iox2` 用于验证主 demo 的 Rust source、C++ controller 和 Rust monitor 通过 iox2 分进程运行，`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接，`examples/mixed_zenoh_demo` 用于验证跨主机 copy backend、bounded variable frame 和 mixed launch 路径。
+Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust trait，C++ codegen 不得为 Rust component 伪造 C++ interface。语言分离 process group 在 route backend 为 `iox2` 或 `zenoh` 时可以通过 `flowrt launch` 由 supervisor 分别启动 Rust app 和 C++ app；`flowrt run --process <name>` 可以运行其中一个单语言 process group。仍然必须拒绝同一 RSDL process group 内混合 C++/Rust，以及跨语言 route backend 为 `inproc` 的 process boundary。`examples/imu_demo_iox2` 用于验证主 demo 的 Rust source、C++ controller 和 Rust monitor 通过 iox2 分进程运行，`examples/mixed_iox2_demo` 用于验证 Rust source 与 C++ sink 通过 iox2 分进程连接，`examples/mixed_zenoh_demo` 用于验证跨主机 copy backend、无界 variable frame 和 mixed launch 路径。
 
 `flowrt/launch/launch.json` 的 process group 必须包含 `runtimes` 和 `runtime_kind`，graph instance 必须包含 `runtime`，graph 必须包含 `channels`，每条 channel 在 `iox2` backend 下必须暴露 canonical service name；生成的 Rust supervisor 会遍历 manifest 中的全部 graph，并读取 `runtime_kind`，为 Rust process 选择 Rust app executable、为 C++ process 选择 C++ app executable，同时继续拒绝 mixed process group。generated supervisor 还会启动 `runtime=supervisor` 的 introspection socket，轮询子进程 PID socket，把子进程 heartbeat、tick stale、exit 和 restart 状态交给 `flowrt status` 展示；当前内置 `on-failure` policy 对异常退出最多重启 3 次，正常退出不重启。默认构建仍走轻量 inproc 路径。不要提前引入大型依赖、复杂目录或半成品 runtime 代码。
 
@@ -84,12 +84,12 @@ Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ compo
 4. **Backend 隔离**：业务层只依赖 FlowRT runtime API，不直接依赖 iox2。iox2 是初代 backend，不是系统语义本身。
 5. **C++/Rust 语义一致**：C++ runtime 和 Rust runtime 可以独立实现，但必须共享 RSDL 语义、Contract IR、消息 ABI 和 conformance tests。
 6. **低学习成本**：普通用户只应关心组件输入、输出和算法实现。通信、调度、生命周期和部署由系统生成或管理。
-7. **MVP 是长期模型的子集**：可以先做单 graph、单 task 和简单触发模式，但 IR、validator、codegen 与本地设计文档要预留模块化 package、backend capability、bounded variable frame 和跨语言一致性。
+7. **MVP 是长期模型的子集**：可以先做单 graph、单 task 和简单触发模式，但 IR、validator、codegen 与本地设计文档要预留模块化 package、backend capability、variable frame 和跨语言一致性。
 
 ## 非目标
 
 - 不把通信库 API 暴露为 FlowRT 用户语义；用户算法代码不直接使用 iox2 或 zenoh publisher/subscriber API。
-- 不支持无界动态 string/vector、map 或递归消息结构；当前只支持带 `max` 上界的 bounded variable frame。
+- 不支持 map 或递归消息结构；变长 string/bytes/sequence 通过无界 variable frame 表达，route backend 不能是 `iox2`。
 - 不在未定语义前堆砌 runtime 代码。
 
 ## 目录规划
@@ -233,18 +233,16 @@ FlowRT Message ABI v0.1 的 native ABI 基线支持 fixed-size plain data：
 - fixed arrays with `N > 0`
 - nested structs
 
-同时已支持带最大长度上界的 bounded variable frame：
+同时已支持无界 variable frame：
 
-- `bytes<max=N>`
-- `string<max=N>`
-- `sequence<T,max=N>`
+- `bytes`
+- `string`
+- `sequence<T>`
 
-bounded variable frame 使用固定 header + 尾部变长区的 canonical frame codec；`inproc` 和 `zenoh` 可以直接传递 canonical frame。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 bounded variable frame 时，normalizer 必须把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。不要重新引入变长 over iox2 的兼容承载层。
+variable frame 使用固定 header + 尾部变长区的 canonical frame codec；`inproc` 和 `zenoh` 可以直接传递 canonical frame。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 variable frame 时，normalizer 必须把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。不要重新引入变长 over iox2 的兼容承载层。
 
 暂不支持：
 
-- unbounded dynamic strings
-- unbounded dynamic vectors
 - maps
 - recursive structures
 - language-specific ownership types

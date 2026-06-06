@@ -42,7 +42,7 @@ pub(crate) fn validate_components(
                 && type_expr_contains_variable_data(&port.ty, &types_by_name)
             {
                 errors.push(ValidationError::new(format!(
-                    "component `{}` port `{}` uses bounded variable data directly; variable data must be declared as a top-level field of a named message type",
+                    "component `{}` port `{}` uses variable data directly; variable data must be declared as a top-level field of a named message type",
                     component.name, port.name
                 )));
             }

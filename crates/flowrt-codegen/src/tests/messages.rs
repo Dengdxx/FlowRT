@@ -9,9 +9,9 @@ name = "variable_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=262144>"
-label = "string<max=64>"
-samples = "sequence<u32,max=16>"
+payload = "bytes"
+label = "string"
+samples = "sequence<u32>"
 
 [component.source]
 language = "rust"
@@ -30,12 +30,12 @@ output = ["packet"]
     let bundle = emit_artifacts(&ir).unwrap();
     let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
     assert!(rust_messages.contains("#[derive(Clone, Debug, PartialEq)]"));
-    assert!(rust_messages.contains("pub payload: flowrt::BoundedBytes<262144>"));
-    assert!(rust_messages.contains("pub label: flowrt::BoundedString<64>"));
-    assert!(rust_messages.contains("pub samples: flowrt::BoundedSequence<u32, 16>"));
+    assert!(rust_messages.contains("pub payload: Vec<u8>"));
+    assert!(rust_messages.contains("pub label: String"));
+    assert!(rust_messages.contains("pub samples: Vec<u32>"));
     assert!(rust_messages.contains("impl flowrt::FrameCodec for Packet"));
     assert!(rust_messages.contains("flowrt::VarSpan::decode"));
-    assert!(rust_messages.contains("BoundedString::<64>::try_from_utf8"));
+    assert!(rust_messages.contains("String::from_utf8"));
     assert!(!bundle.artifacts.iter().any(|artifact| {
         artifact.relative_path == std::path::Path::new("rust/tests/message_abi.rs")
     }));
@@ -58,9 +58,9 @@ name = "variable_route_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=32>"
-label = "string<max=16>"
-samples = "sequence<u32,max=4>"
+payload = "bytes"
+label = "string"
+samples = "sequence<u32>"
 
 [component.source]
 language = "rust"

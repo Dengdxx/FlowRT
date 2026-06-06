@@ -6,8 +6,8 @@ use flowrt_ir::{
 };
 
 use crate::{
-    component_by_name, fixed_message_abi_expectations, frame_max_size_for_type, instance_by_name,
-    port_by_name, rust_wire_size, snake_identifier, type_by_name, type_contains_variable_data,
+    component_by_name, fixed_message_abi_expectations, instance_by_name, port_by_name,
+    rust_wire_size, snake_identifier, type_contains_variable_data,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,14 +274,12 @@ pub(crate) fn runtime_channel_message_type(bind: &BindRuntimePlan) -> String {
 pub(crate) fn runtime_channel_probe_capacity(
     contract: &ContractIr,
     bind: &BindRuntimePlan,
-) -> usize {
+) -> Option<usize> {
     match &bind.source_type {
-        TypeExpr::Named { name } if bind.source_uses_variable_frame => {
-            frame_max_size_for_type(contract, type_by_name(contract, name))
-        }
-        TypeExpr::Named { name } => fixed_message_abi_size(contract, name)
-            .unwrap_or_else(|| rust_wire_size(contract, &bind.source_type)),
-        other => rust_wire_size(contract, other),
+        TypeExpr::Named { name } => fixed_message_abi_size(contract, name).or_else(|| {
+            (!bind.source_uses_variable_frame).then(|| rust_wire_size(contract, &bind.source_type))
+        }),
+        other => Some(rust_wire_size(contract, other)),
     }
 }
 

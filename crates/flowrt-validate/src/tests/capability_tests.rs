@@ -587,7 +587,7 @@ backends = ["inproc"]
 
 #[test]
 fn rejects_forged_variable_frame_capability_metadata() {
-    let mut ir = bounded_variable_contract("inproc");
+    let mut ir = variable_frame_contract("inproc");
     validate_contract(&ir).unwrap();
 
     ir.graphs[0].binds[0]

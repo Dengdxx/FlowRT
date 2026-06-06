@@ -13,7 +13,7 @@ mod contract_tests;
 mod graph_tests;
 mod message_tests;
 
-fn bounded_variable_contract(backend: &str) -> ContractIr {
+fn variable_frame_contract(backend: &str) -> ContractIr {
     let target_backends = if backend == "iox2" {
         r#""iox2", "zenoh""#
     } else {
@@ -29,9 +29,9 @@ name = "variable_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=262144>"
-label = "string<max=64>"
-samples = "sequence<u32,max=16>"
+payload = "bytes"
+label = "string"
+samples = "sequence<u32>"
 
 [component.producer]
 language = "rust"

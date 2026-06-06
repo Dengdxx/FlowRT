@@ -63,10 +63,12 @@ int main() {
     assert(inproc_backend.capabilities().contains("channel:latest"));
     assert(inproc_backend.capabilities().contains("graph:static_graph"));
     assert(inproc_backend.capabilities().contains("timing:deadline_aware"));
-    assert_capabilities_equal(inproc_backend.capabilities(), std::array<std::string_view, 22>{
+    assert_capabilities_equal(inproc_backend.capabilities(), std::array<std::string_view, 24>{
                                                                  "abi:fixed_size_plain_data",
+                                                                 "abi:variable_payload_frame",
                                                                  "layout:native_layout",
                                                                  "allocation:bounded",
+                                                                 "allocation:unbounded_dynamic",
                                                                  "graph:static_graph",
                                                                  "trigger:periodic",
                                                                  "trigger:on_message",
@@ -123,10 +125,12 @@ int main() {
     assert(zenoh_backend.capabilities().contains("topology:multi_process"));
     assert(zenoh_backend.capabilities().contains("topology:multi_host"));
     assert(zenoh_backend.capabilities().contains("transfer:copy"));
-    assert_capabilities_equal(zenoh_backend.capabilities(), std::array<std::string_view, 20>{
+    assert_capabilities_equal(zenoh_backend.capabilities(), std::array<std::string_view, 22>{
                                                                 "abi:fixed_size_plain_data",
+                                                                "abi:variable_payload_frame",
                                                                 "layout:native_layout",
                                                                 "allocation:bounded",
+                                                                "allocation:unbounded_dynamic",
                                                                 "graph:static_graph",
                                                                 "trigger:periodic",
                                                                 "trigger:on_message",

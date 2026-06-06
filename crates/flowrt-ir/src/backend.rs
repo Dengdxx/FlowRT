@@ -38,7 +38,7 @@ enum Capability {
     AbiVariablePayloadFrame,
     LayoutNativeLayout,
     AllocationBounded,
-    AllocationBoundedDynamic,
+    AllocationUnboundedDynamic,
     GraphStaticGraph,
     TriggerPeriodic,
     TriggerOnMessage,
@@ -77,7 +77,7 @@ impl Capability {
             Capability::AbiVariablePayloadFrame => "abi:variable_payload_frame",
             Capability::LayoutNativeLayout => "layout:native_layout",
             Capability::AllocationBounded => "allocation:bounded",
-            Capability::AllocationBoundedDynamic => "allocation:bounded_dynamic",
+            Capability::AllocationUnboundedDynamic => "allocation:unbounded_dynamic",
             Capability::GraphStaticGraph => "graph:static_graph",
             Capability::TriggerPeriodic => "trigger:periodic",
             Capability::TriggerOnMessage => "trigger:on_message",
@@ -216,7 +216,7 @@ const COMMON_BACKEND_CAPABILITIES: [Capability; 16] = [
 
 const INPROC_BACKEND_CAPABILITIES: &[Capability] = &[
     Capability::AbiVariablePayloadFrame,
-    Capability::AllocationBoundedDynamic,
+    Capability::AllocationUnboundedDynamic,
     Capability::OverflowDropNewest,
     Capability::OverflowError,
     Capability::OverflowBlock,
@@ -238,7 +238,7 @@ const IOX2_BACKEND_CAPABILITIES: &[Capability] = &[
 
 const ZENOH_BACKEND_CAPABILITIES: &[Capability] = &[
     Capability::AbiVariablePayloadFrame,
-    Capability::AllocationBoundedDynamic,
+    Capability::AllocationUnboundedDynamic,
     Capability::TopologyMultiProcess,
     Capability::TopologyMultiHost,
     Capability::TransferCopy,
@@ -470,10 +470,10 @@ fn collect_type_expr_abi_capabilities_inner(
             name: PrimitiveType::U128 | PrimitiveType::I128,
         } => required.push(Capability::AbiInt128),
         TypeExpr::Primitive { .. } => {}
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } => {
             required.extend([
                 Capability::AbiVariablePayloadFrame,
-                Capability::AllocationBoundedDynamic,
+                Capability::AllocationUnboundedDynamic,
             ]);
         }
         TypeExpr::Named { name } => {
@@ -498,7 +498,7 @@ fn collect_type_expr_abi_capabilities_inner(
         TypeExpr::VarSequence { element, .. } => {
             required.extend([
                 Capability::AbiVariablePayloadFrame,
-                Capability::AllocationBoundedDynamic,
+                Capability::AllocationUnboundedDynamic,
             ]);
             collect_type_expr_abi_capabilities_inner(element, types_by_name, required, visiting);
         }
@@ -566,14 +566,14 @@ mod tests {
     }
 
     #[test]
-    fn inproc_and_zenoh_support_bounded_variable_frames_but_iox2_does_not() {
+    fn inproc_and_zenoh_support_unbounded_variable_frames_but_iox2_does_not() {
         for backend in ["inproc", "zenoh"] {
             let capabilities = backend_capabilities(backend).unwrap();
             assert!(
                 capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string()))
             );
             assert!(
-                capabilities.contains(&CapabilityAtom("allocation:bounded_dynamic".to_string()))
+                capabilities.contains(&CapabilityAtom("allocation:unbounded_dynamic".to_string()))
             );
         }
         let iox2_capabilities = backend_capabilities("iox2").unwrap();
@@ -581,7 +581,8 @@ mod tests {
             !iox2_capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string()))
         );
         assert!(
-            !iox2_capabilities.contains(&CapabilityAtom("allocation:bounded_dynamic".to_string()))
+            !iox2_capabilities
+                .contains(&CapabilityAtom("allocation:unbounded_dynamic".to_string()))
         );
     }
 
@@ -641,7 +642,7 @@ mod tests {
                 Capability::AbiVariablePayloadFrame.atom(),
                 Capability::LayoutNativeLayout.atom(),
                 Capability::AllocationBounded.atom(),
-                Capability::AllocationBoundedDynamic.atom(),
+                Capability::AllocationUnboundedDynamic.atom(),
                 Capability::GraphStaticGraph.atom(),
                 Capability::TriggerPeriodic.atom(),
                 Capability::TriggerOnMessage.atom(),
@@ -931,14 +932,14 @@ mod tests {
     }
 
     #[test]
-    fn message_abi_capabilities_include_bounded_variable_frame_requirements() {
+    fn message_abi_capabilities_include_unbounded_variable_frame_requirements() {
         let types = vec![TypeIr {
             id: crate::EntityId("type_0000000000000001".to_string()),
             name: "Packet".to_string(),
             fields: vec![
                 crate::FieldIr {
                     name: "payload".to_string(),
-                    ty: TypeExpr::VarBytes { max_len: 1024 },
+                    ty: TypeExpr::VarBytes,
                     default: None,
                 },
                 crate::FieldIr {
@@ -947,7 +948,6 @@ mod tests {
                         element: Box::new(TypeExpr::Primitive {
                             name: PrimitiveType::U32,
                         }),
-                        max_len: 16,
                     },
                     default: None,
                 },
@@ -958,7 +958,7 @@ mod tests {
             message_abi_capabilities(&types, std::iter::empty()),
             vec![
                 Capability::AbiVariablePayloadFrame.atom(),
-                Capability::AllocationBoundedDynamic.atom(),
+                Capability::AllocationUnboundedDynamic.atom(),
             ]
         );
     }

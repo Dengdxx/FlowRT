@@ -8,27 +8,12 @@ use crate::{IrError, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeExpr {
-    Primitive {
-        name: PrimitiveType,
-    },
-    Named {
-        name: String,
-    },
-    Array {
-        element: Box<TypeExpr>,
-        len: usize,
-    },
-    VarBytes {
-        max_len: u32,
-    },
-    VarString {
-        max_len: u32,
-        encoding: StringEncoding,
-    },
-    VarSequence {
-        element: Box<TypeExpr>,
-        max_len: u32,
-    },
+    Primitive { name: PrimitiveType },
+    Named { name: String },
+    Array { element: Box<TypeExpr>, len: usize },
+    VarBytes,
+    VarString { encoding: StringEncoding },
+    VarSequence { element: Box<TypeExpr> },
 }
 
 /// Message ABI v0.1 支持的 fixed-size primitive 类型。
@@ -50,7 +35,7 @@ pub enum PrimitiveType {
     F64,
 }
 
-/// 未来 Variable Frame ABI 中有界变长字符串的编码。
+/// Variable Frame ABI 中变长字符串的编码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StringEncoding {
@@ -66,15 +51,12 @@ impl TypeExpr {
             TypeExpr::Array { element, len } => {
                 format!("[{}; {}]", element.canonical_syntax(), len)
             }
-            TypeExpr::VarBytes { max_len } => format!("bytes<max={max_len}>"),
+            TypeExpr::VarBytes => "bytes".to_string(),
             TypeExpr::VarString {
-                max_len,
                 encoding: StringEncoding::Utf8,
-            } => {
-                format!("string<max={max_len}>")
-            }
-            TypeExpr::VarSequence { element, max_len } => {
-                format!("sequence<{},max={max_len}>", element.canonical_syntax())
+            } => "string".to_string(),
+            TypeExpr::VarSequence { element } => {
+                format!("sequence<{}>", element.canonical_syntax())
             }
         }
     }
@@ -84,9 +66,9 @@ impl TypeExpr {
         match self {
             TypeExpr::Primitive { .. } | TypeExpr::Named { .. } => None,
             TypeExpr::Array { element, .. } => element.required_future_abi(),
-            TypeExpr::VarBytes { .. }
-            | TypeExpr::VarString { .. }
-            | TypeExpr::VarSequence { .. } => Some("Variable Frame ABI"),
+            TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+                Some("Variable Frame ABI")
+            }
         }
     }
 }
@@ -117,26 +99,23 @@ fn parse_expr(source: &str) -> std::result::Result<TypeExpr, String> {
     }
 
     if source == "bytes" {
-        return Err("bytes type must use `bytes<max=N>` with max > 0".to_string());
+        return Ok(TypeExpr::VarBytes);
     }
-    if let Some(args) = generic_args(source, "bytes") {
-        let max_len = parse_max_arg(args, "bytes")?;
-        return Ok(TypeExpr::VarBytes { max_len });
+    if generic_args(source, "bytes").is_some() {
+        return Err("bytes type no longer accepts generic arguments; use `bytes`".to_string());
     }
 
     if source == "string" {
-        return Err("string type must use `string<max=N>` with max > 0".to_string());
-    }
-    if let Some(args) = generic_args(source, "string") {
-        let max_len = parse_max_arg(args, "string")?;
         return Ok(TypeExpr::VarString {
-            max_len,
             encoding: StringEncoding::Utf8,
         });
     }
+    if generic_args(source, "string").is_some() {
+        return Err("string type no longer accepts generic arguments; use `string`".to_string());
+    }
 
     if source == "sequence" {
-        return Err("sequence type must use `sequence<T,max=N>` with max > 0".to_string());
+        return Err("sequence type must use `sequence<T>` syntax".to_string());
     }
     if let Some(args) = generic_args(source, "sequence") {
         return parse_sequence(args);
@@ -163,36 +142,16 @@ fn generic_args<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
     Some(&rest[1..rest.len() - 1])
 }
 
-fn parse_max_arg(args: &str, type_name: &str) -> std::result::Result<u32, String> {
-    let (key, value) = args
-        .trim()
-        .split_once('=')
-        .ok_or_else(|| format!("{type_name} type must declare `max=N`"))?;
-    if key.trim() != "max" {
-        return Err(format!("{type_name} type must declare `max=N`"));
-    }
-    let max_len = value
-        .trim()
-        .parse::<u32>()
-        .map_err(|_| format!("{type_name} max must be a positive integer"))?;
-    if max_len == 0 {
-        return Err(format!("{type_name} max must be greater than zero"));
-    }
-    Ok(max_len)
-}
-
 fn parse_sequence(args: &str) -> std::result::Result<TypeExpr, String> {
-    let comma = find_top_level_comma(args)
-        .ok_or_else(|| "sequence type must use `sequence<T,max=N>` syntax".to_string())?;
-    let element = args[..comma].trim();
-    let max = args[comma + 1..].trim();
+    if find_top_level_comma(args).is_some() {
+        return Err("sequence type no longer accepts max arguments; use `sequence<T>`".to_string());
+    }
+    let element = args.trim();
     if element.is_empty() {
         return Err("sequence element type is missing".to_string());
     }
-    let max_len = parse_max_arg(max, "sequence")?;
     Ok(TypeExpr::VarSequence {
         element: Box::new(parse_expr(element)?),
-        max_len,
     })
 }
 
@@ -334,50 +293,42 @@ mod tests {
     }
 
     #[test]
-    fn parses_bounded_variable_type_expressions_for_future_abi() {
+    fn parses_unbounded_variable_type_expressions_for_variable_frame_abi() {
+        assert_eq!(parse_type_expr("bytes").unwrap(), TypeExpr::VarBytes);
         assert_eq!(
-            parse_type_expr("bytes<max=262144>").unwrap(),
-            TypeExpr::VarBytes { max_len: 262144 }
-        );
-        assert_eq!(
-            parse_type_expr("string<max=64>").unwrap(),
+            parse_type_expr("string").unwrap(),
             TypeExpr::VarString {
-                max_len: 64,
                 encoding: StringEncoding::Utf8,
             }
         );
         assert_eq!(
-            parse_type_expr("sequence<u32,max=16>").unwrap(),
+            parse_type_expr("sequence<u32>").unwrap(),
             TypeExpr::VarSequence {
                 element: Box::new(TypeExpr::Primitive {
                     name: PrimitiveType::U32,
-                }),
-                max_len: 16,
+                })
             }
         );
         assert_eq!(
-            parse_type_expr("sequence<[u8; 4], max=8>").unwrap(),
+            parse_type_expr("sequence<[u8; 4]>").unwrap(),
             TypeExpr::VarSequence {
                 element: Box::new(TypeExpr::Array {
                     element: Box::new(TypeExpr::Primitive {
                         name: PrimitiveType::U8,
                     }),
                     len: 4,
-                }),
-                max_len: 8,
+                })
             }
         );
         assert_eq!(
-            parse_type_expr("sequence<u32,max=16>")
-                .unwrap()
-                .canonical_syntax(),
-            "sequence<u32,max=16>"
+            parse_type_expr("sequence<u32>").unwrap().canonical_syntax(),
+            "sequence<u32>"
         );
         assert_eq!(
-            parse_type_expr("sequence<[u8; 4], max=8>")
+            parse_type_expr("sequence<[u8; 4]>")
                 .unwrap()
                 .canonical_syntax(),
-            "sequence<[u8; 4],max=8>"
+            "sequence<[u8; 4]>"
         );
     }
 
@@ -389,21 +340,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_variable_type_expressions_without_positive_max() {
+    fn rejects_legacy_bounded_variable_type_expressions() {
         for source in [
-            "bytes",
             "bytes<>",
             "bytes<max=0>",
+            "bytes<max=8>",
             "bytes<len=8>",
             "string<>",
             "string<max=0>",
-            "sequence<u32>",
+            "string<max=8>",
             "sequence<u32,max=0>",
+            "sequence<u32,max=8>",
             "sequence<max=4>",
         ] {
             assert!(
                 parse_type_expr(source).is_err(),
-                "{source} should require max > 0"
+                "{source} should reject legacy bounded variable syntax"
             );
         }
     }

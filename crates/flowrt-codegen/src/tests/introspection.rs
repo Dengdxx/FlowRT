@@ -90,13 +90,13 @@ backends = ["iox2"]
 
     let sensors_run = generated_function_block(rust_shell, "fn run_process_sensors");
     let sensor_register_marker = format!(
-        " = register_introspection_channel(&introspection_state, {}, \"Sample\", 4);",
+        " = register_introspection_channel(&introspection_state, {}, \"Sample\", Some(4));",
         rust_string_literal(sensor_channel)
     );
     let sensor_probe = extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
         .expect("sensors process should register sensor channel");
     let aux_register_marker = format!(
-        "register_introspection_channel(&introspection_state, {}, \"Sample\", 4);",
+        "register_introspection_channel(&introspection_state, {}, \"Sample\", Some(4));",
         rust_string_literal(aux_channel)
     );
     assert!(
@@ -158,8 +158,8 @@ channel = "latest"
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(rust_shell.contains(
-            "register_introspection_channel(&introspection_state, \"source.imu_to_sink.imu\", \"Imu\", 24);"
-        ));
+        "register_introspection_channel(&introspection_state, \"source.imu_to_sink.imu\", \"Imu\", Some(24));"
+    ));
 }
 
 #[test]
@@ -305,13 +305,13 @@ backends = ["inproc"]
 
     let sensors_run = generated_function_block(cpp_shell, "App::run_process_sensors");
     let sensor_register_marker = format!(
-        " = register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+        " = register_introspection_channel(introspection_state, {}, \"Sample\", std::optional<std::size_t>{{4}});",
         cpp_string_literal(sensor_channel)
     );
     let sensor_probe = extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
         .expect("sensors process should register sensor channel");
     let aux_register_marker = format!(
-        "register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+        "register_introspection_channel(introspection_state, {}, \"Sample\", std::optional<std::size_t>{{4}});",
         cpp_string_literal(aux_channel)
     );
     assert!(
@@ -327,7 +327,7 @@ backends = ["inproc"]
 
     let aux_run = generated_function_block(cpp_shell, "App::run_process_aux");
     let aux_register_marker = format!(
-        " = register_introspection_channel(introspection_state, {}, \"Sample\", 4);",
+        " = register_introspection_channel(introspection_state, {}, \"Sample\", std::optional<std::size_t>{{4}});",
         cpp_string_literal(aux_channel)
     );
     let aux_probe = extract_probe_field_for_registration(aux_run, &aux_register_marker)

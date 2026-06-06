@@ -577,10 +577,10 @@ fn emit_rust_introspection_helpers(
     state: &flowrt::IntrospectionState,
     name: &'static str,
     message_type: &'static str,
-    max_payload_len: usize,
+    max_payload_len: Option<usize>,
 ) -> flowrt::IntrospectionChannelProbe {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.register_channel_with_probe_capacity(name, message_type, Some(max_payload_len));
+        state.register_channel_with_probe_capacity(name, message_type, max_payload_len);
         state.channel_probe(name).unwrap_or_default()
     }))
     .unwrap_or_default()
@@ -667,11 +667,15 @@ fn emit_rust_introspection_channel_registration(
             "        self.{probe} = register_introspection_channel(&introspection_state, {}, {}, {});\n",
             rust_string_literal(&runtime_channel_name(bind)),
             rust_string_literal(&runtime_channel_message_type(bind)),
-            runtime_channel_probe_capacity(contract, bind),
+            rust_optional_usize_literal(runtime_channel_probe_capacity(contract, bind)),
             probe = bind.probe_field_name
         ));
     }
     output
+}
+
+fn rust_optional_usize_literal(value: Option<usize>) -> String {
+    value.map_or_else(|| "None".to_string(), |value| format!("Some({value})"))
 }
 
 fn emit_rust_app_new(

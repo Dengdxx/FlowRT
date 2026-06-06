@@ -17,7 +17,7 @@ public:
         const auto &value = *frame.as_ref();
         std::cout << std::boolalpha
                   << "valid=" << value.valid
-                  << " label=" << value.label.view()
+                  << " label=" << value.label
                   << " payload_bytes=" << value.payload.size()
                   << " samples=" << value.samples.size()
                   << " temperature=" << value.temperature

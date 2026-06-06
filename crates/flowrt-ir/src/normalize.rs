@@ -719,9 +719,7 @@ fn type_expr_contains_variable_data_inner(
     visiting: &mut std::collections::BTreeSet<String>,
 ) -> bool {
     match expr {
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
-            true
-        }
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
         TypeExpr::Array { element, .. } => {
             type_expr_contains_variable_data_inner(element, types_by_name, visiting)
         }
@@ -1748,7 +1746,7 @@ name = "route_backend_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=64>"
+payload = "bytes"
 
 [type.Counter]
 value = "u32"
@@ -1818,7 +1816,7 @@ name = "explicit_route_backend_demo"
 rsdl_version = "0.1"
 
 [type.Packet]
-payload = "bytes<max=64>"
+payload = "bytes"
 
 [component.producer]
 language = "rust"

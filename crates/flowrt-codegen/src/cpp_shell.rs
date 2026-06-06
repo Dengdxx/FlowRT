@@ -1042,13 +1042,13 @@ fn emit_cpp_introspection_helpers() -> String {
     flowrt::IntrospectionState& state,
     std::string_view name,
     std::string_view message_type,
-    std::size_t max_payload_len
+    std::optional<std::size_t> max_payload_len
 ) {
     try {
         state.register_channel_with_probe_capacity(
             std::string{name},
             std::string{message_type},
-            std::optional<std::size_t>{max_payload_len});
+            max_payload_len);
         if (const auto probe = state.channel_probe(name); probe.has_value()) {
             return *probe;
         }
@@ -1206,11 +1206,18 @@ fn emit_cpp_introspection_channel_registration(
             "    this->{probe} = register_introspection_channel(introspection_state, {}, {}, {});\n",
             cpp_string_literal(&runtime_channel_name(bind)),
             cpp_string_literal(&runtime_channel_message_type(bind)),
-            runtime_channel_probe_capacity(contract, bind),
+            cpp_optional_size_t_literal(runtime_channel_probe_capacity(contract, bind)),
             probe = bind.probe_field_name
         ));
     }
     output
+}
+
+fn cpp_optional_size_t_literal(value: Option<usize>) -> String {
+    value.map_or_else(
+        || "std::nullopt".to_string(),
+        |value| format!("std::optional<std::size_t>{{{value}}}"),
+    )
 }
 
 fn cpp_callback_args(component: &ComponentIr) -> Vec<String> {

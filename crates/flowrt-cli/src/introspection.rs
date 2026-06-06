@@ -89,7 +89,7 @@ pub(crate) struct SelfDescriptionMessageFrame {
     pub(crate) type_name: String,
     #[serde(default)]
     pub(crate) header_size_bytes: usize,
-    pub(crate) max_size_bytes: usize,
+    pub(crate) max_size_bytes: Option<usize>,
     pub(crate) variable: bool,
     #[serde(default)]
     pub(crate) fields: Vec<SelfDescriptionFrameField>,
@@ -254,7 +254,7 @@ pub(crate) enum EchoPayloadShape {
     },
     CanonicalFrame {
         header_size_bytes: usize,
-        max_size_bytes: usize,
+        max_size_bytes: Option<usize>,
         variable: bool,
         fields: Vec<SelfDescriptionFrameField>,
     },
@@ -809,14 +809,16 @@ fn format_echo_snapshot(
             fields,
             ..
         } => {
-            if payload.len() > *max_size_bytes {
-                anyhow::bail!(
-                    "channel `{}` payload length {} exceeds canonical frame max size {} for `{}`",
-                    channel.name,
-                    payload.len(),
-                    max_size_bytes,
-                    channel.message_type
-                );
+            if let Some(max_size_bytes) = *max_size_bytes {
+                if payload.len() > max_size_bytes {
+                    anyhow::bail!(
+                        "channel `{}` payload length {} exceeds canonical frame max size {} for `{}`",
+                        channel.name,
+                        payload.len(),
+                        max_size_bytes,
+                        channel.message_type
+                    );
+                }
             }
             let fields = format_frame_fields(fields, *header_size_bytes, payload)?;
             if !fields.is_empty() {
@@ -854,7 +856,10 @@ fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
             variable,
             ..
         } => {
-            format!("frame_max_size={max_size_bytes} variable={variable}")
+            let max_size = max_size_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unbounded".to_string());
+            format!("frame_max_size={max_size} variable={variable}")
         }
     }
 }
@@ -925,24 +930,21 @@ fn format_frame_field_value(
     tail: &[u8],
 ) -> Result<String> {
     let ty = field.ty.trim();
-    if let Some(max_len) = parse_bounded_type_max(ty, "string")? {
-        let block = frame_tail_block(field, header_bytes, tail, max_len)?;
+    if ty == "string" {
+        let block = frame_tail_block(field, header_bytes, tail)?;
         let text = std::str::from_utf8(block)
             .with_context(|| format!("field `{}` is not valid UTF-8", field.name))?;
         return serde_json::to_string(text)
             .with_context(|| format!("failed to format string field `{}`", field.name));
     }
-    if let Some(max_len) = parse_bounded_type_max(ty, "bytes")? {
-        let block = frame_tail_block(field, header_bytes, tail, max_len)?;
+    if ty == "bytes" {
+        let block = frame_tail_block(field, header_bytes, tail)?;
         return Ok(format!("0x{}", hex_bytes(block)));
     }
-    if let Some((element_ty, max_len)) = parse_sequence_type(ty)? {
+    if let Some(element_ty) = parse_sequence_type(ty)? {
         let element_size = required_fixed_wire_size(element_ty)
             .with_context(|| format!("unsupported sequence element type `{element_ty}`"))?;
-        let max_tail_bytes = element_size
-            .checked_mul(max_len)
-            .with_context(|| format!("sequence `{ty}` max length overflows"))?;
-        let block = frame_tail_block(field, header_bytes, tail, max_tail_bytes)?;
+        let block = frame_tail_block(field, header_bytes, tail)?;
         if block.len() % element_size != 0 {
             anyhow::bail!(
                 "field `{}` byte length {} is not divisible by element size {}",
@@ -952,14 +954,6 @@ fn format_frame_field_value(
             );
         }
         let element_count = block.len() / element_size;
-        if element_count > max_len {
-            anyhow::bail!(
-                "field `{}` contains {} sequence elements, exceeding max {}",
-                field.name,
-                element_count,
-                max_len
-            );
-        }
         let mut values = Vec::with_capacity(element_count);
         for chunk in block.chunks_exact(element_size) {
             values.push(format_fixed_abi_value(element_ty, chunk)?);
@@ -973,7 +967,6 @@ fn frame_tail_block<'a>(
     field: &SelfDescriptionFrameField,
     header_bytes: &[u8],
     tail: &'a [u8],
-    declared_max_len: usize,
 ) -> Result<&'a [u8]> {
     if header_bytes.len() != 8 {
         anyhow::bail!(
@@ -984,14 +977,6 @@ fn frame_tail_block<'a>(
     }
     let offset = read_u32_le(&header_bytes[0..4])? as usize;
     let len = read_u32_le(&header_bytes[4..8])? as usize;
-    if len > declared_max_len {
-        anyhow::bail!(
-            "field `{}` length {} exceeds declared max {}",
-            field.name,
-            len,
-            declared_max_len
-        );
-    }
     if let Some(tail_max_bytes) = field.tail_max_bytes
         && len > tail_max_bytes
     {
@@ -1021,36 +1006,17 @@ fn read_u32_le(bytes: &[u8]) -> Result<u32> {
     Ok(u32::from_le_bytes(array))
 }
 
-fn parse_bounded_type_max(ty: &str, prefix: &str) -> Result<Option<usize>> {
-    let Some(inner) = ty
-        .strip_prefix(prefix)
-        .and_then(|value| value.strip_prefix("<max="))
-        .and_then(|value| value.strip_suffix('>'))
-    else {
-        return Ok(None);
-    };
-    let max = inner
-        .trim()
-        .parse::<usize>()
-        .with_context(|| format!("invalid bounded type max in `{ty}`"))?;
-    Ok(Some(max))
-}
-
-fn parse_sequence_type(ty: &str) -> Result<Option<(&str, usize)>> {
+fn parse_sequence_type(ty: &str) -> Result<Option<&str>> {
     let Some(inner) = ty
         .strip_prefix("sequence<")
         .and_then(|value| value.strip_suffix('>'))
     else {
         return Ok(None);
     };
-    let Some((element, max_len)) = inner.rsplit_once(",max=") else {
-        anyhow::bail!("invalid sequence type `{ty}`");
-    };
-    let max_len = max_len
-        .trim()
-        .parse::<usize>()
-        .with_context(|| format!("invalid sequence max length in `{ty}`"))?;
-    Ok(Some((element.trim(), max_len)))
+    if inner.contains(",max=") {
+        anyhow::bail!("legacy bounded sequence type `{ty}` is not supported");
+    }
+    Ok(Some(inner.trim()))
 }
 
 fn format_fixed_abi_value(ty: &str, bytes: &[u8]) -> Result<String> {

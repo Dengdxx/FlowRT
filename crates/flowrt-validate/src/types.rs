@@ -61,7 +61,7 @@ pub(crate) fn validate_variable_frame_shapes(ir: &ContractIr, errors: &mut Vec<V
         for field in &ty.fields {
             let context = format!("type `{}` field `{}`", ty.name, field.name);
             match &field.ty {
-                TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
+                TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
                 TypeExpr::VarSequence { element, .. } => {
                     if type_expr_contains_variable_data(element, &types_by_name) {
                         errors.push(ValidationError::new(format!(
@@ -71,7 +71,7 @@ pub(crate) fn validate_variable_frame_shapes(ir: &ContractIr, errors: &mut Vec<V
                 }
                 expr if type_expr_contains_variable_data(expr, &types_by_name) => {
                     errors.push(ValidationError::new(format!(
-                        "{context} nests bounded variable data; variable data is only supported as a top-level message field"
+                        "{context} nests variable data; variable data is only supported as a top-level message field"
                     )));
                 }
                 _ => {}
@@ -94,9 +94,7 @@ fn type_expr_contains_variable_data_inner(
 ) -> bool {
     match expr {
         TypeExpr::Primitive { .. } => false,
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
-            true
-        }
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
         TypeExpr::Array { element, .. } => {
             type_expr_contains_variable_data_inner(element, types_by_name, visiting)
         }
@@ -194,7 +192,7 @@ fn collect_recursive_types_from_expr(
                 recursive_types,
             );
         }
-        TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
+        TypeExpr::Primitive { .. } | TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
     }
 }
 
@@ -221,19 +219,8 @@ pub(crate) fn validate_type_expr(
             }
             validate_type_expr(element, type_names, context, errors);
         }
-        TypeExpr::VarBytes { max_len } | TypeExpr::VarString { max_len, .. } => {
-            if *max_len == 0 {
-                errors.push(ValidationError::new(format!(
-                    "{context} has zero maximum length for bounded variable type"
-                )));
-            }
-        }
-        TypeExpr::VarSequence { element, max_len } => {
-            if *max_len == 0 {
-                errors.push(ValidationError::new(format!(
-                    "{context} has zero maximum length for bounded variable type"
-                )));
-            }
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
+        TypeExpr::VarSequence { element } => {
             validate_type_expr(element, type_names, context, errors);
         }
     }

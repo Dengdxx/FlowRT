@@ -5,9 +5,9 @@ rsdl_version = "0.1"
 
 [type.CrossHostFrame]
 valid = "bool"
-label = "string<max=64>"
-payload = "bytes<max=32>"
-samples = "sequence<u32,max=8>"
+label = "string"
+payload = "bytes"
+samples = "sequence<u32>"
 temperature = "f32"
 
 [component.source]

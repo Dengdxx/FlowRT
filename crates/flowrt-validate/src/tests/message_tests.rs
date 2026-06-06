@@ -51,42 +51,42 @@ payload = "[u8; 1]"
 }
 
 #[test]
-fn accepts_top_level_bounded_variable_fields_with_inproc() {
-    validate_contract(&bounded_variable_contract("inproc")).unwrap();
+fn accepts_top_level_variable_frame_fields_with_inproc() {
+    validate_contract(&variable_frame_contract("inproc")).unwrap();
 }
 
 #[test]
-fn bounded_variable_fields_follow_selected_backend_capabilities() {
-    validate_contract(&bounded_variable_contract("iox2")).unwrap();
-    validate_contract(&bounded_variable_contract("zenoh")).unwrap();
+fn variable_frame_fields_follow_selected_backend_capabilities() {
+    validate_contract(&variable_frame_contract("iox2")).unwrap();
+    validate_contract(&variable_frame_contract("zenoh")).unwrap();
 }
 
 #[test]
-fn rejects_bounded_variable_data_below_top_level_message_fields() {
+fn rejects_variable_frame_data_below_top_level_message_fields() {
     let source = r#"
 [package]
 name = "bad_variable_shapes"
 rsdl_version = "0.1"
 
 [type.ArrayHolder]
-items = "[bytes<max=8>; 2]"
+items = "[bytes; 2]"
 
 [type.Inner]
-payload = "bytes<max=8>"
+payload = "bytes"
 
 [type.Outer]
 inner = "Inner"
 
 [type.SequenceHolder]
-items = "sequence<bytes<max=8>,max=2>"
+items = "sequence<bytes>"
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let report = validate_contract(&ir).expect_err("nested bounded variable data must be rejected");
+    let report = validate_contract(&ir).expect_err("nested variable data must be rejected");
 
     for expected in [
-        "type `ArrayHolder` field `items` nests bounded variable data; variable data is only supported as a top-level message field",
-        "type `Outer` field `inner` nests bounded variable data; variable data is only supported as a top-level message field",
+        "type `ArrayHolder` field `items` nests variable data; variable data is only supported as a top-level message field",
+        "type `Outer` field `inner` nests variable data; variable data is only supported as a top-level message field",
         "type `SequenceHolder` field `items` has a variable-length sequence element; sequence elements must be fixed-size",
     ] {
         assert!(
@@ -108,7 +108,7 @@ name = "bad_recursive_variable"
 rsdl_version = "0.1"
 
 [type.APacket]
-payload = "bytes<max=8>"
+payload = "bytes"
 
 [type.ZNode]
 next = "ZNode"
@@ -129,36 +129,7 @@ next = "ZNode"
 }
 
 #[test]
-fn rejects_zero_bounded_variable_lengths_in_contract_ir() {
-    let mut ir = bounded_variable_contract("inproc");
-    for field in &mut ir.types[0].fields {
-        match &mut field.ty {
-            TypeExpr::VarBytes { max_len }
-            | TypeExpr::VarString { max_len, .. }
-            | TypeExpr::VarSequence { max_len, .. } => *max_len = 0,
-            _ => {}
-        }
-    }
-
-    let report =
-        validate_contract(&ir).expect_err("zero bounded variable lengths must be rejected");
-    for field_name in ["payload", "label", "samples"] {
-        let expected = format!(
-            "type `Packet` field `{field_name}` has zero maximum length for bounded variable type"
-        );
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|error| error.message.contains(&expected)),
-            "missing validation error: {expected}; got {:?}",
-            report.errors
-        );
-    }
-}
-
-#[test]
-fn rejects_bounded_variable_data_used_directly_as_component_port_type() {
+fn rejects_variable_frame_data_used_directly_as_component_port_type() {
     let source = r#"
 [package]
 name = "bad_variable_port"
@@ -166,17 +137,17 @@ rsdl_version = "0.1"
 
 [component.producer]
 language = "rust"
-output = ["payload:bytes<max=8>"]
+output = ["payload:bytes"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let report = validate_contract(&ir)
-        .expect_err("bounded variable data must be wrapped in a named message type");
+    let report =
+        validate_contract(&ir).expect_err("variable data must be wrapped in a named message type");
 
     assert!(
             report.errors.iter().any(|error| {
                 error.message.contains(
-                    "component `producer` port `payload` uses bounded variable data directly; variable data must be declared as a top-level field of a named message type",
+                    "component `producer` port `payload` uses variable data directly; variable data must be declared as a top-level field of a named message type",
                 )
             }),
             "{:?}",

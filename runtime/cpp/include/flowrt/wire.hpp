@@ -7,8 +7,6 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
-#include <string>
-#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -158,6 +156,50 @@ inline VarSpan read_var_span(std::span<const std::uint8_t> input) {
     return VarSpan{read_wire_le<std::uint32_t>(input, 0), read_wire_le<std::uint32_t>(input, 4)};
 }
 
+inline bool valid_utf8(std::span<const std::uint8_t> bytes) noexcept {
+    std::size_t index = 0;
+    while (index < bytes.size()) {
+        const auto byte = bytes[index];
+        std::size_t extra = 0;
+        std::uint32_t codepoint = 0;
+        if (byte <= 0x7FU) {
+            ++index;
+            continue;
+        }
+        if ((byte & 0xE0U) == 0xC0U) {
+            extra = 1;
+            codepoint = byte & 0x1FU;
+            if (codepoint == 0) {
+                return false;
+            }
+        } else if ((byte & 0xF0U) == 0xE0U) {
+            extra = 2;
+            codepoint = byte & 0x0FU;
+        } else if ((byte & 0xF8U) == 0xF0U) {
+            extra = 3;
+            codepoint = byte & 0x07U;
+        } else {
+            return false;
+        }
+        if (index + extra >= bytes.size()) {
+            return false;
+        }
+        for (std::size_t offset = 1; offset <= extra; ++offset) {
+            const auto continuation = bytes[index + offset];
+            if ((continuation & 0xC0U) != 0x80U) {
+                return false;
+            }
+            codepoint = (codepoint << 6U) | (continuation & 0x3FU);
+        }
+        if ((extra == 2 && codepoint < 0x800U) || (extra == 3 && codepoint < 0x10000U) ||
+            codepoint > 0x10FFFFU || (codepoint >= 0xD800U && codepoint <= 0xDFFFU)) {
+            return false;
+        }
+        index += extra + 1;
+    }
+    return true;
+}
+
 template <typename T>
 concept CanonicalFixedWireMessage =
     requires(const T &value, std::span<std::uint8_t> output, std::span<const std::uint8_t> input) {
@@ -170,7 +212,6 @@ template <typename T>
 concept CanonicalFrameMessage =
     requires(const T &value, std::span<std::uint8_t> output, std::span<const std::uint8_t> input) {
         { value.encoded_frame_size() } -> std::convertible_to<std::size_t>;
-        { T::max_frame_size() } -> std::convertible_to<std::size_t>;
         { value.encode_frame(output) } -> std::same_as<void>;
         { T::decode_frame(input) } -> std::same_as<T>;
     };
@@ -210,152 +251,17 @@ T decode_frame(std::span<const std::uint8_t> input) {
 
 }  // namespace detail
 
-template <std::size_t MAX>
-class BoundedBytes {
-   public:
-    BoundedBytes() = default;
-
-    explicit BoundedBytes(std::span<const std::uint8_t> bytes) { assign(bytes); }
-
-    static BoundedBytes from(std::span<const std::uint8_t> bytes) { return BoundedBytes(bytes); }
-
-    void assign(std::span<const std::uint8_t> bytes) {
-        if (bytes.size() > MAX) {
-            throw WireCodecError("bounded bytes length exceeds declared maximum");
-        }
-        bytes_.assign(bytes.begin(), bytes.end());
-    }
-
-    std::span<const std::uint8_t> as_span() const noexcept { return bytes_; }
-    const std::vector<std::uint8_t> &vector() const noexcept { return bytes_; }
-    std::size_t size() const noexcept { return bytes_.size(); }
-    bool empty() const noexcept { return bytes_.empty(); }
-
-   private:
-    std::vector<std::uint8_t> bytes_;
-};
-
-template <std::size_t MAX>
-class BoundedString {
-   public:
-    BoundedString() = default;
-
-    explicit BoundedString(std::string_view value) { assign(value); }
-
-    static BoundedString from(std::string_view value) { return BoundedString(value); }
-
-    static BoundedString from_utf8(std::span<const std::uint8_t> bytes) {
-        if (!valid_utf8(bytes)) {
-            throw WireCodecError("bounded string is not valid UTF-8");
-        }
-        if (bytes.empty()) {
-            return BoundedString{};
-        }
-        return BoundedString(
-            std::string_view{reinterpret_cast<const char *>(bytes.data()), bytes.size()});
-    }
-
-    void assign(std::string_view value) {
-        if (value.size() > MAX) {
-            throw WireCodecError("bounded string length exceeds declared maximum");
-        }
-        value_.assign(value);
-    }
-
-    std::string_view view() const noexcept { return value_; }
-    std::span<const std::uint8_t> bytes() const noexcept {
-        return {reinterpret_cast<const std::uint8_t *>(value_.data()), value_.size()};
-    }
-    std::size_t size() const noexcept { return value_.size(); }
-    bool empty() const noexcept { return value_.empty(); }
-
-   private:
-    static bool valid_utf8(std::span<const std::uint8_t> bytes) noexcept {
-        std::size_t index = 0;
-        while (index < bytes.size()) {
-            const auto byte = bytes[index];
-            std::size_t extra = 0;
-            std::uint32_t codepoint = 0;
-            if (byte <= 0x7FU) {
-                ++index;
-                continue;
-            }
-            if ((byte & 0xE0U) == 0xC0U) {
-                extra = 1;
-                codepoint = byte & 0x1FU;
-                if (codepoint == 0) {
-                    return false;
-                }
-            } else if ((byte & 0xF0U) == 0xE0U) {
-                extra = 2;
-                codepoint = byte & 0x0FU;
-            } else if ((byte & 0xF8U) == 0xF0U) {
-                extra = 3;
-                codepoint = byte & 0x07U;
-            } else {
-                return false;
-            }
-            if (index + extra >= bytes.size()) {
-                return false;
-            }
-            for (std::size_t offset = 1; offset <= extra; ++offset) {
-                const auto continuation = bytes[index + offset];
-                if ((continuation & 0xC0U) != 0x80U) {
-                    return false;
-                }
-                codepoint = (codepoint << 6U) | (continuation & 0x3FU);
-            }
-            if ((extra == 2 && codepoint < 0x800U) || (extra == 3 && codepoint < 0x10000U) ||
-                codepoint > 0x10FFFFU || (codepoint >= 0xD800U && codepoint <= 0xDFFFU)) {
-                return false;
-            }
-            index += extra + 1;
-        }
-        return true;
-    }
-
-    std::string value_;
-};
-
-template <typename T, std::size_t MAX>
-class BoundedSequence {
-   public:
-    BoundedSequence() = default;
-
-    explicit BoundedSequence(std::span<const T> values) { assign(values); }
-
-    static BoundedSequence from(std::span<const T> values) { return BoundedSequence(values); }
-
-    void assign(std::span<const T> values) {
-        if (values.size() > MAX) {
-            throw WireCodecError("bounded sequence length exceeds declared maximum");
-        }
-        values_.assign(values.begin(), values.end());
-    }
-
-    std::span<const T> as_span() const noexcept { return values_; }
-    const std::vector<T> &vector() const noexcept { return values_; }
-    std::size_t size() const noexcept { return values_.size(); }
-    bool empty() const noexcept { return values_.empty(); }
-
-   private:
-    std::vector<T> values_;
-};
-
 class FrameDecoder {
    public:
     explicit FrameDecoder(std::span<const std::uint8_t> tail) noexcept : tail_(tail) {}
 
-    std::span<const std::uint8_t> read_block(VarSpan span, std::size_t max_len) {
+    std::span<const std::uint8_t> read_block(VarSpan span) {
         const auto len = static_cast<std::size_t>(span.len);
         if (len == 0U) {
             if (span.offset != 0U) {
                 throw WireCodecError("empty variable span must use zero offset");
             }
             return {};
-        }
-        if (len > max_len) {
-            throw WireCodecError("variable field length exceeds declared maximum");
         }
         const auto offset = static_cast<std::size_t>(span.offset);
         if (offset != cursor_) {
