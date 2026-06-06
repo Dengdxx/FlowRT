@@ -1,5 +1,39 @@
 use super::*;
 
+static REPO_RUNTIME_FALLBACK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvOverride {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvOverride {
+    fn repo_runtime_fallback(value: Option<&str>) -> Self {
+        let key = "FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK";
+        let previous = std::env::var_os(key);
+        // SAFETY: guarded by REPO_RUNTIME_FALLBACK_ENV_LOCK in tests below.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvOverride {
+    fn drop(&mut self) {
+        // SAFETY: guarded by REPO_RUNTIME_FALLBACK_ENV_LOCK in tests below.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 #[test]
 fn load_prepared_contract_reports_build_required() {
     let root = temp_test_dir("missing-prepared-contract");
@@ -274,6 +308,10 @@ fn cargo_build_invocation_resolves_relative_manifest_before_changing_dir() {
 
 #[test]
 fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
 
@@ -292,6 +330,10 @@ fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
 
 #[test]
 fn cmake_configure_args_can_pass_explicit_runtime_dir() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
     let runtime_dir = Path::new("/opt/flowrt/runtime/cpp");
@@ -322,6 +364,10 @@ fn installed_runtime_candidates_include_private_prefix_layout() {
 
 #[test]
 fn cmake_configure_args_can_split_runtime_headers_from_dependency_prefix() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
     let runtime_dir = Path::new("/repo/runtime/cpp");
@@ -351,6 +397,71 @@ fn cmake_prefix_paths_merge_existing_env_and_runtime_prefix() {
             PathBuf::from("/opt/ros/jazzy"),
             PathBuf::from("/opt/flowrt/0.1.0")
         ]
+    );
+}
+
+#[test]
+fn repo_runtime_fallback_is_disabled_by_default() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+
+    assert!(
+        !repo_runtime_fallback_allowed(),
+        "repo runtime fallback must be disabled by default"
+    );
+}
+
+#[test]
+fn repo_runtime_fallback_is_enabled_when_env_is_on() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+    for value in &["ON", "1", "on", "true", "TRUE"] {
+        // SAFETY: guarded by REPO_RUNTIME_FALLBACK_ENV_LOCK.
+        unsafe { std::env::set_var("FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK", value) };
+        assert!(
+            repo_runtime_fallback_allowed(),
+            "should be allowed for value={value}"
+        );
+    }
+}
+
+#[test]
+fn cmake_configure_args_include_repo_fallback_flag_when_env_is_set() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(Some("ON"));
+
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let args = cmake_configure_args(source_dir, build_dir, None, &[]);
+
+    assert!(
+        args.contains(&"-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON".to_string()),
+        "cmake args should include repo fallback flag when env is set: {args:?}"
+    );
+}
+
+#[test]
+fn cmake_configure_args_do_not_include_repo_fallback_flag_by_default() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let args = cmake_configure_args(source_dir, build_dir, None, &[]);
+
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.contains("FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK")),
+        "cmake args should not include repo fallback flag by default: {args:?}"
     );
 }
 

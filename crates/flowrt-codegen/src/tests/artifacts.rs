@@ -415,7 +415,11 @@ channel = "latest"
         cmake.contains("target_link_libraries(robot_demo_flowrt_app INTERFACE flowrt::runtime)")
     );
     assert!(cmake.contains("FLOWRT_CPP_RUNTIME_DIR"));
+    assert!(cmake.contains("FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK"));
+    assert!(cmake.contains("option(FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK"));
+    assert!(cmake.contains("AND FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK)"));
     assert!(cmake.contains("FlowRT C++ runtime was not found"));
+    assert!(cmake.contains("set -DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON"));
     assert!(cmake.contains(
             "add_library(robot_demo_cpp_shell STATIC ../cpp/src/runtime_shell.cpp ../cpp/src/selfdesc.cpp)"
         ));
@@ -425,6 +429,70 @@ channel = "latest"
     assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
     assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));
     assert!(cmake.contains("add_executable(robot_demo_cpp_app ../cpp/src/main.cpp)"));
+}
+
+#[test]
+fn generated_cmake_repo_fallback_is_guarded_by_dev_mode_option() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "fallback_check"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["value:u32"]
+
+[component.sink]
+language = "cpp"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+
+    // Repo fallback must be gated behind the dev mode option.
+    assert!(
+        cmake.contains("option(FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK"),
+        "generated CMake must declare FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK option"
+    );
+    assert!(
+        cmake.contains("AND FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK)"),
+        "repo fallback must be guarded by FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK"
+    );
+
+    // The option must default to OFF.
+    assert!(
+        cmake.contains("FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK \"Allow falling back to FlowRT source tree runtime/cpp (dev mode only)\" OFF"),
+        "FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK must default to OFF"
+    );
+
+    // The fallback must NOT be unconditionally active.
+    // Verify the if-block that contains _flowrt_repo_runtime is gated.
+    assert!(
+        cmake.contains("if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR AND FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK)"),
+        "repo fallback if-block must require FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK"
+    );
 }
 
 #[test]

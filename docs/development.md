@@ -107,6 +107,8 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但完整 smoke、面向用户的 README、文档、示例和最终说明应使用系统安装后的 `flowrt ...`。
 
+仓库内 `flowrt build` 默认不会回退到源码树 `runtime/cpp`；如果安装包未配置且未设置 `FLOWRT_CPP_RUNTIME_DIR`，CLI 和生成 CMake 都会报错。在 FlowRT 仓库内开发时，设置 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1` 环境变量或 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` CMake 变量即可启用源码树回退，不影响正式用户路径。
+
 ## 代码与生成物边界
 
 - `flowrt/` 和 `examples/*/flowrt/` 是生成物目录，不入库。

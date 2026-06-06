@@ -53,10 +53,13 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
             "if(NOT FLOWRT_CPP_RUNTIME_DIR)\n    find_package(flowrt_runtime {flowrt_version_req} QUIET)\nendif()\n",
         );
         output.push_str(
-            "if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
+            "option(FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK \"Allow falling back to FlowRT source tree runtime/cpp (dev mode only)\" OFF)\n",
         );
         output.push_str(
-            "if(FLOWRT_CPP_RUNTIME_DIR)\n    if(NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR does not contain include/flowrt/runtime.hpp: ${FLOWRT_CPP_RUNTIME_DIR}\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nelseif(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install flowrt_runtime, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree.\")\nendif()\n",
+            "if(NOT TARGET flowrt::runtime AND NOT FLOWRT_CPP_RUNTIME_DIR AND FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK)\n    get_filename_component(_flowrt_repo_runtime \"${CMAKE_CURRENT_LIST_DIR}/../../../../runtime/cpp\" ABSOLUTE)\n    if(EXISTS \"${_flowrt_repo_runtime}/include/flowrt/runtime.hpp\")\n        set(FLOWRT_CPP_RUNTIME_DIR \"${_flowrt_repo_runtime}\")\n    endif()\nendif()\n",
+        );
+        output.push_str(
+            "if(FLOWRT_CPP_RUNTIME_DIR)\n    if(NOT EXISTS \"${FLOWRT_CPP_RUNTIME_DIR}/include/flowrt/runtime.hpp\")\n        message(FATAL_ERROR \"FLOWRT_CPP_RUNTIME_DIR does not contain include/flowrt/runtime.hpp: ${FLOWRT_CPP_RUNTIME_DIR}\")\n    endif()\n    target_include_directories({package_name}_flowrt_app INTERFACE ${FLOWRT_CPP_RUNTIME_DIR}/include)\nelseif(TARGET flowrt::runtime)\n    target_link_libraries({package_name}_flowrt_app INTERFACE flowrt::runtime)\nelse()\n    message(FATAL_ERROR \"FlowRT C++ runtime was not found. Install the FlowRT package, set CMAKE_PREFIX_PATH, or set FLOWRT_CPP_RUNTIME_DIR to a FlowRT runtime/cpp tree. If developing inside the FlowRT source tree, set -DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON.\")\nendif()\n",
         );
         output = output.replace("{package_name}", &package_name);
         output = output.replace("{flowrt_version_req}", FLOWRT_RUNTIME_VERSION_REQ);

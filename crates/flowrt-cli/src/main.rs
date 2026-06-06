@@ -1119,6 +1119,9 @@ fn cmake_configure_args(
             join_cmake_prefix_paths(cmake_prefix_paths)
         ));
     }
+    if repo_runtime_fallback_allowed() {
+        args.push("-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON".to_string());
+    }
     args
 }
 
@@ -1343,7 +1346,10 @@ fn rust_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
     if let Some(runtime_dir) = installed_runtime_dir("runtime/rust", "Cargo.toml")? {
         return Ok(Some(runtime_dir));
     }
-    Ok(repo_runtime_dir("runtime/rust", "Cargo.toml"))
+    if repo_runtime_fallback_allowed() {
+        return Ok(repo_runtime_dir("runtime/rust", "Cargo.toml"));
+    }
+    Ok(None)
 }
 
 fn cpp_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
@@ -1353,10 +1359,13 @@ fn cpp_runtime_dir_for_generated_build() -> Result<Option<PathBuf>> {
     if let Some(runtime_dir) = installed_runtime_dir("runtime/cpp", "include/flowrt/runtime.hpp")? {
         return Ok(Some(runtime_dir));
     }
-    Ok(repo_runtime_dir(
-        "runtime/cpp",
-        "include/flowrt/runtime.hpp",
-    ))
+    if repo_runtime_fallback_allowed() {
+        return Ok(repo_runtime_dir(
+            "runtime/cpp",
+            "include/flowrt/runtime.hpp",
+        ));
+    }
+    Ok(None)
 }
 
 fn cpp_runtime_dir_from_env() -> Result<Option<PathBuf>> {
@@ -1452,6 +1461,12 @@ fn repo_root_dir() -> Result<PathBuf> {
             repo_root.display()
         )
     })
+}
+
+fn repo_runtime_fallback_allowed() -> bool {
+    env::var_os("FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK")
+        .map(|v| v == "1" || v == "ON" || v == "on" || v == "true" || v == "TRUE")
+        .unwrap_or(false)
 }
 
 fn toml_basic_string(path: &Path) -> String {
