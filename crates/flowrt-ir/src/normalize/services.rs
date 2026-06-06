@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use flowrt_rsdl::RawDocument;
 
 use crate::{
-    BackendName, EntityRef, IrError, Result, Ros2BridgeDirection, Ros2BridgeIr, ServiceEdgeIr,
-    ServicePortRef,
+    BackendName, EntityRef, InstanceIr, IrError, PolicyValueSource, Result, Ros2BridgeDirection,
+    Ros2BridgeIr, ServiceBackendSource, ServiceEdgeIr, ServiceOverflowPolicy, ServicePolicyIr,
+    ServicePolicySourceIr, ServicePortRef, SERVICE_DEFAULT_MAX_IN_FLIGHT,
+    SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS,
 };
 
 use super::ids::entity_id;
@@ -12,18 +14,38 @@ use super::ids::entity_id;
 pub(super) fn normalize_service_binds(
     document: &RawDocument,
     instance_refs: &BTreeMap<String, EntityRef>,
+    instances: &[InstanceIr],
     graph_name: &str,
 ) -> Result<Vec<ServiceEdgeIr>> {
+    let instances_by_name = instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+
     let mut services = document
         .service_binds
         .iter()
-        .map(|raw| {
+        .enumerate()
+        .map(|(index, raw)| {
             let client = parse_service_port_ref(&raw.client, instance_refs)?;
             let server = parse_service_port_ref(&raw.server, instance_refs)?;
+            let context = format!("bind.service[{index}]");
+
+            let topology = service_route_topology(&instances_by_name, &client, &server);
+            let (backend, backend_source) =
+                resolve_service_backend(&context, raw.backend.as_deref(), topology)?;
+
+            let policy = parse_service_policy(&context, raw)?;
+            let policy_source = service_policy_source(raw);
+
             Ok(ServiceEdgeIr {
                 id: entity_id("service", &format!("{}->{}", raw.client, raw.server)),
                 client,
                 server,
+                backend: BackendName(backend),
+                backend_source,
+                policy,
+                policy_source,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -54,6 +76,155 @@ pub(super) fn normalize_service_binds(
         );
     }
     Ok(services)
+}
+
+/// 推导 service route 的拓扑边界。
+fn service_route_topology(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    client: &ServicePortRef,
+    server: &ServicePortRef,
+) -> (bool, bool) {
+    let client_instance = instances.get(client.instance.name.as_str());
+    let server_instance = instances.get(server.instance.name.as_str());
+    let client_process = client_instance
+        .and_then(|i| i.process.as_deref())
+        .unwrap_or("main");
+    let server_process = server_instance
+        .and_then(|i| i.process.as_deref())
+        .unwrap_or("main");
+    let client_target = client_instance
+        .and_then(|i| i.target.as_ref())
+        .map(|t| t.name.as_str());
+    let server_target = server_instance
+        .and_then(|i| i.target.as_ref())
+        .map(|t| t.name.as_str());
+    let crosses_process = client_process != server_process;
+    let crosses_target =
+        client_target.is_some() && server_target.is_some() && client_target != server_target;
+    (crosses_process, crosses_target)
+}
+
+/// 解析 service backend：auto 根据拓扑选择，显式值校验合法性。
+fn resolve_service_backend(
+    context: &str,
+    requested: Option<&str>,
+    (crosses_process, crosses_target): (bool, bool),
+) -> Result<(String, ServiceBackendSource)> {
+    match requested {
+        None | Some("auto") => {
+            let resolved = if crosses_process || crosses_target {
+                "zenoh"
+            } else {
+                "inproc"
+            };
+            Ok((resolved.to_string(), ServiceBackendSource::AutoResolved))
+        }
+        Some("inproc") => {
+            if crosses_process || crosses_target {
+                Err(IrError::InvalidValue {
+                    context: context.to_string(),
+                    message: "explicit `inproc` service backend cannot span process or target boundaries"
+                        .to_string(),
+                })
+            } else {
+                Ok(("inproc".to_string(), ServiceBackendSource::Explicit))
+            }
+        }
+        Some("zenoh") => Ok(("zenoh".to_string(), ServiceBackendSource::Explicit)),
+        Some("iox2") => Err(IrError::InvalidEnum {
+            context: context.to_string(),
+            kind: "service backend",
+            value: "iox2".to_string(),
+        }),
+        Some(other) => Err(IrError::InvalidEnum {
+            context: context.to_string(),
+            kind: "service backend",
+            value: other.to_string(),
+        }),
+    }
+}
+
+/// 解析 service policy 字段，使用默认值填充缺失项。
+fn parse_service_policy(context: &str, raw: &flowrt_rsdl::RawServiceBind) -> Result<ServicePolicyIr> {
+    let timeout_ms = raw.timeout_ms.unwrap_or(SERVICE_DEFAULT_TIMEOUT_MS);
+    if raw.timeout_ms.is_some() && timeout_ms == 0 {
+        return Err(IrError::InvalidValue {
+            context: format!("{context}.timeout_ms"),
+            message: "service timeout_ms must be greater than zero".to_string(),
+        });
+    }
+
+    let queue_depth = raw.queue_depth.unwrap_or(SERVICE_DEFAULT_QUEUE_DEPTH);
+    if raw.queue_depth.is_some() && queue_depth == 0 {
+        return Err(IrError::InvalidValue {
+            context: format!("{context}.queue_depth"),
+            message: "service queue_depth must be greater than zero".to_string(),
+        });
+    }
+
+    let overflow = match raw.overflow.as_deref() {
+        Some("busy") | None => ServiceOverflowPolicy::Busy,
+        Some("error") => ServiceOverflowPolicy::Error,
+        Some(other) => {
+            return Err(IrError::InvalidEnum {
+                context: format!("{context}.overflow"),
+                kind: "service overflow policy",
+                value: other.to_string(),
+            });
+        }
+    };
+
+    let max_in_flight = raw.max_in_flight.unwrap_or(SERVICE_DEFAULT_MAX_IN_FLIGHT);
+    if raw.max_in_flight.is_some() && max_in_flight == 0 {
+        return Err(IrError::InvalidValue {
+            context: format!("{context}.max_in_flight"),
+            message: "service max_in_flight must be greater than zero".to_string(),
+        });
+    }
+
+    Ok(ServicePolicyIr {
+        timeout_ms,
+        queue_depth,
+        overflow,
+        lane: raw.lane.clone(),
+        max_in_flight,
+    })
+}
+
+/// 构建 service policy source 元数据。
+fn service_policy_source(raw: &flowrt_rsdl::RawServiceBind) -> ServicePolicySourceIr {
+    ServicePolicySourceIr {
+        backend: if raw.backend.is_some() {
+            PolicyValueSource::Explicit
+        } else {
+            PolicyValueSource::ProfileDefault
+        },
+        timeout_ms: if raw.timeout_ms.is_some() {
+            PolicyValueSource::Explicit
+        } else {
+            PolicyValueSource::ProfileDefault
+        },
+        queue_depth: if raw.queue_depth.is_some() {
+            PolicyValueSource::Explicit
+        } else {
+            PolicyValueSource::ProfileDefault
+        },
+        overflow: if raw.overflow.is_some() {
+            PolicyValueSource::Explicit
+        } else {
+            PolicyValueSource::ProfileDefault
+        },
+        lane: if raw.lane.is_some() {
+            PolicyValueSource::Explicit
+        } else {
+            PolicyValueSource::ProfileDefault
+        },
+        max_in_flight: if raw.max_in_flight.is_some() {
+            PolicyValueSource::Explicit
+        } else {
+            PolicyValueSource::ProfileDefault
+        },
+    }
 }
 
 pub(super) fn normalize_ros2_bridges(

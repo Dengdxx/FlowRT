@@ -121,7 +121,8 @@ fn normalize_document_with_modules(
         &profiles,
     )?;
     let processes = graphs::normalize_processes(document, &instances)?;
-    let service_edges = services::normalize_service_binds(document, &instance_refs, &graph_name)?;
+    let service_edges =
+        services::normalize_service_binds(document, &instance_refs, &instances, &graph_name)?;
     let ros2_bridges = services::normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = crate::GraphIr {
         id: graph_id.clone(),
@@ -160,8 +161,9 @@ mod tests {
     use super::*;
     use crate::{
         CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OverflowPolicy, ParamType,
-        ParamUpdatePolicy, ParamValue, PrimitiveType, ProcessFailurePropagation,
-        ProcessRestartPolicyKind, RouteTopology, StalePolicy, TaskReadiness, TypeExpr,
+        ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
+        ProcessFailurePropagation, ProcessRestartPolicyKind, RouteTopology,
+        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness, TypeExpr,
         channel_route_capabilities, deployment_capability_decision,
     };
 
@@ -420,6 +422,14 @@ server = "server.plan"
         assert_eq!(service.client.port, "plan");
         assert_eq!(service.server.instance.name, "server");
         assert_eq!(service.server.port, "plan");
+        // 默认 policy
+        assert_eq!(service.backend.0, "inproc");
+        assert_eq!(service.backend_source, ServiceBackendSource::AutoResolved);
+        assert_eq!(service.policy.timeout_ms, 5000);
+        assert_eq!(service.policy.queue_depth, 32);
+        assert_eq!(service.policy.overflow, ServiceOverflowPolicy::Busy);
+        assert_eq!(service.policy.lane, None);
+        assert_eq!(service.policy.max_in_flight, 64);
     }
 
     #[test]
@@ -1695,6 +1705,383 @@ backends = ["iox2", "zenoh"]
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn service_bind_with_explicit_policy_fields() {
+        let source = r#"
+[package]
+name = "service_policy_demo"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "zenoh"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "error"
+lane = "rpc_lane"
+max_in_flight = 8
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let service = &ir.graphs[0].services[0];
+
+        assert_eq!(service.backend.0, "zenoh");
+        assert_eq!(service.backend_source, ServiceBackendSource::Explicit);
+        assert_eq!(service.policy.timeout_ms, 1000);
+        assert_eq!(service.policy.queue_depth, 16);
+        assert_eq!(service.policy.overflow, ServiceOverflowPolicy::Error);
+        assert_eq!(service.policy.lane.as_deref(), Some("rpc_lane"));
+        assert_eq!(service.policy.max_in_flight, 8);
+        assert_eq!(
+            service.policy_source.backend,
+            PolicyValueSource::Explicit
+        );
+        assert_eq!(
+            service.policy_source.timeout_ms,
+            PolicyValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn service_auto_backend_resolves_to_zenoh_for_cross_process() {
+        let source = r#"
+[package]
+name = "service_cross_process"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "proc_a"
+
+[instance.server]
+component = "server"
+process = "proc_b"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let service = &ir.graphs[0].services[0];
+
+        assert_eq!(service.backend.0, "zenoh");
+        assert_eq!(service.backend_source, ServiceBackendSource::AutoResolved);
+    }
+
+    #[test]
+    fn service_explicit_inproc_same_process() {
+        let source = r#"
+[package]
+name = "service_inproc"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "main"
+
+[instance.server]
+component = "server"
+process = "main"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let service = &ir.graphs[0].services[0];
+
+        assert_eq!(service.backend.0, "inproc");
+        assert_eq!(service.backend_source, ServiceBackendSource::Explicit);
+    }
+
+    #[test]
+    fn rejects_service_bind_with_iox2_backend() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "iox2"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("iox2 service backend should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                kind: "service backend",
+                value,
+                ..
+            } if value == "iox2"
+        ));
+    }
+
+    #[test]
+    fn rejects_service_bind_with_unknown_backend() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "grpc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("unknown service backend should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                kind: "service backend",
+                value,
+                ..
+            } if value == "grpc"
+        ));
+    }
+
+    #[test]
+    fn rejects_explicit_inproc_across_processes() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "proc_a"
+
+[instance.server]
+component = "server"
+process = "proc_b"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("cross-process inproc should fail");
+
+        assert!(matches!(error, IrError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn rejects_service_zero_timeout() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+timeout_ms = 0
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("zero timeout should fail");
+
+        assert!(matches!(error, IrError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn rejects_service_zero_queue_depth() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+queue_depth = 0
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("zero queue_depth should fail");
+
+        assert!(matches!(error, IrError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn rejects_service_zero_max_in_flight() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+max_in_flight = 0
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("zero max_in_flight should fail");
+
+        assert!(matches!(error, IrError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn rejects_service_unknown_overflow_policy() {
+        let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+overflow = "drop_oldest"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("unknown overflow policy should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                kind: "service overflow policy",
+                value,
+                ..
+            } if value == "drop_oldest"
+        ));
     }
 
     fn unique_temp_dir() -> std::path::PathBuf {
