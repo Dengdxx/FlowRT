@@ -6,6 +6,7 @@
 use std::ffi::c_char;
 
 use crate::{BackendHealthSnapshot, BackendHealthState, BackendKind, ReconnectPolicy, Status};
+use crate::service::{ServiceError, ServiceFrameHeader};
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_ABI_VERSION_MINOR: u32 = 1;
@@ -163,5 +164,74 @@ pub fn backend_health_snapshot_to_abi(
         has_next_retry_unix_ms,
         recoverable: u8::from(snapshot.recoverable),
         reserved: [0; 6],
+    }
+}
+
+// ── Service ABI ────────────────────────────────────────────────────────────
+
+/// Service error ABI 编码类型。
+pub type FlowrtServiceError = u16;
+pub const FLOWRT_SERVICE_OK: FlowrtServiceError = 0;
+pub const FLOWRT_SERVICE_TIMEOUT: FlowrtServiceError = 1;
+pub const FLOWRT_SERVICE_UNAVAILABLE: FlowrtServiceError = 2;
+pub const FLOWRT_SERVICE_BUSY: FlowrtServiceError = 3;
+pub const FLOWRT_SERVICE_REJECTED: FlowrtServiceError = 4;
+pub const FLOWRT_SERVICE_CANCELLED: FlowrtServiceError = 5;
+pub const FLOWRT_SERVICE_DEADLINE_EXCEEDED: FlowrtServiceError = 6;
+pub const FLOWRT_SERVICE_PROTOCOL: FlowrtServiceError = 7;
+pub const FLOWRT_SERVICE_BACKEND: FlowrtServiceError = 8;
+pub const FLOWRT_SERVICE_WOULD_DEADLOCK: FlowrtServiceError = 9;
+pub const FLOWRT_SERVICE_HANDLER_ERROR: FlowrtServiceError = 10;
+
+/// service frame 魔数常量。
+pub const FLOWRT_SERVICE_FRAME_MAGIC: u32 = 0x5352_5646;
+/// service frame 协议版本常量。
+pub const FLOWRT_SERVICE_FRAME_VERSION: u16 = 1;
+/// service frame 固定 header 字节数。
+pub const FLOWRT_SERVICE_FRAME_HEADER_SIZE: usize = 80;
+
+/// C ABI service frame header，固定 80 字节。
+///
+/// 字段布局与 Rust `ServiceFrameHeader` 和 C++ `ServiceFrameHeader` 完全对齐。
+/// 变长字段（payload、error message）通过尾部 VarSpan 描述符寻址，不包含在该结构体中。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtServiceFrameHeader {
+    pub magic: u32,
+    pub version: u16,
+    pub error_code: FlowrtServiceError,
+    pub service_id: u64,
+    pub session_id: u64,
+    pub sequence: u64,
+    pub correlation_id: u64,
+    pub timeout_ms: u64,
+    pub absolute_deadline_ms: u64,
+    pub schema_hash: u64,
+    pub payload_offset: u32,
+    pub payload_len: u32,
+    pub error_msg_offset: u32,
+    pub error_msg_len: u32,
+}
+
+pub const fn service_error_to_abi(error: ServiceError) -> FlowrtServiceError {
+    error as u16
+}
+
+pub fn service_frame_header_to_abi(header: &ServiceFrameHeader) -> FlowrtServiceFrameHeader {
+    FlowrtServiceFrameHeader {
+        magic: header.magic,
+        version: header.version,
+        error_code: header.error_code,
+        service_id: header.service_id,
+        session_id: header.session_id,
+        sequence: header.sequence,
+        correlation_id: header.correlation_id,
+        timeout_ms: header.timeout_ms,
+        absolute_deadline_ms: header.absolute_deadline_ms,
+        schema_hash: header.schema_hash,
+        payload_offset: header.payload_span.offset(),
+        payload_len: header.payload_span.len(),
+        error_msg_offset: header.error_msg_span.offset(),
+        error_msg_len: header.error_msg_span.len(),
     }
 }
