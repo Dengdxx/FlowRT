@@ -13,7 +13,7 @@ pub(crate) fn validate_components(
     let types_by_name = ir
         .types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
 
     for component in &ir.components {

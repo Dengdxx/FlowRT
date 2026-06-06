@@ -10,6 +10,8 @@ use crate::{Result, RsdlError};
 #[derive(Debug)]
 struct ParsedDocument {
     package: Option<RawPackage>,
+    workspace: Option<RawWorkspace>,
+    module: Option<RawModule>,
     types: BTreeMap<String, RawType>,
     components: BTreeMap<String, RawComponent>,
     instances: BTreeMap<String, RawInstance>,
@@ -36,6 +38,27 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<LoadedDocument> {
     let mut sources = Vec::new();
     let mut document = load_root_document(&root_path, &package_root, &mut sources)?;
     loaded_paths.insert(root_path.clone());
+    let mut modules = Vec::new();
+    let mut compositions = Vec::new();
+
+    if document.workspace.is_some() {
+        expand_workspace(
+            &mut document,
+            &root_path,
+            &package_root,
+            &mut loaded_paths,
+            &mut sources,
+            &mut modules,
+            &mut compositions,
+        )?;
+        return Ok(LoadedDocument {
+            document,
+            sources,
+            modules,
+            compositions,
+        });
+    }
+
     expand_imports(
         &mut document,
         &root_path,
@@ -44,7 +67,12 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<LoadedDocument> {
         &mut sources,
     )?;
 
-    Ok(LoadedDocument { document, sources })
+    Ok(LoadedDocument {
+        document,
+        sources,
+        modules,
+        compositions,
+    })
 }
 
 fn load_root_document(
@@ -101,6 +129,16 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
 
     Ok(ParsedDocument {
         package,
+        workspace: root
+            .get("workspace")
+            .and_then(Value::as_table)
+            .map(parse_workspace)
+            .transpose()?,
+        module: root
+            .get("module")
+            .and_then(Value::as_table)
+            .map(parse_module)
+            .transpose()?,
         types: parse_named_tables(root, "type", parse_type)?,
         components: parse_named_tables(root, "component", parse_component)?,
         instances: parse_named_tables(root, "instance", parse_instance)?,
@@ -114,6 +152,8 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
 fn validate_top_level_sections(root: &Table) -> Result<()> {
     const ALLOWED_SECTIONS: &[&str] = &[
         "package",
+        "workspace",
+        "module",
         "type",
         "component",
         "instance",
@@ -148,6 +188,7 @@ fn validate_known_fields(table: &Table, context: &str, allowed_fields: &[&str]) 
 fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
     Ok(RawDocument {
         package: parsed.package.ok_or(RsdlError::MissingPackage)?,
+        workspace: parsed.workspace,
         types: parsed.types,
         components: parsed.components,
         instances: parsed.instances,
@@ -156,6 +197,120 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         profiles: parsed.profiles,
         targets: parsed.targets,
     })
+}
+
+fn expand_workspace(
+    document: &mut RawDocument,
+    root_path: &Path,
+    package_root: &Path,
+    loaded_paths: &mut std::collections::BTreeSet<PathBuf>,
+    sources: &mut Vec<LoadedSource>,
+    modules: &mut Vec<RawModuleDocument>,
+    compositions: &mut Vec<RawCompositionDocument>,
+) -> Result<()> {
+    let workspace = document
+        .workspace
+        .clone()
+        .expect("caller checked workspace presence");
+    let mut module_names = std::collections::BTreeSet::new();
+
+    for pattern in &workspace.modules {
+        for path in expand_import_pattern(root_path, pattern)? {
+            let path = canonicalize_existing(&path)?;
+            if !loaded_paths.insert(path.clone()) {
+                continue;
+            }
+            let parsed = load_import_document(&path, package_root, sources)?;
+            let module = parsed
+                .module
+                .clone()
+                .ok_or_else(|| RsdlError::MissingModule {
+                    path: logical_source_path(&path, package_root),
+                })?;
+            validate_module_document(&path, package_root, &module, &parsed)?;
+            if !module_names.insert(module.name.clone()) {
+                return Err(RsdlError::DuplicateModule {
+                    module: module.name,
+                });
+            }
+            modules.push(RawModuleDocument {
+                module,
+                types: parsed.types,
+                components: parsed.components,
+                source: logical_source_path(&path, package_root),
+            });
+        }
+    }
+
+    for pattern in &workspace.compositions {
+        for path in expand_import_pattern(root_path, pattern)? {
+            let path = canonicalize_existing(&path)?;
+            if !loaded_paths.insert(path.clone()) {
+                continue;
+            }
+            let parsed = load_import_document(&path, package_root, sources)?;
+            if parsed.module.is_some() {
+                return Err(RsdlError::UnexpectedModule {
+                    path: logical_source_path(&path, package_root),
+                });
+            }
+            let composition = RawCompositionDocument {
+                instances: parsed.instances.clone(),
+                binds: parsed.binds.clone(),
+                ros2_bridges: parsed.ros2_bridges.clone(),
+                profiles: parsed.profiles.clone(),
+                targets: parsed.targets.clone(),
+                source: logical_source_path(&path, package_root),
+            };
+            merge_composition_document(document, parsed)?;
+            compositions.push(composition);
+        }
+    }
+
+    modules.sort_by(|left, right| left.module.name.cmp(&right.module.name));
+    compositions.sort_by(|left, right| left.source.cmp(&right.source));
+    Ok(())
+}
+
+fn validate_module_document(
+    path: &Path,
+    package_root: &Path,
+    module: &RawModule,
+    parsed: &ParsedDocument,
+) -> Result<()> {
+    let invalid = [
+        (!parsed.instances.is_empty(), "instance"),
+        (!parsed.binds.is_empty(), "bind"),
+        (!parsed.ros2_bridges.is_empty(), "bridge"),
+        (!parsed.profiles.is_empty(), "profile"),
+        (!parsed.targets.is_empty(), "target"),
+        (parsed.workspace.is_some(), "workspace"),
+        (parsed.package.is_some(), "package"),
+    ]
+    .into_iter()
+    .find_map(|(present, section)| present.then_some(section));
+
+    if let Some(section) = invalid {
+        return Err(RsdlError::InvalidModuleSection {
+            path: logical_source_path(path, package_root),
+            module: module.name.clone(),
+            section: section.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn merge_composition_document(
+    document: &mut RawDocument,
+    composition: ParsedDocument,
+) -> Result<()> {
+    merge_named_map("instance", &mut document.instances, composition.instances)?;
+    document.binds.extend(composition.binds);
+    document.ros2_bridges.extend(composition.ros2_bridges);
+    merge_named_map("profile", &mut document.profiles, composition.profiles)?;
+    merge_named_map("target", &mut document.targets, composition.targets)?;
+    Ok(())
 }
 
 fn expand_imports(
@@ -424,6 +579,21 @@ fn parse_package(table: &Table) -> Result<RawPackage> {
         version: optional_string(table, "package", "version")?,
         rsdl_version: required_string(table, "package", "rsdl_version")?,
         imports,
+    })
+}
+
+fn parse_workspace(table: &Table) -> Result<RawWorkspace> {
+    validate_known_fields(table, "workspace", &["modules", "compositions"])?;
+    Ok(RawWorkspace {
+        modules: optional_string_array(table, "workspace", "modules")?,
+        compositions: optional_string_array(table, "workspace", "compositions")?,
+    })
+}
+
+fn parse_module(table: &Table) -> Result<RawModule> {
+    validate_known_fields(table, "module", &["name"])?;
+    Ok(RawModule {
+        name: required_string(table, "module", "name")?,
     })
 }
 
@@ -1463,6 +1633,153 @@ backend = "zenoh"
         assert_eq!(document.ros2_bridges[0].ros2_type, "std_msgs/msg/String");
         assert_eq!(document.ros2_bridges[0].direction, "flowrt_to_ros2");
         assert_eq!(document.ros2_bridges[0].field.as_deref(), Some("data"));
+    }
+
+    #[test]
+    fn load_file_expands_workspace_modules_and_compositions() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("modules")).unwrap();
+        std::fs::create_dir_all(root.join("composition")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "workspace_demo"
+rsdl_version = "0.1"
+
+[workspace]
+modules = ["modules/*.rsdl"]
+compositions = ["composition/default.rsdl"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules").join("perception.rsdl"),
+            r#"
+[module]
+name = "perception"
+
+[type.Imu]
+timestamp = "u64"
+ax = "f32"
+
+[component.imu_sim]
+language = "rust"
+output = ["imu:Imu"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules").join("control.rsdl"),
+            r#"
+[module]
+name = "control"
+
+[type.Odom]
+timestamp = "u64"
+
+[component.estimator]
+language = "rust"
+input = ["imu:perception::Imu"]
+output = ["odom:Odom"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composition").join("default.rsdl"),
+            r#"
+[instance.imu_sim]
+component = "perception::imu_sim"
+process = "main"
+
+[instance.imu_sim.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.estimator]
+component = "control::estimator"
+process = "main"
+
+[instance.estimator.task]
+trigger = "on_message"
+input = ["imu"]
+output = ["odom"]
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "estimator.imu"
+channel = "latest"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_file(root.join("robot.rsdl")).unwrap();
+
+        assert_eq!(
+            loaded.document.workspace.as_ref().unwrap().modules,
+            vec!["modules/*.rsdl"]
+        );
+        assert_eq!(loaded.modules.len(), 2);
+        assert_eq!(loaded.modules[0].module.name, "control");
+        assert_eq!(loaded.modules[1].module.name, "perception");
+        assert_eq!(loaded.modules[1].types["Imu"].fields[0].name, "timestamp");
+        assert_eq!(
+            loaded.modules[0].components["estimator"].input[0].ty,
+            "perception::Imu"
+        );
+        assert_eq!(loaded.compositions.len(), 1);
+        assert_eq!(
+            loaded.document.instances["estimator"].component,
+            "control::estimator"
+        );
+        assert_eq!(loaded.document.binds[0].from, "imu_sim.imu");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_file_rejects_instance_inside_workspace_module() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("modules")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "workspace_demo"
+rsdl_version = "0.1"
+
+[workspace]
+modules = ["modules/perception.rsdl"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules").join("perception.rsdl"),
+            r#"
+[module]
+name = "perception"
+
+[component.imu_sim]
+language = "rust"
+
+[instance.imu_sim]
+component = "imu_sim"
+"#,
+        )
+        .unwrap();
+
+        let error = load_file(root.join("robot.rsdl")).expect_err("module instance should fail");
+
+        assert!(matches!(
+            error,
+            RsdlError::InvalidModuleSection { module, section, .. }
+                if module == "perception" && section == "instance"
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_dir() -> std::path::PathBuf {

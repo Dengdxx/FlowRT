@@ -421,7 +421,7 @@ fn message_abi_capability_list<'a>(
 ) -> CapabilityList {
     let types_by_name = types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut required = CapabilityList::new();
 
@@ -442,7 +442,7 @@ fn message_abi_capability_list<'a>(
 fn type_expr_abi_capability_list(types: &[TypeIr], expr: &TypeExpr) -> CapabilityList {
     let types_by_name = types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut required = CapabilityList::new();
     let mut visiting = BTreeSet::new();
@@ -533,6 +533,33 @@ fn stale_capability(policy: StalePolicy) -> Capability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_type(name: &str, fields: Vec<crate::FieldIr>) -> TypeIr {
+        TypeIr {
+            id: crate::EntityId("type_0000000000000001".to_string()),
+            module: None,
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            generated_name: name.to_string(),
+            fields,
+        }
+    }
+
+    fn test_component(name: &str, outputs: Vec<crate::PortIr>) -> ComponentIr {
+        ComponentIr {
+            id: crate::EntityId("component_0000000000000001".to_string()),
+            module: None,
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            generated_name: name.to_string(),
+            language: crate::LanguageKind::Rust,
+            kind: crate::ComponentKind::Native,
+            inputs: vec![],
+            outputs,
+            params: vec![],
+            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
+        }
+    }
 
     #[test]
     fn inproc_supports_core_v0_1_capabilities() {
@@ -821,10 +848,9 @@ mod tests {
             ],
             ros2_bridges: vec![],
         };
-        let types = [TypeIr {
-            id: crate::EntityId("type_0000000000000001".to_string()),
-            name: "WideIntegers".to_string(),
-            fields: vec![
+        let types = [test_type(
+            "WideIntegers",
+            vec![
                 crate::FieldIr {
                     name: "signed".to_string(),
                     ty: TypeExpr::Primitive {
@@ -840,7 +866,7 @@ mod tests {
                     default: None,
                 },
             ],
-        }];
+        )];
 
         let capabilities = graph_required_capabilities(&graph, &types, &[]);
         graph.tasks.reverse();
@@ -900,24 +926,19 @@ mod tests {
 
     #[test]
     fn message_abi_capabilities_include_nested_int128_usage() {
-        let types = vec![TypeIr {
-            id: crate::EntityId("type_0000000000000001".to_string()),
-            name: "Nested".to_string(),
-            fields: vec![crate::FieldIr {
+        let types = vec![test_type(
+            "Nested",
+            vec![crate::FieldIr {
                 name: "value".to_string(),
                 ty: TypeExpr::Primitive {
                     name: PrimitiveType::I128,
                 },
                 default: None,
             }],
-        }];
-        let components = [ComponentIr {
-            id: crate::EntityId("component_0000000000000001".to_string()),
-            name: "producer".to_string(),
-            language: crate::LanguageKind::Rust,
-            kind: crate::ComponentKind::Native,
-            inputs: vec![],
-            outputs: vec![crate::PortIr {
+        )];
+        let components = [test_component(
+            "producer",
+            vec![crate::PortIr {
                 name: "sample".to_string(),
                 ty: TypeExpr::Array {
                     element: Box::new(TypeExpr::Named {
@@ -926,9 +947,7 @@ mod tests {
                     len: 2,
                 },
             }],
-            params: vec![],
-            lifecycle: crate::LifecycleSurface::reserved_v0_1(),
-        }];
+        )];
 
         assert_eq!(
             message_abi_capabilities(&types, components.iter()),
@@ -938,10 +957,9 @@ mod tests {
 
     #[test]
     fn message_abi_capabilities_include_unbounded_variable_frame_requirements() {
-        let types = vec![TypeIr {
-            id: crate::EntityId("type_0000000000000001".to_string()),
-            name: "Packet".to_string(),
-            fields: vec![
+        let types = vec![test_type(
+            "Packet",
+            vec![
                 crate::FieldIr {
                     name: "payload".to_string(),
                     ty: TypeExpr::VarBytes,
@@ -957,7 +975,7 @@ mod tests {
                     default: None,
                 },
             ],
-        }];
+        )];
 
         assert_eq!(
             message_abi_capabilities(&types, std::iter::empty()),

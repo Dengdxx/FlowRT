@@ -211,6 +211,118 @@ input = ["imu:Imu"]
 }
 
 #[test]
+fn emits_workspace_module_symbols_without_component_name_collisions() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("modules")).unwrap();
+    std::fs::create_dir_all(root.join("composition")).unwrap();
+    std::fs::write(
+        root.join("robot.rsdl"),
+        r#"
+[package]
+name = "workspace_demo"
+rsdl_version = "0.1"
+
+[workspace]
+modules = ["modules/*.rsdl"]
+compositions = ["composition/default.rsdl"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("modules").join("perception.rsdl"),
+        r#"
+[module]
+name = "perception"
+
+[type.Sample]
+timestamp = "u64"
+
+[component.processor]
+language = "rust"
+output = ["sample:Sample"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("modules").join("control.rsdl"),
+        r#"
+[module]
+name = "control"
+
+[type.Sample]
+value = "f32"
+
+[component.processor]
+language = "cpp"
+input = ["sample:perception::Sample"]
+output = ["command:Sample"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("composition").join("default.rsdl"),
+        r#"
+[instance.source]
+component = "perception::processor"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.controller]
+component = "control::processor"
+process = "control_proc"
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["command"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "controller.sample"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["zenoh"]
+"#,
+    )
+    .unwrap();
+
+    let ir = contract_from_file(&root.join("robot.rsdl"));
+    let bundle = emit_artifacts(&ir).unwrap();
+
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    assert!(rust_messages.contains("pub struct PerceptionSample"));
+    assert!(rust_messages.contains("pub struct ControlSample"));
+
+    let rust_components = artifact_content(&bundle, "rust/src/components.rs");
+    assert!(rust_components.contains("pub trait PerceptionProcessor"));
+    assert!(rust_components.contains("flowrt::Output<PerceptionSample>"));
+    assert!(!rust_components.contains("pub trait Processor {"));
+
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("source: Box<dyn PerceptionProcessor>"));
+
+    let cpp_components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    assert!(cpp_components.contains("class ControlProcessorInterface"));
+    assert!(cpp_components.contains("const flowrt::Latest<PerceptionSample>& sample"));
+    assert!(cpp_components.contains("flowrt::Output<ControlSample>& command"));
+    assert!(!cpp_components.contains("class ProcessorInterface"));
+
+    let cpp_shell = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+    assert!(cpp_shell.contains("std::unique_ptr<ControlProcessorInterface> controller_"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn emits_cpp_managed_app_targets() {
     let ir = contract_from_source(
         r#"

@@ -29,6 +29,24 @@ pub enum RsdlError {
     #[error("duplicate `{kind}` symbol `{name}` while merging imported RSDL")]
     DuplicateSymbol { kind: &'static str, name: String },
 
+    #[error("duplicate module `{module}` while loading workspace")]
+    DuplicateModule { module: String },
+
+    #[error("module source `{path}` must declare `[module]`")]
+    MissingModule { path: PathBuf },
+
+    #[error(
+        "module `{module}` in `{path}` may only declare type and component tables; found `{section}`"
+    )]
+    InvalidModuleSection {
+        path: PathBuf,
+        module: String,
+        section: String,
+    },
+
+    #[error("composition source `{path}` must not declare `[module]`")]
+    UnexpectedModule { path: PathBuf },
+
     #[error("missing required table `[package]`")]
     MissingPackage,
 

@@ -12,7 +12,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
     let components = ir
         .components
         .iter()
-        .map(|component| (component.name.as_str(), component))
+        .map(|component| (component.qualified_name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
     let targets = ir
         .targets
@@ -366,7 +366,7 @@ fn validate_ros2_bridges(
     let types = ir
         .types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
 
     for bridge in &graph.ros2_bridges {

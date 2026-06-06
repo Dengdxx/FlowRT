@@ -16,12 +16,16 @@ use crate::runtime_plan::{
     runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name, step_indent,
 };
 use crate::{
-    component_by_name, float_literal, iox2_service_name, managed_header, param_json_literal,
-    param_type_name, param_update_name, param_value_for_instance, pascal_case,
+    component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
+    param_json_literal, param_type_name, param_update_name, param_value_for_instance,
     ros2_bridge_key_expr, scheduler_tasks_for_order, selected_backend_name,
     selected_profile_worker_threads, tasks_for_instance, topo_order_instances_for_language,
     zenoh_key_expr,
 };
+
+fn component_cpp_name(component: &ComponentIr) -> String {
+    component_rust_name(component)
+}
 
 fn cpp_param_type(ty: ParamType) -> &'static str {
     match ty {
@@ -84,12 +88,12 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
         output.push_str(&cpp_component_interface_doc(component));
         output.push_str(&format!(
             "class {}Interface {{\n",
-            pascal_case(&component.name)
+            component_cpp_name(component)
         ));
         output.push_str("public:\n");
         output.push_str(&format!(
             "    virtual ~{}Interface() = default;\n",
-            pascal_case(&component.name)
+            component_cpp_name(component)
         ));
         output.push_str(&cpp_lifecycle_method("on_init"));
         output.push_str(&cpp_lifecycle_method("on_start"));
@@ -317,13 +321,13 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         let component = component_by_name(contract, &instance.component.name);
         output.push_str(&format!(
             "    std::unique_ptr<{}Interface> {}_;\n",
-            pascal_case(&component.name),
+            component_cpp_name(component),
             instance.name
         ));
         if !component.params.is_empty() {
             output.push_str(&format!(
                 "    {}Params {}_params_;\n",
-                pascal_case(&component.name),
+                component_cpp_name(component),
                 instance.name
             ));
         }
@@ -366,7 +370,7 @@ fn emit_cpp_app_constructor_declaration(contract: &ContractIr, order: &[&Instanc
         let component = component_by_name(contract, &instance.component.name);
         params.push(format!(
             "std::unique_ptr<{}Interface> {}",
-            pascal_case(&component.name),
+            component_cpp_name(component),
             instance.name
         ));
     }
@@ -409,7 +413,7 @@ fn emit_cpp_app_constructor(
         let component = component_by_name(contract, &instance.component.name);
         params.push(format!(
             "std::unique_ptr<{}Interface> {}",
-            pascal_case(&component.name),
+            component_cpp_name(component),
             instance.name
         ));
     }
@@ -1330,7 +1334,7 @@ fn cpp_params_struct(component: &ComponentIr) -> String {
     let mut output = String::new();
     output.push_str(&format!(
         "struct {}Params {{\n",
-        pascal_case(&component.name)
+        component_cpp_name(component)
     ));
     for param in &component.params {
         output.push_str(&format!(
@@ -1344,7 +1348,7 @@ fn cpp_params_struct(component: &ComponentIr) -> String {
 }
 
 fn cpp_params_initializer(component: &ComponentIr, instance: &InstanceIr) -> String {
-    let mut output = format!("{}Params{{", pascal_case(&component.name));
+    let mut output = format!("{}Params{{", component_cpp_name(component));
     for param in &component.params {
         let value = param_value_for_instance(instance, param);
         output.push_str(&format!(
@@ -1361,7 +1365,7 @@ fn cpp_params_update_signature(component: &ComponentIr) -> String {
     if component.params.is_empty() {
         return String::new();
     }
-    let params_ty = format!("{}Params", pascal_case(&component.name));
+    let params_ty = format!("{}Params", component_cpp_name(component));
     format!(
         "    /**\n     * @brief 参数 pending 值在 tick 边界通过校验后调用。\n     *\n     * @param old_params 当前已生效参数快照。\n     * @param new_params 即将生效的新参数快照。\n     * @param context runtime 上下文。\n     * @return 返回 `Ok` 后 shell 才会提交新参数。\n     */\n    virtual flowrt::Status on_params_update(\n        const {params_ty}& old_params,\n        const {params_ty}& new_params,\n        flowrt::Context& context) {{\n        (void)old_params;\n        (void)new_params;\n        (void)context;\n        return flowrt::ok();\n    }}\n"
     )
@@ -1661,7 +1665,7 @@ fn cpp_callback_args(component: &ComponentIr) -> Vec<String> {
     if !component.params.is_empty() {
         args.push(format!(
             "const {}Params& params",
-            pascal_case(&component.name)
+            component_cpp_name(component)
         ));
     }
     for output in &component.outputs {

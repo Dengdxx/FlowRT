@@ -64,7 +64,7 @@ pub fn layout_expectations(contract: &ContractIr) -> Result<Vec<LayoutExpectatio
         .types
         .iter()
         .map(|ty| LayoutExpectation {
-            type_name: ty.name.clone(),
+            type_name: ty.generated_name.clone(),
             fields: ty.fields.iter().map(|field| field.name.clone()).collect(),
         })
         .collect())
@@ -75,7 +75,7 @@ pub fn message_abi_expectations(contract: &ContractIr) -> Result<Vec<MessageAbiE
     let type_map = contract
         .types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut cache = BTreeMap::new();
     let mut expectations = Vec::with_capacity(contract.types.len());
@@ -100,9 +100,9 @@ fn message_layout(
     cache: &mut BTreeMap<String, Layout>,
     visiting: &mut BTreeSet<String>,
 ) -> Result<MessageAbiExpectation> {
-    let layout = struct_layout(&ty.name, &ty.fields, type_map, cache, visiting)?;
+    let layout = struct_layout(&ty.qualified_name, &ty.fields, type_map, cache, visiting)?;
     Ok(MessageAbiExpectation {
-        type_name: ty.name.clone(),
+        type_name: ty.generated_name.clone(),
         size_bytes: layout.layout.size_bytes,
         align_bytes: layout.layout.align_bytes,
         fields: layout.fields,
@@ -189,7 +189,7 @@ fn type_layout(
                 });
             }
             let StructLayout { layout, .. } =
-                struct_layout(&ty.name, &ty.fields, type_map, cache, visiting)?;
+                struct_layout(&ty.qualified_name, &ty.fields, type_map, cache, visiting)?;
             Ok(layout)
         }
         TypeExpr::Array { element, len } => {

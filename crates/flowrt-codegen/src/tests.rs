@@ -1,4 +1,4 @@
-use flowrt_ir::{hash_source, normalize_document};
+use flowrt_ir::{hash_source, normalize_document, normalize_loaded_document};
 use flowrt_rsdl::parse_str;
 
 use super::*;
@@ -16,6 +16,23 @@ mod tasks;
 fn contract_from_source(source: &str) -> ContractIr {
     let raw = parse_str(source).unwrap();
     normalize_document(&raw, hash_source(source)).unwrap()
+}
+
+fn contract_from_file(path: &std::path::Path) -> ContractIr {
+    let loaded = flowrt_rsdl::load_file(path).unwrap();
+    normalize_loaded_document(&loaded, hash_source(&loaded.source_bundle_text())).unwrap()
+}
+
+fn unique_temp_dir() -> std::path::PathBuf {
+    let suffix = format!(
+        "flowrt-codegen-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    std::env::temp_dir().join(suffix)
 }
 
 fn artifact_content<'a>(bundle: &'a ArtifactBundle, path: &str) -> &'a str {

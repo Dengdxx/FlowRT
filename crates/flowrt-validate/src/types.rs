@@ -54,7 +54,7 @@ pub(crate) fn validate_variable_frame_shapes(ir: &ContractIr, errors: &mut Vec<V
     let types_by_name = ir
         .types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
 
     for ty in &ir.types {
@@ -117,7 +117,7 @@ pub(crate) fn validate_message_type_cycles(ir: &ContractIr, errors: &mut Vec<Val
     let types_by_name = ir
         .types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
     let mut visiting = Vec::new();

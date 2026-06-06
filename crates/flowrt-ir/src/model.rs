@@ -13,6 +13,7 @@ pub struct ContractIr {
     pub source_hash: String,
     pub package_id: EntityId,
     pub package: PackageIr,
+    pub modules: Vec<ModuleIr>,
     pub types: Vec<TypeIr>,
     pub components: Vec<ComponentIr>,
     pub graphs: Vec<GraphIr>,
@@ -62,11 +63,21 @@ pub struct ImportIr {
     pub patterns: Vec<String>,
 }
 
+/// workspace/module 边界。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleIr {
+    pub name: String,
+    pub source: String,
+}
+
 /// 消息类型声明。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeIr {
     pub id: EntityId,
+    pub module: Option<String>,
     pub name: String,
+    pub qualified_name: String,
+    pub generated_name: String,
     pub fields: Vec<FieldIr>,
 }
 
@@ -82,7 +93,10 @@ pub struct FieldIr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComponentIr {
     pub id: EntityId,
+    pub module: Option<String>,
     pub name: String,
+    pub qualified_name: String,
+    pub generated_name: String,
     pub language: LanguageKind,
     pub kind: ComponentKind,
     pub inputs: Vec<PortIr>,

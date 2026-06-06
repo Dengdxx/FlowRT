@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub struct LoadedDocument {
     pub document: RawDocument,
     pub sources: Vec<LoadedSource>,
+    pub modules: Vec<RawModuleDocument>,
+    pub compositions: Vec<RawCompositionDocument>,
 }
 
 impl LoadedDocument {
@@ -35,10 +37,31 @@ pub struct LoadedSource {
     pub content: String,
 }
 
+/// 一个 module 源文件贡献的符号集合。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawModuleDocument {
+    pub module: RawModule,
+    pub types: BTreeMap<String, RawType>,
+    pub components: BTreeMap<String, RawComponent>,
+    pub source: PathBuf,
+}
+
+/// 一个 composition 源文件贡献的系统装配集合。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawCompositionDocument {
+    pub instances: BTreeMap<String, RawInstance>,
+    pub binds: Vec<RawDataflowBind>,
+    pub ros2_bridges: Vec<RawRos2Bridge>,
+    pub profiles: BTreeMap<String, RawProfile>,
+    pub targets: BTreeMap<String, RawTarget>,
+    pub source: PathBuf,
+}
+
 /// 语义归一化前的 RSDL v0.1 文档。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawDocument {
     pub package: RawPackage,
+    pub workspace: Option<RawWorkspace>,
     pub types: BTreeMap<String, RawType>,
     pub components: BTreeMap<String, RawComponent>,
     pub instances: BTreeMap<String, RawInstance>,
@@ -55,6 +78,19 @@ pub struct RawPackage {
     pub version: Option<String>,
     pub rsdl_version: String,
     pub imports: BTreeMap<String, Vec<String>>,
+}
+
+/// `[workspace]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawWorkspace {
+    pub modules: Vec<String>,
+    pub compositions: Vec<String>,
+}
+
+/// `[module]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawModule {
+    pub name: String,
 }
 
 /// `[type.<Name>]` 表。

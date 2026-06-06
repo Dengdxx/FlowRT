@@ -365,7 +365,7 @@ fn source_types_by_route(
     let components = ir
         .components
         .iter()
-        .map(|component| (component.name.as_str(), component))
+        .map(|component| (component.qualified_name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
     let instances = graph
         .instances

@@ -1,0 +1,10 @@
+[module]
+name = "control"
+
+[type.Sample]
+command = "f32"
+
+[component.processor]
+language = "rust"
+input = ["sample:perception::Sample"]
+output = ["command:Sample"]

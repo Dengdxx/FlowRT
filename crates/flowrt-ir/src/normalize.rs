@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
-use flowrt_rsdl::{RawDocument, RawPort, RawProfile, RawTarget};
+use flowrt_rsdl::{LoadedDocument, RawDocument, RawModuleDocument, RawPort, RawProfile, RawTarget};
 use sha2::{Digest, Sha256};
 
 use crate::{
     BackendName, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelBackendSource, ChannelEdgeIr,
     ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
     EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
-    LifecycleSurface, OverflowPolicy, PackageIr, PolicyDefaults, PolicyValueSource, PortIr,
-    PortRef, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology,
+    LifecycleSurface, ModuleIr, OverflowPolicy, PackageIr, PolicyDefaults, PolicyValueSource,
+    PortIr, PortRef, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology,
     SchedulerDefaults, StalePolicy, TargetIr, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
     channel_capabilities, channel_route_capabilities, deployment_capability_decision,
     graph_required_capabilities, parse_type_expr, target_capabilities,
@@ -28,6 +28,22 @@ pub fn hash_source(source: &str) -> String {
 
 /// 将已解析的 RSDL 文档归一化为 Contract IR。
 pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result<ContractIr> {
+    normalize_document_with_modules(document, &[], source_hash)
+}
+
+/// 将带 workspace/module 边界的 RSDL 文档归一化为 Contract IR。
+pub fn normalize_loaded_document(
+    loaded: &LoadedDocument,
+    source_hash: String,
+) -> Result<ContractIr> {
+    normalize_document_with_modules(&loaded.document, &loaded.modules, source_hash)
+}
+
+fn normalize_document_with_modules(
+    document: &RawDocument,
+    raw_modules: &[RawModuleDocument],
+    source_hash: String,
+) -> Result<ContractIr> {
     let package_qualified_name = format!(
         "{}@{}",
         document.package.name,
@@ -54,16 +70,20 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
             .collect(),
     };
 
-    let types = normalize_types(document)?;
+    let mut resolver = NameResolver::new(raw_modules);
+    resolver.register_document_symbols(document);
+    let modules = normalize_modules(raw_modules);
+
+    let types = normalize_types(document, raw_modules, &resolver)?;
     let type_ids = types
         .iter()
-        .map(|ty| (ty.name.clone(), ty.id.clone()))
+        .map(|ty| (ty.qualified_name.clone(), ty.id.clone()))
         .collect::<BTreeMap<_, _>>();
 
-    let components = normalize_components(document, &type_ids)?;
+    let components = normalize_components(document, raw_modules, &resolver, &type_ids)?;
     let component_ids = components
         .iter()
-        .map(|component| (component.name.clone(), component.id.clone()))
+        .map(|component| (component.qualified_name.clone(), component.id.clone()))
         .collect::<BTreeMap<_, _>>();
 
     let profiles = normalize_profiles(document)?;
@@ -75,8 +95,14 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
 
     let graph_id = entity_id("graph", "default");
     let graph_name = "default".to_string();
-    let (instances, mut tasks) =
-        normalize_instances(document, &component_ids, &target_ids, &graph_name)?;
+    let (instances, mut tasks) = normalize_instances(
+        document,
+        raw_modules,
+        &resolver,
+        &component_ids,
+        &target_ids,
+        &graph_name,
+    )?;
     tasks.sort_by(|left, right| {
         (&left.instance.name, &left.name).cmp(&(&right.instance.name, &right.name))
     });
@@ -119,6 +145,7 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
         source_hash,
         package_id,
         package,
+        modules,
         types,
         components,
         graphs: vec![graph],
@@ -126,6 +153,18 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
         targets,
         deployments,
     })
+}
+
+fn normalize_modules(raw_modules: &[RawModuleDocument]) -> Vec<ModuleIr> {
+    let mut modules = raw_modules
+        .iter()
+        .map(|module| ModuleIr {
+            name: module.module.name.clone(),
+            source: module.source.to_string_lossy().replace('\\', "/"),
+        })
+        .collect::<Vec<_>>();
+    modules.sort_by(|left, right| left.name.cmp(&right.name));
+    modules
 }
 
 /// 依据 profile 名称投影出一个只包含目标 profile 的 Contract IR 副本。
@@ -250,62 +289,373 @@ fn refresh_projected_deployments(contract: &mut ContractIr) {
     }
 }
 
-fn normalize_types(document: &RawDocument) -> Result<Vec<TypeIr>> {
-    document
-        .types
-        .iter()
-        .map(|(name, raw)| {
+#[derive(Debug, Clone)]
+struct SymbolInfo {
+    module: Option<String>,
+    name: String,
+    qualified_name: String,
+    generated_name: String,
+}
+
+#[derive(Debug)]
+struct NameResolver {
+    type_symbols: BTreeMap<String, SymbolInfo>,
+    component_symbols: BTreeMap<String, SymbolInfo>,
+    type_short_names: BTreeMap<String, Vec<String>>,
+    component_short_names: BTreeMap<String, Vec<String>>,
+}
+
+impl NameResolver {
+    fn new(raw_modules: &[RawModuleDocument]) -> Self {
+        let mut type_symbols = BTreeMap::new();
+        let mut component_symbols = BTreeMap::new();
+        let mut type_short_names = BTreeMap::<String, Vec<String>>::new();
+        let mut component_short_names = BTreeMap::<String, Vec<String>>::new();
+
+        for module in raw_modules {
+            let module_name = module.module.name.as_str();
+            for name in module.types.keys() {
+                let info = SymbolInfo::module(module_name, name);
+                type_short_names
+                    .entry(name.clone())
+                    .or_default()
+                    .push(info.qualified_name.clone());
+                type_symbols.insert(info.qualified_name.clone(), info);
+            }
+            for name in module.components.keys() {
+                let info = SymbolInfo::module(module_name, name);
+                component_short_names
+                    .entry(name.clone())
+                    .or_default()
+                    .push(info.qualified_name.clone());
+                component_symbols.insert(info.qualified_name.clone(), info);
+            }
+        }
+
+        Self {
+            type_symbols,
+            component_symbols,
+            type_short_names,
+            component_short_names,
+        }
+    }
+
+    fn register_document_symbols(&mut self, document: &RawDocument) {
+        for name in document.types.keys() {
+            let info = SymbolInfo::root(name);
+            self.type_short_names
+                .entry(name.clone())
+                .or_default()
+                .push(info.qualified_name.clone());
+            self.type_symbols.insert(info.qualified_name.clone(), info);
+        }
+        for name in document.components.keys() {
+            let info = SymbolInfo::root(name);
+            self.component_short_names
+                .entry(name.clone())
+                .or_default()
+                .push(info.qualified_name.clone());
+            self.component_symbols
+                .insert(info.qualified_name.clone(), info);
+        }
+    }
+
+    fn type_info_for_decl(&self, name: &str) -> SymbolInfo {
+        self.type_symbols
+            .get(name)
+            .cloned()
+            .or_else(|| {
+                self.resolve_short_unique("type", name, &self.type_symbols, &self.type_short_names)
+                    .ok()
+            })
+            .unwrap_or_else(|| SymbolInfo::root(name))
+    }
+
+    fn component_info_for_decl(&self, name: &str) -> SymbolInfo {
+        self.component_symbols
+            .get(name)
+            .cloned()
+            .or_else(|| {
+                self.resolve_short_unique(
+                    "component",
+                    name,
+                    &self.component_symbols,
+                    &self.component_short_names,
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| SymbolInfo::root(name))
+    }
+
+    fn resolve_type_expr_in_module(
+        &self,
+        expr: TypeExpr,
+        current_module: Option<&str>,
+    ) -> Result<TypeExpr> {
+        match expr {
+            TypeExpr::Named { name } => Ok(TypeExpr::Named {
+                name: self
+                    .resolve_type_in_module(&name, current_module)?
+                    .qualified_name,
+            }),
+            TypeExpr::Array { element, len } => Ok(TypeExpr::Array {
+                element: Box::new(self.resolve_type_expr_in_module(*element, current_module)?),
+                len,
+            }),
+            TypeExpr::VarSequence { element } => Ok(TypeExpr::VarSequence {
+                element: Box::new(self.resolve_type_expr_in_module(*element, current_module)?),
+            }),
+            TypeExpr::Primitive { .. } | TypeExpr::VarBytes | TypeExpr::VarString { .. } => {
+                Ok(expr)
+            }
+        }
+    }
+
+    fn resolve_type(&self, name: &str) -> Result<SymbolInfo> {
+        self.resolve_symbol("type", name, &self.type_symbols, &self.type_short_names)
+    }
+
+    fn resolve_type_in_module(
+        &self,
+        name: &str,
+        current_module: Option<&str>,
+    ) -> Result<SymbolInfo> {
+        if name.contains("::") {
+            return self.resolve_type(name);
+        }
+        if let Some(module) = current_module {
+            let local_name = format!("{module}::{name}");
+            if let Some(info) = self.type_symbols.get(&local_name) {
+                return Ok(info.clone());
+            }
+        }
+        self.resolve_type(name)
+    }
+
+    fn resolve_component(&self, name: &str) -> Result<SymbolInfo> {
+        self.resolve_symbol(
+            "component",
+            name,
+            &self.component_symbols,
+            &self.component_short_names,
+        )
+    }
+
+    fn resolve_symbol(
+        &self,
+        kind: &'static str,
+        name: &str,
+        symbols: &BTreeMap<String, SymbolInfo>,
+        short_names: &BTreeMap<String, Vec<String>>,
+    ) -> Result<SymbolInfo> {
+        if name.contains("::") {
+            let Some((module, short)) = name.split_once("::") else {
+                unreachable!("contains checked above")
+            };
+            let Some(info) = symbols.get(name).cloned() else {
+                let module_exists = symbols
+                    .values()
+                    .any(|info| info.module.as_deref() == Some(module));
+                if !module_exists {
+                    return Err(IrError::UnknownModule {
+                        kind,
+                        name: short.to_string(),
+                        module: module.to_string(),
+                    });
+                }
+                return Err(IrError::InvalidValue {
+                    context: format!("{kind} reference `{name}`"),
+                    message: "qualified symbol does not exist".to_string(),
+                });
+            };
+            return Ok(info);
+        }
+
+        self.resolve_short_unique(kind, name, symbols, short_names)
+    }
+
+    fn resolve_short_unique(
+        &self,
+        kind: &'static str,
+        name: &str,
+        symbols: &BTreeMap<String, SymbolInfo>,
+        short_names: &BTreeMap<String, Vec<String>>,
+    ) -> Result<SymbolInfo> {
+        let Some(candidates) = short_names.get(name) else {
+            return Err(IrError::InvalidValue {
+                context: format!("{kind} reference `{name}`"),
+                message: "symbol does not exist".to_string(),
+            });
+        };
+        if candidates.len() != 1 {
+            return Err(IrError::AmbiguousName {
+                kind,
+                name: name.to_string(),
+                candidates: candidates.join(", "),
+            });
+        }
+        symbols
+            .get(&candidates[0])
+            .cloned()
+            .ok_or_else(|| IrError::InvalidValue {
+                context: format!("{kind} reference `{name}`"),
+                message: "symbol index is inconsistent".to_string(),
+            })
+    }
+}
+
+impl SymbolInfo {
+    fn root(name: &str) -> Self {
+        Self {
+            module: None,
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            generated_name: name.to_string(),
+        }
+    }
+
+    fn module(module: &str, name: &str) -> Self {
+        Self {
+            module: Some(module.to_string()),
+            name: name.to_string(),
+            qualified_name: format!("{module}::{name}"),
+            generated_name: generated_module_symbol(module, name),
+        }
+    }
+}
+
+fn generated_module_symbol(module: &str, name: &str) -> String {
+    let mut output = String::new();
+    let mut capitalize_next = true;
+    for ch in module
+        .chars()
+        .chain(std::iter::once('_'))
+        .chain(name.chars())
+    {
+        if ch.is_ascii_alphanumeric() {
+            if capitalize_next {
+                output.push(ch.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                output.push(ch);
+            }
+        } else {
+            capitalize_next = true;
+        }
+    }
+    if output.is_empty() {
+        name.to_string()
+    } else {
+        output
+    }
+}
+
+fn normalize_types(
+    document: &RawDocument,
+    raw_modules: &[RawModuleDocument],
+    resolver: &NameResolver,
+) -> Result<Vec<TypeIr>> {
+    let mut raw_types = Vec::new();
+    for module in raw_modules {
+        for (name, raw) in &module.types {
+            raw_types.push((format!("{}::{}", module.module.name, name), name, raw));
+        }
+    }
+    for (name, raw) in &document.types {
+        raw_types.push((name.clone(), name, raw));
+    }
+
+    raw_types
+        .into_iter()
+        .map(|(decl_name, _name, raw)| {
+            let symbol = resolver.type_info_for_decl(&decl_name);
+            let current_module = symbol.module.as_deref();
             Ok(TypeIr {
-                id: entity_id("type", name),
-                name: name.clone(),
+                id: entity_id("type", &symbol.qualified_name),
+                module: symbol.module.clone(),
+                name: symbol.name,
+                qualified_name: symbol.qualified_name,
+                generated_name: symbol.generated_name,
                 fields: raw
                     .fields
                     .iter()
                     .map(|field| {
                         Ok(FieldIr {
                             name: field.name.clone(),
-                            ty: parse_type_expr(&field.ty)?,
+                            ty: resolver.resolve_type_expr_in_module(
+                                parse_type_expr(&field.ty)?,
+                                current_module,
+                            )?,
                             default: None,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()
+        .map(|mut types| {
+            types.sort_by(|left, right| left.qualified_name.cmp(&right.qualified_name));
+            types
+        })
 }
 
 fn normalize_components(
     document: &RawDocument,
+    raw_modules: &[RawModuleDocument],
+    resolver: &NameResolver,
     _type_ids: &BTreeMap<String, EntityId>,
 ) -> Result<Vec<ComponentIr>> {
-    document
-        .components
-        .iter()
-        .map(|(name, raw)| {
+    let mut raw_components = Vec::new();
+    for module in raw_modules {
+        for (name, raw) in &module.components {
+            raw_components.push((format!("{}::{}", module.module.name, name), name, raw));
+        }
+    }
+    for (name, raw) in &document.components {
+        raw_components.push((name.clone(), name, raw));
+    }
+
+    raw_components
+        .into_iter()
+        .map(|(decl_name, name, raw)| {
+            let symbol = resolver.component_info_for_decl(&decl_name);
+            let current_module = symbol.module.as_deref();
             Ok(ComponentIr {
-                id: entity_id("component", name),
-                name: name.clone(),
+                id: entity_id("component", &symbol.qualified_name),
+                module: symbol.module.clone(),
+                name: symbol.name,
+                qualified_name: symbol.qualified_name.clone(),
+                generated_name: symbol.generated_name,
                 language: parse_language(&format!("component.{name}.language"), &raw.language)?,
                 kind: match raw.kind.as_deref() {
                     Some(kind) => parse_component_kind(&format!("component.{name}.kind"), kind)?,
                     None => ComponentKind::Native,
                 },
-                inputs: normalize_ports(&raw.input)?,
-                outputs: normalize_ports(&raw.output)?,
+                inputs: normalize_ports(&raw.input, resolver, current_module)?,
+                outputs: normalize_ports(&raw.output, resolver, current_module)?,
                 params: normalize_component_params(name, raw)?,
                 lifecycle: LifecycleSurface::reserved_v0_1(),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()
+        .map(|mut components| {
+            components.sort_by(|left, right| left.qualified_name.cmp(&right.qualified_name));
+            components
+        })
 }
 
-fn normalize_ports(ports: &[RawPort]) -> Result<Vec<PortIr>> {
+fn normalize_ports(
+    ports: &[RawPort],
+    resolver: &NameResolver,
+    current_module: Option<&str>,
+) -> Result<Vec<PortIr>> {
     ports
         .iter()
         .map(|port| {
             Ok(PortIr {
                 name: port.name.clone(),
-                ty: parse_type_expr(&port.ty)?,
+                ty: resolver
+                    .resolve_type_expr_in_module(parse_type_expr(&port.ty)?, current_module)?,
             })
         })
         .collect()
@@ -405,6 +755,8 @@ fn normalize_target_runtime(target_name: &str, raw: &RawTarget) -> Result<Vec<La
 
 fn normalize_instances(
     document: &RawDocument,
+    raw_modules: &[RawModuleDocument],
+    resolver: &NameResolver,
     component_ids: &BTreeMap<String, EntityId>,
     target_ids: &BTreeMap<String, EntityId>,
     graph_name: &str,
@@ -412,27 +764,41 @@ fn normalize_instances(
     let mut instances = Vec::with_capacity(document.instances.len());
     let mut tasks = Vec::new();
     let mut component_param_schemas = BTreeMap::new();
+    for module in raw_modules {
+        for (name, component) in &module.components {
+            let decl_name = format!("{}::{}", module.module.name, name);
+            let symbol = resolver.component_info_for_decl(&decl_name);
+            let params = normalize_component_params(name, component)?
+                .into_iter()
+                .map(|param| (param.name.clone(), param))
+                .collect::<BTreeMap<_, _>>();
+            component_param_schemas.insert(symbol.qualified_name, params);
+        }
+    }
     for (name, component) in &document.components {
+        let symbol = resolver.component_info_for_decl(name);
         let params = normalize_component_params(name, component)?
             .into_iter()
             .map(|param| (param.name.clone(), param))
             .collect::<BTreeMap<_, _>>();
-        component_param_schemas.insert(name.as_str(), params);
+        component_param_schemas.insert(symbol.qualified_name, params);
     }
 
     for (name, raw) in &document.instances {
-        let component_id = component_ids.get(&raw.component).cloned().ok_or_else(|| {
-            IrError::UnknownComponent {
+        let component_symbol = resolver.resolve_component(&raw.component)?;
+        let component_id = component_ids
+            .get(&component_symbol.qualified_name)
+            .cloned()
+            .ok_or_else(|| IrError::UnknownComponent {
                 instance: name.clone(),
                 component: raw.component.clone(),
-            }
-        })?;
+            })?;
         let component_ref = EntityRef {
             id: component_id,
-            name: raw.component.clone(),
+            name: component_symbol.qualified_name.clone(),
         };
         let component = component_param_schemas
-            .get(raw.component.as_str())
+            .get(component_symbol.qualified_name.as_str())
             .expect("component IDs and normalized components must be built from the same document");
         let params = merge_instance_params(name, raw, component)?;
         let target = raw
@@ -694,7 +1060,7 @@ fn source_port_types_by_endpoint(
 ) -> BTreeMap<(String, String), TypeExpr> {
     let components = components
         .iter()
-        .map(|component| (component.name.as_str(), component))
+        .map(|component| (component.qualified_name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
     let mut ports = BTreeMap::new();
     for instance in instances {
@@ -757,7 +1123,7 @@ fn route_topology(
 fn type_expr_contains_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {
     let types_by_name = types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut visiting = std::collections::BTreeSet::new();
     type_expr_contains_variable_data_inner(expr, &types_by_name, &mut visiting)
@@ -949,7 +1315,7 @@ fn invalid_enum(context: &str, kind: &'static str, value: &str) -> IrError {
 
 #[cfg(test)]
 mod tests {
-    use flowrt_rsdl::parse_str;
+    use flowrt_rsdl::{load_file, parse_str};
 
     use super::*;
     use crate::{
@@ -1076,6 +1442,164 @@ output = ["out"]
         assert_eq!(task.readiness, TaskReadiness::AllReady);
         assert_eq!(task.lane.as_deref(), Some("worker_serial"));
         assert_eq!(task.priority, Some(7));
+    }
+
+    #[test]
+    fn normalizes_workspace_module_qualified_names() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("modules")).unwrap();
+        std::fs::create_dir_all(root.join("composition")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "workspace_demo"
+rsdl_version = "0.1"
+
+[workspace]
+modules = ["modules/*.rsdl"]
+compositions = ["composition/default.rsdl"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules/perception.rsdl"),
+            r#"
+[module]
+name = "perception"
+
+[type.Imu]
+timestamp = "u64"
+
+[component.imu_sim]
+language = "rust"
+output = ["imu:Imu"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules/control.rsdl"),
+            r#"
+[module]
+name = "control"
+
+[type.Odom]
+timestamp = "u64"
+
+[component.estimator]
+language = "rust"
+input = ["imu:perception::Imu"]
+output = ["odom:Odom"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composition/default.rsdl"),
+            r#"
+[instance.imu_sim]
+component = "perception::imu_sim"
+
+[instance.imu_sim.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.estimator]
+component = "control::estimator"
+
+[instance.estimator.task]
+trigger = "on_message"
+input = ["imu"]
+output = ["odom"]
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "estimator.imu"
+channel = "latest"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_file(root.join("robot.rsdl")).unwrap();
+        let ir =
+            normalize_loaded_document(&loaded, hash_source(&loaded.source_bundle_text())).unwrap();
+
+        assert_eq!(ir.modules.len(), 2);
+        assert_eq!(ir.modules[0].name, "control");
+        assert_eq!(ir.types[0].qualified_name, "control::Odom");
+        assert_eq!(ir.types[1].qualified_name, "perception::Imu");
+        assert_eq!(ir.components[0].qualified_name, "control::estimator");
+        assert_eq!(ir.components[1].qualified_name, "perception::imu_sim");
+        assert_eq!(
+            ir.graphs[0].instances[0].component.name,
+            "control::estimator"
+        );
+        assert_eq!(
+            ir.components[0].inputs[0].ty.canonical_syntax(),
+            "perception::Imu"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_ambiguous_short_type_references_across_modules() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("modules")).unwrap();
+        std::fs::create_dir_all(root.join("composition")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "workspace_demo"
+rsdl_version = "0.1"
+
+[workspace]
+modules = ["modules/*.rsdl"]
+compositions = ["composition/default.rsdl"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules/a.rsdl"),
+            r#"
+[module]
+name = "perception"
+
+[type.Sample]
+value = "u32"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("modules/b.rsdl"),
+            r#"
+[module]
+name = "control"
+
+[type.Sample]
+value = "u64"
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("composition/default.rsdl"), "").unwrap();
+
+        let loaded = load_file(root.join("robot.rsdl")).unwrap();
+        let error = normalize_loaded_document(&loaded, hash_source(&loaded.source_bundle_text()))
+            .expect_err("ambiguous short type reference should fail");
+
+        assert!(matches!(
+            error,
+            IrError::AmbiguousName { kind: "type", name, .. } if name == "Sample"
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2042,5 +2566,17 @@ backend = "inproc"
             error,
             IrError::UnknownProfile { profile } if profile == "iox2"
         ));
+    }
+
+    fn unique_temp_dir() -> std::path::PathBuf {
+        let suffix = format!(
+            "flowrt-ir-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(suffix)
     }
 }

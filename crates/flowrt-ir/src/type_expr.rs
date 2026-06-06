@@ -125,7 +125,7 @@ fn parse_expr(source: &str) -> std::result::Result<TypeExpr, String> {
         return Ok(TypeExpr::Primitive { name: primitive });
     }
 
-    if is_identifier(source) {
+    if is_qualified_identifier(source) {
         return Ok(TypeExpr::Named {
             name: source.to_string(),
         });
@@ -258,6 +258,24 @@ fn is_identifier(source: &str) -> bool {
         return false;
     }
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn is_qualified_identifier(source: &str) -> bool {
+    let mut parts = source.split("::");
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !is_identifier(first) {
+        return false;
+    }
+    let mut count = 1usize;
+    for part in parts {
+        count += 1;
+        if !is_identifier(part) {
+            return false;
+        }
+    }
+    count <= 2
 }
 
 #[cfg(test)]

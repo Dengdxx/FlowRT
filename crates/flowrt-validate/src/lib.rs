@@ -86,7 +86,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     let type_names = ir
         .types
         .iter()
-        .map(|ty| ty.name.as_str())
+        .map(|ty| ty.qualified_name.as_str())
         .collect::<BTreeSet<_>>();
     validate_contract_versions(ir, &mut errors);
     validate_contract_shape(ir, &mut errors);

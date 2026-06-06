@@ -1,0 +1,32 @@
+[instance.source]
+component = "perception::processor"
+process = "main"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.controller]
+component = "control::processor"
+process = "main"
+target = "linux"
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["command"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "controller.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+platform = "linux-x86_64"
+runtime = ["rust"]
+backends = ["inproc"]

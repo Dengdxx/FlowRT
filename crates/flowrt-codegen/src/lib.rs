@@ -393,7 +393,10 @@ fn emit_rust_components(contract: &ContractIr) -> String {
             output.push_str(&rust_params_struct(component));
         }
         output.push_str(&rust_component_trait_doc(component));
-        output.push_str(&format!("pub trait {} {{\n", pascal_case(&component.name)));
+        output.push_str(&format!(
+            "pub trait {} {{\n",
+            component_rust_name(component)
+        ));
         output.push_str(&rust_lifecycle_doc("组件初始化钩子"));
         output.push_str(
             "    fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
@@ -458,13 +461,13 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "    {}: Box<dyn {}>,\n",
             instance.name,
-            pascal_case(&component.name)
+            component_rust_name(component)
         ));
         if !component.params.is_empty() {
             output.push_str(&format!(
                 "    {}_params: {}Params,\n",
                 instance.name,
-                pascal_case(&component.name)
+                component_rust_name(component)
             ));
         }
     }
@@ -936,7 +939,7 @@ fn emit_rust_app_new(
         output.push_str(&format!(
             "        {}: Box<dyn {}>,\n",
             instance.name,
-            pascal_case(&component.name)
+            component_rust_name(component)
         ));
     }
     output.push_str("    ) -> Self {\n        Self {\n");
@@ -1883,7 +1886,7 @@ pub(crate) fn type_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a Type
     contract
         .types
         .iter()
-        .find(|ty| ty.name == name)
+        .find(|ty| ty.qualified_name == name || ty.generated_name == name || ty.name == name)
         .expect("normalized contract must reference known message types")
 }
 
@@ -1897,7 +1900,7 @@ fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
         ));
     }
     if !component.params.is_empty() {
-        args.push(format!("params: &{}Params", pascal_case(&component.name)));
+        args.push(format!("params: &{}Params", component_rust_name(component)));
     }
     for output in &component.outputs {
         args.push(format!(
@@ -1965,7 +1968,7 @@ fn rust_params_struct(component: &ComponentIr) -> String {
     let mut output = String::new();
     output.push_str(&format!(
         "#[derive(Clone, Debug, PartialEq)]\npub struct {}Params {{\n",
-        pascal_case(&component.name)
+        component_rust_name(component)
     ));
     for param in &component.params {
         output.push_str(&format!(
@@ -1979,7 +1982,7 @@ fn rust_params_struct(component: &ComponentIr) -> String {
 }
 
 fn rust_params_initializer(component: &ComponentIr, instance: &InstanceIr) -> String {
-    let mut output = format!("{}Params {{", pascal_case(&component.name));
+    let mut output = format!("{}Params {{", component_rust_name(component));
     for param in &component.params {
         let value = param_value_for_instance(instance, param);
         output.push_str(&format!(
@@ -1996,7 +1999,7 @@ fn rust_params_update_signature(component: &ComponentIr) -> String {
     if component.params.is_empty() {
         return String::new();
     }
-    let params_ty = format!("{}Params", pascal_case(&component.name));
+    let params_ty = format!("{}Params", component_rust_name(component));
     format!(
         "    /// 参数 pending 值在 tick 边界通过校验后调用。\n    ///\n    /// 返回 `Ok` 后 shell 才会提交新参数。\n    fn on_params_update(\n        &mut self,\n        _old: &{params_ty},\n        _new: &{params_ty},\n        _context: &mut flowrt::Context,\n    ) -> flowrt::Status {{\n        flowrt::Status::ok()\n    }}\n\n"
     )
@@ -2129,6 +2132,10 @@ pub(crate) fn pascal_case(name: &str) -> String {
     output
 }
 
+pub(crate) fn component_rust_name(component: &ComponentIr) -> String {
+    pascal_case(&component.generated_name)
+}
+
 pub(crate) fn sanitize_package_name(name: &str) -> String {
     let mut output = String::new();
     for ch in name.chars() {
@@ -2153,7 +2160,11 @@ fn component_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a ComponentI
     contract
         .components
         .iter()
-        .find(|component| component.name == name)
+        .find(|component| {
+            component.qualified_name == name
+                || component.generated_name == name
+                || component.name == name
+        })
         .expect("normalized contract must reference known components")
 }
 

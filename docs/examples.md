@@ -7,6 +7,7 @@
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
+| `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | 验证 workspace / module / composition、跨模块引用和同名 module symbol 的生成命名 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
 | `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息、参数 schema 和生成物边界；不伪装为 mixed inproc 可运行 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
@@ -43,6 +44,47 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
 flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 flowrt launch examples/import_demo/rsdl/robot.rsdl
+```
+
+## `workspace_demo`
+
+入口文件：
+
+```text
+examples/workspace_demo/rsdl/robot.rsdl
+```
+
+该示例使用 workspace root 装载两个 module 和一个 composition：
+
+```toml
+[workspace]
+modules = ["modules/*.rsdl"]
+compositions = ["composition/default.rsdl"]
+```
+
+module 只声明自己的 `type` 和 `component`，composition 统一声明 `instance`、`task`、
+`bind`、`profile` 和 `target`。跨模块引用使用 `module::Name`：
+
+```toml
+[component.processor]
+language = "cpp"
+input = ["sample:perception::Sample"]
+output = ["command:Sample"]
+```
+
+该示例刻意让 `perception` 和 `control` 两个 module 都声明 `Sample` 和 `processor`
+短名，用于验证：
+
+- module 内部短类型名优先解析为本 module 符号。
+- root/composition 层短名存在歧义时必须显式写 `module::Name`。
+- 生成的 Rust/C++ 用户接口使用稳定 generated symbol，例如 `PerceptionProcessor`
+  和 `ControlProcessorInterface`，避免同名 module symbol 互相撞。
+
+常用命令：
+
+```bash
+flowrt check examples/workspace_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl
 ```
 
 ## `cpp_counter_demo`

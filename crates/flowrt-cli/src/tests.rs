@@ -1,4 +1,5 @@
 use clap::CommandFactory;
+use flowrt_ir::normalize_document;
 use flowrt_rsdl::parse_str;
 use std::time::{SystemTime, UNIX_EPOCH};
 

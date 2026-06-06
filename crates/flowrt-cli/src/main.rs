@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
 use flowrt_ir::{
-    ContractIr, LanguageKind, hash_source, normalize_document, project_contract_to_profile,
+    ContractIr, LanguageKind, hash_source, normalize_loaded_document, project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
 
@@ -433,7 +433,7 @@ fn normalize_contract_from_rsdl(path: &Path) -> Result<ContractIr> {
     let loaded = flowrt_rsdl::load_file(path)
         .with_context(|| format!("failed to load RSDL source `{}`", path.display()))?;
     let source_bundle = loaded.source_bundle_text();
-    normalize_document(&loaded.document, hash_source(&source_bundle))
+    normalize_loaded_document(&loaded, hash_source(&source_bundle))
         .with_context(|| format!("failed to normalize `{}`", path.display()))
 }
 

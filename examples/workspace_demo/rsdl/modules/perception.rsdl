@@ -1,0 +1,10 @@
+[module]
+name = "perception"
+
+[type.Sample]
+timestamp = "u64"
+ax = "f32"
+
+[component.processor]
+language = "rust"
+output = ["sample:Sample"]

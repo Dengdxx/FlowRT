@@ -53,6 +53,7 @@ scripts/
 当前主要示例覆盖：
 
 - `import_demo`：模块化 RSDL import。
+- `workspace_demo`：workspace / module / composition、跨模块引用和同名 module symbol 生成命名。
 - `imu_demo`：Rust 主 demo。
 - `imu_demo_iox2`：Rust source、C++ controller、Rust monitor 通过 iox2 分进程运行。
 - `profile_switch_demo`：同一 RSDL 在 inproc 与 iox2 profile 间切换。
@@ -69,6 +70,9 @@ scripts/
 工具链已经支持：
 
 - RSDL 解析、import 展开、Contract IR 归一化和 canonical JSON。
+- workspace / module / composition 装载、module name resolver 和跨模块
+  `module::Name` 引用；module 内短名优先解析本 module，root/composition 层短名
+  必须全局唯一。
 - Contract IR validator 对名称、ID、版本、canonical ordering、deployment、
   capability、参数、target 和 derived metadata 的防篡改校验。
 - Rust/C++ message ABI conformance 测试生成，覆盖 size、alignment、field offset、

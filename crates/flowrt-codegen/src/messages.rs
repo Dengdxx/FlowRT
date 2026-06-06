@@ -12,7 +12,7 @@ fn ordered_types(contract: &ContractIr) -> Vec<&flowrt_ir::TypeIr> {
     let type_map = contract
         .types
         .iter()
-        .map(|ty| (ty.name.as_str(), ty))
+        .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
     let mut visiting = BTreeSet::new();
@@ -32,10 +32,10 @@ fn visit_type<'a>(
     visiting: &mut BTreeSet<String>,
     order: &mut Vec<&'a flowrt_ir::TypeIr>,
 ) {
-    if visited.contains(&ty.name) {
+    if visited.contains(&ty.qualified_name) {
         return;
     }
-    if !visiting.insert(ty.name.clone()) {
+    if !visiting.insert(ty.qualified_name.clone()) {
         panic!("validated contract must not contain recursive message types");
     }
 
@@ -49,8 +49,8 @@ fn visit_type<'a>(
         }
     }
 
-    visiting.remove(&ty.name);
-    visited.insert(ty.name.clone());
+    visiting.remove(&ty.qualified_name);
+    visited.insert(ty.qualified_name.clone());
     order.push(ty);
 }
 
@@ -80,14 +80,14 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
         let variable_message = type_contains_variable_data(
             contract,
             &TypeExpr::Named {
-                name: ty.name.clone(),
+                name: ty.qualified_name.clone(),
             },
         );
-        output.push_str(&format!("struct {} {{\n", ty.name));
+        output.push_str(&format!("struct {} {{\n", ty.generated_name));
         if needs_iox2_type_name && !variable_message {
             output.push_str(&format!(
                 "    static constexpr const char* IOX2_TYPE_NAME = \"{}\";\n",
-                ty.name
+                ty.qualified_name
             ));
         }
         for field in &ty.fields {
@@ -124,7 +124,7 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
         let variable_message = type_contains_variable_data(
             contract,
             &TypeExpr::Named {
-                name: ty.name.clone(),
+                name: ty.qualified_name.clone(),
             },
         );
         if !variable_message {
@@ -142,10 +142,10 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
         if needs_iox2_type_name && !variable_message {
             output.push_str(&format!(
                 "#[type_name({})]\n",
-                rust_string_literal(&ty.name)
+                rust_string_literal(&ty.qualified_name)
             ));
         }
-        output.push_str(&format!("pub struct {} {{\n", ty.name));
+        output.push_str(&format!("pub struct {} {{\n", ty.generated_name));
         for field in &ty.fields {
             output.push_str(&format!(
                 "    pub {}: {},\n",
@@ -166,7 +166,7 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
 
 fn rust_default_impl(ty: &TypeIr, variable_message: bool) -> String {
     let mut output = String::new();
-    output.push_str(&format!("impl Default for {} {{\n", ty.name));
+    output.push_str(&format!("impl Default for {} {{\n", ty.generated_name));
     output.push_str("    fn default() -> Self {\n");
     if variable_message {
         output.push_str("        Self {\n");
@@ -199,7 +199,7 @@ pub(crate) fn fixed_message_abi_expectations(
             !type_contains_variable_data(
                 contract,
                 &TypeExpr::Named {
-                    name: ty.name.clone(),
+                    name: ty.qualified_name.clone(),
                 },
             )
         })
@@ -213,7 +213,7 @@ fn contract_has_variable_messages(contract: &ContractIr) -> bool {
         type_contains_variable_data(
             contract,
             &TypeExpr::Named {
-                name: ty.name.clone(),
+                name: ty.qualified_name.clone(),
             },
         )
     })
@@ -266,7 +266,7 @@ pub(crate) fn frame_max_size_for_type(contract: &ContractIr, ty: &TypeIr) -> Opt
     if type_contains_variable_data(
         contract,
         &TypeExpr::Named {
-            name: ty.name.clone(),
+            name: ty.qualified_name.clone(),
         },
     ) {
         return None;
@@ -314,8 +314,9 @@ fn sample_bytes_for_expr(
     match expr {
         TypeExpr::Primitive { name } => primitive_sample_bytes(*name, seed),
         TypeExpr::Named { name } => {
+            let ty = type_by_name(contract, name);
             let expectation = expectations_by_name
-                .get(name.as_str())
+                .get(ty.generated_name.as_str())
                 .copied()
                 .expect("ABI expectation must exist for named message type");
             message_sample_bytes(contract, expectation, expectations_by_name)
@@ -434,12 +435,12 @@ pub(crate) fn emit_rust_message_abi_tests(
     for ty in ordered_types(contract) {
         output.push_str(&format!(
             "fn {}() -> flowrt_app::messages::{} {{\n",
-            sample_function_name(&ty.name),
-            ty.name
+            sample_function_name(&ty.qualified_name),
+            ty.generated_name
         ));
         output.push_str(&format!(
             "    let mut value = flowrt_app::messages::{}::default();\n",
-            ty.name
+            ty.generated_name
         ));
         for (index, field) in ty.fields.iter().enumerate() {
             output.push_str(&format!(
@@ -547,10 +548,13 @@ pub(crate) fn emit_cpp_message_abi_tests(
     for ty in ordered_types(contract) {
         output.push_str(&format!(
             "flowrt_app::{} {}() {{\n",
-            ty.name,
-            sample_function_name(&ty.name)
+            ty.generated_name,
+            sample_function_name(&ty.qualified_name)
         ));
-        output.push_str(&format!("    flowrt_app::{} value{{}};\n", ty.name));
+        output.push_str(&format!(
+            "    flowrt_app::{} value{{}};\n",
+            ty.generated_name
+        ));
         output.push_str("    std::memset(&value, 0, sizeof(value));\n");
         for (index, field) in ty.fields.iter().enumerate() {
             output.push_str(&format!(
@@ -657,7 +661,7 @@ pub(crate) fn emit_cpp_message_abi_tests(
 pub(crate) fn cpp_type(expr: &TypeExpr) -> String {
     match expr {
         TypeExpr::Primitive { name } => cpp_primitive(*name).to_string(),
-        TypeExpr::Named { name } => name.clone(),
+        TypeExpr::Named { name } => type_identifier(name),
         TypeExpr::Array { element, len } => {
             format!("std::array<{}, {}>", cpp_type(element), len)
         }
@@ -688,7 +692,7 @@ fn cpp_primitive(primitive: PrimitiveType) -> &'static str {
 pub(crate) fn rust_type(expr: &TypeExpr) -> String {
     match expr {
         TypeExpr::Primitive { name } => rust_primitive(*name).to_string(),
-        TypeExpr::Named { name } => name.clone(),
+        TypeExpr::Named { name } => type_identifier(name),
         TypeExpr::Array { element, len } => format!("[{}; {}]", rust_type(element), len),
         TypeExpr::VarBytes => "Vec<u8>".to_string(),
         TypeExpr::VarString { .. } => "String".to_string(),
@@ -698,13 +702,16 @@ pub(crate) fn rust_type(expr: &TypeExpr) -> String {
 
 fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     let mut output = String::new();
-    output.push_str(&format!("impl flowrt::WireCodec for {} {{\n", ty.name));
+    output.push_str(&format!(
+        "impl flowrt::WireCodec for {} {{\n",
+        ty.generated_name
+    ));
     output.push_str(&format!(
         "    const WIRE_SIZE: usize = {};\n\n",
         rust_wire_size(
             contract,
             &TypeExpr::Named {
-                name: ty.name.clone()
+                name: ty.qualified_name.clone()
             }
         )
     ));
@@ -737,7 +744,10 @@ fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
 fn rust_frame_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     let header_size = frame_header_size_for_type(contract, ty);
     let mut output = String::new();
-    output.push_str(&format!("impl flowrt::FrameCodec for {} {{\n", ty.name));
+    output.push_str(&format!(
+        "impl flowrt::FrameCodec for {} {{\n",
+        ty.generated_name
+    ));
     output.push_str(&format!(
         "    fn encoded_frame_size(&self) -> usize {{\n        {header_size}{}    }}\n\n",
         rust_dynamic_tail_size_exprs(contract, ty)
@@ -919,9 +929,12 @@ fn rust_wire_encode_expr(expr: &TypeExpr, value: &str, output: &str, indent: usi
     let pad = " ".repeat(indent);
     match expr {
         TypeExpr::Primitive { name } => rust_wire_encode_primitive(*name, value, output, indent),
-        TypeExpr::Named { name } => format!(
-            "{pad}{value}.encode_wire(&mut {output}[cursor..cursor + {name}::WIRE_SIZE])?;\n{pad}cursor += {name}::WIRE_SIZE;\n"
-        ),
+        TypeExpr::Named { name } => {
+            let ty = type_identifier(name);
+            format!(
+                "{pad}{value}.encode_wire(&mut {output}[cursor..cursor + {ty}::WIRE_SIZE])?;\n{pad}cursor += {ty}::WIRE_SIZE;\n"
+            )
+        }
         TypeExpr::Array { element, .. } => {
             let mut code = format!("{pad}for element in &{value} {{\n");
             code.push_str(&rust_wire_encode_expr(
@@ -978,9 +991,12 @@ fn rust_wire_decode_expr(expr: &TypeExpr, local: &str, input: &str, indent: usiz
     let pad = " ".repeat(indent);
     match expr {
         TypeExpr::Primitive { name } => rust_wire_decode_primitive(*name, local, input, indent),
-        TypeExpr::Named { name } => format!(
-            "{pad}let {local} = {name}::decode_wire(&{input}[cursor..cursor + {name}::WIRE_SIZE])?;\n{pad}cursor += {name}::WIRE_SIZE;\n"
-        ),
+        TypeExpr::Named { name } => {
+            let ty = type_identifier(name);
+            format!(
+                "{pad}let {local} = {ty}::decode_wire(&{input}[cursor..cursor + {ty}::WIRE_SIZE])?;\n{pad}cursor += {ty}::WIRE_SIZE;\n"
+            )
+        }
         TypeExpr::Array { element, len } => {
             let element_ty = rust_type(element);
             let mut code = format!(
@@ -1057,7 +1073,7 @@ fn cpp_wire_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
         rust_wire_size(
             contract,
             &TypeExpr::Named {
-                name: ty.name.clone()
+                name: ty.qualified_name.clone()
             }
         )
     ));
@@ -1076,7 +1092,7 @@ fn cpp_wire_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
     output.push_str("    }\n\n");
     output.push_str(&format!(
         "    static {} decode_wire(std::span<const std::uint8_t> input) {{\n        flowrt::ensure_wire_size(wire_size(), input.size());\n        std::size_t cursor = 0;\n        {} value{{}};\n",
-        ty.name, ty.name
+        ty.generated_name, ty.generated_name
     ));
     for field in &ty.fields {
         output.push_str(&cpp_wire_decode_expr(
@@ -1115,7 +1131,7 @@ fn cpp_frame_codec_methods(contract: &ContractIr, ty: &TypeIr) -> String {
     ));
     output.push_str(&format!(
         "    static {} decode_frame(std::span<const std::uint8_t> input) {{\n        if (input.size() < {header_size}) {{\n            throw flowrt::WireCodecError({header_size}, input.size());\n        }}\n        std::size_t cursor = 0;\n        {} value{{}};\n",
-        ty.name, ty.name
+        ty.generated_name, ty.generated_name
     ));
     for field in &ty.fields {
         output.push_str(&cpp_frame_decode_header_field(contract, field));
@@ -1270,9 +1286,12 @@ fn cpp_wire_encode_expr(
                 "{pad}flowrt::write_wire_le({output}, cursor, {value});\n{pad}cursor += {size};\n"
             )
         }
-        TypeExpr::Named { name } => format!(
-            "{pad}{value}.encode_wire({output}.subspan(cursor, {name}::wire_size()));\n{pad}cursor += {name}::wire_size();\n"
-        ),
+        TypeExpr::Named { name } => {
+            let ty = type_identifier(name);
+            format!(
+                "{pad}{value}.encode_wire({output}.subspan(cursor, {ty}::wire_size()));\n{pad}cursor += {ty}::wire_size();\n"
+            )
+        }
         TypeExpr::Array { element, .. } => {
             let mut code = format!("{pad}for (const auto& element : {value}) {{\n");
             code.push_str(&cpp_wire_encode_expr(
@@ -1310,9 +1329,12 @@ fn cpp_wire_decode_expr(
                 cpp_type(expr)
             )
         }
-        TypeExpr::Named { name } => format!(
-            "{pad}{target} = {name}::decode_wire({input}.subspan(cursor, {name}::wire_size()));\n{pad}cursor += {name}::wire_size();\n"
-        ),
+        TypeExpr::Named { name } => {
+            let ty = type_identifier(name);
+            format!(
+                "{pad}{target} = {ty}::decode_wire({input}.subspan(cursor, {ty}::wire_size()));\n{pad}cursor += {ty}::wire_size();\n"
+            )
+        }
         TypeExpr::Array { element, len } => {
             let mut code = format!("{pad}for (std::size_t index = 0; index < {len}; ++index) {{\n");
             code.push_str(&cpp_wire_decode_expr(
@@ -1428,4 +1450,30 @@ fn cpp_primitive_sample(primitive: PrimitiveType, seed: usize) -> String {
 
 fn sample_function_name(type_name: &str) -> String {
     format!("sample_{}", snake_identifier(type_name))
+}
+
+fn type_identifier(type_name: &str) -> String {
+    let Some((module, name)) = type_name.split_once("::") else {
+        return type_name.to_string();
+    };
+
+    let mut output = String::new();
+    let mut capitalize_next = true;
+    for ch in module
+        .chars()
+        .chain(std::iter::once('_'))
+        .chain(name.chars())
+    {
+        if ch.is_ascii_alphanumeric() {
+            if capitalize_next {
+                output.push(ch.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                output.push(ch);
+            }
+        } else {
+            capitalize_next = true;
+        }
+    }
+    output
 }

@@ -17,6 +17,20 @@ pub enum IrError {
     #[error("invalid type expression `{expr}`: {message}")]
     InvalidTypeExpr { expr: String, message: String },
 
+    #[error("ambiguous {kind} name `{name}`; candidates: {candidates}")]
+    AmbiguousName {
+        kind: &'static str,
+        name: String,
+        candidates: String,
+    },
+
+    #[error("unknown module `{module}` referenced by {kind} `{name}`")]
+    UnknownModule {
+        kind: &'static str,
+        name: String,
+        module: String,
+    },
+
     #[error("unknown component `{component}` referenced by instance `{instance}`")]
     UnknownComponent { instance: String, component: String },
 

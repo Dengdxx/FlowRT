@@ -279,7 +279,7 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
     validate_unique_names(
         "contract",
         "type",
-        ir.types.iter().map(|ty| ty.name.as_str()),
+        ir.types.iter().map(|ty| ty.qualified_name.as_str()),
         errors,
     );
     validate_unique_names(
@@ -287,7 +287,7 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
         "component",
         ir.components
             .iter()
-            .map(|component| component.name.as_str()),
+            .map(|component| component.qualified_name.as_str()),
         errors,
     );
     validate_unique_names(
@@ -437,7 +437,7 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
     let component_ids = ir
         .components
         .iter()
-        .map(|component| (component.name.as_str(), &component.id))
+        .map(|component| (component.qualified_name.as_str(), &component.id))
         .collect::<BTreeMap<_, _>>();
     let graph_ids = ir
         .graphs
@@ -573,7 +573,7 @@ fn validate_named_entity_ref(
 fn is_supported_import_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "types" | "components" | "graphs" | "profiles" | "targets"
+        "types" | "components" | "graphs" | "profiles" | "targets" | "modules" | "compositions"
     )
 }
 
