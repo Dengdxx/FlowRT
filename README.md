@@ -363,7 +363,7 @@ backends = ["zenoh"]
 - `ros2_type` 当前只支持 `std_msgs/msg/String`。
 - `field` 必须指向 FlowRT message 中的 `string` 字段，省略时默认为 `data`。
 - bridge route 固定使用 `zenoh`；source target 必须声明支持 `zenoh`。
-- 构建 bridge 需要 ROS2 Jazzy 或之后版本的 C++ 开发包；运行 bridge 需要安装 `rmw_zenoh_cpp`。构建前应 source 对应 ROS2 环境，生成 CMake 会把 `AMENT_PREFIX_PATH` 映射进 `CMAKE_PREFIX_PATH`，以便 plain CMake 找到 `rclcpp`、`std_msgs` 和 `rmw_zenoh_cpp`。
+- 构建 bridge 需要 ROS2 Jazzy 或之后版本的 C++ 开发包；运行 bridge 需要安装 `rmw_zenoh_cpp`。当前 CI 会在 Jazzy 和 Lyrical 上强制运行 bridge smoke。构建前应 source 对应 ROS2 环境，生成 CMake 会把 `AMENT_PREFIX_PATH` 映射进 `CMAKE_PREFIX_PATH`，以便 plain CMake 找到 `rclcpp`、`std_msgs` 和 `rmw_zenoh_cpp`。
 - 如果 `ros2 topic echo` 看不到刚启动的 topic，先执行 `ros2 daemon stop` 后重试，避免 ROS2 daemon 的旧缓存干扰。
 
 ## 运行态观测

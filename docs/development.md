@@ -70,9 +70,11 @@ Debian 包和安装后用户项目 smoke：
 ```bash
 scripts/test-package-deb.sh
 scripts/test-deb-installed-user-project.sh
+sudo dpkg -i dist/flowrt_*_*.deb
+scripts/test-ros2-bridge-installed.sh --distro jazzy
 ```
 
-`scripts/test-deb-installed-user-project.sh` 会从 deb 中解包 `flowrt`，在临时用户项目目录里构建示例，验证生成项目不依赖 FlowRT 源码树。若本机安装了 ROS2 Jazzy 和 `rmw_zenoh_cpp`，该脚本还会构建并运行 `ros2_bridge_demo`，确认 generated adapter 链接 ROS2 自带 `zenoh_cpp_vendor` 并能被 `ros2 topic echo /flowrt/text --once` 观察到；缺少 ROS2 环境时该子项跳过。
+`scripts/test-deb-installed-user-project.sh` 会从 deb 中解包 `flowrt`，在临时用户项目目录里构建示例，验证生成项目不依赖 FlowRT 源码树。ROS2 bridge 安装后 smoke 由 `scripts/test-ros2-bridge-installed.sh` 单独负责；它要求本机已经安装对应 ROS2 发行版、`rmw_zenoh_cpp`，并且 PATH 中的 `flowrt` 来自 FlowRT 安装包或解包后的安装前缀。该脚本会构建并运行 `ros2_bridge_demo`，确认 generated adapter 链接 ROS2 自带 `zenoh_cpp_vendor` 并能被 `ros2 topic echo /flowrt/text --once` 观察到。CI 会在官方 `ros:jazzy-ros-base-noble` 基础容器中运行常规 Linux job，并额外并行运行 `ros2-jazzy-bridge` 与 `ros2-lyrical-bridge` 两个强制 bridge smoke。
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：
 
@@ -167,7 +169,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 ## 发布流程
 
-FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待 `guard-generated`、Rust fmt/test/clippy、C++ runtime、C++ zenoh runtime、deb package 和 demo smoke 全部通过，再创建 GitHub Release，并上传 `.deb` 与 `SHA256SUMS`。
+FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待 `guard-generated`、Rust fmt/test/clippy、C++ runtime、C++ zenoh runtime、deb package、demo smoke、ROS2 Jazzy bridge smoke 和 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，并上传 `.deb` 与 `SHA256SUMS`。
 
 发布前检查：
 

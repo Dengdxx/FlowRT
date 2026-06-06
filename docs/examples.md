@@ -213,7 +213,7 @@ direction = "flowrt_to_ros2"
 field = "data"
 ```
 
-FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。FlowRT source 会把 bridge tap 发布到 deterministic zenoh key，生成的 C++ ROS2 adapter 订阅该 key 并发布 `std_msgs/msg/String`。ROS2 侧必须使用 `rmw_zenoh_cpp`；adapter 启动时会设置并校验 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，不会回退到 DDS。普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`，让 plain CMake 找到 ROS2 C++ packages。
+FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。FlowRT source 会把 bridge tap 发布到 deterministic zenoh key，生成的 C++ ROS2 adapter 订阅该 key 并发布 `std_msgs/msg/String`。ROS2 侧必须使用 `rmw_zenoh_cpp`；adapter 启动时会设置并校验 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，不会回退到 DDS。普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`，让 plain CMake 找到 ROS2 C++ packages。CI 当前在 Jazzy 和 Lyrical 上强制验证该示例。
 
 构建和运行：
 

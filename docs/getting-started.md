@@ -6,7 +6,7 @@
 
 - Rust toolchain，支持当前 workspace 使用的 Rust 2024 Edition。
 - C++20 编译器、CMake 和 CTest，用于构建 C++ runtime 与 C++ 示例。
-- ROS2 bridge 示例需要 ROS2 Jazzy 或之后版本的 C++ 开发环境；运行 bridge 时还需要 `rmw_zenoh_cpp`。
+- ROS2 bridge 示例需要 ROS2 Jazzy 或之后版本的 C++ 开发环境；运行 bridge 时还需要 `rmw_zenoh_cpp`。CI 当前强制验证 Jazzy 和 Lyrical。
 
 ## 安装 FlowRT
 

@@ -14,6 +14,8 @@ jobs:
   guard-generated:
     name: Guard Generated Files
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
 
     steps:
       - name: 检出仓库
@@ -25,7 +27,7 @@ jobs:
           set -euo pipefail
 
           tracked=$(
-            git ls-files -- \
+            git -c safe.directory="$GITHUB_WORKSPACE" ls-files -- \
               docs/architecture-plan.md \
               docs/backend-contract.md \
               docs/contract-ir-v0.1.md \
@@ -47,6 +49,8 @@ jobs:
   rust-fmt:
     name: Rust Fmt
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
 
     steps:
       - name: 检出仓库
@@ -63,6 +67,8 @@ jobs:
   rust-test:
     name: Rust Test
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
 
     steps:
       - name: 检出仓库
@@ -77,6 +83,8 @@ jobs:
   rust-clippy:
     name: Rust Clippy
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
 
     steps:
       - name: 检出仓库
@@ -93,6 +101,8 @@ jobs:
   cpp-runtime:
     name: C++ Runtime
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
 
     steps:
       - name: 检出仓库
@@ -100,8 +110,8 @@ jobs:
 
       - name: 安装系统构建工具
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++
+          apt-get update
+          apt-get install -y cmake ninja-build g++
 
       - name: 确认工具链版本
         run: |
@@ -121,6 +131,8 @@ jobs:
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
     needs:
       - package
 
@@ -136,14 +148,14 @@ jobs:
 
       - name: 安装系统构建工具
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ dpkg-dev curl git
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git
 
       - name: 安装 flowrt deb
         shell: bash
         run: |
           set -euo pipefail
-          sudo dpkg -i dist/flowrt_*_*.deb
+          dpkg -i dist/flowrt_*_*.deb
           version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           {
             echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
@@ -160,6 +172,8 @@ jobs:
   package:
     name: Debian Package
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
     needs:
       - guard-generated
       - rust-test
@@ -171,8 +185,8 @@ jobs:
 
       - name: 安装系统构建工具
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ dpkg-dev curl git
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -181,7 +195,7 @@ jobs:
         shell: bash
         run: |
           scripts/package-deb.sh --output-dir dist
-          sudo dpkg -i dist/flowrt_*_*.deb
+          dpkg -i dist/flowrt_*_*.deb
           version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
           test -x /usr/bin/flowrt
@@ -208,6 +222,8 @@ jobs:
   demo-smoke:
     name: Demo Smoke
     runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
     needs:
       - package
       - cpp-zenoh-runtime
@@ -224,8 +240,8 @@ jobs:
 
       - name: 安装系统构建工具
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ dpkg-dev curl git
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -233,7 +249,7 @@ jobs:
       - name: 安装 flowrt deb
         shell: bash
         run: |
-          sudo dpkg -i dist/flowrt_*_*.deb
+          dpkg -i dist/flowrt_*_*.deb
           version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           {
             echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
@@ -258,6 +274,94 @@ jobs:
           flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
           FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
+  ros2-jazzy-bridge:
+    name: ROS2 Jazzy Bridge
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-deb
+          path: dist
+
+      - name: 安装系统构建工具和 ROS2 zenoh RMW
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git \
+            ros-jazzy-rclcpp \
+            ros-jazzy-rmw-zenoh-cpp \
+            ros-jazzy-std-msgs \
+            ros-jazzy-zenoh-cpp-vendor
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 flowrt deb
+        shell: bash
+        run: |
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          {
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
+          } >> "$GITHUB_ENV"
+          flowrt --version
+
+      - name: ROS2 Jazzy bridge smoke
+        run: scripts/test-ros2-bridge-installed.sh --distro jazzy
+
+  ros2-lyrical-bridge:
+    name: ROS2 Lyrical Bridge
+    runs-on: ubuntu-latest
+    container:
+      image: ros:lyrical-ros-base-resolute
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-deb
+          path: dist
+
+      - name: 安装系统构建工具和 ROS2 zenoh RMW
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git \
+            ros-lyrical-rclcpp \
+            ros-lyrical-rmw-zenoh-cpp \
+            ros-lyrical-std-msgs \
+            ros-lyrical-zenoh-cpp-vendor
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 flowrt deb
+        shell: bash
+        run: |
+          dpkg -i dist/flowrt_*_*.deb
+          version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
+          {
+            echo "FLOWRT_PRIVATE_PREFIX=/opt/flowrt/${version}"
+            echo "LD_LIBRARY_PATH=/opt/flowrt/${version}/lib"
+          } >> "$GITHUB_ENV"
+          flowrt --version
+
+      - name: ROS2 Lyrical bridge smoke
+        run: scripts/test-ros2-bridge-installed.sh --distro lyrical
+
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
@@ -270,6 +374,8 @@ jobs:
       - cpp-zenoh-runtime
       - package
       - demo-smoke
+      - ros2-jazzy-bridge
+      - ros2-lyrical-bridge
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       actions: read
