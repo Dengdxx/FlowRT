@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use flowrt_ir::{ContractIr, GraphIr, InstanceIr, TaskIr};
+use flowrt_ir::{ContractIr, GraphIr, InstanceIr, ProcessIr, TaskIr};
 
 use crate::runtime_plan::bridge_runtime_plans;
 use crate::{
@@ -154,12 +154,21 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
                 .collect::<BTreeSet<_>>();
             let runtimes = process_runtimes(contract, &instances);
             let target = common_process_target(&instances);
+            let orchestration = process_orchestration(graph, &name);
             serde_json::json!({
                 "name": name,
                 "backend": process_backend(graph, &instance_names),
                 "target": target,
                 "runtimes": runtimes,
                 "runtime_kind": process_runtime_kind(&runtimes),
+                "depends_on": orchestration.depends_on,
+                "restart": {
+                    "policy": orchestration.restart.policy,
+                    "max_restarts": orchestration.restart.max_restarts,
+                    "initial_delay_ms": orchestration.restart.initial_delay_ms,
+                    "max_delay_ms": orchestration.restart.max_delay_ms,
+                },
+                "failure": orchestration.failure_propagation,
                 "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
                 "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(launch_task).collect::<Vec<_>>(),
             })
@@ -173,12 +182,28 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
             "target": null,
             "runtimes": ["ros2_bridge"],
             "runtime_kind": "ros2_bridge",
+            "depends_on": [],
+            "restart": {
+                "policy": "on_failure",
+                "max_restarts": 3,
+                "initial_delay_ms": 100,
+                "max_delay_ms": 1000,
+            },
+            "failure": "propagate",
             "instances": [],
             "tasks": [],
         }));
     }
 
     launch_processes
+}
+
+fn process_orchestration<'a>(graph: &'a GraphIr, process_name: &str) -> &'a ProcessIr {
+    graph
+        .processes
+        .iter()
+        .find(|process| process.name == process_name)
+        .expect("normalized graph must contain process orchestration for every process")
 }
 
 fn process_backend(graph: &GraphIr, instance_names: &BTreeSet<&str>) -> String {

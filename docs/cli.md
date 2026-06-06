@@ -247,6 +247,31 @@ flowrt status
 
 generated supervisor 会启动自己的 status socket，`runtime=supervisor`，`process=flowrt_supervisor`。它会按子进程 PID socket 轮询 live status，并额外输出 `supervisor_process=<name>` 行，字段包括 `state`、`pid`、`restarts`、`ticks`、`last_seen_ms`、`tick_stale` 和 `exit_code`。`state` 当前取值为 `starting`、`running`、`stale`、`restarting`、`exited` 或 `failed`。内置 restart policy 是 `on-failure`：子进程异常退出时最多重启 3 次，退避 100ms 起步、上限 1000ms；正常退出不重启。
 
+RSDL 可以用 graph 级 `[[process]]` 覆盖默认进程编排策略：
+
+```toml
+[[process]]
+name = "sensors"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+
+[[process]]
+name = "control"
+depends_on = ["sensors"]
+restart = "never"
+failure = "isolate"
+```
+
+未声明 `[[process]]` 的实际 process group 仍使用默认策略：`restart = "on_failure"`、
+`max_restarts = 3`、`initial_delay_ms = 100`、`max_delay_ms = 1000`、
+`failure = "propagate"`。`depends_on` 只依赖同一 graph 内已经由 instance 使用的
+process group；generated supervisor 按依赖顺序启动 process。依赖进程最终失败且
+`failure = "propagate"` 时，supervisor 会终止依赖它的进程并把整体 launch 判定为
+失败；`failure = "isolate"` 时只记录当前进程失败。
+
 runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
 
 ## `hz`

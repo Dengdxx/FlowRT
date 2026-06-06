@@ -176,9 +176,45 @@ pub struct GraphIr {
     pub id: EntityId,
     pub name: String,
     pub instances: Vec<InstanceIr>,
+    pub processes: Vec<ProcessIr>,
     pub tasks: Vec<TaskIr>,
     pub binds: Vec<ChannelEdgeIr>,
     pub ros2_bridges: Vec<Ros2BridgeIr>,
+}
+
+/// graph 级运行进程编排策略。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessIr {
+    pub name: String,
+    pub depends_on: Vec<String>,
+    pub restart: ProcessRestartPolicy,
+    pub failure_propagation: ProcessFailurePropagation,
+}
+
+/// 进程重启策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessRestartPolicy {
+    pub policy: ProcessRestartPolicyKind,
+    pub max_restarts: u32,
+    pub initial_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+/// 进程异常退出后的重启类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessRestartPolicyKind {
+    Never,
+    OnFailure,
+    Always,
+}
+
+/// 当前进程失败时 supervisor 是否向依赖它的进程传播故障。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessFailurePropagation {
+    Propagate,
+    Isolate,
 }
 
 /// FlowRT 与 ROS2 的静态桥接声明。

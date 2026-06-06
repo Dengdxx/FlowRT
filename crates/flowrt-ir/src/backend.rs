@@ -788,6 +788,7 @@ mod tests {
             id: crate::EntityId("graph_0000000000000001".to_string()),
             name: "default".to_string(),
             instances: vec![],
+            processes: vec![],
             tasks: vec![
                 crate::TaskIr {
                     id: crate::EntityId("task_0000000000000001".to_string()),

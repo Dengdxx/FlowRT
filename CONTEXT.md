@@ -94,8 +94,8 @@ scripts/
 - runtime introspection socket、自描述、status、channel snapshot、echo observer、
   `hz` 采样和参数控制面。
 - generated supervisor 对 Rust、C++ 和 ROS2 bridge process 的分流启动、health
-  汇总、PID socket 轮询、tick stale/exit/restart 状态展示和内置 `on-failure`
-  restart baseline。
+  汇总、PID socket 轮询、tick stale/exit/restart 状态展示、process 依赖顺序、
+  可配置 restart policy 和失败传播 baseline。
 
 ## CLI 状态
 
@@ -142,8 +142,9 @@ backend 为 `inproc`。
 
 ## Runtime 和观测状态
 
-`flowrt/launch/launch.json` 当前包含 process group 的 `runtimes` 和 `runtime_kind`，
-graph instance 的 `runtime`，graph 的 `channels`，以及 channel 的 backend 元数据。
+`flowrt/launch/launch.json` 当前包含 process group 的 `runtimes`、`runtime_kind`、
+`depends_on`、`restart` 和 `failure`，graph instance 的 `runtime`，graph 的
+`channels`，以及 channel 的 backend 元数据。
 iox2 channel 暴露 canonical service name，zenoh channel 和 ROS2 bridge 暴露
 deterministic `key_expr`。
 

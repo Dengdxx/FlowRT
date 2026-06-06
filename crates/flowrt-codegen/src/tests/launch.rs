@@ -128,6 +128,87 @@ backends = ["iox2"]
 }
 
 #[test]
+fn launch_manifest_exposes_process_orchestration_policy() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensor_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[[process]]
+name = "sensor_proc"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+restart = "never"
+failure = "isolate"
+
+[profile.default]
+backend = "iox2"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let processes = launch["graphs"][0]["processes"].as_array().unwrap();
+    let control = processes
+        .iter()
+        .find(|process| process["name"] == "control_proc")
+        .unwrap();
+    let sensors = processes
+        .iter()
+        .find(|process| process["name"] == "sensor_proc")
+        .unwrap();
+
+    assert_eq!(control["depends_on"], serde_json::json!(["sensor_proc"]));
+    assert_eq!(control["restart"]["policy"], "never");
+    assert_eq!(control["restart"]["max_restarts"], 0);
+    assert_eq!(control["failure"], "isolate");
+    assert_eq!(sensors["depends_on"], serde_json::json!([]));
+    assert_eq!(sensors["restart"]["policy"], "on_failure");
+    assert_eq!(sensors["restart"]["max_restarts"], 5);
+    assert_eq!(sensors["restart"]["initial_delay_ms"], 50);
+    assert_eq!(sensors["restart"]["max_delay_ms"], 500);
+    assert_eq!(sensors["failure"], "propagate");
+}
+
+#[test]
 fn launch_manifest_marks_mixed_process_runtime_kind() {
     let ir = contract_from_source(
         r#"
@@ -469,6 +550,12 @@ backends = ["iox2"]
     assert!(supervisor.contains("restart_count: child.restart_count"));
     assert!(supervisor.contains("if status.success()"));
     assert!(supervisor.contains("child.finished = true;"));
+    assert!(supervisor.contains("depends_on: Vec<String>"));
+    assert!(supervisor.contains("restart: LaunchRestartPolicy"));
+    assert!(supervisor.contains("failure: String"));
+    assert!(supervisor.contains("policy: RestartPolicyKind"));
+    assert!(supervisor.contains("fn process_dependencies_satisfied("));
+    assert!(supervisor.contains("fn propagate_process_failure("));
     assert!(supervisor.contains("for graph in &manifest.graphs"));
     assert!(supervisor.contains("zenoh_launch_env_for_graph(graph)?"));
     assert!(supervisor.contains("fn should_auto_configure_zenoh()"));

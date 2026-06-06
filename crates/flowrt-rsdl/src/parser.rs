@@ -15,6 +15,7 @@ struct ParsedDocument {
     types: BTreeMap<String, RawType>,
     components: BTreeMap<String, RawComponent>,
     instances: BTreeMap<String, RawInstance>,
+    processes: Vec<RawProcess>,
     binds: Vec<RawDataflowBind>,
     ros2_bridges: Vec<RawRos2Bridge>,
     profiles: BTreeMap<String, RawProfile>,
@@ -142,6 +143,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         types: parse_named_tables(root, "type", parse_type)?,
         components: parse_named_tables(root, "component", parse_component)?,
         instances: parse_named_tables(root, "instance", parse_instance)?,
+        processes: parse_processes(root)?,
         binds: parse_binds(root)?,
         ros2_bridges: parse_ros2_bridges(root)?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
@@ -157,6 +159,7 @@ fn validate_top_level_sections(root: &Table) -> Result<()> {
         "type",
         "component",
         "instance",
+        "process",
         "bind",
         "bridge",
         "profile",
@@ -192,6 +195,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         types: parsed.types,
         components: parsed.components,
         instances: parsed.instances,
+        processes: parsed.processes,
         binds: parsed.binds,
         ros2_bridges: parsed.ros2_bridges,
         profiles: parsed.profiles,
@@ -256,6 +260,7 @@ fn expand_workspace(
             }
             let composition = RawCompositionDocument {
                 instances: parsed.instances.clone(),
+                processes: parsed.processes.clone(),
                 binds: parsed.binds.clone(),
                 ros2_bridges: parsed.ros2_bridges.clone(),
                 profiles: parsed.profiles.clone(),
@@ -280,6 +285,7 @@ fn validate_module_document(
 ) -> Result<()> {
     let invalid = [
         (!parsed.instances.is_empty(), "instance"),
+        (!parsed.processes.is_empty(), "process"),
         (!parsed.binds.is_empty(), "bind"),
         (!parsed.ros2_bridges.is_empty(), "bridge"),
         (!parsed.profiles.is_empty(), "profile"),
@@ -306,6 +312,7 @@ fn merge_composition_document(
     composition: ParsedDocument,
 ) -> Result<()> {
     merge_named_map("instance", &mut document.instances, composition.instances)?;
+    document.processes.extend(composition.processes);
     document.binds.extend(composition.binds);
     document.ros2_bridges.extend(composition.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, composition.profiles)?;
@@ -388,6 +395,7 @@ fn merge_imported_document(document: &mut RawDocument, imported: ParsedDocument)
     merge_named_map("type", &mut document.types, imported.types)?;
     merge_named_map("component", &mut document.components, imported.components)?;
     merge_named_map("instance", &mut document.instances, imported.instances)?;
+    document.processes.extend(imported.processes);
     document.binds.extend(imported.binds);
     document.ros2_bridges.extend(imported.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, imported.profiles)?;
@@ -712,6 +720,54 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
         input: optional_string_array(table, &context, "input")?,
         output: optional_string_array(table, &context, "output")?,
     })
+}
+
+fn parse_processes(root: &Table) -> Result<Vec<RawProcess>> {
+    let Some(process_value) = root.get("process") else {
+        return Ok(Vec::new());
+    };
+    let processes = process_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "process".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(processes.len());
+    for (index, value) in processes.iter().enumerate() {
+        let context = format!("process[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "document".to_string(),
+                field: "process".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &[
+                "name",
+                "depends_on",
+                "restart",
+                "max_restarts",
+                "initial_delay_ms",
+                "max_delay_ms",
+                "failure",
+            ],
+        )?;
+        parsed.push(RawProcess {
+            name: required_string(table, &context, "name")?,
+            depends_on: optional_string_array(table, &context, "depends_on")?,
+            restart: optional_string(table, &context, "restart")?,
+            max_restarts: optional_u32(table, &context, "max_restarts")?,
+            initial_delay_ms: optional_u64(table, &context, "initial_delay_ms")?,
+            max_delay_ms: optional_u64(table, &context, "max_delay_ms")?,
+            failure: optional_string(table, &context, "failure")?,
+        });
+    }
+    Ok(parsed)
 }
 
 fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
@@ -1151,6 +1207,44 @@ output = ["out"]
         assert_eq!(task.readiness.as_deref(), Some("all_ready"));
         assert_eq!(task.lane.as_deref(), Some("worker_serial"));
         assert_eq!(task.priority, Some(7));
+    }
+
+    #[test]
+    fn parses_process_orchestration_tables() {
+        let source = r#"
+[package]
+name = "process_demo"
+rsdl_version = "0.1"
+
+[[process]]
+name = "sensor_proc"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+restart = "never"
+failure = "isolate"
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+
+        assert_eq!(document.processes.len(), 2);
+        assert_eq!(document.processes[0].name, "sensor_proc");
+        assert_eq!(document.processes[0].depends_on, Vec::<String>::new());
+        assert_eq!(document.processes[0].restart.as_deref(), Some("on_failure"));
+        assert_eq!(document.processes[0].max_restarts, Some(5));
+        assert_eq!(document.processes[0].initial_delay_ms, Some(50));
+        assert_eq!(document.processes[0].max_delay_ms, Some(500));
+        assert_eq!(document.processes[0].failure.as_deref(), Some("propagate"));
+        assert_eq!(document.processes[1].name, "control_proc");
+        assert_eq!(document.processes[1].depends_on, vec!["sensor_proc"]);
+        assert_eq!(document.processes[1].restart.as_deref(), Some("never"));
+        assert_eq!(document.processes[1].failure.as_deref(), Some("isolate"));
     }
 
     #[test]

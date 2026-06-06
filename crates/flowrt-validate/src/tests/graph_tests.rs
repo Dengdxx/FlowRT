@@ -493,6 +493,62 @@ period_ms = 5
 }
 
 #[test]
+fn rejects_process_dependency_cycles_in_contract_ir() {
+    let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensor_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[[process]]
+name = "sensor_proc"
+depends_on = ["control_proc"]
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("process dependency cycle should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("process dependency graph contains a cycle")
+    }));
+}
+
+#[test]
 fn rejects_reserved_name_prefix_case_insensitively() {
     let source = r#"
 [package]

@@ -89,6 +89,24 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 );
             }
         }
+        for process in &graph.processes {
+            validate_name(
+                "process",
+                "process name",
+                &process.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+            for dependency in &process.depends_on {
+                validate_name(
+                    "process",
+                    "process dependency name",
+                    dependency,
+                    NameStyle::SnakeCase,
+                    errors,
+                );
+            }
+        }
         for task in &graph.tasks {
             validate_name(
                 "task",

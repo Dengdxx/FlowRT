@@ -206,6 +206,24 @@ pub(crate) fn validate_contract_canonical_ordering(
             )));
         }
         if !graph
+            .processes
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` processes must use canonical name order",
+                graph.name
+            )));
+        }
+        for process in &graph.processes {
+            if !process.depends_on.windows(2).all(|pair| pair[0] <= pair[1]) {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` dependencies must use canonical sorted order",
+                    process.name
+                )));
+            }
+        }
+        if !graph
             .binds
             .windows(2)
             .all(|pair| bind_canonical_key(&pair[0]) <= bind_canonical_key(&pair[1]))
@@ -317,6 +335,12 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
                 .instances
                 .iter()
                 .map(|instance| instance.name.as_str()),
+            errors,
+        );
+        validate_unique_names(
+            &format!("graph `{}`", graph.name),
+            "process",
+            graph.processes.iter().map(|process| process.name.as_str()),
             errors,
         );
         validate_unique_names(

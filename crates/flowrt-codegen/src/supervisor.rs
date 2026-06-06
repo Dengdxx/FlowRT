@@ -14,7 +14,7 @@ pub(crate) fn emit_rust_supervisor_main() -> String {
 pub(crate) fn emit_rust_supervisor(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str(&format!(
-        "\nuse std::collections::HashMap;\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::{{Child, Command}};\nuse std::time::Duration;\n\nconst PACKAGE_NAME: &str = {};\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\nconst ROS2_BRIDGE_STEM: &str = {};\nconst HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);\nconst TICK_STALE_AFTER_MS: u64 = 1_000;\n",
+        "\nuse std::collections::{{BTreeSet, HashMap}};\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::{{Child, Command}};\nuse std::time::Duration;\n\nconst PACKAGE_NAME: &str = {};\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\nconst ROS2_BRIDGE_STEM: &str = {};\nconst HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);\nconst TICK_STALE_AFTER_MS: u64 = 1_000;\n",
         rust_string_literal(&contract.package.name),
         rust_string_literal(&rust_app_stem(contract)),
         rust_string_literal(&cpp_app_stem(contract)),
@@ -39,6 +39,12 @@ struct LaunchProcess {
     name: String,
     backend: String,
     runtime_kind: String,
+    #[serde(default)]
+    depends_on: Vec<String>,
+    #[serde(default = "default_restart_policy")]
+    restart: LaunchRestartPolicy,
+    #[serde(default = "default_failure_propagation")]
+    failure: String,
 }
 
 #[derive(Debug, Clone)]
@@ -47,22 +53,38 @@ struct ZenohLaunchEnv {
     connect: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RestartPolicyKind {
+    Never,
+    OnFailure,
+    Always,
+}
+
+type LaunchRestartPolicy = RestartPolicy;
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
 struct RestartPolicy {
+    policy: RestartPolicyKind,
     max_restarts: u32,
     initial_delay_ms: u64,
     max_delay_ms: u64,
 }
 
 const DEFAULT_RESTART_POLICY: RestartPolicy = RestartPolicy {
+    policy: RestartPolicyKind::OnFailure,
     max_restarts: 3,
     initial_delay_ms: 100,
     max_delay_ms: 1_000,
 };
 
 impl RestartPolicy {
-    fn can_restart(self, restart_count: u32) -> bool {
-        restart_count < self.max_restarts
+    fn can_restart(self, success: bool, restart_count: u32) -> bool {
+        match self.policy {
+            RestartPolicyKind::Never => false,
+            RestartPolicyKind::OnFailure => !success && restart_count < self.max_restarts,
+            RestartPolicyKind::Always => restart_count < self.max_restarts,
+        }
     }
 
     fn delay_ms_for(self, restart_count: u32) -> u64 {
@@ -74,10 +96,21 @@ impl RestartPolicy {
     }
 }
 
+fn default_restart_policy() -> LaunchRestartPolicy {
+    DEFAULT_RESTART_POLICY
+}
+
+fn default_failure_propagation() -> String {
+    "propagate".to_string()
+}
+
 struct SupervisedChild {
     name: String,
     app_exe: PathBuf,
     zenoh_env: Option<ZenohLaunchEnv>,
+    dependencies: Vec<String>,
+    restart_policy: RestartPolicy,
+    failure: String,
     child: Child,
     socket: PathBuf,
     finished: bool,
@@ -119,7 +152,16 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
         } else {
             HashMap::new()
         };
-        for process in &graph.processes {
+        let mut pending = graph.processes.iter().collect::<Vec<_>>();
+        let mut spawned_names = BTreeSet::new();
+        while !pending.is_empty() {
+            let Some(index) = pending
+                .iter()
+                .position(|process| process_dependencies_satisfied(process, &spawned_names))
+            else {
+                return Err("FlowRT process dependencies contain a cycle or unknown process".to_string());
+            };
+            let process = pending.remove(index);
             let app_exe = app_executable_for_runtime(&current_exe, &process.runtime_kind)?;
             let process_zenoh_env = zenoh_env.get(&process.name).cloned();
             let child = spawn_flowrt_process(&app_exe, &process.name, run_ticks, process_zenoh_env.as_ref())?;
@@ -128,6 +170,9 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
                 name: process.name.clone(),
                 app_exe,
                 zenoh_env: process_zenoh_env,
+                dependencies: process.depends_on.clone(),
+                restart_policy: process.restart,
+                failure: process.failure.clone(),
                 child,
                 socket,
                 finished: false,
@@ -140,6 +185,7 @@ pub fn launch(run_ticks: Option<usize>) -> Result<(), String> {
                 exit_code: None,
             };
             record_child_health(&supervisor_state, &child, false);
+            spawned_names.insert(process.name.clone());
             children.push(child);
         }
     }
@@ -175,6 +221,7 @@ fn supervise_children(
     run_ticks: Option<usize>,
 ) -> Result<(), String> {
     while children.iter().any(|child| !child.finished) {
+        let mut failed_to_propagate = Vec::new();
         for child in children.iter_mut() {
             if child.finished {
                 continue;
@@ -193,28 +240,44 @@ fn supervise_children(
                 .map_err(|error| format!("failed to poll FlowRT process `{}`: {error}", child.name))?
             {
                 child.exit_code = status.code();
-                if status.success() {
-                    child.finished = true;
-                    child.state = "exited".to_string();
-                } else if DEFAULT_RESTART_POLICY.can_restart(child.restart_count) {
+                if child.restart_policy.can_restart(status.success(), child.restart_count) {
                     child.state = "restarting".to_string();
                     child.next_restart_unix_ms = Some(
                         unix_time_ms().saturating_add(
-                            DEFAULT_RESTART_POLICY.delay_ms_for(child.restart_count),
+                            child.restart_policy.delay_ms_for(child.restart_count),
                         ),
                     );
+                } else if status.success() {
+                    child.finished = true;
+                    child.state = "exited".to_string();
                 } else {
                     child.finished = true;
                     child.state = "failed".to_string();
+                    if child.failure == "propagate" {
+                        failed_to_propagate.push(child.name.clone());
+                    }
                 }
                 record_child_health(supervisor_state, child, false);
                 continue;
             }
             refresh_child_health(supervisor_state, child);
         }
+        for failed_process in failed_to_propagate {
+            propagate_process_failure(supervisor_state, children, &failed_process);
+        }
         std::thread::sleep(HEALTH_POLL_INTERVAL);
     }
     Ok(())
+}
+
+fn process_dependencies_satisfied(
+    process: &LaunchProcess,
+    spawned_names: &BTreeSet<String>,
+) -> bool {
+    process
+        .depends_on
+        .iter()
+        .all(|dependency| spawned_names.contains(dependency))
 }
 
 fn spawn_flowrt_process(
@@ -269,6 +332,30 @@ fn restart_child(
     child.state = "starting".to_string();
     record_child_health(supervisor_state, child, false);
     Ok(())
+}
+
+fn propagate_process_failure(
+    supervisor_state: &flowrt::IntrospectionState,
+    children: &mut [SupervisedChild],
+    failed_process: &str,
+) {
+    let mut pending = vec![failed_process.to_string()];
+    while let Some(failed) = pending.pop() {
+        for child in children.iter_mut() {
+            if child.finished || !child.dependencies.iter().any(|dependency| dependency == &failed) {
+                continue;
+            }
+            let _ = child.child.kill();
+            let _ = child.child.wait();
+            child.finished = true;
+            child.state = "failed".to_string();
+            child.exit_code = None;
+            record_child_health(supervisor_state, child, false);
+            if child.failure == "propagate" {
+                pending.push(child.name.clone());
+            }
+        }
+    }
 }
 
 fn refresh_child_health(supervisor_state: &flowrt::IntrospectionState, child: &mut SupervisedChild) {

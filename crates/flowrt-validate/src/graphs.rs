@@ -29,12 +29,120 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
 
         validate_instance_targets(&components, &targets, graph, errors);
         validate_process_targets(graph, errors);
+        validate_process_orchestration(graph, errors);
         validate_tasks(&components, &instances, graph, errors);
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
     }
+}
+
+fn validate_process_orchestration(graph: &GraphIr, errors: &mut Vec<ValidationError>) {
+    let declared = graph
+        .processes
+        .iter()
+        .map(|process| process.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let used = graph
+        .instances
+        .iter()
+        .map(|instance| instance.process.as_deref().unwrap_or("main"))
+        .collect::<BTreeSet<_>>();
+
+    for process in &used {
+        if !declared.contains(process) {
+            errors.push(ValidationError::new(format!(
+                "process `{process}` is used by an instance but missing process orchestration"
+            )));
+        }
+    }
+    for process in &declared {
+        if !used.contains(process) {
+            errors.push(ValidationError::new(format!(
+                "process `{process}` has orchestration policy but no instance"
+            )));
+        }
+    }
+
+    for process in &graph.processes {
+        let mut seen = BTreeSet::new();
+        for dependency in &process.depends_on {
+            if dependency == &process.name {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` must not depend on itself",
+                    process.name
+                )));
+            }
+            if !declared.contains(dependency.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` depends on unknown process `{dependency}`",
+                    process.name
+                )));
+            }
+            if !seen.insert(dependency.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` depends on `{dependency}` more than once",
+                    process.name
+                )));
+            }
+        }
+    }
+
+    if has_process_dependency_cycle(graph) {
+        errors.push(ValidationError::new(
+            "process dependency graph contains a cycle",
+        ));
+    }
+}
+
+fn has_process_dependency_cycle(graph: &GraphIr) -> bool {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Done,
+    }
+
+    fn visit<'a>(
+        name: &'a str,
+        dependencies: &BTreeMap<&'a str, Vec<&'a str>>,
+        states: &mut BTreeMap<&'a str, VisitState>,
+    ) -> bool {
+        match states.get(name).copied() {
+            Some(VisitState::Visiting) => return true,
+            Some(VisitState::Done) => return false,
+            None => {}
+        }
+        states.insert(name, VisitState::Visiting);
+        if let Some(next) = dependencies.get(name) {
+            for dependency in next {
+                if visit(dependency, dependencies, states) {
+                    return true;
+                }
+            }
+        }
+        states.insert(name, VisitState::Done);
+        false
+    }
+
+    let dependencies = graph
+        .processes
+        .iter()
+        .map(|process| {
+            (
+                process.name.as_str(),
+                process
+                    .depends_on
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut states = BTreeMap::new();
+    dependencies
+        .keys()
+        .any(|process| visit(process, &dependencies, &mut states))
 }
 
 fn validate_instance_targets(

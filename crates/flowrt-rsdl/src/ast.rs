@@ -50,6 +50,7 @@ pub struct RawModuleDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawCompositionDocument {
     pub instances: BTreeMap<String, RawInstance>,
+    pub processes: Vec<RawProcess>,
     pub binds: Vec<RawDataflowBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
@@ -65,6 +66,7 @@ pub struct RawDocument {
     pub types: BTreeMap<String, RawType>,
     pub components: BTreeMap<String, RawComponent>,
     pub instances: BTreeMap<String, RawInstance>,
+    pub processes: Vec<RawProcess>,
     pub binds: Vec<RawDataflowBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
@@ -145,6 +147,18 @@ pub struct RawTask {
     pub priority: Option<u32>,
     pub input: Vec<String>,
     pub output: Vec<String>,
+}
+
+/// `[[process]]` 表项，描述 graph 级进程编排策略。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawProcess {
+    pub name: String,
+    pub depends_on: Vec<String>,
+    pub restart: Option<String>,
+    pub max_restarts: Option<u32>,
+    pub initial_delay_ms: Option<u64>,
+    pub max_delay_ms: Option<u64>,
+    pub failure: Option<String>,
 }
 
 /// `[[bind.dataflow]]` 表项。

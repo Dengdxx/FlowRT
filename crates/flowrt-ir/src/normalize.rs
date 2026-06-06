@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use flowrt_rsdl::{LoadedDocument, RawDocument, RawModuleDocument, RawPort, RawProfile, RawTarget};
+use flowrt_rsdl::{
+    LoadedDocument, RawDocument, RawModuleDocument, RawPort, RawProcess, RawProfile, RawTarget,
+};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -8,7 +10,8 @@ use crate::{
     ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
     EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
     LifecycleSurface, ModuleIr, OverflowPolicy, PackageIr, PolicyDefaults, PolicyValueSource,
-    PortIr, PortRef, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology,
+    PortIr, PortRef, ProcessFailurePropagation, ProcessIr, ProcessRestartPolicy,
+    ProcessRestartPolicyKind, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology,
     SchedulerDefaults, StalePolicy, TargetIr, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
     channel_capabilities, channel_route_capabilities, deployment_capability_decision,
     graph_required_capabilities, parse_type_expr, target_capabilities,
@@ -127,11 +130,13 @@ fn normalize_document_with_modules(
         &instances,
         &profiles,
     )?;
+    let processes = normalize_processes(document, &instances)?;
     let ros2_bridges = normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = GraphIr {
         id: graph_id.clone(),
         name: graph_name.clone(),
         instances,
+        processes,
         tasks,
         binds,
         ros2_bridges,
@@ -871,6 +876,135 @@ fn default_task_name(index: usize) -> String {
     }
 }
 
+fn normalize_processes(document: &RawDocument, instances: &[InstanceIr]) -> Result<Vec<ProcessIr>> {
+    let used_processes = instances
+        .iter()
+        .map(|instance| {
+            instance
+                .process
+                .clone()
+                .unwrap_or_else(|| "main".to_string())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let mut declared = BTreeMap::<String, &RawProcess>::new();
+    for raw in &document.processes {
+        if declared.insert(raw.name.clone(), raw).is_some() {
+            return Err(IrError::InvalidValue {
+                context: format!("process.{}", raw.name),
+                message: "process orchestration is declared more than once".to_string(),
+            });
+        }
+        if !used_processes.contains(&raw.name) {
+            return Err(IrError::InvalidValue {
+                context: format!("process.{}", raw.name),
+                message: "process is not used by any instance".to_string(),
+            });
+        }
+    }
+
+    let mut processes = Vec::with_capacity(used_processes.len());
+    for name in used_processes {
+        let raw = declared.get(&name).copied();
+        let mut seen_dependencies = std::collections::BTreeSet::new();
+        let mut depends_on = raw
+            .map(|raw| raw.depends_on.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|dependency| {
+                if !seen_dependencies.insert(dependency.clone()) {
+                    return Err(IrError::InvalidValue {
+                        context: format!("process.{name}.depends_on"),
+                        message: format!("duplicate dependency `{dependency}`"),
+                    });
+                }
+                if dependency == name {
+                    return Err(IrError::InvalidValue {
+                        context: format!("process.{name}.depends_on"),
+                        message: "process must not depend on itself".to_string(),
+                    });
+                }
+                if !instances.iter().any(|instance| {
+                    instance.process.as_deref().unwrap_or("main") == dependency.as_str()
+                }) {
+                    return Err(IrError::InvalidValue {
+                        context: format!("process.{name}.depends_on"),
+                        message: format!("unknown process `{dependency}`"),
+                    });
+                }
+                Ok(dependency)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        depends_on.sort();
+
+        processes.push(ProcessIr {
+            name: name.clone(),
+            depends_on,
+            restart: normalize_process_restart(&name, raw)?,
+            failure_propagation: normalize_failure_propagation(&name, raw)?,
+        });
+    }
+    Ok(processes)
+}
+
+fn normalize_process_restart(
+    process_name: &str,
+    raw: Option<&RawProcess>,
+) -> Result<ProcessRestartPolicy> {
+    let policy = match raw.and_then(|raw| raw.restart.as_deref()) {
+        Some("never") => ProcessRestartPolicyKind::Never,
+        Some("on_failure") | None => ProcessRestartPolicyKind::OnFailure,
+        Some("always") => ProcessRestartPolicyKind::Always,
+        Some(value) => {
+            return Err(IrError::InvalidEnum {
+                context: format!("process.{process_name}.restart"),
+                kind: "process restart policy",
+                value: value.to_string(),
+            });
+        }
+    };
+    let max_restarts = if policy == ProcessRestartPolicyKind::Never {
+        0
+    } else {
+        raw.and_then(|raw| raw.max_restarts).unwrap_or(3)
+    };
+    let initial_delay_ms = raw.and_then(|raw| raw.initial_delay_ms).unwrap_or(100);
+    let max_delay_ms = raw.and_then(|raw| raw.max_delay_ms).unwrap_or(1_000);
+    if initial_delay_ms == 0 {
+        return Err(IrError::InvalidValue {
+            context: format!("process.{process_name}.initial_delay_ms"),
+            message: "`initial_delay_ms` must be greater than zero".to_string(),
+        });
+    }
+    if max_delay_ms < initial_delay_ms {
+        return Err(IrError::InvalidValue {
+            context: format!("process.{process_name}.max_delay_ms"),
+            message: "`max_delay_ms` must be greater than or equal to initial_delay_ms".to_string(),
+        });
+    }
+    Ok(ProcessRestartPolicy {
+        policy,
+        max_restarts,
+        initial_delay_ms,
+        max_delay_ms,
+    })
+}
+
+fn normalize_failure_propagation(
+    process_name: &str,
+    raw: Option<&RawProcess>,
+) -> Result<ProcessFailurePropagation> {
+    match raw.and_then(|raw| raw.failure.as_deref()) {
+        Some("propagate") | None => Ok(ProcessFailurePropagation::Propagate),
+        Some("isolate") => Ok(ProcessFailurePropagation::Isolate),
+        Some(value) => Err(IrError::InvalidEnum {
+            context: format!("process.{process_name}.failure"),
+            kind: "process failure propagation",
+            value: value.to_string(),
+        }),
+    }
+}
+
 fn normalize_binds(
     document: &RawDocument,
     instance_refs: &BTreeMap<String, EntityRef>,
@@ -1442,6 +1576,87 @@ output = ["out"]
         assert_eq!(task.readiness, TaskReadiness::AllReady);
         assert_eq!(task.lane.as_deref(), Some("worker_serial"));
         assert_eq!(task.priority, Some(7));
+    }
+
+    #[test]
+    fn normalizes_process_orchestration_defaults_and_overrides() {
+        let source = r#"
+[package]
+name = "process_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensor_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[[process]]
+name = "sensor_proc"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+restart = "never"
+failure = "isolate"
+
+[profile.default]
+backend = "iox2"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let processes = &ir.graphs[0].processes;
+
+        assert_eq!(processes.len(), 2);
+        assert_eq!(processes[0].name, "control_proc");
+        assert_eq!(processes[0].depends_on, vec!["sensor_proc"]);
+        assert_eq!(processes[0].restart.policy, ProcessRestartPolicyKind::Never);
+        assert_eq!(processes[0].restart.max_restarts, 0);
+        assert_eq!(
+            processes[0].failure_propagation,
+            ProcessFailurePropagation::Isolate
+        );
+        assert_eq!(processes[1].name, "sensor_proc");
+        assert_eq!(
+            processes[1].restart.policy,
+            ProcessRestartPolicyKind::OnFailure
+        );
+        assert_eq!(processes[1].restart.max_restarts, 5);
+        assert_eq!(processes[1].restart.initial_delay_ms, 50);
+        assert_eq!(processes[1].restart.max_delay_ms, 500);
+        assert_eq!(
+            processes[1].failure_propagation,
+            ProcessFailurePropagation::Propagate
+        );
     }
 
     #[test]
