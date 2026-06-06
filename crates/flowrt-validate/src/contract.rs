@@ -71,6 +71,9 @@ pub(crate) fn validate_contract_canonical_fields(
         for bind in &graph.binds {
             validate_entity_id_shape("bind id", "bind", &bind.id, errors);
         }
+        for bridge in &graph.ros2_bridges {
+            validate_entity_id_shape("ROS2 bridge id", "bridge", &bridge.id, errors);
+        }
     }
     for profile in &ir.profiles {
         validate_entity_id_shape("profile id", "profile", &profile.id, errors);
@@ -212,6 +215,16 @@ pub(crate) fn validate_contract_canonical_ordering(
                 graph.name
             )));
         }
+        if !graph
+            .ros2_bridges
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` ROS2 bridges must use canonical name order",
+                graph.name
+            )));
+        }
     }
 
     if !ir
@@ -306,6 +319,12 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
                 .map(|instance| instance.name.as_str()),
             errors,
         );
+        validate_unique_names(
+            &format!("graph `{}`", graph.name),
+            "ROS2 bridge",
+            graph.ros2_bridges.iter().map(|bridge| bridge.name.as_str()),
+            errors,
+        );
     }
 }
 
@@ -359,6 +378,14 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
                     "bind `{}.{}` -> `{}.{}`",
                     bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
                 ),
+                errors,
+            );
+        }
+        for bridge in &graph.ros2_bridges {
+            record_entity_id(
+                &mut seen,
+                &bridge.id,
+                format!("ROS2 bridge `{}`", bridge.name),
                 errors,
             );
         }
@@ -479,6 +506,16 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
                 "bind target instance reference",
                 "instance",
                 &bind.to.instance,
+                &instance_ids,
+                errors,
+            );
+        }
+
+        for bridge in &graph.ros2_bridges {
+            validate_named_entity_ref(
+                "ROS2 bridge FlowRT instance reference",
+                "instance",
+                &bridge.flowrt.instance,
                 &instance_ids,
                 errors,
             );

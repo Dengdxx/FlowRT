@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{ContractIr, GraphIr, InstanceIr, TaskIr};
 
+use crate::runtime_plan::bridge_runtime_plans;
 use crate::{
-    Result, component_by_name, iox2_service_name_for_edge, language_name, zenoh_key_expr_for_edge,
+    Result, component_by_name, iox2_service_name_for_edge, language_name, ros2_bridge_key_expr,
+    zenoh_key_expr_for_edge,
 };
 
 pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
@@ -16,6 +18,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
             "name": graph.name,
             "processes": launch_processes(contract, graph),
             "channels": launch_channels(contract, graph),
+            "ros2_bridges": launch_ros2_bridges(contract, graph),
             "instances": graph.instances.iter().map(|instance| {
                 let component = component_by_name(contract, &instance.component.name);
                 serde_json::json!({
@@ -32,6 +35,23 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
+}
+
+fn launch_ros2_bridges(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
+    bridge_runtime_plans(contract, graph)
+        .iter()
+        .map(|bridge| {
+            serde_json::json!({
+                "name": bridge.name,
+                "flowrt": format!("{}.{}", bridge.source_instance, bridge.source_port),
+                "ros2_topic": bridge.ros2_topic,
+                "ros2_type": bridge.ros2_type,
+                "field": bridge.field,
+                "backend": "zenoh",
+                "key_expr": ros2_bridge_key_expr(contract, graph, bridge),
+            })
+        })
+        .collect()
 }
 
 fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
@@ -75,7 +95,7 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
             .push(instance);
     }
 
-    processes
+    let mut launch_processes = processes
         .into_iter()
         .map(|(name, instances)| {
             let instance_names = instances
@@ -94,10 +114,29 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
                 "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(launch_task).collect::<Vec<_>>(),
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    if !graph.ros2_bridges.is_empty() {
+        launch_processes.push(serde_json::json!({
+            "name": "ros2_bridge",
+            "backend": "zenoh",
+            "target": null,
+            "runtimes": ["ros2_bridge"],
+            "runtime_kind": "ros2_bridge",
+            "instances": [],
+            "tasks": [],
+        }));
+    }
+
+    launch_processes
 }
 
 fn process_backend(graph: &GraphIr, instance_names: &BTreeSet<&str>) -> String {
+    if graph.ros2_bridges.iter().any(|bridge| {
+        bridge.backend.0 == "zenoh" && instance_names.contains(bridge.flowrt.instance.name.as_str())
+    }) {
+        return "zenoh".to_string();
+    }
     if graph.binds.iter().any(|bind| {
         bind.backend.0 == "zenoh"
             && (instance_names.contains(bind.from.instance.name.as_str())

@@ -17,6 +17,7 @@ mod build_files;
 mod cpp_shell;
 mod launch_manifest;
 mod messages;
+mod ros2_bridge;
 mod runtime_plan;
 mod selfdesc;
 mod supervisor;
@@ -33,10 +34,12 @@ use messages::{
     frame_max_size_for_type, rust_type, rust_wire_size, type_contains_variable_data,
     variable_tail_max_size,
 };
+use ros2_bridge::emit_ros2_bridge_adapter;
 use runtime_plan::{
-    BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
-    bind_backend, bind_runtime_plans, incoming_bind_index_map, indent_generated_block,
-    indent_generated_block_levels, on_message_trigger_guard, outgoing_bind_indices_map,
+    BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    active_binds_for_instances, bind_backend, bind_runtime_plans, bridge_runtime_plans,
+    incoming_bind_index_map, indent_generated_block, indent_generated_block_levels,
+    on_message_trigger_guard, outgoing_bind_indices_map, outgoing_bridge_indices_map,
     process_runtime_plans, runtime_channel_message_type, runtime_channel_name,
     runtime_channel_probe_capacity, runtime_param_name, rust_nested_step_indent, rust_step_indent,
 };
@@ -127,7 +130,9 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
 
     let mut artifacts = Vec::new();
     let abi_expectations = fixed_message_abi_expectations(contract)?;
-    let has_cpp = has_language(contract, LanguageKind::Cpp);
+    let has_cpp_components = has_language(contract, LanguageKind::Cpp);
+    let has_ros2_bridge = contract_has_ros2_bridge(contract);
+    let has_cpp = has_cpp_components || has_ros2_bridge;
     let has_rust = has_language(contract, LanguageKind::Rust);
 
     if has_cpp {
@@ -139,23 +144,33 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             "cpp/include/flowrt_app/selfdesc.hpp",
             emit_cpp_selfdesc_header(contract),
         ));
-        artifacts.push(artifact(
-            "cpp/include/flowrt_app/components.hpp",
-            emit_cpp_components(contract),
-        ));
-        artifacts.push(artifact(
-            "cpp/include/flowrt_app/runtime_shell.hpp",
-            emit_cpp_runtime_shell_header(contract),
-        ));
+        if has_cpp_components {
+            artifacts.push(artifact(
+                "cpp/include/flowrt_app/components.hpp",
+                emit_cpp_components(contract),
+            ));
+            artifacts.push(artifact(
+                "cpp/include/flowrt_app/runtime_shell.hpp",
+                emit_cpp_runtime_shell_header(contract),
+            ));
+        }
         artifacts.push(artifact(
             "cpp/src/selfdesc.cpp",
             emit_cpp_selfdesc_source(contract),
         ));
-        artifacts.push(artifact(
-            "cpp/src/runtime_shell.cpp",
-            emit_cpp_runtime_shell(contract),
-        ));
-        artifacts.push(artifact("cpp/src/main.cpp", emit_cpp_main()));
+        if has_cpp_components {
+            artifacts.push(artifact(
+                "cpp/src/runtime_shell.cpp",
+                emit_cpp_runtime_shell(contract),
+            ));
+            artifacts.push(artifact("cpp/src/main.cpp", emit_cpp_main()));
+        }
+        if has_ros2_bridge {
+            artifacts.push(artifact(
+                "cpp/src/ros2_bridge.cpp",
+                emit_ros2_bridge_adapter(contract),
+            ));
+        }
         if !abi_expectations.is_empty() {
             artifacts.push(artifact(
                 "cpp/tests/message_abi.cpp",
@@ -232,6 +247,13 @@ pub(crate) fn has_language(contract: &ContractIr, language: LanguageKind) -> boo
         .components
         .iter()
         .any(|component| component.language == language)
+}
+
+pub(crate) fn contract_has_ros2_bridge(contract: &ContractIr) -> bool {
+    contract
+        .graphs
+        .iter()
+        .any(|graph| !graph.ros2_bridges.is_empty())
 }
 
 pub(crate) fn language_name(language: LanguageKind) -> &'static str {
@@ -407,8 +429,10 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let order = topo_order_instances_for_language(contract, graph, LanguageKind::Rust);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
+    let bridge_plans = bridge_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
+    let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
     let selected_backend = selected_backend_name(contract);
 
     let mut output = managed_header();
@@ -455,16 +479,31 @@ fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             bind.probe_field_name
         ));
     }
+    for bridge in &bridge_plans {
+        output.push_str(&format!(
+            "    {}: {},\n",
+            bridge.field_name,
+            bridge_runtime_channel_type(bridge)
+        ));
+    }
     output.push_str("}\n\n");
 
     output.push_str("impl App {\n");
-    output.push_str(&emit_rust_app_new(contract, graph, &order, &bind_plans));
+    output.push_str(&emit_rust_app_new(
+        contract,
+        graph,
+        &order,
+        &bind_plans,
+        &bridge_plans,
+    ));
     let step_emission = RustStepEmission {
         contract,
         graph,
         binds: &bind_plans,
+        bridges: &bridge_plans,
         incoming_bind_index: &incoming_bind_index,
         outgoing_bind_indices: &outgoing_bind_indices,
+        outgoing_bridge_indices: &outgoing_bridge_indices,
     };
 
     output.push_str(&emit_rust_app_step(
@@ -683,6 +722,7 @@ fn emit_rust_app_new(
     graph: &GraphIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let mut output = String::new();
     output.push_str("    pub fn new(\n");
@@ -717,6 +757,13 @@ fn emit_rust_app_new(
             bind.probe_field_name
         ));
     }
+    for bridge in bridges {
+        output.push_str(&format!(
+            "            {}: {},\n",
+            bridge.field_name,
+            bridge_runtime_channel_initializer(contract, graph, bridge)
+        ));
+    }
     output.push_str("        }\n    }\n");
     output
 }
@@ -725,8 +772,10 @@ struct RustStepEmission<'a> {
     contract: &'a ContractIr,
     graph: &'a GraphIr,
     binds: &'a [BindRuntimePlan],
+    bridges: &'a [BridgeRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+    outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
 }
 
 fn emit_rust_app_step(
@@ -741,7 +790,7 @@ fn emit_rust_app_step(
     ));
     output.push_str("        let _ = tick;\n");
     output.push_str("        let _ = introspection_state;\n");
-    if runtime_step_uses_tick_time(emission.binds) {
+    if runtime_step_uses_tick_time(emission.binds, emission.bridges) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
 
@@ -852,7 +901,12 @@ fn emit_rust_app_step(
                     .get(&(instance.name.clone(), port.name.clone()))
                     .cloned()
                     .unwrap_or_default();
-                if outgoing.is_empty() {
+                let bridge_outgoing = emission
+                    .outgoing_bridge_indices
+                    .get(&(instance.name.clone(), port.name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if outgoing.is_empty() && bridge_outgoing.is_empty() {
                     continue;
                 }
                 output.push_str(&format!(
@@ -863,6 +917,13 @@ fn emit_rust_app_step(
                     let bind = &emission.binds[bind_index];
                     output.push_str(&indent_generated_block_levels(
                         &runtime_channel_write(bind),
+                        write_indent_levels,
+                    ));
+                }
+                for bridge_index in bridge_outgoing {
+                    let bridge = &emission.bridges[bridge_index];
+                    output.push_str(&indent_generated_block_levels(
+                        &bridge_runtime_channel_write(bridge),
                         write_indent_levels,
                     ));
                 }
@@ -997,10 +1058,20 @@ fn emit_rust_app_run_function(
     output
 }
 
-fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan]) -> bool {
+fn runtime_step_uses_tick_time(binds: &[BindRuntimePlan], bridges: &[BridgeRuntimePlan]) -> bool {
+    if !bridges.is_empty() {
+        return true;
+    }
     binds
         .iter()
         .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
+}
+
+fn bridge_runtime_channel_type(bridge: &BridgeRuntimePlan) -> String {
+    format!(
+        "flowrt::zenoh::ZenohPubSub<{}>",
+        rust_type(&bridge.source_type)
+    )
 }
 
 fn runtime_channel_type(bind: &BindRuntimePlan) -> String {
@@ -1045,6 +1116,17 @@ fn runtime_channel_initializer(
         ),
         ChannelKind::Fifo => runtime_fifo_channel_initializer(bind),
     }
+}
+
+fn bridge_runtime_channel_initializer(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    bridge: &BridgeRuntimePlan,
+) -> String {
+    format!(
+        "flowrt::zenoh::ZenohPubSub::open_with_config({}, flowrt::zenoh::ZenohChannelConfig::latest()).expect(\"failed to open FlowRT ROS2 bridge zenoh channel\")",
+        rust_string_literal(&ros2_bridge_key_expr(contract, graph, bridge)),
+    )
 }
 
 fn zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
@@ -1180,6 +1262,13 @@ fn runtime_channel_write(bind: &BindRuntimePlan) -> String {
     }
 }
 
+fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
+    format!(
+        "            if self.{field}.publish_at(value.clone(), tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n",
+        field = bridge.field_name
+    )
+}
+
 pub(crate) fn iox2_service_name(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -1230,6 +1319,43 @@ pub(crate) fn zenoh_key_expr_for_edge(
         &bind.from.port,
         &bind.to.instance.name,
         &bind.to.port,
+    )
+}
+
+pub(crate) fn ros2_bridge_key_expr(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    bridge: &BridgeRuntimePlan,
+) -> String {
+    ros2_bridge_key_expr_from_parts(
+        &contract.package.name,
+        &selected_profile_name(contract),
+        &graph.name,
+        bridge.index,
+        &bridge.source_instance,
+        &bridge.source_port,
+        &bridge.ros2_topic,
+    )
+}
+
+fn ros2_bridge_key_expr_from_parts(
+    package: &str,
+    profile: &str,
+    graph: &str,
+    index: usize,
+    source_instance: &str,
+    source_port: &str,
+    ros2_topic: &str,
+) -> String {
+    format!(
+        "flowrt/{}/{}/{}/ros2_bridge_{}/{}_{}_to_{}",
+        flowrt_path_part(package),
+        flowrt_path_part(profile),
+        flowrt_path_part(graph),
+        index,
+        flowrt_path_part(source_instance),
+        flowrt_path_part(source_port),
+        flowrt_topic_path_part(ros2_topic),
     )
 }
 
@@ -1308,6 +1434,25 @@ fn iox2_service_name_from_parts(
 }
 
 fn flowrt_path_part(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            output.push(ch);
+        } else if !output.ends_with('_') {
+            output.push('_');
+        }
+    }
+    while output.ends_with('_') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "unnamed".to_string()
+    } else {
+        output
+    }
+}
+
+fn flowrt_topic_path_part(value: &str) -> String {
     let mut output = String::new();
     for ch in value.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {

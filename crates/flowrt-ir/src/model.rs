@@ -164,6 +164,27 @@ pub struct GraphIr {
     pub instances: Vec<InstanceIr>,
     pub tasks: Vec<TaskIr>,
     pub binds: Vec<ChannelEdgeIr>,
+    pub ros2_bridges: Vec<Ros2BridgeIr>,
+}
+
+/// FlowRT 与 ROS2 的静态桥接声明。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ros2BridgeIr {
+    pub id: EntityId,
+    pub name: String,
+    pub flowrt: PortRef,
+    pub ros2_topic: String,
+    pub ros2_type: String,
+    pub direction: Ros2BridgeDirection,
+    pub field: String,
+    pub backend: BackendName,
+}
+
+/// ROS2 bridge 方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ros2BridgeDirection {
+    FlowrtToRos2,
 }
 
 /// instance 的执行单元。

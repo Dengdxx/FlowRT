@@ -28,6 +28,7 @@ cargo run -p flowrt-cli -- prepare examples/cpp_counter_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/imu_demo_iox2/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/mixed_iox2_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/mixed_zenoh_demo/rsdl/robot.rsdl
+cargo run -p flowrt-cli -- prepare examples/ros2_bridge_demo/rsdl/robot.rsdl
 ```
 
 仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让 `examples/*/src/cpp/**` 读取本示例自己的 `flowrt/cpp/include` 生成头。`flowrt/` 和 `examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行对应示例的 `prepare` 或 `build`，再重启 clangd。
@@ -55,12 +56,23 @@ flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
 FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
+ROS2 bridge 本地 smoke 需要 ROS2 Jazzy 或之后版本的 C++ 开发环境，以及运行时 `rmw_zenoh_cpp`。该 bridge 只允许 zenoh 路径，不接受 DDS fallback。普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。执行前 source ROS2 环境，生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+```
+
 Debian 包和安装后用户项目 smoke：
 
 ```bash
 scripts/test-package-deb.sh
 scripts/test-deb-installed-user-project.sh
 ```
+
+`scripts/test-deb-installed-user-project.sh` 会从 deb 中解包 `flowrt`，在临时用户项目目录里构建示例，验证生成项目不依赖 FlowRT 源码树。若本机安装了 ROS2 Jazzy 和 `rmw_zenoh_cpp`，该脚本还会构建并运行 `ros2_bridge_demo`，确认 generated adapter 链接 ROS2 自带 `zenoh_cpp_vendor` 并能被 `ros2 topic echo /flowrt/text --once` 观察到；缺少 ROS2 环境时该子项跳过。
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：
 
@@ -107,6 +119,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - C++ runtime introspection API 要保持与 Rust JSON-line wire 格式兼容：`status`、`self_description`、`channel_snapshot`、`observe_channel` 和结构化 error 的字段语义必须一致。generated Rust/C++ shell 都应启动 PID 命名 socket、注册当前 process active channel，并使用同一套按需 probe 规则。
 - C++ only contract 的普通 `flowrt build` / `flowrt run` 走 CMake app 路径，不依赖 Cargo app。
 - C++ only contract 的 `flowrt build --launcher` 会生成并构建 supervisor-only Rust crate；该 crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
+- `[[bridge.ros2]]` 会生成 FlowRT 管理的 C++ ROS2 adapter process；CLI `build` 必须构建 CMake bridge target，即使 contract 没有 C++ 用户 component。FlowRT 与 ROS2 的唯一 bridge backend 是 `zenoh`，ROS2 侧必须使用 `rmw_zenoh_cpp`，不得添加 DDS fallback。
 - `flowrt run` 和 `flowrt launch` 只读取已生成产物，不执行 prepare/build，不写 `flowrt/` 输出目录。
 - 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有 OS advisory lock；`.flowrt.lock` 文件可以残留，PID 只作为诊断内容，真实占用状态必须由锁判断。`check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`echo` 和 `params` 不写生成物，不应获取该锁。
 - 生成的 Rust/C++ runtime shell 必须把 SIGINT/SIGTERM 转成 runtime `ShutdownToken`，让长期运行的 tick loop 优雅退出，并继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。CLI 的 `--run-ticks` 只是显式运行上限，不是核心 runtime 行为来源。

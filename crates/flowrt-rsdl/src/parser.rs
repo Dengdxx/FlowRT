@@ -14,6 +14,7 @@ struct ParsedDocument {
     components: BTreeMap<String, RawComponent>,
     instances: BTreeMap<String, RawInstance>,
     binds: Vec<RawDataflowBind>,
+    ros2_bridges: Vec<RawRos2Bridge>,
     profiles: BTreeMap<String, RawProfile>,
     targets: BTreeMap<String, RawTarget>,
 }
@@ -104,6 +105,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         components: parse_named_tables(root, "component", parse_component)?,
         instances: parse_named_tables(root, "instance", parse_instance)?,
         binds: parse_binds(root)?,
+        ros2_bridges: parse_ros2_bridges(root)?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
     })
@@ -116,6 +118,7 @@ fn validate_top_level_sections(root: &Table) -> Result<()> {
         "component",
         "instance",
         "bind",
+        "bridge",
         "profile",
         "target",
     ];
@@ -149,6 +152,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         components: parsed.components,
         instances: parsed.instances,
         binds: parsed.binds,
+        ros2_bridges: parsed.ros2_bridges,
         profiles: parsed.profiles,
         targets: parsed.targets,
     })
@@ -230,6 +234,7 @@ fn merge_imported_document(document: &mut RawDocument, imported: ParsedDocument)
     merge_named_map("component", &mut document.components, imported.components)?;
     merge_named_map("instance", &mut document.instances, imported.instances)?;
     document.binds.extend(imported.binds);
+    document.ros2_bridges.extend(imported.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, imported.profiles)?;
     merge_named_map("target", &mut document.targets, imported.targets)?;
     Ok(())
@@ -591,6 +596,55 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             overflow: optional_string(table, &context, "overflow")?,
             stale_policy: optional_string(table, &context, "stale_policy")?,
             max_age_ms: optional_u64(table, &context, "max_age_ms")?,
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_ros2_bridges(root: &Table) -> Result<Vec<RawRos2Bridge>> {
+    let Some(bridge_value) = root.get("bridge") else {
+        return Ok(Vec::new());
+    };
+    let bridge_table = bridge_value
+        .as_table()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "bridge".to_string(),
+            expected: "table",
+        })?;
+    validate_known_fields(bridge_table, "bridge", &["ros2"])?;
+    let Some(ros2_value) = bridge_table.get("ros2") else {
+        return Ok(Vec::new());
+    };
+    let bridges = ros2_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "bridge".to_string(),
+            field: "ros2".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(bridges.len());
+    for (index, value) in bridges.iter().enumerate() {
+        let context = format!("bridge.ros2[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "bridge".to_string(),
+                field: "ros2".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &["flowrt", "ros2_topic", "ros2_type", "direction", "field"],
+        )?;
+        parsed.push(RawRos2Bridge {
+            flowrt: required_string(table, &context, "flowrt")?,
+            ros2_topic: required_string(table, &context, "ros2_topic")?,
+            ros2_type: required_string(table, &context, "ros2_type")?,
+            direction: required_string(table, &context, "direction")?,
+            field: optional_string(table, &context, "field")?,
         });
     }
     Ok(parsed)
@@ -1325,6 +1379,50 @@ timestamp = "u64"
         ));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_ros2_bridge_tables() {
+        let document = parse_str(
+            r#"
+[package]
+name = "ros2_bridge_demo"
+rsdl_version = "0.1"
+
+[type.TextFrame]
+data = "string"
+
+[component.source]
+language = "rust"
+output = ["text:TextFrame"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 10
+output = ["text"]
+
+[[bridge.ros2]]
+flowrt = "source.text"
+ros2_topic = "/flowrt/text"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+
+[profile.default]
+backend = "zenoh"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(document.ros2_bridges.len(), 1);
+        assert_eq!(document.ros2_bridges[0].flowrt, "source.text");
+        assert_eq!(document.ros2_bridges[0].ros2_topic, "/flowrt/text");
+        assert_eq!(document.ros2_bridges[0].ros2_type, "std_msgs/msg/String");
+        assert_eq!(document.ros2_bridges[0].direction, "flowrt_to_ros2");
+        assert_eq!(document.ros2_bridges[0].field.as_deref(), Some("data"));
     }
 
     fn unique_temp_dir() -> std::path::PathBuf {

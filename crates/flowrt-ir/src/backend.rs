@@ -815,6 +815,7 @@ mod tests {
                     capability_requirements: vec![],
                 },
             ],
+            ros2_bridges: vec![],
         };
         let types = [TypeIr {
             id: crate::EntityId("type_0000000000000001".to_string()),

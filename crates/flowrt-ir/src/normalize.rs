@@ -8,10 +8,10 @@ use crate::{
     ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
     EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
     LifecycleSurface, OverflowPolicy, PackageIr, PolicyDefaults, PolicyValueSource, PortIr,
-    PortRef, ProfileIr, Result, RouteTopology, StalePolicy, TargetIr, TaskIr, TriggerKind,
-    TypeExpr, TypeIr, channel_capabilities, channel_route_capabilities,
-    deployment_capability_decision, graph_required_capabilities, parse_type_expr,
-    target_capabilities,
+    PortRef, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology, StalePolicy,
+    TargetIr, TaskIr, TriggerKind, TypeExpr, TypeIr, channel_capabilities,
+    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
+    parse_type_expr, target_capabilities,
 };
 
 mod params;
@@ -101,12 +101,14 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
         &instances,
         &profiles,
     )?;
+    let ros2_bridges = normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = GraphIr {
         id: graph_id.clone(),
         name: graph_name.clone(),
         instances,
         tasks,
         binds,
+        ros2_bridges,
     };
 
     let deployments = normalize_deployments(&graph, &types, &components, &profiles, &targets);
@@ -614,6 +616,36 @@ fn normalize_binds(
     Ok(binds)
 }
 
+fn normalize_ros2_bridges(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    graph_name: &str,
+) -> Result<Vec<Ros2BridgeIr>> {
+    document
+        .ros2_bridges
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let flowrt = parse_port_ref(&raw.flowrt, instance_refs)?;
+            let direction = parse_ros2_bridge_direction(
+                &format!("bridge.ros2[{index}].direction"),
+                &raw.direction,
+            )?;
+            let name = format!("ros2_bridge_{index}");
+            Ok(Ros2BridgeIr {
+                id: entity_id("bridge", &format!("{graph_name}.{name}")),
+                name,
+                flowrt,
+                ros2_topic: raw.ros2_topic.clone(),
+                ros2_type: raw.ros2_type.clone(),
+                direction,
+                field: raw.field.clone().unwrap_or_else(|| "data".to_string()),
+                backend: BackendName("zenoh".to_string()),
+            })
+        })
+        .collect()
+}
+
 struct ResolvedChannelBackend {
     backend: String,
     source: ChannelBackendSource,
@@ -871,6 +903,13 @@ fn parse_stale_policy(context: &str, value: &str) -> Result<StalePolicy> {
         "hold_last" => Ok(StalePolicy::HoldLast),
         "error" => Ok(StalePolicy::Error),
         _ => Err(invalid_enum(context, "stale policy", value)),
+    }
+}
+
+fn parse_ros2_bridge_direction(context: &str, value: &str) -> Result<Ros2BridgeDirection> {
+    match value {
+        "flowrt_to_ros2" => Ok(Ros2BridgeDirection::FlowrtToRos2),
+        _ => Err(invalid_enum(context, "ROS2 bridge direction", value)),
     }
 }
 

@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, PortIr, PortRef, TaskIr,
-    TriggerKind, param_value_compatible, param_value_kind,
+    BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, PortIr,
+    PortRef, Ros2BridgeDirection, TaskIr, TriggerKind, TypeExpr, param_value_compatible,
+    param_value_kind,
 };
 
 use crate::ValidationError;
@@ -31,6 +32,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_tasks(&components, &instances, graph, errors);
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
+        validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
     }
 }
@@ -327,6 +329,115 @@ fn validate_binds(
             errors.push(ValidationError::new(format!(
                 "input port `{}.{}` has multiple incoming binds",
                 bind.to.instance.name, bind.to.port
+            )));
+        }
+    }
+}
+
+fn validate_ros2_bridges(
+    ir: &ContractIr,
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    if !graph.ros2_bridges.is_empty()
+        && graph
+            .instances
+            .iter()
+            .any(|instance| instance.process.as_deref() == Some("ros2_bridge"))
+    {
+        errors.push(ValidationError::new(
+            "process name `ros2_bridge` is reserved when `bridge.ros2` is declared",
+        ));
+    }
+
+    let targets = ir
+        .targets
+        .iter()
+        .map(|target| (target.name.as_str(), target))
+        .collect::<BTreeMap<_, _>>();
+    let types = ir
+        .types
+        .iter()
+        .map(|ty| (ty.name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+
+    for bridge in &graph.ros2_bridges {
+        if bridge.backend != BackendName("zenoh".to_string()) {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` must use backend `zenoh`; found `{}`",
+                bridge.name, bridge.backend.0
+            )));
+        }
+        if bridge.direction != Ros2BridgeDirection::FlowrtToRos2 {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` has unsupported direction",
+                bridge.name
+            )));
+        }
+        if bridge.ros2_type != "std_msgs/msg/String" {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` uses unsupported ROS2 type `{}`; only `std_msgs/msg/String` is supported",
+                bridge.name, bridge.ros2_type
+            )));
+        }
+
+        let source_port =
+            match resolve_port(components, instances, &bridge.flowrt, PortDirection::Output) {
+                Ok(port) => port,
+                Err(message) => {
+                    errors.push(ValidationError::new(message));
+                    continue;
+                }
+            };
+        let TypeExpr::Named { name: type_name } = &source_port.ty else {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` source `{}.{}` must use a named message type",
+                bridge.name, bridge.flowrt.instance.name, bridge.flowrt.port
+            )));
+            continue;
+        };
+        let Some(message_type) = types.get(type_name.as_str()) else {
+            continue;
+        };
+        let Some(field) = message_type
+            .fields
+            .iter()
+            .find(|field| field.name == bridge.field)
+        else {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` maps field `{}`, but type `{}` has no such field",
+                bridge.name, bridge.field, message_type.name
+            )));
+            continue;
+        };
+        if !matches!(field.ty, TypeExpr::VarString { .. }) {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` maps field `{}` of type `{}`, but `std_msgs/msg/String.data` requires `string`",
+                bridge.name,
+                bridge.field,
+                field.ty.canonical_syntax()
+            )));
+        }
+
+        let Some(instance) = instances.get(bridge.flowrt.instance.name.as_str()) else {
+            continue;
+        };
+        let Some(target_ref) = &instance.target else {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` source instance `{}` must declare a target that supports backend `zenoh`",
+                bridge.name, instance.name
+            )));
+            continue;
+        };
+        let Some(target) = targets.get(target_ref.name.as_str()) else {
+            continue;
+        };
+        if !target.backends.iter().any(|backend| backend.0 == "zenoh") {
+            errors.push(ValidationError::new(format!(
+                "ROS2 bridge `{}` requires target `{}` to support backend `zenoh`",
+                bridge.name, target.name
             )));
         }
     }

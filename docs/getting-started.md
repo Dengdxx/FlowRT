@@ -6,6 +6,7 @@
 
 - Rust toolchain，支持当前 workspace 使用的 Rust 2024 Edition。
 - C++20 编译器、CMake 和 CTest，用于构建 C++ runtime 与 C++ 示例。
+- ROS2 bridge 示例需要 ROS2 Jazzy 或之后版本的 C++ 开发环境；运行 bridge 时还需要 `rmw_zenoh_cpp`。
 
 ## 安装 FlowRT
 
@@ -112,6 +113,26 @@ flowrt params set examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator
 ```
 
 `params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。
+
+## ROS2 bridge 示例
+
+FlowRT 与 ROS2 的 bridge 固定走 `zenoh`，ROS2 侧必须使用 `rmw_zenoh_cpp`，不会回退到 DDS。ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`。当前示例把 FlowRT `TextFrame.data` 发布到 ROS2 `/flowrt/text`：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
+flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+```
+
+另开 ROS2 环境终端观察：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+ros2 topic echo /flowrt/text --once
+```
+
+如果 `ros2 topic echo` 没看到刚启动的 topic，先执行 `ros2 daemon stop` 后重试。
 
 ## 出错时先看什么
 

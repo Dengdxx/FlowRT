@@ -13,6 +13,7 @@
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体，并覆盖 Rust/C++ 用户组件参数接口 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证无界 variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
+| `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
 
 ## `import_demo`
 
@@ -186,6 +187,59 @@ FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/r
 含 C++ zenoh 组件的生成 CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标，并链接该目标。通过 Debian 包安装 FlowRT 时，`zenoh-c` / `zenoh-cpp` 已在 `/opt/flowrt/<version>` 私有前缀内，`flowrt build` 会自动传入对应路径；直接调试生成 CMake 时，可以显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
 
 本机 `flowrt launch` 在没有显式 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT` 时，会为同一个 supervisor 启动的 zenoh process 自动分配本地 TCP mesh。跨机器运行时，需要让两个进程分别拿到对应的 zenoh session 配置，例如通过 `FLOWRT_ZENOH_CONNECT` 和 `FLOWRT_ZENOH_LISTEN` 注入端点；如果要在本机观察足够多的样本，`FLOWRT_TICK_SLEEP_MS` 可以把同步 tick 拉长。
+
+## ROS2 bridge 示例
+
+入口文件：
+
+```text
+examples/ros2_bridge_demo/rsdl/robot.rsdl
+```
+
+该示例声明一个 Rust source：
+
+```text
+source.text -> /flowrt/text
+```
+
+RSDL 中通过 `[[bridge.ros2]]` 声明外部 bridge：
+
+```toml
+[[bridge.ros2]]
+flowrt = "source.text"
+ros2_topic = "/flowrt/text"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+```
+
+FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。FlowRT source 会把 bridge tap 发布到 deterministic zenoh key，生成的 C++ ROS2 adapter 订阅该 key 并发布 `std_msgs/msg/String`。ROS2 侧必须使用 `rmw_zenoh_cpp`；adapter 启动时会设置并校验 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，不会回退到 DDS。普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`，让 plain CMake 找到 ROS2 C++ packages。
+
+构建和运行：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
+flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+```
+
+另开 ROS2 环境终端观察：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+ros2 topic echo /flowrt/text --once
+```
+
+如果 `ros2 topic echo` 没看到刚启动的 topic，先执行 `ros2 daemon stop` 后重试。
+
+当前限制：
+
+- 只支持 `direction = "flowrt_to_ros2"`。
+- 只支持 `ros2_type = "std_msgs/msg/String"`。
+- `field` 必须是 FlowRT message 的 `string` 字段。
+- `target.<name>.backends` 必须包含 `zenoh`。
+- 构建需要 ROS2 C++ 开发包；运行需要安装 `rmw_zenoh_cpp`。
 
 ## 添加新示例
 

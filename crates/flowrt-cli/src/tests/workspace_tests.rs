@@ -277,7 +277,7 @@ fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
 
-    let args = cmake_configure_args(source_dir, build_dir, None);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[]);
 
     assert_eq!(
         args,
@@ -296,7 +296,12 @@ fn cmake_configure_args_can_pass_explicit_runtime_dir() {
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
     let runtime_dir = Path::new("/opt/flowrt/runtime/cpp");
 
-    let args = cmake_configure_args(source_dir, build_dir, Some(runtime_dir));
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        Some(runtime_dir),
+        &[runtime_dir.to_path_buf()],
+    );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/opt/flowrt/runtime/cpp".to_string()));
     assert!(args.contains(&"-DCMAKE_PREFIX_PATH=/opt/flowrt/runtime/cpp".to_string()));
@@ -312,6 +317,40 @@ fn installed_runtime_candidates_include_private_prefix_layout() {
         candidates
             .iter()
             .any(|path| path == Path::new("/opt/flowrt/0.1.0"))
+    );
+}
+
+#[test]
+fn cmake_configure_args_can_split_runtime_headers_from_dependency_prefix() {
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let runtime_dir = Path::new("/repo/runtime/cpp");
+    let sdk_prefix = Path::new("/opt/flowrt/0.1.0");
+
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        Some(runtime_dir),
+        &[sdk_prefix.to_path_buf()],
+    );
+
+    assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/repo/runtime/cpp".to_string()));
+    assert!(args.contains(&"-DCMAKE_PREFIX_PATH=/opt/flowrt/0.1.0".to_string()));
+}
+
+#[test]
+fn cmake_prefix_paths_merge_existing_env_and_runtime_prefix() {
+    let runtime_dir = Path::new("/opt/flowrt/0.1.0");
+    let existing = vec![PathBuf::from("/opt/ros/jazzy")];
+
+    let prefixes = cmake_prefix_paths_for_runtime(Some(runtime_dir), &existing);
+
+    assert_eq!(
+        prefixes,
+        vec![
+            PathBuf::from("/opt/ros/jazzy"),
+            PathBuf::from("/opt/flowrt/0.1.0")
+        ]
     );
 }
 

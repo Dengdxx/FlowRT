@@ -1,6 +1,7 @@
 use flowrt_ir::ContractIr;
 
-use crate::{managed_header, rust_string_literal, sanitize_package_name};
+use crate::ros2_bridge::ros2_bridge_stem;
+use crate::{contract_has_ros2_bridge, managed_header, rust_string_literal, sanitize_package_name};
 
 pub(crate) fn emit_rust_supervisor_main() -> String {
     let mut output = managed_header();
@@ -13,10 +14,11 @@ pub(crate) fn emit_rust_supervisor_main() -> String {
 pub(crate) fn emit_rust_supervisor(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str(&format!(
-        "\nuse std::collections::HashMap;\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::{{Child, Command}};\nuse std::time::Duration;\n\nconst PACKAGE_NAME: &str = {};\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\nconst HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);\nconst TICK_STALE_AFTER_MS: u64 = 1_000;\n",
+        "\nuse std::collections::HashMap;\nuse std::net::TcpListener;\nuse std::path::{{Path, PathBuf}};\nuse std::process::{{Child, Command}};\nuse std::time::Duration;\n\nconst PACKAGE_NAME: &str = {};\nconst RUST_APP_STEM: &str = {};\nconst CPP_APP_STEM: &str = {};\nconst ROS2_BRIDGE_STEM: &str = {};\nconst HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);\nconst TICK_STALE_AFTER_MS: u64 = 1_000;\n",
         rust_string_literal(&contract.package.name),
         rust_string_literal(&rust_app_stem(contract)),
-        rust_string_literal(&cpp_app_stem(contract))
+        rust_string_literal(&cpp_app_stem(contract)),
+        rust_string_literal(&ros2_bridge_app_stem(contract))
     ));
     output.push_str(
         r#"
@@ -222,7 +224,11 @@ fn spawn_flowrt_process(
     zenoh_env: Option<&ZenohLaunchEnv>,
 ) -> Result<Child, String> {
     let mut command = Command::new(app_exe);
-    command.arg("--process").arg(process_name);
+    if process_name != "ros2_bridge" {
+        command.arg("--process").arg(process_name);
+    } else {
+        command.env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp");
+    }
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
     }
@@ -366,6 +372,7 @@ fn app_executable_for_runtime(current_exe: &Path, runtime_kind: &str) -> Result<
     match runtime_kind {
         "rust" => rust_app_executable(current_exe),
         "cpp" => cpp_app_executable(current_exe),
+        "ros2_bridge" => ros2_bridge_executable(current_exe),
         "mixed" => Err("FlowRT mixed process groups are not launchable yet".to_string()),
         other => Err(format!("unknown FlowRT process runtime_kind `{other}`")),
     }
@@ -385,6 +392,17 @@ fn cpp_app_executable(current_exe: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("failed to resolve FlowRT build directory from `{}`", current_exe.display()))?;
     let mut path = build_dir.join("cmake");
     path.push(binary_name(CPP_APP_STEM));
+    Ok(path)
+}
+
+fn ros2_bridge_executable(current_exe: &Path) -> Result<PathBuf, String> {
+    let build_dir = current_exe
+        .parent()
+        .and_then(|profile_dir| profile_dir.parent())
+        .and_then(|target_dir| target_dir.parent())
+        .ok_or_else(|| format!("failed to resolve FlowRT build directory from `{}`", current_exe.display()))?;
+    let mut path = build_dir.join("cmake");
+    path.push(binary_name(ROS2_BRIDGE_STEM));
     Ok(path)
 }
 
@@ -408,4 +426,12 @@ fn cpp_app_stem(contract: &ContractIr) -> String {
         "{}_cpp_app",
         sanitize_package_name(&contract.package.name).replace('-', "_")
     )
+}
+
+fn ros2_bridge_app_stem(contract: &ContractIr) -> String {
+    if contract_has_ros2_bridge(contract) {
+        ros2_bridge_stem(contract)
+    } else {
+        String::new()
+    }
 }

@@ -65,6 +65,7 @@ flowrt --version
 | profile | 一套构建/部署选择，例如默认 backend、channel policy。 |
 | target | 部署目标能力，例如 runtime 语言和可用 backend。 |
 | backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
+| bridge | FlowRT 管理的外部系统适配进程；用户组件仍只读写 FlowRT message。 |
 | runtime shell | FlowRT 生成的胶水代码，负责调度、通信、生命周期和观测。 |
 
 核心模型：
@@ -325,7 +326,45 @@ runtime = ["rust", "cpp"]
 backends = ["zenoh"]
 ```
 
-省略 `backend` 等价于 `auto`。`auto` 默认跟随 profile backend；如果 profile backend 是 `iox2` 且该 route 使用 variable frame，FlowRT 会自动选择 `zenoh`。message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约、profile 和 route 生成。
+省略 `backend` 等价于 `auto`。`auto` 默认跟随 profile backend；如果 profile backend 是 `iox2` 且该 route 使用 variable frame，FlowRT 会自动选择 `zenoh`。`backend` 绑定在单条 `[[bind.dataflow]]` route 上；同一条 route 只能声明一次，跨 RSDL import 后仍归一化为同一个 Contract IR，不通过重复声明做隐式合并。message type 只描述数据 schema，不直接暴露 backend API；实际 transport 由 FlowRT 根据 RSDL 契约、profile 和 route 生成。
+
+## ROS2 Bridge
+
+FlowRT 与 ROS2 的桥接唯一走 `zenoh`。FlowRT 不生成 DDS fallback，也不把 ROS2 publisher/subscriber API 暴露给用户组件；bridge 是 FlowRT 管理的 C++ adapter process。ROS2 侧必须使用 `rmw_zenoh_cpp`，adapter 启动时会设置并校验 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`。普通 FlowRT `zenoh` backend 仍使用 FlowRT 包内锁定的私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。
+
+当前桥接切片支持 FlowRT 输出端口到 ROS2 topic：
+
+```toml
+[type.TextFrame]
+data = "string"
+
+[component.source]
+language = "rust"
+output = ["text:TextFrame"]
+
+[[bridge.ros2]]
+flowrt = "source.text"
+ros2_topic = "/flowrt/text"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+```
+
+约束：
+
+- `direction` 当前只支持 `flowrt_to_ros2`。
+- `ros2_type` 当前只支持 `std_msgs/msg/String`。
+- `field` 必须指向 FlowRT message 中的 `string` 字段，省略时默认为 `data`。
+- bridge route 固定使用 `zenoh`；source target 必须声明支持 `zenoh`。
+- 构建 bridge 需要 ROS2 Jazzy 或之后版本的 C++ 开发包；运行 bridge 需要安装 `rmw_zenoh_cpp`。构建前应 source 对应 ROS2 环境，生成 CMake 会把 `AMENT_PREFIX_PATH` 映射进 `CMAKE_PREFIX_PATH`，以便 plain CMake 找到 `rclcpp`、`std_msgs` 和 `rmw_zenoh_cpp`。
+- 如果 `ros2 topic echo` 看不到刚启动的 topic，先执行 `ros2 daemon stop` 后重试，避免 ROS2 daemon 的旧缓存干扰。
 
 ## 运行态观测
 
@@ -382,6 +421,7 @@ flowrt echo channel_name --follow
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | profile 驱动 backend 切换。 |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | Rust source 与 C++ sink 的 iox2 分进程 contract。 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 无界 variable frame、zenoh 跨主机 transport 和 mixed launch。 |
+| `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | FlowRT string 输出经 zenoh bridge 发布到 ROS2 topic。 |
 
 完整说明见 [示例矩阵](docs/examples.md)。
 

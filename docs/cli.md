@@ -67,6 +67,7 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会查找 `iceoryx2-cxx 0.9.1` 的 `iceoryx2-cxx::static-lib-cxx` 目标。
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
+- 声明 `[[bridge.ros2]]` 时，`build` 会额外构建 FlowRT 管理的 C++ ROS2 adapter target；即使没有 C++ 用户 component，也会运行生成 CMake。
 
 Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt build` 会把该私有前缀传给生成 CMake，并为生成 Rust app 写入离线 Cargo config；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 
@@ -117,8 +118,47 @@ launch manifest 的关键字段包括：
 - graph instance 的 `runtime`
 - task 的 `name`、`trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
 - graph `channels`
+- graph `ros2_bridges`
 - iox2 channel 的 canonical service name
 - zenoh channel 的 deterministic key expression
+
+## ROS2 Bridge
+
+RSDL 可以用 `[[bridge.ros2]]` 声明 FlowRT 到 ROS2 的外部 bridge：
+
+```toml
+[[bridge.ros2]]
+flowrt = "source.text"
+ros2_topic = "/flowrt/text"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+```
+
+FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。生成物包含：
+
+- source process 中的 zenoh bridge tap。
+- C++ ROS2 adapter `*_ros2_bridge`。
+- launch manifest 中的 `runtime_kind = "ros2_bridge"` process。
+
+约束：
+
+- `direction` 当前只支持 `flowrt_to_ros2`。
+- `ros2_type` 当前只支持 `std_msgs/msg/String`。
+- `field` 必须是 source message 的 `string` 字段，省略时默认为 `data`。
+- bridge backend 固定为 `zenoh`，source instance 的 target 必须在 `backends` 中声明 `zenoh`。
+- ROS2 侧必须使用 `rmw_zenoh_cpp`；generated adapter 会设置并校验 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，不会回退到 DDS。
+- 普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。
+
+构建和运行示例：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
+flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+```
+
+观察 ROS2 topic 时如果遇到 daemon 旧缓存，先执行 `ros2 daemon stop` 后重试。
 
 ## `inspect`
 
@@ -236,7 +276,7 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 - 没有 `default` 时使用首个 profile。
 - RSDL 未声明任何 profile 时，归一化阶段会插入隐式 `default` profile，backend 为 `inproc`。
 
-profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。未显式声明 `backend` 或声明 `backend = "auto"` 的 bind 会跟随选中 profile backend；如果该 route 使用 variable frame 且 profile backend 为 `iox2`，会自动选择 `zenoh`。投影后的 `contract.ir.json` 会同时刷新 route 和 deployment 的 capability 元数据。
+profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。未显式声明 `backend` 或声明 `backend = "auto"` 的 bind 会跟随选中 profile backend；如果该 route 使用 variable frame 且 profile backend 为 `iox2`，会自动选择 `zenoh`。`backend` 是单条 route 的属性；同一 `from`/`to` route 只能声明一次，跨 import 的 RSDL 片段会先合并成一个 Contract IR，再由 validator 拒绝多重 incoming bind 或冲突连线。投影后的 `contract.ir.json` 会同时刷新 route 和 deployment 的 capability 元数据。
 
 ## RSDL task 写法
 

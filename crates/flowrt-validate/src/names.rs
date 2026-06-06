@@ -98,6 +98,15 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 errors,
             );
         }
+        for bridge in &graph.ros2_bridges {
+            validate_name(
+                "ROS2 bridge",
+                "ROS2 bridge name",
+                &bridge.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+        }
     }
 }
 

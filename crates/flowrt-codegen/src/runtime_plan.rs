@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy,
-    ParamIr, StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr,
+    ParamIr, Ros2BridgeIr, StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -124,6 +124,19 @@ pub(crate) struct ProcessRuntimePlan<'a> {
     pub(crate) instances: Vec<&'a InstanceIr>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct BridgeRuntimePlan {
+    pub(crate) index: usize,
+    pub(crate) name: String,
+    pub(crate) field_name: String,
+    pub(crate) source_type: TypeExpr,
+    pub(crate) source_instance: String,
+    pub(crate) source_port: String,
+    pub(crate) ros2_topic: String,
+    pub(crate) ros2_type: String,
+    pub(crate) field: String,
+}
+
 pub(crate) fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<ProcessRuntimePlan<'a>> {
     let mut by_process = BTreeMap::<String, Vec<&'a InstanceIr>>::new();
     for &instance in order {
@@ -190,6 +203,40 @@ pub(crate) fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<
         .collect()
 }
 
+pub(crate) fn bridge_runtime_plans(
+    contract: &ContractIr,
+    graph: &GraphIr,
+) -> Vec<BridgeRuntimePlan> {
+    graph
+        .ros2_bridges
+        .iter()
+        .enumerate()
+        .map(|(index, bridge)| bridge_runtime_plan(contract, graph, index, bridge))
+        .collect()
+}
+
+fn bridge_runtime_plan(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    index: usize,
+    bridge: &Ros2BridgeIr,
+) -> BridgeRuntimePlan {
+    let source_instance = instance_by_name(graph, &bridge.flowrt.instance.name);
+    let source_component = component_by_name(contract, &source_instance.component.name);
+    let source_port = port_by_name(&source_component.outputs, &bridge.flowrt.port);
+    BridgeRuntimePlan {
+        index,
+        name: bridge.name.clone(),
+        field_name: bridge.name.clone(),
+        source_type: source_port.ty.clone(),
+        source_instance: source_instance.name.clone(),
+        source_port: bridge.flowrt.port.clone(),
+        ros2_topic: bridge.ros2_topic.clone(),
+        ros2_type: bridge.ros2_type.clone(),
+        field: bridge.field.clone(),
+    }
+}
+
 pub(crate) fn incoming_bind_index_map(
     plans: &[BindRuntimePlan],
 ) -> BTreeMap<(String, String), usize> {
@@ -206,6 +253,18 @@ pub(crate) fn incoming_bind_index_map(
 
 pub(crate) fn outgoing_bind_indices_map(
     plans: &[BindRuntimePlan],
+) -> BTreeMap<(String, String), Vec<usize>> {
+    let mut map = BTreeMap::new();
+    for plan in plans {
+        map.entry((plan.source_instance.clone(), plan.source_port.clone()))
+            .or_insert_with(Vec::new)
+            .push(plan.index);
+    }
+    map
+}
+
+pub(crate) fn outgoing_bridge_indices_map(
+    plans: &[BridgeRuntimePlan],
 ) -> BTreeMap<(String, String), Vec<usize>> {
     let mut map = BTreeMap::new();
     for plan in plans {
@@ -247,6 +306,11 @@ pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> boo
             .iter()
             .flat_map(|graph| &graph.binds)
             .any(|bind| bind.backend.0 == backend)
+        || contract
+            .graphs
+            .iter()
+            .flat_map(|graph| &graph.ros2_bridges)
+            .any(|bridge| bridge.backend.0 == backend)
 }
 
 pub(crate) fn contract_backend_features(contract: &ContractIr) -> Vec<&'static str> {

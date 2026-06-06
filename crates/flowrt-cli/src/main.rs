@@ -573,7 +573,7 @@ fn build_steps(contract: &ContractIr, include_launcher: bool) -> Vec<BuildStep> 
     if has_component_language(contract, LanguageKind::Rust) {
         steps.push(BuildStep::CargoApp);
     }
-    if has_component_language(contract, LanguageKind::Cpp) {
+    if has_component_language(contract, LanguageKind::Cpp) || has_ros2_bridge(contract) {
         steps.push(BuildStep::CmakeApp);
     }
     if include_launcher {
@@ -653,6 +653,13 @@ fn has_component_language(contract: &ContractIr, language: LanguageKind) -> bool
         .components
         .iter()
         .any(|component| component.language == language)
+}
+
+fn has_ros2_bridge(contract: &ContractIr) -> bool {
+    contract
+        .graphs
+        .iter()
+        .any(|graph| !graph.ros2_bridges.is_empty())
 }
 
 fn is_mixed_language_contract(contract: &ContractIr) -> bool {
@@ -1059,7 +1066,14 @@ fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
     let source_dir = out_dir.join("build");
     let build_dir = source_dir.join("cmake");
     let runtime_dir = cpp_runtime_dir_for_generated_build()?;
-    run_cmake_configure(&source_dir, &build_dir, runtime_dir.as_deref())?;
+    let cmake_prefix_paths =
+        cmake_prefix_paths_for_runtime(runtime_dir.as_deref(), &cmake_prefix_path_from_env());
+    run_cmake_configure(
+        &source_dir,
+        &build_dir,
+        runtime_dir.as_deref(),
+        &cmake_prefix_paths,
+    )?;
     run_cmake_build(&build_dir)
 }
 
@@ -1067,8 +1081,9 @@ fn run_cmake_configure(
     source_dir: &Path,
     build_dir: &Path,
     runtime_dir: Option<&Path>,
+    cmake_prefix_paths: &[PathBuf],
 ) -> Result<()> {
-    let args = cmake_configure_args(source_dir, build_dir, runtime_dir);
+    let args = cmake_configure_args(source_dir, build_dir, runtime_dir, cmake_prefix_paths);
     let status = ProcessCommand::new("cmake")
         .args(args)
         .status()
@@ -1083,6 +1098,7 @@ fn cmake_configure_args(
     source_dir: &Path,
     build_dir: &Path,
     runtime_dir: Option<&Path>,
+    cmake_prefix_paths: &[PathBuf],
 ) -> Vec<String> {
     let mut args = vec![
         "-S".to_string(),
@@ -1095,12 +1111,62 @@ fn cmake_configure_args(
             "-DFLOWRT_CPP_RUNTIME_DIR={}",
             runtime_dir.to_string_lossy()
         ));
+    }
+    if !cmake_prefix_paths.is_empty() {
         args.push(format!(
             "-DCMAKE_PREFIX_PATH={}",
-            runtime_dir.to_string_lossy()
+            join_cmake_prefix_paths(cmake_prefix_paths)
         ));
     }
     args
+}
+
+fn cmake_prefix_path_from_env() -> Vec<PathBuf> {
+    let Some(raw) = env::var_os("CMAKE_PREFIX_PATH") else {
+        return Vec::new();
+    };
+    env::split_paths(&raw).collect()
+}
+
+fn cmake_prefix_paths_for_runtime(
+    runtime_dir: Option<&Path>,
+    existing: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut prefixes = Vec::new();
+    for prefix in existing {
+        push_unique_path(&mut prefixes, prefix);
+    }
+    if let Some(runtime_dir) = runtime_dir {
+        push_unique_path(&mut prefixes, runtime_dir);
+        if let Some(private_prefix) = flowrt_private_prefix_from_cpp_runtime_dir(runtime_dir) {
+            push_unique_path(&mut prefixes, &private_prefix);
+        }
+    }
+    prefixes
+}
+
+fn flowrt_private_prefix_from_cpp_runtime_dir(runtime_dir: &Path) -> Option<PathBuf> {
+    if runtime_dir.join("include/flowrt/runtime.hpp").exists()
+        && runtime_dir.join("lib").is_dir()
+        && runtime_dir.join("share").is_dir()
+    {
+        return Some(runtime_dir.to_path_buf());
+    }
+    None
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: &Path) {
+    if !paths.iter().any(|existing| existing == path) {
+        paths.push(path.to_path_buf());
+    }
+}
+
+fn join_cmake_prefix_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn run_cmake_build(build_dir: &Path) -> Result<()> {

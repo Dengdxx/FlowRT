@@ -7,6 +7,7 @@ use flowrt_rsdl::parse_str;
 
 use super::*;
 
+mod bridge_tests;
 mod capability_tests;
 mod component_tests;
 mod contract_tests;

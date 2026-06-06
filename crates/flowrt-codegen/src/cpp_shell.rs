@@ -8,16 +8,18 @@ use flowrt_ir::{
 
 use crate::messages::cpp_type;
 use crate::runtime_plan::{
-    BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
-    bind_backend, bind_runtime_plans, incoming_bind_index_map, indent_generated_block,
-    indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
-    outgoing_bind_indices_map, process_runtime_plans, runtime_channel_message_type,
+    BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    active_binds_for_instances, bind_backend, bind_runtime_plans, bridge_runtime_plans,
+    incoming_bind_index_map, indent_generated_block, indent_generated_block_levels,
+    nested_step_indent, on_message_trigger_guard, outgoing_bind_indices_map,
+    outgoing_bridge_indices_map, process_runtime_plans, runtime_channel_message_type,
     runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name, step_indent,
 };
 use crate::{
     component_by_name, float_literal, iox2_service_name, managed_header, param_json_literal,
     param_type_name, param_update_name, param_value_for_instance, pascal_case,
-    selected_backend_name, tasks_for_instance, topo_order_instances_for_language, zenoh_key_expr,
+    ros2_bridge_key_expr, selected_backend_name, tasks_for_instance,
+    topo_order_instances_for_language, zenoh_key_expr,
 };
 
 fn cpp_param_type(ty: ParamType) -> &'static str {
@@ -109,8 +111,10 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
+    let bridge_plans = bridge_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
+    let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
     let selected_backend = selected_backend_name(contract);
 
     let mut output = managed_header();
@@ -129,13 +133,16 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         graph,
         &order,
         &bind_plans,
+        &bridge_plans,
     ));
     let step_emission = CppStepEmission {
         contract,
         graph,
         binds: &bind_plans,
+        bridges: &bridge_plans,
         incoming_bind_index: &incoming_bind_index,
         outgoing_bind_indices: &outgoing_bind_indices,
+        outgoing_bridge_indices: &outgoing_bridge_indices,
     };
     output.push_str(&emit_cpp_app_step(
         &step_emission,
@@ -223,6 +230,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
+    let bridge_plans = bridge_runtime_plans(contract, graph);
 
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
@@ -289,6 +297,13 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             bind.probe_field_name
         ));
     }
+    for bridge in &bridge_plans {
+        output.push_str(&format!(
+            "    {} {}_;\n",
+            cpp_bridge_runtime_channel_type(bridge),
+            bridge.field_name
+        ));
+    }
     output.push_str("};\n\n");
     output.push_str(
         "/**\n * @brief 运行默认 C++ inproc 应用。\n *\n * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run(std::optional<std::size_t> run_ticks);\n\n",
@@ -345,6 +360,7 @@ fn emit_cpp_app_constructor(
     graph: &GraphIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let mut params = Vec::new();
     for instance in order {
@@ -373,6 +389,13 @@ fn emit_cpp_app_constructor(
             "{}_({})",
             bind.field_name,
             cpp_runtime_channel_initializer(contract, graph, bind)
+        ));
+    }
+    for bridge in bridges {
+        initializers.push(format!(
+            "{}_({})",
+            bridge.field_name,
+            cpp_bridge_runtime_channel_initializer(contract, graph, bridge)
         ));
     }
 
@@ -405,8 +428,10 @@ struct CppStepEmission<'a> {
     contract: &'a ContractIr,
     graph: &'a GraphIr,
     binds: &'a [BindRuntimePlan],
+    bridges: &'a [BridgeRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+    outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
 }
 
 fn emit_cpp_app_step(
@@ -419,7 +444,7 @@ fn emit_cpp_app_step(
     output.push_str(&format!(
         "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {{\n",
     ));
-    if cpp_runtime_step_uses_tick_time(emission.binds) {
+    if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges) {
         output.push_str(
             "    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n    (void)tick_time_ms;\n",
         );
@@ -548,7 +573,12 @@ fn emit_cpp_app_step(
                     .get(&(instance.name.clone(), port.name.clone()))
                     .cloned()
                     .unwrap_or_default();
-                if outgoing.is_empty() {
+                let bridge_outgoing = emission
+                    .outgoing_bridge_indices
+                    .get(&(instance.name.clone(), port.name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if outgoing.is_empty() && bridge_outgoing.is_empty() {
                     continue;
                 }
                 output.push_str(&format!(
@@ -559,6 +589,13 @@ fn emit_cpp_app_step(
                     let bind = &emission.binds[bind_index];
                     output.push_str(&indent_generated_block_levels(
                         &cpp_runtime_channel_write(bind),
+                        write_indent_levels,
+                    ));
+                }
+                for bridge_index in bridge_outgoing {
+                    let bridge = &emission.bridges[bridge_index];
+                    output.push_str(&indent_generated_block_levels(
+                        &cpp_bridge_runtime_channel_write(bridge),
                         write_indent_levels,
                     ));
                 }
@@ -694,6 +731,13 @@ fn cpp_runtime_channel_type(bind: &BindRuntimePlan) -> String {
     }
 }
 
+fn cpp_bridge_runtime_channel_type(bridge: &BridgeRuntimePlan) -> String {
+    format!(
+        "flowrt::zenoh::ZenohPubSub<{}>",
+        cpp_type(&bridge.source_type)
+    )
+}
+
 fn cpp_runtime_channel_initializer(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -720,6 +764,18 @@ fn cpp_runtime_channel_initializer(
         ChannelKind::Latest => cpp_runtime_latest_channel_initializer(bind),
         ChannelKind::Fifo => cpp_runtime_fifo_channel_initializer(bind),
     }
+}
+
+fn cpp_bridge_runtime_channel_initializer(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    bridge: &BridgeRuntimePlan,
+) -> String {
+    format!(
+        "flowrt::zenoh::ZenohPubSub<{}>::open_with_config({}, flowrt::zenoh::ZenohChannelConfig::latest())",
+        cpp_type(&bridge.source_type),
+        cpp_string_literal(&ros2_bridge_key_expr(contract, graph, bridge))
+    )
 }
 
 fn cpp_zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
@@ -865,7 +921,20 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
     }
 }
 
-fn cpp_runtime_step_uses_tick_time(binds: &[BindRuntimePlan]) -> bool {
+fn cpp_bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
+    format!(
+        "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
+        field = bridge.field_name
+    )
+}
+
+fn cpp_runtime_step_uses_tick_time(
+    binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
+) -> bool {
+    if !bridges.is_empty() {
+        return true;
+    }
     binds
         .iter()
         .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))

@@ -43,6 +43,7 @@ pub struct RawDocument {
     pub components: BTreeMap<String, RawComponent>,
     pub instances: BTreeMap<String, RawInstance>,
     pub binds: Vec<RawDataflowBind>,
+    pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
 }
@@ -119,6 +120,16 @@ pub struct RawDataflowBind {
     pub overflow: Option<String>,
     pub stale_policy: Option<String>,
     pub max_age_ms: Option<u64>,
+}
+
+/// `[[bridge.ros2]]` 表项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawRos2Bridge {
+    pub flowrt: String,
+    pub ros2_topic: String,
+    pub ros2_type: String,
+    pub direction: String,
+    pub field: Option<String>,
 }
 
 /// `[profile.<name>]` 表。
