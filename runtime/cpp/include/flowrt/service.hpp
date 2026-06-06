@@ -3,12 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <flowrt/wire.hpp>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <flowrt/wire.hpp>
 
 namespace flowrt {
 
@@ -21,17 +21,17 @@ namespace flowrt {
  * ABI 编码使用 u16 固定宽度整数，不依赖 C++ enum 的实现相关大小。
  */
 enum class ServiceError : std::uint16_t {
-    Ok = 0,              ///< 请求成功完成。
-    Timeout = 1,         ///< 请求超时。
-    Unavailable = 2,     ///< 目标服务不可用。
-    Busy = 3,            ///< 服务繁忙，请求被限流或排队溢出。
-    Rejected = 4,        ///< 请求被服务端主动拒绝。
-    Cancelled = 5,       ///< 请求被取消。
-    DeadlineExceeded = 6,///< 截止时间已过。
-    Protocol = 7,        ///< 协议层错误（magic/version 不匹配、帧格式非法等）。
-    Backend = 8,         ///< 后端传输错误。
-    WouldDeadlock = 9,   ///< 执行会导致死锁。
-    HandlerError = 10,   ///< 用户 handler 自身返回的业务错误。
+    Ok = 0,                ///< 请求成功完成。
+    Timeout = 1,           ///< 请求超时。
+    Unavailable = 2,       ///< 目标服务不可用。
+    Busy = 3,              ///< 服务繁忙，请求被限流或排队溢出。
+    Rejected = 4,          ///< 请求被服务端主动拒绝。
+    Cancelled = 5,         ///< 请求被取消。
+    DeadlineExceeded = 6,  ///< 截止时间已过。
+    Protocol = 7,          ///< 协议层错误（magic/version 不匹配、帧格式非法等）。
+    Backend = 8,           ///< 后端传输错误。
+    WouldDeadlock = 9,     ///< 执行会导致死锁。
+    HandlerError = 10,     ///< 用户 handler 自身返回的业务错误。
 };
 
 /**
@@ -47,23 +47,32 @@ constexpr std::optional<ServiceError> service_error_from_abi(std::uint16_t value
 /**
  * @brief 判断错误码是否表示成功。
  */
-constexpr bool is_ok(ServiceError error) noexcept {
-    return error == ServiceError::Ok;
-}
+constexpr bool is_ok(ServiceError error) noexcept { return error == ServiceError::Ok; }
 
 inline std::string_view to_string(ServiceError error) noexcept {
     switch (error) {
-        case ServiceError::Ok: return "Ok";
-        case ServiceError::Timeout: return "Timeout";
-        case ServiceError::Unavailable: return "Unavailable";
-        case ServiceError::Busy: return "Busy";
-        case ServiceError::Rejected: return "Rejected";
-        case ServiceError::Cancelled: return "Cancelled";
-        case ServiceError::DeadlineExceeded: return "DeadlineExceeded";
-        case ServiceError::Protocol: return "Protocol";
-        case ServiceError::Backend: return "Backend";
-        case ServiceError::WouldDeadlock: return "WouldDeadlock";
-        case ServiceError::HandlerError: return "HandlerError";
+        case ServiceError::Ok:
+            return "Ok";
+        case ServiceError::Timeout:
+            return "Timeout";
+        case ServiceError::Unavailable:
+            return "Unavailable";
+        case ServiceError::Busy:
+            return "Busy";
+        case ServiceError::Rejected:
+            return "Rejected";
+        case ServiceError::Cancelled:
+            return "Cancelled";
+        case ServiceError::DeadlineExceeded:
+            return "DeadlineExceeded";
+        case ServiceError::Protocol:
+            return "Protocol";
+        case ServiceError::Backend:
+            return "Backend";
+        case ServiceError::WouldDeadlock:
+            return "WouldDeadlock";
+        case ServiceError::HandlerError:
+            return "HandlerError";
     }
     return "Unknown";
 }
@@ -175,8 +184,8 @@ struct RequestId {
  * 使用单调时钟毫秒表示。不允许无界等待：timeout_ms 为 0 表示非法值。
  */
 struct Deadline {
-    std::uint64_t timeout_ms = 0;           ///< 相对超时毫秒数。0 为非法。
-    std::uint64_t absolute_deadline_ms = 0; ///< 绝对截止时间（单调时钟毫秒）。
+    std::uint64_t timeout_ms = 0;            ///< 相对超时毫秒数。0 为非法。
+    std::uint64_t absolute_deadline_ms = 0;  ///< 绝对截止时间（单调时钟毫秒）。
 
     /**
      * @brief 构造截止时间。
@@ -189,7 +198,10 @@ struct Deadline {
         if (timeout_ms == 0U) {
             return std::nullopt;
         }
-        return Deadline{timeout_ms, now_monotonic_ms + timeout_ms};
+        const auto max = std::numeric_limits<std::uint64_t>::max();
+        const auto absolute =
+            now_monotonic_ms > max - timeout_ms ? max : now_monotonic_ms + timeout_ms;
+        return Deadline{timeout_ms, absolute};
     }
 
     /** @brief 判断是否已过期。 */
@@ -235,8 +247,7 @@ struct ServiceFrameHeader {
     VarSpan error_msg_span{};
 
     /** @brief 构造请求帧 header。 */
-    static ServiceFrameHeader make_request(RequestId request_id,
-                                           Deadline deadline,
+    static ServiceFrameHeader make_request(RequestId request_id, Deadline deadline,
                                            std::uint64_t correlation_id,
                                            std::uint64_t schema_hash) noexcept {
         ServiceFrameHeader h{};
@@ -252,10 +263,8 @@ struct ServiceFrameHeader {
     }
 
     /** @brief 构造响应帧 header。 */
-    static ServiceFrameHeader make_response(RequestId request_id,
-                                            Deadline deadline,
-                                            std::uint64_t correlation_id,
-                                            std::uint64_t schema_hash,
+    static ServiceFrameHeader make_response(RequestId request_id, Deadline deadline,
+                                            std::uint64_t correlation_id, std::uint64_t schema_hash,
                                             ServiceError error_code) noexcept {
         ServiceFrameHeader h{};
         h.error_code = static_cast<std::uint16_t>(error_code);
@@ -301,11 +310,17 @@ struct ServiceFrameHeader {
         h.magic = magic_val;
         h.version = version_val;
         h.error_code = read_wire_le<std::uint16_t>(input, 6);
+        if (!service_error_from_abi(h.error_code).has_value()) {
+            throw WireCodecError("service frame error code is unknown");
+        }
         h.service_id = read_wire_le<std::uint64_t>(input, 8);
         h.session_id = read_wire_le<std::uint64_t>(input, 16);
         h.sequence = read_wire_le<std::uint64_t>(input, 24);
         h.correlation_id = read_wire_le<std::uint64_t>(input, 32);
         h.timeout_ms = read_wire_le<std::uint64_t>(input, 40);
+        if (h.timeout_ms == 0U) {
+            throw WireCodecError("service frame timeout_ms must be greater than zero");
+        }
         h.absolute_deadline_ms = read_wire_le<std::uint64_t>(input, 48);
         h.schema_hash = read_wire_le<std::uint64_t>(input, 56);
         h.payload_span = read_var_span(input.subspan(64, VAR_SPAN_WIRE_SIZE));
@@ -315,10 +330,10 @@ struct ServiceFrameHeader {
 
     /** @brief 判断两个 header 是否语义等价（忽略 magic/version 默认值差异）。 */
     bool operator==(const ServiceFrameHeader &other) const noexcept {
-        return magic == other.magic && version == other.version &&
-               error_code == other.error_code && service_id == other.service_id &&
-               session_id == other.session_id && sequence == other.sequence &&
-               correlation_id == other.correlation_id && timeout_ms == other.timeout_ms &&
+        return magic == other.magic && version == other.version && error_code == other.error_code &&
+               service_id == other.service_id && session_id == other.session_id &&
+               sequence == other.sequence && correlation_id == other.correlation_id &&
+               timeout_ms == other.timeout_ms &&
                absolute_deadline_ms == other.absolute_deadline_ms &&
                schema_hash == other.schema_hash &&
                payload_span.offset == other.payload_span.offset &&
@@ -337,8 +352,8 @@ struct ServiceFrameHeader {
  * @return 完整 frame 字节序列。
  */
 inline std::vector<std::uint8_t> encode_service_frame(ServiceFrameHeader header,
-                                                       std::span<const std::uint8_t> payload,
-                                                       std::span<const std::uint8_t> error_msg) {
+                                                      std::span<const std::uint8_t> payload,
+                                                      std::span<const std::uint8_t> error_msg) {
     std::vector<std::uint8_t> tail;
     header.payload_span = append_tail_block(tail, payload);
     header.error_msg_span = append_tail_block(tail, error_msg);
@@ -364,8 +379,7 @@ inline DecodedServiceFrame decode_service_frame(std::span<const std::uint8_t> fr
     if (frame.size() < SERVICE_FRAME_HEADER_SIZE) {
         throw WireCodecError(SERVICE_FRAME_HEADER_SIZE, frame.size());
     }
-    auto header =
-        ServiceFrameHeader::decode(frame.subspan(0, SERVICE_FRAME_HEADER_SIZE));
+    auto header = ServiceFrameHeader::decode(frame.subspan(0, SERVICE_FRAME_HEADER_SIZE));
     FrameDecoder decoder{frame.subspan(SERVICE_FRAME_HEADER_SIZE)};
     auto payload_data = decoder.read_block(header.payload_span);
     auto error_msg_data = decoder.read_block(header.error_msg_span);

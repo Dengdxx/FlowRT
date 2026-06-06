@@ -5,8 +5,8 @@
 
 use std::ffi::c_char;
 
-use crate::{BackendHealthSnapshot, BackendHealthState, BackendKind, ReconnectPolicy, Status};
 use crate::service::{ServiceError, ServiceFrameHeader};
+use crate::{BackendHealthSnapshot, BackendHealthState, BackendKind, ReconnectPolicy, Status};
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_ABI_VERSION_MINOR: u32 = 1;

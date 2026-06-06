@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <flowrt/abi.h>
 #include <flowrt/service.hpp>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -79,6 +80,9 @@ int main() {
     assert(!deadline->expired(1499));
     assert(deadline->expired(1500));
     assert(deadline->expired(2000));
+    auto saturated = flowrt::Deadline::make(10, std::numeric_limits<std::uint64_t>::max() - 5U);
+    assert(saturated.has_value());
+    assert(saturated->absolute_deadline_ms == std::numeric_limits<std::uint64_t>::max());
 
     // ── RequestId 构造 ──────────────────────────────────────────────────────
 
@@ -91,8 +95,8 @@ int main() {
 
     {
         auto d = flowrt::Deadline::make(2000, 500).value();
-        auto header = flowrt::ServiceFrameHeader::make_request(
-            flowrt::RequestId{100, 1, 0xABCD}, d, 0x9999, 0);
+        auto header = flowrt::ServiceFrameHeader::make_request(flowrt::RequestId{100, 1, 0xABCD}, d,
+                                                               0x9999, 0);
 
         std::array<std::uint8_t, 80> buf{};
         header.encode(buf);
@@ -118,14 +122,14 @@ int main() {
     {
         auto d = flowrt::Deadline::make(3000, 1000).value();
         auto header = flowrt::ServiceFrameHeader::make_response(
-            flowrt::RequestId{200, 5, 0x1234}, d, 0, 0,
-            flowrt::ServiceError::HandlerError);
+            flowrt::RequestId{200, 5, 0x1234}, d, 0, 0, flowrt::ServiceError::HandlerError);
 
         std::array<std::uint8_t, 80> buf{};
         header.encode(buf);
         auto decoded = flowrt::ServiceFrameHeader::decode(buf);
 
-        assert(decoded.error_code == static_cast<std::uint16_t>(flowrt::ServiceError::HandlerError));
+        assert(decoded.error_code ==
+               static_cast<std::uint16_t>(flowrt::ServiceError::HandlerError));
         assert(decoded.session_id == 200U);
         assert(decoded.sequence == 5U);
     }
@@ -172,6 +176,47 @@ int main() {
         assert(caught);
     }
 
+    // ── 未知 error code 报错 ───────────────────────────────────────────────
+
+    {
+        auto d = flowrt::Deadline::make(1000, 500).value();
+        auto header = flowrt::ServiceFrameHeader::make_request(flowrt::RequestId{1, 1, 1}, d, 0, 0);
+        std::array<std::uint8_t, 80> bad_error_code{};
+        header.encode(bad_error_code);
+        bad_error_code[6] = 99U;
+        bad_error_code[7] = 0U;
+        bool caught = false;
+        try {
+            flowrt::ServiceFrameHeader::decode(bad_error_code);
+        } catch (const flowrt::WireCodecError &error) {
+            caught = true;
+            const auto msg = std::string_view{error.what()};
+            assert(msg.find("error code") != std::string_view::npos);
+        }
+        assert(caught);
+    }
+
+    // ── zero timeout 报错 ──────────────────────────────────────────────────
+
+    {
+        auto d = flowrt::Deadline::make(1000, 500).value();
+        auto header = flowrt::ServiceFrameHeader::make_request(flowrt::RequestId{1, 1, 1}, d, 0, 0);
+        std::array<std::uint8_t, 80> zero_timeout{};
+        header.encode(zero_timeout);
+        for (std::size_t index = 40; index < 48; ++index) {
+            zero_timeout[index] = 0U;
+        }
+        bool caught = false;
+        try {
+            flowrt::ServiceFrameHeader::decode(zero_timeout);
+        } catch (const flowrt::WireCodecError &error) {
+            caught = true;
+            const auto msg = std::string_view{error.what()};
+            assert(msg.find("timeout_ms") != std::string_view::npos);
+        }
+        assert(caught);
+    }
+
     // ── 完整 frame roundtrip（请求 + payload）──────────────────────────────
 
     {
@@ -200,13 +245,12 @@ int main() {
     // ── 完整 frame roundtrip（错误响应 + error message）────────────────────
 
     {
-        const std::vector<std::uint8_t> error_msg_bytes{
-            0x64U, 0x69U, 0x76U, 0x69U, 0x73U, 0x69U, 0x6FU, 0x6EU,
-            0x20U, 0x62U, 0x79U, 0x20U, 0x7AU, 0x65U, 0x72U, 0x6FU};
+        const std::vector<std::uint8_t> error_msg_bytes{0x64U, 0x69U, 0x76U, 0x69U, 0x73U, 0x69U,
+                                                        0x6FU, 0x6EU, 0x20U, 0x62U, 0x79U, 0x20U,
+                                                        0x7AU, 0x65U, 0x72U, 0x6FU};
         auto d = flowrt::Deadline::make(3000, 1000).value();
         auto header = flowrt::ServiceFrameHeader::make_response(
-            flowrt::RequestId{200, 5, 0x1234}, d, 0, 0,
-            flowrt::ServiceError::HandlerError);
+            flowrt::RequestId{200, 5, 0x1234}, d, 0, 0, flowrt::ServiceError::HandlerError);
 
         auto frame = flowrt::encode_service_frame(header, {}, error_msg_bytes);
         auto decoded = flowrt::decode_service_frame(frame);
@@ -221,8 +265,7 @@ int main() {
 
     {
         auto d = flowrt::Deadline::make(100, 0).value();
-        auto header = flowrt::ServiceFrameHeader::make_request(
-            flowrt::RequestId{1, 1, 1}, d, 0, 0);
+        auto header = flowrt::ServiceFrameHeader::make_request(flowrt::RequestId{1, 1, 1}, d, 0, 0);
 
         auto frame = flowrt::encode_service_frame(header, {}, {});
         auto decoded = flowrt::decode_service_frame(frame);
@@ -243,8 +286,8 @@ int main() {
         assert(ok.value() != nullptr);
         assert(*ok.value() == 42);
 
-        auto err = flowrt::ServiceResult<int>::err_with_message(
-            flowrt::ServiceError::Timeout, "timed out");
+        auto err = flowrt::ServiceResult<int>::err_with_message(flowrt::ServiceError::Timeout,
+                                                                "timed out");
         assert(!err.is_ok());
         assert(err.is_err());
         assert(err.error_code() == flowrt::ServiceError::Timeout);

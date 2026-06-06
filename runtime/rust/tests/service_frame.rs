@@ -3,15 +3,14 @@
 use std::mem::{offset_of, size_of};
 
 use flowrt::{
-    Deadline, RequestId, ServiceError, ServiceFrameHeader, ServiceResult,
-    SERVICE_FRAME_HEADER_SIZE, SERVICE_FRAME_MAGIC, SERVICE_FRAME_VERSION,
+    Deadline, RequestId, SERVICE_FRAME_HEADER_SIZE, SERVICE_FRAME_MAGIC, SERVICE_FRAME_VERSION,
+    ServiceError, ServiceFrameHeader, ServiceResult,
     abi::{
         FLOWRT_SERVICE_BACKEND, FLOWRT_SERVICE_BUSY, FLOWRT_SERVICE_CANCELLED,
-        FLOWRT_SERVICE_DEADLINE_EXCEEDED, FLOWRT_SERVICE_HANDLER_ERROR, FLOWRT_SERVICE_OK,
-        FLOWRT_SERVICE_PROTOCOL, FLOWRT_SERVICE_REJECTED, FLOWRT_SERVICE_TIMEOUT,
-        FLOWRT_SERVICE_UNAVAILABLE, FLOWRT_SERVICE_WOULD_DEADLOCK,
-        FLOWRT_SERVICE_FRAME_HEADER_SIZE, FLOWRT_SERVICE_FRAME_MAGIC,
-        FLOWRT_SERVICE_FRAME_VERSION,
+        FLOWRT_SERVICE_DEADLINE_EXCEEDED, FLOWRT_SERVICE_FRAME_HEADER_SIZE,
+        FLOWRT_SERVICE_FRAME_MAGIC, FLOWRT_SERVICE_FRAME_VERSION, FLOWRT_SERVICE_HANDLER_ERROR,
+        FLOWRT_SERVICE_OK, FLOWRT_SERVICE_PROTOCOL, FLOWRT_SERVICE_REJECTED,
+        FLOWRT_SERVICE_TIMEOUT, FLOWRT_SERVICE_UNAVAILABLE, FLOWRT_SERVICE_WOULD_DEADLOCK,
         FlowrtServiceFrameHeader, service_error_to_abi, service_frame_header_to_abi,
     },
     decode_service_frame, encode_service_frame, fnv1a64,
@@ -35,8 +34,14 @@ fn service_error_abi_constants_are_stable() {
 #[test]
 fn service_error_to_abi_conversion() {
     assert_eq!(service_error_to_abi(ServiceError::Ok), FLOWRT_SERVICE_OK);
-    assert_eq!(service_error_to_abi(ServiceError::Timeout), FLOWRT_SERVICE_TIMEOUT);
-    assert_eq!(service_error_to_abi(ServiceError::HandlerError), FLOWRT_SERVICE_HANDLER_ERROR);
+    assert_eq!(
+        service_error_to_abi(ServiceError::Timeout),
+        FLOWRT_SERVICE_TIMEOUT
+    );
+    assert_eq!(
+        service_error_to_abi(ServiceError::HandlerError),
+        FLOWRT_SERVICE_HANDLER_ERROR
+    );
 }
 
 #[test]
@@ -57,7 +62,10 @@ fn service_frame_header_abi_struct_layout() {
     assert_eq!(offset_of!(FlowrtServiceFrameHeader, sequence), 24);
     assert_eq!(offset_of!(FlowrtServiceFrameHeader, correlation_id), 32);
     assert_eq!(offset_of!(FlowrtServiceFrameHeader, timeout_ms), 40);
-    assert_eq!(offset_of!(FlowrtServiceFrameHeader, absolute_deadline_ms), 48);
+    assert_eq!(
+        offset_of!(FlowrtServiceFrameHeader, absolute_deadline_ms),
+        48
+    );
     assert_eq!(offset_of!(FlowrtServiceFrameHeader, schema_hash), 56);
     assert_eq!(offset_of!(FlowrtServiceFrameHeader, payload_offset), 64);
     assert_eq!(offset_of!(FlowrtServiceFrameHeader, payload_len), 68);
@@ -113,10 +121,8 @@ fn service_frame_roundtrip_request_with_payload_and_correlation() {
 fn service_frame_roundtrip_error_response() {
     let request_id = RequestId::new(100, 5, fnv1a64(b"sensor"));
     let deadline = Deadline::new(1000, 500).unwrap();
-    let header = ServiceFrameHeader::response(
-        request_id, deadline, 0x99, 0,
-        ServiceError::HandlerError,
-    );
+    let header =
+        ServiceFrameHeader::response(request_id, deadline, 0x99, 0, ServiceError::HandlerError);
 
     let error_msg = b"division by zero";
     let frame = encode_service_frame(&header, b"", error_msg).unwrap();
@@ -158,6 +164,30 @@ fn service_frame_rejects_wrong_version() {
     frame[4..6].copy_from_slice(&99u16.to_le_bytes());
     let err = decode_service_frame(&frame).unwrap_err();
     assert!(err.to_string().contains("version"));
+}
+
+#[test]
+fn service_frame_rejects_unknown_error_code() {
+    let request_id = RequestId::new(1, 1, 1);
+    let deadline = Deadline::new(100, 0).unwrap();
+    let header = ServiceFrameHeader::request(request_id, deadline, 0, 0);
+    let mut frame = encode_service_frame(&header, b"", b"").unwrap();
+    frame[6..8].copy_from_slice(&99u16.to_le_bytes());
+
+    let err = decode_service_frame(&frame).unwrap_err();
+    assert!(err.to_string().contains("error code"));
+}
+
+#[test]
+fn service_frame_rejects_zero_timeout() {
+    let request_id = RequestId::new(1, 1, 1);
+    let deadline = Deadline::new(100, 0).unwrap();
+    let header = ServiceFrameHeader::request(request_id, deadline, 0, 0);
+    let mut frame = encode_service_frame(&header, b"", b"").unwrap();
+    frame[40..48].copy_from_slice(&0u64.to_le_bytes());
+
+    let err = decode_service_frame(&frame).unwrap_err();
+    assert!(err.to_string().contains("timeout_ms"));
 }
 
 #[test]
@@ -216,10 +246,8 @@ fn service_result_semantics() {
     assert_eq!(ok.error_code(), ServiceError::Ok);
     assert_eq!(ok.ok_value(), Some(42));
 
-    let err: ServiceResult<u32> = ServiceResult::err_with_message(
-        ServiceError::Timeout,
-        "timed out",
-    );
+    let err: ServiceResult<u32> =
+        ServiceResult::err_with_message(ServiceError::Timeout, "timed out");
     assert!(err.is_err());
     assert_eq!(err.error_code(), ServiceError::Timeout);
     assert_eq!(err.error_message(), Some("timed out"));

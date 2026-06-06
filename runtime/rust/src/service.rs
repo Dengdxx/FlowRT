@@ -5,11 +5,10 @@
 //! 不是 backend transport API。
 //!
 //! canonical service frame 使用 little-endian 固定 header + 变长 tail 的编码方式。
-//! header 固定 80 字节，变长字段（payload、错误消息、correlation id）通过 tail 中的
-//! VarSpan 描述符寻址。inproc 可以做 typed/direct dispatch，但其语义必须与 canonical
-//! frame 等价。
+//! header 固定 80 字节，变长字段（payload、错误消息）通过 tail 中的 VarSpan 描述符寻址。
+//! inproc 可以做 typed/direct dispatch，但其语义必须与 canonical frame 等价。
 
-use crate::frame::{VarSpan, append_tail_block, FrameDecoder};
+use crate::frame::{FrameDecoder, VarSpan, append_tail_block};
 use crate::wire::WireCodecError;
 
 /// service frame 魔数，ASCII "FRVS" = 0x46525653，little-endian 存储为 0x53525646。
@@ -196,7 +195,11 @@ pub struct RequestId {
 impl RequestId {
     /// 构造请求标识。
     pub const fn new(session_id: ClientSessionId, sequence: SequenceNum, service_id: u64) -> Self {
-        Self { session_id, sequence, service_id }
+        Self {
+            session_id,
+            sequence,
+            service_id,
+        }
     }
 }
 
@@ -334,7 +337,10 @@ impl ServiceFrameHeader {
     /// 将 header 编码到 80 字节 buffer。
     pub fn encode(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
         if output.len() != SERVICE_FRAME_HEADER_SIZE {
-            return Err(WireCodecError::wrong_size(SERVICE_FRAME_HEADER_SIZE, output.len()));
+            return Err(WireCodecError::wrong_size(
+                SERVICE_FRAME_HEADER_SIZE,
+                output.len(),
+            ));
         }
         output[0..4].copy_from_slice(&self.magic.to_le_bytes());
         output[4..6].copy_from_slice(&self.version.to_le_bytes());
@@ -354,47 +360,66 @@ impl ServiceFrameHeader {
     /// 从 80 字节 buffer 解码 header。
     pub fn decode(input: &[u8]) -> Result<Self, WireCodecError> {
         if input.len() != SERVICE_FRAME_HEADER_SIZE {
-            return Err(WireCodecError::wrong_size(SERVICE_FRAME_HEADER_SIZE, input.len()));
+            return Err(WireCodecError::wrong_size(
+                SERVICE_FRAME_HEADER_SIZE,
+                input.len(),
+            ));
         }
         let magic = u32::from_le_bytes([input[0], input[1], input[2], input[3]]);
         if magic != SERVICE_FRAME_MAGIC {
-            return Err(WireCodecError::invalid_frame("service frame magic mismatch"));
+            return Err(WireCodecError::invalid_frame(
+                "service frame magic mismatch",
+            ));
         }
         let version = u16::from_le_bytes([input[4], input[5]]);
         if version != SERVICE_FRAME_VERSION {
-            return Err(WireCodecError::invalid_frame("service frame version mismatch"));
+            return Err(WireCodecError::invalid_frame(
+                "service frame version mismatch",
+            ));
         }
+        let error_code = u16::from_le_bytes([input[6], input[7]]);
+        if ServiceError::from_abi(error_code).is_none() {
+            return Err(WireCodecError::invalid_frame(
+                "service frame error code is unknown",
+            ));
+        }
+        let timeout_ms = u64::from_le_bytes([
+            input[40], input[41], input[42], input[43], input[44], input[45], input[46], input[47],
+        ]);
+        if timeout_ms == 0 {
+            return Err(WireCodecError::invalid_frame(
+                "service frame timeout_ms must be greater than zero",
+            ));
+        }
+
         Ok(Self {
             magic,
             version,
-            error_code: u16::from_le_bytes([input[6], input[7]]),
+            error_code,
             service_id: u64::from_le_bytes([
-                input[8], input[9], input[10], input[11],
-                input[12], input[13], input[14], input[15],
+                input[8], input[9], input[10], input[11], input[12], input[13], input[14],
+                input[15],
             ]),
             session_id: u64::from_le_bytes([
-                input[16], input[17], input[18], input[19],
-                input[20], input[21], input[22], input[23],
+                input[16], input[17], input[18], input[19], input[20], input[21], input[22],
+                input[23],
             ]),
             sequence: u64::from_le_bytes([
-                input[24], input[25], input[26], input[27],
-                input[28], input[29], input[30], input[31],
+                input[24], input[25], input[26], input[27], input[28], input[29], input[30],
+                input[31],
             ]),
             correlation_id: u64::from_le_bytes([
-                input[32], input[33], input[34], input[35],
-                input[36], input[37], input[38], input[39],
+                input[32], input[33], input[34], input[35], input[36], input[37], input[38],
+                input[39],
             ]),
-            timeout_ms: u64::from_le_bytes([
-                input[40], input[41], input[42], input[43],
-                input[44], input[45], input[46], input[47],
-            ]),
+            timeout_ms,
             absolute_deadline_ms: u64::from_le_bytes([
-                input[48], input[49], input[50], input[51],
-                input[52], input[53], input[54], input[55],
+                input[48], input[49], input[50], input[51], input[52], input[53], input[54],
+                input[55],
             ]),
             schema_hash: u64::from_le_bytes([
-                input[56], input[57], input[58], input[59],
-                input[60], input[61], input[62], input[63],
+                input[56], input[57], input[58], input[59], input[60], input[61], input[62],
+                input[63],
             ]),
             payload_span: VarSpan::decode(&input[64..72])?,
             error_msg_span: VarSpan::decode(&input[72..80])?,
@@ -425,9 +450,14 @@ pub fn encode_service_frame(
 }
 
 /// 解码完整的 service frame，返回 header、payload 和 error message。
-pub fn decode_service_frame(frame: &[u8]) -> Result<(ServiceFrameHeader, Vec<u8>, Vec<u8>), WireCodecError> {
+pub fn decode_service_frame(
+    frame: &[u8],
+) -> Result<(ServiceFrameHeader, Vec<u8>, Vec<u8>), WireCodecError> {
     if frame.len() < SERVICE_FRAME_HEADER_SIZE {
-        return Err(WireCodecError::wrong_size(SERVICE_FRAME_HEADER_SIZE, frame.len()));
+        return Err(WireCodecError::wrong_size(
+            SERVICE_FRAME_HEADER_SIZE,
+            frame.len(),
+        ));
     }
     let header = ServiceFrameHeader::decode(&frame[..SERVICE_FRAME_HEADER_SIZE])?;
     let tail = &frame[SERVICE_FRAME_HEADER_SIZE..];
@@ -484,10 +514,8 @@ mod tests {
         assert!(ok.error_message().is_none());
         assert_eq!(ok.ok_value(), Some(42));
 
-        let err: ServiceResult<u32> = ServiceResult::err_with_message(
-            ServiceError::Timeout,
-            "request timed out",
-        );
+        let err: ServiceResult<u32> =
+            ServiceResult::err_with_message(ServiceError::Timeout, "request timed out");
         assert!(!err.is_ok());
         assert!(err.is_err());
         assert_eq!(err.error_code(), ServiceError::Timeout);
@@ -507,10 +535,8 @@ mod tests {
         let err: ServiceResult<u32> = ServiceResult::err(ServiceError::Backend);
         assert_eq!(err.to_string(), "Backend");
 
-        let err_msg: ServiceResult<u32> = ServiceResult::err_with_message(
-            ServiceError::HandlerError,
-            "division by zero",
-        );
+        let err_msg: ServiceResult<u32> =
+            ServiceResult::err_with_message(ServiceError::HandlerError, "division by zero");
         assert_eq!(err_msg.to_string(), "HandlerError: division by zero");
     }
 
@@ -557,12 +583,7 @@ mod tests {
     fn service_frame_header_encode_decode_roundtrip() {
         let request_id = RequestId::new(0xAAAA, 1, 0xBBBB);
         let deadline = Deadline::new(1000, 5000).unwrap();
-        let header = ServiceFrameHeader::request(
-            request_id,
-            deadline,
-            0xCCCC,
-            0xDDDD,
-        );
+        let header = ServiceFrameHeader::request(request_id, deadline, 0xCCCC, 0xDDDD);
 
         let mut buf = [0u8; 80];
         header.encode(&mut buf).unwrap();
@@ -596,6 +617,34 @@ mod tests {
     }
 
     #[test]
+    fn service_frame_header_rejects_unknown_error_code() {
+        let request_id = RequestId::new(0xAAAA, 1, 0xBBBB);
+        let deadline = Deadline::new(1000, 5000).unwrap();
+        let header = ServiceFrameHeader::request(request_id, deadline, 0xCCCC, 0xDDDD);
+
+        let mut buf = [0u8; 80];
+        header.encode(&mut buf).unwrap();
+        buf[6..8].copy_from_slice(&99u16.to_le_bytes());
+
+        let err = ServiceFrameHeader::decode(&buf).unwrap_err();
+        assert!(err.to_string().contains("error code"));
+    }
+
+    #[test]
+    fn service_frame_header_rejects_zero_timeout() {
+        let request_id = RequestId::new(0xAAAA, 1, 0xBBBB);
+        let deadline = Deadline::new(1000, 5000).unwrap();
+        let header = ServiceFrameHeader::request(request_id, deadline, 0xCCCC, 0xDDDD);
+
+        let mut buf = [0u8; 80];
+        header.encode(&mut buf).unwrap();
+        buf[40..48].copy_from_slice(&0u64.to_le_bytes());
+
+        let err = ServiceFrameHeader::decode(&buf).unwrap_err();
+        assert!(err.to_string().contains("timeout_ms"));
+    }
+
+    #[test]
     fn service_frame_header_rejects_wrong_size() {
         let err = ServiceFrameHeader::decode(&[0u8; 79]).unwrap_err();
         assert_eq!(err.expected, 80);
@@ -606,9 +655,7 @@ mod tests {
     fn service_frame_roundtrip_request_with_payload() {
         let request_id = RequestId::new(100, 1, 0xABCD);
         let deadline = Deadline::new(2000, 500).unwrap();
-        let header = ServiceFrameHeader::request(
-            request_id, deadline, 0x9999, 0,
-        );
+        let header = ServiceFrameHeader::request(request_id, deadline, 0x9999, 0);
 
         let payload = b"hello, service!";
         let frame = encode_service_frame(&header, payload, b"").unwrap();
@@ -635,10 +682,8 @@ mod tests {
     fn service_frame_roundtrip_response_with_error() {
         let request_id = RequestId::new(200, 5, 0x1234);
         let deadline = Deadline::new(3000, 1000).unwrap();
-        let header = ServiceFrameHeader::response(
-            request_id, deadline, 0, 0,
-            ServiceError::HandlerError,
-        );
+        let header =
+            ServiceFrameHeader::response(request_id, deadline, 0, 0, ServiceError::HandlerError);
 
         let error_msg = b"division by zero";
         let frame = encode_service_frame(&header, b"", error_msg).unwrap();
