@@ -21,20 +21,59 @@ drain loop 级联唤醒。
 录制回放系统暂不实施，但实现上述能力时应预留 runtime、self-description 或 CLI
 边界，避免后续引入时破坏已发布契约。
 
-下一版本 `v0.4.0` 目标定为 Service runtime 完整化：
+后续版本路线是当前长期演进主线，不是一次性重写目标。每个版本只推动一个主轴，
+但新语义必须按长期边界设计，避免为短期演示留下兼容负担。
 
-- 生成 Rust/C++ service client/server 用户 API。
-- Service transport 支持 `inproc` 与 `zenoh`；`iox2` 暂不作为 Service transport，
-  继续专注 fixed-size shared-memory dataflow。
-- request arrival 直接驱动 server，不靠 tick polling。
-- 补齐 request id、correlation、timeout、server unavailable 和 structured error 语义。
-- self-description、`flowrt list` 和 `flowrt status` 展示 service endpoints 与 health。
-- ROS2 Service bridge 先固定语义和 manifest 边界；external process adapter 先预留
-  process/service 接入边界；`flowrt pub` 与 record/replay 只预留接口。
+| 版本 | 主线 |
+| --- | --- |
+| `v0.4.0` | Service runtime。 |
+| `v0.5.0` | Operation（Action 上位替代）+ lifecycle/supervisor 深化。 |
+| `v0.6.0` | record/replay + simulated clock + deterministic debug。 |
+| `v0.7.0` | external process / driver package 接入边界。 |
+| `v0.8.0` | 跨机器部署、交叉编译、多架构安装包。 |
+| `v0.9.0` | C/Python API、ROS2 互操作扩展。 |
+| `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
-参数热更新是 runtime control-plane service-like RPC，可复用 schema、validation、
-structured error、pending/apply 和 self-description 经验，但不并入 graph 业务
-Service 语义。
+路线边界：
+
+- `v0.4.0` 先把 Service 做成稳定的 request/response runtime 语义。
+- `v0.5.0` 在 Service 之上引入 Operation，而不是复刻 ROS2 Action。
+- `v0.6.0` 开始让运行时具备可复现调试能力，record/replay、模拟时钟和确定性调试
+  必须共享同一时间与事件模型。
+- `v0.7.0` 只定义 external process / driver package 的接入边界，不把硬件 backend
+  做进 FlowRT 主项目。
+- `v0.8.0` 解决跨机器部署、交叉编译和多架构安装包，使已生成应用可脱离源码仓库交付。
+- `v0.9.0` 扩展 C/Python API 和 ROS2 互操作，但仍以 FlowRT 自身语义为中心。
+- `v1.0.0` 冻结 ABI/schema 基线，并补齐兼容策略、故障注入和性能矩阵。
+
+`v0.4.0` 的 Service runtime 目标是：生成 Rust/C++ service client/server 用户 API；
+Service transport 支持 `inproc` 与 `zenoh`；`iox2` 暂不作为 Service transport，
+继续专注 fixed-size shared-memory dataflow；request arrival 直接驱动 server，不靠
+tick polling；补齐 request id、correlation、timeout、server unavailable 和
+structured error 语义；self-description、`flowrt list` 和 `flowrt status` 展示
+service endpoints 与 health。ROS2 Service bridge 先固定语义和 manifest 边界；
+external process adapter 先预留 process/service 接入边界；`flowrt pub` 与
+record/replay 只预留接口。
+
+Service 与参数热更新有相似的控制面形状，但职责不同：参数热更新是 runtime
+control-plane service-like RPC，服务于运行中配置管理；Service 是 graph 业务语义，
+服务于用户组件之间的 typed request/response。两者可以复用 schema、validation、
+structured error、pending/apply 和 self-description 经验，但不能混成同一个概念。
+
+`v0.5.0` 不复制 ROS2 Action。FlowRT 需要的是一等 Operation 语义：typed
+long-running command、generated state machine、explicit policy、observable handle，
+底层编译期 lower 成 Service + Channel。用户只看 Operation，调试时才展开底层拓扑。
+Operation policy 必须显式声明 concurrency、preempt、cancel、timeout 和
+result retention；用户不得手写 start/cancel/result/progress 四套底层协议。
+
+Operation 解决的不是“长时间 service call”，而是机器人系统里常见的可取消、
+可抢占、可观测、可恢复的长任务。生成器负责把 Operation lowered 成 request、
+progress、feedback、cancel、result 和状态观测通道；用户只实现业务 handler 和策略
+钩子，不手写底层协议。这样保留 Action 的实用能力，同时避免让用户维护分散的
+start/cancel/result/progress glue。
+
+FlowRT 主项目不做硬件 backend。Linux 和外部 driver package 管硬件；FlowRT 管结构、
+执行、通信、观测、external process 生命周期和 typed 接入边界。
 
 ## 当前仓库状态
 
