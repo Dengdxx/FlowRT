@@ -25,11 +25,12 @@ use introspection::{
 };
 
 #[cfg(test)]
+use flowrt_selfdesc::SelfDescription;
+#[cfg(test)]
 use introspection::{
-    SelfDescription, echo_channel_follow_for_polls, echo_channel_from_image,
-    echo_channel_snapshot_from_image, find_echo_channel, format_hz_summary_from_status_pair,
-    live_hz_summary_for_sockets, live_status_summary_for_sockets, select_matching_runtime_socket,
-    self_description_hash,
+    echo_channel_follow_for_polls, echo_channel_from_image, echo_channel_snapshot_from_image,
+    find_echo_channel, format_hz_summary_from_status_pair, live_hz_summary_for_sockets,
+    live_status_summary_for_sockets, select_matching_runtime_socket, self_description_hash,
 };
 
 #[derive(Debug, Parser)]

@@ -6,7 +6,15 @@ use flowrt_ir::{
     OverflowPolicy as IrOverflowPolicy, StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind,
     TypeExpr, TypeIr,
 };
-use serde::Serialize;
+use flowrt_selfdesc::{
+    SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
+    SelfDescriptionChannel, SelfDescriptionDeployment, SelfDescriptionFieldAbi,
+    SelfDescriptionFrameField, SelfDescriptionGraph, SelfDescriptionInstance,
+    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionPackage,
+    SelfDescriptionParam, SelfDescriptionProfile, SelfDescriptionScheduler,
+    SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionTarget,
+    SelfDescriptionTask,
+};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -15,178 +23,6 @@ use crate::{
     param_type_name, param_update_name, param_value_for_instance, param_value_json,
     type_contains_variable_data, variable_tail_max_size,
 };
-
-const SELF_DESCRIPTION_SCHEMA_VERSION: &str = "0.1";
-const SELF_DESCRIPTION_SECTION: &str = ".flowrt.selfdesc";
-
-#[derive(Debug, Serialize)]
-struct SelfDescription<'a> {
-    self_description_version: &'static str,
-    ir_version: &'a str,
-    schema_version: &'a str,
-    source_hash: &'a str,
-    package: SelfDescriptionPackage<'a>,
-    profiles: Vec<SelfDescriptionProfile<'a>>,
-    targets: Vec<SelfDescriptionTarget<'a>>,
-    deployments: Vec<SelfDescriptionDeployment<'a>>,
-    graphs: Vec<SelfDescriptionGraph<'a>>,
-    message_abi: Vec<SelfDescriptionMessageAbi>,
-    message_frames: Vec<SelfDescriptionMessageFrame>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionPackage<'a> {
-    name: &'a str,
-    version: Option<&'a str>,
-    rsdl_version: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionProfile<'a> {
-    name: &'a str,
-    backend: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionTarget<'a> {
-    name: &'a str,
-    platform: Option<&'a str>,
-    runtimes: Vec<&'static str>,
-    backends: Vec<&'a str>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionDeployment<'a> {
-    graph: &'a str,
-    profile: &'a str,
-    target: &'a str,
-    backend: &'a str,
-    satisfied: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionGraph<'a> {
-    name: &'a str,
-    scheduler: SelfDescriptionScheduler,
-    instances: Vec<SelfDescriptionInstance<'a>>,
-    tasks: Vec<SelfDescriptionTask<'a>>,
-    channels: Vec<SelfDescriptionChannel>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionScheduler {
-    worker_threads: u32,
-    lanes: Vec<SelfDescriptionSchedulerLane>,
-    tasks: Vec<SelfDescriptionSchedulerTask>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionSchedulerLane {
-    name: String,
-    kind: &'static str,
-    instance: String,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionSchedulerTask {
-    name: String,
-    instance: String,
-    lane: String,
-    trigger: &'static str,
-    readiness: &'static str,
-    period_ms: Option<u64>,
-    deadline_ms: Option<u64>,
-    priority: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionInstance<'a> {
-    name: &'a str,
-    component: &'a str,
-    process: &'a str,
-    target: Option<&'a str>,
-    runtime: &'static str,
-    params: Vec<SelfDescriptionParam>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionParam {
-    name: String,
-    #[serde(rename = "type")]
-    ty: &'static str,
-    update: &'static str,
-    current: serde_json::Value,
-    min: Option<serde_json::Value>,
-    max: Option<serde_json::Value>,
-    choices: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionTask<'a> {
-    name: &'a str,
-    instance: &'a str,
-    trigger: &'static str,
-    readiness: &'static str,
-    period_ms: Option<u64>,
-    deadline_ms: Option<u64>,
-    lane: String,
-    priority: Option<u32>,
-    inputs: &'a [String],
-    outputs: &'a [String],
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionChannel {
-    from: String,
-    to: String,
-    message_type: String,
-    backend: String,
-    service: Option<String>,
-    key_expr: Option<String>,
-    channel: &'static str,
-    depth: Option<u32>,
-    overflow: &'static str,
-    stale_policy: &'static str,
-    max_age_ms: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionMessageAbi {
-    type_name: String,
-    size_bytes: usize,
-    align_bytes: usize,
-    fields: Vec<SelfDescriptionFieldAbi>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionFieldAbi {
-    name: String,
-    #[serde(rename = "type")]
-    ty: String,
-    offset_bytes: usize,
-    size_bytes: usize,
-    align_bytes: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionMessageFrame {
-    type_name: String,
-    encoding: &'static str,
-    header_size_bytes: usize,
-    max_size_bytes: Option<usize>,
-    variable: bool,
-    fields: Vec<SelfDescriptionFrameField>,
-}
-
-#[derive(Debug, Serialize)]
-struct SelfDescriptionFrameField {
-    name: String,
-    #[serde(rename = "type")]
-    ty: String,
-    header_offset_bytes: usize,
-    header_size_bytes: usize,
-    tail_max_bytes: Option<usize>,
-}
 
 pub(super) fn emit_self_description(contract: &ContractIr) -> Result<String> {
     let self_description = self_description(contract)?;
@@ -255,52 +91,52 @@ pub(super) fn emit_rust_selfdesc(contract: &ContractIr) -> String {
     output
 }
 
-fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
+fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
     Ok(SelfDescription {
-        self_description_version: SELF_DESCRIPTION_SCHEMA_VERSION,
-        ir_version: &contract.ir_version,
-        schema_version: &contract.schema_version,
-        source_hash: &contract.source_hash,
+        self_description_version: SELF_DESCRIPTION_SCHEMA_VERSION.to_string(),
+        ir_version: contract.ir_version.clone(),
+        schema_version: contract.schema_version.clone(),
+        source_hash: contract.source_hash.clone(),
         package: SelfDescriptionPackage {
-            name: &contract.package.name,
-            version: contract.package.version.as_deref(),
-            rsdl_version: &contract.package.rsdl_version,
+            name: contract.package.name.clone(),
+            version: contract.package.version.clone(),
+            rsdl_version: contract.package.rsdl_version.clone(),
         },
         profiles: contract
             .profiles
             .iter()
             .map(|profile| SelfDescriptionProfile {
-                name: &profile.name,
-                backend: &profile.backend.0,
+                name: profile.name.clone(),
+                backend: profile.backend.0.clone(),
             })
             .collect(),
         targets: contract
             .targets
             .iter()
             .map(|target| SelfDescriptionTarget {
-                name: &target.name,
-                platform: target.platform.as_deref(),
+                name: target.name.clone(),
+                platform: target.platform.clone(),
                 runtimes: target
                     .runtime
                     .iter()
                     .copied()
-                    .map(language_name)
-                    .collect::<Vec<_>>(),
+                    .map(|r| language_name(r).to_string())
+                    .collect(),
                 backends: target
                     .backends
                     .iter()
-                    .map(|backend| backend.0.as_str())
-                    .collect::<Vec<_>>(),
+                    .map(|backend| backend.0.clone())
+                    .collect(),
             })
             .collect(),
         deployments: contract
             .deployments
             .iter()
             .map(|deployment| SelfDescriptionDeployment {
-                graph: &deployment.graph.name,
-                profile: &deployment.profile.name,
-                target: &deployment.target.name,
-                backend: &deployment.backend.0,
+                graph: deployment.graph.name.clone(),
+                profile: deployment.profile.name.clone(),
+                target: deployment.target.name.clone(),
+                backend: deployment.backend.0.clone(),
                 satisfied: deployment.satisfied,
             })
             .collect(),
@@ -321,12 +157,9 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription<'_>> {
     })
 }
 
-fn self_description_graph<'a>(
-    contract: &'a ContractIr,
-    graph: &'a GraphIr,
-) -> SelfDescriptionGraph<'a> {
+fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescriptionGraph {
     SelfDescriptionGraph {
-        name: &graph.name,
+        name: graph.name.clone(),
         scheduler: self_description_scheduler(contract, graph),
         instances: graph
             .instances
@@ -334,11 +167,14 @@ fn self_description_graph<'a>(
             .map(|instance| {
                 let component = component_by_name(contract, &instance.component.name);
                 SelfDescriptionInstance {
-                    name: &instance.name,
-                    component: &instance.component.name,
-                    process: instance.process.as_deref().unwrap_or("main"),
-                    target: instance.target.as_ref().map(|target| target.name.as_str()),
-                    runtime: language_name(component.language),
+                    name: instance.name.clone(),
+                    component: instance.component.name.clone(),
+                    process: instance
+                        .process
+                        .clone()
+                        .unwrap_or_else(|| "main".to_string()),
+                    target: instance.target.as_ref().map(|target| target.name.clone()),
+                    runtime: language_name(component.language).to_string(),
                     params: self_description_params(component, instance),
                 }
             })
@@ -347,16 +183,16 @@ fn self_description_graph<'a>(
             .tasks
             .iter()
             .map(|task| SelfDescriptionTask {
-                name: &task.name,
-                instance: &task.instance.name,
-                trigger: trigger_name(task.trigger),
-                readiness: readiness_name(task.readiness),
+                name: task.name.clone(),
+                instance: task.instance.name.clone(),
+                trigger: trigger_name(task.trigger).to_string(),
+                readiness: readiness_name(task.readiness).to_string(),
                 period_ms: task.period_ms,
                 deadline_ms: task.deadline_ms,
                 lane: task_lane_name(task),
                 priority: task.priority,
-                inputs: &task.inputs,
-                outputs: &task.outputs,
+                inputs: task.inputs.clone(),
+                outputs: task.outputs.clone(),
             })
             .collect(),
         channels: graph
@@ -364,21 +200,29 @@ fn self_description_graph<'a>(
             .iter()
             .enumerate()
             .map(|(index, bind)| {
-                let backend = bind.backend.0.as_str();
+                let backend = bind.backend.0.clone();
                 SelfDescriptionChannel {
                     from: format!("{}.{}", bind.from.instance.name, bind.from.port),
                     to: format!("{}.{}", bind.to.instance.name, bind.to.port),
                     message_type: channel_message_type(contract, graph, bind),
-                    backend: backend.to_string(),
-                    service: (backend == "iox2")
-                        .then(|| crate::iox2_service_name_for_edge(contract, graph, index, bind)),
-                    key_expr: (backend == "zenoh")
-                        .then(|| crate::zenoh_key_expr_for_edge(contract, graph, index, bind)),
-                    channel: channel_name(bind.channel),
+                    service: if backend == "iox2" {
+                        Some(crate::iox2_service_name_for_edge(
+                            contract, graph, index, bind,
+                        ))
+                    } else {
+                        None
+                    },
+                    key_expr: if backend == "zenoh" {
+                        Some(crate::zenoh_key_expr_for_edge(contract, graph, index, bind))
+                    } else {
+                        None
+                    },
+                    channel: channel_name(bind.channel).to_string(),
                     depth: bind.depth,
-                    overflow: overflow_name(bind.overflow),
-                    stale_policy: stale_name(bind.stale),
+                    overflow: overflow_name(bind.overflow).to_string(),
+                    stale_policy: stale_name(bind.stale).to_string(),
                     max_age_ms: bind.max_age_ms,
+                    backend,
                 }
             })
             .collect(),
@@ -401,7 +245,7 @@ fn self_description_scheduler(contract: &ContractIr, graph: &GraphIr) -> SelfDes
             .into_iter()
             .map(|(name, instance)| SelfDescriptionSchedulerLane {
                 name,
-                kind: "serial",
+                kind: "serial".to_string(),
                 instance,
             })
             .collect(),
@@ -412,8 +256,8 @@ fn self_description_scheduler(contract: &ContractIr, graph: &GraphIr) -> SelfDes
                 name: task.name.clone(),
                 instance: task.instance.name.clone(),
                 lane: task_lane_name(task),
-                trigger: trigger_name(task.trigger),
-                readiness: readiness_name(task.readiness),
+                trigger: trigger_name(task.trigger).to_string(),
+                readiness: readiness_name(task.readiness).to_string(),
                 period_ms: task.period_ms,
                 deadline_ms: task.deadline_ms,
                 priority: task.priority,
@@ -484,7 +328,7 @@ fn self_description_message_frame(
     }
     SelfDescriptionMessageFrame {
         type_name: ty.name.clone(),
-        encoding: "canonical_frame_v1",
+        encoding: "canonical_frame_v1".to_string(),
         header_size_bytes: frame_header_size_for_type(contract, ty),
         max_size_bytes: frame_max_size_for_type(contract, ty),
         variable: type_contains_variable_data(
@@ -565,8 +409,8 @@ fn self_description_params(
         .iter()
         .map(|param| SelfDescriptionParam {
             name: param.name.clone(),
-            ty: param_type_name(param.ty),
-            update: param_update_name(param.update),
+            ty: param_type_name(param.ty).to_string(),
+            update: param_update_name(param.update).to_string(),
             current: param_value_json(param_value_for_instance(instance, param)),
             min: param.min.as_ref().map(param_value_json),
             max: param.max.as_ref().map(param_value_json),

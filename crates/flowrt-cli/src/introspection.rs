@@ -1,129 +1,23 @@
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use object::{Object, ObjectSection};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-const SELF_DESCRIPTION_SECTION: &str = ".flowrt.selfdesc";
+use flowrt_selfdesc::{
+    SelfDescription, SelfDescriptionChannel, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
+    SelfDescriptionInstance, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
+    SelfDescriptionParam, load_self_description as load_selfdesc,
+};
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescription {
-    pub(crate) self_description_version: String,
-    pub(crate) source_hash: String,
-    pub(crate) package: SelfDescriptionPackage,
-    pub(crate) graphs: Vec<SelfDescriptionGraph>,
-    pub(crate) message_abi: Vec<SelfDescriptionMessageAbi>,
-    #[serde(default)]
-    pub(crate) message_frames: Vec<SelfDescriptionMessageFrame>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionPackage {
-    pub(crate) name: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionGraph {
-    pub(crate) name: String,
-    pub(crate) instances: Vec<SelfDescriptionInstance>,
-    pub(crate) tasks: Vec<SelfDescriptionTask>,
-    pub(crate) channels: Vec<SelfDescriptionChannel>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionInstance {
-    pub(crate) name: String,
-    pub(crate) component: String,
-    pub(crate) process: String,
-    pub(crate) runtime: String,
-    #[serde(default)]
-    pub(crate) params: Vec<SelfDescriptionParam>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionParam {
-    pub(crate) name: String,
-    #[serde(rename = "type")]
-    pub(crate) ty: String,
-    pub(crate) update: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionTask {
-    pub(crate) instance: String,
-    pub(crate) trigger: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionChannel {
-    pub(crate) from: String,
-    pub(crate) to: String,
-    pub(crate) message_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionMessageAbi {
-    pub(crate) type_name: String,
-    pub(crate) size_bytes: usize,
-    #[serde(default)]
-    pub(crate) fields: Vec<SelfDescriptionFieldAbi>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct SelfDescriptionFieldAbi {
-    pub(crate) name: String,
-    #[serde(rename = "type", default)]
-    pub(crate) ty: String,
-    pub(crate) offset_bytes: usize,
-    pub(crate) size_bytes: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SelfDescriptionMessageFrame {
-    pub(crate) type_name: String,
-    #[serde(default)]
-    pub(crate) header_size_bytes: usize,
-    pub(crate) max_size_bytes: Option<usize>,
-    pub(crate) variable: bool,
-    #[serde(default)]
-    pub(crate) fields: Vec<SelfDescriptionFrameField>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct SelfDescriptionFrameField {
-    pub(crate) name: String,
-    #[serde(rename = "type", default)]
-    pub(crate) ty: String,
-    pub(crate) header_offset_bytes: usize,
-    pub(crate) header_size_bytes: usize,
-    pub(crate) tail_max_bytes: Option<usize>,
-}
+pub(crate) use flowrt_selfdesc::self_description_hash;
 
 pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read FlowRT image `{}`", path.display()))?;
-    let json = if path
-        .file_name()
-        .is_some_and(|name| name == OsStr::new("selfdesc.json"))
-    {
-        bytes
-    } else {
-        self_description_section_bytes(&bytes).with_context(|| {
-            format!(
-                "failed to read `{SELF_DESCRIPTION_SECTION}` section from `{}`",
-                path.display()
-            )
-        })?
-    };
-    serde_json::from_slice(&json).with_context(|| {
+    load_selfdesc(path).with_context(|| {
         format!(
-            "failed to parse FlowRT self-description from `{}`",
+            "failed to read FlowRT self-description from `{}`",
             path.display()
         )
     })
@@ -132,45 +26,9 @@ pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
 fn load_self_description_with_hash(path: &Path) -> Result<(SelfDescription, String)> {
     let bytes = fs::read(path)
         .with_context(|| format!("failed to read FlowRT image `{}`", path.display()))?;
-    let json = if path
-        .file_name()
-        .is_some_and(|name| name == OsStr::new("selfdesc.json"))
-    {
-        bytes
-    } else {
-        self_description_section_bytes(&bytes).with_context(|| {
-            format!(
-                "failed to read `{SELF_DESCRIPTION_SECTION}` section from `{}`",
-                path.display()
-            )
-        })?
-    };
-    let hash = self_description_hash(&json);
-    let self_description = serde_json::from_slice(&json).with_context(|| {
-        format!(
-            "failed to parse FlowRT self-description from `{}`",
-            path.display()
-        )
-    })?;
+    let hash = self_description_hash(&bytes);
+    let self_description = load_self_description(path)?;
     Ok((self_description, hash))
-}
-
-fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>> {
-    let object =
-        object::File::parse(image).context("FlowRT image is not a supported object file")?;
-    let section = object
-        .section_by_name(SELF_DESCRIPTION_SECTION)
-        .with_context(|| format!("FlowRT image does not contain `{SELF_DESCRIPTION_SECTION}`"))?;
-    let data = section
-        .data()
-        .context("failed to decode FlowRT self-description section data")?;
-    Ok(data.to_vec())
-}
-
-pub(crate) fn self_description_hash(json: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(json);
-    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) fn self_description_summary(self_description: &SelfDescription) -> String {
@@ -788,7 +646,7 @@ fn format_echo_snapshot(
                     channel.message_type
                 );
             }
-            let fields = format_fixed_abi_fields(fields, payload)?;
+            let fields = flowrt_selfdesc::format_fixed_abi_fields(fields, payload)?;
             if !fields.is_empty() {
                 return Ok(format!(
                     "channel={} type={} {} published_count={} published_at_ms={} payload_len={} fields={{{}}} raw={}",
@@ -820,7 +678,7 @@ fn format_echo_snapshot(
                     );
                 }
             }
-            let fields = format_frame_fields(fields, *header_size_bytes, payload)?;
+            let fields = flowrt_selfdesc::format_frame_fields(fields, *header_size_bytes, payload)?;
             if !fields.is_empty() {
                 return Ok(format!(
                     "channel={} type={} {} published_count={} published_at_ms={} payload_len={} fields={{{}}} raw={}",
@@ -862,266 +720,6 @@ fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
             format!("frame_max_size={max_size} variable={variable}")
         }
     }
-}
-
-fn format_fixed_abi_fields(fields: &[SelfDescriptionFieldAbi], payload: &[u8]) -> Result<String> {
-    let mut formatted = Vec::new();
-    for field in fields {
-        if field.offset_bytes > payload.len()
-            || field.size_bytes > payload.len().saturating_sub(field.offset_bytes)
-        {
-            anyhow::bail!(
-                "field `{}` range {}..{} exceeds payload length {}",
-                field.name,
-                field.offset_bytes,
-                field.offset_bytes.saturating_add(field.size_bytes),
-                payload.len()
-            );
-        }
-        let bytes = &payload[field.offset_bytes..field.offset_bytes + field.size_bytes];
-        formatted.push(format!(
-            "{}={}",
-            field.name,
-            format_fixed_abi_value(&field.ty, bytes)?
-        ));
-    }
-    Ok(formatted.join(","))
-}
-
-fn format_frame_fields(
-    fields: &[SelfDescriptionFrameField],
-    header_size_bytes: usize,
-    payload: &[u8],
-) -> Result<String> {
-    if payload.len() < header_size_bytes {
-        anyhow::bail!(
-            "canonical frame header size {} exceeds payload length {}",
-            header_size_bytes,
-            payload.len()
-        );
-    }
-    let (header, tail) = payload.split_at(header_size_bytes);
-    let mut formatted = Vec::new();
-    for field in fields {
-        if field.header_offset_bytes > header.len()
-            || field.header_size_bytes > header.len().saturating_sub(field.header_offset_bytes)
-        {
-            anyhow::bail!(
-                "field `{}` header range {}..{} exceeds frame header length {}",
-                field.name,
-                field.header_offset_bytes,
-                field
-                    .header_offset_bytes
-                    .saturating_add(field.header_size_bytes),
-                header.len()
-            );
-        }
-        let bytes =
-            &header[field.header_offset_bytes..field.header_offset_bytes + field.header_size_bytes];
-        let value = format_frame_field_value(field, bytes, tail)?;
-        formatted.push(format!("{}={value}", field.name));
-    }
-    Ok(formatted.join(","))
-}
-
-fn format_frame_field_value(
-    field: &SelfDescriptionFrameField,
-    header_bytes: &[u8],
-    tail: &[u8],
-) -> Result<String> {
-    let ty = field.ty.trim();
-    if ty == "string" {
-        let block = frame_tail_block(field, header_bytes, tail)?;
-        let text = std::str::from_utf8(block)
-            .with_context(|| format!("field `{}` is not valid UTF-8", field.name))?;
-        return serde_json::to_string(text)
-            .with_context(|| format!("failed to format string field `{}`", field.name));
-    }
-    if ty == "bytes" {
-        let block = frame_tail_block(field, header_bytes, tail)?;
-        return Ok(format!("0x{}", hex_bytes(block)));
-    }
-    if let Some(element_ty) = parse_sequence_type(ty)? {
-        let element_size = required_fixed_wire_size(element_ty)
-            .with_context(|| format!("unsupported sequence element type `{element_ty}`"))?;
-        let block = frame_tail_block(field, header_bytes, tail)?;
-        if block.len() % element_size != 0 {
-            anyhow::bail!(
-                "field `{}` byte length {} is not divisible by element size {}",
-                field.name,
-                block.len(),
-                element_size
-            );
-        }
-        let element_count = block.len() / element_size;
-        let mut values = Vec::with_capacity(element_count);
-        for chunk in block.chunks_exact(element_size) {
-            values.push(format_fixed_abi_value(element_ty, chunk)?);
-        }
-        return Ok(format!("[{}]", values.join(",")));
-    }
-    format_fixed_abi_value(ty, header_bytes)
-}
-
-fn frame_tail_block<'a>(
-    field: &SelfDescriptionFrameField,
-    header_bytes: &[u8],
-    tail: &'a [u8],
-) -> Result<&'a [u8]> {
-    if header_bytes.len() != 8 {
-        anyhow::bail!(
-            "variable field `{}` header expects 8-byte VarSpan but has {} bytes",
-            field.name,
-            header_bytes.len()
-        );
-    }
-    let offset = read_u32_le(&header_bytes[0..4])? as usize;
-    let len = read_u32_le(&header_bytes[4..8])? as usize;
-    if let Some(tail_max_bytes) = field.tail_max_bytes
-        && len > tail_max_bytes
-    {
-        anyhow::bail!(
-            "field `{}` length {} exceeds self-description tail max {}",
-            field.name,
-            len,
-            tail_max_bytes
-        );
-    }
-    if offset > tail.len() || len > tail.len().saturating_sub(offset) {
-        anyhow::bail!(
-            "field `{}` tail range {}..{} exceeds tail length {}",
-            field.name,
-            offset,
-            offset.saturating_add(len),
-            tail.len()
-        );
-    }
-    Ok(&tail[offset..offset + len])
-}
-
-fn read_u32_le(bytes: &[u8]) -> Result<u32> {
-    let array: [u8; 4] = bytes
-        .try_into()
-        .context("u32 wire value must contain exactly 4 bytes")?;
-    Ok(u32::from_le_bytes(array))
-}
-
-fn parse_sequence_type(ty: &str) -> Result<Option<&str>> {
-    let Some(inner) = ty
-        .strip_prefix("sequence<")
-        .and_then(|value| value.strip_suffix('>'))
-    else {
-        return Ok(None);
-    };
-    if inner.contains(",max=") {
-        anyhow::bail!("legacy bounded sequence type `{ty}` is not supported");
-    }
-    Ok(Some(inner.trim()))
-}
-
-fn format_fixed_abi_value(ty: &str, bytes: &[u8]) -> Result<String> {
-    let ty = ty.trim();
-    if let Some((element, len)) = parse_fixed_array_type(ty)? {
-        let element_size = required_fixed_wire_size(element)
-            .with_context(|| format!("unsupported fixed array element type `{element}`"))?;
-        if bytes.len() != element_size * len {
-            anyhow::bail!(
-                "fixed array `{ty}` expects {} bytes but payload field has {} bytes",
-                element_size * len,
-                bytes.len()
-            );
-        }
-        let mut values = Vec::with_capacity(len);
-        for index in 0..len {
-            let start = index * element_size;
-            values.push(format_fixed_abi_value(
-                element,
-                &bytes[start..start + element_size],
-            )?);
-        }
-        return Ok(format!("[{}]", values.join(",")));
-    }
-    format_primitive_value(ty, bytes)
-}
-
-fn required_fixed_wire_size(ty: &str) -> Result<usize> {
-    fixed_wire_size(ty)?.with_context(|| format!("unsupported fixed wire type `{ty}`"))
-}
-
-fn fixed_wire_size(ty: &str) -> Result<Option<usize>> {
-    let ty = ty.trim();
-    if let Some(size) = primitive_size(ty) {
-        return Ok(Some(size));
-    }
-    if let Some((element, len)) = parse_fixed_array_type(ty)? {
-        let Some(element_size) = fixed_wire_size(element)? else {
-            return Ok(None);
-        };
-        return Ok(element_size.checked_mul(len));
-    }
-    Ok(None)
-}
-
-fn parse_fixed_array_type(ty: &str) -> Result<Option<(&str, usize)>> {
-    let Some(inner) = ty
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-    else {
-        return Ok(None);
-    };
-    let Some((element, len)) = inner.split_once(';') else {
-        anyhow::bail!("invalid fixed array type `{ty}`");
-    };
-    let len = len
-        .trim()
-        .parse::<usize>()
-        .with_context(|| format!("invalid fixed array length in `{ty}`"))?;
-    Ok(Some((element.trim(), len)))
-}
-
-fn primitive_size(ty: &str) -> Option<usize> {
-    Some(match ty {
-        "bool" | "u8" | "i8" => 1,
-        "u16" | "i16" => 2,
-        "u32" | "i32" | "f32" => 4,
-        "u64" | "i64" | "f64" => 8,
-        "u128" | "i128" => 16,
-        _ => return None,
-    })
-}
-
-fn format_primitive_value(ty: &str, bytes: &[u8]) -> Result<String> {
-    let expected = primitive_size(ty).with_context(|| format!("unsupported field type `{ty}`"))?;
-    if bytes.len() != expected {
-        anyhow::bail!(
-            "primitive `{ty}` expects {expected} bytes but payload field has {} bytes",
-            bytes.len()
-        );
-    }
-    Ok(match ty {
-        "bool" => (bytes[0] != 0).to_string(),
-        "u8" => bytes[0].to_string(),
-        "i8" => (bytes[0] as i8).to_string(),
-        "u16" => u16::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "i16" => i16::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "u32" => u32::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "i32" => i32::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "u64" => u64::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "i64" => i64::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "u128" => u128::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "i128" => i128::from_le_bytes(bytes.try_into().unwrap()).to_string(),
-        "f32" => format_float(f32::from_le_bytes(bytes.try_into().unwrap()) as f64),
-        "f64" => format_float(f64::from_le_bytes(bytes.try_into().unwrap())),
-        _ => unreachable!("primitive_size already accepted type"),
-    })
-}
-
-fn format_float(value: f64) -> String {
-    let mut formatted = value.to_string();
-    if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E') {
-        formatted.push_str(".0");
-    }
-    formatted
 }
 
 pub(crate) fn params_list(image: &Path, socket: Option<&Path>) -> Result<String> {

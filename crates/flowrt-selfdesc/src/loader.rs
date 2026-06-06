@@ -1,0 +1,216 @@
+//! 从 JSON 文件或二进制 section 读取 self-description。
+
+use std::ffi::OsStr;
+use std::fs;
+use std::path::Path;
+
+use object::{Object, ObjectSection};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+use crate::schema::{SELF_DESCRIPTION_SECTION, SelfDescription};
+
+/// 加载错误。
+#[derive(Debug, Error)]
+pub enum LoadError {
+    #[error("failed to read FlowRT image `{path}`: {source}")]
+    Io {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("FlowRT image is not a supported object file")]
+    ParseObject(#[from] object::Error),
+    #[error("FlowRT image does not contain `{section}` section")]
+    MissingSection { section: String },
+    #[error("failed to decode FlowRT self-description section data")]
+    SectionData,
+    #[error("failed to parse FlowRT self-description: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// 从 `selfdesc.json` 或二进制 `.flowrt.selfdesc` section 读取 self-description。
+pub fn load_self_description(path: &Path) -> Result<SelfDescription, LoadError> {
+    let bytes = fs::read(path).map_err(|source| LoadError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let json = if path
+        .file_name()
+        .is_some_and(|name| name == OsStr::new("selfdesc.json"))
+    {
+        bytes
+    } else {
+        self_description_section_bytes(&bytes)?
+    };
+    serde_json::from_slice(&json).map_err(LoadError::Json)
+}
+
+/// 计算 self-description JSON 的 SHA-256 哈希（hex 小写）。
+pub fn self_description_hash(json: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(json);
+    format!("{:x}", hasher.finalize())
+}
+
+fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>, LoadError> {
+    let object = object::File::parse(image)?;
+    let section = object
+        .section_by_name(SELF_DESCRIPTION_SECTION)
+        .ok_or_else(|| LoadError::MissingSection {
+            section: SELF_DESCRIPTION_SECTION.to_string(),
+        })?;
+    let data = section.data().map_err(|_| LoadError::SectionData)?;
+    Ok(data.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn minimal_selfdesc_json() -> &'static str {
+        r#"{
+  "self_description_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "test_pkg" },
+  "graphs": [],
+  "message_abi": []
+}"#
+    }
+
+    #[test]
+    fn load_from_selfdesc_json_file() {
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-load-json-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, minimal_selfdesc_json()).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert_eq!(sd.self_description_version, "0.1");
+        assert_eq!(sd.package.name, "test_pkg");
+        assert!(sd.graphs.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_from_binary_section() {
+        let dir = std::env::temp_dir().join(format!(
+            "flowrt-selfdesc-load-section-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"selfdesc-section-test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n",
+        )
+        .unwrap();
+        let json = minimal_selfdesc_json();
+        let len = json.len();
+        std::fs::write(
+            dir.join("src/main.rs"),
+            format!(
+                r##"#[used]
+#[unsafe(link_section = ".flowrt.selfdesc")]
+static FLOWRT_SELF_DESCRIPTION: [u8; {len}] = *br#"{json}"#;
+
+fn main() {{}}
+"##,
+            ),
+        )
+        .unwrap();
+
+        let status = std::process::Command::new("cargo")
+            .arg("build")
+            .arg("--quiet")
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let binary_name = if cfg!(windows) {
+            "selfdesc-section-test.exe"
+        } else {
+            "selfdesc-section-test"
+        };
+        let binary = dir.join("target/debug").join(binary_name);
+        let sd = load_self_description(&binary).unwrap();
+        assert_eq!(sd.package.name, "test_pkg");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hash_is_deterministic() {
+        let json = minimal_selfdesc_json();
+        let h1 = self_description_hash(json.as_bytes());
+        let h2 = self_description_hash(json.as_bytes());
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "x" },
+  "graphs": [],
+  "message_abi": [],
+  "future_field": 42,
+  "nested_unknown": { "a": "b" }
+}"#;
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-unknown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert_eq!(sd.self_description_version, "0.1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsupported_version_loads_without_error() {
+        let json = r#"{
+  "self_description_version": "99.0",
+  "source_hash": "abc",
+  "package": { "name": "x" },
+  "graphs": [],
+  "message_abi": []
+}"#;
+        let dir = std::env::temp_dir().join(format!("flowrt-selfdesc-ver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert_eq!(sd.self_description_version, "99.0");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_json_reports_clear_error() {
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-badjson-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, "not json").unwrap();
+
+        let err = load_self_description(&path).unwrap_err();
+        assert!(err.to_string().contains("failed to parse"), "error: {err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_file_reports_clear_error() {
+        let path = Path::new("/nonexistent/selfdesc.json");
+        let err = load_self_description(path).unwrap_err();
+        assert!(err.to_string().contains("failed to read"), "error: {err}");
+    }
+}
