@@ -130,10 +130,12 @@ if [[ -z "$version" ]]; then
                 exit;
             }
         ' "$repo_root/Cargo.toml"
-    )"
+    )" || true
 fi
 if [[ -z "$version" ]]; then
-    printf 'failed to read FlowRT version from Cargo.toml\n' >&2
+    printf '错误: 无法从 %s 读取 workspace version。\n' "$repo_root/Cargo.toml" >&2
+    printf '请确认 Cargo.toml 中 [workspace.package] 的 version 字段存在且格式正确，\n' >&2
+    printf '或使用 --version 参数显式指定版本。\n' >&2
     exit 1
 fi
 
@@ -144,8 +146,8 @@ case "$architecture" in
     amd64|arm64)
         ;;
     *)
-        printf 'error: --architecture %s is not supported.\n' "$architecture" >&2
-        printf 'supported architectures: amd64 arm64\n' >&2
+        printf '错误: --architecture %s 暂不支持。\n' "$architecture" >&2
+        printf '当前支持架构: amd64 arm64\n' >&2
         exit 1
         ;;
 esac

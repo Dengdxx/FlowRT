@@ -398,6 +398,8 @@ jobs:
 
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
+
+          # 校验根 Cargo.toml
           cargo_version="$(
             awk '
               $1 == "version" && $2 == "=" {
@@ -412,8 +414,45 @@ jobs:
             exit 1
           fi
 
+          # 校验 runtime/rust/Cargo.toml
+          rust_runtime_version="$(
+            awk '
+              $1 == "version" && $2 == "=" {
+                gsub(/"/, "", $3);
+                print $3;
+                exit;
+              }
+            ' runtime/rust/Cargo.toml
+          )"
+          if [[ "$version" != "$rust_runtime_version" ]]; then
+            printf 'tag version %s does not match runtime/rust/Cargo.toml version %s\n' "$version" "$rust_runtime_version" >&2
+            exit 1
+          fi
+
+          # 校验 runtime/cpp/CMakeLists.txt
+          cpp_version="$(
+            grep -oP '(?<=FLOWRT_RUNTIME_CPP_VERSION ")[0-9]+\.[0-9]+\.[0-9]+' runtime/cpp/CMakeLists.txt
+          )"
+          if [[ "$version" != "$cpp_version" ]]; then
+            printf 'tag version %s does not match runtime/cpp/CMakeLists.txt version %s\n' "$version" "$cpp_version" >&2
+            exit 1
+          fi
+
           scripts/extract-release-notes.sh "$tag" CHANGELOG.md > dist/release-notes.md
+
+          # 校验 release notes 非空
+          if [[ ! -s dist/release-notes.md ]]; then
+            printf 'release notes for %s are empty\n' "$tag" >&2
+            exit 1
+          fi
+
           (cd dist && sha256sum flowrt_*_*.deb > SHA256SUMS)
+
+          # 校验 SHA256SUMS 非空
+          if [[ ! -s dist/SHA256SUMS ]]; then
+            printf 'SHA256SUMS is empty — no deb packages found\n' >&2
+            exit 1
+          fi
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
