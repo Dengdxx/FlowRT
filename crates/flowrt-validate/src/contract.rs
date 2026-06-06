@@ -71,6 +71,9 @@ pub(crate) fn validate_contract_canonical_fields(
         for bind in &graph.binds {
             validate_entity_id_shape("bind id", "bind", &bind.id, errors);
         }
+        for service in &graph.services {
+            validate_entity_id_shape("service id", "service", &service.id, errors);
+        }
         for bridge in &graph.ros2_bridges {
             validate_entity_id_shape("ROS2 bridge id", "bridge", &bridge.id, errors);
         }
@@ -230,6 +233,16 @@ pub(crate) fn validate_contract_canonical_ordering(
         {
             errors.push(ValidationError::new(format!(
                 "graph `{}` binds must use canonical endpoint order",
+                graph.name
+            )));
+        }
+        if !graph
+            .services
+            .windows(2)
+            .all(|pair| service_canonical_key(&pair[0]) <= service_canonical_key(&pair[1]))
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` services must use canonical endpoint order",
                 graph.name
             )));
         }
@@ -405,6 +418,20 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
                 errors,
             );
         }
+        for service in &graph.services {
+            record_entity_id(
+                &mut seen,
+                &service.id,
+                format!(
+                    "service `{}.{}` -> `{}.{}`",
+                    service.client.instance.name,
+                    service.client.port,
+                    service.server.instance.name,
+                    service.server.port
+                ),
+                errors,
+            );
+        }
         for bridge in &graph.ros2_bridges {
             record_entity_id(
                 &mut seen,
@@ -535,6 +562,23 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
             );
         }
 
+        for service in &graph.services {
+            validate_named_entity_ref(
+                "service client instance reference",
+                "instance",
+                &service.client.instance,
+                &instance_ids,
+                errors,
+            );
+            validate_named_entity_ref(
+                "service server instance reference",
+                "instance",
+                &service.server.instance,
+                &instance_ids,
+                errors,
+            );
+        }
+
         for bridge in &graph.ros2_bridges {
             validate_named_entity_ref(
                 "ROS2 bridge FlowRT instance reference",
@@ -632,6 +676,15 @@ fn bind_canonical_key(bind: &ChannelEdgeIr) -> (&str, &str, &str, &str) {
         bind.from.port.as_str(),
         bind.to.instance.name.as_str(),
         bind.to.port.as_str(),
+    )
+}
+
+fn service_canonical_key(service: &flowrt_ir::ServiceEdgeIr) -> (&str, &str, &str, &str) {
+    (
+        service.client.instance.name.as_str(),
+        service.client.port.as_str(),
+        service.server.instance.name.as_str(),
+        service.server.port.as_str(),
     )
 }
 

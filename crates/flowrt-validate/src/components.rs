@@ -48,6 +48,42 @@ pub(crate) fn validate_components(
             }
         }
 
+        let mut service_clients = BTreeSet::new();
+        for port in &component.service_clients {
+            if !service_clients.insert(port.name.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "component `{}` has duplicate service client `{}`",
+                    component.name, port.name
+                )));
+            }
+            validate_service_port_types(
+                component,
+                "service client",
+                port,
+                type_names,
+                &types_by_name,
+                errors,
+            );
+        }
+
+        let mut service_servers = BTreeSet::new();
+        for port in &component.service_servers {
+            if !service_servers.insert(port.name.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "component `{}` has duplicate service server `{}`",
+                    component.name, port.name
+                )));
+            }
+            validate_service_port_types(
+                component,
+                "service server",
+                port,
+                type_names,
+                &types_by_name,
+                errors,
+            );
+        }
+
         let mut params = BTreeSet::new();
         for param in &component.params {
             if !params.insert(param.name.as_str()) {
@@ -57,6 +93,35 @@ pub(crate) fn validate_components(
                 )));
             }
             validate_param_schema(component, param, errors);
+        }
+    }
+}
+
+fn validate_service_port_types(
+    component: &ComponentIr,
+    label: &'static str,
+    port: &flowrt_ir::ServicePortIr,
+    type_names: &BTreeSet<&str>,
+    types_by_name: &BTreeMap<&str, &flowrt_ir::TypeIr>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (role, ty) in [("request", &port.request), ("response", &port.response)] {
+        validate_type_expr(
+            ty,
+            type_names,
+            &format!(
+                "component `{}` {label} `{}` {role}",
+                component.name, port.name
+            ),
+            errors,
+        );
+        if !matches!(ty, TypeExpr::Named { .. })
+            && type_expr_contains_variable_data(ty, types_by_name)
+        {
+            errors.push(ValidationError::new(format!(
+                "component `{}` {label} `{}` {role} uses variable data directly; variable data must be declared as a top-level field of a named message type",
+                component.name, port.name
+            )));
         }
     }
 }

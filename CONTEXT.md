@@ -82,6 +82,10 @@ scripts/
   支持变长消息的 backend。
 - Rust/C++ generated runtime shell 的生命周期、task 调度、latest/FIFO channel、
   bind-level stale freshness、deadline 检查和参数 pending apply。
+- Service 请求/响应语义切片：RSDL component 可声明 `service_client` /
+  `service_server`，graph 可用 `[[bind.service]]` 绑定 client/server；Contract IR、
+  validator 和 launch manifest 已保留 service 拓扑，但 runtime RPC 调用 API 仍是后续
+  切片。
 - C++ only contract 的 CMake app 路径，支持 `flowrt build` / `flowrt run` / `flowrt launch`。
 - language-separated mixed contract over `iox2` 或 `zenoh`，并拒绝同一 process group
   内混合 C++/Rust 以及 mixed `inproc` process boundary。
@@ -144,7 +148,7 @@ backend 为 `inproc`。
 
 `flowrt/launch/launch.json` 当前包含 process group 的 `runtimes`、`runtime_kind`、
 `depends_on`、`restart` 和 `failure`，graph instance 的 `runtime`，graph 的
-`channels`，以及 channel 的 backend 元数据。
+`channels`、`services`，以及 channel 的 backend 元数据。
 iox2 channel 暴露 canonical service name，zenoh channel 和 ROS2 bridge 暴露
 deterministic `key_expr`。
 

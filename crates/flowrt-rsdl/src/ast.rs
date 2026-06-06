@@ -52,6 +52,7 @@ pub struct RawCompositionDocument {
     pub instances: BTreeMap<String, RawInstance>,
     pub processes: Vec<RawProcess>,
     pub binds: Vec<RawDataflowBind>,
+    pub service_binds: Vec<RawServiceBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
@@ -68,6 +69,7 @@ pub struct RawDocument {
     pub instances: BTreeMap<String, RawInstance>,
     pub processes: Vec<RawProcess>,
     pub binds: Vec<RawDataflowBind>,
+    pub service_binds: Vec<RawServiceBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
@@ -115,6 +117,8 @@ pub struct RawComponent {
     pub kind: Option<String>,
     pub input: Vec<RawPort>,
     pub output: Vec<RawPort>,
+    pub service_clients: Vec<RawServicePort>,
+    pub service_servers: Vec<RawServicePort>,
     pub params: BTreeMap<String, RawValue>,
 }
 
@@ -123,6 +127,14 @@ pub struct RawComponent {
 pub struct RawPort {
     pub name: String,
     pub ty: String,
+}
+
+/// 组件 service client/server 端口声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawServicePort {
+    pub name: String,
+    pub request: String,
+    pub response: String,
 }
 
 /// `[instance.<name>]` 表。
@@ -172,6 +184,13 @@ pub struct RawDataflowBind {
     pub overflow: Option<String>,
     pub stale_policy: Option<String>,
     pub max_age_ms: Option<u64>,
+}
+
+/// `[[bind.service]]` 表项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawServiceBind {
+    pub client: String,
+    pub server: String,
 }
 
 /// `[[bridge.ros2]]` 表项。

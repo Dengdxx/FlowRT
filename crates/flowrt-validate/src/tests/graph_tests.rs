@@ -549,6 +549,51 @@ depends_on = ["sensor_proc"]
 }
 
 #[test]
+fn rejects_service_bind_with_mismatched_response_type() {
+    let source = r#"
+[package]
+name = "bad_service"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[type.BadResponse]
+code = "u32"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->BadResponse"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("service response mismatch should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("service bind `client.plan -> server.plan` has mismatched response type")
+    }));
+}
+
+#[test]
 fn rejects_reserved_name_prefix_case_insensitively() {
     let source = r#"
 [package]

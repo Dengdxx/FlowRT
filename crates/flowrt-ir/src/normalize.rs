@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use flowrt_rsdl::{
-    LoadedDocument, RawDocument, RawModuleDocument, RawPort, RawProcess, RawProfile, RawTarget,
+    LoadedDocument, RawDocument, RawModuleDocument, RawPort, RawProcess, RawProfile,
+    RawServicePort, RawTarget,
 };
 use sha2::{Digest, Sha256};
 
@@ -12,9 +13,10 @@ use crate::{
     LifecycleSurface, ModuleIr, OverflowPolicy, PackageIr, PolicyDefaults, PolicyValueSource,
     PortIr, PortRef, ProcessFailurePropagation, ProcessIr, ProcessRestartPolicy,
     ProcessRestartPolicyKind, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology,
-    SchedulerDefaults, StalePolicy, TargetIr, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
-    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
-    graph_required_capabilities, parse_type_expr, target_capabilities,
+    SchedulerDefaults, ServiceEdgeIr, ServicePortIr, ServicePortRef, StalePolicy, TargetIr, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr, TypeIr, channel_capabilities, channel_route_capabilities,
+    deployment_capability_decision, graph_required_capabilities, parse_type_expr,
+    target_capabilities,
 };
 
 mod params;
@@ -131,6 +133,7 @@ fn normalize_document_with_modules(
         &profiles,
     )?;
     let processes = normalize_processes(document, &instances)?;
+    let services = normalize_service_binds(document, &instance_refs, &graph_name)?;
     let ros2_bridges = normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = GraphIr {
         id: graph_id.clone(),
@@ -139,6 +142,7 @@ fn normalize_document_with_modules(
         processes,
         tasks,
         binds,
+        services,
         ros2_bridges,
     };
 
@@ -638,6 +642,16 @@ fn normalize_components(
                 },
                 inputs: normalize_ports(&raw.input, resolver, current_module)?,
                 outputs: normalize_ports(&raw.output, resolver, current_module)?,
+                service_clients: normalize_service_ports(
+                    &raw.service_clients,
+                    resolver,
+                    current_module,
+                )?,
+                service_servers: normalize_service_ports(
+                    &raw.service_servers,
+                    resolver,
+                    current_module,
+                )?,
                 params: normalize_component_params(name, raw)?,
                 lifecycle: LifecycleSurface::reserved_v0_1(),
             })
@@ -661,6 +675,27 @@ fn normalize_ports(
                 name: port.name.clone(),
                 ty: resolver
                     .resolve_type_expr_in_module(parse_type_expr(&port.ty)?, current_module)?,
+            })
+        })
+        .collect()
+}
+
+fn normalize_service_ports(
+    ports: &[RawServicePort],
+    resolver: &NameResolver,
+    current_module: Option<&str>,
+) -> Result<Vec<ServicePortIr>> {
+    ports
+        .iter()
+        .map(|port| {
+            Ok(ServicePortIr {
+                name: port.name.clone(),
+                request: resolver
+                    .resolve_type_expr_in_module(parse_type_expr(&port.request)?, current_module)?,
+                response: resolver.resolve_type_expr_in_module(
+                    parse_type_expr(&port.response)?,
+                    current_module,
+                )?,
             })
         })
         .collect()
@@ -1164,6 +1199,53 @@ fn normalize_ros2_bridges(
         .collect()
 }
 
+fn normalize_service_binds(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    graph_name: &str,
+) -> Result<Vec<ServiceEdgeIr>> {
+    let mut services = document
+        .service_binds
+        .iter()
+        .map(|raw| {
+            let client = parse_service_port_ref(&raw.client, instance_refs)?;
+            let server = parse_service_port_ref(&raw.server, instance_refs)?;
+            Ok(ServiceEdgeIr {
+                id: entity_id("service", &format!("{}->{}", raw.client, raw.server)),
+                client,
+                server,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    services.sort_by(|left, right| {
+        (
+            &left.client.instance.name,
+            &left.client.port,
+            &left.server.instance.name,
+            &left.server.port,
+        )
+            .cmp(&(
+                &right.client.instance.name,
+                &right.client.port,
+                &right.server.instance.name,
+                &right.server.port,
+            ))
+    });
+    for service in &mut services {
+        service.id = entity_id(
+            "service",
+            &format!(
+                "{graph_name}.{}.{}->{}.{}",
+                service.client.instance.name,
+                service.client.port,
+                service.server.instance.name,
+                service.server.port
+            ),
+        );
+    }
+    Ok(services)
+}
+
 struct ResolvedChannelBackend {
     backend: String,
     source: ChannelBackendSource,
@@ -1302,6 +1384,27 @@ fn parse_port_ref(endpoint: &str, instance_refs: &BTreeMap<String, EntityRef>) -
         }
     })?;
     Ok(PortRef {
+        instance,
+        port: port.to_string(),
+    })
+}
+
+fn parse_service_port_ref(
+    endpoint: &str,
+    instance_refs: &BTreeMap<String, EntityRef>,
+) -> Result<ServicePortRef> {
+    let Some((instance_name, port)) = endpoint.split_once('.') else {
+        return Err(IrError::InvalidPortEndpoint {
+            endpoint: endpoint.to_string(),
+        });
+    };
+    let instance = instance_refs.get(instance_name).cloned().ok_or_else(|| {
+        IrError::UnknownEndpointInstance {
+            endpoint: endpoint.to_string(),
+            instance: instance_name.to_string(),
+        }
+    })?;
+    Ok(ServicePortRef {
         instance,
         port: port.to_string(),
     })
@@ -1657,6 +1760,61 @@ backend = "iox2"
             processes[1].failure_propagation,
             ProcessFailurePropagation::Propagate
         );
+    }
+
+    #[test]
+    fn normalizes_service_ports_and_binds() {
+        let source = r#"
+[package]
+name = "service_demo"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let client = ir
+            .components
+            .iter()
+            .find(|component| component.name == "client")
+            .unwrap();
+        let service = &ir.graphs[0].services[0];
+
+        assert_eq!(client.service_clients[0].name, "plan");
+        assert_eq!(
+            client.service_clients[0].request.canonical_syntax(),
+            "PlanRequest"
+        );
+        assert_eq!(
+            client.service_clients[0].response.canonical_syntax(),
+            "PlanResponse"
+        );
+        assert_eq!(service.client.instance.name, "client");
+        assert_eq!(service.client.port, "plan");
+        assert_eq!(service.server.instance.name, "server");
+        assert_eq!(service.server.port, "plan");
     }
 
     #[test]

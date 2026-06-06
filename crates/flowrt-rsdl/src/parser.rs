@@ -17,6 +17,7 @@ struct ParsedDocument {
     instances: BTreeMap<String, RawInstance>,
     processes: Vec<RawProcess>,
     binds: Vec<RawDataflowBind>,
+    service_binds: Vec<RawServiceBind>,
     ros2_bridges: Vec<RawRos2Bridge>,
     profiles: BTreeMap<String, RawProfile>,
     targets: BTreeMap<String, RawTarget>,
@@ -145,6 +146,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         instances: parse_named_tables(root, "instance", parse_instance)?,
         processes: parse_processes(root)?,
         binds: parse_binds(root)?,
+        service_binds: parse_service_binds(root)?,
         ros2_bridges: parse_ros2_bridges(root)?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
@@ -197,6 +199,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         instances: parsed.instances,
         processes: parsed.processes,
         binds: parsed.binds,
+        service_binds: parsed.service_binds,
         ros2_bridges: parsed.ros2_bridges,
         profiles: parsed.profiles,
         targets: parsed.targets,
@@ -262,6 +265,7 @@ fn expand_workspace(
                 instances: parsed.instances.clone(),
                 processes: parsed.processes.clone(),
                 binds: parsed.binds.clone(),
+                service_binds: parsed.service_binds.clone(),
                 ros2_bridges: parsed.ros2_bridges.clone(),
                 profiles: parsed.profiles.clone(),
                 targets: parsed.targets.clone(),
@@ -287,6 +291,7 @@ fn validate_module_document(
         (!parsed.instances.is_empty(), "instance"),
         (!parsed.processes.is_empty(), "process"),
         (!parsed.binds.is_empty(), "bind"),
+        (!parsed.service_binds.is_empty(), "bind.service"),
         (!parsed.ros2_bridges.is_empty(), "bridge"),
         (!parsed.profiles.is_empty(), "profile"),
         (!parsed.targets.is_empty(), "target"),
@@ -314,6 +319,7 @@ fn merge_composition_document(
     merge_named_map("instance", &mut document.instances, composition.instances)?;
     document.processes.extend(composition.processes);
     document.binds.extend(composition.binds);
+    document.service_binds.extend(composition.service_binds);
     document.ros2_bridges.extend(composition.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, composition.profiles)?;
     merge_named_map("target", &mut document.targets, composition.targets)?;
@@ -397,6 +403,7 @@ fn merge_imported_document(document: &mut RawDocument, imported: ParsedDocument)
     merge_named_map("instance", &mut document.instances, imported.instances)?;
     document.processes.extend(imported.processes);
     document.binds.extend(imported.binds);
+    document.service_binds.extend(imported.service_binds);
     document.ros2_bridges.extend(imported.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, imported.profiles)?;
     merge_named_map("target", &mut document.targets, imported.targets)?;
@@ -622,7 +629,15 @@ fn parse_component(name: &str, table: &Table) -> Result<RawComponent> {
     validate_known_fields(
         table,
         &context,
-        &["language", "kind", "input", "output", "params"],
+        &[
+            "language",
+            "kind",
+            "input",
+            "output",
+            "service_client",
+            "service_server",
+            "params",
+        ],
     )?;
 
     Ok(RawComponent {
@@ -630,6 +645,8 @@ fn parse_component(name: &str, table: &Table) -> Result<RawComponent> {
         kind: optional_string(table, &context, "kind")?,
         input: optional_port_array(table, &context, "input")?,
         output: optional_port_array(table, &context, "output")?,
+        service_clients: optional_service_port_array(table, &context, "service_client")?,
+        service_servers: optional_service_port_array(table, &context, "service_server")?,
         params: optional_param_table(table, &context, "params")?,
     })
 }
@@ -781,7 +798,7 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             field: "bind".to_string(),
             expected: "table",
         })?;
-    validate_known_fields(bind_table, "bind", &["dataflow"])?;
+    validate_known_fields(bind_table, "bind", &["dataflow", "service"])?;
     let Some(dataflow_value) = bind_table.get("dataflow") else {
         return Ok(Vec::new());
     };
@@ -826,6 +843,48 @@ fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             overflow: optional_string(table, &context, "overflow")?,
             stale_policy: optional_string(table, &context, "stale_policy")?,
             max_age_ms: optional_u64(table, &context, "max_age_ms")?,
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_service_binds(root: &Table) -> Result<Vec<RawServiceBind>> {
+    let Some(bind_value) = root.get("bind") else {
+        return Ok(Vec::new());
+    };
+    let bind_table = bind_value
+        .as_table()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "bind".to_string(),
+            expected: "table",
+        })?;
+    validate_known_fields(bind_table, "bind", &["dataflow", "service"])?;
+    let Some(service_value) = bind_table.get("service") else {
+        return Ok(Vec::new());
+    };
+    let binds = service_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "bind".to_string(),
+            field: "service".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(binds.len());
+    for (index, value) in binds.iter().enumerate() {
+        let context = format!("bind.service[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "bind".to_string(),
+                field: "service".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(table, &context, &["client", "server"])?;
+        parsed.push(RawServiceBind {
+            client: required_string(table, &context, "client")?,
+            server: required_string(table, &context, "server")?,
         });
     }
     Ok(parsed)
@@ -984,6 +1043,17 @@ fn optional_port_array(table: &Table, context: &str, field: &'static str) -> Res
         .collect()
 }
 
+fn optional_service_port_array(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+) -> Result<Vec<RawServicePort>> {
+    optional_string_array(table, context, field)?
+        .into_iter()
+        .map(|descriptor| parse_service_port_descriptor(&descriptor))
+        .collect()
+}
+
 fn parse_port_descriptor(descriptor: &str) -> Result<RawPort> {
     let Some((name, ty)) = descriptor.split_once(':') else {
         return Err(RsdlError::InvalidPortDescriptor {
@@ -1000,6 +1070,41 @@ fn parse_port_descriptor(descriptor: &str) -> Result<RawPort> {
     Ok(RawPort {
         name: name.to_string(),
         ty: ty.to_string(),
+    })
+}
+
+fn parse_service_port_descriptor(descriptor: &str) -> Result<RawServicePort> {
+    let Some((name, types)) = descriptor.split_once(':') else {
+        return Err(RsdlError::InvalidValue {
+            context: "service port descriptor".to_string(),
+            message: format!(
+                "`{descriptor}` must use `<port_name>:<request_type>-><response_type>`"
+            ),
+        });
+    };
+    let Some((request, response)) = types.split_once("->") else {
+        return Err(RsdlError::InvalidValue {
+            context: "service port descriptor".to_string(),
+            message: format!(
+                "`{descriptor}` must use `<port_name>:<request_type>-><response_type>`"
+            ),
+        });
+    };
+    let name = name.trim();
+    let request = request.trim();
+    let response = response.trim();
+    if name.is_empty() || request.is_empty() || response.is_empty() {
+        return Err(RsdlError::InvalidValue {
+            context: "service port descriptor".to_string(),
+            message: format!(
+                "`{descriptor}` must use `<port_name>:<request_type>-><response_type>`"
+            ),
+        });
+    }
+    Ok(RawServicePort {
+        name: name.to_string(),
+        request: request.to_string(),
+        response: response.to_string(),
     })
 }
 
@@ -1245,6 +1350,53 @@ failure = "isolate"
         assert_eq!(document.processes[1].depends_on, vec!["sensor_proc"]);
         assert_eq!(document.processes[1].restart.as_deref(), Some("never"));
         assert_eq!(document.processes[1].failure.as_deref(), Some("isolate"));
+    }
+
+    #[test]
+    fn parses_service_ports_and_binds() {
+        let source = r#"
+[package]
+name = "service_demo"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+
+        assert_eq!(document.components["client"].service_clients.len(), 1);
+        assert_eq!(
+            document.components["client"].service_clients[0].name,
+            "plan"
+        );
+        assert_eq!(
+            document.components["client"].service_clients[0].request,
+            "PlanRequest"
+        );
+        assert_eq!(
+            document.components["client"].service_clients[0].response,
+            "PlanResponse"
+        );
+        assert_eq!(document.components["server"].service_servers.len(), 1);
+        assert_eq!(document.service_binds.len(), 1);
+        assert_eq!(document.service_binds[0].client, "client.plan");
+        assert_eq!(document.service_binds[0].server, "server.plan");
     }
 
     #[test]

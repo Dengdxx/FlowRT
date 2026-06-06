@@ -101,6 +101,8 @@ pub struct ComponentIr {
     pub kind: ComponentKind,
     pub inputs: Vec<PortIr>,
     pub outputs: Vec<PortIr>,
+    pub service_clients: Vec<ServicePortIr>,
+    pub service_servers: Vec<ServicePortIr>,
     pub params: Vec<ParamIr>,
     pub lifecycle: LifecycleSurface,
 }
@@ -110,6 +112,14 @@ pub struct ComponentIr {
 pub struct PortIr {
     pub name: String,
     pub ty: crate::TypeExpr,
+}
+
+/// 组件 service client/server 端口声明。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServicePortIr {
+    pub name: String,
+    pub request: crate::TypeExpr,
+    pub response: crate::TypeExpr,
 }
 
 /// 组件参数声明。
@@ -179,6 +189,7 @@ pub struct GraphIr {
     pub processes: Vec<ProcessIr>,
     pub tasks: Vec<TaskIr>,
     pub binds: Vec<ChannelEdgeIr>,
+    pub services: Vec<ServiceEdgeIr>,
     pub ros2_bridges: Vec<Ros2BridgeIr>,
 }
 
@@ -215,6 +226,21 @@ pub enum ProcessRestartPolicyKind {
 pub enum ProcessFailurePropagation {
     Propagate,
     Isolate,
+}
+
+/// 两个 service 端口之间的 request/response bind。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceEdgeIr {
+    pub id: EntityId,
+    pub client: ServicePortRef,
+    pub server: ServicePortRef,
+}
+
+/// service 端口引用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicePortRef {
+    pub instance: EntityRef,
+    pub port: String,
 }
 
 /// FlowRT 与 ROS2 的静态桥接声明。

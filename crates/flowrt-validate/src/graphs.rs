@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, PortIr,
-    PortRef, Ros2BridgeDirection, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
-    param_value_compatible, param_value_kind,
+    PortRef, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr, TaskReadiness,
+    TriggerKind, TypeExpr, param_value_compatible, param_value_kind,
 };
 
 use crate::ValidationError;
@@ -33,6 +33,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_tasks(&components, &instances, graph, errors);
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
+        validate_service_binds(&components, &instances, graph, errors);
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
     }
@@ -143,6 +144,64 @@ fn has_process_dependency_cycle(graph: &GraphIr) -> bool {
     dependencies
         .keys()
         .any(|process| visit(process, &dependencies, &mut states))
+}
+
+fn validate_service_binds(
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut clients = BTreeSet::new();
+    for service in &graph.services {
+        let client_key = format!("{}.{}", service.client.instance.name, service.client.port);
+        let server_key = format!("{}.{}", service.server.instance.name, service.server.port);
+        if !clients.insert(client_key.clone()) {
+            errors.push(ValidationError::new(format!(
+                "service client `{client_key}` is bound more than once"
+            )));
+        }
+
+        let client = match resolve_service_port(
+            components,
+            instances,
+            &service.client,
+            ServiceDirection::Client,
+        ) {
+            Ok(port) => port,
+            Err(message) => {
+                errors.push(ValidationError::new(message));
+                continue;
+            }
+        };
+        let server = match resolve_service_port(
+            components,
+            instances,
+            &service.server,
+            ServiceDirection::Server,
+        ) {
+            Ok(port) => port,
+            Err(message) => {
+                errors.push(ValidationError::new(message));
+                continue;
+            }
+        };
+
+        if client.request != server.request {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` has mismatched request type: client uses `{}`, server uses `{}`",
+                client.request.canonical_syntax(),
+                server.request.canonical_syntax()
+            )));
+        }
+        if client.response != server.response {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` has mismatched response type: client uses `{}`, server uses `{}`",
+                client.response.canonical_syntax(),
+                server.response.canonical_syntax()
+            )));
+        }
+    }
 }
 
 fn validate_instance_targets(
@@ -691,8 +750,41 @@ fn resolve_port<'a>(
         })
 }
 
+fn resolve_service_port<'a>(
+    components: &'a BTreeMap<&str, &'a ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    endpoint: &ServicePortRef,
+    direction: ServiceDirection,
+) -> std::result::Result<&'a ServicePortIr, String> {
+    let instance = instances
+        .get(endpoint.instance.name.as_str())
+        .ok_or_else(|| format!("unknown instance `{}`", endpoint.instance.name))?;
+    let component = components
+        .get(instance.component.name.as_str())
+        .ok_or_else(|| format!("unknown component `{}`", instance.component.name))?;
+    let ports = match direction {
+        ServiceDirection::Client => &component.service_clients,
+        ServiceDirection::Server => &component.service_servers,
+    };
+    ports
+        .iter()
+        .find(|port| port.name == endpoint.port)
+        .ok_or_else(|| {
+            format!(
+                "instance `{}` component `{}` has no {:?} service `{}`",
+                instance.name, component.name, direction, endpoint.port
+            )
+        })
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PortDirection {
     Input,
     Output,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ServiceDirection {
+    Client,
+    Server,
 }

@@ -114,10 +114,11 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 launch manifest 的关键字段包括：
 
-- process group 的 `runtimes` 和 `runtime_kind`
+- process group 的 `runtimes`、`runtime_kind`、`depends_on`、`restart` 和 `failure`
 - graph instance 的 `runtime`
 - task 的 `name`、`trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
 - graph `channels`
+- graph `services`
 - graph `ros2_bridges`
 - iox2 channel 的 canonical service name
 - zenoh channel 的 deterministic key expression
@@ -167,6 +168,39 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 ```
 
 `inspect` 会先校验已落盘 Contract IR JSON，再显示摘要，用于确认 package、type、component、instance、task、bind、profile、target 和 deployment 是否符合预期。当前工具链不支持的 `ir_version`、`schema_version` 或 package `rsdl_version` 会被明确拒绝。
+
+## RSDL Service 写法
+
+Service 是 request/response 语义，不是 dataflow channel。当前版本已经把 service
+端口和 bind 纳入 RSDL、Contract IR、validator 和 launch manifest；runtime RPC 调用
+API 仍未生成，后续版本会在该语义合同上继续扩展。
+
+```toml
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+```
+
+validator 会要求：
+
+- `client` 指向 component 的 `service_client` 端口。
+- `server` 指向 component 的 `service_server` 端口。
+- request 和 response 类型完全匹配。
+- 同一个 client service 端口只能绑定一次。
 
 ## `list` / `nodes`
 

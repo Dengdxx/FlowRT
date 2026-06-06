@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use flowrt_ir::{ContractIr, GraphIr, InstanceIr, ProcessIr, TaskIr};
+use flowrt_ir::{ComponentIr, ContractIr, GraphIr, InstanceIr, ProcessIr, ServicePortIr, TaskIr};
 
 use crate::runtime_plan::bridge_runtime_plans;
 use crate::{
@@ -19,6 +19,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
             "scheduler": launch_scheduler(contract, graph),
             "processes": launch_processes(contract, graph),
             "channels": launch_channels(contract, graph),
+            "services": launch_services(contract, graph),
             "ros2_bridges": launch_ros2_bridges(contract, graph),
             "instances": graph.instances.iter().map(|instance| {
                 let component = component_by_name(contract, &instance.component.name);
@@ -36,6 +37,77 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
+}
+
+fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
+    let components = contract
+        .components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
+        .collect::<BTreeMap<_, _>>();
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+
+    graph
+        .services
+        .iter()
+        .map(|service| {
+            let client = service_port_for_instance(
+                &components,
+                &instances,
+                service.client.instance.name.as_str(),
+                service.client.port.as_str(),
+                ServicePortRole::Client,
+            );
+            let server = service_port_for_instance(
+                &components,
+                &instances,
+                service.server.instance.name.as_str(),
+                service.server.port.as_str(),
+                ServicePortRole::Server,
+            );
+            debug_assert_eq!(client.request, server.request);
+            debug_assert_eq!(client.response, server.response);
+            serde_json::json!({
+                "client": format!("{}.{}", service.client.instance.name, service.client.port),
+                "server": format!("{}.{}", service.server.instance.name, service.server.port),
+                "request": client.request.canonical_syntax(),
+                "response": client.response.canonical_syntax(),
+            })
+        })
+        .collect()
+}
+
+fn service_port_for_instance<'a>(
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    instance_name: &str,
+    port_name: &str,
+    role: ServicePortRole,
+) -> &'a ServicePortIr {
+    let instance = instances
+        .get(instance_name)
+        .expect("validated service bind must reference an existing instance");
+    let component = components
+        .get(instance.component.name.as_str())
+        .expect("validated service bind must reference an existing component");
+    let ports = match role {
+        ServicePortRole::Client => &component.service_clients,
+        ServicePortRole::Server => &component.service_servers,
+    };
+    ports
+        .iter()
+        .find(|port| port.name == port_name)
+        .expect("validated service bind must reference an existing service port")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ServicePortRole {
+    Client,
+    Server,
 }
 
 fn launch_scheduler(contract: &ContractIr, graph: &GraphIr) -> serde_json::Value {

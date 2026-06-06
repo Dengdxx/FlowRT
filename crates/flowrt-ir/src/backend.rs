@@ -556,6 +556,8 @@ mod tests {
             kind: crate::ComponentKind::Native,
             inputs: vec![],
             outputs,
+            service_clients: vec![],
+            service_servers: vec![],
             params: vec![],
             lifecycle: crate::LifecycleSurface::reserved_v0_1(),
         }
@@ -847,6 +849,7 @@ mod tests {
                     capability_requirements: vec![],
                 },
             ],
+            services: vec![],
             ros2_bridges: vec![],
         };
         let types = [test_type(

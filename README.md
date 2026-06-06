@@ -62,6 +62,7 @@ flowrt --version
 | instance | graph 中的组件实例，绑定 component、参数、target 和 process。 |
 | task | instance 的执行单元，描述 trigger、输入、输出、周期和 deadline。 |
 | channel route | 从一个输出端口到一个输入端口的 typed dataflow 边。 |
+| service route | 从 service client 到 service server 的 typed request/response 边。 |
 | profile | 一套构建/部署选择，例如默认 backend、channel policy。 |
 | target | 部署目标能力，例如 runtime 语言和可用 backend。 |
 | backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
@@ -71,7 +72,7 @@ flowrt --version
 核心模型：
 
 ```text
-component -> instance -> task -> channel route
+component -> instance -> task -> channel route / service route
 ```
 
 FlowRT 的核心对象是可编译、可校验、可重新生成的数据流系统契约。
@@ -298,6 +299,28 @@ stale_policy = "warn" | "drop" | "hold_last" | "error"
 ```
 
 overflow 表示队列满，stale 表示数据过期。两者是不同问题。
+
+## Service
+
+Service 表达 request/response 拓扑。component 可以声明 service client/server 端口，
+graph 用 `[[bind.service]]` 绑定双方：
+
+```toml
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+```
+
+当前 Service 已进入 RSDL、Contract IR、validator 和 launch manifest；runtime RPC 用户
+API 还未生成，因此它目前用于稳定系统结构和后续 ABI 边界。
 
 ## Backend
 

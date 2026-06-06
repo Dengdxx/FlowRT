@@ -209,6 +209,51 @@ backend = "iox2"
 }
 
 #[test]
+fn launch_manifest_exposes_service_binds() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "service_demo"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let services = launch["graphs"][0]["services"].as_array().unwrap();
+
+    assert_eq!(services.len(), 1);
+    assert_eq!(services[0]["client"], "client.plan");
+    assert_eq!(services[0]["server"], "server.plan");
+    assert_eq!(services[0]["request"], "PlanRequest");
+    assert_eq!(services[0]["response"], "PlanResponse");
+}
+
+#[test]
 fn launch_manifest_marks_mixed_process_runtime_kind() {
     let ir = contract_from_source(
         r#"
