@@ -403,6 +403,7 @@ channel = "latest"
     let main = artifact_content(&bundle, "cpp/src/main.cpp");
     assert!(main.contains("#include \"flowrt_app/runtime_shell.hpp\""));
     assert!(main.contains("std::string_view process;"));
+    // 生成应用内部兼容参数：`--flowrt-run-ticks` 作为 `--flowrt-run-steps` 的别名保留
     assert!(main.contains("--flowrt-run-ticks"));
     assert!(main.contains("--flowrt-run-steps"));
     assert!(main.contains("flowrt_app::run_process(process, run_ticks)"));

@@ -436,6 +436,7 @@ backends = ["iox2"]
         )
     );
     assert!(rust_main.contains("--process"));
+    // 生成应用内部兼容参数：`--flowrt-run-ticks` 作为 `--flowrt-run-steps` 的别名保留
     assert!(rust_main.contains("--flowrt-run-ticks"));
     assert!(rust_main.contains("--flowrt-run-steps"));
     assert!(rust_main.contains("flowrt_app::runtime_shell::run_process(process, run_ticks)"));
@@ -508,6 +509,7 @@ backends = ["inproc"]
     assert!(cpp_shell.contains("if (process == \"control\")"));
     assert!(cpp_shell.contains("return run_process_control(backend, run_ticks);"));
     assert!(cpp_main.contains("--process"));
+    // 生成应用内部兼容参数：`--flowrt-run-ticks` 作为 `--flowrt-run-steps` 的别名保留
     assert!(cpp_main.contains("--flowrt-run-ticks"));
     assert!(cpp_main.contains("--flowrt-run-steps"));
     assert!(cpp_main.contains("flowrt_app::run_process(process, run_ticks)"));
@@ -581,6 +583,7 @@ backends = ["iox2"]
     assert!(supervisor.contains("flowrt::supervisor::SupervisorConfig"));
     assert!(supervisor.contains("rust_app_stem: \"robot-demo-flowrt-app\""));
     assert!(supervisor.contains("flowrt::supervisor::launch(&SUPERVISOR_CONFIG, run_ticks)"));
+    // 生成应用内部兼容参数：`--flowrt-run-ticks` 作为 `--flowrt-run-steps` 的别名保留
     assert!(supervisor_main.contains("--flowrt-run-ticks"));
     assert!(supervisor_main.contains("--flowrt-run-steps"));
     assert!(supervisor_main.contains("flowrt_app::supervisor::launch(run_ticks)"));

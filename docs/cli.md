@@ -156,7 +156,7 @@ FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。生成物包含：
 ```bash
 source /opt/ros/jazzy/setup.bash
 flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
-flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+flowrt launch --run-steps 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
 ```
 
 观察 ROS2 topic 时如果遇到 daemon 旧缓存，先执行 `ros2 daemon stop` 后重试。

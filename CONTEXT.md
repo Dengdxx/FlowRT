@@ -184,7 +184,6 @@ flowrt build path/to/robot.rsdl
 flowrt run path/to/robot.rsdl
 flowrt run path/to/robot.rsdl --process main
 flowrt run path/to/robot.rsdl --run-steps 5 --process main
-flowrt run path/to/robot.rsdl --run-ticks 5 --process main
 flowrt launch path/to/robot.rsdl
 flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app

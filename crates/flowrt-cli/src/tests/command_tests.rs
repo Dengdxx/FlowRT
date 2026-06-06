@@ -203,8 +203,9 @@ fn cli_rejects_zero_echo_follow_interval() {
     assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
 }
 
+/// 兼容测试：`--run-ticks` 作为 `--run-steps` 的别名仍可被 CLI 解析。
 #[test]
-fn cli_parses_run_ticks_for_run_and_launch() {
+fn cli_parses_run_ticks_compat_alias_for_run_and_launch() {
     let run_cli = Cli::try_parse_from([
         "flowrt",
         "run",
@@ -238,8 +239,9 @@ fn cli_parses_run_ticks_for_run_and_launch() {
     assert_eq!(run_ticks, Some(7));
 }
 
+/// 主路径测试：`--run-steps` 是推荐的外部运行上限名称。
 #[test]
-fn cli_parses_run_steps_alias_for_run_and_launch() {
+fn cli_parses_run_steps_as_primary_run_limit() {
     let run_cli = Cli::try_parse_from([
         "flowrt",
         "run",
@@ -283,8 +285,9 @@ fn cli_parses_build_launcher_flag() {
     assert!(launcher);
 }
 
+/// 兼容测试：`--run-ticks 0` 仍会被 CLI 拒绝。
 #[test]
-fn cli_rejects_zero_run_ticks() {
+fn cli_rejects_zero_run_ticks_compat() {
     let error = Cli::try_parse_from([
         "flowrt",
         "run",

@@ -152,7 +152,7 @@ flowrt build examples/imu_demo/rsdl/robot.rsdl
 
 ```bash
 flowrt build --launcher examples/imu_demo_iox2/rsdl/robot.rsdl
-FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-ticks 500 examples/imu_demo_iox2/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-steps 500 examples/imu_demo_iox2/rsdl/robot.rsdl
 ```
 
 另开一个终端查看 live 参数：
@@ -223,7 +223,7 @@ examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
 ```bash
 flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
-FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 ```
 
 含 C++ zenoh 组件的生成 CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标，并链接该目标。通过 Debian 包安装 FlowRT 时，`zenoh-c` / `zenoh-cpp` 已在 `/opt/flowrt/<version>` 私有前缀内，`flowrt build` 会自动传入对应路径；直接调试生成 CMake 时，可以显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
@@ -262,7 +262,7 @@ FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。FlowRT source 会把 bridge t
 ```bash
 source /opt/ros/jazzy/setup.bash
 flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
-flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+flowrt launch --run-steps 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
 ```
 
 另开 ROS2 环境终端观察：

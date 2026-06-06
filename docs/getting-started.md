@@ -101,7 +101,7 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 
 ```bash
 flowrt build --launcher examples/imu_demo_iox2/rsdl/robot.rsdl
-FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-ticks 500 examples/imu_demo_iox2/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-steps 500 examples/imu_demo_iox2/rsdl/robot.rsdl
 ```
 
 另开一个终端查询或提交参数：
@@ -121,7 +121,7 @@ FlowRT 与 ROS2 的 bridge 固定走 `zenoh`，ROS2 侧必须使用 `rmw_zenoh_c
 ```bash
 source /opt/ros/jazzy/setup.bash
 flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl
-flowrt launch --run-ticks 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
+flowrt launch --run-steps 200 examples/ros2_bridge_demo/rsdl/robot.rsdl
 ```
 
 另开 ROS2 环境终端观察：

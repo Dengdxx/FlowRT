@@ -260,19 +260,19 @@ jobs:
       - name: FlowRT demo smoke
         run: |
           flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-          flowrt run --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-          flowrt launch --run-ticks 5 examples/cpp_counter_demo/rsdl/robot.rsdl
+          flowrt run --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
+          flowrt launch --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl
           flowrt build examples/imu_demo/rsdl/robot.rsdl
           flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
-          flowrt run --run-ticks 5 examples/import_demo/rsdl/robot.rsdl --process main
-          flowrt launch --run-ticks 5 examples/import_demo/rsdl/robot.rsdl
+          flowrt run --run-steps 5 examples/import_demo/rsdl/robot.rsdl --process main
+          flowrt launch --run-steps 5 examples/import_demo/rsdl/robot.rsdl
           flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl
           flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl
           flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
           flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
-          flowrt run --run-ticks 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
+          flowrt run --run-steps 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
           flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
-          FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-ticks 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+          FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
   ros2-jazzy-bridge:
     name: ROS2 Jazzy Bridge
