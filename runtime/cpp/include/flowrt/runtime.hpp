@@ -8,5 +8,6 @@
 #include <flowrt/executor.hpp>
 #include <flowrt/introspection.hpp>
 #include <flowrt/iox2.hpp>
+#include <flowrt/service.hpp>
 #include <flowrt/wire.hpp>
 #include <flowrt/zenoh.hpp>
