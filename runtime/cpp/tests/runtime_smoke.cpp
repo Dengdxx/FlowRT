@@ -62,6 +62,7 @@ int main() {
     static_assert(FLOWRT_BACKEND_HEALTH_DEGRADED == 1U);
     static_assert(FLOWRT_BACKEND_HEALTH_RECONNECTING == 2U);
     static_assert(FLOWRT_BACKEND_HEALTH_FAILED == 3U);
+    static_assert(FLOWRT_BACKEND_HEALTH_UNSUPPORTED == 4U);
     static_assert(offsetof(flowrt_string_view_t, data) == 0U);
     static_assert(offsetof(flowrt_string_view_t, len) == sizeof(void *));
     static_assert(sizeof(flowrt_string_view_t) == sizeof(void *) * 2U);
@@ -161,6 +162,11 @@ int main() {
                                                                  "transfer:copy",
                                                                  "observability:health",
                                                              });
+
+    static_assert(!flowrt::Iox2Backend::compiled_with_transport(),
+                  "default build should not have iox2 transport");
+    static_assert(!flowrt::ZenohBackend::compiled_with_transport(),
+                  "default build should not have zenoh transport");
 
     flowrt::Iox2Backend iox2_backend;
     assert(iox2_backend.kind() == flowrt::BackendKind::Iox2);
@@ -544,16 +550,16 @@ int main() {
     assert(iox2_endpoint.config().depth() == 1U);
     assert(iox2_endpoint.config().overflow() == flowrt::OverflowPolicy::DropOldest);
     assert(!iox2_endpoint.ready());
-    assert(iox2_endpoint.health().state == flowrt::BackendHealthState::Degraded);
-    assert(iox2_endpoint.health().recoverable);
+    assert(iox2_endpoint.health().state == flowrt::BackendHealthState::Unsupported);
+    assert(!iox2_endpoint.health().recoverable);
     const auto transport_write = iox2_endpoint.publish_at(Sample{23U}, 10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_write));
-    assert(std::get<flowrt::ChannelError>(transport_write) == flowrt::ChannelError::Transport);
-    assert(iox2_endpoint.health().state == flowrt::BackendHealthState::Failed);
+    assert(std::get<flowrt::ChannelError>(transport_write) == flowrt::ChannelError::Unsupported);
+    assert(iox2_endpoint.health().state == flowrt::BackendHealthState::Unsupported);
     assert(!iox2_endpoint.health().recoverable);
     const auto transport_read = iox2_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(transport_read));
-    assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Transport);
+    assert(std::get<flowrt::ChannelError>(transport_read) == flowrt::ChannelError::Unsupported);
 
     auto zenoh_config =
         flowrt::zenoh::ZenohChannelConfig::fifo(0, flowrt::OverflowPolicy::DropNewest)
@@ -576,17 +582,18 @@ int main() {
     assert(zenoh_endpoint.config().depth() == 1U);
     assert(zenoh_endpoint.config().overflow() == flowrt::OverflowPolicy::DropNewest);
     assert(!zenoh_endpoint.ready());
-    assert(zenoh_endpoint.health().state == flowrt::BackendHealthState::Degraded);
-    assert(zenoh_endpoint.health().recoverable);
+    assert(zenoh_endpoint.health().state == flowrt::BackendHealthState::Unsupported);
+    assert(!zenoh_endpoint.health().recoverable);
     const auto zenoh_transport_write = zenoh_endpoint.publish_at(TinyWireMessage{23U}, 10U);
     assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_write));
     assert(std::get<flowrt::ChannelError>(zenoh_transport_write) ==
-           flowrt::ChannelError::Transport);
-    assert(zenoh_endpoint.health().state == flowrt::BackendHealthState::Failed);
+           flowrt::ChannelError::Unsupported);
+    assert(zenoh_endpoint.health().state == flowrt::BackendHealthState::Unsupported);
     assert(!zenoh_endpoint.health().recoverable);
     const auto zenoh_transport_read = zenoh_endpoint.receive_latest_at(10U);
     assert(std::holds_alternative<flowrt::ChannelError>(zenoh_transport_read));
-    assert(std::get<flowrt::ChannelError>(zenoh_transport_read) == flowrt::ChannelError::Transport);
+    assert(std::get<flowrt::ChannelError>(zenoh_transport_read) ==
+           flowrt::ChannelError::Unsupported);
 
     return 0;
 }

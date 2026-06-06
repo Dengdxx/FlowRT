@@ -35,8 +35,9 @@ enum class ChannelWriteOutcome : std::uint8_t {
  * @brief channel 严格写入失败时的错误。
  */
 enum class ChannelError : std::uint8_t {
-    Overflow = 0,   ///< 有界队列已满且策略要求报告错误。
-    Transport = 1,  ///< backend transport 无法完成本次读写。
+    Overflow = 0,     ///< 有界队列已满且策略要求报告错误。
+    Transport = 1,    ///< backend transport 无法完成本次读写。
+    Unsupported = 2,  ///< backend SDK 未编译进当前构建，配置错误不可恢复。
 };
 
 /**

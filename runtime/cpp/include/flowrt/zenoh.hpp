@@ -157,6 +157,15 @@ class ZenohPubSub {
      * @brief 返回 endpoint 健康快照。
      */
     BackendHealthSnapshot health() const {
+#ifndef FLOWRT_HAS_ZENOH_CXX
+        return BackendHealthSnapshot{
+            .state = BackendHealthState::Unsupported,
+            .last_error = std::optional<std::string>{"zenoh-cpp support is not compiled"},
+            .attempt = 0,
+            .next_retry_unix_ms = std::nullopt,
+            .recoverable = false,
+        };
+#endif
         if (!ready() && health_.snapshot().state == BackendHealthState::Ready) {
             return BackendHealthSnapshot{
                 .state = BackendHealthState::Degraded,
@@ -244,8 +253,7 @@ class ZenohPubSub {
 #else
         (void)value;
         (void)published_at_ms;
-        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
-        return ChannelError::Transport;
+        return ChannelError::Unsupported;
 #endif
     }
 
@@ -260,11 +268,11 @@ class ZenohPubSub {
      * channel 会排空当前 ring 后暴露最新值；FIFO channel 每次只消费一个最旧可用样本。
      */
     std::variant<Latest<T>, ChannelError> receive_latest_at(std::uint64_t now_ms) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         if (!ensure_ready()) {
             return ChannelError::Transport;
         }
 
-#ifdef FLOWRT_HAS_ZENOH_CXX
         bool retried = false;
         try {
             for (;;) {
@@ -302,8 +310,7 @@ class ZenohPubSub {
         return cached_latest_at(now_ms);
 #else
         (void)now_ms;
-        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
-        return ChannelError::Transport;
+        return ChannelError::Unsupported;
 #endif
     }
 
@@ -331,7 +338,7 @@ class ZenohPubSub {
             health_.mark_degraded("failed to open Zenoh endpoint");
         }
 #else
-        health_.mark_degraded("zenoh-cpp support is disabled");
+        // health() getter 直接返回 Unsupported 状态，无需在此标记。
 #endif
     }
 
@@ -345,7 +352,6 @@ class ZenohPubSub {
         }
         return recover_after_transport_error("reopen Zenoh endpoint");
 #else
-        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
         return false;
 #endif
     }
@@ -391,7 +397,6 @@ class ZenohPubSub {
         }
         return false;
 #else
-        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
         return false;
 #endif
     }

@@ -245,6 +245,21 @@ class InprocBackend final : public Backend {
 class Iox2Backend final : public Backend {
    public:
     /**
+     * @brief 编译期查询当前构建是否包含 iox2 transport 支持。
+     *
+     * 该函数可在 `static_assert` 或 `if constexpr` 中使用，也可在运行时调用。
+     * 未定义 `FLOWRT_HAS_ICEORYX2_CXX` 时返回 false；此时使用 iox2 transport
+     * path 的 endpoint 会返回 `ChannelError::Unsupported`。
+     */
+    static constexpr bool compiled_with_transport() noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    /**
      * @copydoc Backend::kind
      */
     BackendKind kind() const noexcept override { return BackendKind::Iox2; }
@@ -301,6 +316,21 @@ class Iox2Backend final : public Backend {
  */
 class ZenohBackend final : public Backend {
    public:
+    /**
+     * @brief 编译期查询当前构建是否包含 zenoh transport 支持。
+     *
+     * 该函数可在 `static_assert` 或 `if constexpr` 中使用，也可在运行时调用。
+     * 未定义 `FLOWRT_HAS_ZENOH_CXX` 时返回 false；此时使用 zenoh transport
+     * path 的 endpoint 会返回 `ChannelError::Unsupported`。
+     */
+    static constexpr bool compiled_with_transport() noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return true;
+#else
+        return false;
+#endif
+    }
+
     /**
      * @copydoc Backend::kind
      */

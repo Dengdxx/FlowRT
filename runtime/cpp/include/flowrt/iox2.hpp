@@ -152,6 +152,15 @@ class Iox2PubSub {
      * @brief 返回 endpoint 健康快照。
      */
     BackendHealthSnapshot health() const {
+#ifndef FLOWRT_HAS_ICEORYX2_CXX
+        return BackendHealthSnapshot{
+            .state = BackendHealthState::Unsupported,
+            .last_error = std::optional<std::string>{"iceoryx2-cxx support is not compiled"},
+            .attempt = 0,
+            .next_retry_unix_ms = std::nullopt,
+            .recoverable = false,
+        };
+#endif
         if (!ready() && health_.snapshot().state == BackendHealthState::Ready) {
             return BackendHealthSnapshot{
                 .state = BackendHealthState::Degraded,
@@ -228,8 +237,7 @@ class Iox2PubSub {
 #else
         (void)value;
         (void)published_at_ms;
-        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
-        return ChannelError::Transport;
+        return ChannelError::Unsupported;
 #endif
     }
 
@@ -270,8 +278,7 @@ class Iox2PubSub {
         return cached_latest_at(now_ms);
 #else
         (void)now_ms;
-        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
-        return ChannelError::Transport;
+        return ChannelError::Unsupported;
 #endif
     }
 
@@ -301,7 +308,7 @@ class Iox2PubSub {
             health_.mark_degraded("failed to open iceoryx2 endpoint");
         }
 #else
-        health_.mark_degraded("iceoryx2-cxx support is disabled");
+        // health() getter 直接返回 Unsupported 状态，无需在此标记。
 #endif
     }
 

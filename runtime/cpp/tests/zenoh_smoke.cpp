@@ -38,6 +38,11 @@ struct WireProbe {
 };
 
 int main() {
+    static_assert(flowrt::ZenohBackend::compiled_with_transport(),
+                  "zenoh smoke requires zenoh transport");
+    static_assert(!flowrt::Iox2Backend::compiled_with_transport(),
+                  "zenoh smoke should not have iox2 transport");
+
     static_assert(flowrt::CanonicalTransportMessage<WireProbe>);
     static_assert(sizeof(WireProbe) > WireProbe::wire_size());
 

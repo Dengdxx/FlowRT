@@ -12,6 +12,11 @@ struct Iox2SmokeSample {
 };
 
 int main() {
+    static_assert(flowrt::Iox2Backend::compiled_with_transport(),
+                  "iox2 smoke requires iox2 transport");
+    static_assert(!flowrt::ZenohBackend::compiled_with_transport(),
+                  "iox2 smoke should not have zenoh transport");
+
     auto endpoint = flowrt::iox2::Iox2PubSub<Iox2SmokeSample>::open_with_config(
         "FlowRT/Cpp/Iox2/Smoke",
         flowrt::iox2::Iox2ChannelConfig::latest().with_stale_config(

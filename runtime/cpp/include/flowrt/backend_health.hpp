@@ -15,10 +15,11 @@ namespace flowrt {
  * 枚举值保持紧凑、稳定，方便未来 C ABI 直接映射为整数。
  */
 enum class BackendHealthState : std::uint8_t {
-    Ready = 0,         ///< 本地 endpoint 已打开，最近一次操作未发现错误。
-    Degraded = 1,      ///< 本地 endpoint 可见错误，但仍允许后续恢复。
-    Reconnecting = 2,  ///< runtime 正在按重连策略等待或尝试恢复。
-    Failed = 3,        ///< 重连预算耗尽或错误不可恢复。
+    Ready = 0,          ///< 本地 endpoint 已打开，最近一次操作未发现错误。
+    Degraded = 1,       ///< 本地 endpoint 可见错误，但仍允许后续恢复。
+    Reconnecting = 2,   ///< runtime 正在按重连策略等待或尝试恢复。
+    Failed = 3,         ///< 重连预算耗尽或错误不可恢复。
+    Unsupported = 4,    ///< backend SDK 未编译进当前构建，配置错误不可恢复。
 };
 
 /**

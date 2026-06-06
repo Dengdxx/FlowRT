@@ -33,6 +33,7 @@ typedef uint32_t flowrt_backend_health_state_t;
 #define FLOWRT_BACKEND_HEALTH_DEGRADED ((flowrt_backend_health_state_t)1U)
 #define FLOWRT_BACKEND_HEALTH_RECONNECTING ((flowrt_backend_health_state_t)2U)
 #define FLOWRT_BACKEND_HEALTH_FAILED ((flowrt_backend_health_state_t)3U)
+#define FLOWRT_BACKEND_HEALTH_UNSUPPORTED ((flowrt_backend_health_state_t)4U)
 
 typedef struct flowrt_string_view_t {
     const char *data;
