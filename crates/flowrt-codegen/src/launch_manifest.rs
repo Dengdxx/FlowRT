@@ -76,6 +76,12 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
                 "server": format!("{}.{}", service.server.instance.name, service.server.port),
                 "request": client.request.canonical_syntax(),
                 "response": client.response.canonical_syntax(),
+                "backend": service.backend.0,
+                "timeout_ms": service.policy.timeout_ms,
+                "queue_depth": service.policy.queue_depth,
+                "overflow": service.policy.overflow,
+                "lane": service.policy.lane,
+                "max_in_flight": service.policy.max_in_flight,
             })
         })
         .collect()
