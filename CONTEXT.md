@@ -18,6 +18,20 @@ drain loop 级联唤醒。
 - Service 请求/响应语义切片。
 - C/Python ABI 边界准备：先稳定 C ABI 基础类型，不实现 Python binding。
 
+`v0.3.2` 定义为 hardening / architecture repair 版本：不新增用户语义，不推进
+v0.4 Service runtime，只修复现有能力缺陷。修复范围：
+
+- codegen 深化。
+- 打包 hermetic。
+- arm64 deb 支持。
+- self-description / introspection schema 共享。
+- generated startup 去 panic。
+- supervisor engine 下沉 runtime。
+- parser / normalizer seam 拆分。
+- C++ backend capability 硬化。
+- CMake repo fallback 收口。
+- CI 主路径迁到 `--run-steps`。
+
 录制回放系统暂不实施，但实现上述能力时应预留 runtime、self-description 或 CLI
 边界，避免后续引入时破坏已发布契约。
 
