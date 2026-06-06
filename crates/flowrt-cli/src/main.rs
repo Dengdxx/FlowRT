@@ -1211,6 +1211,8 @@ struct CargoBuildInvocation {
 }
 
 fn cargo_build_invocation(manifest: &Path, bin_name: &str) -> Result<CargoBuildInvocation> {
+    let manifest = fs::canonicalize(manifest)
+        .with_context(|| format!("failed to resolve `{}`", manifest.display()))?;
     let manifest_dir = manifest
         .parent()
         .with_context(|| format!("manifest path has no parent: `{}`", manifest.display()))?;

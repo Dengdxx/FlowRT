@@ -230,6 +230,44 @@ fn cargo_build_invocation_uses_manifest_dir_and_offline_config() {
 
     assert_eq!(invocation.current_dir, build_dir);
     assert!(invocation.args.iter().any(|arg| arg == "--offline"));
+    let manifest_arg = invocation
+        .args
+        .windows(2)
+        .find_map(|args| (args[0] == "--manifest-path").then_some(args[1].as_str()))
+        .expect("cargo invocation should pass --manifest-path");
+    assert!(Path::new(manifest_arg).is_absolute());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cargo_build_invocation_resolves_relative_manifest_before_changing_dir() {
+    let repo_dir = std::env::current_dir().unwrap();
+    let root = repo_dir.join("target").join("tmp").join(format!(
+        "flowrt-cargo-build-relative-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let build_dir = root.join("flowrt").join("build");
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let manifest = build_dir.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        "[package]\nname = \"robot\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let relative_manifest = manifest.strip_prefix(&repo_dir).unwrap();
+
+    let invocation = cargo_build_invocation(relative_manifest, "robot-flowrt-app")
+        .expect("relative manifest should be resolved before cargo changes directory");
+
+    assert_eq!(invocation.current_dir, build_dir);
+    let manifest_arg = invocation
+        .args
+        .windows(2)
+        .find_map(|args| (args[0] == "--manifest-path").then_some(args[1].as_str()))
+        .expect("cargo invocation should pass --manifest-path");
+    assert_eq!(Path::new(manifest_arg), manifest.as_path());
 
     let _ = std::fs::remove_dir_all(&root);
 }
