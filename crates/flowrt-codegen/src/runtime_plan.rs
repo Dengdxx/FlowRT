@@ -51,13 +51,26 @@ pub(crate) fn indent_generated_block(block: &str, nested: bool) -> String {
         return block.to_string();
     }
 
+    indent_generated_block_levels(block, 1)
+}
+
+pub(crate) fn indent_generated_block_levels(block: &str, levels: usize) -> String {
+    if block.is_empty() {
+        return String::new();
+    }
+
+    if levels == 0 {
+        return block.to_string();
+    }
+
+    let prefix = "    ".repeat(levels);
     block
         .lines()
         .map(|line| {
             if line.is_empty() {
                 String::new()
             } else {
-                format!("    {line}")
+                format!("{prefix}{line}")
             }
         })
         .collect::<Vec<_>>()

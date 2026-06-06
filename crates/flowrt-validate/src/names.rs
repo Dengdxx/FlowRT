@@ -89,6 +89,15 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 );
             }
         }
+        for task in &graph.tasks {
+            validate_name(
+                "task",
+                "task name",
+                &task.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+        }
     }
 }
 

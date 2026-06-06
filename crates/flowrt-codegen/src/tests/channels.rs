@@ -124,10 +124,8 @@ backends = ["inproc"]
     assert!(rust_shell.contains("let imu_read = self.bind_0.pop_at(tick_time_ms);"));
     assert!(rust_shell.contains("let imu = imu_read.view();"));
     assert!(rust_shell.contains("push_at(value.clone(), tick_time_ms)"));
-    assert!(
-        rust_shell
-            .contains("if imu.stale() {\n            return flowrt::Status::Error;\n        }")
-    );
+    assert!(rust_shell.contains("if imu.stale() {"));
+    assert!(rust_shell.contains("return flowrt::Status::Error;"));
     assert!(rust_shell.find("if imu.stale()").unwrap() < rust_shell.find(".on_tick(imu)").unwrap());
 }
 
@@ -186,10 +184,8 @@ backends = ["inproc"]
     let bundle = emit_artifacts(&ir).unwrap();
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
-    assert!(
-        rust_shell
-            .contains("if imu.stale() {\n            return flowrt::Status::Error;\n        }")
-    );
+    assert!(rust_shell.contains("if imu.stale() {"));
+    assert!(rust_shell.contains("return flowrt::Status::Error;"));
     assert!(rust_shell.find("if imu.stale()").unwrap() < rust_shell.find(".on_tick(imu)").unwrap());
 }
 
@@ -319,9 +315,8 @@ backends = ["inproc"]
     assert!(cpp_shell.contains("auto sink_imu_read = bind_0_.pop_at(tick_time_ms);"));
     assert!(cpp_shell.contains("const auto sink_imu = sink_imu_read.view();"));
     assert!(cpp_shell.contains("push_at(*value, tick_time_ms)"));
-    assert!(
-        cpp_shell.contains("if (sink_imu.stale()) {\n        return flowrt::Status::Error;\n    }")
-    );
+    assert!(cpp_shell.contains("if (sink_imu.stale()) {"));
+    assert!(cpp_shell.contains("return flowrt::Status::Error;"));
     assert!(
         cpp_shell.find("if (sink_imu.stale())").unwrap()
             < cpp_shell.find("sink_->on_tick(sink_imu)").unwrap()
@@ -383,9 +378,8 @@ backends = ["inproc"]
     let bundle = emit_artifacts(&ir).unwrap();
     let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
 
-    assert!(
-        cpp_shell.contains("if (sink_imu.stale()) {\n        return flowrt::Status::Error;\n    }")
-    );
+    assert!(cpp_shell.contains("if (sink_imu.stale()) {"));
+    assert!(cpp_shell.contains("return flowrt::Status::Error;"));
     assert!(
         cpp_shell.find("if (sink_imu.stale())").unwrap()
             < cpp_shell.find("sink_->on_tick(sink_imu)").unwrap()

@@ -195,10 +195,10 @@ pub(crate) fn validate_contract_canonical_ordering(
         if !graph
             .tasks
             .windows(2)
-            .all(|pair| pair[0].instance.name <= pair[1].instance.name)
+            .all(|pair| task_canonical_key(&pair[0]) <= task_canonical_key(&pair[1]))
         {
             errors.push(ValidationError::new(format!(
-                "graph `{}` tasks must use canonical instance order",
+                "graph `{}` tasks must use canonical instance/name order",
                 graph.name
             )));
         }
@@ -347,7 +347,7 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
             record_entity_id(
                 &mut seen,
                 &task.id,
-                format!("task on instance `{}`", task.instance.name),
+                format!("task `{}` on instance `{}`", task.name, task.instance.name),
                 errors,
             );
         }
@@ -457,8 +457,8 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
         for task in &graph.tasks {
             validate_named_entity_ref(
                 &format!(
-                    "task on instance `{}` instance reference",
-                    task.instance.name
+                    "task `{}` on instance `{}` instance reference",
+                    task.name, task.instance.name
                 ),
                 "instance",
                 &task.instance,
@@ -572,6 +572,10 @@ fn bind_canonical_key(bind: &ChannelEdgeIr) -> (&str, &str, &str, &str) {
         bind.to.instance.name.as_str(),
         bind.to.port.as_str(),
     )
+}
+
+fn task_canonical_key(task: &flowrt_ir::TaskIr) -> (&str, &str) {
+    (task.instance.name.as_str(), task.name.as_str())
 }
 
 fn target_runtime_rank(language: LanguageKind) -> u8 {

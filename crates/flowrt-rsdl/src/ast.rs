@@ -93,12 +93,13 @@ pub struct RawInstance {
     pub process: Option<String>,
     pub target: Option<String>,
     pub params: BTreeMap<String, RawValue>,
-    pub task: Option<RawTask>,
+    pub tasks: Vec<RawTask>,
 }
 
-/// `[instance.<name>.task]` 表。
+/// `[instance.<name>.task]` 或 `[[instance.<name>.task]]` 表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTask {
+    pub name: Option<String>,
     pub trigger: String,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,

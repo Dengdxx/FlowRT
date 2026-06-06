@@ -70,8 +70,11 @@ pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result
 
     let graph_id = entity_id("graph", "default");
     let graph_name = "default".to_string();
-    let (instances, tasks) =
+    let (instances, mut tasks) =
         normalize_instances(document, &component_ids, &target_ids, &graph_name)?;
+    tasks.sort_by(|left, right| {
+        (&left.instance.name, &left.name).cmp(&(&right.instance.name, &right.name))
+    });
     let instance_refs = instances
         .iter()
         .map(|instance| {
@@ -525,9 +528,14 @@ fn normalize_instances(
             id: instance_id.clone(),
             name: name.clone(),
         };
-        if let Some(raw_task) = &raw.task {
+        for (task_index, raw_task) in raw.tasks.iter().enumerate() {
+            let task_name = raw_task
+                .name
+                .clone()
+                .unwrap_or_else(|| default_task_name(task_index));
             tasks.push(TaskIr {
-                id: entity_id("task", &format!("{graph_name}.{name}.task")),
+                id: entity_id("task", &format!("{graph_name}.{name}.{task_name}")),
+                name: task_name,
                 instance: instance_ref.clone(),
                 trigger: parse_trigger(
                     &format!("instance.{name}.task.trigger"),
@@ -552,6 +560,14 @@ fn normalize_instances(
     }
 
     Ok((instances, tasks))
+}
+
+fn default_task_name(index: usize) -> String {
+    if index == 0 {
+        "main".to_string()
+    } else {
+        format!("task_{index}")
+    }
 }
 
 fn merge_instance_params(
@@ -1335,6 +1351,44 @@ backends = ["inproc"]
             }
         );
         assert_eq!(ir.graphs[0].tasks[0].period_ms, Some(5));
+    }
+
+    #[test]
+    fn normalizes_named_task_array_for_one_instance() {
+        let source = r#"
+[package]
+name = "multi_task_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+output = ["slow"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let tasks = &ir.graphs[0].tasks;
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].name, "fast_loop");
+        assert_eq!(tasks[1].name, "slow_loop");
+        assert_ne!(tasks[0].id, tasks[1].id);
+        assert_eq!(tasks[0].outputs, vec!["fast"]);
+        assert_eq!(tasks[1].outputs, vec!["slow"]);
     }
 
     #[test]

@@ -399,7 +399,7 @@ backends = ["inproc", "iox2"]
         "contract components must use canonical name order",
         "component `producer` params must use canonical name order",
         "graph `default` instances must use canonical name order",
-        "graph `default` tasks must use canonical instance order",
+        "graph `default` tasks must use canonical instance/name order",
         "instance `producer` params must use canonical name order",
         "contract profiles must use canonical name order",
         "contract targets must use canonical name order",
@@ -608,7 +608,7 @@ fn rejects_inconsistent_entity_references_in_contract_ir() {
 
     for expected in [
         "instance `producer` component reference",
-        "task on instance `producer` instance reference",
+        "task `main` on instance `producer` instance reference",
         "bind source instance reference",
         "deployment profile reference",
     ] {

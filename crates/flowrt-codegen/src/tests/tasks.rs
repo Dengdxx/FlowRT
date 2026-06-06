@@ -347,6 +347,93 @@ channel = "latest"
 }
 
 #[test]
+fn rust_shell_runs_multiple_tasks_for_one_instance() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "multi_task_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+output = ["slow"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let scheduler_step = generated_function_block(rust_shell, "fn step(");
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+
+    assert_eq!(scheduler_step.matches("self.worker.on_tick(").count(), 2);
+    assert!(scheduler_step.contains("let mut fast = flowrt::Output::<u32>::new();"));
+    assert!(scheduler_step.contains("let mut slow = flowrt::Output::<u32>::new();"));
+    assert_eq!(launch["graphs"][0]["tasks"][0]["name"], "fast_loop");
+    assert_eq!(launch["graphs"][0]["tasks"][1]["name"], "slow_loop");
+}
+
+#[test]
+fn cpp_shell_runs_multiple_tasks_for_one_instance() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "multi_task_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+output = ["slow"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let scheduler_start = cpp_shell.find("flowrt::Status App::step(").unwrap();
+    let scheduler_end = cpp_shell[scheduler_start..]
+        .find("flowrt::Status App::step_startup(")
+        .map(|offset| scheduler_start + offset)
+        .unwrap();
+    let scheduler_step = &cpp_shell[scheduler_start..scheduler_end];
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert_eq!(scheduler_step.matches("worker_->on_tick(").count(), 2);
+    assert!(scheduler_step.contains("flowrt::Output<std::uint32_t> worker_fast;"));
+    assert!(scheduler_step.contains("flowrt::Output<std::uint32_t> worker_slow;"));
+    assert_eq!(selfdesc["graphs"][0]["tasks"][0]["name"], "fast_loop");
+    assert_eq!(selfdesc["graphs"][0]["tasks"][1]["name"], "slow_loop");
+}
+
+#[test]
 fn rust_shell_runs_startup_and_shutdown_tasks_outside_tick_loop() {
     let mut ir = contract_from_source(
         r#"
@@ -457,10 +544,13 @@ period_ms = 5
     assert!(run.contains("auto shutdown = flowrt::install_signal_shutdown_token();"));
     assert!(run.contains("!shutdown.is_requested()"));
     assert!(run.contains("backend.scheduler().run_ticks_until_shutdown("));
-    assert!(cpp_shell.contains("flowrt::Status App::step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (boot_ && boot_->on_tick()"));
-    assert!(cpp_shell.contains("flowrt::Status App::step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (cleanup_ && cleanup_->on_tick()"));
-    assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (boot_ && boot_->on_tick()"));
-    assert!(!cpp_shell.contains("flowrt::Status App::step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    if (cleanup_ && cleanup_->on_tick()"));
+    let startup_step = generated_function_block(cpp_shell, "App::step_startup");
+    let shutdown_step = generated_function_block(cpp_shell, "App::step_shutdown");
+    let scheduler_step = generated_function_block(cpp_shell, "App::step(");
+    assert!(startup_step.contains("if (boot_ && boot_->on_tick()"));
+    assert!(shutdown_step.contains("if (cleanup_ && cleanup_->on_tick()"));
+    assert!(!scheduler_step.contains("if (boot_ && boot_->on_tick()"));
+    assert!(!scheduler_step.contains("if (cleanup_ && cleanup_->on_tick()"));
 }
 
 #[test]

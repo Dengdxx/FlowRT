@@ -170,6 +170,7 @@ pub struct GraphIr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskIr {
     pub id: EntityId,
+    pub name: String,
     pub instance: EntityRef,
     pub trigger: TriggerKind,
     pub period_ms: Option<u64>,

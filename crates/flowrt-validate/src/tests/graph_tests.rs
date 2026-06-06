@@ -233,18 +233,15 @@ period_ms = 0
 }
 
 #[test]
-fn rejects_multiple_tasks_for_one_instance_in_v0_1() {
+fn accepts_multiple_named_tasks_for_one_instance() {
     let source = r#"
 [package]
-name = "bad"
+name = "multi_task_demo"
 rsdl_version = "0.1"
-
-[type.Sample]
-value = "u32"
 
 [component.worker]
 language = "rust"
-output = ["sample:Sample"]
+output = ["fast:u32", "slow:u32"]
 
 [instance.worker]
 component = "worker"
@@ -252,21 +249,54 @@ component = "worker"
 [instance.worker.task]
 trigger = "periodic"
 period_ms = 5
-output = ["sample"]
+output = ["fast"]
 "#;
     let raw = parse_str(source).unwrap();
     let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
     let mut second_task = ir.graphs[0].tasks[0].clone();
-    second_task.id.0 = "task:default.worker.second".to_string();
+    second_task.id.0 = "task_1111111111111111".to_string();
+    second_task.name = "slow_loop".to_string();
     second_task.period_ms = Some(10);
+    second_task.outputs = vec!["slow".to_string()];
     ir.graphs[0].tasks.push(second_task);
 
-    let report = validate_contract(&ir).expect_err("duplicate instance task should fail");
+    validate_contract(&ir).expect("multiple named tasks should validate");
+}
+
+#[test]
+fn rejects_duplicate_task_names_for_one_instance() {
+    let source = r#"
+[package]
+name = "bad_tasks"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "loop"
+trigger = "periodic"
+period_ms = 5
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "loop"
+trigger = "periodic"
+period_ms = 100
+output = ["slow"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("duplicate task names should fail");
 
     assert!(report.errors.iter().any(|error| {
         error
             .message
-            .contains("instance `worker` has multiple tasks in Contract IR v0.1")
+            .contains("instance `worker` has duplicate task name `loop`")
     }));
 }
 

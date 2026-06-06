@@ -763,6 +763,7 @@ mod tests {
             tasks: vec![
                 crate::TaskIr {
                     id: crate::EntityId("task_0000000000000001".to_string()),
+                    name: "shutdown".to_string(),
                     instance: instance.clone(),
                     trigger: TriggerKind::Shutdown,
                     period_ms: None,
@@ -773,6 +774,7 @@ mod tests {
                 },
                 crate::TaskIr {
                     id: crate::EntityId("task_0000000000000002".to_string()),
+                    name: "main".to_string(),
                     instance: instance.clone(),
                     trigger: TriggerKind::Periodic,
                     period_ms: Some(10),

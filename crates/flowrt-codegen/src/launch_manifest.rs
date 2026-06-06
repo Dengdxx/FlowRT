@@ -117,6 +117,7 @@ fn process_backend(graph: &GraphIr, instance_names: &BTreeSet<&str>) -> String {
 
 fn launch_task(task: &TaskIr) -> serde_json::Value {
     serde_json::json!({
+        "name": task.name,
         "instance": task.instance.name,
         "trigger": task.trigger,
         "period_ms": task.period_ms,

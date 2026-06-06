@@ -96,6 +96,7 @@ struct SelfDescriptionParam {
 
 #[derive(Debug, Serialize)]
 struct SelfDescriptionTask<'a> {
+    name: &'a str,
     instance: &'a str,
     trigger: &'static str,
     period_ms: Option<u64>,
@@ -316,6 +317,7 @@ fn self_description_graph<'a>(
             .tasks
             .iter()
             .map(|task| SelfDescriptionTask {
+                name: &task.name,
                 instance: &task.instance.name,
                 trigger: trigger_name(task.trigger),
                 period_ms: task.period_ms,

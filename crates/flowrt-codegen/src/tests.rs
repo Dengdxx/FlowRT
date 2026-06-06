@@ -31,9 +31,14 @@ fn generated_function_block<'a>(source: &'a str, function: &str) -> &'a str {
         .find(function)
         .expect("generated function must exist");
     let rest = &source[start..];
-    let next = rest[function.len()..]
-        .find("\n    fn ")
-        .map(|offset| function.len() + offset)
+    let next = ["\n    fn ", "\nflowrt::Status App::"]
+        .iter()
+        .filter_map(|marker| {
+            rest[function.len()..]
+                .find(marker)
+                .map(|offset| function.len() + offset)
+        })
+        .min()
         .unwrap_or(rest.len());
     &rest[..next]
 }

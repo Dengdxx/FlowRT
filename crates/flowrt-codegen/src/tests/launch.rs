@@ -66,6 +66,7 @@ backends = ["iox2"]
         processes[0]["tasks"],
         serde_json::json!([
             {
+                "name": "main",
                 "instance": "sink",
                 "trigger": "on_message",
                 "period_ms": null,

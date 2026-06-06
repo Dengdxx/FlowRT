@@ -36,9 +36,9 @@ use messages::{
 use runtime_plan::{
     BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
     bind_backend, bind_runtime_plans, incoming_bind_index_map, indent_generated_block,
-    on_message_trigger_guard, outgoing_bind_indices_map, process_runtime_plans,
-    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
-    runtime_param_name, rust_nested_step_indent, rust_step_indent,
+    indent_generated_block_levels, on_message_trigger_guard, outgoing_bind_indices_map,
+    process_runtime_plans, runtime_channel_message_type, runtime_channel_name,
+    runtime_channel_probe_capacity, runtime_param_name, rust_nested_step_indent, rust_step_indent,
 };
 use selfdesc::{
     emit_cpp_selfdesc_header, emit_cpp_selfdesc_source, emit_rust_selfdesc, emit_self_description,
@@ -743,128 +743,131 @@ fn emit_rust_app_step(
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
-        let Some(task) = task_for_instance(emission.graph, instance) else {
-            continue;
-        };
-        if !phase.includes(task.trigger) {
-            continue;
-        }
-        let task_inputs = task
-            .inputs
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let task_outputs = task
-            .outputs
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let trigger_guard = on_message_trigger_guard(task, |input| input.to_string());
-
-        for input in &component.inputs {
-            if task_inputs.contains(input.name.as_str()) {
-                let bind_index = emission
-                    .incoming_bind_index
-                    .get(&(instance.name.clone(), input.name.clone()))
-                    .expect("validated graph must provide a bind for each task input");
-                let bind = &emission.binds[*bind_index];
-                output.push_str(&runtime_channel_read(input, bind));
-                output.push_str(&runtime_stale_error_guard(input, bind));
-            } else {
-                output.push_str(&format!(
-                    "        let {input} = flowrt::Latest::new(None, false);\n",
-                    input = input.name
-                ));
-            }
-        }
-
-        if let Some(guard) = &trigger_guard {
-            output.push_str(&format!("        if {guard} {{\n"));
-        }
-
         if !component.params.is_empty() && phase == TaskEmissionPhase::Scheduler {
-            output.push_str(&rust_apply_pending_params(
-                instance,
-                component,
-                trigger_guard.is_some(),
-            ));
+            output.push_str(&rust_apply_pending_params(instance, component, false));
         }
-
-        if task.deadline_ms.is_some() {
-            output.push_str(&format!(
-                "{indent}let {name}_deadline_started_at = std::time::Instant::now();\n",
-                indent = rust_step_indent(trigger_guard.is_some()),
-                name = instance.name
-            ));
-        }
-
-        for port in &component.outputs {
-            output.push_str(&format!(
-                "{indent}let mut {port} = flowrt::Output::<{ty}>::new();\n",
-                indent = rust_step_indent(trigger_guard.is_some()),
-                port = port.name,
-                ty = rust_type(&port.ty)
-            ));
-        }
-
-        let mut call_args = Vec::new();
-        for input in &component.inputs {
-            call_args.push(input.name.clone());
-        }
-        if !component.params.is_empty() {
-            call_args.push(format!("&self.{}_params", instance.name));
-        }
-        for port in &component.outputs {
-            call_args.push(format!("&mut {}", port.name));
-        }
-        output.push_str(&format!(
-            "{indent}if self.{name}.on_tick({args}) != flowrt::Status::Ok {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
-            indent = rust_step_indent(trigger_guard.is_some()),
-            inner_indent = rust_nested_step_indent(trigger_guard.is_some()),
-            name = instance.name,
-            args = call_args.join(", ")
-        ));
-
-        if let Some(deadline_ms) = task.deadline_ms {
-            output.push_str(&format!(
-                "{indent}if {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms}) {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
-                indent = rust_step_indent(trigger_guard.is_some()),
-                inner_indent = rust_nested_step_indent(trigger_guard.is_some()),
-                name = instance.name
-            ));
-        }
-
-        for port in &component.outputs {
-            if !task_outputs.contains(port.name.as_str()) {
+        for task in tasks_for_instance(emission.graph, instance) {
+            if !phase.includes(task.trigger) {
                 continue;
             }
-            let outgoing = emission
-                .outgoing_bind_indices
-                .get(&(instance.name.clone(), port.name.clone()))
-                .cloned()
-                .unwrap_or_default();
-            if outgoing.is_empty() {
-                continue;
+            output.push_str("        {\n");
+            let task_inputs = task
+                .inputs
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let task_outputs = task
+                .outputs
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let trigger_guard = on_message_trigger_guard(task, |input| input.to_string());
+
+            for input in &component.inputs {
+                if task_inputs.contains(input.name.as_str()) {
+                    let bind_index = emission
+                        .incoming_bind_index
+                        .get(&(instance.name.clone(), input.name.clone()))
+                        .expect("validated graph must provide a bind for each task input");
+                    let bind = &emission.binds[*bind_index];
+                    output.push_str(&indent_generated_block(
+                        &runtime_channel_read(input, bind),
+                        true,
+                    ));
+                    output.push_str(&indent_generated_block(
+                        &runtime_stale_error_guard(input, bind),
+                        true,
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "            let {input} = flowrt::Latest::new(None, false);\n",
+                        input = input.name
+                    ));
+                }
             }
-            output.push_str(&format!(
-                "{indent}if let Some(value) = {port}.as_ref().cloned() {{\n",
-                indent = rust_step_indent(trigger_guard.is_some()),
-                port = port.name
-            ));
-            for bind_index in outgoing {
-                let bind = &emission.binds[bind_index];
-                output.push_str(&indent_generated_block(
-                    &runtime_channel_write(bind),
-                    trigger_guard.is_some(),
+
+            if let Some(guard) = &trigger_guard {
+                output.push_str(&format!("            if {guard} {{\n"));
+            }
+            let body_indent = if trigger_guard.is_some() {
+                "                "
+            } else {
+                "            "
+            };
+            let body_inner_indent = if trigger_guard.is_some() {
+                "                    "
+            } else {
+                "                "
+            };
+            let write_indent_levels = if trigger_guard.is_some() { 2 } else { 1 };
+
+            if task.deadline_ms.is_some() {
+                output.push_str(&format!(
+                    "{body_indent}let {name}_deadline_started_at = std::time::Instant::now();\n",
+                    name = instance.name
                 ));
             }
-            output.push_str(&format!(
-                "{}}}\n",
-                rust_step_indent(trigger_guard.is_some())
-            ));
-        }
 
-        if trigger_guard.is_some() {
+            for port in &component.outputs {
+                output.push_str(&format!(
+                    "{body_indent}let mut {port} = flowrt::Output::<{ty}>::new();\n",
+                    port = port.name,
+                    ty = rust_type(&port.ty)
+                ));
+            }
+
+            let mut call_args = Vec::new();
+            for input in &component.inputs {
+                call_args.push(input.name.clone());
+            }
+            if !component.params.is_empty() {
+                call_args.push(format!("&self.{}_params", instance.name));
+            }
+            for port in &component.outputs {
+                call_args.push(format!("&mut {}", port.name));
+            }
+            output.push_str(&format!(
+                "{body_indent}if self.{name}.on_tick({args}) != flowrt::Status::Ok {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
+                name = instance.name,
+                args = call_args.join(", ")
+            ));
+
+            if let Some(deadline_ms) = task.deadline_ms {
+                output.push_str(&format!(
+                    "{body_indent}if {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms}) {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
+                    name = instance.name
+                ));
+            }
+
+            for port in &component.outputs {
+                if !task_outputs.contains(port.name.as_str()) {
+                    continue;
+                }
+                let outgoing = emission
+                    .outgoing_bind_indices
+                    .get(&(instance.name.clone(), port.name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if outgoing.is_empty() {
+                    continue;
+                }
+                output.push_str(&format!(
+                    "{body_indent}if let Some(value) = {port}.as_ref().cloned() {{\n",
+                    port = port.name
+                ));
+                for bind_index in outgoing {
+                    let bind = &emission.binds[bind_index];
+                    output.push_str(&indent_generated_block_levels(
+                        &runtime_channel_write(bind),
+                        write_indent_levels,
+                    ));
+                }
+                output.push_str(&format!("{body_indent}}}\n"));
+            }
+
+            if trigger_guard.is_some() {
+                output.push_str("            }\n");
+            }
             output.push_str("        }\n");
         }
     }
@@ -1629,11 +1632,14 @@ fn component_by_name<'a>(contract: &'a ContractIr, name: &str) -> &'a ComponentI
         .expect("normalized contract must reference known components")
 }
 
-fn task_for_instance<'a>(graph: &'a GraphIr, instance: &InstanceIr) -> Option<&'a TaskIr> {
+pub(crate) fn tasks_for_instance<'a>(
+    graph: &'a GraphIr,
+    instance: &'a InstanceIr,
+) -> impl Iterator<Item = &'a TaskIr> {
     graph
         .tasks
         .iter()
-        .find(|task| task.instance.id == instance.id)
+        .filter(move |task| task.instance.id == instance.id)
 }
 
 fn topo_order_instances(graph: &GraphIr) -> Vec<&InstanceIr> {

@@ -459,21 +459,53 @@ fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
         &["component", "process", "target", "params", "task"],
     )?;
 
-    let task = table
+    let tasks = table
         .get("task")
-        .map(|value| {
-            let table = expect_table_value(&context, "task", value)?;
-            parse_task(name, table)
-        })
-        .transpose()?;
+        .map(|value| parse_tasks(name, value))
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(RawInstance {
         component: required_string(table, &context, "component")?,
         process: optional_string(table, &context, "process")?,
         target: optional_string(table, &context, "target")?,
         params: optional_param_table(table, &context, "params")?,
-        task,
+        tasks,
     })
+}
+
+fn parse_tasks(instance_name: &str, value: &Value) -> Result<Vec<RawTask>> {
+    if let Some(table) = value.as_table() {
+        return Ok(vec![parse_task(instance_name, table)?]);
+    }
+
+    let Some(tasks) = value.as_array() else {
+        return Err(RsdlError::InvalidFieldType {
+            context: format!("instance.{instance_name}"),
+            field: "task".to_string(),
+            expected: "table or array of tables",
+        });
+    };
+
+    tasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| {
+            let table = task.as_table().ok_or_else(|| RsdlError::InvalidFieldType {
+                context: format!("instance.{instance_name}.task[{index}]"),
+                field: "task".to_string(),
+                expected: "table",
+            })?;
+            let task = parse_task(instance_name, table)?;
+            if task.name.is_none() {
+                return Err(RsdlError::MissingField {
+                    context: format!("instance.{instance_name}.task[{index}]"),
+                    field: "name",
+                });
+            }
+            Ok(task)
+        })
+        .collect()
 }
 
 fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
@@ -482,6 +514,7 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
         table,
         &context,
         &[
+            "name",
             "trigger",
             "period_ms",
             "deadline_ms",
@@ -492,6 +525,7 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
     )?;
 
     Ok(RawTask {
+        name: optional_string(table, &context, "name")?,
         trigger: required_string(table, &context, "trigger")?,
         period_ms: optional_u64(table, &context, "period_ms")?,
         deadline_ms: optional_u64(table, &context, "deadline_ms")?,
@@ -812,10 +846,71 @@ backends = ["inproc"]
         assert_eq!(document.package.name, "robot_demo");
         assert_eq!(document.types["Imu"].fields[0].name, "timestamp");
         assert_eq!(document.components["imu_sim"].output[0].name, "imu");
-        assert_eq!(
-            document.instances["imu_sim"].task.as_ref().unwrap().trigger,
-            "periodic"
-        );
+        assert_eq!(document.instances["imu_sim"].tasks[0].trigger, "periodic");
+    }
+
+    #[test]
+    fn parses_multiple_tasks_for_one_instance() {
+        let source = r#"
+[package]
+name = "multi_task_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+input = ["in:u32"]
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+input = ["in"]
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+input = ["in"]
+output = ["slow"]
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+        let tasks = &document.instances["worker"].tasks;
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].name.as_deref(), Some("fast_loop"));
+        assert_eq!(tasks[1].name.as_deref(), Some("slow_loop"));
+        assert_eq!(tasks[0].output, vec!["fast"]);
+        assert_eq!(tasks[1].output, vec!["slow"]);
+    }
+
+    #[test]
+    fn rejects_unnamed_task_in_task_array() {
+        let source = r#"
+[package]
+name = "multi_task_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["fast:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+trigger = "periodic"
+period_ms = 5
+output = ["fast"]
+"#;
+
+        let error = parse_str(source).expect_err("task array entries must be named");
+        assert!(error.to_string().contains("missing required field `name`"));
     }
 
     #[test]
@@ -1041,8 +1136,8 @@ backends = ["inproc"]
         assert_eq!(document.instances["imu_sim"].component, "imu_sim");
         assert_eq!(
             document.instances["estimator"]
-                .task
-                .as_ref()
+                .tasks
+                .first()
                 .unwrap()
                 .trigger,
             "on_message"

@@ -166,6 +166,28 @@ backends = ["inproc"]
 - `bind.dataflow` 把 source 输出接到 sink 输入。
 - `profile.default` 选择 `inproc` backend。
 
+## 任务
+
+`task` 是 instance 内的执行单元。单 task 可以继续使用 `[instance.<name>.task]`，FlowRT 会把它命名为 `main`。
+
+一个 instance 也可以声明多个 task：
+
+```toml
+[[instance.sensor.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[[instance.sensor.task]]
+name = "health_loop"
+trigger = "periodic"
+period_ms = 1000
+output = ["health"]
+```
+
+多 task 共享同一个 component 实例和同一份 typed params。每个 task 只读取自己声明的 `input`，只发布自己声明的 `output`；生成 shell 会按 task 分别调度同一个用户组件接口。task name 必须在同一个 instance 内唯一，并使用 `snake_case`。
+
 ## 构建和运行
 
 检查契约：

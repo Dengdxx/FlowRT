@@ -115,7 +115,7 @@ launch manifest 的关键字段包括：
 
 - process group 的 `runtimes` 和 `runtime_kind`
 - graph instance 的 `runtime`
-- task 的 `trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
+- task 的 `name`、`trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
 - graph `channels`
 - iox2 channel 的 canonical service name
 - zenoh channel 的 deterministic key expression
@@ -237,6 +237,26 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 - RSDL 未声明任何 profile 时，归一化阶段会插入隐式 `default` profile，backend 为 `inproc`。
 
 profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。未显式声明 `backend` 或声明 `backend = "auto"` 的 bind 会跟随选中 profile backend；如果该 route 使用 bounded variable frame 且 profile backend 为 `iox2`，会自动选择 `zenoh`。投影后的 `contract.ir.json` 会同时刷新 route 和 deployment 的 capability 元数据。
+
+## RSDL task 写法
+
+单 task 可以继续使用 `[instance.<name>.task]`，归一化后的 task name 为 `main`。一个 instance 需要多个执行单元时，使用数组表 `[[instance.<name>.task]]`，并为每个 task 声明唯一的 `name`：
+
+```toml
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+output = ["slow"]
+```
+
+多 task 共享同一个 component 实例。生成 shell 会按 task 的 `input` / `output` 子集分别调度同一个用户组件接口，并在 self-description 和 launch manifest 中保留 task name。
 
 ## 生成物边界
 

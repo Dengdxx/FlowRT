@@ -123,9 +123,9 @@ examples/
 - MVP 可以支持单文件 RSDL。
 - 长期语义模型必须区分 `types`、`components`、`graphs`、`profiles`、`targets` 和 `package`。
 - RSDL 不应出现 backend 的底层 API 名称，例如 iox2 publisher/subscriber。应描述 channel、policy、target 和 capability requirement。
-- MVP 单文件示例建议使用 `[type.*]`、`[component.*]`、`[instance.*]`、`[instance.*.task]`、`[[bind.dataflow]]`、`[profile.*]`、`[target.*]` 这些表。
+- MVP 单文件示例建议使用 `[type.*]`、`[component.*]`、`[instance.*]`、`[instance.*.task]` / `[[instance.*.task]]`、`[[bind.dataflow]]`、`[profile.*]`、`[target.*]` 这些表。
 - RSDL parser 必须拒绝未知顶层 section 和固定 schema 表中的未知字段，例如 `[components.*]`、`instance.foo.proces` 这类拼写错误不能被静默忽略；`type.<Name>` 的 message fields 与 `params` 表是开放键空间。
-- `instance.<name>.task` 是 v0.1 推荐写法。
+- `instance.<name>.task` 是单 task 简写，归一化后 task name 默认为 `main`；`[[instance.<name>.task]]` 是多 task 写法，必须声明唯一的 `name`。
 - `instance.<name>.params` 覆盖 component 默认参数，并在 normalization 阶段合并；override 不能引入 component 未声明参数，类型必须与默认值兼容，空默认数组不能被非空数组覆盖。
 - `instance.<name>.process` 是 launch grouping label，必须使用 `snake_case`，且不得使用大小写不敏感的保留 `flowrt` 前缀；未声明时默认为 `main`。
 - `bind.dataflow` 表示图连线，归一化后展开成具体 channel edges。
@@ -175,7 +175,7 @@ validator 必须拒绝当前工具链不支持的 `ir_version`、`schema_version
 
 - 最小生命周期接口保留 `on_init`、`on_start`、`on_stop`、`on_shutdown`。生成的 Rust/C++ runtime shell 只对成功进入对应阶段的组件执行逆序清理：成功 start 的组件执行 `on_stop`，成功 init 的组件执行 `on_shutdown`；scheduler 或前序 hook 失败后仍必须继续清理。原始非 `Ok` 状态优先，原始状态为 `Ok` 时任一清理 hook 失败统一返回 `Error`。
 
-初代可以简化为 `instance ~= task`，但 IR 中必须保留 task 概念。Contract IR v0.1 当前每个 instance 最多只能有一个 task；validator 必须拒绝同一 instance 的多 task，避免 codegen 静默只消费第一条 task。
+FlowRT v0.2 起支持单 instance 多 task。Contract IR 中 task 必须带 `name`，同一 instance 内 task name 必须唯一并符合 `snake_case`；旧单 task RSDL 简写归一化为 `main`。生成 shell 当前仍复用同一个用户 component 接口，对每个 task 按其 input/output 子集分别调用用户回调；不生成 `on_<task_name>` 这类新用户 API。参数 pending apply 在 scheduler tick 边界按 instance 执行一次，不能按 task 重复应用。
 
 优先支持：
 
@@ -186,7 +186,7 @@ startup
 shutdown
 ```
 
-多输入默认语义为 `latest snapshot`。codegen 必须在用户接口中表达该语义，例如 C++ 使用 `Latest<T>` view，Rust 使用 `Latest<'_, T>` view，并暴露 present/stale 信息。task 的 `input` / `output` 是端口集合语义，同一列表不得重复端口；task 声明的每个输入端口必须有且只有一条 incoming dataflow bind；缺失或多重绑定都必须由 validator 拒绝，不能让 codegen 隐式传空视图或 panic。v0.1 同步 tick shell 中，`periodic` task 每 tick 调用且必须声明大于 0 的 `period_ms`；`on_message` task 只有声明输入中至少一个 `Latest::present()` / `Latest<T>::present()` 为真时才调用；`startup` task 在组件成功 start 后、scheduler 前调用一次；`shutdown` task 在 scheduler 正常返回、显式 `--run-ticks` 到达或 SIGINT/SIGTERM 触发 graceful shutdown 后、组件 stop 前调用一次。非 `periodic` task 不得声明 `period_ms`，避免无效周期字段被 runtime shell 忽略。后续可扩展显式 `all_ready`、`any_ready`、时间同步窗口和 stale-data policy。
+多输入默认语义为 `latest snapshot`。codegen 必须在用户接口中表达该语义，例如 C++ 使用 `Latest<T>` view，Rust 使用 `Latest<'_, T>` view，并暴露 present/stale 信息。task 的 `input` / `output` 是端口集合语义，同一列表不得重复端口；task 声明的每个输入端口必须有且只有一条 incoming dataflow bind；缺失或多重绑定都必须由 validator 拒绝，不能让 codegen 隐式传空视图或 panic。v0.1 同步 tick shell 中，`periodic` task 每 tick 调用且必须声明大于 0 的 `period_ms`；`on_message` task 只有声明输入中至少一个 `Latest::present()` / `Latest<T>::present()` 为真时才调用；`startup` task 在组件成功 start 后、scheduler 前调用一次；`shutdown` task 在 scheduler 正常返回、显式 `--run-ticks` 到达或 SIGINT/SIGTERM 触发 graceful shutdown 后、组件 stop 前调用一次。非 `periodic` task 不得声明 `period_ms`，避免无效周期字段被 runtime shell 忽略。多 task shell 必须为每个 task 建立独立局部 scope，避免同一 instance 的不同 task 因输入、输出或 deadline 局部变量重名互相污染。后续可扩展显式 `all_ready`、`any_ready`、时间同步窗口和 stale-data policy。
 
 v0.1 生成 shell 使用同步拓扑 tick，因此 codegen 可以假设已经通过 validator 的 graph 是 acyclic。不要在 codegen 中把环路隐式解释成反馈、延迟或跨 tick 状态。
 

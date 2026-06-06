@@ -10,14 +10,14 @@ use crate::messages::cpp_type;
 use crate::runtime_plan::{
     BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase, active_binds_for_instances,
     bind_backend, bind_runtime_plans, incoming_bind_index_map, indent_generated_block,
-    nested_step_indent, on_message_trigger_guard, outgoing_bind_indices_map, process_runtime_plans,
-    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
-    runtime_param_name, step_indent,
+    indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
+    outgoing_bind_indices_map, process_runtime_plans, runtime_channel_message_type,
+    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name, step_indent,
 };
 use crate::{
     component_by_name, float_literal, iox2_service_name, managed_header, param_json_literal,
     param_type_name, param_update_name, param_value_for_instance, pascal_case,
-    selected_backend_name, task_for_instance, topo_order_instances_for_language, zenoh_key_expr,
+    selected_backend_name, tasks_for_instance, topo_order_instances_for_language, zenoh_key_expr,
 };
 
 fn cpp_param_type(ty: ParamType) -> &'static str {
@@ -431,137 +431,143 @@ fn emit_cpp_app_step(
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
-        let Some(task) = task_for_instance(emission.graph, instance) else {
-            continue;
-        };
-        if !phase.includes(task.trigger) {
-            continue;
+        if !component.params.is_empty() && phase == TaskEmissionPhase::Scheduler {
+            output.push_str(&cpp_apply_pending_params(instance, component, false));
         }
-        let task_inputs = task
-            .inputs
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let task_outputs = task
-            .outputs
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let trigger_guard =
-            on_message_trigger_guard(task, |input| cpp_step_local_name(&instance.name, input));
+        for task in tasks_for_instance(emission.graph, instance) {
+            if !phase.includes(task.trigger) {
+                continue;
+            }
+            output.push_str("    {\n");
+            let task_inputs = task
+                .inputs
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let task_outputs = task
+                .outputs
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let trigger_guard =
+                on_message_trigger_guard(task, |input| cpp_step_local_name(&instance.name, input));
 
-        for input in &component.inputs {
-            let input_local = cpp_step_local_name(&instance.name, &input.name);
-            if task_inputs.contains(input.name.as_str()) {
-                if let Some(bind_index) = emission
-                    .incoming_bind_index
-                    .get(&(instance.name.clone(), input.name.clone()))
-                {
-                    let bind = &emission.binds[*bind_index];
-                    output.push_str(&cpp_runtime_channel_read(input, bind, &input_local));
-                    output.push_str(&cpp_runtime_stale_error_guard(&input_local, bind));
+            for input in &component.inputs {
+                let input_local = cpp_step_local_name(&instance.name, &input.name);
+                if task_inputs.contains(input.name.as_str()) {
+                    if let Some(bind_index) = emission
+                        .incoming_bind_index
+                        .get(&(instance.name.clone(), input.name.clone()))
+                    {
+                        let bind = &emission.binds[*bind_index];
+                        output.push_str(&indent_generated_block(
+                            &cpp_runtime_channel_read(input, bind, &input_local),
+                            true,
+                        ));
+                        output.push_str(&indent_generated_block(
+                            &cpp_runtime_stale_error_guard(&input_local, bind),
+                            true,
+                        ));
+                    } else {
+                        output.push_str(&format!(
+                            "        flowrt::Latest<{ty}> {local};\n",
+                            ty = cpp_type(&input.ty),
+                            local = input_local
+                        ));
+                    }
                 } else {
                     output.push_str(&format!(
-                        "    flowrt::Latest<{ty}> {local};\n",
+                        "        flowrt::Latest<{ty}> {local};\n",
                         ty = cpp_type(&input.ty),
                         local = input_local
                     ));
                 }
+            }
+
+            if let Some(guard) = &trigger_guard {
+                output.push_str(&format!("        if ({guard}) {{\n"));
+            }
+            let body_indent = if trigger_guard.is_some() {
+                "            "
             } else {
+                "        "
+            };
+            let body_inner_indent = if trigger_guard.is_some() {
+                "                "
+            } else {
+                "            "
+            };
+            let write_indent_levels = if trigger_guard.is_some() { 2 } else { 1 };
+
+            if task.deadline_ms.is_some() {
                 output.push_str(&format!(
-                    "    flowrt::Latest<{ty}> {local};\n",
-                    ty = cpp_type(&input.ty),
-                    local = input_local
+                    "{body_indent}const auto {instance}_deadline_started_at = std::chrono::steady_clock::now();\n",
+                    instance = instance.name
                 ));
             }
-        }
 
-        if let Some(guard) = &trigger_guard {
-            output.push_str(&format!("    if ({guard}) {{\n"));
-        }
-
-        if !component.params.is_empty() && phase == TaskEmissionPhase::Scheduler {
-            output.push_str(&cpp_apply_pending_params(
-                instance,
-                component,
-                trigger_guard.is_some(),
-            ));
-        }
-
-        if task.deadline_ms.is_some() {
-            output.push_str(&format!(
-                "{indent}const auto {instance}_deadline_started_at = std::chrono::steady_clock::now();\n",
-                indent = step_indent(trigger_guard.is_some()),
-                instance = instance.name
-            ));
-        }
-
-        for port in &component.outputs {
-            let output_local = cpp_step_local_name(&instance.name, &port.name);
-            output.push_str(&format!(
-                "{indent}flowrt::Output<{ty}> {local};\n",
-                indent = step_indent(trigger_guard.is_some()),
-                ty = cpp_type(&port.ty),
-                local = output_local
-            ));
-        }
-
-        let mut call_args = Vec::new();
-        for input in &component.inputs {
-            call_args.push(cpp_step_local_name(&instance.name, &input.name));
-        }
-        if !component.params.is_empty() {
-            call_args.push(format!("{}_params_", instance.name));
-        }
-        for port in &component.outputs {
-            call_args.push(cpp_step_local_name(&instance.name, &port.name));
-        }
-        output.push_str(&format!(
-            "{indent}if ({instance}_ && {instance}_->on_tick({args}) != flowrt::Status::Ok) {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
-            indent = step_indent(trigger_guard.is_some()),
-            inner_indent = nested_step_indent(trigger_guard.is_some()),
-            instance = instance.name,
-            args = call_args.join(", ")
-        ));
-
-        if let Some(deadline_ms) = task.deadline_ms {
-            output.push_str(&format!(
-                "{indent}if (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}}) {{\n{inner_indent}return flowrt::Status::Error;\n{indent}}}\n",
-                indent = step_indent(trigger_guard.is_some()),
-                inner_indent = nested_step_indent(trigger_guard.is_some()),
-                instance = instance.name
-            ));
-        }
-
-        for port in &component.outputs {
-            if !task_outputs.contains(port.name.as_str()) {
-                continue;
-            }
-            let output_local = cpp_step_local_name(&instance.name, &port.name);
-            let outgoing = emission
-                .outgoing_bind_indices
-                .get(&(instance.name.clone(), port.name.clone()))
-                .cloned()
-                .unwrap_or_default();
-            if outgoing.is_empty() {
-                continue;
-            }
-            output.push_str(&format!(
-                "{indent}if (const auto* value = {local}.as_ref()) {{\n",
-                indent = step_indent(trigger_guard.is_some()),
-                local = output_local
-            ));
-            for bind_index in outgoing {
-                let bind = &emission.binds[bind_index];
-                output.push_str(&indent_generated_block(
-                    &cpp_runtime_channel_write(bind),
-                    trigger_guard.is_some(),
+            for port in &component.outputs {
+                let output_local = cpp_step_local_name(&instance.name, &port.name);
+                output.push_str(&format!(
+                    "{body_indent}flowrt::Output<{ty}> {local};\n",
+                    ty = cpp_type(&port.ty),
+                    local = output_local
                 ));
             }
-            output.push_str(&format!("{}}}\n", step_indent(trigger_guard.is_some())));
-        }
 
-        if trigger_guard.is_some() {
+            let mut call_args = Vec::new();
+            for input in &component.inputs {
+                call_args.push(cpp_step_local_name(&instance.name, &input.name));
+            }
+            if !component.params.is_empty() {
+                call_args.push(format!("{}_params_", instance.name));
+            }
+            for port in &component.outputs {
+                call_args.push(cpp_step_local_name(&instance.name, &port.name));
+            }
+            output.push_str(&format!(
+                "{body_indent}if ({instance}_ && {instance}_->on_tick({args}) != flowrt::Status::Ok) {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
+                instance = instance.name,
+                args = call_args.join(", ")
+            ));
+
+            if let Some(deadline_ms) = task.deadline_ms {
+                output.push_str(&format!(
+                    "{body_indent}if (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}}) {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
+                    instance = instance.name
+                ));
+            }
+
+            for port in &component.outputs {
+                if !task_outputs.contains(port.name.as_str()) {
+                    continue;
+                }
+                let output_local = cpp_step_local_name(&instance.name, &port.name);
+                let outgoing = emission
+                    .outgoing_bind_indices
+                    .get(&(instance.name.clone(), port.name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if outgoing.is_empty() {
+                    continue;
+                }
+                output.push_str(&format!(
+                    "{body_indent}if (const auto* value = {local}.as_ref()) {{\n",
+                    local = output_local
+                ));
+                for bind_index in outgoing {
+                    let bind = &emission.binds[bind_index];
+                    output.push_str(&indent_generated_block_levels(
+                        &cpp_runtime_channel_write(bind),
+                        write_indent_levels,
+                    ));
+                }
+                output.push_str(&format!("{body_indent}}}\n"));
+            }
+
+            if trigger_guard.is_some() {
+                output.push_str("        }\n");
+            }
             output.push_str("    }\n");
         }
     }

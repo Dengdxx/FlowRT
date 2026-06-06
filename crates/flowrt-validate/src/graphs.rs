@@ -102,7 +102,7 @@ fn validate_tasks(
     graph: &GraphIr,
     errors: &mut Vec<ValidationError>,
 ) {
-    let mut task_instances = BTreeSet::new();
+    let mut task_names_by_instance = BTreeMap::<String, BTreeSet<String>>::new();
     let incoming_binds = graph
         .binds
         .iter()
@@ -110,10 +110,14 @@ fn validate_tasks(
         .collect::<BTreeSet<_>>();
 
     for task in &graph.tasks {
-        if !task_instances.insert(task.instance.id.clone()) {
+        if !task_names_by_instance
+            .entry(task.instance.name.clone())
+            .or_default()
+            .insert(task.name.clone())
+        {
             errors.push(ValidationError::new(format!(
-                "instance `{}` has multiple tasks in Contract IR v0.1",
-                task.instance.name
+                "instance `{}` has duplicate task name `{}`",
+                task.instance.name, task.name
             )));
         }
 
