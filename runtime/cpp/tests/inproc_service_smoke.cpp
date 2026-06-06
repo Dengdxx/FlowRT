@@ -115,6 +115,15 @@ int main() {
         auto result = handle.wait();
         assert(result.is_err());
         assert(result.error_code() == flowrt::ServiceError::Timeout);
+
+        // 超时后 done=true，late response 不会写入
+        assert(handle.ready());
+        auto polled = handle.poll();
+        assert(polled.has_value());
+        assert(polled->error_code() == flowrt::ServiceError::Timeout);
+
+        auto stats = server.stats();
+        assert(stats.timeouts == 1);
     }
 
     registry.clear();
@@ -224,7 +233,7 @@ int main() {
 
     registry.clear();
 
-    // ── late response 不污染下一次 request ────────────────────────────────────
+    // ── late response 不污染下一次 request，late_dropped 计数 ──────────────────
 
     {
         flowrt::InprocServiceConfig config;
@@ -243,6 +252,12 @@ int main() {
         auto r1 = h1.wait();
         assert(r1.is_err());
         assert(r1.error_code() == flowrt::ServiceError::Timeout);
+        assert(h1.ready());
+
+        // server 处理：h1 的 deliver 会检测到 done=true 并递增 late_dropped
+        server.process_pending();
+        auto stats1 = server.stats();
+        assert(stats1.late_dropped == 1);
 
         auto h2 = client.call(AddRequest{100, 200});
         server.process_pending();
@@ -514,6 +529,71 @@ int main() {
         stats.completed = 5;
         stats.reset();
         assert(stats.completed == 0);
+    }
+
+    registry.clear();
+
+    // ── queue_depth=1 边界 ───────────────────────────────────────────────────
+
+    {
+        flowrt::InprocServiceConfig config;
+        config.queue_depth = 1;
+        config.max_in_flight = 1;
+        config.default_timeout_ms = 1000;
+
+        flowrt::InprocServiceServer<AddRequest, AddResponse> server(
+            "single_slot",
+            [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
+                return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
+            },
+            config);
+
+        flowrt::InprocServiceClient<AddRequest, AddResponse> client("single_slot", server);
+
+        auto h1 = client.call(AddRequest{1, 1});
+        assert(server.pending_count() == 1);
+
+        auto h2 = client.call(AddRequest{2, 2});
+        auto busy = h2.poll();
+        assert(busy.has_value());
+        assert(busy->error_code() == flowrt::ServiceError::Busy);
+
+        server.process_pending();
+        auto r1 = h1.wait();
+        assert(r1.is_ok());
+        assert(r1.value()->sum == 2);
+
+        // 处理完成后可以再次调用
+        auto h3 = client.call(AddRequest{10, 20});
+        server.process_pending();
+        auto r3 = h3.wait();
+        assert(r3.is_ok());
+        assert(r3.value()->sum == 30);
+    }
+
+    registry.clear();
+
+    // ── timeout=0 回退到 default_timeout_ms ──────────────────────────────────
+
+    {
+        flowrt::InprocServiceConfig config;
+        config.default_timeout_ms = 1000;
+
+        flowrt::InprocServiceServer<AddRequest, AddResponse> server(
+            "default_timeout",
+            [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
+                return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
+            },
+            config);
+
+        flowrt::InprocServiceClient<AddRequest, AddResponse> client("default_timeout", server);
+
+        // timeout_ms=0 应使用 default_timeout_ms（1000ms），不会立即超时
+        auto handle = client.call(AddRequest{5, 5}, 0);
+        server.process_pending();
+        auto result = handle.wait();
+        assert(result.is_ok());
+        assert(result.value()->sum == 10);
     }
 
     registry.clear();
