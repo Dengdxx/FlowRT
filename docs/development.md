@@ -195,18 +195,51 @@ git push origin v0.2.0
 
 ## 提交规则
 
-提交标题使用 Conventional Commits，标题正文使用中文：
+提交必须原子化。一次提交只做一类相关改动，不把多个不相关功能、修复、文档和发布
+准备混入同一次提交。Agent 创建提交时不能只写标题，必须写正文说明关键动机、边界
+和验证。
+
+采用 Conventional Commits 格式，提交信息使用中文：
 
 ```text
 <type>(<scope>): <中文标题>
+
+<正文>
 ```
+
+格式要求：
+
+- `type` 和 `scope` 使用英文。
+- 标题和正文使用中文。
+- 标题不超过 50 个中文字符，不加句号。
+- 正文每行不超过 72 个字符。
+- 正文可用 `-` 列要点。
+- `scope` 用小括号标注影响范围，影响全局时可省略。
+
+常用类型：
+
+| 类型 | 说明 | 示例 |
+|---|---|---|
+| `feat` | 新功能 | `feat(rsdl): 增加 module 声明解析` |
+| `fix` | Bug 修复 | `fix(cli): 修复 lock 残留后的构建判断` |
+| `docs` | 仅文档变更 | `docs(readme): 更新安装后使用说明` |
+| `refactor` | 重构，不改变行为 | `refactor(ir): 拆分 backend 能力推导` |
+| `test` | 添加或修改测试 | `test(parser): 补充 workspace 边界用例` |
+| `chore` | 构建、配置或工具类 | `chore(scripts): 整理 deb smoke 脚本` |
+| `perf` | 性能优化 | `perf(runtime): 减少 echo 热路径分支开销` |
+| `style` | 格式调整，不影响逻辑 | `style: 统一 C++ include 顺序` |
+| `ci` | CI 或发布流水线 | `ci(release): 拆分 deb 发布 gate` |
+| `build` | 构建系统或打包 | `build(package): 内嵌 zenoh C++ SDK` |
+| `revert` | 回滚提交 | `revert: 撤销错误的模块命名变更` |
 
 示例：
 
 ```text
-docs(readme): 重写项目入口文档
 fix(validate): 拒绝缺失任务输入绑定
-test(abi): 补充 C++ 与 Rust 消息布局测试
+
+- 在 graph 校验中检查 active task input
+- 覆盖缺失和重复 bind 的回归用例
+- 验证 cargo test -p flowrt-validate
 ```
 
 提交应保持原子：
@@ -216,6 +249,7 @@ test(abi): 补充 C++ 与 Rust 消息布局测试
 - 提交前运行本地规格与生成物入库防回归检查，确认 `docs/` 下本地规格草案、`flowrt/` 和 `examples/*/flowrt/` 没有被 git tracked。
 - 不把生成物、大型构建输出或未验证半成品混入提交。
 - `docs/` 下被 `.gitignore` 排除的本地设计/规格文件不得加入索引。
+- 禁止英文提交信息、模糊标题和没有 Conventional Commits 前缀的裸文字提交。
 
 ## backend 依赖与离线包
 

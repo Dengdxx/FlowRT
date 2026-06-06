@@ -1,0 +1,215 @@
+# CONTEXT.md
+
+本文档记录 FlowRT 仓库的当前上下文，供 coding agent 和维护者快速了解现状。它会
+随版本演进更新；长期架构原则、语义约定、文档边界和提交纪律维护在 `AGENTS.md`。
+
+## 当前版本背景
+
+当前 workspace 版本为 `0.3.0`。`v0.3.0` 已发布，核心主题是 Scheduler v2：
+task-centric scheduler plan、`startup` / `shutdown` task、`on_message` readiness、
+serial lane、worker thread 配置、channel revision/cache 和同一 scheduler step 内的
+drain loop 级联唤醒。
+
+`## 未发布` 中的近期规划聚焦 `v0.3.1`：
+
+- workspace / module / composition 机制。
+- module name resolver 和跨模块引用。
+- supervisor 编排增强，包括 process 依赖顺序、故障传播和可配置 restart policy。
+- Service 请求/响应语义切片。
+- C/Python ABI 边界准备。
+
+录制回放系统暂不实施，但实现上述能力时应预留 runtime、self-description 或 CLI
+边界，避免后续引入时破坏已发布契约。
+
+## 当前仓库状态
+
+仓库已经形成 FlowRT 工具链、Rust/C++ runtime shell、跨进程 backend、ROS2 zenoh
+bridge、运行态观测、参数系统和安装包闭环。
+
+主要目录：
+
+```text
+Cargo.toml
+Cargo.lock
+README.md
+CHANGELOG.md
+CONTEXT.md
+AGENTS.md
+crates/
+  flowrt-cli/
+  flowrt-rsdl/
+  flowrt-ir/
+  flowrt-validate/
+  flowrt-codegen/
+  flowrt-conformance/
+runtime/
+  cpp/
+  rust/
+examples/
+docs/
+scripts/
+```
+
+当前主要示例覆盖：
+
+- `import_demo`：模块化 RSDL import。
+- `imu_demo`：Rust 主 demo。
+- `imu_demo_iox2`：Rust source、C++ controller、Rust monitor 通过 iox2 分进程运行。
+- `profile_switch_demo`：同一 RSDL 在 inproc 与 iox2 profile 间切换。
+- `cpp_counter_demo`：C++ only 用户逻辑。
+- `mixed_iox2_demo`：Rust source 与 C++ sink 通过 iox2 分进程连接。
+- `mixed_zenoh_demo`：跨主机 copy backend、variable frame 和 mixed launch。
+- `ros2_bridge_demo`：Rust source 到 ROS2 `/flowrt/text` 的 zenoh-only bridge。
+
+仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和
+最终回复默认使用安装后的 `flowrt ...` 命令。
+
+## 已实现能力
+
+工具链已经支持：
+
+- RSDL 解析、import 展开、Contract IR 归一化和 canonical JSON。
+- Contract IR validator 对名称、ID、版本、canonical ordering、deployment、
+  capability、参数、target 和 derived metadata 的防篡改校验。
+- Rust/C++ message ABI conformance 测试生成，覆盖 size、alignment、field offset、
+  byte-level roundtrip、default initialization 和 IR-derived expected byte fixtures。
+- fixed-size plain data 与 variable frame 主线。`bytes`、`string` 和 `sequence<T>`
+  使用 canonical frame；`iox2` 只承载 fixed-size plain data，变长 route 自动选择
+  支持变长消息的 backend。
+- Rust/C++ generated runtime shell 的生命周期、task 调度、latest/FIFO channel、
+  bind-level stale freshness、deadline 检查和参数 pending apply。
+- C++ only contract 的 CMake app 路径，支持 `flowrt build` / `flowrt run` / `flowrt launch`。
+- language-separated mixed contract over `iox2` 或 `zenoh`，并拒绝同一 process group
+  内混合 C++/Rust 以及 mixed `inproc` process boundary。
+- Rust/C++ `iox2` typed pub/sub endpoint、QoS 映射、同名 `FlowRTIox2Header` user
+  header、canonical service name 和 endpoint 自动恢复。
+- Rust/C++ `zenoh` endpoint、deterministic `key_expr`、copy transport、自动恢复和
+  本机 launch 自动 mesh。
+- zenoh-only ROS2 bridge：生成 source process bridge tap 和 FlowRT 管理的 C++ ROS2
+  adapter process，ROS2 侧强制 `rmw_zenoh_cpp`。
+- runtime introspection socket、自描述、status、channel snapshot、echo observer、
+  `hz` 采样和参数控制面。
+- generated supervisor 对 Rust、C++ 和 ROS2 bridge process 的分流启动、health
+  汇总、PID socket 轮询、tick stale/exit/restart 状态展示和内置 `on-failure`
+  restart baseline。
+
+## CLI 状态
+
+当前已实现的用户入口：
+
+```bash
+flowrt check path/to/robot.rsdl
+flowrt prepare path/to/robot.rsdl
+flowrt build path/to/robot.rsdl
+flowrt run path/to/robot.rsdl
+flowrt run path/to/robot.rsdl --process main
+flowrt run path/to/robot.rsdl --run-steps 5 --process main
+flowrt run path/to/robot.rsdl --run-ticks 5 --process main
+flowrt launch path/to/robot.rsdl
+flowrt list path/to/generated-app
+flowrt nodes path/to/generated-app
+flowrt status
+flowrt hz [channel] [--socket path/to/runtime.sock] [--window-ms 1000]
+flowrt echo <channel> [--socket path/to/runtime.sock] [--image path/to/generated-app-or-selfdesc.json] [--follow]
+flowrt params list|get|set path/to/generated-app-or-selfdesc.json ...
+flowrt inspect flowrt/contract/contract.ir.json
+```
+
+`prepare` / `build` / `run` / `launch` 支持 `--profile <name>`，用于显式选择 profile
+并按该 profile 生成或校验产物。省略参数时会先投影到 `default` profile 或首个
+profile。RSDL 未声明任何 profile 时，normalization 会插入隐式 `default` profile，
+backend 为 `inproc`。
+
+命令职责边界：
+
+- `prepare` 和 `build` 会写 `flowrt/` 输出目录，必须持有 OS advisory lock。
+- `.flowrt.lock` 文件可残留，PID 只用于诊断，真实占用状态由锁判断。
+- `check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`hz`、`echo`
+  和 `params` 不写生成物，不应获取生成物锁。
+- `run` / `launch` 省略 `--run-steps` / `--run-ticks` 时长期运行，直到生成应用返回
+  `Error` 或收到 SIGINT/SIGTERM。
+- `--run-steps` 是推荐外部名称，`--run-ticks` 是兼容别名。
+- `flowrt run --process <name>` 运行生成应用中的单个 RSDL process group；mixed
+  contract 必须选择一个单语言 process group。
+- `launch` 运行 FlowRT 管理的 Rust supervisor。C++ only contract 会生成
+  supervisor-only Rust crate，launch 先构建 CMake app 再运行 supervisor。
+- `inproc` 是单进程 backend；launch 和单独 process run 必须拒绝 inproc dataflow
+  跨 RSDL process group。
+
+## Runtime 和观测状态
+
+`flowrt/launch/launch.json` 当前包含 process group 的 `runtimes` 和 `runtime_kind`，
+graph instance 的 `runtime`，graph 的 `channels`，以及 channel 的 backend 元数据。
+iox2 channel 暴露 canonical service name，zenoh channel 和 ROS2 bridge 暴露
+deterministic `key_expr`。
+
+runtime introspection socket 使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock` 或
+`/tmp/flowrt.<uid>/<pid>.sock`。socket 路径只用于发现，真实身份来自 handshake。
+启动 status server 时不能覆盖仍可连接的 live socket；SIGKILL 后残留且不可连接的
+socket 文件可以回收。Rust `IntrospectionState` 会在 mutex poison 后恢复访问。
+
+Runtime 已提供 C ABI 友好形状的 `BackendHealthState`、`BackendHealthSnapshot`、
+`ReconnectPolicy` 和 `BackendHealthTracker`。`iox2` 和 `zenoh` endpoint 已接入自动
+恢复：本地 transport 资源丢失或操作失败会重建本地 publisher/subscriber/session；
+codec/schema 错误不得触发重连。
+
+## ROS2 Bridge 状态
+
+FlowRT 与 ROS2 bridge 的唯一通信桥梁固定为 `zenoh`。RSDL 使用 `[[bridge.ros2]]`
+声明 bridge，当前只支持：
+
+- `direction = "flowrt_to_ros2"`。
+- `ros2_type = "std_msgs/msg/String"`。
+- `field` 指向 FlowRT message 中的 `string` 字段。
+
+normalization 生成的 bridge backend 必须是 `zenoh`；validator 必须拒绝 source target
+不支持 `zenoh` 的 contract，不得添加 DDS fallback。codegen 会在 source process 中
+生成 zenoh bridge tap，并额外生成 FlowRT 管理的 C++ ROS2 adapter process
+`ros2_bridge`。launch manifest 中该 process 的 `runtime_kind` 为 `ros2_bridge`。
+
+generated supervisor 必须为 ROS2 bridge process 选择 CMake 产出的 adapter executable，
+启动时设置 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`；adapter 自身也必须校验 ROS2 侧实际
+使用 `rmw_zenoh_cpp`。
+
+## 打包与分发状态
+
+FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
+
+- `flowrt` CLI。
+- Rust runtime crate。
+- C++ runtime header 和 CMake package。
+- Rust crate vendor。
+- 私有 backend SDK 依赖。
+- 基础文档。
+
+包内文件安装到 `/opt/flowrt/<version>` 私有前缀，并通过 `/usr/bin/flowrt` 暴露入口。
+生成 Rust app 会优先使用包内 vendor；生成 CMake 会使用 FlowRT 私有前缀解析 C++
+runtime 和 backend SDK。生成 CMake 不应通过 `FetchContent` 联网拉取 backend SDK；
+缺失依赖应要求安装 FlowRT 包或显式设置 `FLOWRT_CPP_RUNTIME_DIR` / `CMAKE_PREFIX_PATH`。
+
+## CI 和 Release 状态
+
+当前 `.github/workflows/ci.yml` 将 Linux 验证拆为分层 job，覆盖生成物保护、Rust
+格式化/测试/clippy、C++ runtime、打包、C++ zenoh runtime、demo smoke、ROS2 bridge
+smoke 和 release。Linux job 默认运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge
+smoke 覆盖 Jazzy 和 Lyrical 两个发行版，并安装对应的 `rmw_zenoh_cpp`。
+
+CI 会上传 `flowrt-linux-deb` artifact。demo smoke 先安装 deb，再用安装后的
+`flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载 deb
+artifact，从 `CHANGELOG.md` 对应版本段抽取 release notes，并创建 GitHub Release
+上传 `.deb` 与 `SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的 workspace version。
+
+workflow 暂不做 cache 或多平台矩阵。
+
+## 文档维护提示
+
+`CONTEXT.md` 记录当前事实，不替代 `AGENTS.md` 的长期规范，也不替代
+`CHANGELOG.md` 的发布记录。发生以下变化时应同步更新本文档：
+
+- 版本背景或近期路线变化。
+- CLI 命令、选项或职责边界变化。
+- runtime、supervisor、backend、ROS2 bridge 或观测能力变化。
+- 打包、安装路径、依赖解析或 release 流程变化。
+- 示例矩阵或 CI smoke 覆盖变化。
+
+阶段计划和设计草案仍然不入库；不要为了更新本文档而新增设计/计划文档。

@@ -8,6 +8,7 @@
 - [CLI 参考](cli.md)：`check`、`prepare`、`build`、`run`、`launch`、`inspect` 的用途、参数和边界。
 - [示例矩阵](examples.md)：每个 `examples/` 项目的 runtime、backend、推荐命令和外部依赖。
 - [开发维护](development.md)：本仓库开发验证、文档维护、提交和生成物边界。
+- [当前上下文](../CONTEXT.md)：当前版本背景、已实现能力、CLI 状态、CI/Release 状态和近期路线。
 
 ## 不入库文档
 
