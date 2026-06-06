@@ -521,8 +521,10 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
         &[
             "name",
             "trigger",
+            "readiness",
             "period_ms",
             "deadline_ms",
+            "lane",
             "priority",
             "input",
             "output",
@@ -532,8 +534,10 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
     Ok(RawTask {
         name: optional_string(table, &context, "name")?,
         trigger: required_string(table, &context, "trigger")?,
+        readiness: optional_string(table, &context, "readiness")?,
         period_ms: optional_u64(table, &context, "period_ms")?,
         deadline_ms: optional_u64(table, &context, "deadline_ms")?,
+        lane: optional_string(table, &context, "lane")?,
         priority: optional_u32(table, &context, "priority")?,
         input: optional_string_array(table, &context, "input")?,
         output: optional_string_array(table, &context, "output")?,
@@ -657,6 +661,7 @@ fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
         &context,
         &[
             "backend",
+            "worker_threads",
             "default_overflow",
             "default_stale_policy",
             "max_age_ms",
@@ -665,6 +670,7 @@ fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
 
     Ok(RawProfile {
         backend: optional_string(table, &context, "backend")?,
+        worker_threads: optional_u32(table, &context, "worker_threads")?,
         default_overflow: optional_string(table, &context, "default_overflow")?,
         default_stale_policy: optional_string(table, &context, "default_stale_policy")?,
         max_age_ms: optional_u64(table, &context, "max_age_ms")?,
@@ -887,6 +893,7 @@ output = ["imu"]
 
 [profile.default]
 backend = "inproc"
+worker_threads = 3
 default_overflow = "drop_oldest"
 default_stale_policy = "warn"
 
@@ -901,6 +908,7 @@ backends = ["inproc"]
         assert_eq!(document.types["Imu"].fields[0].name, "timestamp");
         assert_eq!(document.components["imu_sim"].output[0].name, "imu");
         assert_eq!(document.instances["imu_sim"].tasks[0].trigger, "periodic");
+        assert_eq!(document.profiles["default"].worker_threads, Some(3));
     }
 
     #[test]
@@ -941,6 +949,38 @@ output = ["slow"]
         assert_eq!(tasks[1].name.as_deref(), Some("slow_loop"));
         assert_eq!(tasks[0].output, vec!["fast"]);
         assert_eq!(tasks[1].output, vec!["slow"]);
+    }
+
+    #[test]
+    fn parses_scheduler_v2_task_fields() {
+        let source = r#"
+[package]
+name = "scheduler_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+input = ["in:u32"]
+output = ["out:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "on_message"
+readiness = "all_ready"
+lane = "worker_serial"
+priority = 7
+input = ["in"]
+output = ["out"]
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+        let task = &document.instances["worker"].tasks[0];
+
+        assert_eq!(task.readiness.as_deref(), Some("all_ready"));
+        assert_eq!(task.lane.as_deref(), Some("worker_serial"));
+        assert_eq!(task.priority, Some(7));
     }
 
     #[test]

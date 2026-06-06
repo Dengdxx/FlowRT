@@ -431,6 +431,15 @@ output = ["slow"]
     assert!(scheduler_step.contains("flowrt::Output<std::uint32_t> worker_slow;"));
     assert_eq!(selfdesc["graphs"][0]["tasks"][0]["name"], "fast_loop");
     assert_eq!(selfdesc["graphs"][0]["tasks"][1]["name"], "slow_loop");
+    assert_eq!(selfdesc["graphs"][0]["scheduler"]["worker_threads"], 1);
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["lanes"][0],
+        serde_json::json!({"name": "worker_serial", "kind": "serial", "instance": "worker"})
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["lane"],
+        "worker_serial"
+    );
 }
 
 #[test]
@@ -472,11 +481,15 @@ period_ms = 5
     let run_start = rust_shell.find("    pub fn run(").unwrap();
     let run = &rust_shell[run_start..];
     let startup_call = run
-        .find("self.step_startup(0, &mut lifecycle_context, &introspection_state)")
+        .find(
+            "self.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events)",
+        )
         .unwrap();
-    let scheduler_call = run.find("backend.scheduler().run_ticks").unwrap();
+    let scheduler_call = run
+        .find("let mut scheduler = flowrt::DeterministicExecutor")
+        .unwrap();
     let shutdown_call = run
-        .find("self.step_shutdown(0, &mut lifecycle_context, &introspection_state)")
+        .find("self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events)")
         .unwrap();
     let startup_step = generated_function_block(rust_shell, "fn step_startup");
     let shutdown_step = generated_function_block(rust_shell, "fn step_shutdown");
@@ -484,13 +497,16 @@ period_ms = 5
 
     assert!(startup_call < scheduler_call);
     assert!(scheduler_call < shutdown_call);
+    assert!(run.contains(
+        "if status == flowrt::Status::Ok {\n            status = self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events);\n        }"
+    ));
     assert!(run.contains("let shutdown = flowrt::install_signal_shutdown_token();"));
     assert!(run.contains("&& !shutdown.is_requested()"));
-    assert!(run.contains("backend.scheduler().run_ticks_until_shutdown("));
-    assert!(startup_step.contains("if self.boot.on_tick()"));
-    assert!(shutdown_step.contains("if self.cleanup.on_tick()"));
-    assert!(!scheduler_step.contains("if self.boot.on_tick()"));
-    assert!(!scheduler_step.contains("if self.cleanup.on_tick()"));
+    assert!(!run.contains("backend.scheduler().run_ticks_until_shutdown("));
+    assert!(startup_step.contains("match self.boot.on_tick()"));
+    assert!(shutdown_step.contains("match self.cleanup.on_tick()"));
+    assert!(!scheduler_step.contains("match self.boot.on_tick()"));
+    assert!(!scheduler_step.contains("match self.cleanup.on_tick()"));
 }
 
 #[test]
@@ -532,25 +548,28 @@ period_ms = 5
     let run_start = cpp_shell.find("flowrt::Status App::run(").unwrap();
     let run = &cpp_shell[run_start..];
     let startup_call = run
-        .find("status = step_startup(0, lifecycle_context, introspection_state)")
+        .find("status = step_startup(0, lifecycle_context, introspection_state, scheduler_events)")
         .unwrap();
-    let scheduler_call = run.find("backend.scheduler().run_ticks").unwrap();
+    let scheduler_call = run.find("flowrt::DeterministicExecutor scheduler").unwrap();
     let shutdown_call = run
-        .find("status = step_shutdown(0, lifecycle_context, introspection_state)")
+        .find("status = step_shutdown(0, lifecycle_context, introspection_state, scheduler_events)")
         .unwrap();
 
     assert!(startup_call < scheduler_call);
     assert!(scheduler_call < shutdown_call);
+    assert!(run.contains(
+        "if (status == flowrt::Status::Ok) {\n        status = step_shutdown(0, lifecycle_context, introspection_state, scheduler_events);\n    }"
+    ));
     assert!(run.contains("auto shutdown = flowrt::install_signal_shutdown_token();"));
     assert!(run.contains("!shutdown.is_requested()"));
-    assert!(run.contains("backend.scheduler().run_ticks_until_shutdown("));
+    assert!(!run.contains("backend.scheduler().run_ticks_until_shutdown("));
     let startup_step = generated_function_block(cpp_shell, "App::step_startup");
     let shutdown_step = generated_function_block(cpp_shell, "App::step_shutdown");
     let scheduler_step = generated_function_block(cpp_shell, "App::step(");
-    assert!(startup_step.contains("if (boot_ && boot_->on_tick()"));
-    assert!(shutdown_step.contains("if (cleanup_ && cleanup_->on_tick()"));
-    assert!(!scheduler_step.contains("if (boot_ && boot_->on_tick()"));
-    assert!(!scheduler_step.contains("if (cleanup_ && cleanup_->on_tick()"));
+    assert!(startup_step.contains("switch (boot_->on_tick()"));
+    assert!(shutdown_step.contains("switch (cleanup_->on_tick()"));
+    assert!(!scheduler_step.contains("switch (boot_->on_tick()"));
+    assert!(!scheduler_step.contains("switch (cleanup_->on_tick()"));
 }
 
 #[test]
@@ -600,7 +619,7 @@ channel = "latest"
         .find("let source_deadline_started_at = std::time::Instant::now();")
         .unwrap();
     let source_call = rust_shell
-        .find("self.source.on_tick(&mut sample) != flowrt::Status::Ok")
+        .find("match self.source.on_tick(&mut sample)")
         .unwrap();
     let deadline_guard = rust_shell
         .find("source_deadline_started_at.elapsed() > std::time::Duration::from_millis(10)")
@@ -661,7 +680,7 @@ channel = "latest"
         .find("const auto source_deadline_started_at = std::chrono::steady_clock::now();")
         .unwrap();
     let source_call = cpp_shell
-        .find("source_ && source_->on_tick(source_sample) != flowrt::Status::Ok")
+        .find("switch (source_->on_tick(source_sample))")
         .unwrap();
     let deadline_guard = cpp_shell
             .find("std::chrono::steady_clock::now() - source_deadline_started_at > std::chrono::milliseconds{10}")
@@ -723,4 +742,508 @@ channel = "latest"
 
     assert!(source_call < gate);
     assert!(gate < sink_call);
+}
+
+#[test]
+fn rust_shell_uses_all_ready_guard_for_on_message_tasks() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source_a]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.source_b]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["left:Sample", "right:Sample"]
+
+[instance.source_a]
+component = "source_a"
+
+[instance.source_a.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.source_b]
+component = "source_b"
+
+[instance.source_b.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+readiness = "all_ready"
+input = ["left", "right"]
+
+[[bind.dataflow]]
+from = "source_a.sample"
+to = "sink.left"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "source_b.sample"
+to = "sink.right"
+channel = "latest"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains(
+        "if self.bind_0.revision() != bind_0_seen_revision_for_sink_main && self.bind_1.revision() != bind_1_seen_revision_for_sink_main"
+    ));
+    assert!(rust_shell.contains("if left.present() && right.present() {"));
+}
+
+#[test]
+fn rust_shell_builds_scheduler_v2_task_plan_and_wakes_on_input_revision() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+worker_threads = 2
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains("let mut scheduler = flowrt::DeterministicExecutor::new(2);"));
+    assert!(rust_shell.contains("let scheduler_base_period_ms: u64 = 5;"));
+    assert!(rust_shell.contains("let tick_time_ms = scheduler_now_ms;"));
+    assert!(rust_shell.contains("scheduler.add_periodic(flowrt::PeriodicSpec"));
+    assert!(rust_shell.contains("let mut bind_0_seen_revision_for_sink_main: u64 = 0;"));
+    assert!(rust_shell.contains("if self.bind_0.revision() != bind_0_seen_revision_for_sink_main"));
+    assert!(rust_shell.contains("scheduler.wake(flowrt::TaskId("));
+    assert!(rust_shell.contains("scheduler.run_ready(|task| match task"));
+    assert!(rust_shell.contains("let mut woke_on_message = false;"));
+    assert!(rust_shell.contains("woke_on_message = true;"));
+    assert!(rust_shell.contains("if !woke_on_message && task_statuses.is_empty()"));
+    assert!(rust_shell.contains("let mut observed_data_generation: u64;"));
+    assert!(rust_shell.contains(
+        "loop {\n                observed_data_generation = scheduler_events.data_generation();"
+    ));
+    assert!(!rust_shell.contains(
+        "while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {\n            let mut observed_data_generation = scheduler_events.data_generation();"
+    ));
+    assert!(rust_shell.contains("let scheduler_events = flowrt::ScheduleWaiter::new();"));
+    assert!(rust_shell.contains("scheduler_events.notify_data();"));
+    assert!(rust_shell.contains(
+        "scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown)"
+    ));
+    assert!(!rust_shell.contains("backend.scheduler().run_ticks_until_shutdown(1"));
+    assert!(rust_shell.contains("flowrt::Status::Retry => return flowrt::Status::Retry,"));
+    assert!(rust_shell.contains("if task_status == flowrt::Status::Error"));
+}
+
+#[test]
+fn rust_shell_reads_cached_transport_sample_after_on_message_wake_probe() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "fifo"
+depth = 4
+backend = "zenoh"
+
+[profile.default]
+backend = "zenoh"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let sink_step = generated_function_block(rust_shell, "fn step_task_sink_main");
+
+    assert!(rust_shell.contains("self.bind_0.set_schedule_waiter(scheduler_events.clone());"));
+    assert!(rust_shell.contains("let _ = self.bind_0.receive_latest_at(tick_time_ms);"));
+    assert!(sink_step.contains("let sample = self.bind_0.cached_latest_at(tick_time_ms);"));
+    assert!(!sink_step.contains("receive_latest_at(tick_time_ms)"));
+}
+
+#[test]
+fn cpp_shell_uses_all_ready_guard_for_on_message_tasks() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source_a]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.source_b]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["left:Sample", "right:Sample"]
+
+[instance.source_a]
+component = "source_a"
+
+[instance.source_a.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.source_b]
+component = "source_b"
+
+[instance.source_b.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+readiness = "all_ready"
+input = ["left", "right"]
+
+[[bind.dataflow]]
+from = "source_a.sample"
+to = "sink.left"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "source_b.sample"
+to = "sink.right"
+channel = "latest"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(cpp_shell.contains(
+        "if (bind_0_.revision() != bind_0_seen_revision_for_sink_main && bind_1_.revision() != bind_1_seen_revision_for_sink_main)"
+    ));
+    assert!(cpp_shell.contains("if (sink_left.present() && sink_right.present()) {"));
+}
+
+#[test]
+fn cpp_shell_builds_scheduler_v2_task_plan_and_wakes_on_input_revision() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+worker_threads = 2
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(cpp_shell.contains("flowrt::DeterministicExecutor scheduler{2};"));
+    assert!(cpp_shell.contains("const auto scheduler_base_period_ms = std::uint64_t{5};"));
+    assert!(cpp_shell.contains("const auto tick_time_ms = scheduler_now_ms;"));
+    assert!(cpp_shell.contains("scheduler.add_periodic(flowrt::PeriodicSpec"));
+    assert!(cpp_shell.contains("std::uint64_t bind_0_seen_revision_for_sink_main = 0;"));
+    assert!(cpp_shell.contains("if (bind_0_.revision() != bind_0_seen_revision_for_sink_main)"));
+    assert!(cpp_shell.contains("scheduler.wake(flowrt::TaskId{"));
+    assert!(cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, tick_time_ms](flowrt::TaskId task)"));
+    assert!(cpp_shell.contains("bool woke_on_message = false;"));
+    assert!(cpp_shell.contains("woke_on_message = true;"));
+    assert!(cpp_shell.contains("if (!woke_on_message && task_statuses.empty())"));
+    assert!(
+        cpp_shell.contains(
+            "std::uint64_t observed_data_generation = scheduler_events.data_generation();"
+        )
+    );
+    assert!(cpp_shell.contains(
+        "while (true) {\n            observed_data_generation = scheduler_events.data_generation();"
+    ));
+    assert!(!cpp_shell.contains(
+        "while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        const auto observed_data_generation = scheduler_events.data_generation();"
+    ));
+    assert!(cpp_shell.contains("flowrt::ScheduleWaiter scheduler_events;"));
+    assert!(cpp_shell.contains("scheduler_events.notify_data();"));
+    assert!(cpp_shell.contains(
+        "scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)"
+    ));
+    assert!(!cpp_shell.contains("backend.scheduler().run_ticks_until_shutdown("));
+    assert!(cpp_shell.contains("case flowrt::Status::Retry:"));
+    assert!(cpp_shell.contains("return flowrt::Status::Retry;"));
+    assert!(cpp_shell.contains("if (task_status == flowrt::Status::Error)"));
+}
+
+#[test]
+fn cpp_shell_reads_cached_transport_sample_after_on_message_wake_probe() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "cpp"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "fifo"
+depth = 4
+backend = "zenoh"
+
+[profile.default]
+backend = "zenoh"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let sink_step = generated_function_block(cpp_shell, "App::step_task_sink_main");
+
+    assert!(cpp_shell.contains("bind_0_.set_schedule_waiter(scheduler_events);"));
+    assert!(cpp_shell.contains("(void)bind_0_.receive_latest_at(tick_time_ms);"));
+    assert!(sink_step.contains("const auto sink_sample = bind_0_.cached_latest_at(tick_time_ms);"));
+    assert!(!sink_step.contains("receive_latest_at(tick_time_ms)"));
+}
+
+#[test]
+fn rust_shell_maps_fifo_backpressure_to_retry_without_global_error() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["sample:u32"]
+
+[component.sink]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "fifo"
+depth = 1
+overflow = "block"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let source_step = generated_function_block(rust_shell, "fn step_task_source_main");
+    let run_loop = &rust_shell[rust_shell
+        .find("let mut scheduler = flowrt::DeterministicExecutor")
+        .unwrap()..];
+
+    assert!(source_step.contains(
+        "Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,"
+    ));
+    assert!(run_loop.contains("if task_status == flowrt::Status::Error"));
+    assert!(!run_loop.contains("if task_status != flowrt::Status::Ok"));
+}
+
+#[test]
+fn cpp_shell_maps_fifo_backpressure_to_retry_without_global_error() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["sample:u32"]
+
+[component.sink]
+language = "cpp"
+input = ["sample:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "fifo"
+depth = 1
+overflow = "block"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let source_step = generated_function_block(cpp_shell, "App::step_task_source_main");
+    let run_loop = &cpp_shell[cpp_shell
+        .find("flowrt::DeterministicExecutor scheduler")
+        .unwrap()..];
+
+    assert!(source_step.contains("case flowrt::Status::Retry:"));
+    assert!(source_step.contains("return flowrt::Status::Retry;"));
+    assert!(run_loop.contains("if (task_status == flowrt::Status::Error)"));
+    assert!(!run_loop.contains("if (task_status != flowrt::Status::Ok)"));
 }

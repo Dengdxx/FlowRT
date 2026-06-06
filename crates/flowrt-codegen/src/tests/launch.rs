@@ -36,6 +36,8 @@ trigger = "on_message"
 input = ["value"]
 deadline_ms = 10
 priority = 7
+readiness = "all_ready"
+lane = "sink_serial"
 
 [[bind.dataflow]]
 from = "source.value"
@@ -72,6 +74,8 @@ backends = ["iox2"]
                 "period_ms": null,
                 "deadline_ms": 10,
                 "priority": 7,
+                "readiness": "all_ready",
+                "lane": "sink_serial",
                 "inputs": ["value"],
                 "outputs": []
             }
@@ -90,8 +94,31 @@ backends = ["iox2"]
     assert_eq!(source_task["inputs"], serde_json::json!([]));
     assert_eq!(source_task["outputs"], serde_json::json!(["value"]));
     assert_eq!(sink_task["priority"], 7);
+    assert_eq!(sink_task["readiness"], "all_ready");
+    assert_eq!(sink_task["lane"], "sink_serial");
     assert_eq!(sink_task["inputs"], serde_json::json!(["value"]));
     assert_eq!(sink_task["outputs"], serde_json::json!([]));
+    assert_eq!(launch["graphs"][0]["scheduler"]["worker_threads"], 1);
+    assert_eq!(
+        launch["graphs"][0]["scheduler"]["lanes"],
+        serde_json::json!([
+            {"name": "sink_serial", "kind": "serial", "instance": "sink"},
+            {"name": "source_serial", "kind": "serial", "instance": "source"}
+        ])
+    );
+    assert_eq!(
+        launch["graphs"][0]["scheduler"]["tasks"][0],
+        serde_json::json!({
+            "name": "main",
+            "instance": "sink",
+            "lane": "sink_serial",
+            "trigger": "on_message",
+            "readiness": "all_ready",
+            "period_ms": null,
+            "deadline_ms": 10,
+            "priority": 7
+        })
+    );
     assert_eq!(processes[1]["name"], "sensors");
     assert_eq!(processes[1]["backend"], "iox2");
     assert_eq!(processes[1]["target"], "linux");
@@ -284,6 +311,7 @@ backends = ["iox2"]
     );
     assert!(rust_main.contains("--process"));
     assert!(rust_main.contains("--flowrt-run-ticks"));
+    assert!(rust_main.contains("--flowrt-run-steps"));
     assert!(rust_main.contains("flowrt_app::runtime_shell::run_process(process, run_ticks)"));
     assert!(rust_lib.contains("pub use runtime_shell::{run, run_process, App};"));
 }
@@ -343,8 +371,8 @@ backends = ["inproc"]
     let cpp_main = artifact_content(&bundle, "cpp/src/main.cpp");
 
     assert!(cpp_header.contains(
-            "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);"
-        ));
+        "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);"
+    ));
     assert!(
             cpp_header
                 .contains("flowrt::Status run_process_control(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);")
@@ -355,6 +383,7 @@ backends = ["inproc"]
     assert!(cpp_shell.contains("return run_process_control(backend, run_ticks);"));
     assert!(cpp_main.contains("--process"));
     assert!(cpp_main.contains("--flowrt-run-ticks"));
+    assert!(cpp_main.contains("--flowrt-run-steps"));
     assert!(cpp_main.contains("flowrt_app::run_process(process, run_ticks)"));
 }
 
@@ -455,8 +484,9 @@ backends = ["iox2"]
     );
     assert!(supervisor.contains(".arg(\"--process\")"));
     assert!(supervisor.contains(".arg(process_name)"));
-    assert!(supervisor.contains(".arg(\"--flowrt-run-ticks\")"));
+    assert!(supervisor.contains(".arg(\"--flowrt-run-steps\")"));
     assert!(supervisor_main.contains("--flowrt-run-ticks"));
+    assert!(supervisor_main.contains("--flowrt-run-steps"));
     assert!(supervisor_main.contains("flowrt_app::supervisor::launch(run_ticks)"));
     assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
     assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));

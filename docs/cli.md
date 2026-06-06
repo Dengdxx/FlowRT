@@ -8,8 +8,8 @@
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--launcher]
-flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-ticks <N>]
-flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-ticks <N>]
+flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>]
+flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
@@ -82,7 +82,7 @@ flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 
 `--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 
-`--run-ticks <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到收到 SIGINT/SIGTERM 或 runtime shell 返回非 `Ok` 状态。SIGINT/SIGTERM 会触发 runtime shutdown token，生成应用退出 tick loop 后继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。该选项会被 CLI 转换为生成应用的内部 `--flowrt-run-ticks` 参数；核心 runtime scheduler 只服从调用方传入的 tick 数，不读取 CLI 环境变量。
+`--run-steps <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到收到 SIGINT/SIGTERM 或 runtime shell 返回 `Error`。SIGINT/SIGTERM 会触发 runtime shutdown token，生成应用退出 scheduler loop 后继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。`--run-ticks <N>` 作为兼容别名保留；CLI 会把上限转换为生成应用的内部 `--flowrt-run-steps` 参数，核心 runtime scheduler 不读取 CLI 环境变量。
 
 如果传入 `--profile <name>`，`run` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --profile <name>`。
 
@@ -108,7 +108,7 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 `inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` 或 `zenoh` backend，或把相关 instance 放回同一 process group。
 
-`--run-ticks <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动，并通过生成应用自己的 shutdown token 响应 SIGINT/SIGTERM。
+`--run-steps <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动，并通过生成应用自己的 shutdown token 响应 SIGINT/SIGTERM。`--run-ticks <N>` 仍可作为兼容别名使用。
 
 如果传入 `--profile <name>`，`launch` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --launcher --profile <name>`。
 
@@ -233,7 +233,7 @@ controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 ch
 - `FLOWRT_ZENOH_NO_MULTICAST`
 - `FLOWRT_TICK_SLEEP_MS`
 
-前四个用于给 runtime session 注入 zenoh 网络配置。`flowrt launch` 在这些变量都未显式设置时，会为同一个 supervisor 本机启动的 zenoh process 自动分配 `127.0.0.1` TCP mesh；只要设置了任一 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT`，就视为用户接管 session 配置。`FLOWRT_TICK_SLEEP_MS` 用于把 demo 的同步 tick 间隔拉长到可观察窗口。tick 数上限由 `flowrt run --run-ticks <N>` 或 `flowrt launch --run-ticks <N>` 显式传入，不进入核心 runtime scheduler。
+前四个用于给 runtime session 注入 zenoh 网络配置。`flowrt launch` 在这些变量都未显式设置时，会为同一个 supervisor 本机启动的 zenoh process 自动分配 `127.0.0.1` TCP mesh；只要设置了任一 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT`，就视为用户接管 session 配置。`FLOWRT_TICK_SLEEP_MS` 用于把 demo 的同步调度步间隔拉长到可观察窗口。运行上限由 `flowrt run --run-steps <N>` 或 `flowrt launch --run-steps <N>` 显式传入，不进入核心 runtime scheduler。
 
 ## `status`
 

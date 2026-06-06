@@ -5,6 +5,7 @@
 
 pub mod backend;
 pub mod channel;
+pub mod executor;
 pub mod frame;
 pub mod inproc;
 pub mod introspection;
@@ -23,6 +24,10 @@ pub use backend::{
 pub use channel::{
     BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,
     OverflowPolicy, StaleConfig, StalePolicy,
+};
+pub use executor::{
+    DeterministicExecutor, FutureExecutor, FutureHandle, LaneId, LaneKind, PeriodicSpec,
+    ScheduleEvent, ScheduleWaiter, TaskId, TaskSpec, WorkerPool,
 };
 pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_tail_block};
 #[cfg(feature = "iox2")]

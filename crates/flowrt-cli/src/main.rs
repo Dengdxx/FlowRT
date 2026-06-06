@@ -95,7 +95,7 @@ enum Command {
         process: Option<String>,
 
         /// 显式限制生成应用最多运行多少个 tick；省略表示无限运行。
-        #[arg(long, value_parser = parse_positive_usize)]
+        #[arg(long, visible_alias = "run-steps", value_parser = parse_positive_usize)]
         run_ticks: Option<usize>,
 
         /// 选择用于生成和运行的 profile 名称。
@@ -113,7 +113,7 @@ enum Command {
         out_dir: PathBuf,
 
         /// 显式限制生成应用最多运行多少个 tick；省略表示无限运行。
-        #[arg(long, value_parser = parse_positive_usize)]
+        #[arg(long, visible_alias = "run-steps", value_parser = parse_positive_usize)]
         run_ticks: Option<usize>,
 
         /// 选择用于生成和启动的 profile 名称。
@@ -1199,7 +1199,7 @@ fn run_cmake_app(
         command.arg("--process").arg(process);
     }
     if let Some(run_ticks) = run_ticks {
-        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+        command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
     let status = command
         .status()
@@ -1247,7 +1247,7 @@ fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) ->
         command.arg("--process").arg(process);
     }
     if let Some(run_ticks) = run_ticks {
-        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+        command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
     let status = command
         .status()
@@ -1301,7 +1301,7 @@ fn cargo_build_invocation(manifest: &Path, bin_name: &str) -> Result<CargoBuildI
 fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> Result<()> {
     let mut command = ProcessCommand::new(binary);
     if let Some(run_ticks) = run_ticks {
-        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+        command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
     let status = command
         .status()

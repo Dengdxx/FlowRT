@@ -4,6 +4,7 @@
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
 #include <flowrt/core.hpp>
+#include <flowrt/executor.hpp>
 #include <flowrt/introspection.hpp>
 #include <flowrt/iox2.hpp>
 #include <flowrt/wire.hpp>

@@ -1,10 +1,15 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
+#include <flowrt/executor.hpp>
 #include <flowrt/wire.hpp>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -169,6 +174,27 @@ class ZenohPubSub {
      */
     ReconnectPolicy reconnect_policy() const noexcept { return health_.policy(); }
 
+    /**
+     * @brief 返回接收侧已接受样本的修订号。
+     */
+    std::uint64_t revision() const noexcept { return revision_; }
+
+    /**
+     * @brief 注册 scheduler 数据到达唤醒器。
+     *
+     * zenoh callback 只把 canonical frame 放进 endpoint 内部有界 inbox，然后通知 generated
+     * scheduler；用户组件仍由 FlowRT scheduler 同步调用。
+     */
+    void set_schedule_waiter(ScheduleWaiter waiter) noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        if (inbox_) {
+            inbox_->set_schedule_waiter(std::move(waiter));
+        }
+#else
+        (void)waiter;
+#endif
+    }
+
 #ifdef FLOWRT_ENABLE_TEST_HOOKS
     /**
      * @brief 测试钩子：模拟本地 session 被关闭。
@@ -242,10 +268,9 @@ class ZenohPubSub {
         bool retried = false;
         try {
             for (;;) {
-                auto result = subscriber_->handler().try_recv();
-                if (std::holds_alternative<::zenoh::Sample>(result)) {
-                    auto sample = std::get<::zenoh::Sample>(std::move(result));
-                    if (!decode_frame(sample.get_payload().as_vector())) {
+                auto frame = inbox_->pop();
+                if (frame.has_value()) {
+                    if (!decode_frame(*frame)) {
                         return ChannelError::Transport;
                     }
                     if (!config_.is_latest()) {
@@ -253,17 +278,8 @@ class ZenohPubSub {
                     }
                     continue;
                 }
-
-                const auto error = std::get<::zenoh::channels::RecvError>(result);
-                if (error == ::zenoh::channels::RecvError::Z_NODATA) {
-                    health_.mark_ready();
-                    break;
-                }
-                mark_transport_error("receive Zenoh sample");
-                if (retried || !recover_after_transport_error("receive Zenoh sample")) {
-                    return ChannelError::Transport;
-                }
-                retried = true;
+                health_.mark_ready();
+                break;
             }
         } catch (const std::exception &error) {
             mark_transport_error(error.what());
@@ -283,13 +299,25 @@ class ZenohPubSub {
             return receive_latest_at(now_ms);
         }
 
+        return cached_latest_at(now_ms);
+#else
+        (void)now_ms;
+        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
+        return ChannelError::Transport;
+#endif
+    }
+
+    /**
+     * @brief 返回最近一次已接收样本的 cached latest view，不触碰 transport。
+     */
+    Latest<T> cached_latest_at(std::uint64_t now_ms) const noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
         const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
         const bool drop_stale = stale && config_.stale().policy() == StalePolicy::Drop;
         return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
 #else
         (void)now_ms;
-        health_.mark_failed("zenoh-cpp support is disabled", health_.snapshot().attempt);
-        return ChannelError::Transport;
+        return Latest<T>{};
 #endif
     }
 
@@ -369,8 +397,49 @@ class ZenohPubSub {
     }
 
 #ifdef FLOWRT_HAS_ZENOH_CXX
-    using ZenohSubscriber =
-        ::zenoh::Subscriber<::zenoh::channels::RingChannel::HandlerType<::zenoh::Sample>>;
+    struct ZenohInbox {
+        explicit ZenohInbox(std::size_t depth) : depth_(std::max<std::size_t>(1, depth)) {}
+
+        void push(::zenoh::Sample& sample) {
+            {
+                std::lock_guard lock(mutex_);
+                if (frames_.size() >= depth_) {
+                    frames_.pop_front();
+                }
+                frames_.push_back(sample.get_payload().as_vector());
+            }
+            std::optional<ScheduleWaiter> waiter;
+            {
+                std::lock_guard lock(mutex_);
+                waiter = schedule_waiter_;
+            }
+            if (waiter.has_value()) {
+                waiter->notify_data();
+            }
+        }
+
+        std::optional<std::vector<std::uint8_t>> pop() {
+            std::lock_guard lock(mutex_);
+            if (frames_.empty()) {
+                return std::nullopt;
+            }
+            auto frame = std::move(frames_.front());
+            frames_.pop_front();
+            return frame;
+        }
+
+        void set_schedule_waiter(ScheduleWaiter waiter) {
+            std::lock_guard lock(mutex_);
+            schedule_waiter_ = std::move(waiter);
+        }
+
+        std::size_t depth_;
+        std::mutex mutex_;
+        std::deque<std::vector<std::uint8_t>> frames_;
+        std::optional<ScheduleWaiter> schedule_waiter_;
+    };
+
+    using ZenohSubscriber = ::zenoh::Subscriber<void>;
 
     static constexpr std::size_t timestamp_wire_size() noexcept { return sizeof(std::uint64_t); }
 
@@ -380,10 +449,20 @@ class ZenohPubSub {
         }
 
         try {
+            if (!inbox_) {
+                inbox_ = std::make_shared<ZenohInbox>(config_.depth());
+            }
+            auto inbox = inbox_;
             session_.emplace(::zenoh::Session::open(config_from_environment()));
             publisher_.emplace(session_->declare_publisher(::zenoh::KeyExpr(key_expr_)));
             subscriber_.emplace(session_->declare_subscriber(
-                ::zenoh::KeyExpr(key_expr_), ::zenoh::channels::RingChannel(config_.depth())));
+                ::zenoh::KeyExpr(key_expr_),
+                [inbox](::zenoh::Sample& sample) {
+                    if (inbox) {
+                        inbox->push(sample);
+                    }
+                },
+                []() {}));
             return true;
         } catch (...) {
             subscriber_.reset();
@@ -435,6 +514,7 @@ class ZenohPubSub {
             auto decoded = detail::decode_frame<T>(input.subspan(timestamp_wire_size()));
             published_at_ms_ = published_at_ms;
             received_ = std::move(decoded);
+            ++revision_;
             return true;
         } catch (...) {
             return false;
@@ -544,10 +624,12 @@ class ZenohPubSub {
     std::string key_expr_;
     ZenohChannelConfig config_;
     BackendHealthTracker health_;
+    std::uint64_t revision_ = 0;
 #ifdef FLOWRT_HAS_ZENOH_CXX
     std::optional<::zenoh::Session> session_;
     std::optional<::zenoh::Publisher> publisher_;
     std::optional<ZenohSubscriber> subscriber_;
+    std::shared_ptr<ZenohInbox> inbox_;
     std::optional<T> received_;
     std::optional<std::uint64_t> published_at_ms_;
 #endif

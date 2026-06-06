@@ -180,7 +180,9 @@ validator 必须拒绝当前工具链不支持的 `ir_version`、`schema_version
 
 - 最小生命周期接口保留 `on_init`、`on_start`、`on_stop`、`on_shutdown`。生成的 Rust/C++ runtime shell 只对成功进入对应阶段的组件执行逆序清理：成功 start 的组件执行 `on_stop`，成功 init 的组件执行 `on_shutdown`；scheduler 或前序 hook 失败后仍必须继续清理。原始非 `Ok` 状态优先，原始状态为 `Ok` 时任一清理 hook 失败统一返回 `Error`。
 
-FlowRT v0.2 起支持单 instance 多 task。Contract IR 中 task 必须带 `name`，同一 instance 内 task name 必须唯一并符合 `snake_case`；旧单 task RSDL 简写归一化为 `main`。生成 shell 当前仍复用同一个用户 component 接口，对每个 task 按其 input/output 子集分别调用用户回调；不生成 `on_<task_name>` 这类新用户 API。参数 pending apply 在 scheduler tick 边界按 instance 执行一次，不能按 task 重复应用。
+FlowRT v0.2 起支持单 instance 多 task。Contract IR 中 task 必须带 `name`，同一 instance 内 task name 必须唯一并符合 `snake_case`；旧单 task RSDL 简写归一化为 `main`。生成 shell 当前仍复用同一个用户 component 接口，对每个 task 按其 input/output 子集分别调用用户回调；不生成 `on_<task_name>` 这类新用户 API。参数 pending apply 在 Scheduler v2 step 边界按 instance 执行一次，不能按 task 重复应用。
+
+FlowRT v0.3 起生成 shell 使用 task-centric Scheduler v2 基础。RSDL task 可声明 `lane = "<snake_case>"` 和 `readiness = "any_ready" | "all_ready"`；`readiness` 只对 `on_message` 有效。profile 可声明 `worker_threads = N`，省略时为 `1`。当前默认语义仍保持每个 instance 的 task 串行，不同 instance 可进入不同 serial lane；`worker_threads` 进入 Contract IR、launch manifest、自描述和 runtime executor 配置。Rust/C++ runtime 已提供 FlowRT 自有 `WorkerPool` / coroutine/future 基础作为并发 substrate，但 generated shell 当前仍同步调用普通用户组件，不能在没有明确 lane ownership 和用户 API 边界前擅自并行调用同一 component。
 
 优先支持：
 
@@ -191,9 +193,9 @@ startup
 shutdown
 ```
 
-多输入默认语义为 `latest snapshot`。codegen 必须在用户接口中表达该语义，例如 C++ 使用 `Latest<T>` view，Rust 使用 `Latest<'_, T>` view，并暴露 present/stale 信息。task 的 `input` / `output` 是端口集合语义，同一列表不得重复端口；task 声明的每个输入端口必须有且只有一条 incoming dataflow bind；缺失或多重绑定都必须由 validator 拒绝，不能让 codegen 隐式传空视图或 panic。v0.1 同步 tick shell 中，`periodic` task 每 tick 调用且必须声明大于 0 的 `period_ms`；`on_message` task 只有声明输入中至少一个 `Latest::present()` / `Latest<T>::present()` 为真时才调用；`startup` task 在组件成功 start 后、scheduler 前调用一次；`shutdown` task 在 scheduler 正常返回、显式 `--run-ticks` 到达或 SIGINT/SIGTERM 触发 graceful shutdown 后、组件 stop 前调用一次。非 `periodic` task 不得声明 `period_ms`，避免无效周期字段被 runtime shell 忽略。多 task shell 必须为每个 task 建立独立局部 scope，避免同一 instance 的不同 task 因输入、输出或 deadline 局部变量重名互相污染。后续可扩展显式 `all_ready`、`any_ready`、时间同步窗口和 stale-data policy。
+多输入默认语义为 `latest snapshot`。codegen 必须在用户接口中表达该语义，例如 C++ 使用 `Latest<T>` view，Rust 使用 `Latest<'_, T>` view，并暴露 present/stale 信息。task 的 `input` / `output` 是端口集合语义，同一列表不得重复端口；task 声明的每个输入端口必须有且只有一条 incoming dataflow bind；缺失或多重绑定都必须由 validator 拒绝，不能让 codegen 隐式传空视图或 panic。`periodic` task 由 task timer 唤醒且必须声明大于 0 的 `period_ms`；`on_message` task 由输入 channel revision 变化或 FIFO backlog 唤醒，默认 `readiness = "any_ready"`，显式 `readiness = "all_ready"` 时要求所有声明输入都出现新到达信号；同一 scheduler step 内，前序 task 发布导致 revision 变化时，依赖它的 `on_message` task 必须在同一 step 的 drain loop 中被唤醒执行，而不是等下一个外层 polling step。transport backend 的 wake probe 只负责刷新 endpoint cache，真正传给用户回调的输入必须从 cached latest view 读取，不能二次 receive 消耗样本。`startup` task 在组件成功 start 后、scheduler 前调用一次；`shutdown` task 在 scheduler 正常返回、显式 `--run-steps` / `--run-ticks` 到达或 SIGINT/SIGTERM 触发 graceful shutdown 后、组件 stop 前调用一次。非 `periodic` task 不得声明 `period_ms`，避免无效周期字段被 runtime shell 忽略。多 task shell 必须为每个 task 建立独立局部 scope，避免同一 instance 的不同 task 因输入、输出或 deadline 局部变量重名互相污染。后续可扩展时间同步窗口和更完整的 stale-data policy。
 
-v0.1 生成 shell 使用同步拓扑 tick，因此 codegen 可以假设已经通过 validator 的 graph 是 acyclic。不要在 codegen 中把环路隐式解释成反馈、延迟或跨 tick 状态。
+当前生成 shell 仍要求通过 validator 的 graph 是 acyclic。不要在 codegen 中把环路隐式解释成反馈、延迟或跨 step 状态。
 
 ## 通道语义约定
 
@@ -359,6 +361,7 @@ flowrt build path/to/robot.rsdl
 flowrt run path/to/robot.rsdl
 flowrt run path/to/robot.rsdl --process main
 flowrt run path/to/robot.rsdl --run-ticks 5 --process main
+flowrt run path/to/robot.rsdl --run-steps 5 --process main
 flowrt launch path/to/robot.rsdl
 flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app
@@ -373,7 +376,7 @@ flowrt inspect flowrt/contract/contract.ir.json
 `run` / `launch` 当前支持 Rust only、C++ only，以及 language-separated mixed contract over `iox2` 或 `zenoh`。同一 process group 内混合 C++/Rust 或 mixed `inproc` 必须明确拒绝。
 `[[bridge.ros2]]` contract 的 `flowrt build` 必须构建 generated C++ ROS2 adapter target；即使没有 C++ 用户 component，也不能只构建 Rust app 和 supervisor。`flowrt launch` 必须启动 `runtime_kind = "ros2_bridge"` 的 adapter process，并把该 process 纳入 zenoh auto mesh。
 `prepare` 和 `build` 会写 `flowrt/` 输出目录，必须在命令级持有 OS advisory lock；`.flowrt.lock` 文件可残留，PID 只用于诊断，真实占用状态必须由锁判断。`check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`echo` 和 `params` 不写生成物，不应获取该锁。
-`run` / `launch` 省略 `--run-ticks` 时长期运行，直到生成应用返回非 `Ok` 或收到 SIGINT/SIGTERM；生成 shell 必须通过 runtime `ShutdownToken` 触发 graceful shutdown，继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。
+`run` / `launch` 省略 `--run-steps` / `--run-ticks` 时长期运行，直到生成应用返回 `Error` 或收到 SIGINT/SIGTERM；生成 shell 必须通过 runtime `ShutdownToken` 触发 graceful shutdown，继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。`--run-steps` 是外部推荐名称，`--run-ticks` 是兼容别名。
 `launch` 运行 FlowRT 管理的 Rust supervisor；supervisor 读取 `flowrt/launch/launch.json`，遍历全部 graph，并按 process group 启动生成应用。C++ only contract 会生成 supervisor-only Rust crate，`launch` 先构建 CMake app 再运行 supervisor，不生成 Rust runtime shell 或 Rust app binary。`inproc` 是单进程 backend，`launch` 必须拒绝 inproc dataflow 跨 RSDL process group；`run --process <name>` 也必须拒绝单独运行带跨 process dataflow 的 inproc process group。跨 process dataflow 必须选择 `iox2` / `zenoh`、运行完整 inproc app，或把相关 instance 放回同一 process group。launch manifest 的 process group 必须暴露 `runtimes` 和 `runtime_kind`，task metadata 必须暴露 `inputs`、`outputs` 和 `priority` scheduler hint，便于后续 supervisor/scheduler 消费；graph instance 必须暴露 `runtime`，graph 必须暴露 `channels`。supervisor health 必须通过 introspection 暴露 `starting` / `running` / `stale` / `restarting` / `exited` / `failed`、PID、restart count、tick 计数、最后一次可见时间和退出码；当前内置 `on-failure` policy 对异常退出最多重启 3 次，正常退出不重启。
 runtime introspection socket 使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock` 或 `/tmp/flowrt.<uid>/<pid>.sock`，socket 路径只用于发现；真实身份必须来自 handshake。启动 status server 时不能覆盖仍可连接的 live socket，SIGKILL 后残留且不可连接的 socket 文件可以回收。Rust `IntrospectionState` 必须在 mutex poison 后恢复访问，不得因单个连接或线程异常导致全局 panic。
 当前 iox2/zenoh endpoint 已有对 peer endpoint 重建后的继续收发回归测试；Runtime 已提供 C ABI 友好形状的 `BackendHealthState`、`BackendHealthSnapshot`、`ReconnectPolicy` 和 `BackendHealthTracker`。`iox2` 和 `zenoh` endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地 publisher/subscriber/session，codec/schema 错误不得触发重连。后续 C、Python 或更多语言 runtime 应复用这套稳定状态形状，不要在 shell 中临时吞掉错误。

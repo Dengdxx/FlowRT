@@ -4,6 +4,9 @@ pub type Result<T> = std::result::Result<T, IrError>;
 /// 构建 normalized Contract IR 时产生的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum IrError {
+    #[error("invalid value in `{context}`: {message}")]
+    InvalidValue { context: String, message: String },
+
     #[error("invalid `{kind}` value `{value}` in `{context}`")]
     InvalidEnum {
         context: String,

@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy,
-    ParamIr, Ros2BridgeIr, StalePolicy as IrStalePolicy, TaskIr, TriggerKind, TypeExpr,
+    ParamIr, Ros2BridgeIr, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness, TriggerKind,
+    TypeExpr,
 };
 
 use crate::{
@@ -42,7 +43,10 @@ where
             .iter()
             .map(|input| format!("{}.present()", input_name(input)))
             .collect::<Vec<_>>()
-            .join(" || "),
+            .join(match task.readiness {
+                TaskReadiness::AnyReady => " || ",
+                TaskReadiness::AllReady => " && ",
+            }),
     )
 }
 

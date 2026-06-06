@@ -8,10 +8,10 @@ use crate::{
     ChannelKind, ChannelPolicySourceIr, ComponentIr, ComponentKind, ContractIr, DeploymentIr,
     EntityId, EntityRef, FieldIr, GraphIr, ImportIr, InstanceIr, IrError, LanguageKind,
     LifecycleSurface, OverflowPolicy, PackageIr, PolicyDefaults, PolicyValueSource, PortIr,
-    PortRef, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology, StalePolicy,
-    TargetIr, TaskIr, TriggerKind, TypeExpr, TypeIr, channel_capabilities,
-    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
-    parse_type_expr, target_capabilities,
+    PortRef, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr, RouteTopology,
+    SchedulerDefaults, StalePolicy, TargetIr, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities, parse_type_expr, target_capabilities,
 };
 
 mod params;
@@ -317,6 +317,7 @@ fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr>> {
             id: entity_id("profile", "default"),
             name: "default".to_string(),
             backend: BackendName("inproc".to_string()),
+            scheduler: SchedulerDefaults { worker_threads: 1 },
             defaults: PolicyDefaults {
                 default_overflow: OverflowPolicy::DropOldest,
                 default_stale_policy: StalePolicy::Warn,
@@ -333,10 +334,22 @@ fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr>> {
                 id: entity_id("profile", name),
                 name: name.clone(),
                 backend: BackendName(raw.backend.clone().unwrap_or_else(|| "inproc".to_string())),
+                scheduler: normalize_scheduler_defaults(raw, &format!("profile.{name}"))?,
                 defaults: normalize_policy_defaults(raw, &format!("profile.{name}"))?,
             })
         })
         .collect()
+}
+
+fn normalize_scheduler_defaults(raw: &RawProfile, context: &str) -> Result<SchedulerDefaults> {
+    let worker_threads = raw.worker_threads.unwrap_or(1);
+    if worker_threads == 0 {
+        return Err(IrError::InvalidValue {
+            context: format!("{context}.worker_threads"),
+            message: "`worker_threads` must be greater than zero".to_string(),
+        });
+    }
+    Ok(SchedulerDefaults { worker_threads })
 }
 
 fn normalize_policy_defaults(raw: &RawProfile, context: &str) -> Result<PolicyDefaults> {
@@ -458,8 +471,13 @@ fn normalize_instances(
                     &format!("instance.{name}.task.trigger"),
                     &raw_task.trigger,
                 )?,
+                readiness: parse_readiness(
+                    &format!("instance.{name}.task.readiness"),
+                    raw_task.readiness.as_deref(),
+                )?,
                 period_ms: raw_task.period_ms,
                 deadline_ms: raw_task.deadline_ms,
+                lane: raw_task.lane.clone(),
                 priority: raw_task.priority,
                 inputs: raw_task.input.clone(),
                 outputs: raw_task.output.clone(),
@@ -878,6 +896,14 @@ fn parse_trigger(context: &str, value: &str) -> Result<TriggerKind> {
     }
 }
 
+fn parse_readiness(context: &str, value: Option<&str>) -> Result<TaskReadiness> {
+    match value.unwrap_or("any_ready") {
+        "any_ready" => Ok(TaskReadiness::AnyReady),
+        "all_ready" => Ok(TaskReadiness::AllReady),
+        other => Err(invalid_enum(context, "readiness", other)),
+    }
+}
+
 fn parse_channel_kind(context: &str, value: &str) -> Result<ChannelKind> {
     match value {
         "latest" => Ok(ChannelKind::Latest),
@@ -959,6 +985,7 @@ output = ["imu"]
 
 [profile.default]
 backend = "inproc"
+worker_threads = 3
 default_overflow = "drop_oldest"
 default_stale_policy = "warn"
 
@@ -978,6 +1005,7 @@ backends = ["inproc"]
             }
         );
         assert_eq!(ir.graphs[0].tasks[0].period_ms, Some(5));
+        assert_eq!(ir.profiles[0].scheduler.worker_threads, 3);
     }
 
     #[test]
@@ -1016,6 +1044,38 @@ output = ["slow"]
         assert_ne!(tasks[0].id, tasks[1].id);
         assert_eq!(tasks[0].outputs, vec!["fast"]);
         assert_eq!(tasks[1].outputs, vec!["slow"]);
+    }
+
+    #[test]
+    fn normalizes_scheduler_v2_task_fields() {
+        let source = r#"
+[package]
+name = "scheduler_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+input = ["in:u32"]
+output = ["out:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "on_message"
+readiness = "all_ready"
+lane = "worker_serial"
+priority = 7
+input = ["in"]
+output = ["out"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let task = &ir.graphs[0].tasks[0];
+
+        assert_eq!(task.readiness, TaskReadiness::AllReady);
+        assert_eq!(task.lane.as_deref(), Some("worker_serial"));
+        assert_eq!(task.priority, Some(7));
     }
 
     #[test]

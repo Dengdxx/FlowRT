@@ -297,6 +297,7 @@ class LatestChannel {
         value_ = std::move(value);
         stale_ = false;
         published_at_ms_.reset();
+        ++revision_;
     }
 
     /**
@@ -309,7 +310,15 @@ class LatestChannel {
         value_ = std::move(value);
         stale_ = false;
         published_at_ms_ = now_ms;
+        ++revision_;
     }
+
+    /**
+     * @brief 返回已进入 channel 的样本修订号。
+     *
+     * @return 每次成功发布后递增的计数。
+     */
+    std::uint64_t revision() const noexcept { return revision_; }
 
     /**
      * @brief 设置当前样本的 stale 标记。
@@ -355,6 +364,7 @@ class LatestChannel {
     bool stale_ = false;
     std::optional<std::uint64_t> published_at_ms_;
     StaleConfig stale_config_;
+    std::uint64_t revision_ = 0;
 };
 
 /**
@@ -523,6 +533,13 @@ class FifoChannel {
      */
     std::size_t depth() const noexcept { return depth_; }
 
+    /**
+     * @brief 返回已进入 channel 的样本修订号。
+     *
+     * @return 每次样本进入队列后递增的计数。
+     */
+    std::uint64_t revision() const noexcept { return revision_; }
+
    private:
     struct Entry {
         T value;
@@ -532,6 +549,7 @@ class FifoChannel {
     ChannelPushResult push_entry(Entry entry) {
         if (queue_.size() < depth_) {
             queue_.push_back(std::move(entry));
+            ++revision_;
             return ChannelWriteOutcome::Accepted;
         }
 
@@ -539,6 +557,7 @@ class FifoChannel {
             case OverflowPolicy::DropOldest:
                 queue_.pop_front();
                 queue_.push_back(std::move(entry));
+                ++revision_;
                 return ChannelWriteOutcome::DroppedOldest;
             case OverflowPolicy::DropNewest:
                 return ChannelWriteOutcome::DroppedNewest;
@@ -555,6 +574,7 @@ class FifoChannel {
     std::size_t depth_ = 1;
     OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
     StaleConfig stale_config_;
+    std::uint64_t revision_ = 0;
 };
 
 }  // namespace flowrt

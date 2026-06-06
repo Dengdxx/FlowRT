@@ -6,7 +6,7 @@ use crate::{contract_has_ros2_bridge, managed_header, rust_string_literal, sanit
 pub(crate) fn emit_rust_supervisor_main() -> String {
     let mut output = managed_header();
     output.push_str(
-        "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut run_ticks = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--flowrt-run-ticks\" => {\n                let Some(raw_ticks) = args.next() else {\n                    eprintln!(\"missing value for --flowrt-run-ticks\");\n                    std::process::exit(2);\n                };\n                match raw_ticks.parse::<usize>() {\n                    Ok(ticks) if ticks > 0 => run_ticks = Some(ticks),\n                    _ => {\n                        eprintln!(\"invalid value for --flowrt-run-ticks: {raw_ticks}\");\n                        std::process::exit(2);\n                    }\n                }\n            }\n            _ => {\n                eprintln!(\"unknown FlowRT supervisor argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    match flowrt_app::supervisor::launch(run_ticks) {\n        Ok(()) => std::process::exit(0),\n        Err(error) => {\n            eprintln!(\"FlowRT supervisor failed: {error}\");\n            std::process::exit(1);\n        }\n    }\n}\n",
+        "\nfn main() {\n    let mut args = std::env::args().skip(1);\n    let mut run_ticks = None;\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--flowrt-run-ticks\" | \"--flowrt-run-steps\" => {\n                let Some(raw_ticks) = args.next() else {\n                    eprintln!(\"missing value for {arg}\");\n                    std::process::exit(2);\n                };\n                match raw_ticks.parse::<usize>() {\n                    Ok(ticks) if ticks > 0 => run_ticks = Some(ticks),\n                    _ => {\n                        eprintln!(\"invalid value for {arg}: {raw_ticks}\");\n                        std::process::exit(2);\n                    }\n                }\n            }\n            _ => {\n                eprintln!(\"unknown FlowRT supervisor argument: {arg}\");\n                std::process::exit(2);\n            }\n        }\n    }\n\n    match flowrt_app::supervisor::launch(run_ticks) {\n        Ok(()) => std::process::exit(0),\n        Err(error) => {\n            eprintln!(\"FlowRT supervisor failed: {error}\");\n            std::process::exit(1);\n        }\n    }\n}\n",
     );
     output
 }
@@ -230,7 +230,7 @@ fn spawn_flowrt_process(
         command.env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp");
     }
     if let Some(run_ticks) = run_ticks {
-        command.arg("--flowrt-run-ticks").arg(run_ticks.to_string());
+        command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
     if let Some(env) = zenoh_env {
         command.env("FLOWRT_ZENOH_MODE", "peer");

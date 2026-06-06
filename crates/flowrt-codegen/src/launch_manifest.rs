@@ -16,6 +16,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
         "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
             "name": graph.name,
+            "scheduler": launch_scheduler(contract, graph),
             "processes": launch_processes(contract, graph),
             "channels": launch_channels(contract, graph),
             "ros2_bridges": launch_ros2_bridges(contract, graph),
@@ -35,6 +36,55 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
+}
+
+fn launch_scheduler(contract: &ContractIr, graph: &GraphIr) -> serde_json::Value {
+    serde_json::json!({
+        "worker_threads": contract
+            .profiles
+            .first()
+            .map(|profile| profile.scheduler.worker_threads)
+            .unwrap_or(1),
+        "lanes": scheduler_lanes(graph),
+        "tasks": graph.tasks.iter().map(scheduler_task).collect::<Vec<_>>(),
+    })
+}
+
+fn scheduler_lanes(graph: &GraphIr) -> Vec<serde_json::Value> {
+    let mut lanes = BTreeMap::<String, String>::new();
+    for task in &graph.tasks {
+        lanes.insert(task_lane_name(task), task.instance.name.clone());
+    }
+
+    lanes
+        .into_iter()
+        .map(|(name, instance)| {
+            serde_json::json!({
+                "name": name,
+                "kind": "serial",
+                "instance": instance,
+            })
+        })
+        .collect()
+}
+
+fn scheduler_task(task: &TaskIr) -> serde_json::Value {
+    serde_json::json!({
+        "name": task.name,
+        "instance": task.instance.name,
+        "lane": task_lane_name(task),
+        "trigger": task.trigger,
+        "readiness": task.readiness,
+        "period_ms": task.period_ms,
+        "deadline_ms": task.deadline_ms,
+        "priority": task.priority,
+    })
+}
+
+fn task_lane_name(task: &TaskIr) -> String {
+    task.lane
+        .clone()
+        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
 }
 
 fn launch_ros2_bridges(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
@@ -159,8 +209,10 @@ fn launch_task(task: &TaskIr) -> serde_json::Value {
         "name": task.name,
         "instance": task.instance.name,
         "trigger": task.trigger,
+        "readiness": task.readiness,
         "period_ms": task.period_ms,
         "deadline_ms": task.deadline_ms,
+        "lane": task_lane_name(task),
         "priority": task.priority,
         "inputs": task.inputs,
         "outputs": task.outputs,

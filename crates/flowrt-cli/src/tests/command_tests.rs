@@ -239,6 +239,35 @@ fn cli_parses_run_ticks_for_run_and_launch() {
 }
 
 #[test]
+fn cli_parses_run_steps_alias_for_run_and_launch() {
+    let run_cli = Cli::try_parse_from([
+        "flowrt",
+        "run",
+        "examples/import_demo/rsdl/robot.rsdl",
+        "--run-steps",
+        "5",
+    ])
+    .unwrap();
+    let Command::Run { run_ticks, .. } = run_cli.command else {
+        panic!("run command should parse into Command::Run")
+    };
+    assert_eq!(run_ticks, Some(5));
+
+    let launch_cli = Cli::try_parse_from([
+        "flowrt",
+        "launch",
+        "examples/import_demo/rsdl/robot.rsdl",
+        "--run-steps",
+        "7",
+    ])
+    .unwrap();
+    let Command::Launch { run_ticks, .. } = launch_cli.command else {
+        panic!("launch command should parse into Command::Launch")
+    };
+    assert_eq!(run_ticks, Some(7));
+}
+
+#[test]
 fn cli_parses_build_launcher_flag() {
     let cli = Cli::try_parse_from([
         "flowrt",

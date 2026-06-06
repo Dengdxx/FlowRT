@@ -3,17 +3,20 @@
 //! 该模块只在启用 `zenoh` feature 时编译。endpoint 在 transport 上发送 FlowRT canonical
 //! wire bytes，不发送 Rust native struct 布局；用户组件接口不应直接依赖本模块或 Zenoh 类型。
 
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
 use zenoh::{
     Config, Wait,
-    handlers::{RingChannel, RingChannelHandler},
     pubsub::{Publisher, Subscriber},
-    sample::Sample,
     session::Session,
 };
 
 use crate::{
     BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, FrameCodec, Latest,
-    OverflowPolicy, ReconnectPolicy, StaleConfig, StalePolicy, WireCodecError,
+    OverflowPolicy, ReconnectPolicy, ScheduleWaiter, StaleConfig, StalePolicy, WireCodecError,
 };
 
 const PUBLISHED_AT_WIRE_SIZE: usize = std::mem::size_of::<u64>();
@@ -33,8 +36,46 @@ where
 
 struct ZenohEndpointParts {
     publisher: Publisher<'static>,
-    subscriber: Subscriber<RingChannelHandler<Sample>>,
+    subscriber: Subscriber<()>,
     session: Session,
+}
+
+#[derive(Debug)]
+struct ZenohInbox {
+    frames: Mutex<VecDeque<Vec<u8>>>,
+    schedule_waiter: Mutex<Option<ScheduleWaiter>>,
+    depth: usize,
+}
+
+impl ZenohInbox {
+    fn new(depth: usize) -> Self {
+        Self {
+            frames: Mutex::new(VecDeque::with_capacity(depth)),
+            schedule_waiter: Mutex::new(None),
+            depth,
+        }
+    }
+
+    fn push(&self, frame: Vec<u8>) {
+        {
+            let mut frames = lock_recover(&self.frames);
+            if frames.len() >= self.depth {
+                frames.pop_front();
+            }
+            frames.push_back(frame);
+        }
+        if let Some(waiter) = lock_recover(&self.schedule_waiter).clone() {
+            waiter.notify_data();
+        }
+    }
+
+    fn pop(&self) -> Option<Vec<u8>> {
+        lock_recover(&self.frames).pop_front()
+    }
+
+    fn set_schedule_waiter(&self, waiter: ScheduleWaiter) {
+        *lock_recover(&self.schedule_waiter) = Some(waiter);
+    }
 }
 
 /// Zenoh endpoint 操作失败。
@@ -180,11 +221,13 @@ where
 {
     key_expr: String,
     publisher: Publisher<'static>,
-    subscriber: Subscriber<RingChannelHandler<Sample>>,
+    subscriber: Subscriber<()>,
     session: Session,
+    inbox: Arc<ZenohInbox>,
     config: ZenohChannelConfig,
     health: BackendHealthTracker,
     received: Option<ZenohReceived<T>>,
+    revision: u64,
 }
 
 impl<T> ZenohPubSub<T>
@@ -200,17 +243,28 @@ where
         config: ZenohChannelConfig,
     ) -> Result<Self, ZenohError> {
         config.validate()?;
-        let parts = open_zenoh_parts(key_expr, config)?;
+        let inbox = Arc::new(ZenohInbox::new(config.depth()));
+        let parts = open_zenoh_parts(key_expr, config, Arc::clone(&inbox))?;
 
         Ok(Self {
             key_expr: key_expr.to_string(),
             publisher: parts.publisher,
             subscriber: parts.subscriber,
             session: parts.session,
+            inbox,
             config,
             health: BackendHealthTracker::new(ReconnectPolicy::default()),
             received: None,
+            revision: 0,
         })
+    }
+
+    /// 注册 scheduler 数据到达唤醒器。
+    ///
+    /// Zenoh 接收 callback 只把 canonical frame 放入有界 inbox，并通过该 waiter 通知 generated
+    /// scheduler；用户回调仍在 FlowRT scheduler 线程中同步执行。
+    pub fn set_schedule_waiter(&mut self, waiter: ScheduleWaiter) {
+        self.inbox.set_schedule_waiter(waiter);
     }
 
     /// 带 FlowRT runtime 时间戳发布一个 canonical-wire payload。
@@ -247,11 +301,18 @@ where
         if self.config.is_latest() {
             while let Some(sample) = self.try_receive_sample_with_recovery()? {
                 self.received = Some(decode_sample(sample)?);
+                self.revision = self.revision.saturating_add(1);
             }
         } else if let Some(sample) = self.try_receive_sample_with_recovery()? {
             self.received = Some(decode_sample(sample)?);
+            self.revision = self.revision.saturating_add(1);
         }
 
+        Ok(self.cached_latest_at(now_ms))
+    }
+
+    /// 返回最近一次已接收样本的 cached latest view，不触碰 transport。
+    pub fn cached_latest_at(&self, now_ms: u64) -> Latest<'_, T> {
         let stale = self
             .received
             .as_ref()
@@ -267,7 +328,7 @@ where
             self.received.as_ref().map(|sample| &sample.payload)
         };
 
-        Ok(Latest::new(value, stale))
+        Latest::new(value, stale)
     }
 
     /// 判断底层 Zenoh session 是否仍处于打开状态。
@@ -301,13 +362,16 @@ where
         self.config
     }
 
-    fn try_receive_sample(&self) -> Result<Option<Sample>, ZenohError> {
-        self.subscriber
-            .try_recv()
-            .map_err(|error| ZenohError::transport("receive Zenoh sample", error))
+    /// 返回接收侧已接受样本的修订号，用于调度器检测新到达数据。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
-    fn try_receive_sample_with_recovery(&mut self) -> Result<Option<Sample>, ZenohError> {
+    fn try_receive_sample(&self) -> Result<Option<Vec<u8>>, ZenohError> {
+        Ok(self.inbox.pop())
+    }
+
+    fn try_receive_sample_with_recovery(&mut self) -> Result<Option<Vec<u8>>, ZenohError> {
         match self.try_receive_sample() {
             Ok(sample) => {
                 self.health.mark_ready();
@@ -365,7 +429,7 @@ where
             attempt,
             now_ms.saturating_add(self.health.policy().delay_for_attempt(attempt)),
         );
-        match open_zenoh_parts(&self.key_expr, self.config) {
+        match open_zenoh_parts(&self.key_expr, self.config, Arc::clone(&self.inbox)) {
             Ok(parts) => {
                 self.publisher = parts.publisher;
                 self.subscriber = parts.subscriber;
@@ -391,14 +455,18 @@ where
 
 fn open_zenoh_parts(
     key_expr: &str,
-    config: ZenohChannelConfig,
+    _config: ZenohChannelConfig,
+    inbox: Arc<ZenohInbox>,
 ) -> Result<ZenohEndpointParts, ZenohError> {
     let session = zenoh::open(config_from_environment()?)
         .wait()
         .map_err(|error| ZenohError::transport("open Zenoh session", error))?;
+    let callback_inbox = Arc::clone(&inbox);
     let subscriber = session
         .declare_subscriber(key_expr.to_owned())
-        .with(RingChannel::new(config.depth()))
+        .callback(move |sample| {
+            callback_inbox.push(sample.payload().to_bytes().to_vec());
+        })
         .wait()
         .map_err(|error| ZenohError::transport("declare Zenoh subscriber", error))?;
     let publisher = session
@@ -538,12 +606,18 @@ where
     })
 }
 
-fn decode_sample<T>(sample: Sample) -> Result<ZenohReceived<T>, ZenohError>
+fn decode_sample<T>(frame: Vec<u8>) -> Result<ZenohReceived<T>, ZenohError>
 where
     T: FrameCodec + Clone,
 {
-    let bytes = sample.payload().to_bytes();
-    decode_frame(&bytes)
+    decode_frame(&frame)
+}
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 #[cfg(test)]

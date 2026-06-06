@@ -3,8 +3,17 @@
 //! 该模块只在启用 `iox2` feature 时编译。它用于验证 FlowRT Message ABI plain-data
 //! payload 可以通过 iceoryx2 传输；用户算法代码仍不应直接依赖本模块。
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 
+use iceoryx2::port::{listener::Listener, notifier::Notifier};
 use iceoryx2::prelude::*;
 use iceoryx2::sample::Sample;
 
@@ -16,6 +25,9 @@ use crate::{
 type IpcNode = Node<ipc::Service>;
 type IpcPublisher<T> = iceoryx2::port::publisher::Publisher<ipc::Service, T, FlowrtIox2Header>;
 type IpcSubscriber<T> = iceoryx2::port::subscriber::Subscriber<ipc::Service, T, FlowrtIox2Header>;
+type IpcNotifier = Notifier<ipc::Service>;
+type IpcListener = Listener<ipc::Service>;
+const IOX2_WAKE_EVENT_ID: usize = 4;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
@@ -39,7 +51,60 @@ where
 {
     publisher: IpcPublisher<T>,
     subscriber: IpcSubscriber<T>,
+    notifier: IpcNotifier,
     node: IpcNode,
+}
+
+struct Iox2WakeHandle {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+struct Iox2WakeListenerParts {
+    listener: IpcListener,
+    _node: IpcNode,
+}
+
+impl Iox2WakeHandle {
+    fn start(service_name: String, waiter: crate::ScheduleWaiter) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let wake = match open_iox2_wake_listener(&service_name) {
+                Ok(wake) => {
+                    let _ = ready_tx.send(Ok(()));
+                    wake
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error));
+                    return;
+                }
+            };
+            while !worker_stop.load(Ordering::Acquire) {
+                match wake.listener.timed_wait_one(Duration::from_millis(50)) {
+                    Ok(Some(_)) => waiter.notify_data(),
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+        let _ = ready_rx.recv_timeout(Duration::from_millis(500));
+
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for Iox2WakeHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 /// 可选 iceoryx2 transport helper 返回的错误。
@@ -151,11 +216,15 @@ where
     service_name: String,
     publisher: Option<IpcPublisher<T>>,
     subscriber: Option<IpcSubscriber<T>>,
+    notifier: Option<IpcNotifier>,
+    wake_handle: Option<Iox2WakeHandle>,
+    schedule_waiter: Option<crate::ScheduleWaiter>,
     node: Option<IpcNode>,
     config: Iox2ChannelConfig,
     stale: StaleConfig,
     health: BackendHealthTracker,
     received: Option<Iox2Received<T>>,
+    revision: u64,
 }
 
 impl<T> Iox2PubSub<T>
@@ -178,11 +247,15 @@ where
             service_name: service_name.to_string(),
             publisher: Some(parts.publisher),
             subscriber: Some(parts.subscriber),
+            notifier: Some(parts.notifier),
+            wake_handle: None,
+            schedule_waiter: None,
             node: Some(parts.node),
             config,
             stale: config.stale(),
             health: BackendHealthTracker::new(ReconnectPolicy::default()),
             received: None,
+            revision: 0,
         })
     }
 
@@ -209,6 +282,16 @@ where
         }
     }
 
+    /// 注册 scheduler 数据到达唤醒器。
+    ///
+    /// iceoryx2 v0.9 的 typed pub/sub subscriber 不直接暴露可附着到 WaitSet 的数据到达事件；
+    /// FlowRT 保留该 API 作为 backend wake adapter 的稳定入口，后续会由 sideband event 或 SDK
+    /// waitset adapter 驱动。
+    pub fn set_schedule_waiter(&mut self, waiter: crate::ScheduleWaiter) {
+        self.schedule_waiter = Some(waiter.clone());
+        self.start_wake_listener(waiter);
+    }
+
     fn publish_slot(&self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
         let publisher = self
             .publisher
@@ -223,7 +306,26 @@ where
             .write_payload(value)
             .send()
             .map_err(|error| Iox2Error::new("failed to send iceoryx2 sample", error))?;
+        self.notify_wake()?;
         Ok(())
+    }
+
+    fn notify_wake(&self) -> Result<(), Iox2Error> {
+        let notifier = self
+            .notifier
+            .as_ref()
+            .ok_or_else(|| Iox2Error::new("notify iceoryx2 wake event", "endpoint is not ready"))?;
+        notifier
+            .notify_with_custom_event_id(EventId::new(IOX2_WAKE_EVENT_ID))
+            .map(|_| ())
+            .map_err(|error| Iox2Error::new("failed to notify iceoryx2 wake event", error))
+    }
+
+    fn start_wake_listener(&mut self, waiter: crate::ScheduleWaiter) {
+        if self.wake_handle.is_some() {
+            return;
+        }
+        self.wake_handle = Some(Iox2WakeHandle::start(self.service_name.clone(), waiter));
     }
 
     /// 如果有可用样本，则接收一个值。
@@ -241,8 +343,14 @@ where
                 published_at_ms: sample.user_header().published_at_ms,
                 payload: *sample,
             });
+            self.revision = self.revision.saturating_add(1);
         }
 
+        Ok(self.cached_latest_at(now_ms))
+    }
+
+    /// 返回最近一次已接收样本的 cached latest view，不触碰 transport。
+    pub fn cached_latest_at(&self, now_ms: u64) -> Latest<'_, T> {
         let stale = self
             .received
             .map(|sample| self.stale.stale_at(Some(sample.published_at_ms), now_ms))
@@ -253,7 +361,7 @@ where
             self.received.as_ref().map(|sample| &sample.payload)
         };
 
-        Ok(Latest::new(value, stale))
+        Latest::new(value, stale)
     }
 
     /// 返回 endpoint 的 QoS 配置。
@@ -278,6 +386,11 @@ where
             };
         }
         self.health.snapshot()
+    }
+
+    /// 返回接收侧已接受样本的修订号，用于调度器检测新到达数据。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// 返回 endpoint 重连策略。
@@ -346,6 +459,9 @@ where
             self.config,
             &mut self.publisher,
             &mut self.subscriber,
+            &mut self.notifier,
+            &mut self.wake_handle,
+            self.schedule_waiter.as_ref(),
             &mut self.node,
             &mut self.health,
         )
@@ -355,6 +471,8 @@ where
     fn reset_transport_for_test(&mut self) {
         self.publisher = None;
         self.subscriber = None;
+        self.notifier = None;
+        self.wake_handle = None;
         self.node = None;
         self.health.mark_degraded("iceoryx2 endpoint reset by test");
     }
@@ -394,11 +512,43 @@ where
         .buffer_size(config.depth())
         .create()
         .map_err(|error| Iox2Error::new("failed to create iceoryx2 subscriber", error))?;
+    let event = node
+        .service_builder(&service_name)
+        .event()
+        .open_or_create()
+        .map_err(|error| Iox2Error::new("failed to open or create iceoryx2 wake event", error))?;
+    let notifier = event
+        .notifier_builder()
+        .create()
+        .map_err(|error| Iox2Error::new("failed to create iceoryx2 wake notifier", error))?;
 
     Ok(Iox2EndpointParts {
         publisher,
         subscriber,
+        notifier,
         node,
+    })
+}
+
+fn open_iox2_wake_listener(service_name: &str) -> Result<Iox2WakeListenerParts, Iox2Error> {
+    let service_name = service_name
+        .try_into()
+        .map_err(|error| Iox2Error::new("invalid iceoryx2 wake service name", error))?;
+    let node = NodeBuilder::new()
+        .create::<ipc::Service>()
+        .map_err(|error| Iox2Error::new("failed to create iceoryx2 wake node", error))?;
+    let event = node
+        .service_builder(&service_name)
+        .event()
+        .open_or_create()
+        .map_err(|error| Iox2Error::new("failed to open or create iceoryx2 wake event", error))?;
+    let listener = event
+        .listener_builder()
+        .create()
+        .map_err(|error| Iox2Error::new("failed to create iceoryx2 wake listener", error))?;
+    Ok(Iox2WakeListenerParts {
+        listener,
+        _node: node,
     })
 }
 
@@ -408,6 +558,9 @@ fn recover_iox2_endpoint<T>(
     config: Iox2ChannelConfig,
     publisher: &mut Option<IpcPublisher<T>>,
     subscriber: &mut Option<IpcSubscriber<T>>,
+    notifier: &mut Option<IpcNotifier>,
+    wake_handle: &mut Option<Iox2WakeHandle>,
+    schedule_waiter: Option<&crate::ScheduleWaiter>,
     node: &mut Option<IpcNode>,
     health: &mut BackendHealthTracker,
 ) -> Result<(), Iox2Error>
@@ -439,13 +592,22 @@ where
         attempt,
         now_ms.saturating_add(health.policy().delay_for_attempt(attempt)),
     );
+    *wake_handle = None;
     *publisher = None;
     *subscriber = None;
+    *notifier = None;
     *node = None;
     match open_iox2_parts(service_name, config) {
         Ok(parts) => {
             *publisher = Some(parts.publisher);
             *subscriber = Some(parts.subscriber);
+            *notifier = Some(parts.notifier);
+            if let Some(waiter) = schedule_waiter {
+                *wake_handle = Some(Iox2WakeHandle::start(
+                    service_name.to_string(),
+                    waiter.clone(),
+                ));
+            }
             *node = Some(parts.node);
             health.mark_ready();
             Ok(())
@@ -700,6 +862,36 @@ mod tests {
                 .as_ref(),
             Some(&message)
         );
+    }
+
+    #[test]
+    fn schedule_waiter_is_notified_when_peer_publishes_sample() {
+        let service_name = "FlowRT/Smoke/ScheduleWake";
+        let mut receiver = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+            .expect("receiver endpoint should open");
+        let mut sender = Iox2PubSub::<Iox2SmokeMessage>::open(service_name)
+            .expect("sender endpoint should open");
+        let waiter = crate::ScheduleWaiter::new();
+        receiver.set_schedule_waiter(waiter.clone());
+
+        sender
+            .publish_at(
+                Iox2SmokeMessage {
+                    timestamp: 41,
+                    x: 7.0,
+                    y: 8.0,
+                },
+                300,
+            )
+            .expect("sender should publish");
+
+        let event = waiter.wait_until_after(
+            0,
+            Some(std::time::Instant::now() + Duration::from_millis(500)),
+            &crate::ShutdownToken::new(),
+        );
+
+        assert_eq!(event, crate::ScheduleEvent::Data);
     }
 
     #[test]

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, GraphIr, InstanceIr,
-    OverflowPolicy as IrOverflowPolicy, StalePolicy as IrStalePolicy, TriggerKind, TypeExpr,
-    TypeIr,
+    OverflowPolicy as IrOverflowPolicy, StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind,
+    TypeExpr, TypeIr,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -67,9 +67,36 @@ struct SelfDescriptionDeployment<'a> {
 #[derive(Debug, Serialize)]
 struct SelfDescriptionGraph<'a> {
     name: &'a str,
+    scheduler: SelfDescriptionScheduler,
     instances: Vec<SelfDescriptionInstance<'a>>,
     tasks: Vec<SelfDescriptionTask<'a>>,
     channels: Vec<SelfDescriptionChannel>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionScheduler {
+    worker_threads: u32,
+    lanes: Vec<SelfDescriptionSchedulerLane>,
+    tasks: Vec<SelfDescriptionSchedulerTask>,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionSchedulerLane {
+    name: String,
+    kind: &'static str,
+    instance: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SelfDescriptionSchedulerTask {
+    name: String,
+    instance: String,
+    lane: String,
+    trigger: &'static str,
+    readiness: &'static str,
+    period_ms: Option<u64>,
+    deadline_ms: Option<u64>,
+    priority: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,8 +126,10 @@ struct SelfDescriptionTask<'a> {
     name: &'a str,
     instance: &'a str,
     trigger: &'static str,
+    readiness: &'static str,
     period_ms: Option<u64>,
     deadline_ms: Option<u64>,
+    lane: String,
     priority: Option<u32>,
     inputs: &'a [String],
     outputs: &'a [String],
@@ -298,6 +327,7 @@ fn self_description_graph<'a>(
 ) -> SelfDescriptionGraph<'a> {
     SelfDescriptionGraph {
         name: &graph.name,
+        scheduler: self_description_scheduler(contract, graph),
         instances: graph
             .instances
             .iter()
@@ -320,8 +350,10 @@ fn self_description_graph<'a>(
                 name: &task.name,
                 instance: &task.instance.name,
                 trigger: trigger_name(task.trigger),
+                readiness: readiness_name(task.readiness),
                 period_ms: task.period_ms,
                 deadline_ms: task.deadline_ms,
+                lane: task_lane_name(task),
                 priority: task.priority,
                 inputs: &task.inputs,
                 outputs: &task.outputs,
@@ -351,6 +383,49 @@ fn self_description_graph<'a>(
             })
             .collect(),
     }
+}
+
+fn self_description_scheduler(contract: &ContractIr, graph: &GraphIr) -> SelfDescriptionScheduler {
+    let mut lanes = BTreeMap::<String, String>::new();
+    for task in &graph.tasks {
+        lanes.insert(task_lane_name(task), task.instance.name.clone());
+    }
+
+    SelfDescriptionScheduler {
+        worker_threads: contract
+            .profiles
+            .first()
+            .map(|profile| profile.scheduler.worker_threads)
+            .unwrap_or(1),
+        lanes: lanes
+            .into_iter()
+            .map(|(name, instance)| SelfDescriptionSchedulerLane {
+                name,
+                kind: "serial",
+                instance,
+            })
+            .collect(),
+        tasks: graph
+            .tasks
+            .iter()
+            .map(|task| SelfDescriptionSchedulerTask {
+                name: task.name.clone(),
+                instance: task.instance.name.clone(),
+                lane: task_lane_name(task),
+                trigger: trigger_name(task.trigger),
+                readiness: readiness_name(task.readiness),
+                period_ms: task.period_ms,
+                deadline_ms: task.deadline_ms,
+                priority: task.priority,
+            })
+            .collect(),
+    }
+}
+
+fn task_lane_name(task: &flowrt_ir::TaskIr) -> String {
+    task.lane
+        .clone()
+        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
 }
 
 fn self_description_message_abi(
@@ -471,6 +546,13 @@ fn trigger_name(trigger: TriggerKind) -> &'static str {
         TriggerKind::OnMessage => "on_message",
         TriggerKind::Startup => "startup",
         TriggerKind::Shutdown => "shutdown",
+    }
+}
+
+fn readiness_name(readiness: TaskReadiness) -> &'static str {
+    match readiness {
+        TaskReadiness::AnyReady => "any_ready",
+        TaskReadiness::AllReady => "all_ready",
     }
 }
 

@@ -301,6 +301,81 @@ output = ["slow"]
 }
 
 #[test]
+fn accepts_scheduler_v2_task_fields() {
+    let source = r#"
+[package]
+name = "scheduler_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["sample:u32"]
+
+[component.sink]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+readiness = "all_ready"
+lane = "sink_serial"
+priority = 4
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).expect("scheduler v2 task fields should validate");
+}
+
+#[test]
+fn rejects_readiness_on_non_on_message_task() {
+    let source = r#"
+[package]
+name = "bad_readiness"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["sample:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+readiness = "all_ready"
+output = ["sample"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("readiness on periodic task should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "task on instance `worker` must not set readiness unless trigger is on_message",
+        )
+    }));
+}
+
+#[test]
 fn rejects_process_spanning_multiple_targets() {
     let source = r#"
 [package]

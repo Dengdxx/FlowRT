@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, PortIr,
-    PortRef, Ros2BridgeDirection, TaskIr, TriggerKind, TypeExpr, param_value_compatible,
-    param_value_kind,
+    PortRef, Ros2BridgeDirection, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    param_value_compatible, param_value_kind,
 };
 
 use crate::ValidationError;
@@ -155,6 +155,12 @@ fn validate_tasks(
         if task.trigger == TriggerKind::OnMessage && task.inputs.is_empty() {
             errors.push(ValidationError::new(format!(
                 "on_message task on instance `{}` must list at least one input",
+                instance.name
+            )));
+        }
+        if task.trigger != TriggerKind::OnMessage && task.readiness != TaskReadiness::AnyReady {
+            errors.push(ValidationError::new(format!(
+                "task on instance `{}` must not set readiness unless trigger is on_message",
                 instance.name
             )));
         }

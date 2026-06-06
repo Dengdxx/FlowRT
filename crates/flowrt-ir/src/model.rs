@@ -194,8 +194,10 @@ pub struct TaskIr {
     pub name: String,
     pub instance: EntityRef,
     pub trigger: TriggerKind,
+    pub readiness: TaskReadiness,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,
+    pub lane: Option<String>,
     pub priority: Option<u32>,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
@@ -256,7 +258,14 @@ pub struct ProfileIr {
     pub id: EntityId,
     pub name: String,
     pub backend: BackendName,
+    pub scheduler: SchedulerDefaults,
     pub defaults: PolicyDefaults,
+}
+
+/// profile 级 scheduler 默认值。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SchedulerDefaults {
+    pub worker_threads: u32,
 }
 
 /// profile 级 channel policy 默认值。
@@ -335,6 +344,14 @@ pub enum TriggerKind {
     OnMessage,
     Startup,
     Shutdown,
+}
+
+/// on_message task 的 readiness 聚合语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskReadiness {
+    AnyReady,
+    AllReady,
 }
 
 /// channel 语义类型。

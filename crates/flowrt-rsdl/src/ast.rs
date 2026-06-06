@@ -102,8 +102,10 @@ pub struct RawInstance {
 pub struct RawTask {
     pub name: Option<String>,
     pub trigger: String,
+    pub readiness: Option<String>,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,
+    pub lane: Option<String>,
     pub priority: Option<u32>,
     pub input: Vec<String>,
     pub output: Vec<String>,
@@ -136,6 +138,7 @@ pub struct RawRos2Bridge {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawProfile {
     pub backend: Option<String>,
+    pub worker_threads: Option<u32>,
     pub default_overflow: Option<String>,
     pub default_stale_policy: Option<String>,
     pub max_age_ms: Option<u64>,

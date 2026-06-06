@@ -18,8 +18,9 @@ use crate::runtime_plan::{
 use crate::{
     component_by_name, float_literal, iox2_service_name, managed_header, param_json_literal,
     param_type_name, param_update_name, param_value_for_instance, pascal_case,
-    ros2_bridge_key_expr, selected_backend_name, tasks_for_instance,
-    topo_order_instances_for_language, zenoh_key_expr,
+    ros2_bridge_key_expr, scheduler_tasks_for_order, selected_backend_name,
+    selected_profile_worker_threads, tasks_for_instance, topo_order_instances_for_language,
+    zenoh_key_expr,
 };
 
 fn cpp_param_type(ty: ParamType) -> &'static str {
@@ -120,7 +121,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <cerrno>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <algorithm>\n#include <cerrno>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -149,38 +150,62 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         &order,
         "step",
         TaskEmissionPhase::Scheduler,
+        None,
     ));
     output.push_str(&emit_cpp_app_step(
         &step_emission,
         &order,
         "step_startup",
         TaskEmissionPhase::Startup,
+        None,
     ));
     output.push_str(&emit_cpp_app_step(
         &step_emission,
         &order,
         "step_shutdown",
         TaskEmissionPhase::Shutdown,
+        None,
     ));
+    for task in scheduler_tasks_for_order(graph, &order) {
+        output.push_str(&emit_cpp_app_step(
+            &step_emission,
+            &order,
+            &cpp_task_step_function_name(task),
+            TaskEmissionPhase::Scheduler,
+            Some(task),
+        ));
+    }
     for process in &process_plans {
         output.push_str(&emit_cpp_app_step(
             &step_emission,
             &process.instances,
             &format!("step_process_{}", process.method_suffix),
             TaskEmissionPhase::Scheduler,
+            None,
         ));
         output.push_str(&emit_cpp_app_step(
             &step_emission,
             &process.instances,
             &format!("step_process_{}_startup", process.method_suffix),
             TaskEmissionPhase::Startup,
+            None,
         ));
         output.push_str(&emit_cpp_app_step(
             &step_emission,
             &process.instances,
             &format!("step_process_{}_shutdown", process.method_suffix),
             TaskEmissionPhase::Shutdown,
+            None,
         ));
+        for task in scheduler_tasks_for_order(graph, &process.instances) {
+            output.push_str(&emit_cpp_app_step(
+                &step_emission,
+                &process.instances,
+                &cpp_process_task_step_function_name(process, task),
+                TaskEmissionPhase::Scheduler,
+                Some(task),
+            ));
+        }
     }
     output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
         contract,
@@ -190,6 +215,8 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         shutdown_function_name: "step_shutdown",
         order: &order,
         binds: &bind_plans,
+        graph,
+        process: None,
         package_name: &contract.package.name,
         process_name: "main",
     }));
@@ -207,12 +234,15 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             shutdown_function_name: &shutdown_function_name,
             order: &process.instances,
             binds: &bind_plans,
+            graph,
+            process: Some(process),
             package_name: &contract.package.name,
             process_name: &process.name,
         }));
     }
     let backend_factory = cpp_backend_factory(&selected_backend);
-    output.push_str(&format!(
+    output.push_str(
+        &format!(
         "flowrt::Status run(std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run(backend, run_ticks);\n}}\n\n"
     ));
     output.push_str(&format!(
@@ -248,21 +278,33 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
     );
+    for task in scheduler_tasks_for_order(graph, &order) {
+        output.push_str(&format!(
+            "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+            cpp_task_step_function_name(task)
+        ));
+    }
     for process in &process_plans {
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
+            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
             process.method_suffix
         ));
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
+            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
             process.method_suffix
         ));
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state);\n",
+            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
             process.method_suffix
         ));
+        for task in scheduler_tasks_for_order(graph, &process.instances) {
+            output.push_str(&format!(
+                "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+                cpp_process_task_step_function_name(process, task)
+            ));
+        }
     }
     for process in &process_plans {
         output.push_str(&format!(
@@ -439,10 +481,11 @@ fn emit_cpp_app_step(
     order: &[&InstanceIr],
     function_name: &str,
     phase: TaskEmissionPhase,
+    task_filter: Option<&flowrt_ir::TaskIr>,
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state) {{\n",
+        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events) {{\n",
     ));
     if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges) {
         output.push_str(
@@ -453,14 +496,26 @@ fn emit_cpp_app_step(
     }
     output.push_str("    (void)tick_context;\n");
     output.push_str("    (void)introspection_state;\n");
+    output.push_str("    (void)scheduler_events;\n");
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
-        if !component.params.is_empty() && phase == TaskEmissionPhase::Scheduler {
-            output.push_str(&cpp_apply_pending_params(instance, component, false));
+        if task_filter.is_none()
+            && !component.params.is_empty()
+            && phase == TaskEmissionPhase::Scheduler
+        {
+            output.push_str(&cpp_apply_pending_params(
+                instance,
+                component,
+                false,
+                "tick_context",
+            ));
         }
         for task in tasks_for_instance(emission.graph, instance) {
             if !phase.includes(task.trigger) {
+                continue;
+            }
+            if task_filter.is_some_and(|filter| filter.id != task.id) {
                 continue;
             }
             output.push_str("    {\n");
@@ -486,7 +541,12 @@ fn emit_cpp_app_step(
                     {
                         let bind = &emission.binds[*bind_index];
                         output.push_str(&indent_generated_block(
-                            &cpp_runtime_channel_read(input, bind, &input_local),
+                            &cpp_runtime_channel_read(
+                                input,
+                                bind,
+                                &input_local,
+                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            ),
                             true,
                         ));
                         output.push_str(&indent_generated_block(
@@ -551,7 +611,7 @@ fn emit_cpp_app_step(
                 call_args.push(cpp_step_local_name(&instance.name, &port.name));
             }
             output.push_str(&format!(
-                "{body_indent}if ({instance}_ && {instance}_->on_tick({args}) != flowrt::Status::Ok) {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
+                "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({instance}_->on_tick({args})) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return flowrt::Status::Retry;\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return flowrt::Status::Error;\n{body_inner_indent}}}\n{body_indent}}}\n",
                 instance = instance.name,
                 args = call_args.join(", ")
             ));
@@ -637,6 +697,8 @@ struct CppRunEmission<'a> {
     shutdown_function_name: &'a str,
     order: &'a [&'a InstanceIr],
     binds: &'a [BindRuntimePlan],
+    graph: &'a GraphIr,
+    process: Option<&'a ProcessRuntimePlan<'a>>,
     package_name: &'a str,
     process_name: &'a str,
 }
@@ -647,8 +709,11 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         "flowrt::Status App::{}(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
         run.function_name
     ));
+    output.push_str("    (void)backend;\n");
     output.push_str("    auto shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
+    output.push_str("    flowrt::ScheduleWaiter scheduler_events;\n");
+    output.push_str(&emit_cpp_scheduler_event_registration(run.binds));
     output.push_str(
         "    introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});\n",
     );
@@ -685,15 +750,12 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state);\n    }}\n",
+        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events);\n    }}\n",
         run.startup_function_name
     ));
+    output.push_str(&emit_cpp_scheduler_v2_loop(run));
     output.push_str(&format!(
-        "    {{\n        std::size_t tick_base = 0;\n        while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {{\n            status = backend.scheduler().run_ticks_until_shutdown(\n                1, shutdown, [this, &introspection_state, tick_base](std::size_t tick, flowrt::Context& tick_context) {{\n                    introspection_state.record_tick();\n                    return {}(tick_base + tick, tick_context, introspection_state);\n                }});\n            ++tick_base;\n        }}\n    }}\n",
-        run.step_function_name
-    ));
-    output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state);\n    }}\n",
+        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events);\n    }}\n",
         run.shutdown_function_name
     ));
     for instance in run.order.iter().rev() {
@@ -709,6 +771,291 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str("    return status;\n}\n\n");
+    output
+}
+
+fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
+    let tasks = scheduler_tasks_for_order(run.graph, run.order);
+    let mut output = String::new();
+    output.push_str(&format!(
+        "    flowrt::DeterministicExecutor scheduler{{{}}};\n",
+        selected_profile_worker_threads(run.contract)
+    ));
+
+    let lane_ids = cpp_scheduler_lane_ids(&tasks);
+    for (lane, lane_id) in &lane_ids {
+        output.push_str(&format!(
+            "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    (void){};\n",
+            cpp_string_literal(lane)
+        ));
+    }
+    for (index, task) in tasks.iter().enumerate() {
+        let task_id = index + 1;
+        let lane_id = lane_ids[&cpp_task_lane_name(task)];
+        let priority = task.priority.unwrap_or(0);
+        output.push_str(&format!(
+            "    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = {priority}}});\n"
+        ));
+        if task.trigger == flowrt_ir::TriggerKind::Periodic {
+            output.push_str(&format!(
+                "    scheduler.add_periodic(flowrt::PeriodicSpec{{.task = flowrt::TaskId{{{task_id}}}, .period = std::chrono::milliseconds{{{}}}}});\n    scheduler.wake(flowrt::TaskId{{{task_id}}});\n",
+                task.period_ms.unwrap_or(1)
+            ));
+        }
+    }
+    output.push_str(&emit_cpp_on_message_revision_state(&tasks, run.binds));
+    output.push_str(&format!(
+        "    const auto scheduler_base_period_ms = std::uint64_t{{{}}};\n",
+        cpp_scheduler_base_period_ms(&tasks)
+    ));
+    output.push_str(
+        "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n",
+    );
+    output.push_str(&emit_cpp_apply_pending_params_for_order(
+        run.contract,
+        run.order,
+    ));
+    let woke_on_message_decl = if tasks
+        .iter()
+        .any(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage)
+    {
+        "bool woke_on_message = false;"
+    } else {
+        "const bool woke_on_message = false;"
+    };
+    output.push_str(&format!(
+        "        introspection_state.record_tick();\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
+    ));
+    output.push_str(&indent_generated_block_levels(
+        &emit_cpp_on_message_wake_checks(&tasks, run.binds),
+        1,
+    ));
+    output.push_str(
+        "            const auto task_statuses = scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, tick_time_ms](flowrt::TaskId task) {\n                switch (task.value) {\n",
+    );
+    for (index, task) in tasks.iter().enumerate() {
+        let task_id = index + 1;
+        let function_name = match run.process {
+            Some(process) => cpp_process_task_step_function_name(process, task),
+            None => cpp_task_step_function_name(task),
+        };
+        output.push_str(&format!(
+            "                    case {task_id}: return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n"
+        ));
+    }
+    if tasks.is_empty() {
+        output.push_str(&format!(
+            "                    default: return {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n",
+            run.step_function_name
+        ));
+    } else {
+        output.push_str("                    default: return flowrt::Status::Error;\n");
+    }
+    output.push_str(&format!(
+        "                }}\n            }});\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (const auto task_status : task_statuses) {{\n                if (task_status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
+            next_deadline_expr = cpp_next_periodic_deadline_expr(&tasks)
+        )
+        .replace(
+            "next_periodic_deadline_ms->value",
+            "static_cast<std::uint64_t>(next_periodic_deadline_ms->count())",
+        ),
+    );
+    output
+}
+
+fn emit_cpp_scheduler_event_registration(binds: &[BindRuntimePlan]) -> String {
+    let mut output = String::new();
+    for bind in binds
+        .iter()
+        .filter(|bind| matches!(bind_backend(bind), "iox2" | "zenoh"))
+    {
+        output.push_str(&format!(
+            "    {field}_.set_schedule_waiter(scheduler_events);\n",
+            field = bind.field_name
+        ));
+    }
+    output
+}
+
+fn cpp_task_lane_name(task: &flowrt_ir::TaskIr) -> String {
+    task.lane
+        .clone()
+        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
+}
+
+fn cpp_scheduler_base_period_ms(tasks: &[&flowrt_ir::TaskIr]) -> u64 {
+    tasks
+        .iter()
+        .filter(|task| task.trigger == flowrt_ir::TriggerKind::Periodic)
+        .filter_map(|task| task.period_ms)
+        .min()
+        .unwrap_or(1)
+}
+
+fn cpp_next_periodic_deadline_expr(tasks: &[&flowrt_ir::TaskIr]) -> String {
+    let deadlines = tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, task)| task.trigger == flowrt_ir::TriggerKind::Periodic)
+        .map(|(index, _)| format!("scheduler.next_deadline(flowrt::TaskId{{{}}})", index + 1))
+        .collect::<Vec<_>>();
+    if deadlines.is_empty() {
+        "std::optional<std::chrono::milliseconds>{}".to_string()
+    } else {
+        let mut output = "std::optional<std::chrono::milliseconds>{std::min({".to_string();
+        output.push_str(&deadlines.join(", "));
+        output.push_str("})}");
+        output
+    }
+}
+
+fn emit_cpp_apply_pending_params_for_order(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        if !component.params.is_empty() {
+            output.push_str(&cpp_apply_pending_params(
+                instance,
+                component,
+                false,
+                "lifecycle_context",
+            ));
+        }
+    }
+    output
+}
+
+fn cpp_scheduler_lane_ids(tasks: &[&flowrt_ir::TaskIr]) -> BTreeMap<String, usize> {
+    let mut lanes = BTreeMap::new();
+    for task in tasks {
+        let lane = cpp_task_lane_name(task);
+        if !lanes.contains_key(&lane) {
+            let next_id = lanes.len() + 1;
+            lanes.insert(lane, next_id);
+        }
+    }
+    lanes
+}
+
+fn cpp_task_step_function_name(task: &flowrt_ir::TaskIr) -> String {
+    format!(
+        "step_task_{}_{}",
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
+fn cpp_process_task_step_function_name(
+    process: &ProcessRuntimePlan<'_>,
+    task: &flowrt_ir::TaskIr,
+) -> String {
+    format!(
+        "step_process_{}_task_{}_{}",
+        process.method_suffix,
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
+fn cpp_task_seen_revision_name(bind: &BindRuntimePlan, task: &flowrt_ir::TaskIr) -> String {
+    format!(
+        "{}_seen_revision_for_{}_{}",
+        bind.field_name,
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
+fn cpp_input_binds_for_task<'a>(
+    task: &flowrt_ir::TaskIr,
+    binds: &'a [BindRuntimePlan],
+) -> Vec<&'a BindRuntimePlan> {
+    task.inputs
+        .iter()
+        .filter_map(|input| {
+            binds.iter().find(|bind| {
+                bind.target_instance == task.instance.name && bind.target_port == *input
+            })
+        })
+        .collect()
+}
+
+fn emit_cpp_on_message_revision_state(
+    tasks: &[&flowrt_ir::TaskIr],
+    binds: &[BindRuntimePlan],
+) -> String {
+    let mut output = String::new();
+    for task in tasks
+        .iter()
+        .copied()
+        .filter(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage)
+    {
+        for bind in cpp_input_binds_for_task(task, binds) {
+            output.push_str(&format!(
+                "    std::uint64_t {seen} = 0;\n",
+                seen = cpp_task_seen_revision_name(bind, task)
+            ));
+        }
+    }
+    output
+}
+
+fn emit_cpp_on_message_wake_checks(
+    tasks: &[&flowrt_ir::TaskIr],
+    binds: &[BindRuntimePlan],
+) -> String {
+    let mut output = String::new();
+    for (index, task) in tasks.iter().enumerate() {
+        if task.trigger != flowrt_ir::TriggerKind::OnMessage {
+            continue;
+        }
+        let input_binds = cpp_input_binds_for_task(task, binds);
+        if input_binds.is_empty() {
+            continue;
+        }
+        for bind in &input_binds {
+            if matches!(bind_backend(bind), "iox2" | "zenoh") {
+                output.push_str(&format!(
+                    "        (void){field}_.receive_latest_at(tick_time_ms);\n",
+                    field = bind.field_name
+                ));
+            }
+        }
+        let checks = input_binds
+            .iter()
+            .map(|bind| {
+                let revision_changed = format!(
+                    "{field}_.revision() != {seen}",
+                    field = bind.field_name,
+                    seen = cpp_task_seen_revision_name(bind, task)
+                );
+                if bind.channel == ChannelKind::Fifo && bind_backend(bind) == "inproc" {
+                    format!(
+                        "({revision_changed} || !{field}_.empty())",
+                        field = bind.field_name
+                    )
+                } else {
+                    revision_changed
+                }
+            })
+            .collect::<Vec<_>>();
+        let joiner = match task.readiness {
+            flowrt_ir::TaskReadiness::AnyReady => " || ",
+            flowrt_ir::TaskReadiness::AllReady => " && ",
+        };
+        output.push_str(&format!("        if ({}) {{\n", checks.join(joiner)));
+        for bind in &input_binds {
+            output.push_str(&format!(
+                "            {seen} = {field}_.revision();\n",
+                seen = cpp_task_seen_revision_name(bind, task),
+                field = bind.field_name
+            ));
+        }
+        output.push_str(&format!(
+            "            scheduler.wake(flowrt::TaskId{{{}}});\n            woke_on_message = true;\n        }}\n",
+            index + 1
+        ));
+    }
     output
 }
 
@@ -849,8 +1196,20 @@ fn cpp_runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
     }
 }
 
-fn cpp_runtime_channel_read(input: &PortIr, bind: &BindRuntimePlan, local_name: &str) -> String {
+fn cpp_runtime_channel_read(
+    input: &PortIr,
+    bind: &BindRuntimePlan,
+    local_name: &str,
+    use_cached_transport: bool,
+) -> String {
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
+        if use_cached_transport {
+            return format!(
+                "    const auto {local} = {field}_.cached_latest_at(tick_time_ms);\n",
+                local = local_name,
+                field = bind.field_name
+            );
+        }
         return format!(
             "    auto {local}_result = {field}_.receive_latest_at(tick_time_ms);\n    if (std::holds_alternative<flowrt::ChannelError>({local}_result)) {{\n        return flowrt::Status::Error;\n    }}\n    const auto {local} = std::get<flowrt::Latest<{ty}>>({local}_result);\n",
             local = local_name,
@@ -904,18 +1263,18 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
     let introspection_record = cpp_introspection_publish_record(bind);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
-            "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n{introspection_record}",
+            "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        scheduler_events.notify_data();\n{introspection_record}",
             field = bind.field_name
         );
     }
 
     match bind.channel {
         ChannelKind::Latest => format!(
-            "        {field}_.publish_at(*value, tick_time_ms);\n{introspection_record}",
+            "        {field}_.publish_at(*value, tick_time_ms);\n        scheduler_events.notify_data();\n{introspection_record}",
             field = bind.field_name
         ),
         ChannelKind::Fifo => format!(
-            "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
+            "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
             field = bind.field_name
         ),
     }
@@ -1035,6 +1394,7 @@ fn cpp_apply_pending_params(
     instance: &InstanceIr,
     component: &ComponentIr,
     nested: bool,
+    context_name: &str,
 ) -> String {
     let mut output = String::new();
     let indent = step_indent(nested);
@@ -1060,7 +1420,7 @@ fn cpp_apply_pending_params(
             deep_indent = if nested { "                " } else { "            " }
         ));
         output.push_str(&format!(
-            "{inner_indent}if ({instance}_ && {instance}_->on_params_update({instance}_params_, {next}, tick_context) != flowrt::Status::Ok) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            "{inner_indent}if ({instance}_ && {instance}_->on_params_update({instance}_params_, {next}, {context_name}) != flowrt::Status::Ok) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
             instance = instance.name,
             deep_indent = if nested { "                " } else { "            " }
         ));
@@ -1101,7 +1461,7 @@ pub(crate) fn emit_cpp_main() -> String {
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include <charconv>\n#include <cstddef>\n#include <optional>\n#include <string_view>\n#include <system_error>\n\n");
     output.push_str(
-        "int main(int argc, char** argv) {\n    std::string_view process;\n    std::optional<std::size_t> run_ticks;\n    for (int index = 1; index < argc; ++index) {\n        const std::string_view arg(argv[index]);\n        if (arg == \"--process\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            process = argv[++index];\n        } else if (arg == \"--flowrt-run-ticks\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            const std::string_view raw(argv[++index]);\n            std::size_t ticks = 0;\n            const auto result = std::from_chars(raw.data(), raw.data() + raw.size(), ticks);\n            if (result.ec != std::errc{} || result.ptr != raw.data() + raw.size() || ticks == 0) {\n                return 2;\n            }\n            run_ticks = ticks;\n        } else {\n            return 2;\n        }\n    }\n\n    const auto status = process.empty() ? flowrt_app::run(run_ticks) : flowrt_app::run_process(process, run_ticks);\n    return status == flowrt::Status::Ok ? 0 : 1;\n}\n",
+        "int main(int argc, char** argv) {\n    std::string_view process;\n    std::optional<std::size_t> run_ticks;\n    for (int index = 1; index < argc; ++index) {\n        const std::string_view arg(argv[index]);\n        if (arg == \"--process\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            process = argv[++index];\n        } else if (arg == \"--flowrt-run-ticks\" || arg == \"--flowrt-run-steps\") {\n            if (index + 1 >= argc) {\n                return 2;\n            }\n            const std::string_view raw(argv[++index]);\n            std::size_t ticks = 0;\n            const auto result = std::from_chars(raw.data(), raw.data() + raw.size(), ticks);\n            if (result.ec != std::errc{} || result.ptr != raw.data() + raw.size() || ticks == 0) {\n                return 2;\n            }\n            run_ticks = ticks;\n        } else {\n            return 2;\n        }\n    }\n\n    const auto status = process.empty() ? flowrt_app::run(run_ticks) : flowrt_app::run_process(process, run_ticks);\n    return status == flowrt::Status::Ok ? 0 : 1;\n}\n",
     );
     output
 }

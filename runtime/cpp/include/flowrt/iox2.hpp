@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
+#include <flowrt/executor.hpp>
 #include <flowrt/wire.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -30,6 +32,8 @@ struct FlowrtIox2Header {
 
     std::uint64_t published_at_ms{};
 };
+
+inline constexpr std::size_t kWakeEventId = 4;
 
 /**
  * @brief 打开 iceoryx2 publish-subscribe endpoint 时使用的 C++ QoS 配置。
@@ -165,6 +169,27 @@ class Iox2PubSub {
      */
     ReconnectPolicy reconnect_policy() const noexcept { return health_.policy(); }
 
+    /**
+     * @brief 返回接收侧已接受样本的修订号。
+     */
+    std::uint64_t revision() const noexcept { return revision_; }
+
+    /**
+     * @brief 注册 scheduler 数据到达唤醒器。
+     *
+     * iox2 typed pub/sub 不直接暴露 sample-arrival waitable。FlowRT 使用同名 event service
+     * 作为 sideband wake：发布成功后 notifier 发送 wake event，接收侧 listener 只唤醒
+     * scheduler，不读取用户 payload。
+     */
+    void set_schedule_waiter(ScheduleWaiter waiter) noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        schedule_waiter_ = std::move(waiter);
+        start_wake_listener();
+#else
+        (void)waiter;
+#endif
+    }
+
 #ifdef FLOWRT_ENABLE_TEST_HOOKS
     /**
      * @brief 测试钩子：模拟本地 iox2 endpoint 资源丢失。
@@ -239,15 +264,28 @@ class Iox2PubSub {
 
             received_ = sample->payload();
             published_at_ms_ = sample->user_header().published_at_ms;
+            ++revision_;
         }
 
+        return cached_latest_at(now_ms);
+#else
+        (void)now_ms;
+        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
+        return ChannelError::Transport;
+#endif
+    }
+
+    /**
+     * @brief 返回最近一次已接收样本的 cached latest view，不触碰 transport。
+     */
+    Latest<T> cached_latest_at(std::uint64_t now_ms) const noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
         const bool stale = config_.stale().stale_at(published_at_ms_, now_ms);
         const bool drop_stale = stale && config_.stale().policy() == StalePolicy::Drop;
         return Latest<T>{received_ && !drop_stale ? std::addressof(*received_) : nullptr, stale};
 #else
         (void)now_ms;
-        health_.mark_failed("iceoryx2-cxx support is disabled", health_.snapshot().attempt);
-        return ChannelError::Transport;
+        return Latest<T>{};
 #endif
     }
 
@@ -329,6 +367,9 @@ class Iox2PubSub {
     }
 
     void reset_iox2_endpoint() noexcept {
+        stop_wake_listener();
+        notifier_.reset();
+        event_.reset();
         publisher_.reset();
         subscriber_.reset();
         service_.reset();
@@ -355,7 +396,65 @@ class Iox2PubSub {
             mark_transport_error("send iceoryx2 sample failed");
             return false;
         }
+        return notify_wake();
+    }
+
+    bool notify_wake() noexcept {
+        if (!notifier_) {
+            mark_transport_error("iceoryx2 wake notifier is not ready");
+            return false;
+        }
+        if (!notifier_->notify_with_custom_event_id(::iox2::EventId{kWakeEventId}).has_value()) {
+            mark_transport_error("notify iceoryx2 wake event failed");
+            return false;
+        }
         return true;
+    }
+
+    void start_wake_listener() noexcept {
+        if (!schedule_waiter_.has_value() || wake_thread_.has_value()) {
+            return;
+        }
+
+        auto service_name = service_name_;
+        auto waiter = *schedule_waiter_;
+        wake_thread_.emplace([service_name = std::move(service_name), waiter = std::move(waiter)](
+                                 std::stop_token stop_token) {
+            auto name = ::iox2::ServiceName::create(service_name.c_str());
+            if (!name.has_value()) {
+                return;
+            }
+            auto node = ::iox2::NodeBuilder().create<::iox2::ServiceType::Ipc>();
+            if (!node.has_value()) {
+                return;
+            }
+            auto wake_node = std::move(node).value();
+            auto event = wake_node.service_builder(std::move(name).value()).event().open_or_create();
+            if (!event.has_value()) {
+                return;
+            }
+            auto wake_event = std::move(event).value();
+            auto listener = wake_event.listener_builder().create();
+            if (!listener.has_value()) {
+                return;
+            }
+            auto wake_listener = std::move(listener).value();
+
+            while (!stop_token.stop_requested()) {
+                auto received =
+                    wake_listener.timed_wait_one(::iox2::bb::Duration::from_millis(50));
+                if (!received.has_value()) {
+                    return;
+                }
+                if (received->has_value()) {
+                    waiter.notify_data();
+                }
+            }
+        });
+    }
+
+    void stop_wake_listener() noexcept {
+        wake_thread_.reset();
     }
 
     bool open_iox2_endpoint() {
@@ -404,6 +503,24 @@ class Iox2PubSub {
             return false;
         }
         publisher_.emplace(std::move(publisher).value());
+        auto wake_name = ::iox2::ServiceName::create(service_name_.c_str());
+        if (!wake_name.has_value()) {
+            reset_iox2_endpoint();
+            return false;
+        }
+        auto event = node_->service_builder(std::move(wake_name).value()).event().open_or_create();
+        if (!event.has_value()) {
+            reset_iox2_endpoint();
+            return false;
+        }
+        event_.emplace(std::move(event).value());
+        auto notifier = event_->notifier_builder().create();
+        if (!notifier.has_value()) {
+            reset_iox2_endpoint();
+            return false;
+        }
+        notifier_.emplace(std::move(notifier).value());
+        start_wake_listener();
         return true;
     }
 #endif
@@ -411,11 +528,16 @@ class Iox2PubSub {
     std::string service_name_;
     Iox2ChannelConfig config_;
     BackendHealthTracker health_;
+    std::uint64_t revision_ = 0;
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
     std::optional<Iox2Node> node_;
     std::optional<Iox2Service> service_;
+    std::optional<::iox2::PortFactoryEvent<::iox2::ServiceType::Ipc>> event_;
     std::optional<Iox2Publisher> publisher_;
     std::optional<Iox2Subscriber> subscriber_;
+    std::optional<::iox2::Notifier<::iox2::ServiceType::Ipc>> notifier_;
+    std::optional<ScheduleWaiter> schedule_waiter_;
+    std::optional<std::jthread> wake_thread_;
     std::optional<T> received_;
     std::optional<std::uint64_t> published_at_ms_;
 #endif

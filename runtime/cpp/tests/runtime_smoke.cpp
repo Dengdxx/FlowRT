@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstdint>
 #include <flowrt/runtime.hpp>
+#include <optional>
 #include <string_view>
+#include <atomic>
 #include <vector>
 
 struct Sample {
@@ -27,6 +29,11 @@ struct TinyWireMessage {
         return value;
     }
 };
+
+flowrt::DetachedTask mark_after_schedule(flowrt::ManualExecutor &executor, bool &flag) {
+    co_await flowrt::schedule_on(executor);
+    flag = true;
+}
 
 template <std::size_t N>
 void assert_capabilities_equal(flowrt::BackendCapabilities capabilities,
@@ -218,6 +225,108 @@ int main() {
     assert(shutdown_ticks == 1);
     assert(shutdown_status == flowrt::Status::Ok);
 
+    flowrt::ScheduleWaiter data_waiter;
+    auto data_shutdown = flowrt::ShutdownToken::new_for_test();
+    std::thread data_notifier([&data_waiter]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        data_waiter.notify_data();
+    });
+    assert(data_waiter.wait_until(std::chrono::steady_clock::now() + std::chrono::seconds{1}, data_shutdown) ==
+           flowrt::ScheduleEvent::Data);
+    data_notifier.join();
+
+    const flowrt::ScheduleWaiter const_notifier = data_waiter;
+    const auto before_const_notify = data_waiter.data_generation();
+    const_notifier.notify_data();
+    assert(data_waiter.data_generation() == before_const_notify + 1);
+
+    flowrt::ScheduleWaiter barrier_waiter;
+    auto barrier_shutdown = flowrt::ShutdownToken::new_for_test();
+    barrier_waiter.notify_data();
+    const auto seen_generation = barrier_waiter.data_generation();
+    assert(barrier_waiter.wait_until_after(seen_generation,
+                                           std::chrono::steady_clock::now() + std::chrono::milliseconds{1},
+                                           barrier_shutdown) == flowrt::ScheduleEvent::Timer);
+
+    flowrt::ScheduleWaiter timer_waiter;
+    auto timer_shutdown = flowrt::ShutdownToken::new_for_test();
+    assert(timer_waiter.wait_until(std::chrono::steady_clock::now(), timer_shutdown) == flowrt::ScheduleEvent::Timer);
+
+    flowrt::ScheduleWaiter shutdown_waiter;
+    auto shutdown_for_waiter = flowrt::ShutdownToken::new_for_test();
+    shutdown_for_waiter.request();
+    assert(shutdown_waiter.wait_until(std::nullopt, shutdown_for_waiter) == flowrt::ScheduleEvent::Shutdown);
+
+    flowrt::DeterministicExecutor executor{1};
+    executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 10});
+    executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
+    executor.wake(flowrt::TaskId{1});
+    executor.wake(flowrt::TaskId{2});
+    std::vector<flowrt::TaskId> executor_order;
+    executor.run_ready([&executor_order](flowrt::TaskId task) {
+        executor_order.push_back(task);
+        return flowrt::Status::Ok;
+    });
+    assert((executor_order == std::vector<flowrt::TaskId>{flowrt::TaskId{2}, flowrt::TaskId{1}}));
+
+    flowrt::DeterministicExecutor fair_executor{1};
+    fair_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    fair_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
+    fair_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    fair_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
+    fair_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{3}, .lane = flowrt::LaneId{2}, .priority = 99});
+    fair_executor.wake(flowrt::TaskId{1});
+    fair_executor.wake(flowrt::TaskId{2});
+    fair_executor.wake(flowrt::TaskId{3});
+    std::vector<flowrt::TaskId> fair_order;
+    fair_executor.run_ready([&fair_order](flowrt::TaskId task) {
+        fair_order.push_back(task);
+        return flowrt::Status::Ok;
+    });
+    assert((fair_order == std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{3}, flowrt::TaskId{2}}));
+
+    flowrt::DeterministicExecutor timer_executor{1};
+    timer_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    timer_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    timer_executor.add_periodic(flowrt::PeriodicSpec{.task = flowrt::TaskId{1}, .period = std::chrono::milliseconds{10}});
+    timer_executor.advance_to(std::chrono::milliseconds{35});
+    std::vector<flowrt::TaskId> timer_order;
+    timer_executor.run_ready([&timer_order](flowrt::TaskId task) {
+        timer_order.push_back(task);
+        return flowrt::Status::Ok;
+    });
+    assert((timer_order == std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    assert(timer_executor.next_deadline(flowrt::TaskId{1}) == std::chrono::milliseconds{40});
+    assert(timer_executor.missed_periods(flowrt::TaskId{1}) == 2U);
+
+    flowrt::ManualExecutor coroutine_executor;
+    bool coroutine_resumed = false;
+    auto task = mark_after_schedule(coroutine_executor, coroutine_resumed);
+    (void)task;
+    assert(!coroutine_resumed);
+    assert(coroutine_executor.run_ready() == 1U);
+    assert(coroutine_resumed);
+
+    flowrt::WorkerPool worker_pool{2};
+    std::atomic<std::size_t> completed_jobs{0};
+    for (std::size_t index = 0; index < 8; ++index) {
+        assert(worker_pool.spawn([&completed_jobs]() {
+            ++completed_jobs;
+            return flowrt::Status::Ok;
+        }));
+    }
+    assert(worker_pool.worker_threads() == 2U);
+    assert(worker_pool.shutdown() == flowrt::Status::Ok);
+    assert(completed_jobs.load() == 8U);
+    assert(!worker_pool.spawn([]() { return flowrt::Status::Ok; }));
+
+    flowrt::WorkerPool failing_pool{2};
+    assert(failing_pool.spawn([]() { return flowrt::Status::Ok; }));
+    assert(failing_pool.spawn([]() { return flowrt::Status::Error; }));
+    assert(failing_pool.spawn([]() { return flowrt::Status::Ok; }));
+    assert(failing_pool.shutdown() == flowrt::Status::Error);
+
     Sample sample{42U};
     flowrt::Latest<Sample> latest(&sample, true);
     assert(latest.present());
@@ -234,10 +343,16 @@ int main() {
     assert(!output.present());
 
     flowrt::LatestChannel<Sample> latest_channel;
+    assert(latest_channel.revision() == 0U);
     latest_channel.publish(Sample{11U});
+    assert(latest_channel.revision() == 1U);
     assert(latest_channel.view().present());
     assert(latest_channel.view().get()->value == 11U);
-    assert(latest_channel.take()->value == 11U);
+    assert(latest_channel.revision() == 1U);
+    latest_channel.publish_at(Sample{12U}, 10U);
+    assert(latest_channel.revision() == 2U);
+    assert(latest_channel.take()->value == 12U);
+    assert(latest_channel.revision() == 2U);
 
     auto warn_channel = flowrt::LatestChannel<Sample>::with_stale_config(
         flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::Warn});
@@ -323,15 +438,19 @@ int main() {
     assert(fifo_channel.pop()->value == 2U);
 
     flowrt::FifoChannel<Sample> block_channel(1, flowrt::OverflowPolicy::Block);
+    assert(block_channel.revision() == 0U);
     const auto block_first = block_channel.push(Sample{3U});
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(block_first));
     assert(std::get<flowrt::ChannelWriteOutcome>(block_first) ==
            flowrt::ChannelWriteOutcome::Accepted);
+    assert(block_channel.revision() == 1U);
     const auto block_second = block_channel.push(Sample{4U});
     assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(block_second));
     assert(std::get<flowrt::ChannelWriteOutcome>(block_second) ==
            flowrt::ChannelWriteOutcome::Backpressured);
+    assert(block_channel.revision() == 1U);
     assert(block_channel.pop()->value == 3U);
+    assert(block_channel.revision() == 1U);
 
     auto iox2_config = flowrt::iox2::Iox2ChannelConfig::fifo(0, flowrt::OverflowPolicy::DropOldest)
                            .with_stale_config(flowrt::StaleConfig{std::chrono::milliseconds{5},

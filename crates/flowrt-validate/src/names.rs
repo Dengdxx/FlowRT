@@ -97,6 +97,9 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 NameStyle::SnakeCase,
                 errors,
             );
+            if let Some(lane) = &task.lane {
+                validate_name("lane", "lane name", lane, NameStyle::SnakeCase, errors);
+            }
         }
         for bridge in &graph.ros2_bridges {
             validate_name(

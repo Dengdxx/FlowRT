@@ -129,6 +129,7 @@ pub struct LatestChannel<T> {
     stale: bool,
     published_at_ms: Option<u64>,
     stale_config: StaleConfig,
+    revision: u64,
 }
 
 impl<T> Default for LatestChannel<T> {
@@ -138,6 +139,7 @@ impl<T> Default for LatestChannel<T> {
             stale: false,
             published_at_ms: None,
             stale_config: StaleConfig::default(),
+            revision: 0,
         }
     }
 }
@@ -161,6 +163,7 @@ impl<T> LatestChannel<T> {
         self.value = Some(value);
         self.stale = false;
         self.published_at_ms = None;
+        self.revision = self.revision.saturating_add(1);
     }
 
     /// 带 runtime 时间戳发布一个新样本。
@@ -168,6 +171,12 @@ impl<T> LatestChannel<T> {
         self.value = Some(value);
         self.stale = false;
         self.published_at_ms = Some(now_ms);
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    /// 返回已进入 channel 的样本修订号，用于调度器检测新到达数据。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// 设置当前样本的 stale 标记。
@@ -242,6 +251,7 @@ pub struct FifoChannel<T> {
     depth: usize,
     overflow: OverflowPolicy,
     stale_config: StaleConfig,
+    revision: u64,
 }
 
 impl<T> FifoChannel<T> {
@@ -252,6 +262,7 @@ impl<T> FifoChannel<T> {
             depth: depth.max(1),
             overflow,
             stale_config: StaleConfig::default(),
+            revision: 0,
         }
     }
 
@@ -286,6 +297,7 @@ impl<T> FifoChannel<T> {
     fn push_entry(&mut self, entry: FifoEntry<T>) -> Result<ChannelWriteOutcome, ChannelError> {
         if self.queue.len() < self.depth {
             self.queue.push_back(entry);
+            self.revision = self.revision.saturating_add(1);
             return Ok(ChannelWriteOutcome::Accepted);
         }
 
@@ -293,6 +305,7 @@ impl<T> FifoChannel<T> {
             OverflowPolicy::DropOldest => {
                 self.queue.pop_front();
                 self.queue.push_back(entry);
+                self.revision = self.revision.saturating_add(1);
                 Ok(ChannelWriteOutcome::DroppedOldest)
             }
             OverflowPolicy::DropNewest => Ok(ChannelWriteOutcome::DroppedNewest),
@@ -333,6 +346,11 @@ impl<T> FifoChannel<T> {
     /// 返回归一化后的队列深度。
     pub fn depth(&self) -> usize {
         self.depth
+    }
+
+    /// 返回已进入 channel 的样本修订号，用于调度器检测新到达数据。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -480,5 +498,33 @@ mod tests {
         assert_eq!(channel.push(2u32), Ok(ChannelWriteOutcome::Backpressured));
         assert_eq!(channel.len(), 1);
         assert_eq!(channel.pop(), Some(1));
+    }
+
+    #[test]
+    fn latest_channel_revision_advances_only_on_publish() {
+        let mut channel = LatestChannel::new();
+        assert_eq!(channel.revision(), 0);
+
+        channel.publish(7u32);
+        assert_eq!(channel.revision(), 1);
+        assert_eq!(channel.view().as_ref(), Some(&7));
+        assert_eq!(channel.revision(), 1);
+
+        channel.publish_at(9u32, 5);
+        assert_eq!(channel.revision(), 2);
+    }
+
+    #[test]
+    fn fifo_channel_revision_advances_only_when_sample_enters_queue() {
+        let mut channel = FifoChannel::new(1, OverflowPolicy::DropNewest);
+        assert_eq!(channel.revision(), 0);
+
+        assert_eq!(channel.push(1u32), Ok(ChannelWriteOutcome::Accepted));
+        assert_eq!(channel.revision(), 1);
+        assert_eq!(channel.push(2u32), Ok(ChannelWriteOutcome::DroppedNewest));
+        assert_eq!(channel.revision(), 1);
+
+        let _ = channel.pop();
+        assert_eq!(channel.revision(), 1);
     }
 }
