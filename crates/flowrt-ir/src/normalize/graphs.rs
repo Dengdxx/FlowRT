@@ -1,0 +1,473 @@
+use std::collections::BTreeMap;
+
+use flowrt_rsdl::{RawDocument, RawModuleDocument, RawProcess};
+
+use crate::{
+    BackendName, ChannelBackendSource, ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr,
+    ComponentIr, DeploymentIr, EntityId, EntityRef, GraphIr, InstanceIr, IrError, OverflowPolicy,
+    PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessRestartPolicy,
+    ProcessRestartPolicyKind, ProfileIr, Result, StalePolicy, TargetIr, TaskIr, TypeIr,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities,
+};
+
+use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
+use super::ids::entity_id;
+use super::modules::{parse_readiness, parse_trigger};
+use super::params::merge_instance_params;
+use super::profiles::{parse_overflow_policy, parse_stale_policy};
+use super::resolver::NameResolver;
+
+pub(super) fn normalize_instances(
+    document: &RawDocument,
+    raw_modules: &[RawModuleDocument],
+    resolver: &NameResolver,
+    component_ids: &BTreeMap<String, EntityId>,
+    target_ids: &BTreeMap<String, EntityId>,
+    graph_name: &str,
+) -> Result<(Vec<InstanceIr>, Vec<TaskIr>)> {
+    let mut instances = Vec::with_capacity(document.instances.len());
+    let mut tasks = Vec::new();
+    let mut component_param_schemas = BTreeMap::new();
+    for module in raw_modules {
+        for (name, component) in &module.components {
+            let decl_name = format!("{}::{}", module.module.name, name);
+            let symbol = resolver.component_info_for_decl(&decl_name);
+            let params = super::params::normalize_component_params(name, component)?
+                .into_iter()
+                .map(|param| (param.name.clone(), param))
+                .collect::<BTreeMap<_, _>>();
+            component_param_schemas.insert(symbol.qualified_name, params);
+        }
+    }
+    for (name, component) in &document.components {
+        let symbol = resolver.component_info_for_decl(name);
+        let params = super::params::normalize_component_params(name, component)?
+            .into_iter()
+            .map(|param| (param.name.clone(), param))
+            .collect::<BTreeMap<_, _>>();
+        component_param_schemas.insert(symbol.qualified_name, params);
+    }
+
+    for (name, raw) in &document.instances {
+        let component_symbol = resolver.resolve_component(&raw.component)?;
+        let component_id = component_ids
+            .get(&component_symbol.qualified_name)
+            .cloned()
+            .ok_or_else(|| IrError::UnknownComponent {
+                instance: name.clone(),
+                component: raw.component.clone(),
+            })?;
+        let component_ref = EntityRef {
+            id: component_id,
+            name: component_symbol.qualified_name.clone(),
+        };
+        let component = component_param_schemas
+            .get(component_symbol.qualified_name.as_str())
+            .expect("component IDs and normalized components must be built from the same document");
+        let params = merge_instance_params(name, raw, component)?;
+        let target = raw
+            .target
+            .as_ref()
+            .map(|target_name| {
+                target_ids
+                    .get(target_name)
+                    .cloned()
+                    .map(|id| EntityRef {
+                        id,
+                        name: target_name.clone(),
+                    })
+                    .ok_or_else(|| IrError::UnknownTarget {
+                        instance: name.clone(),
+                        target: target_name.clone(),
+                    })
+            })
+            .transpose()?;
+
+        let instance_id = entity_id("instance", &format!("{graph_name}.{name}"));
+        let instance_ref = EntityRef {
+            id: instance_id.clone(),
+            name: name.clone(),
+        };
+        for (task_index, raw_task) in raw.tasks.iter().enumerate() {
+            let task_name = raw_task
+                .name
+                .clone()
+                .unwrap_or_else(|| default_task_name(task_index));
+            tasks.push(TaskIr {
+                id: entity_id("task", &format!("{graph_name}.{name}.{task_name}")),
+                name: task_name,
+                instance: instance_ref.clone(),
+                trigger: parse_trigger(
+                    &format!("instance.{name}.task.trigger"),
+                    &raw_task.trigger,
+                )?,
+                readiness: parse_readiness(
+                    &format!("instance.{name}.task.readiness"),
+                    raw_task.readiness.as_deref(),
+                )?,
+                period_ms: raw_task.period_ms,
+                deadline_ms: raw_task.deadline_ms,
+                lane: raw_task.lane.clone(),
+                priority: raw_task.priority,
+                inputs: raw_task.input.clone(),
+                outputs: raw_task.output.clone(),
+            });
+        }
+
+        instances.push(InstanceIr {
+            id: instance_id,
+            name: name.clone(),
+            component: component_ref,
+            params,
+            process: raw.process.clone(),
+            target,
+        });
+    }
+
+    Ok((instances, tasks))
+}
+
+fn default_task_name(index: usize) -> String {
+    if index == 0 {
+        "main".to_string()
+    } else {
+        format!("task_{index}")
+    }
+}
+
+pub(super) fn normalize_processes(
+    document: &RawDocument,
+    instances: &[InstanceIr],
+) -> Result<Vec<ProcessIr>> {
+    let used_processes = instances
+        .iter()
+        .map(|instance| {
+            instance
+                .process
+                .clone()
+                .unwrap_or_else(|| "main".to_string())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let mut declared = BTreeMap::<String, &RawProcess>::new();
+    for raw in &document.processes {
+        if declared.insert(raw.name.clone(), raw).is_some() {
+            return Err(IrError::InvalidValue {
+                context: format!("process.{}", raw.name),
+                message: "process orchestration is declared more than once".to_string(),
+            });
+        }
+        if !used_processes.contains(&raw.name) {
+            return Err(IrError::InvalidValue {
+                context: format!("process.{}", raw.name),
+                message: "process is not used by any instance".to_string(),
+            });
+        }
+    }
+
+    let mut processes = Vec::with_capacity(used_processes.len());
+    for name in used_processes {
+        let raw = declared.get(&name).copied();
+        let mut seen_dependencies = std::collections::BTreeSet::new();
+        let mut depends_on = raw
+            .map(|raw| raw.depends_on.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|dependency| {
+                if !seen_dependencies.insert(dependency.clone()) {
+                    return Err(IrError::InvalidValue {
+                        context: format!("process.{name}.depends_on"),
+                        message: format!("duplicate dependency `{dependency}`"),
+                    });
+                }
+                if dependency == name {
+                    return Err(IrError::InvalidValue {
+                        context: format!("process.{name}.depends_on"),
+                        message: "process must not depend on itself".to_string(),
+                    });
+                }
+                if !instances.iter().any(|instance| {
+                    instance.process.as_deref().unwrap_or("main") == dependency.as_str()
+                }) {
+                    return Err(IrError::InvalidValue {
+                        context: format!("process.{name}.depends_on"),
+                        message: format!("unknown process `{dependency}`"),
+                    });
+                }
+                Ok(dependency)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        depends_on.sort();
+
+        processes.push(ProcessIr {
+            name: name.clone(),
+            depends_on,
+            restart: normalize_process_restart(&name, raw)?,
+            failure_propagation: normalize_failure_propagation(&name, raw)?,
+        });
+    }
+    Ok(processes)
+}
+
+fn normalize_process_restart(
+    process_name: &str,
+    raw: Option<&RawProcess>,
+) -> Result<ProcessRestartPolicy> {
+    let policy = match raw.and_then(|raw| raw.restart.as_deref()) {
+        Some("never") => ProcessRestartPolicyKind::Never,
+        Some("on_failure") | None => ProcessRestartPolicyKind::OnFailure,
+        Some("always") => ProcessRestartPolicyKind::Always,
+        Some(value) => {
+            return Err(IrError::InvalidEnum {
+                context: format!("process.{process_name}.restart"),
+                kind: "process restart policy",
+                value: value.to_string(),
+            });
+        }
+    };
+    let max_restarts = if policy == ProcessRestartPolicyKind::Never {
+        0
+    } else {
+        raw.and_then(|raw| raw.max_restarts).unwrap_or(3)
+    };
+    let initial_delay_ms = raw.and_then(|raw| raw.initial_delay_ms).unwrap_or(100);
+    let max_delay_ms = raw.and_then(|raw| raw.max_delay_ms).unwrap_or(1_000);
+    if initial_delay_ms == 0 {
+        return Err(IrError::InvalidValue {
+            context: format!("process.{process_name}.initial_delay_ms"),
+            message: "`initial_delay_ms` must be greater than zero".to_string(),
+        });
+    }
+    if max_delay_ms < initial_delay_ms {
+        return Err(IrError::InvalidValue {
+            context: format!("process.{process_name}.max_delay_ms"),
+            message: "`max_delay_ms` must be greater than or equal to initial_delay_ms".to_string(),
+        });
+    }
+    Ok(ProcessRestartPolicy {
+        policy,
+        max_restarts,
+        initial_delay_ms,
+        max_delay_ms,
+    })
+}
+
+fn normalize_failure_propagation(
+    process_name: &str,
+    raw: Option<&RawProcess>,
+) -> Result<ProcessFailurePropagation> {
+    match raw.and_then(|raw| raw.failure.as_deref()) {
+        Some("propagate") | None => Ok(ProcessFailurePropagation::Propagate),
+        Some("isolate") => Ok(ProcessFailurePropagation::Isolate),
+        Some(value) => Err(IrError::InvalidEnum {
+            context: format!("process.{process_name}.failure"),
+            kind: "process failure propagation",
+            value: value.to_string(),
+        }),
+    }
+}
+
+pub(super) fn normalize_binds(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    types: &[TypeIr],
+    components: &[ComponentIr],
+    instances: &[InstanceIr],
+    profiles: &[ProfileIr],
+) -> Result<Vec<ChannelEdgeIr>> {
+    let default_policy = profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or(profiles.first());
+    let default_overflow = default_policy
+        .map(|profile| profile.defaults.default_overflow)
+        .unwrap_or(OverflowPolicy::DropOldest);
+    let default_stale = default_policy
+        .map(|profile| profile.defaults.default_stale_policy)
+        .unwrap_or(StalePolicy::Warn);
+    let default_max_age = default_policy.and_then(|profile| profile.defaults.max_age_ms);
+    let default_backend = default_policy
+        .map(|profile| profile.backend.0.as_str())
+        .unwrap_or("inproc");
+    let source_port_types = source_port_types_by_endpoint(components, instances);
+    let instances_by_name = instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut binds = document
+        .binds
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let channel =
+                parse_channel_kind(&format!("bind.dataflow[{index}].channel"), &raw.channel)?;
+            let depth = raw.depth.or(match channel {
+                ChannelKind::Latest => Some(1),
+                ChannelKind::Fifo => None,
+            });
+            let overflow = match raw.overflow.as_deref() {
+                Some(value) => {
+                    parse_overflow_policy(&format!("bind.dataflow[{index}].overflow"), value)?
+                }
+                None => default_overflow,
+            };
+            let stale = match raw.stale_policy.as_deref() {
+                Some(value) => {
+                    parse_stale_policy(&format!("bind.dataflow[{index}].stale_policy"), value)?
+                }
+                None => default_stale,
+            };
+            let from = parse_port_ref(&raw.from, instance_refs)?;
+            let to = parse_port_ref(&raw.to, instance_refs)?;
+            let source_type =
+                source_port_types.get(&(from.instance.name.clone(), from.port.clone()));
+            let topology = route_topology(&instances_by_name, &from, &to);
+            let backend_seed = match raw.backend.as_deref() {
+                Some("auto") | None => default_backend,
+                Some(backend) => backend,
+            };
+            let resolved_backend = resolve_channel_backend(backend_seed, source_type, types);
+            let backend_source = if raw.backend.is_some()
+                && raw.backend.as_deref() != Some("auto")
+                && resolved_backend.source != ChannelBackendSource::AutoFallback
+            {
+                ChannelBackendSource::Explicit
+            } else {
+                resolved_backend.source
+            };
+
+            Ok(ChannelEdgeIr {
+                id: entity_id("bind", &format!("{}->{}", raw.from, raw.to)),
+                from,
+                to,
+                backend: BackendName(resolved_backend.backend),
+                backend_source,
+                channel,
+                depth,
+                overflow,
+                stale,
+                max_age_ms: raw.max_age_ms.or(default_max_age),
+                policy_source: ChannelPolicySourceIr {
+                    overflow: if raw.overflow.is_some() {
+                        PolicyValueSource::Explicit
+                    } else {
+                        PolicyValueSource::ProfileDefault
+                    },
+                    stale: if raw.stale_policy.is_some() {
+                        PolicyValueSource::Explicit
+                    } else {
+                        PolicyValueSource::ProfileDefault
+                    },
+                    max_age_ms: if raw.max_age_ms.is_some() {
+                        PolicyValueSource::Explicit
+                    } else {
+                        PolicyValueSource::ProfileDefault
+                    },
+                },
+                capability_requirements: match source_type {
+                    Some(source_type) => channel_route_capabilities(
+                        types,
+                        source_type,
+                        channel,
+                        overflow,
+                        stale,
+                        topology,
+                    ),
+                    None => channel_capabilities(channel, overflow, stale),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    binds.sort_by(|left, right| {
+        (
+            &left.from.instance.name,
+            &left.from.port,
+            &left.to.instance.name,
+            &left.to.port,
+        )
+            .cmp(&(
+                &right.from.instance.name,
+                &right.from.port,
+                &right.to.instance.name,
+                &right.to.port,
+            ))
+    });
+    Ok(binds)
+}
+
+pub(super) fn normalize_deployments(
+    graph: &GraphIr,
+    types: &[TypeIr],
+    components: &[ComponentIr],
+    profiles: &[ProfileIr],
+    targets: &[TargetIr],
+) -> Vec<DeploymentIr> {
+    let graph_ref = EntityRef {
+        id: graph.id.clone(),
+        name: graph.name.clone(),
+    };
+    let mut deployments = Vec::new();
+    let required_capabilities = graph_required_capabilities(graph, types, components);
+
+    for profile in profiles {
+        for target in targets {
+            deployments.push(DeploymentIr {
+                id: entity_id(
+                    "deployment",
+                    &format!("{}.{}.{}", graph.name, profile.name, target.name),
+                ),
+                graph: graph_ref.clone(),
+                profile: EntityRef {
+                    id: profile.id.clone(),
+                    name: profile.name.clone(),
+                },
+                target: EntityRef {
+                    id: target.id.clone(),
+                    name: target.name.clone(),
+                },
+                backend: profile.backend.clone(),
+                required_capabilities: required_capabilities.clone(),
+                satisfied: deployment_capability_decision(
+                    &profile.backend,
+                    &target.backends,
+                    &required_capabilities,
+                )
+                .satisfied,
+            });
+        }
+    }
+
+    deployments
+}
+
+fn parse_channel_kind(context: &str, value: &str) -> Result<ChannelKind> {
+    match value {
+        "latest" => Ok(ChannelKind::Latest),
+        "fifo" => Ok(ChannelKind::Fifo),
+        _ => Err(IrError::InvalidEnum {
+            context: context.to_string(),
+            kind: "channel",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn parse_port_ref(endpoint: &str, instance_refs: &BTreeMap<String, EntityRef>) -> Result<PortRef> {
+    let Some((instance_name, port)) = endpoint.split_once('.') else {
+        return Err(IrError::InvalidPortEndpoint {
+            endpoint: endpoint.to_string(),
+        });
+    };
+    let instance = instance_refs.get(instance_name).cloned().ok_or_else(|| {
+        IrError::UnknownEndpointInstance {
+            endpoint: endpoint.to_string(),
+            instance: instance_name.to_string(),
+        }
+    })?;
+    Ok(PortRef {
+        instance,
+        port: port.to_string(),
+    })
+}
