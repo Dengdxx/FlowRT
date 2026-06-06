@@ -322,20 +322,21 @@ fn binary_name(stem: &str) -> String {
 
 /// 构造子进程 Command。
 ///
-/// - 非 ros2_bridge 进程传 `--process <name>`
-/// - ros2_bridge 进程设置 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`
+/// - 非 ros2_bridge runtime 进程传 `--process <name>`
+/// - ros2_bridge runtime 进程设置 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`
 /// - 注入 zenoh 环境变量
 pub fn build_process_command(
     app_exe: &Path,
     process_name: &str,
+    runtime_kind: &str,
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
 ) -> Command {
     let mut command = Command::new(app_exe);
-    if process_name != "ros2_bridge" {
-        command.arg("--process").arg(process_name);
-    } else {
+    if runtime_kind == "ros2_bridge" {
         command.env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp");
+    } else {
+        command.arg("--process").arg(process_name);
     }
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
@@ -357,10 +358,11 @@ pub fn build_process_command(
 pub fn spawn_flowrt_process(
     app_exe: &Path,
     process_name: &str,
+    runtime_kind: &str,
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
 ) -> Result<Child, String> {
-    build_process_command(app_exe, process_name, run_ticks, zenoh_env)
+    build_process_command(app_exe, process_name, runtime_kind, run_ticks, zenoh_env)
         .spawn()
         .map_err(|error| format!("failed to start FlowRT process `{process_name}`: {error}"))
 }
@@ -432,6 +434,7 @@ pub struct SupervisorConfig {
 
 struct SupervisedChild {
     name: String,
+    runtime_kind: String,
     app_exe: PathBuf,
     zenoh_env: Option<ZenohLaunchEnv>,
     dependencies: Vec<String>,
@@ -509,12 +512,14 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             let child = spawn_flowrt_process(
                 &app_exe,
                 &process.name,
+                &process.runtime_kind,
                 run_ticks,
                 process_zenoh_env.as_ref(),
             )?;
             let socket = crate::runtime_socket_path_for_pid(child.id());
             let child = SupervisedChild {
                 name: process.name.clone(),
+                runtime_kind: process.runtime_kind.clone(),
                 app_exe,
                 zenoh_env: process_zenoh_env,
                 dependencies: process.depends_on.clone(),
@@ -630,6 +635,7 @@ fn restart_child(
     let restarted = spawn_flowrt_process(
         &child.app_exe,
         &child.name,
+        &child.runtime_kind,
         run_ticks,
         child.zenoh_env.as_ref(),
     )?;
@@ -731,6 +737,21 @@ fn unix_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn command_env(command: &Command, key: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(env_key, _)| env_key.to_string_lossy() == key)
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
 
     // -- RestartPolicy 测试 --
 
@@ -796,6 +817,40 @@ mod tests {
         // 100 * 2^63 would overflow, but saturating_mul handles it
         assert_eq!(policy.delay_ms_for(63), 1000);
         assert_eq!(policy.delay_ms_for(100), 1000);
+    }
+
+    #[test]
+    fn process_command_uses_runtime_kind_not_process_name_for_ros2_bridge() {
+        let command = build_process_command(
+            Path::new("/tmp/flowrt_app"),
+            "ros2_bridge",
+            "rust",
+            Some(5),
+            None,
+        );
+
+        assert_eq!(
+            command_args(&command),
+            vec!["--process", "ros2_bridge", "--flowrt-run-steps", "5"]
+        );
+        assert_eq!(command_env(&command, "RMW_IMPLEMENTATION"), None);
+    }
+
+    #[test]
+    fn ros2_bridge_runtime_command_sets_rmw_without_process_arg() {
+        let command = build_process_command(
+            Path::new("/tmp/flowrt_ros2_bridge"),
+            "adapter",
+            "ros2_bridge",
+            Some(7),
+            None,
+        );
+
+        assert_eq!(command_args(&command), vec!["--flowrt-run-steps", "7"]);
+        assert_eq!(
+            command_env(&command, "RMW_IMPLEMENTATION").as_deref(),
+            Some("rmw_zenoh_cpp")
+        );
     }
 
     // -- 依赖排序测试 --
@@ -1068,7 +1123,7 @@ mod tests {
 
     #[test]
     fn zenoh_launch_env_hub_and_spoke() {
-        let processes = vec![
+        let processes = [
             LaunchProcess {
                 name: "hub".into(),
                 backend: "zenoh".into(),
@@ -1108,7 +1163,7 @@ mod tests {
 
     #[test]
     fn zenoh_launch_env_empty_for_no_zenoh() {
-        let processes = vec![LaunchProcess {
+        let processes = [LaunchProcess {
             name: "a".into(),
             backend: "inproc".into(),
             runtime_kind: "rust".into(),
