@@ -40,7 +40,7 @@ flowrt --version
 
 - `/usr/bin/flowrt`
 - Rust runtime crate
-- C++ runtime header
+- C++ runtime header（包含 C ABI 基础头）
 - CMake package
 - 私有 Rust crate vendor
 - `iceoryx2-cxx 0.9.1` C++ SDK
@@ -240,6 +240,15 @@ flowrt_app::App build_app() {
 Rust 组件通过生成 trait 和用户模块接入。
 
 业务代码只依赖 FlowRT runtime API，不直接依赖 backend 的 publisher/subscriber API。通信、调度、生命周期和观测由生成的 runtime shell 负责。
+
+## 跨语言 ABI 边界
+
+FlowRT 以 C ABI 作为后续 C、Python 和更多语言接入的共同边界。当前安装包中的 C++
+runtime header 已包含 `flowrt/abi.h`，Rust runtime 也提供对应的 `repr(C)` 镜像类型，
+用于稳定 status、backend health、重连策略和 borrowed string/bytes view 等基础形状。
+
+这只是 ABI 边界准备，不表示已经提供 Python binding 或 C runtime wrapper。用户组件
+当前仍以 C++ 和 Rust 生成接口为主。
 
 ## 参数
 

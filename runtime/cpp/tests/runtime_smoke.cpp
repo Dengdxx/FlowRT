@@ -1,7 +1,9 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <flowrt/abi.h>
 #include <flowrt/runtime.hpp>
 #include <optional>
 #include <string_view>
@@ -47,9 +49,72 @@ void assert_capabilities_equal(flowrt::BackendCapabilities capabilities,
 
 int main() {
     static_assert(flowrt::ok() == flowrt::Status::Ok);
+    static_assert(FLOWRT_ABI_VERSION_MAJOR == 0U);
+    static_assert(FLOWRT_ABI_VERSION_MINOR == 1U);
+    static_assert(sizeof(flowrt_status_t) == sizeof(std::uint32_t));
+    static_assert(FLOWRT_STATUS_OK == 0U);
+    static_assert(FLOWRT_STATUS_RETRY == 1U);
+    static_assert(FLOWRT_STATUS_ERROR == 2U);
+    static_assert(FLOWRT_BACKEND_INPROC == 0U);
+    static_assert(FLOWRT_BACKEND_IOX2 == 1U);
+    static_assert(FLOWRT_BACKEND_ZENOH == 2U);
+    static_assert(FLOWRT_BACKEND_HEALTH_READY == 0U);
+    static_assert(FLOWRT_BACKEND_HEALTH_DEGRADED == 1U);
+    static_assert(FLOWRT_BACKEND_HEALTH_RECONNECTING == 2U);
+    static_assert(FLOWRT_BACKEND_HEALTH_FAILED == 3U);
+    static_assert(offsetof(flowrt_string_view_t, data) == 0U);
+    static_assert(offsetof(flowrt_string_view_t, len) == sizeof(void *));
+    static_assert(sizeof(flowrt_string_view_t) == sizeof(void *) * 2U);
+    static_assert(offsetof(flowrt_reconnect_policy_t, initial_delay_ms) == 0U);
+    static_assert(offsetof(flowrt_reconnect_policy_t, max_delay_ms) == 8U);
+    static_assert(offsetof(flowrt_reconnect_policy_t, max_attempts) == 16U);
+    static_assert(offsetof(flowrt_reconnect_policy_t, has_max_attempts) == 20U);
+    static_assert(offsetof(flowrt_backend_health_snapshot_t, state) == 0U);
+    static_assert(offsetof(flowrt_backend_health_snapshot_t, attempt) == 4U);
+    static_assert(offsetof(flowrt_backend_health_snapshot_t, next_retry_unix_ms) == 8U);
+    static_assert(offsetof(flowrt_backend_health_snapshot_t, last_error) == 16U);
 
     flowrt::Context context;
     (void)context;
+
+    const flowrt_string_view_t label_view{
+        .data = "imu",
+        .len = 3U,
+    };
+    assert(label_view.data[0] == 'i');
+    assert(label_view.len == 3U);
+
+    const std::array<std::uint8_t, 3> bytes{1U, 2U, 3U};
+    const flowrt_bytes_view_t bytes_view{
+        .data = bytes.data(),
+        .len = bytes.size(),
+    };
+    assert(bytes_view.data[2] == 3U);
+    assert(bytes_view.len == 3U);
+
+    const flowrt_reconnect_policy_t abi_policy{
+        .initial_delay_ms = 100U,
+        .max_delay_ms = 1000U,
+        .max_attempts = 3U,
+        .has_max_attempts = 1U,
+        .reserved = {0U, 0U, 0U},
+    };
+    assert(abi_policy.initial_delay_ms == 100U);
+    assert(abi_policy.max_attempts == 3U);
+    assert(abi_policy.has_max_attempts == 1U);
+
+    const flowrt_backend_health_snapshot_t abi_snapshot{
+        .state = FLOWRT_BACKEND_HEALTH_RECONNECTING,
+        .attempt = 2U,
+        .next_retry_unix_ms = 123456U,
+        .last_error = label_view,
+        .has_next_retry_unix_ms = 1U,
+        .recoverable = 1U,
+        .reserved = {0U, 0U, 0U, 0U, 0U, 0U},
+    };
+    assert(abi_snapshot.state == FLOWRT_BACKEND_HEALTH_RECONNECTING);
+    assert(abi_snapshot.last_error.len == 3U);
+    assert(abi_snapshot.recoverable == 1U);
 
     std::array<std::uint8_t, TinyWireMessage::wire_size()> tiny_wire{};
     TinyWireMessage{0x1234U}.encode_wire(tiny_wire);

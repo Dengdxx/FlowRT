@@ -3,6 +3,7 @@
 //! 本 crate 只承载 runtime shell 和用户组件需要直接接触的薄接口：状态、上下文、输入视图、
 //! 输出句柄、channel 语义和 backend 抽象。用户算法不应依赖具体通信库 API。
 
+pub mod abi;
 pub mod backend;
 pub mod channel;
 pub mod executor;

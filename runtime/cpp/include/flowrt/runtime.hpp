@@ -1,5 +1,6 @@
 #pragma once
 
+#include <flowrt/abi.h>
 #include <flowrt/backend.hpp>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>

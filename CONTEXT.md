@@ -16,7 +16,7 @@ drain loop 级联唤醒。
 - module name resolver 和跨模块引用。
 - supervisor 编排增强，包括 process 依赖顺序、故障传播和可配置 restart policy。
 - Service 请求/响应语义切片。
-- C/Python ABI 边界准备。
+- C/Python ABI 边界准备：先稳定 C ABI 基础类型，不实现 Python binding。
 
 录制回放系统暂不实施，但实现上述能力时应预留 runtime、self-description 或 CLI
 边界，避免后续引入时破坏已发布契约。
@@ -86,6 +86,10 @@ scripts/
   `service_server`，graph 可用 `[[bind.service]]` 绑定 client/server；Contract IR、
   validator 和 launch manifest 已保留 service 拓扑，但 runtime RPC 调用 API 仍是后续
   切片。
+- C/Python ABI 边界准备：`runtime/cpp/include/flowrt/abi.h` 定义 C ABI 版本、
+  status/backend/health 整数编码、borrowed string/bytes view、reconnect policy 和
+  backend health snapshot；Rust runtime 提供对应 `repr(C)` 镜像类型和转换函数。当前
+  只是稳定跨语言边界，不提供 C runtime wrapper 或 Python binding。
 - C++ only contract 的 CMake app 路径，支持 `flowrt build` / `flowrt run` / `flowrt launch`。
 - language-separated mixed contract over `iox2` 或 `zenoh`，并拒绝同一 process group
   内混合 C++/Rust 以及 mixed `inproc` process boundary。
@@ -157,10 +161,12 @@ runtime introspection socket 使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock` 或
 启动 status server 时不能覆盖仍可连接的 live socket；SIGKILL 后残留且不可连接的
 socket 文件可以回收。Rust `IntrospectionState` 会在 mutex poison 后恢复访问。
 
-Runtime 已提供 C ABI 友好形状的 `BackendHealthState`、`BackendHealthSnapshot`、
-`ReconnectPolicy` 和 `BackendHealthTracker`。`iox2` 和 `zenoh` endpoint 已接入自动
-恢复：本地 transport 资源丢失或操作失败会重建本地 publisher/subscriber/session；
-codec/schema 错误不得触发重连。
+Runtime 已提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象。C ABI 当前覆盖
+`Status`、backend kind、backend health state、borrowed string/bytes view、
+`ReconnectPolicy` 和 `BackendHealthSnapshot` 的稳定 POD 形状；Rust/C++ runtime 内部
+仍使用各自语言的高层类型，并通过转换函数或 C header 对齐。`iox2` 和 `zenoh`
+endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地
+publisher/subscriber/session；codec/schema 错误不得触发重连。
 
 ## ROS2 Bridge 状态
 

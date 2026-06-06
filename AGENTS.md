@@ -218,6 +218,26 @@ C++/Rust 生成类型必须通过 conformance tests 验证：
 
 跨语言 sample field value 必须保持字节等价，padding 和默认初始化语义不得漂移。
 
+## 跨语言 C ABI 边界
+
+C ABI 是后续 C、Python 和更多语言 runtime/binding 的稳定边界，不是临时 FFI
+胶水。新增跨语言 runtime 共享类型时必须遵守：
+
+- C 侧事实源放在 `runtime/cpp/include/flowrt/abi.h`，只定义 POD 类型、整数编码、
+  borrowed view 和版本常量，不暴露 C++/Rust 对象、backend SDK 句柄或所有权语义。
+- Rust 侧必须提供对应 `#[repr(C)]` 镜像类型和转换函数；C++ 侧必须能直接包含同一
+  C header。
+- 枚举类语义在 C ABI 中使用固定宽度整数和常量表达，不能依赖 C enum 的实现相关
+  大小。
+- 可选字段必须使用显式 `has_*` 标志和保留字节，不把 Rust `Option`、C++
+  `std::optional` 或语言特定 bool 布局泄漏到 ABI。
+- string/bytes 使用借用 view。调用方如果要跨调用保存内容，必须复制；ABI 类型不
+  承担分配、释放或生命周期延长责任。
+- ABI 版本常量改变前必须说明兼容性影响，并同步 Rust/C++ layout 测试、文档和
+  changelog。
+- C/Python 支持应复用该边界逐步实现；在语义未定前不要引入 Python binding、
+  动态插件加载或新构建系统。
+
 ## Backend 约定
 
 Backend capability 必须显式建模。validator 必须拒绝未知 backend 名称，以及 profile
