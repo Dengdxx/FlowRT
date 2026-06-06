@@ -162,6 +162,50 @@ fn validate_service_binds(
             )));
         }
 
+        // 校验 service backend 合法性：只允许 inproc 和 zenoh。
+        if !flowrt_ir::is_known_service_backend(&service.backend.0) {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` uses unsupported backend `{}`; only `inproc` and `zenoh` are allowed",
+                service.backend.0
+            )));
+        }
+
+        // 校验 service policy 字段为正数。
+        if service.policy.timeout_ms == 0 {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` has zero timeout_ms"
+            )));
+        }
+        if service.policy.queue_depth == 0 {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` has zero queue_depth"
+            )));
+        }
+        if service.policy.max_in_flight == 0 {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` has zero max_in_flight"
+            )));
+        }
+
+        // 校验显式 inproc 不跨 process。
+        if service.backend.0 == "inproc"
+            && service.backend_source == flowrt_ir::ServiceBackendSource::Explicit
+        {
+            let client_process = instances
+                .get(service.client.instance.name.as_str())
+                .and_then(|i| i.process.as_deref())
+                .unwrap_or("main");
+            let server_process = instances
+                .get(service.server.instance.name.as_str())
+                .and_then(|i| i.process.as_deref())
+                .unwrap_or("main");
+            if client_process != server_process {
+                errors.push(ValidationError::new(format!(
+                    "service bind `{client_key} -> {server_key}` uses explicit `inproc` but spans processes `{client_process}` and `{server_process}`"
+                )));
+            }
+        }
+
         let client = match resolve_service_port(
             components,
             instances,
