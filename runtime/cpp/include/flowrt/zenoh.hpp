@@ -1,13 +1,16 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
 #include <flowrt/executor.hpp>
+#include <flowrt/service.hpp>
 #include <flowrt/wire.hpp>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -639,6 +642,394 @@ class ZenohPubSub {
     std::optional<std::uint64_t> published_at_ms_;
 #endif
 };
+
+/**
+ * @brief Zenoh service client。
+ *
+ * 使用 zenoh query 实现 request/response 语义。client 通过 shared_ptr 共享 session。
+ */
+template <typename Req, typename Resp>
+class ZenohServiceClient {
+   public:
+    ZenohServiceClient(ZenohServiceClient &&) noexcept = default;
+    ZenohServiceClient(const ZenohServiceClient &) = delete;
+    auto operator=(ZenohServiceClient &&) noexcept -> ZenohServiceClient & = default;
+    auto operator=(const ZenohServiceClient &) -> ZenohServiceClient & = delete;
+    ~ZenohServiceClient() = default;
+
+    /**
+     * @brief 使用已有 session 打开 zenoh service client。
+     */
+    static ZenohServiceClient open(std::string_view service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                   ,
+                                   std::shared_ptr<::zenoh::Session> session
+#endif
+    ) {
+        return ZenohServiceClient(service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                  ,
+                                  std::move(session)
+#endif
+        );
+    }
+
+    /**
+     * @brief 发送请求并等待响应。
+     */
+    ServiceResult<Resp> call(const Req &request, std::uint64_t timeout_ms) {
+#ifndef FLOWRT_HAS_ZENOH_CXX
+        (void)request;
+        (void)timeout_ms;
+        return ServiceResult<Resp>::err(ServiceError::Backend);
+#else
+        if (!session_ || session_->is_closed()) {
+            return ServiceResult<Resp>::err(ServiceError::Unavailable);
+        }
+
+        const auto now_ms = detail::monotonic_now_ms();
+        const auto deadline = Deadline::make(timeout_ms, now_ms);
+        if (!deadline.has_value()) {
+            return ServiceResult<Resp>::err(ServiceError::Timeout);
+        }
+
+        const auto sequence = sequence_++;
+        const RequestId request_id{session_id_, sequence, service_id_};
+
+        std::vector<std::uint8_t> payload;
+        try {
+            payload.resize(detail::encoded_frame_size(request));
+            detail::encode_frame(request, std::span<std::uint8_t>{payload});
+        } catch (...) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Protocol,
+                                                         "encode request payload failed");
+        }
+
+        const auto header = ServiceFrameHeader::make_request(request_id, *deadline, 0, 0);
+        const auto frame = encode_service_frame(header, payload, {});
+
+        try {
+            std::optional<::zenoh::Reply> reply_holder;
+            std::atomic<bool> reply_done{false};
+            auto on_reply = [&reply_holder, &reply_done](::zenoh::Reply &reply) {
+                if (!reply_holder.has_value()) {
+                    reply_holder = std::move(reply);
+                }
+                reply_done = true;
+            };
+            auto on_drop = [&reply_done]() { reply_done = true; };
+            auto opts = ::zenoh::Session::GetOptions::create_default();
+            opts.timeout_ms = timeout_ms;
+            opts.payload = ::zenoh::Bytes(std::vector<std::uint8_t>(frame));
+            session_->get(::zenoh::KeyExpr(key_expr_), "", std::move(on_reply), std::move(on_drop),
+                          std::move(opts));
+
+            // 等待回调触发或超时
+            const auto wait_deadline =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+            while (!reply_done.load(std::memory_order_acquire)) {
+                if (std::chrono::steady_clock::now() >= wait_deadline) {
+                    return ServiceResult<Resp>::err(ServiceError::Timeout);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            if (!reply_holder.has_value()) {
+                return ServiceResult<Resp>::err(ServiceError::Timeout);
+            }
+            auto &reply = *reply_holder;
+
+            if (!reply.is_ok()) {
+                return ServiceResult<Resp>::err(ServiceError::Timeout);
+            }
+            auto &sample = reply.get_ok();
+
+            const auto reply_payload = sample.get_payload().as_vector();
+            const auto decoded = decode_service_frame(reply_payload);
+            const auto &resp_header = decoded.header;
+
+            if (resp_header.error_code != static_cast<std::uint16_t>(ServiceError::Ok)) {
+                const auto error =
+                    service_error_from_abi(resp_header.error_code).value_or(ServiceError::Backend);
+                std::optional<std::string> message;
+                if (!decoded.error_msg.empty()) {
+                    message = std::string(decoded.error_msg.begin(), decoded.error_msg.end());
+                }
+                return ServiceResult<Resp>::err_with_message(error, message.value_or(""));
+            }
+
+            auto resp = detail::decode_frame<Resp>(decoded.payload);
+            return ServiceResult<Resp>::ok(std::move(resp));
+        } catch (const std::exception &e) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Backend, e.what());
+        } catch (...) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Backend, "zenoh query failed");
+        }
+#endif
+    }
+
+    /**
+     * @brief 返回 service 名称。
+     */
+    std::string_view service_name() const noexcept { return service_name_; }
+
+    /**
+     * @brief 判断 client 是否已绑定到底层 zenoh transport 资源。
+     */
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return session_ && !session_->is_closed();
+#else
+        return false;
+#endif
+    }
+
+   private:
+    ZenohServiceClient(std::string_view service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                        ,
+                        std::shared_ptr<::zenoh::Session> session
+#endif
+                        )
+        : service_name_(service_name),
+          service_id_(fnv1a64(service_name)),
+          key_expr_("flowrt/service/" + std::string(service_name) + "/request"),
+          session_id_(reinterpret_cast<std::uint64_t>(this))
+#ifdef FLOWRT_HAS_ZENOH_CXX
+          ,
+          session_(std::move(session))
+#endif
+    {
+    }
+
+    std::string service_name_;
+    std::uint64_t service_id_;
+    std::string key_expr_;
+    std::uint64_t session_id_;
+    std::uint64_t sequence_ = 0;
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    std::shared_ptr<::zenoh::Session> session_;
+#endif
+};
+
+/**
+ * @brief Zenoh service server。
+ *
+ * 使用 zenoh queryable 实现 request/response 语义。server 不持有 session 所有权，
+ * session 生命周期由调用方管理。
+ */
+template <typename Req, typename Resp>
+class ZenohServiceServer {
+   public:
+    using Handler = std::function<ServiceResult<Resp>(const Req &)>;
+
+    ZenohServiceServer(ZenohServiceServer &&) noexcept = default;
+    ZenohServiceServer(const ZenohServiceServer &) = delete;
+    auto operator=(ZenohServiceServer &&) noexcept -> ZenohServiceServer & = default;
+    auto operator=(const ZenohServiceServer &) -> ZenohServiceServer & = delete;
+    ~ZenohServiceServer() = default;
+
+    /**
+     * @brief 使用已有 session 打开 zenoh service server。
+     */
+    static ZenohServiceServer open(std::string_view service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                   ,
+                                   std::shared_ptr<::zenoh::Session> session
+#endif
+                                   ,
+                                   Handler handler) {
+        return ZenohServiceServer(service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                  ,
+                                  std::move(session)
+#endif
+                                  ,
+                                  std::move(handler));
+    }
+
+    /**
+     * @brief 返回 service 名称。
+     */
+    std::string_view service_name() const noexcept { return service_name_; }
+
+    /**
+     * @brief 判断 server 是否已绑定到底层 zenoh transport 资源。
+     */
+    bool ready() const noexcept {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        return queryable_.has_value();
+#else
+        return false;
+#endif
+    }
+
+   private:
+    ZenohServiceServer(std::string_view service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                        ,
+                        std::shared_ptr<::zenoh::Session> session
+#endif
+                        ,
+                        Handler handler)
+        : service_name_(service_name),
+          service_id_(fnv1a64(service_name)),
+          key_expr_("flowrt/service/" + std::string(service_name) + "/request"),
+          handler_(std::move(handler)) {
+#ifdef FLOWRT_HAS_ZENOH_CXX
+        auto handler_fn = handler_;
+        auto service_id = service_id_;
+        auto ke = key_expr_;
+
+        queryable_.emplace(session->declare_queryable(
+            ::zenoh::KeyExpr(ke),
+            [handler_fn, service_id, ke](::zenoh::Query &query) {
+
+                const auto reply_ke = ::zenoh::KeyExpr(ke);
+
+                std::vector<std::uint8_t> payload;
+                auto payload_ref = query.get_payload();
+                if (payload_ref.has_value()) {
+                    auto bytes = payload_ref->get().as_vector();
+                    payload = std::move(bytes);
+                } else {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{0, 0, service_id},
+                        Deadline::make(1000, detail::monotonic_now_ms()).value_or(Deadline{1000, 0}),
+                        0, 0, ServiceError::Protocol);
+                    const auto frame = encode_service_frame(header, {}, {});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                    return;
+                }
+
+                DecodedServiceFrame decoded;
+                try {
+                    decoded = decode_service_frame(payload);
+                } catch (...) {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{0, 0, service_id},
+                        Deadline::make(1000, detail::monotonic_now_ms()).value_or(Deadline{1000, 0}),
+                        0, 0, ServiceError::Protocol);
+                    const auto frame = encode_service_frame(header, {}, {});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                    return;
+                }
+
+                const auto &req_header = decoded.header;
+                const auto now_ms = detail::monotonic_now_ms();
+                const auto deadline = Deadline::make(req_header.timeout_ms, now_ms);
+                if (!deadline.has_value() || deadline->expired(now_ms)) {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{req_header.session_id, req_header.sequence, service_id},
+                        Deadline::make(1000, now_ms).value_or(Deadline{1000, 0}),
+                        req_header.correlation_id, req_header.schema_hash, ServiceError::Timeout);
+                    const auto frame = encode_service_frame(header, {}, {});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                    return;
+                }
+
+                Req request;
+                try {
+                    request = detail::decode_frame<Req>(decoded.payload);
+                } catch (...) {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{req_header.session_id, req_header.sequence, service_id},
+                        *deadline, req_header.correlation_id, req_header.schema_hash,
+                        ServiceError::Protocol);
+                    const auto frame = encode_service_frame(header, {}, {});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                    return;
+                }
+
+                auto result = handler_fn(request);
+                ServiceError error_code = ServiceError::Ok;
+                std::vector<std::uint8_t> response_payload;
+                std::vector<std::uint8_t> error_msg;
+
+                if (result.is_ok()) {
+                    const auto *value = result.value();
+                    if (value) {
+                        response_payload.resize(detail::encoded_frame_size(*value));
+                        detail::encode_frame(*value, std::span<std::uint8_t>{response_payload});
+                    }
+                } else {
+                    error_code = result.error_code();
+                    const auto &msg = result.error_message();
+                    if (msg.has_value()) {
+                        error_msg.assign(msg->begin(), msg->end());
+                    }
+                }
+
+                const auto header = ServiceFrameHeader::make_response(
+                    RequestId{req_header.session_id, req_header.sequence, service_id}, *deadline,
+                    req_header.correlation_id, req_header.schema_hash, error_code);
+                const auto frame = encode_service_frame(header, response_payload, error_msg);
+                query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+            },
+            []() {}));
+#endif
+    }
+
+    std::string service_name_;
+    std::uint64_t service_id_;
+    std::string key_expr_;
+    Handler handler_;
+#ifdef FLOWRT_HAS_ZENOH_CXX
+    std::optional<::zenoh::Queryable<void>> queryable_;
+#endif
+};
+
+#ifdef FLOWRT_HAS_ZENOH_CXX
+/**
+ * @brief 从 FLOWRT_ZENOH_* 环境变量构建 zenoh session 配置。
+ *
+ * 读取 FLOWRT_ZENOH_MODE、FLOWRT_ZENOH_LISTEN、FLOWRT_ZENOH_CONNECT、
+ * FLOWRT_ZENOH_NO_MULTICAST 环境变量，与 Rust 端 config_from_environment 对齐。
+ */
+inline ::zenoh::Config zenoh_config_from_environment() {
+    auto config = ::zenoh::Config::create_default();
+    if (const auto *mode = std::getenv("FLOWRT_ZENOH_MODE")) {
+        auto s = std::string("\"") + mode + "\"";
+        config.insert_json5(Z_CONFIG_MODE_KEY, s);
+    }
+    if (const auto *listen = std::getenv("FLOWRT_ZENOH_LISTEN")) {
+        std::string endpoints = "[\"";
+        for (const char *p = listen; *p; ++p) {
+            if (*p == ',') {
+                endpoints += "\",\"";
+            } else if (*p != ' ' && *p != '\t') {
+                endpoints += *p;
+            }
+        }
+        endpoints += "\"]";
+        config.insert_json5(Z_CONFIG_LISTEN_KEY, endpoints);
+    }
+    if (const auto *connect = std::getenv("FLOWRT_ZENOH_CONNECT")) {
+        std::string endpoints = "[\"";
+        for (const char *p = connect; *p; ++p) {
+            if (*p == ',') {
+                endpoints += "\",\"";
+            } else if (*p != ' ' && *p != '\t') {
+                endpoints += *p;
+            }
+        }
+        endpoints += "\"]";
+        config.insert_json5(Z_CONFIG_CONNECT_KEY, endpoints);
+    }
+    if (const auto *no_mc = std::getenv("FLOWRT_ZENOH_NO_MULTICAST");
+        no_mc && (std::string_view(no_mc) == "1" || std::string_view(no_mc) == "true")) {
+        config.insert_json5(Z_CONFIG_MULTICAST_SCOUTING_KEY, "false");
+    }
+    return config;
+}
+
+/**
+ * @brief 从环境变量打开 zenoh session。
+ */
+inline ::zenoh::Session open_zenoh_session_from_env() {
+    return ::zenoh::Session::open(zenoh_config_from_environment());
+}
+#endif
 
 }  // namespace zenoh
 
