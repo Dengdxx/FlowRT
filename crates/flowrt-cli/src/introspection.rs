@@ -1502,18 +1502,24 @@ pub(crate) fn parse_remote_params_key_expr(key: &str) -> Option<(&str, &str, &st
     Some((package, hash, pid))
 }
 
-/// 通过 zenoh 扫描所有远程 params 端点，返回匹配 `self_description_hash` 的 runtime。
-pub(crate) fn discover_remote_params_runtimes(
-    self_description_hash: &str,
-    timeout_ms: u64,
-) -> Result<Vec<RemoteRuntimeEntry>> {
+/// 打开用于远程参数控制面的 zenoh session。
+fn open_zenoh_params_session() -> Result<zenoh::Session> {
     let zenoh_config = flowrt::zenoh::config_from_environment().map_err(|error| {
         anyhow::anyhow!("failed to configure zenoh session for params discovery: {error}")
     })?;
-    let session = zenoh::open(zenoh_config).wait().map_err(|error| {
+    zenoh::open(zenoh_config).wait().map_err(|error| {
         anyhow::anyhow!("failed to open zenoh session for params discovery: {error:?}")
-    })?;
+    })
+}
 
+/// 通过 zenoh 扫描所有远程 params 端点，返回匹配 `self_description_hash` 的 runtime。
+///
+/// 复用调用方提供的 session，避免每次 discovery 重复创建 zenoh 连接。
+pub(crate) fn discover_remote_params_runtimes(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    timeout_ms: u64,
+) -> Result<Vec<RemoteRuntimeEntry>> {
     let request = flowrt::IntrospectionRequest::ParamList;
     let payload = serde_json::to_vec(&request)
         .map_err(|error| anyhow::anyhow!("failed to encode params discovery request: {error}"))?;
@@ -1607,13 +1613,9 @@ pub(crate) fn select_remote_runtime(
 
 /// 请求远程 runtime 参数列表。
 pub(crate) fn remote_params_list(self_description_hash: &str, timeout_ms: u64) -> Result<String> {
-    let entries = discover_remote_params_runtimes(self_description_hash, timeout_ms)?;
+    let session = open_zenoh_params_session()?;
+    let entries = discover_remote_params_runtimes(&session, self_description_hash, timeout_ms)?;
     let runtime = select_remote_runtime(entries, self_description_hash)?;
-    let zenoh_config = flowrt::zenoh::config_from_environment()
-        .map_err(|error| anyhow::anyhow!("failed to configure zenoh session: {error}"))?;
-    let session = zenoh::open(zenoh_config)
-        .wait()
-        .map_err(|error| anyhow::anyhow!("failed to open zenoh session: {error:?}"))?;
     let response = flowrt::request_remote_param_list(&session, &runtime.key_expr, timeout_ms)
         .map_err(|error| {
             anyhow::anyhow!("failed to list remote params from `{}`: {error}", runtime)
@@ -1647,13 +1649,9 @@ pub(crate) fn remote_params_get(
     name: &str,
     timeout_ms: u64,
 ) -> Result<String> {
-    let entries = discover_remote_params_runtimes(self_description_hash, timeout_ms)?;
+    let session = open_zenoh_params_session()?;
+    let entries = discover_remote_params_runtimes(&session, self_description_hash, timeout_ms)?;
     let runtime = select_remote_runtime(entries, self_description_hash)?;
-    let zenoh_config = flowrt::zenoh::config_from_environment()
-        .map_err(|error| anyhow::anyhow!("failed to configure zenoh session: {error}"))?;
-    let session = zenoh::open(zenoh_config)
-        .wait()
-        .map_err(|error| anyhow::anyhow!("failed to open zenoh session: {error:?}"))?;
     let response = flowrt::request_remote_param_get(&session, &runtime.key_expr, name, timeout_ms)
         .map_err(|error| {
             anyhow::anyhow!("failed to get remote param `{name}` from `{runtime}`: {error}")
@@ -1681,13 +1679,9 @@ pub(crate) fn remote_params_set(
     let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
         format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
     })?;
-    let entries = discover_remote_params_runtimes(self_description_hash, timeout_ms)?;
+    let session = open_zenoh_params_session()?;
+    let entries = discover_remote_params_runtimes(&session, self_description_hash, timeout_ms)?;
     let runtime = select_remote_runtime(entries, self_description_hash)?;
-    let zenoh_config = flowrt::zenoh::config_from_environment()
-        .map_err(|error| anyhow::anyhow!("failed to configure zenoh session: {error}"))?;
-    let session = zenoh::open(zenoh_config)
-        .wait()
-        .map_err(|error| anyhow::anyhow!("failed to open zenoh session: {error:?}"))?;
     let response =
         flowrt::request_remote_param_set(&session, &runtime.key_expr, name, value, timeout_ms)
             .map_err(|error| {
