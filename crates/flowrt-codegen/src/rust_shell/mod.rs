@@ -3,6 +3,7 @@ mod introspection_emit;
 mod lifecycle_emit;
 pub(crate) mod params_emit;
 mod scheduler_emit;
+pub(crate) mod service_emit;
 mod step_emit;
 
 use flowrt_ir::{ComponentIr, ContractIr, LanguageKind};
@@ -18,6 +19,10 @@ use introspection_emit::emit_rust_introspection_helpers;
 use lifecycle_emit::{emit_rust_app_new, emit_rust_app_run};
 use params_emit::rust_params_struct;
 use scheduler_emit::emit_all_step_functions;
+use service_emit::{
+    emit_rust_service_client_handles, emit_rust_service_step_functions,
+    rust_service_handler_methods,
+};
 use step_emit::RustStepEmission;
 
 fn contract_has_runtime_params_for_language(contract: &ContractIr, language: LanguageKind) -> bool {
@@ -33,6 +38,13 @@ fn contract_has_runtime_params_for_language(contract: &ContractIr, language: Lan
 pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("\nuse crate::messages::*;\n\n");
+
+    // 预先计算 service plans（整个 contract 的）
+    let graph = contract.graphs.first();
+    let service_plans = graph
+        .map(|g| crate::runtime_plan::service_runtime_plans(contract, g))
+        .unwrap_or_default();
+
     for component in contract
         .components
         .iter()
@@ -67,6 +79,10 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
         );
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
         output.push_str(&params_emit::rust_params_update_signature(component));
+        // service handler 方法
+        if let Some(g) = graph {
+            output.push_str(&rust_service_handler_methods(component, g, &service_plans));
+        }
         output.push_str(&rust_tick_signature(component));
         output.push_str("}\n\n");
     }
@@ -105,15 +121,30 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         has_active_rust_channels,
         contract_has_runtime_params_for_language(contract, LanguageKind::Rust),
     ));
+    // service client handle structs
+    output.push_str(&emit_rust_service_client_handles(contract, graph));
     output.push_str("pub struct App {\n");
     output.push_str("    startup_status: flowrt::Status,\n");
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let server_instances: std::collections::BTreeSet<&str> = service_plans
+        .iter()
+        .map(|p| p.server_instance.as_str())
+        .collect();
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
-        output.push_str(&format!(
-            "    {}: Box<dyn {}>,\n",
-            instance.name,
-            component_rust_name(component)
-        ));
+        if server_instances.contains(instance.name.as_str()) {
+            output.push_str(&format!(
+                "    {}: std::rc::Rc<std::cell::RefCell<Box<dyn {}>>>,\n",
+                instance.name,
+                component_rust_name(component)
+            ));
+        } else {
+            output.push_str(&format!(
+                "    {}: Box<dyn {}>,\n",
+                instance.name,
+                component_rust_name(component)
+            ));
+        }
         if !component.params.is_empty() {
             output.push_str(&format!(
                 "    {}_params: {}Params,\n",
@@ -140,6 +171,8 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             backend_emit::bridge_runtime_channel_type(bridge)
         ));
     }
+    // service client/server fields
+    output.push_str(&service_emit::rust_app_service_fields(contract, graph));
     output.push_str("}\n\n");
 
     output.push_str("impl App {\n");
@@ -150,6 +183,11 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         &bind_plans,
         &bridge_plans,
     ));
+    let service_plans_for_emission = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let service_server_instances: std::collections::BTreeSet<String> = service_plans_for_emission
+        .iter()
+        .map(|p| p.server_instance.clone())
+        .collect();
     let step_emission = RustStepEmission {
         contract,
         graph,
@@ -158,10 +196,13 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         incoming_bind_index: &incoming_bind_index,
         outgoing_bind_indices: &outgoing_bind_indices,
         outgoing_bridge_indices: &outgoing_bridge_indices,
+        service_server_instances: &service_server_instances,
     };
 
     emit_all_step_functions(&step_emission, graph, &order, &mut output);
     scheduler_emit::emit_process_step_functions(&step_emission, graph, &process_plans, &mut output);
+    // service hidden task step functions
+    output.push_str(&emit_rust_service_step_functions(contract, graph));
     output.push_str(&emit_rust_app_run(contract, graph, &order, &bind_plans));
     output.push_str(&lifecycle_emit::emit_rust_app_run_process_dispatch(
         &process_plans,

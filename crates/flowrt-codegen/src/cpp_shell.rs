@@ -73,9 +73,15 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str("#include <cstdint>\n#include <string>\n\n");
-    output.push_str("#include <flowrt/runtime.hpp>\n\n");
+    output.push_str("#include <flowrt/runtime.hpp>\n#include <flowrt/service.hpp>\n\n");
     output.push_str("#include \"flowrt_app/messages.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
+
+    // 预先计算 service plans
+    let graph = contract.graphs.first();
+    let service_plans = graph
+        .map(|g| crate::runtime_plan::service_runtime_plans(contract, g))
+        .unwrap_or_default();
 
     for component in contract
         .components
@@ -100,6 +106,10 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
         output.push_str(&cpp_lifecycle_method("on_stop"));
         output.push_str(&cpp_lifecycle_method("on_shutdown"));
         output.push_str(&cpp_params_update_signature(component));
+        // service handler 方法
+        if let Some(g) = graph {
+            output.push_str(&cpp_service_handler_methods(component, g, &service_plans));
+        }
         output.push_str(&cpp_tick_signature(component));
         output.push_str("};\n\n");
     }
@@ -1676,6 +1686,63 @@ fn cpp_callback_args(component: &ComponentIr) -> Vec<String> {
         ));
     }
     args
+}
+
+fn cpp_service_handler_methods(
+    component: &ComponentIr,
+    graph: &GraphIr,
+    plans: &[crate::runtime_plan::ServiceRuntimePlan],
+) -> String {
+    // 找出该 component 的所有实例作为 server 的 plans
+    let server_instances: std::collections::BTreeSet<&str> = graph
+        .instances
+        .iter()
+        .filter(|i| {
+            i.component.name == component.name
+                || i.component.name == component.generated_name
+                || i.component.name == component.qualified_name
+        })
+        .map(|i| i.name.as_str())
+        .collect();
+
+    let relevant_plans: Vec<&crate::runtime_plan::ServiceRuntimePlan> = plans
+        .iter()
+        .filter(|p| server_instances.contains(p.server_instance.as_str()))
+        .collect();
+
+    if relevant_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    for plan in relevant_plans {
+        let method_name = format!("on_{}_request", crate::snake_identifier(&plan.server_port));
+        let req_ty = cpp_type(&plan.request_type);
+        let resp_ty = cpp_type(&plan.response_type);
+        let port_name = &plan.server_port;
+
+        output.push_str(&format!(
+            "    /**\n\
+             * @brief 处理 `{port}` service request。\n\
+             *\n\
+             * runtime shell 在 hidden service task 中调用该方法。用户业务逻辑\n\
+             * 实现具体的 request -> response 转换。\n\
+             *\n\
+             * @param request 请求消息引用。\n\
+             * @return 成功返回 `ServiceResult::ok(response)`，业务错误返回\n\
+             *         `ServiceResult::err(error_code, message)`。\n\
+             */\n",
+            port = port_name,
+        ));
+        output.push_str(&format!(
+            "    virtual flowrt::ServiceResult<{resp_ty}> {method_name}(const {req_ty}& request) {{\n\
+                 (void)request;\n\
+                 return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::HandlerError);\n\
+             }}\n\n",
+        ));
+    }
+
+    output
 }
 
 fn cpp_component_interface_doc(component: &ComponentIr) -> String {

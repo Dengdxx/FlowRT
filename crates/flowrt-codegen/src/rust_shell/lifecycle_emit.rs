@@ -4,6 +4,7 @@ use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan
 
 use super::backend_emit;
 use super::scheduler_emit;
+use super::service_emit;
 
 pub(super) fn emit_rust_app_new(
     contract: &ContractIr,
@@ -28,11 +29,37 @@ pub(super) fn emit_rust_app_new(
         "let startup_status = flowrt::Status::Ok;"
     };
     output.push_str(&format!(
-        "    ) -> Self {{\n        {startup_status_binding}\n        Self {{\n",
+        "    ) -> Self {{\n        {startup_status_binding}\n",
     ));
+    // wrap service server components in Rc<RefCell<...>>
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let server_instances: std::collections::BTreeSet<&str> = service_plans
+        .iter()
+        .map(|p| p.server_instance.as_str())
+        .collect();
+    for instance in order {
+        if server_instances.contains(instance.name.as_str()) {
+            let _component = crate::component_by_name(contract, &instance.component.name);
+            output.push_str(&format!(
+                "        let {name} = std::rc::Rc::new(std::cell::RefCell::new({name}));\n",
+                name = instance.name,
+            ));
+        }
+    }
+    // service registration (before Self construction)
+    let (service_registration, _service_initializers) =
+        service_emit::emit_rust_service_new(contract, graph);
+    if !service_registration.is_empty() {
+        output.push_str(&service_registration);
+    }
+    output.push_str("        Self {\n");
     for instance in order {
         let component = crate::component_by_name(contract, &instance.component.name);
-        output.push_str(&format!("            {},\n", instance.name));
+        if server_instances.contains(instance.name.as_str()) {
+            output.push_str(&format!("            {name}: {name}.clone(),\n", name = instance.name));
+        } else {
+            output.push_str(&format!("            {},\n", instance.name));
+        }
         if !component.params.is_empty() {
             output.push_str(&format!(
                 "            {}_params: {},\n",
@@ -59,6 +86,12 @@ pub(super) fn emit_rust_app_new(
             backend_emit::bridge_runtime_channel_initializer(contract, graph, bridge)
         ));
     }
+    // service field initializers
+    let (_service_registration, service_initializers) =
+        service_emit::emit_rust_service_new(contract, graph);
+    if !service_initializers.is_empty() {
+        output.push_str(&service_initializers);
+    }
     output.push_str("            startup_status,\n");
     output.push_str("        }\n    }\n");
     output
@@ -80,6 +113,11 @@ pub(super) fn emit_rust_app_run(
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
 ) -> String {
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let service_server_instances: std::collections::BTreeSet<String> = service_plans
+        .iter()
+        .map(|p| p.server_instance.clone())
+        .collect();
     emit_rust_app_run_function(RustRunFunctionEmission {
         contract,
         function_name: "run",
@@ -94,6 +132,7 @@ pub(super) fn emit_rust_app_run(
         process: None,
         process_name: "main",
         public: true,
+        service_server_instances: &service_server_instances,
     })
 }
 
@@ -120,6 +159,11 @@ pub(super) fn emit_process_run_functions(
     processes: &[ProcessRuntimePlan<'_>],
     output: &mut String,
 ) {
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let service_server_instances: std::collections::BTreeSet<String> = service_plans
+        .iter()
+        .map(|p| p.server_instance.clone())
+        .collect();
     for process in processes {
         let step_function_name = format!("step_process_{}", process.method_suffix);
         let startup_function_name = format!("step_process_{}_startup", process.method_suffix);
@@ -138,6 +182,7 @@ pub(super) fn emit_process_run_functions(
             process: Some(process),
             process_name: &process.name,
             public: false,
+            service_server_instances: &service_server_instances,
         }));
     }
 }
@@ -159,6 +204,7 @@ struct RustRunFunctionEmission<'a> {
     process: Option<&'a ProcessRuntimePlan<'a>>,
     process_name: &'a str,
     public: bool,
+    service_server_instances: &'a std::collections::BTreeSet<String>,
 }
 
 fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
@@ -203,14 +249,16 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         ));
     }
     for instance in emission.order {
+        let call = component_call_expr(instance, emission.service_server_instances, "on_init(&mut lifecycle_context)");
         output.push_str(&format!(
-            "        if status == flowrt::Status::Ok {{\n            status = self.{name}.on_init(&mut lifecycle_context);\n            {name}_initialized = status == flowrt::Status::Ok;\n        }}\n",
+            "        if status == flowrt::Status::Ok {{\n            status = {call};\n            {name}_initialized = status == flowrt::Status::Ok;\n        }}\n",
             name = instance.name
         ));
     }
     for instance in emission.order {
+        let call = component_call_expr(instance, emission.service_server_instances, "on_start(&mut lifecycle_context)");
         output.push_str(&format!(
-            "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = self.{name}.on_start(&mut lifecycle_context);\n            {name}_started = status == flowrt::Status::Ok;\n        }}\n",
+            "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = {call};\n            {name}_started = status == flowrt::Status::Ok;\n        }}\n",
             name = instance.name
         ));
     }
@@ -231,17 +279,32 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         shutdown_function_name = emission.steps.shutdown
     ));
     for instance in emission.order.iter().rev() {
+        let call = component_call_expr(instance, emission.service_server_instances, "on_stop(&mut lifecycle_context)");
         output.push_str(&format!(
-            "        if {name}_started {{\n            let stop_status = self.{name}.on_stop(&mut lifecycle_context);\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
+            "        if {name}_started {{\n            let stop_status = {call};\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
             name = instance.name
         ));
     }
     for instance in emission.order.iter().rev() {
+        let call = component_call_expr(instance, emission.service_server_instances, "on_shutdown(&mut lifecycle_context)");
         output.push_str(&format!(
-            "        if {name}_initialized {{\n            let shutdown_status = self.{name}.on_shutdown(&mut lifecycle_context);\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
+            "        if {name}_initialized {{\n            let shutdown_status = {call};\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
             name = instance.name
         ));
     }
     output.push_str("        status\n    }\n");
     output
+}
+
+/// 生成组件方法调用表达式。对于 service server 实例使用 `borrow_mut()`。
+fn component_call_expr(
+    instance: &InstanceIr,
+    service_server_instances: &std::collections::BTreeSet<String>,
+    method_call: &str,
+) -> String {
+    if service_server_instances.contains(&instance.name) {
+        format!("self.{name}.borrow_mut().{method_call}", name = instance.name)
+    } else {
+        format!("self.{name}.{method_call}", name = instance.name)
+    }
 }

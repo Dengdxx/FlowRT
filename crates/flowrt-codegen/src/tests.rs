@@ -11,6 +11,7 @@ mod launch;
 mod messages;
 mod params;
 mod ros2_bridge;
+mod services;
 mod tasks;
 
 fn contract_from_source(source: &str) -> ContractIr {
