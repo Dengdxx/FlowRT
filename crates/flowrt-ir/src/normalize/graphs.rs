@@ -5,10 +5,10 @@ use flowrt_rsdl::{RawDocument, RawModuleDocument, RawProcess};
 use crate::{
     BackendName, ChannelBackendSource, ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr,
     ComponentIr, DeploymentIr, EntityId, EntityRef, GraphIr, InstanceIr, IrError, OverflowPolicy,
-    PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessRestartPolicy,
-    ProcessRestartPolicyKind, ProfileIr, Result, StalePolicy, TargetIr, TaskIr, TypeIr,
-    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
-    graph_required_capabilities,
+    PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessReadinessGate,
+    ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy,
+    TargetIr, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
+    deployment_capability_decision, graph_required_capabilities,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -205,6 +205,16 @@ pub(super) fn normalize_processes(
             depends_on,
             restart: normalize_process_restart(&name, raw)?,
             failure_propagation: normalize_failure_propagation(&name, raw)?,
+            readiness: normalize_process_readiness(&name, raw)?,
+            startup_delay_ms: raw.and_then(|r| r.startup_delay_ms).unwrap_or(0),
+            env: raw.map(|r| r.env.clone()).unwrap_or_default(),
+            cpu_affinity: raw.map(|r| r.cpu_affinity.clone()).unwrap_or_default(),
+            nice: raw.and_then(|r| r.nice),
+            rt_policy: raw
+                .map(|r| normalize_rt_policy(&name, r.rt_policy.as_deref()))
+                .transpose()?
+                .flatten(),
+            rt_priority: raw.and_then(|r| r.rt_priority),
         });
     }
     Ok(processes)
@@ -264,6 +274,35 @@ fn normalize_failure_propagation(
             context: format!("process.{process_name}.failure"),
             kind: "process failure propagation",
             value: value.to_string(),
+        }),
+    }
+}
+
+fn normalize_process_readiness(
+    process_name: &str,
+    raw: Option<&RawProcess>,
+) -> Result<ProcessReadinessGate> {
+    match raw.and_then(|raw| raw.readiness.as_deref()) {
+        Some("process_started") | None => Ok(ProcessReadinessGate::ProcessStarted),
+        Some("runtime_ready") => Ok(ProcessReadinessGate::RuntimeReady),
+        Some("service_ready") => Ok(ProcessReadinessGate::ServiceReady),
+        Some(value) => Err(IrError::InvalidEnum {
+            context: format!("process.{process_name}.readiness"),
+            kind: "process readiness gate",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn normalize_rt_policy(process_name: &str, value: Option<&str>) -> Result<Option<RtPolicy>> {
+    match value {
+        None => Ok(None),
+        Some("fifo") => Ok(Some(RtPolicy::Fifo)),
+        Some("round_robin") => Ok(Some(RtPolicy::RoundRobin)),
+        Some(other) => Err(IrError::InvalidEnum {
+            context: format!("process.{process_name}.rt_policy"),
+            kind: "RT scheduling policy",
+            value: other.to_string(),
         }),
     }
 }

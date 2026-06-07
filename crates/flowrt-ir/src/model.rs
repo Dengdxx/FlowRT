@@ -200,6 +200,30 @@ pub struct ProcessIr {
     pub depends_on: Vec<String>,
     pub restart: ProcessRestartPolicy,
     pub failure_propagation: ProcessFailurePropagation,
+    pub readiness: ProcessReadinessGate,
+    pub startup_delay_ms: u64,
+    pub env: BTreeMap<String, String>,
+    pub cpu_affinity: Vec<u32>,
+    pub nice: Option<i32>,
+    pub rt_policy: Option<RtPolicy>,
+    pub rt_priority: Option<u32>,
+}
+
+/// 进程 readiness gate 类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessReadinessGate {
+    ProcessStarted,
+    RuntimeReady,
+    ServiceReady,
+}
+
+/// Linux 实时调度策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RtPolicy {
+    Fifo,
+    RoundRobin,
 }
 
 /// 进程重启策略。

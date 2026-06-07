@@ -209,6 +209,100 @@ backend = "iox2"
 }
 
 #[test]
+fn launch_manifest_exposes_process_resource_hints() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "resource_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensor_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[[process]]
+name = "sensor_proc"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+readiness = "runtime_ready"
+startup_delay_ms = 200
+cpu_affinity = [0, 1]
+nice = -5
+rt_policy = "fifo"
+rt_priority = 50
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+restart = "never"
+failure = "isolate"
+readiness = "service_ready"
+env = { APP_MODE = "control" }
+
+[profile.default]
+backend = "iox2"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let processes = launch["graphs"][0]["processes"].as_array().unwrap();
+    let sensors = processes
+        .iter()
+        .find(|process| process["name"] == "sensor_proc")
+        .unwrap();
+    let control = processes
+        .iter()
+        .find(|process| process["name"] == "control_proc")
+        .unwrap();
+
+    assert_eq!(sensors["readiness"], "runtime_ready");
+    assert_eq!(sensors["startup_delay_ms"], 200);
+    assert_eq!(sensors["cpu_affinity"], serde_json::json!([0, 1]));
+    assert_eq!(sensors["nice"], -5);
+    assert_eq!(sensors["rt_policy"], "fifo");
+    assert_eq!(sensors["rt_priority"], 50);
+    assert_eq!(sensors["env"], serde_json::json!({}));
+
+    assert_eq!(control["readiness"], "service_ready");
+    assert_eq!(control["startup_delay_ms"], 0);
+    assert_eq!(control["cpu_affinity"], serde_json::json!([]));
+    assert_eq!(control["nice"], serde_json::Value::Null);
+    assert_eq!(control["rt_policy"], serde_json::Value::Null);
+    assert_eq!(control["rt_priority"], serde_json::Value::Null);
+    assert_eq!(control["env"], serde_json::json!({ "APP_MODE": "control" }));
+}
+
+#[test]
 fn launch_manifest_exposes_service_binds() {
     let ir = contract_from_source(
         r#"

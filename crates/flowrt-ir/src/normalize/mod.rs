@@ -162,9 +162,9 @@ mod tests {
     use crate::{
         CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OverflowPolicy, ParamType,
         ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType, ProcessFailurePropagation,
-        ProcessRestartPolicyKind, RouteTopology, ServiceBackendSource, ServiceOverflowPolicy,
-        StalePolicy, TaskReadiness, TypeExpr, channel_route_capabilities,
-        deployment_capability_decision,
+        ProcessReadinessGate, ProcessRestartPolicyKind, RouteTopology, RtPolicy,
+        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness, TypeExpr,
+        channel_route_capabilities, deployment_capability_decision,
     };
 
     #[test]
@@ -367,6 +367,209 @@ backend = "iox2"
             processes[1].failure_propagation,
             ProcessFailurePropagation::Propagate
         );
+    }
+
+    #[test]
+    fn normalizes_process_resource_hints() {
+        let source = r#"
+[package]
+name = "resource_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[component.sink]
+language = "rust"
+input = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "sensor_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[instance.sink]
+component = "sink"
+process = "control_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["value"]
+
+[[bind.dataflow]]
+from = "source.value"
+to = "sink.value"
+channel = "latest"
+
+[[process]]
+name = "sensor_proc"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+readiness = "runtime_ready"
+startup_delay_ms = 200
+cpu_affinity = [0, 1]
+nice = -5
+rt_policy = "fifo"
+rt_priority = 50
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+restart = "never"
+failure = "isolate"
+readiness = "service_ready"
+env = { APP_MODE = "control" }
+
+[profile.default]
+backend = "iox2"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let processes = &ir.graphs[0].processes;
+
+        assert_eq!(processes.len(), 2);
+        let control = processes.iter().find(|p| p.name == "control_proc").unwrap();
+        let sensor = processes.iter().find(|p| p.name == "sensor_proc").unwrap();
+
+        assert_eq!(control.readiness, ProcessReadinessGate::ServiceReady);
+        assert_eq!(control.startup_delay_ms, 0);
+        assert_eq!(control.env["APP_MODE"], "control");
+        assert!(control.cpu_affinity.is_empty());
+        assert_eq!(control.nice, None);
+        assert_eq!(control.rt_policy, None);
+        assert_eq!(control.rt_priority, None);
+
+        assert_eq!(sensor.readiness, ProcessReadinessGate::RuntimeReady);
+        assert_eq!(sensor.startup_delay_ms, 200);
+        assert_eq!(sensor.cpu_affinity, vec![0, 1]);
+        assert_eq!(sensor.nice, Some(-5));
+        assert_eq!(sensor.rt_policy, Some(RtPolicy::Fifo));
+        assert_eq!(sensor.rt_priority, Some(50));
+    }
+
+    #[test]
+    fn normalizes_process_defaults_when_no_resource_hints() {
+        let source = r#"
+[package]
+name = "default_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let processes = &ir.graphs[0].processes;
+
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].name, "main");
+        assert_eq!(processes[0].readiness, ProcessReadinessGate::ProcessStarted);
+        assert_eq!(processes[0].startup_delay_ms, 0);
+        assert!(processes[0].env.is_empty());
+        assert!(processes[0].cpu_affinity.is_empty());
+        assert_eq!(processes[0].nice, None);
+        assert_eq!(processes[0].rt_policy, None);
+        assert_eq!(processes[0].rt_priority, None);
+    }
+
+    #[test]
+    fn rejects_unknown_process_readiness_gate() {
+        let source = r#"
+[package]
+name = "bad_readiness"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+readiness = "custom_health_check"
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("unknown readiness gate should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                kind: "process readiness gate",
+                value,
+                ..
+            } if value == "custom_health_check"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_rt_policy() {
+        let source = r#"
+[package]
+name = "bad_rt"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+rt_policy = "deadline"
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("unknown rt_policy should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                kind: "RT scheduling policy",
+                value,
+                ..
+            } if value == "deadline"
+        ));
     }
 
     #[test]

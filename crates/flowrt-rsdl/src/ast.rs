@@ -171,6 +171,13 @@ pub struct RawProcess {
     pub initial_delay_ms: Option<u64>,
     pub max_delay_ms: Option<u64>,
     pub failure: Option<String>,
+    pub readiness: Option<String>,
+    pub startup_delay_ms: Option<u64>,
+    pub env: BTreeMap<String, String>,
+    pub cpu_affinity: Vec<u32>,
+    pub nice: Option<i32>,
+    pub rt_policy: Option<String>,
+    pub rt_priority: Option<u32>,
 }
 
 /// `[[bind.dataflow]]` 表项。

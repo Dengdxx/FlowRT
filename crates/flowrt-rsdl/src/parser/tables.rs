@@ -8,9 +8,9 @@ use crate::{Result, RsdlError};
 
 use super::schema::validate_known_fields;
 use super::values::{
-    expect_string, expect_string_array, expect_table_value, optional_param_table,
+    expect_string, expect_string_array, expect_table_value, optional_i32, optional_param_table,
     optional_port_array, optional_service_port_array, optional_string, optional_string_array,
-    optional_u32, optional_u64, required_string,
+    optional_string_table, optional_u32, optional_u32_array, optional_u64, required_string,
 };
 
 pub(super) fn parse_named_tables<T>(
@@ -249,6 +249,13 @@ pub(super) fn parse_processes(root: &Table) -> Result<Vec<RawProcess>> {
                 "initial_delay_ms",
                 "max_delay_ms",
                 "failure",
+                "readiness",
+                "startup_delay_ms",
+                "env",
+                "cpu_affinity",
+                "nice",
+                "rt_policy",
+                "rt_priority",
             ],
         )?;
         parsed.push(RawProcess {
@@ -259,6 +266,13 @@ pub(super) fn parse_processes(root: &Table) -> Result<Vec<RawProcess>> {
             initial_delay_ms: optional_u64(table, &context, "initial_delay_ms")?,
             max_delay_ms: optional_u64(table, &context, "max_delay_ms")?,
             failure: optional_string(table, &context, "failure")?,
+            readiness: optional_string(table, &context, "readiness")?,
+            startup_delay_ms: optional_u64(table, &context, "startup_delay_ms")?,
+            env: optional_string_table(table, &context, "env")?,
+            cpu_affinity: optional_u32_array(table, &context, "cpu_affinity")?,
+            nice: optional_i32(table, &context, "nice")?,
+            rt_policy: optional_string(table, &context, "rt_policy")?,
+            rt_priority: optional_u32(table, &context, "rt_priority")?,
         });
     }
     Ok(parsed)

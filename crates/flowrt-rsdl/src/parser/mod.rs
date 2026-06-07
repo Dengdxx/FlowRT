@@ -324,6 +324,73 @@ failure = "isolate"
     }
 
     #[test]
+    fn parses_process_orchestration_with_resource_hints() {
+        let source = r#"
+[package]
+name = "process_resource_demo"
+rsdl_version = "0.1"
+
+[[process]]
+name = "sensor_proc"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+readiness = "runtime_ready"
+startup_delay_ms = 200
+cpu_affinity = [0, 1]
+nice = -5
+rt_policy = "fifo"
+rt_priority = 50
+
+[[process]]
+name = "control_proc"
+depends_on = ["sensor_proc"]
+restart = "never"
+failure = "isolate"
+readiness = "service_ready"
+env = { FLOWRT_LOG_LEVEL = "debug", APP_MODE = "control" }
+
+[[process]]
+name = "idle_proc"
+restart = "never"
+readiness = "process_started"
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+
+        assert_eq!(document.processes.len(), 3);
+        assert_eq!(document.processes[0].name, "sensor_proc");
+        assert_eq!(
+            document.processes[0].readiness.as_deref(),
+            Some("runtime_ready")
+        );
+        assert_eq!(document.processes[0].startup_delay_ms, Some(200));
+        assert_eq!(document.processes[0].cpu_affinity, vec![0, 1]);
+        assert_eq!(document.processes[0].nice, Some(-5));
+        assert_eq!(document.processes[0].rt_policy.as_deref(), Some("fifo"));
+        assert_eq!(document.processes[0].rt_priority, Some(50));
+        assert_eq!(document.processes[1].name, "control_proc");
+        assert_eq!(
+            document.processes[1].readiness.as_deref(),
+            Some("service_ready")
+        );
+        assert_eq!(document.processes[1].env["FLOWRT_LOG_LEVEL"], "debug");
+        assert_eq!(document.processes[1].env["APP_MODE"], "control");
+        assert_eq!(document.processes[2].name, "idle_proc");
+        assert_eq!(
+            document.processes[2].readiness.as_deref(),
+            Some("process_started")
+        );
+        assert!(document.processes[2].env.is_empty());
+        assert!(document.processes[2].cpu_affinity.is_empty());
+        assert_eq!(document.processes[2].nice, None);
+        assert_eq!(document.processes[2].rt_policy, None);
+        assert_eq!(document.processes[2].rt_priority, None);
+    }
+
+    #[test]
     fn parses_service_ports_and_binds() {
         let source = r#"
 [package]

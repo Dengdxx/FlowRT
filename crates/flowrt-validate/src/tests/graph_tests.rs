@@ -1020,3 +1020,193 @@ depth = 2
             .contains("latest channel to `sink.sample` must omit depth or set depth = 1")
     }));
 }
+
+#[test]
+fn rejects_invalid_nice_value() {
+    let source = r#"
+[package]
+name = "bad_nice"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+nice = -21
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("invalid nice value should fail");
+
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("invalid nice value -21"))
+    );
+}
+
+#[test]
+fn rejects_rt_priority_without_rt_policy() {
+    let source = r#"
+[package]
+name = "bad_rt"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+rt_priority = 50
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("rt_priority without rt_policy should fail");
+
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("rt_priority without rt_policy"))
+    );
+}
+
+#[test]
+fn rejects_invalid_rt_priority_range() {
+    let source = r#"
+[package]
+name = "bad_rt_priority"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+rt_policy = "fifo"
+rt_priority = 100
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("rt_priority out of range should fail");
+
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("invalid rt_priority 100"))
+    );
+}
+
+#[test]
+fn rejects_duplicate_cpu_affinity_entry() {
+    let source = r#"
+[package]
+name = "bad_cpu"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+cpu_affinity = [0, 1, 0]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("duplicate cpu_affinity should fail");
+
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("duplicate cpu_affinity entry 0"))
+    );
+}
+
+#[test]
+fn accepts_valid_process_resource_hints() {
+    let source = r#"
+[package]
+name = "good_resource"
+rsdl_version = "0.1"
+
+[component.source]
+language = "rust"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[[process]]
+name = "main"
+readiness = "service_ready"
+startup_delay_ms = 100
+cpu_affinity = [0, 1, 2]
+nice = -10
+rt_policy = "fifo"
+rt_priority = 99
+env = { APP_MODE = "control" }
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    validate_contract(&ir).expect("valid resource hints should pass");
+}

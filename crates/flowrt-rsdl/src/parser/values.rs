@@ -174,6 +174,78 @@ pub(super) fn expect_string_array(
         .collect()
 }
 
+pub(super) fn optional_i32(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+) -> Result<Option<i32>> {
+    let Some(value) = table.get(field) else {
+        return Ok(None);
+    };
+    let integer = value
+        .as_integer()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: context.to_string(),
+            field: field.to_string(),
+            expected: "integer",
+        })?;
+    let value = i32::try_from(integer).map_err(|_| RsdlError::InvalidValue {
+        context: context.to_string(),
+        message: format!("`{field}` is out of range for i32"),
+    })?;
+    Ok(Some(value))
+}
+
+pub(super) fn optional_string_table(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+) -> Result<BTreeMap<String, String>> {
+    let Some(value) = table.get(field) else {
+        return Ok(BTreeMap::new());
+    };
+    let table = expect_table_value(context, field, value)?;
+    let mut result = BTreeMap::new();
+    for (key, value) in table {
+        let string_value = expect_string(context, field, value)?;
+        result.insert(key.clone(), string_value);
+    }
+    Ok(result)
+}
+
+pub(super) fn optional_u32_array(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+) -> Result<Vec<u32>> {
+    let Some(value) = table.get(field) else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: context.to_string(),
+            field: field.to_string(),
+            expected: "array of non-negative integers",
+        })?;
+    values
+        .iter()
+        .map(|value| {
+            let integer = value
+                .as_integer()
+                .ok_or_else(|| RsdlError::InvalidFieldType {
+                    context: context.to_string(),
+                    field: field.to_string(),
+                    expected: "non-negative integer",
+                })?;
+            u32::try_from(integer).map_err(|_| RsdlError::InvalidValue {
+                context: context.to_string(),
+                message: format!("`{field}` entry must be non-negative and fit in u32"),
+            })
+        })
+        .collect()
+}
+
 pub(super) fn optional_u32(
     table: &Table,
     context: &str,

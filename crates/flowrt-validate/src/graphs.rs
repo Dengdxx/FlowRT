@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, PortIr,
-    PortRef, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr, TaskReadiness,
-    TriggerKind, TypeExpr, param_value_compatible, param_value_kind,
+    PortRef, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr, param_value_compatible, param_value_kind,
 };
 
 use crate::ValidationError;
@@ -95,6 +95,8 @@ fn validate_process_orchestration(graph: &GraphIr, errors: &mut Vec<ValidationEr
             "process dependency graph contains a cycle",
         ));
     }
+
+    validate_process_resource_hints(graph, errors);
 }
 
 fn has_process_dependency_cycle(graph: &GraphIr) -> bool {
@@ -144,6 +146,58 @@ fn has_process_dependency_cycle(graph: &GraphIr) -> bool {
     dependencies
         .keys()
         .any(|process| visit(process, &dependencies, &mut states))
+}
+
+fn validate_process_resource_hints(graph: &GraphIr, errors: &mut Vec<ValidationError>) {
+    for process in &graph.processes {
+        // readiness gate 必须是已知变体（防御性校验，normalization 已先行拒绝）
+        match process.readiness {
+            ProcessReadinessGate::ProcessStarted
+            | ProcessReadinessGate::RuntimeReady
+            | ProcessReadinessGate::ServiceReady => {}
+        }
+
+        // nice 范围：-20 到 19
+        if let Some(nice) = process.nice {
+            if !(-20..=19).contains(&nice) {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` has invalid nice value {nice}; must be -20..=19",
+                    process.name
+                )));
+            }
+        }
+
+        // rt_priority 范围：1-99
+        if let Some(rt_priority) = process.rt_priority {
+            if rt_priority == 0 || rt_priority > 99 {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` has invalid rt_priority {rt_priority}; must be 1..=99",
+                    process.name
+                )));
+            }
+        }
+
+        // rt_priority 必须搭配 rt_policy
+        if process.rt_priority.is_some() && process.rt_policy.is_none() {
+            errors.push(ValidationError::new(format!(
+                "process `{}` sets rt_priority without rt_policy",
+                process.name
+            )));
+        }
+
+        // cpu_affinity 不允许重复
+        let mut seen_cpus = BTreeSet::new();
+        for cpu in &process.cpu_affinity {
+            if !seen_cpus.insert(cpu) {
+                errors.push(ValidationError::new(format!(
+                    "process `{}` has duplicate cpu_affinity entry {cpu}",
+                    process.name
+                )));
+            }
+        }
+
+        // startup_delay_ms 非负（u64 已保证，无需额外检查）
+    }
 }
 
 fn validate_service_binds(
