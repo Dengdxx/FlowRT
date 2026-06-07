@@ -420,6 +420,75 @@ fn live_status_summary_displays_service_health() {
 }
 
 #[test]
+fn live_status_summary_associates_service_health_with_instances() {
+    let root = temp_test_dir("live-status-svc-instance");
+    let socket = root.join("main.sock");
+    let selfdesc_json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "robot_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "services": [{
+      "name": "planner.plan_to_executor.execute",
+      "client_instance": "planner",
+      "client_port": "plan",
+      "server_instance": "executor",
+      "server_port": "execute",
+      "request_type": "PlanReq",
+      "response_type": "PlanResp",
+      "backend": "inproc"
+    }]
+  }],
+  "message_abi": []
+}"#;
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.set_self_description_json(selfdesc_json);
+    state.register_service("planner.plan_to_executor.execute");
+    state.record_service_health(flowrt::IntrospectionServiceStatus {
+        name: "planner.plan_to_executor.execute".to_string(),
+        ready: true,
+        in_flight: 1,
+        queued: 0,
+        total_requests: 50,
+        timeout_count: 0,
+        busy_count: 0,
+        unavailable_count: 0,
+        late_drop_count: 0,
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+    assert!(
+        output.contains("client_instance=planner"),
+        "expected client_instance=planner in output: {output}"
+    );
+    assert!(
+        output.contains("server_instance=executor"),
+        "expected server_instance=executor in output: {output}"
+    );
+    assert!(output.contains("service=planner.plan_to_executor.execute"));
+    assert!(output.contains("ready=true"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn self_description_summary_shows_component_types() {
     let source = r#"
 {
