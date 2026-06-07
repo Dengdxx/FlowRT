@@ -205,7 +205,7 @@ overflow = "busy"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `backend` | string | auto | 传输后端，当前仅支持 `inproc` |
+| `backend` | string | auto | 传输后端：`inproc`（同进程）、`zenoh`（跨进程，runtime 已实现，codegen 尚未生成用户 API）；`auto` 同进程默认 `inproc`，跨进程默认 `zenoh` |
 | `timeout_ms` | u64 | 5000 | 请求超时毫秒 |
 | `queue_depth` | u32 | 32 | pending request 队列深度 |
 | `overflow` | string | "busy" | 队列满策略：`busy` 或 `error` |
@@ -259,6 +259,22 @@ validator 会要求：
 - `server` 指向 component 的 `service_server` 端口。
 - request 和 response 类型完全匹配。
 - 同一个 client service 端口只能绑定一次。
+
+### 错误语义
+
+`flowrt::ServiceResult<T>` 携带 `ServiceError` 错误码：
+
+| 错误码 | 含义 |
+|--------|------|
+| `Timeout` | 请求超时（`timeout_ms` 到期） |
+| `Busy` | 服务队列满，请求被限流 |
+| `Unavailable` | server 未注册或已销毁 |
+| `WouldDeadlock` | 同 lane 阻塞调用会死锁 |
+| `HandlerError` | 用户 handler 返回的业务错误 |
+| `Backend` | 后端传输错误 |
+
+`flowrt status` 输出每个 service 的运行态健康指标：`ready`、`in_flight`、`queued`、
+`total_requests`、`timeout`、`busy`、`unavailable`、`late_drop`。
 
 ## `list` / `nodes`
 
