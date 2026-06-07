@@ -449,7 +449,7 @@ fn live_status_summary_associates_service_health_with_instances() {
         protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
         pid: 88,
         started_at_unix_ms: 1234,
-        self_description_hash: "feedface".to_string(),
+        self_description_hash: self_description_hash(selfdesc_json.as_bytes()),
         package: "robot_demo".to_string(),
         process: "main".to_string(),
         runtime: "rust".to_string(),

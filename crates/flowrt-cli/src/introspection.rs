@@ -6,10 +6,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use flowrt_selfdesc::{
-    SelfDescription, SelfDescriptionChannel, SelfDescriptionComponentType,
-    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionInstance,
-    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionParam,
-    load_self_description as load_selfdesc,
+    SelfDescription, SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionFieldAbi,
+    SelfDescriptionFrameField, SelfDescriptionInstance, SelfDescriptionMessageAbi,
+    SelfDescriptionMessageFrame, SelfDescriptionParam, load_self_description as load_selfdesc,
     load_self_description_with_hash as load_selfdesc_with_hash,
 };
 
@@ -107,9 +106,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     let ports: Vec<String> = ct
                         .service_clients
                         .iter()
-                        .map(|p| {
-                            format!("{}:{}->{}", p.name, p.request_type, p.response_type)
-                        })
+                        .map(|p| format!("{}:{}->{}", p.name, p.request_type, p.response_type))
                         .collect();
                     output.push_str(&format!("\n    service_clients: {}", ports.join(", ")));
                 }
@@ -117,9 +114,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     let ports: Vec<String> = ct
                         .service_servers
                         .iter()
-                        .map(|p| {
-                            format!("{}:{}->{}", p.name, p.request_type, p.response_type)
-                        })
+                        .map(|p| format!("{}:{}->{}", p.name, p.request_type, p.response_type))
                         .collect();
                     output.push_str(&format!("\n    service_servers: {}", ports.join(", ")));
                 }
@@ -1113,7 +1108,8 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
         match flowrt::request_status(&socket) {
             Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
                 // 尝试从同一 socket 获取 self-description，用于关联 service → instance。
-                let service_endpoints = load_service_endpoint_map(&socket);
+                let service_endpoints =
+                    load_service_endpoint_map(&socket, &handshake.self_description_hash);
 
                 let active_observers = status
                     .channels
@@ -1234,26 +1230,36 @@ struct ServiceEndpointAssoc {
 /// 从 runtime socket 请求 self-description，构建 service name → instance 关联映射。
 ///
 /// 如果 self-description 请求失败（如 socket 不支持），返回空 map，不报错。
-fn load_service_endpoint_map(socket: &Path) -> BTreeMap<String, ServiceEndpointAssoc> {
+fn load_service_endpoint_map(
+    socket: &Path,
+    expected_hash: &str,
+) -> BTreeMap<String, ServiceEndpointAssoc> {
     let Ok(response) = flowrt::request_self_description(socket) else {
         return BTreeMap::new();
     };
-    let flowrt::IntrospectionResponse::SelfDescription { json, .. } = response else {
+    let flowrt::IntrospectionResponse::SelfDescription { handshake, json } = response else {
         return BTreeMap::new();
     };
+    if handshake.self_description_hash != expected_hash
+        || self_description_hash(json.as_bytes()) != expected_hash
+    {
+        return BTreeMap::new();
+    }
     let Ok(sd) = serde_json::from_str::<SelfDescription>(&json) else {
         return BTreeMap::new();
     };
     let mut map = BTreeMap::new();
     for graph in &sd.graphs {
         for ep in &graph.services {
-            map.insert(
-                ep.name.clone(),
-                ServiceEndpointAssoc {
-                    client_instance: ep.client_instance.clone(),
-                    server_instance: ep.server_instance.clone(),
-                },
-            );
+            if !ep.client_instance.is_empty() && !ep.server_instance.is_empty() {
+                map.insert(
+                    ep.name.clone(),
+                    ServiceEndpointAssoc {
+                        client_instance: ep.client_instance.clone(),
+                        server_instance: ep.server_instance.clone(),
+                    },
+                );
+            }
         }
     }
     map
