@@ -267,12 +267,35 @@ flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app
 ```
 
-`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出静态拓扑摘要或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、instance、task、channel、service 和 Message ABI layout 是否与预期一致。
+`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出组件视图或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、component type、instance、task、channel、service 和 params 是否与预期一致。
 
-`list` 的摘要行包含 `services=<N>` 计数；每个 graph 内的 service endpoint 以独立行展示：
+`list` 的摘要行包含 `component_types=<N>` 和 `services=<N>` 计数。每个 graph 内先展示 component type 声明，再按 instance 展示其 tasks、channel endpoints、service endpoints 和 params：
 
 ```text
-service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse
+package=robot_demo selfdesc=0.1 source_hash=abc graphs=1 component_types=2 instances=2 tasks=3 channels=2 services=1 messages=1
+graph default
+  component planner language=rust kind=native
+    service_clients: plan:PlanRequest->PlanResponse
+    params: goal_x:f64 update=on_tick
+  component executor language=rust kind=native
+    service_servers: execute:PlanRequest->PlanResponse
+  instance planner component=planner process=main runtime=rust
+    task plan_task trigger=on_message lane=plan_lane
+    channel planner.cmd -> executor.cmd type=Cmd backend=inproc
+    service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse backend=inproc
+    param goal_x:f64 update=on_tick current=1.0
+  instance executor component=executor process=main runtime=rust
+    task exec_task trigger=on_message
+    channel planner.cmd -> executor.cmd type=Cmd backend=inproc
+    service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse backend=inproc
+```
+
+`nodes` 输出 instance 列表，当 self-description 包含 component type 信息时会附加 `kind=` 字段：
+
+```text
+graph default
+planner process=main runtime=rust component=planner kind=native
+executor process=main runtime=rust component=executor kind=native
 ```
 
 当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status`、`echo` 和 `params` 使用。
@@ -345,13 +368,13 @@ flowrt status
 
 generated supervisor 会启动自己的 status socket，`runtime=supervisor`，`process=flowrt_supervisor`。它会按子进程 PID socket 轮询 live status，并额外输出 `supervisor_process=<name>` 行，字段包括 `state`、`pid`、`restarts`、`ticks`、`last_seen_ms`、`tick_stale` 和 `exit_code`。`state` 当前取值为 `starting`、`running`、`stale`、`restarting`、`exited` 或 `failed`。内置 restart policy 是 `on-failure`：子进程异常退出时最多重启 3 次，退避 100ms 起步、上限 1000ms；正常退出不重启。
 
-runtime 启动时可以预注册 service endpoint，`status` 会输出每个 service 的运行态健康行：
+runtime 启动时可以预注册 service endpoint，`status` 会输出每个 service 的运行态健康行，并通过 self-description 关联 client/server instance：
 
 ```text
-service=planner.plan_to_executor.execute ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock
+service=planner.plan_to_executor.execute client_instance=planner server_instance=executor ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock
 ```
 
-字段说明：`ready` 表示 service 是否就绪；`in_flight` 是当前正在处理的请求数；`queued` 是排队中的请求数；`total_requests` 是累计请求总数；`timeout`/`busy`/`unavailable`/`late_drop` 分别是超时、繁忙拒绝、不可用和迟到响应/丢弃的累计计数。
+字段说明：`client_instance`/`server_instance` 是从 self-description 关联的 service endpoint 参与方；`ready` 表示 service 是否就绪；`in_flight` 是当前正在处理的请求数；`queued` 是排队中的请求数；`total_requests` 是累计请求总数；`timeout`/`busy`/`unavailable`/`late_drop` 分别是超时、繁忙拒绝、不可用和迟到响应/丢弃的累计计数。
 
 RSDL 可以用 graph 级 `[[process]]` 覆盖默认进程编排策略：
 
