@@ -114,6 +114,36 @@ flowrt params set examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator
 
 `params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。
 
+## Service request/response 示例
+
+Service 是 request/response 语义，和 channel（dataflow push）不同。client 发起请求后
+等待 server 返回结果，适合路径规划、参数查询等低频请求场景。
+
+构建并运行 service_demo：
+
+```bash
+flowrt build examples/service_demo/service_demo.rsdl
+flowrt run examples/service_demo/service_demo.rsdl --process main --run-steps 50
+```
+
+该示例中 `planner` 组件每 100ms 调用一次 `plan_service` 的 plan service，server
+根据请求的 goal 值返回接受或拒绝。运行后可以看到 `result` 输出端口的值随 service
+响应变化。
+
+查看 service 拓扑和运行态健康：
+
+```bash
+flowrt list examples/service_demo/flowrt/selfdesc/selfdesc.json
+flowrt status
+```
+
+`flowrt list` 展示 service endpoint 的 client/server 绑定和 request/response 类型；
+`flowrt status` 展示每个 service 的 ready、in_flight、queued、timeout、busy 等运行态指标。
+
+Service 与 channel 的区别：channel 是 publish/subscribe，生产者写入后不等消费者处理；
+Service 是 call/response，client 阻塞或轮询等待 server 返回。Service 与参数热更新的区别：
+参数是 runtime control-plane 的配置值，Service 是 graph 业务逻辑的一部分。
+
 ## ROS2 bridge 示例
 
 FlowRT 与 ROS2 的 bridge 固定走 `zenoh`，ROS2 侧必须使用 `rmw_zenoh_cpp`，不会回退到 DDS。ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`。当前示例把 FlowRT `TextFrame.data` 发布到 ROS2 `/flowrt/text`：

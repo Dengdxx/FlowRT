@@ -15,7 +15,7 @@
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体，并覆盖 Rust/C++ 用户组件参数接口 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证无界 variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
-| `examples/service_demo` | Rust | `inproc` | `flowrt prepare examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response 和 service policy |
+| `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 
 ## `import_demo`
 
@@ -290,11 +290,22 @@ ros2 topic echo /flowrt/text --once
 
 ```text
 examples/service_demo/service_demo.rsdl
+examples/service_demo/src/rust/mod.rs
 ```
 
-该示例验证 service client/server typed API：
+该示例验证 Service request/response 运行时的完整闭环：RSDL 声明、codegen 生成、
+用户组件实现、inproc service call 和 `flowrt status` 健康观测。
+
+RSDL 声明 service 类型、组件端口、bind policy、profile 和 target：
 
 ```toml
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+reason = "string"
+
 [component.plan_service]
 language = "rust"
 service_server = ["plan:PlanRequest->PlanResponse"]
@@ -302,6 +313,7 @@ service_server = ["plan:PlanRequest->PlanResponse"]
 [component.planner]
 language = "rust"
 service_client = ["plan:PlanRequest->PlanResponse"]
+output = ["result:i32"]
 
 [[bind.service]]
 client = "plan_client.plan"
@@ -312,20 +324,56 @@ queue_depth = 16
 overflow = "busy"
 ```
 
+用户实现 service server handler 和 service client 调用方：
+
+```rust
+// service server：实现 on_plan_request handler
+impl PlanService for PlanServiceImpl {
+    fn on_plan_request(&mut self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse> {
+        let accepted = request.goal % 2 == 0;
+        flowrt::ServiceResult::ok(PlanResponse { accepted, reason: "...".into() })
+    }
+}
+
+// service client：在 on_tick 中通过 typed handle 调用
+impl Planner for PlannerImpl {
+    fn on_tick(
+        &mut self,
+        plan: &ServiceClient_planner_plan,
+        result: &mut flowrt::Output<i32>,
+    ) -> flowrt::Status {
+        match plan.call(PlanRequest { goal: 1 }, std::time::Duration::from_millis(500)) {
+            flowrt::ServiceResult::Ok(resp) => { /* 处理响应 */ }
+            flowrt::ServiceResult::Err(code, msg) => { /* 处理错误 */ }
+        }
+        flowrt::Status::ok()
+    }
+}
+```
+
 它验证：
 
-- RSDL `[[bind.service]]` 声明和 service policy 字段。
-- Contract IR `ServiceEdgeIr` 归一化。
+- RSDL `[[bind.service]]` 声明、service policy 字段（`backend`、`timeout_ms`、`queue_depth`、`overflow`）。
+- Contract IR `ServiceEdgeIr` 归一化和 auto backend resolver。
 - Rust codegen：`ServiceClient_{instance}_{port}` typed handle（`call()` / `start_call()`）。
 - Rust codegen：component trait 中 `on_{port}_request` handler 方法。
 - Rust codegen：hidden service task 注册和 scheduler wake glue。
 - `InprocServiceConfig` 生成：`queue_depth`、`max_in_flight`、`overflow`。
+- `flowrt list` 展示 service endpoint 拓扑。
+- `flowrt status` 展示 service 运行态健康（ready、in_flight、queued、timeout、busy）。
 
-常用命令：
+构建和运行：
 
 ```bash
-flowrt check examples/service_demo/service_demo.rsdl
-flowrt prepare examples/service_demo/service_demo.rsdl
+flowrt build examples/service_demo/service_demo.rsdl
+flowrt run examples/service_demo/service_demo.rsdl --process main --run-steps 50
+```
+
+查看 service 拓扑和健康：
+
+```bash
+flowrt list examples/service_demo/flowrt/selfdesc/selfdesc.json
+flowrt status
 ```
 
 ## 添加新示例
