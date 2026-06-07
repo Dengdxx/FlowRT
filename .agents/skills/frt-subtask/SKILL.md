@@ -1,5 +1,5 @@
 ---
-name: frt-subtask-orchestration
+name: frt-subtask
 description: >
   Use when the user says "派子智能体", "外派任务", "分配子任务", "验收 worktree",
   "减少返工", or wants copyable FlowRT subtask prompts, external-agent worktree review,

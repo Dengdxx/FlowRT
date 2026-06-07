@@ -10,8 +10,8 @@ examples/*/flowrt/
 !.agents/skills/README.md
 !.agents/skills/write-frt-skill/
 !.agents/skills/write-frt-skill/**
-!.agents/skills/frt-subtask-orchestration/
-!.agents/skills/frt-subtask-orchestration/**
+!.agents/skills/frt-subtask/
+!.agents/skills/frt-subtask/**
 !.agents/skills/frt-core-*/
 !.agents/skills/frt-core-*/**
 .claude/
