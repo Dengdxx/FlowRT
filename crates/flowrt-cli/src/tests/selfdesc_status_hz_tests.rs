@@ -204,6 +204,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
                 dropped_samples: 0,
             }],
             processes: Vec::new(),
+            services: Vec::new(),
         },
     };
     let second = flowrt::IntrospectionResponse::Status {
@@ -227,6 +228,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
                 dropped_samples: 0,
             }],
             processes: Vec::new(),
+            services: Vec::new(),
         },
     };
 
@@ -296,5 +298,123 @@ fn live_hz_summary_reports_stale_socket_without_failing_scan() {
 
     assert!(output.contains(&format!("stale socket={}", socket.display())));
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn self_description_summary_displays_service_endpoints() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "svc_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "services": [{
+      "name": "planner.plan_to_executor.execute",
+      "canonical_id": "svc_001",
+      "client_instance": "planner",
+      "client_port": "plan",
+      "server_instance": "executor",
+      "server_port": "execute",
+      "request_type": "PlanRequest",
+      "response_type": "PlanResponse"
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-services");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    assert!(list.contains("services=1"));
+    assert!(list.contains("service planner.plan_to_executor.execute"));
+    assert!(list.contains("client=planner.plan"));
+    assert!(list.contains("server=executor.execute"));
+    assert!(list.contains("request=PlanRequest"));
+    assert!(list.contains("response=PlanResponse"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn self_description_summary_handles_no_services() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "no_svc" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-no-services");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    assert!(list.contains("services=0"));
+    assert!(!list.contains("service "));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_displays_service_health() {
+    let root = temp_test_dir("live-status-service-health");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 77,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_service("planner.plan_to_executor.execute");
+    state.record_service_health(flowrt::IntrospectionServiceStatus {
+        name: "planner.plan_to_executor.execute".to_string(),
+        ready: true,
+        in_flight: 2,
+        queued: 1,
+        total_requests: 100,
+        timeout_count: 3,
+        busy_count: 1,
+        unavailable_count: 0,
+        late_drop_count: 2,
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+    assert!(output.contains("service=planner.plan_to_executor.execute"));
+    assert!(output.contains("ready=true"));
+    assert!(output.contains("in_flight=2"));
+    assert!(output.contains("queued=1"));
+    assert!(output.contains("total_requests=100"));
+    assert!(output.contains("timeout=3"));
+    assert!(output.contains("busy=1"));
+    assert!(output.contains("late_drop=2"));
+
+    drop(server);
     let _ = std::fs::remove_dir_all(&root);
 }

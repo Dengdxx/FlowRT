@@ -32,8 +32,13 @@ fn load_self_description_with_hash(path: &Path) -> Result<(SelfDescription, Stri
 }
 
 pub(crate) fn self_description_summary(self_description: &SelfDescription) -> String {
+    let total_services: usize = self_description
+        .graphs
+        .iter()
+        .map(|graph| graph.services.len())
+        .sum();
     let mut output = format!(
-        "package={} selfdesc={} source_hash={} graphs={} instances={} tasks={} channels={} messages={}",
+        "package={} selfdesc={} source_hash={} graphs={} instances={} tasks={} channels={} services={} messages={}",
         self_description.package.name,
         self_description.self_description_version,
         self_description.source_hash,
@@ -53,6 +58,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
             .iter()
             .map(|graph| graph.channels.len())
             .sum::<usize>(),
+        total_services,
         self_description.message_abi.len()
     );
     for graph in &self_description.graphs {
@@ -67,6 +73,18 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
             output.push_str(&format!(
                 "\nchannel {} -> {} type={}",
                 channel.from, channel.to, channel.message_type
+            ));
+        }
+        for service in &graph.services {
+            output.push_str(&format!(
+                "\nservice {} client={}.{} server={}.{} request={} response={}",
+                service.name,
+                service.client_instance,
+                service.client_port,
+                service.server_instance,
+                service.server_port,
+                service.request_type,
+                service.response_type
             ));
         }
     }
@@ -967,6 +985,21 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         option_u64(process.last_seen_unix_ms),
                         process.tick_stale,
                         option_i32(process.exit_code),
+                        socket.display()
+                    ));
+                }
+                for service in status.services {
+                    lines.push(format!(
+                        "service={} ready={} in_flight={} queued={} total_requests={} timeout={} busy={} unavailable={} late_drop={} socket={}",
+                        service.name,
+                        service.ready,
+                        service.in_flight,
+                        service.queued,
+                        service.total_requests,
+                        service.timeout_count,
+                        service.busy_count,
+                        service.unavailable_count,
+                        service.late_drop_count,
                         socket.display()
                     ));
                 }
