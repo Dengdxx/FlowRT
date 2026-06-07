@@ -35,6 +35,9 @@ pub struct SelfDescription {
     pub deployments: Vec<SelfDescriptionDeployment>,
     #[serde(default)]
     pub graphs: Vec<SelfDescriptionGraph>,
+    /// v0.4+ component 类型声明摘要。
+    #[serde(default)]
+    pub component_types: Vec<SelfDescriptionComponentType>,
     #[serde(default)]
     pub message_abi: Vec<SelfDescriptionMessageAbi>,
     #[serde(default)]
@@ -74,6 +77,71 @@ pub struct SelfDescriptionDeployment {
     pub backend: String,
     #[serde(default)]
     pub satisfied: bool,
+}
+
+/// 可复用组件类型声明摘要。
+///
+/// 记录 component 的语言、kind 和声明端口（inputs、outputs、service_clients、
+/// service_servers、params），让 CLI 在不读 RSDL 的情况下展示组件视图。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionComponentType {
+    /// 组件类型名称。
+    #[serde(default)]
+    pub name: String,
+    /// 组件所属 runtime 语言。
+    #[serde(default)]
+    pub language: String,
+    /// 组件 kind：native / adapter / external_process。
+    #[serde(default)]
+    pub kind: String,
+    /// 输入端口声明。
+    #[serde(default)]
+    pub inputs: Vec<SelfDescriptionPortDecl>,
+    /// 输出端口声明。
+    #[serde(default)]
+    pub outputs: Vec<SelfDescriptionPortDecl>,
+    /// service client 端口声明。
+    #[serde(default)]
+    pub service_clients: Vec<SelfDescriptionServicePortDecl>,
+    /// service server 端口声明。
+    #[serde(default)]
+    pub service_servers: Vec<SelfDescriptionServicePortDecl>,
+    /// 参数 schema 声明。
+    #[serde(default)]
+    pub params: Vec<SelfDescriptionParamDecl>,
+}
+
+/// 端口声明（输入/输出）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionPortDecl {
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub ty: String,
+}
+
+/// service 端口声明（client/server）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionServicePortDecl {
+    pub name: String,
+    #[serde(default)]
+    pub request_type: String,
+    #[serde(default)]
+    pub response_type: String,
+}
+
+/// 参数 schema 声明（来自 component 类型定义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionParamDecl {
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub ty: String,
+    #[serde(default)]
+    pub update: String,
+    pub default: Option<serde_json::Value>,
+    pub min: Option<serde_json::Value>,
+    pub max: Option<serde_json::Value>,
+    #[serde(default)]
+    pub choices: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

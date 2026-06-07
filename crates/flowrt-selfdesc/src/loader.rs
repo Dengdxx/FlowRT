@@ -327,4 +327,75 @@ fn main() {{}}
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn old_json_without_component_types_loads_without_error() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "x" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}"#;
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-nocomp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert!(sd.component_types.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_json_with_component_types_loads_correctly() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "x" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "component_types": [{
+    "name": "sensor",
+    "language": "rust",
+    "kind": "native",
+    "inputs": [],
+    "outputs": [{ "name": "imu", "type": "Imu" }],
+    "service_clients": [],
+    "service_servers": [],
+    "params": [{ "name": "rate", "type": "f64", "update": "on_tick" }]
+  }],
+  "message_abi": []
+}"#;
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-withcomp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert_eq!(sd.component_types.len(), 1);
+        assert_eq!(sd.component_types[0].name, "sensor");
+        assert_eq!(sd.component_types[0].language, "rust");
+        assert_eq!(sd.component_types[0].kind, "native");
+        assert_eq!(sd.component_types[0].outputs.len(), 1);
+        assert_eq!(sd.component_types[0].outputs[0].name, "imu");
+        assert_eq!(sd.component_types[0].outputs[0].ty, "Imu");
+        assert_eq!(sd.component_types[0].params.len(), 1);
+        assert_eq!(sd.component_types[0].params[0].name, "rate");
+        assert_eq!(sd.component_types[0].params[0].ty, "f64");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
