@@ -146,7 +146,12 @@ pub(super) fn emit_rust_scheduler_v2_loop(
     // service task registration
     let next_task_id = tasks.len();
     let (service_lanes, service_tasks, _service_task_end) =
-        service_emit::emit_rust_service_scheduler_registration(contract, graph, next_task_id, &mut lane_ids);
+        service_emit::emit_rust_service_scheduler_registration(
+            contract,
+            graph,
+            next_task_id,
+            &mut lane_ids,
+        );
     output.push_str(&service_lanes);
     output.push_str(&service_tasks);
     output.push_str(&emit_rust_on_message_revision_state(&tasks, binds));

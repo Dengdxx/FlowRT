@@ -46,8 +46,12 @@ pub(crate) fn rust_service_handler_methods(
     }
 
     let mut output = String::new();
+    let mut emitted = std::collections::BTreeSet::new();
     for plan in relevant_plans {
         let method_name = service_handler_method_name(&plan.server_port);
+        if !emitted.insert(method_name.clone()) {
+            continue;
+        }
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
         let port_name = &plan.server_port;
@@ -78,10 +82,7 @@ pub(crate) fn rust_service_handler_methods(
 // ── Client handle 代码生成 ──────────────────────────────────────────────
 
 /// 为每个 service edge 生成 client handle struct 定义和 impl。
-pub(crate) fn emit_rust_service_client_handles(
-    contract: &ContractIr,
-    graph: &GraphIr,
-) -> String {
+pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &GraphIr) -> String {
     let plans = service_runtime_plans(contract, graph);
     if plans.is_empty() {
         return String::new();
@@ -89,9 +90,13 @@ pub(crate) fn emit_rust_service_client_handles(
 
     let mut output = String::new();
     output.push_str("// ── Service client typed handles ───────────────────────────────────\n\n");
+    let mut emitted_handles = std::collections::BTreeSet::new();
 
     for plan in &plans {
         let handle_name = client_handle_name(plan);
+        if !emitted_handles.insert(handle_name.clone()) {
+            continue;
+        }
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
         let is_zenoh = plan.backend.0 == "zenoh";
@@ -118,10 +123,10 @@ pub(crate) fn emit_rust_service_client_handles(
         output.push_str("#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
         if is_zenoh {
-            output.push_str("    _marker: std::marker::PhantomData<()>,\n");
+            output.push_str("    pub(crate) _marker: std::marker::PhantomData<()>,\n");
         } else {
             output.push_str(&format!(
-                "    inner: flowrt::InprocServiceClient<{req_ty}, {resp_ty}>,\n",
+                "    pub(crate) inner: flowrt::InprocServiceClient<{req_ty}, {resp_ty}>,\n",
             ));
         }
         output.push_str("}\n\n");
@@ -148,7 +153,7 @@ pub(crate) fn emit_rust_service_client_handles(
                      _request: {req_ty},\n\
                      _timeout: std::time::Duration,\n\
                  ) -> flowrt::ServiceCallHandle<{resp_ty}> {{\n\
-                     unimplemented!(\"zenoh service transport is not yet supported\")\n\
+                     flowrt::ServiceCallHandle::ready_error(flowrt::ServiceError::Backend)\n\
                  }}\n\n",
             ));
         } else {
@@ -202,6 +207,9 @@ pub(crate) fn rust_app_service_fields(contract: &ContractIr, graph: &GraphIr) ->
         let handle_name = client_handle_name(plan);
         output.push_str(&format!("    {client_field}: {handle_name},\n"));
 
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
         let server_field = server_field_name(plan);
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
@@ -228,10 +236,13 @@ pub(crate) fn emit_rust_service_new(
     if plans.is_empty() {
         return (String::new(), String::new());
     }
+    let has_inproc_service = plans.iter().any(|plan| plan.backend.0 != "zenoh");
 
     let mut registration = String::new();
-    registration.push_str("        // ── Service registration\n");
-    registration.push_str("        let service_registry = flowrt::ServiceRegistry::new();\n");
+    if has_inproc_service {
+        registration.push_str("        // ── Service registration\n");
+        registration.push_str("        let service_registry = flowrt::ServiceRegistry::new();\n");
+    }
 
     let mut initializers = String::new();
     let mut service_lane_offset: usize = 0;
@@ -244,16 +255,10 @@ pub(crate) fn emit_rust_service_new(
         if is_zenoh {
             // zenoh backend: skip inproc registration, generate placeholder initializers
             let client_field = client_field_name(plan);
-            let server_field = server_field_name(plan);
             let handle_name = client_handle_name(plan);
-            let _req_ty2 = req_ty.clone();
-            let _resp_ty2 = resp_ty.clone();
 
             initializers.push_str(&format!(
                 "            {client_field}: {handle_name} {{ _marker: std::marker::PhantomData }},\n",
-            ));
-            initializers.push_str(&format!(
-                "            {server_field}: unimplemented!(\"zenoh service transport is not yet supported\"),\n",
             ));
             continue;
         }
@@ -303,9 +308,7 @@ pub(crate) fn emit_rust_service_new(
         initializers.push_str(&format!(
             "            {client_field}: {handle_name} {{ inner: {reg_var}.0 }},\n",
         ));
-        initializers.push_str(&format!(
-            "            {server_field}: {reg_var}.1,\n",
-        ));
+        initializers.push_str(&format!("            {server_field}: {reg_var}.1,\n",));
     }
 
     (registration, initializers)
@@ -324,6 +327,9 @@ pub(crate) fn emit_rust_service_step_functions(contract: &ContractIr, graph: &Gr
     output.push_str("// ── Service step functions ─────────────────────────────────────────\n\n");
 
     for plan in &plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
         let fn_name = service_step_fn_name(plan);
         let server_field = server_field_name(plan);
         let server_instance = &plan.server_instance;
@@ -361,6 +367,9 @@ pub(crate) fn emit_rust_service_scheduler_registration(
     let mut task_id = next_task_id;
 
     for plan in &plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
         let server_lane = service_server_lane(plan);
 
         // 注册 lane（如果尚未注册）
@@ -400,6 +409,9 @@ pub(crate) fn rust_service_dispatch_cases(
     let mut task_id = task_id_offset;
 
     for plan in &plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
         task_id += 1;
         let fn_name = service_step_fn_name(plan);
         output.push_str(&format!(
@@ -425,6 +437,9 @@ pub(crate) fn emit_rust_service_wake_checks(
     let mut task_id = task_id_offset;
 
     for plan in &plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
         task_id += 1;
         let server_field = server_field_name(plan);
         output.push_str(&format!(
@@ -444,7 +459,7 @@ pub(crate) fn emit_rust_service_wake_checks(
 pub(crate) fn client_handle_name(plan: &ServiceRuntimePlan) -> String {
     format!(
         "ServiceClient_{}_{}",
-        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_component),
         crate::snake_identifier(&plan.client_port)
     )
 }

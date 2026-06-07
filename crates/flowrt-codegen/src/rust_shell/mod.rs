@@ -20,7 +20,7 @@ use lifecycle_emit::{emit_rust_app_new, emit_rust_app_run};
 use params_emit::rust_params_struct;
 use scheduler_emit::emit_all_step_functions;
 use service_emit::{
-    emit_rust_service_client_handles, emit_rust_service_step_functions,
+    client_handle_name, emit_rust_service_client_handles, emit_rust_service_step_functions,
     rust_service_handler_methods,
 };
 use step_emit::RustStepEmission;
@@ -44,6 +44,9 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
     let service_plans = graph
         .map(|g| crate::runtime_plan::service_runtime_plans(contract, g))
         .unwrap_or_default();
+    if let Some(g) = graph {
+        output.push_str(&emit_rust_service_client_handles(contract, g));
+    }
 
     for component in contract
         .components
@@ -83,7 +86,7 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
         if let Some(g) = graph {
             output.push_str(&rust_service_handler_methods(component, g, &service_plans));
         }
-        output.push_str(&rust_tick_signature(component));
+        output.push_str(&rust_tick_signature(component, &service_plans));
         output.push_str("}\n\n");
     }
     output
@@ -121,8 +124,6 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         has_active_rust_channels,
         contract_has_runtime_params_for_language(contract, LanguageKind::Rust),
     ));
-    // service client handle structs
-    output.push_str(&emit_rust_service_client_handles(contract, graph));
     output.push_str("pub struct App {\n");
     output.push_str("    startup_status: flowrt::Status,\n");
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
@@ -177,8 +178,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
 
     output.push_str("impl App {\n");
     let dataflow_tasks = crate::scheduler_tasks_for_order(graph, &order);
-    let dataflow_lane_count =
-        step_emit::scheduler_lane_ids(&dataflow_tasks).len();
+    let dataflow_lane_count = step_emit::scheduler_lane_ids(&dataflow_tasks).len();
     output.push_str(&emit_rust_app_new(
         contract,
         graph,
@@ -245,8 +245,22 @@ pub(crate) fn emit_rust_main() -> String {
     output
 }
 
-fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
+fn rust_callback_args(
+    component: &ComponentIr,
+    service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
+) -> Vec<String> {
     let mut args = Vec::new();
+    let mut emitted_service_args = std::collections::BTreeSet::new();
+    for plan in service_plans.iter().filter(|plan| {
+        plan.client_component == component.name
+            || plan.client_component == component.generated_name
+            || plan.client_component == component.qualified_name
+    }) {
+        let arg_name = crate::snake_identifier(&plan.client_port);
+        if emitted_service_args.insert(arg_name.clone()) {
+            args.push(format!("{arg_name}: &{}", client_handle_name(plan)));
+        }
+    }
     for input in &component.inputs {
         args.push(format!(
             "{}: flowrt::Latest<'_, {}>",
@@ -267,9 +281,12 @@ fn rust_callback_args(component: &ComponentIr) -> Vec<String> {
     args
 }
 
-fn rust_tick_signature(component: &ComponentIr) -> String {
-    let args = rust_callback_args(component);
-    let doc = rust_tick_doc(component);
+fn rust_tick_signature(
+    component: &ComponentIr,
+    service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
+) -> String {
+    let args = rust_callback_args(component, service_plans);
+    let doc = rust_tick_doc(component, service_plans);
     if args.is_empty() {
         format!("{doc}    fn on_tick(&mut self) -> flowrt::Status;\n")
     } else {
@@ -295,7 +312,10 @@ fn rust_lifecycle_doc(brief: &str) -> String {
     )
 }
 
-fn rust_tick_doc(component: &ComponentIr) -> String {
+fn rust_tick_doc(
+    component: &ComponentIr,
+    service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
+) -> String {
     let mut output = format!(
         "    /// 执行一次 `{}` 组件调度回调。\n    ///\n    /// runtime shell 按 Contract IR 中的 task 和 dataflow 顺序调用该方法。输入使用 latest snapshot 视图，输出通过 `flowrt::Output<T>` 写入，本方法不得保存输入引用到回调之外。\n",
         component.name
@@ -308,6 +328,19 @@ fn rust_tick_doc(component: &ComponentIr) -> String {
             "    /// - `{}`: latest snapshot 输入视图。\n",
             input.name
         ));
+    }
+    let mut emitted_service_args = std::collections::BTreeSet::new();
+    for plan in service_plans.iter().filter(|plan| {
+        plan.client_component == component.name
+            || plan.client_component == component.generated_name
+            || plan.client_component == component.qualified_name
+    }) {
+        let arg_name = crate::snake_identifier(&plan.client_port);
+        if emitted_service_args.insert(arg_name.clone()) {
+            output.push_str(&format!(
+                "    /// - `{arg_name}`: typed service client handle。\n"
+            ));
+        }
     }
     for output_port in &component.outputs {
         output.push_str(&format!(

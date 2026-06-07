@@ -355,6 +355,20 @@ int main() {
 
     registry.clear();
 
+    // ── ready error handle ──────────────────────────────────────────────────
+
+    {
+        auto handle =
+            flowrt::InprocServiceHandle<AddResponse>::ready_error(flowrt::ServiceError::Backend);
+        assert(handle.ready());
+        assert(handle.poll());
+        auto result = handle.wait();
+        assert(result.is_err());
+        assert(result.error_code() == flowrt::ServiceError::Backend);
+    }
+
+    registry.clear();
+
     // ── on_request_arrived 回调 ───────────────────────────────────────────────
 
     {

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy,
-    ParamIr, Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy,
-    TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    ParamIr, Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -373,10 +373,14 @@ pub(crate) struct ServiceRuntimePlan {
     pub(crate) service_name: String,
     /// client 端实例名。
     pub(crate) client_instance: String,
+    /// client 端 component 名。
+    pub(crate) client_component: String,
     /// client 端端口名。
     pub(crate) client_port: String,
     /// server 端实例名。
     pub(crate) server_instance: String,
+    /// server 端 component 名。
+    pub(crate) server_component: String,
     /// server 端端口名。
     pub(crate) server_port: String,
     /// request 类型。
@@ -398,7 +402,10 @@ pub(crate) struct ServiceRuntimePlan {
 }
 
 /// 为 graph 中所有 service edge 生成 codegen 计划。
-pub(crate) fn service_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<ServiceRuntimePlan> {
+pub(crate) fn service_runtime_plans(
+    contract: &ContractIr,
+    graph: &GraphIr,
+) -> Vec<ServiceRuntimePlan> {
     graph
         .services
         .iter()
@@ -408,12 +415,12 @@ pub(crate) fn service_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> V
             let client_port = &service.client.port;
             let server_instance = &service.server.instance.name;
             let server_port = &service.server.port;
+            let client_instance_ir = instance_by_name(graph, client_instance);
+            let server_instance_ir = instance_by_name(graph, server_instance);
 
             // 从 server component 查找 request/response 类型
-            let server_component = crate::component_by_name(
-                contract,
-                &instance_by_name(graph, server_instance).component.name,
-            );
+            let server_component =
+                crate::component_by_name(contract, &server_instance_ir.component.name);
             let server_port_ir = server_component
                 .service_servers
                 .iter()
@@ -424,8 +431,10 @@ pub(crate) fn service_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> V
                 index,
                 service_name: format!("{client_instance}.{client_port}"),
                 client_instance: client_instance.clone(),
+                client_component: client_instance_ir.component.name.clone(),
                 client_port: client_port.clone(),
                 server_instance: server_instance.clone(),
+                server_component: server_instance_ir.component.name.clone(),
                 server_port: server_port.clone(),
                 request_type: server_port_ir.request.clone(),
                 response_type: server_port_ir.response.clone(),

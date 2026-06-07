@@ -245,6 +245,22 @@ class InprocServiceHandle {
         InprocServiceStats *stats = nullptr;  ///< 指向 server 共享状态的统计计数器。
     };
 
+   public:
+    /**
+     * @brief 构造一个已经就绪的错误 handle。
+     *
+     * 用于 generated shell 在 transport 尚不可用或调用提交阶段已经失败时，仍保持
+     * `start_call()` 非阻塞 API 不抛异常。调用方随后 `poll()` 会立即返回 true，
+     * `complete()` 会返回对应 `ServiceError`。
+     */
+    static InprocServiceHandle ready_error(ServiceError error) {
+        auto state = std::make_shared<State>();
+        state->error = error;
+        state->done = true;
+        return InprocServiceHandle(std::move(state));
+    }
+
+   private:
     explicit InprocServiceHandle(std::shared_ptr<State> state) : state_(std::move(state)) {}
 
     ServiceResult<Resp> take_result() {

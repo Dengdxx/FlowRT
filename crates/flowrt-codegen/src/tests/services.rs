@@ -44,23 +44,40 @@ queue_depth = 16
 overflow = "busy"
 "#;
 
-/// service client handle struct 出现在 runtime_shell 文件中。
+/// service client handle struct 出现在用户接口文件中。
 #[test]
 fn rust_service_client_handle_struct_is_generated() {
     let contract = contract_from_source(SERVICE_RSDL);
     let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    assert!(
+        components.contains("pub struct ServiceClient_planner_plan"),
+        "components module must contain service client handle struct.\n\n{components}"
+    );
+    assert!(
+        components.contains("fn call("),
+        "service client handle must expose call() method.\n\n{components}"
+    );
+    assert!(
+        components.contains("fn start_call("),
+        "service client handle must expose start_call() method.\n\n{components}"
+    );
+}
+
+/// Rust component trait 和 runtime shell 必须把 typed service client 注入用户回调。
+#[test]
+fn rust_service_client_is_injected_into_on_tick() {
+    let contract = contract_from_source(SERVICE_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    assert!(
+        components.contains("plan: &ServiceClient_planner_plan"),
+        "planner trait on_tick must receive typed service client handle.\n\n{components}"
+    );
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        shell.contains("ServiceClient_plan_client_plan"),
-        "runtime shell must contain service client handle struct.\n\n{shell}"
-    );
-    assert!(
-        shell.contains("fn call("),
-        "service client handle must expose call() method.\n\n{shell}"
-    );
-    assert!(
-        shell.contains("fn start_call("),
-        "service client handle must expose start_call() method.\n\n{shell}"
+        shell.contains("self.plan_client.on_tick(&self.service_client_plan_client_plan)"),
+        "runtime shell must pass the App-owned service client handle into on_tick.\n\n{shell}"
     );
 }
 
@@ -224,11 +241,19 @@ timeout_ms = 2000
         components.contains("on_plan_request"),
         "C++ plan_service interface must declare on_plan_request handler.\n\n{components}"
     );
-    // C++ runtime shell 应该有 service client wrapper 和 server 字段
+    assert!(
+        components.contains("class ServiceClient_planner_plan"),
+        "C++ components header must expose service client wrapper to user code.\n\n{components}"
+    );
+    assert!(
+        components.contains("ServiceClient_planner_plan& plan"),
+        "C++ planner interface on_tick must receive typed service client handle.\n\n{components}"
+    );
+    // C++ runtime shell 应该有 service client/server 字段
     let shell_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
     assert!(
-        shell_header.contains("ServiceClient_plan_client_plan"),
-        "C++ runtime shell header must have service client wrapper.\n\n{shell_header}"
+        shell_header.contains("ServiceClient_planner_plan service_client_plan_client_plan_"),
+        "C++ runtime shell header must have service client field.\n\n{shell_header}"
     );
     assert!(
         shell_header.contains("service_server_plan_svc_plan"),
@@ -241,12 +266,16 @@ timeout_ms = 2000
     // C++ runtime shell 应该有 service registration
     let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
     assert!(
-        shell.contains("InprocServiceServer"),
+        shell.contains("service_server_plan_svc_plan_.emplace"),
         "C++ runtime shell must register service server.\n\n{shell}"
     );
     assert!(
         shell.contains("InprocServiceClient"),
         "C++ runtime shell must create service client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("plan_client_->on_tick(service_client_plan_client_plan_)"),
+        "C++ runtime shell must pass the App-owned service client handle into on_tick.\n\n{shell}"
     );
     assert!(
         shell.contains("process_pending()"),
@@ -345,5 +374,45 @@ backend = "inproc"
     assert!(
         shell.contains("ServiceClient_client_s2"),
         "must have second client handle.\n\n{shell}"
+    );
+}
+
+/// zenoh service transport 尚未实现时，generated API 返回 Backend 错误且不 panic。
+#[test]
+fn zenoh_service_placeholder_does_not_generate_panics_or_inproc_tasks() {
+    let source = SERVICE_RSDL.replace("backend = \"inproc\"", "backend = \"zenoh\"");
+    let contract = contract_from_source(&source);
+    let bundle = emit_artifacts(&contract).unwrap();
+
+    let rust_components = artifact_content(&bundle, "rust/src/components.rs");
+    assert!(
+        rust_components.contains("pub struct ServiceClient_planner_plan"),
+        "Rust components must expose zenoh service client placeholder.\n\n{rust_components}"
+    );
+    assert!(
+        rust_components.contains("ServiceError::Backend"),
+        "Rust zenoh placeholder must return Backend error.\n\n{rust_components}"
+    );
+    assert!(
+        rust_components.contains("ServiceCallHandle::ready_error"),
+        "Rust zenoh start_call must return a ready error handle.\n\n{rust_components}"
+    );
+
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    assert!(
+        !rust_shell.contains("unimplemented!"),
+        "Rust zenoh service generation must not panic at runtime.\n\n{rust_shell}"
+    );
+    assert!(
+        !rust_shell.contains("ServiceRegistry::new()"),
+        "zenoh-only service generation must not create inproc registry.\n\n{rust_shell}"
+    );
+    assert!(
+        !rust_shell.contains("service_server_plan_svc_plan"),
+        "zenoh service generation must not create inproc server field.\n\n{rust_shell}"
+    );
+    assert!(
+        !rust_shell.contains("fn step_service_plan_svc_plan"),
+        "zenoh service generation must not create hidden inproc service task.\n\n{rust_shell}"
     );
 }

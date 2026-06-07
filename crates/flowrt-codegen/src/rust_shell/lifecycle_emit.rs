@@ -57,7 +57,10 @@ pub(super) fn emit_rust_app_new(
     for instance in order {
         let component = crate::component_by_name(contract, &instance.component.name);
         if server_instances.contains(instance.name.as_str()) {
-            output.push_str(&format!("            {name}: {name}.clone(),\n", name = instance.name));
+            output.push_str(&format!(
+                "            {name}: {name}.clone(),\n",
+                name = instance.name
+            ));
         } else {
             output.push_str(&format!("            {},\n", instance.name));
         }
@@ -250,14 +253,22 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         ));
     }
     for instance in emission.order {
-        let call = component_call_expr(instance, emission.service_server_instances, "on_init(&mut lifecycle_context)");
+        let call = component_call_expr(
+            instance,
+            emission.service_server_instances,
+            "on_init(&mut lifecycle_context)",
+        );
         output.push_str(&format!(
             "        if status == flowrt::Status::Ok {{\n            status = {call};\n            {name}_initialized = status == flowrt::Status::Ok;\n        }}\n",
             name = instance.name
         ));
     }
     for instance in emission.order {
-        let call = component_call_expr(instance, emission.service_server_instances, "on_start(&mut lifecycle_context)");
+        let call = component_call_expr(
+            instance,
+            emission.service_server_instances,
+            "on_start(&mut lifecycle_context)",
+        );
         output.push_str(&format!(
             "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = {call};\n            {name}_started = status == flowrt::Status::Ok;\n        }}\n",
             name = instance.name
@@ -280,14 +291,22 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         shutdown_function_name = emission.steps.shutdown
     ));
     for instance in emission.order.iter().rev() {
-        let call = component_call_expr(instance, emission.service_server_instances, "on_stop(&mut lifecycle_context)");
+        let call = component_call_expr(
+            instance,
+            emission.service_server_instances,
+            "on_stop(&mut lifecycle_context)",
+        );
         output.push_str(&format!(
             "        if {name}_started {{\n            let stop_status = {call};\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
             name = instance.name
         ));
     }
     for instance in emission.order.iter().rev() {
-        let call = component_call_expr(instance, emission.service_server_instances, "on_shutdown(&mut lifecycle_context)");
+        let call = component_call_expr(
+            instance,
+            emission.service_server_instances,
+            "on_shutdown(&mut lifecycle_context)",
+        );
         output.push_str(&format!(
             "        if {name}_initialized {{\n            let shutdown_status = {call};\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
             name = instance.name
@@ -304,7 +323,10 @@ fn component_call_expr(
     method_call: &str,
 ) -> String {
     if service_server_instances.contains(&instance.name) {
-        format!("self.{name}.borrow_mut().{method_call}", name = instance.name)
+        format!(
+            "self.{name}.borrow_mut().{method_call}",
+            name = instance.name
+        )
     } else {
         format!("self.{name}.{method_call}", name = instance.name)
     }
