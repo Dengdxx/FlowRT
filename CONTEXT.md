@@ -5,10 +5,14 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.3.1`。`v0.3.0` 已发布，核心主题是 Scheduler v2：
-task-centric scheduler plan、`startup` / `shutdown` task、`on_message` readiness、
-serial lane、worker thread 配置、channel revision/cache 和同一 scheduler step 内的
-drain loop 级联唤醒。
+当前 workspace 版本为 `0.4.0`。`v0.4.0` 已发布，核心主题是 Service runtime：
+生成 Rust/C++ service client/server 用户 API，支持 `inproc` 与 `zenoh` service
+transport，补齐 request/response frame、错误语义、self-description、`flowrt list` /
+`flowrt status` 观测和示例文档，并完成 amd64 + arm64 release 安装包闭环。
+
+`v0.3.0` 已发布，核心主题是 Scheduler v2：task-centric scheduler plan、
+`startup` / `shutdown` task、`on_message` readiness、serial lane、worker thread
+配置、channel revision/cache 和同一 scheduler step 内的 drain loop 级联唤醒。
 
 `v0.3.1` 聚焦复杂系统结构能力：
 
@@ -78,11 +82,23 @@ control-plane service-like RPC，服务于运行中配置管理；Service 是 gr
 服务于用户组件之间的 typed request/response。两者可以复用 schema、validation、
 structured error、pending/apply 和 self-description 经验，但不能混成同一个概念。
 
-`v0.5.0` 的系统编排目标是让 generated supervisor 足以替代常见 launch 脚本的核心
-职责：process 条件启停、错峰启动、环境注入、CPU affinity、重启策略、故障传播、
-profile 选择和运行态 health。参数系统要从单应用热更新扩展到可发现、可校验、可远程
-操作的 runtime control-plane；Web、HTTP、WebSocket 和 UI 不进入 FlowRT core，只能
-作为应用层或外部工具消费 FlowRT 暴露的 typed introspection / params / record API。
+`v0.5.0` 聚焦三条主线：launch-grade supervisor、参数控制面和高频调度硬化。
+
+supervisor 主线：让 generated supervisor 足以替代常见 launch 脚本的核心职责。已拍板
+支持 `process_started`、`runtime_ready`、`service_ready` 三级 readiness gate、错峰
+启动、env 注入、restart/failure policy、显式 CPU affinity 绑核，以及 CPU priority
+采用 `nice` + 可选 Linux RT policy / priority。
+
+参数控制面主线：参数系统从单应用热更新扩展到可发现、可校验、可远程操作的 runtime
+control-plane。参数远程控制必须支持跨机器，推荐走 zenoh control-plane。
+
+高频调度硬化主线：deadline、stale、backpressure 和 fairness 要进入 runtime 行为和
+status 观测，补齐多 lane 调度的语义硬化。
+
+非目标：Operation、record/replay、Web/HTTP/WebSocket/UI、硬件 backend、新语言
+binding、新 backend、ROS2 bridge 扩展。Web、HTTP、WebSocket 和 UI 不进入 FlowRT
+core，只能作为应用层或外部工具消费 FlowRT 暴露的 typed introspection / params /
+record API。
 
 `v0.6.0` 不复制 ROS2 Action。FlowRT 需要的是一等 Operation 语义：typed
 long-running command、generated state machine、explicit policy、observable handle，
