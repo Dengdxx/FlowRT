@@ -3,6 +3,7 @@ use flowrt_ir::{ContractIr, GraphIr, InstanceIr, TaskIr, TriggerKind};
 use crate::runtime_plan::{BindRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase};
 use crate::{scheduler_tasks_for_order, selected_profile_worker_threads};
 
+use super::service_emit;
 use super::step_emit::{
     RustStepEmission, emit_rust_app_step, emit_rust_apply_pending_params_for_order,
     emit_rust_on_message_revision_state, emit_rust_on_message_wake_checks, scheduler_lane_ids,
@@ -122,7 +123,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         selected_profile_worker_threads(contract)
     ));
 
-    let lane_ids = scheduler_lane_ids(&tasks);
+    let mut lane_ids = scheduler_lane_ids(&tasks);
     for (lane, lane_id) in &lane_ids {
         output.push_str(&format!(
             "        scheduler.add_lane(flowrt::LaneId({lane_id}), flowrt::LaneKind::Serial);\n        let _ = {lane:?};\n"
@@ -142,6 +143,17 @@ pub(super) fn emit_rust_scheduler_v2_loop(
             ));
         }
     }
+    // service task registration
+    let next_task_id = tasks.len();
+    let (service_lanes, service_tasks, _service_task_end) =
+        service_emit::emit_rust_service_scheduler_registration(
+            contract,
+            graph,
+            next_task_id,
+            &mut lane_ids,
+        );
+    output.push_str(&service_lanes);
+    output.push_str(&service_tasks);
     output.push_str(&emit_rust_on_message_revision_state(&tasks, binds));
     output.push_str(&format!(
         "        let scheduler_base_period_ms: u64 = {};\n",
@@ -151,9 +163,12 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {\n            let mut observed_data_generation: u64;\n            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n",
     );
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
+    let has_service_tasks =
+        !service_emit::emit_rust_service_wake_checks(contract, graph, next_task_id).is_empty();
     let woke_on_message_decl = if tasks
         .iter()
         .any(|task| task.trigger == TriggerKind::OnMessage)
+        || has_service_tasks
     {
         "let mut woke_on_message = false;"
     } else {
@@ -166,6 +181,15 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         &emit_rust_on_message_wake_checks(&tasks, binds),
         1,
     ));
+    // service wake checks
+    let service_wake_checks =
+        service_emit::emit_rust_service_wake_checks(contract, graph, next_task_id);
+    if !service_wake_checks.is_empty() {
+        output.push_str(&crate::runtime_plan::indent_generated_block_levels(
+            &service_wake_checks,
+            1,
+        ));
+    }
     output
         .push_str("                let task_statuses = scheduler.run_ready(|task| match task {\n");
     for (index, task) in tasks.iter().enumerate() {
@@ -178,7 +202,13 @@ pub(super) fn emit_rust_scheduler_v2_loop(
             "                flowrt::TaskId({task_id}) => self.{function_name}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events),\n"
         ));
     }
-    if tasks.is_empty() {
+    // service dispatch cases
+    let (service_cases, _service_case_end) =
+        service_emit::rust_service_dispatch_cases(contract, graph, next_task_id);
+    if !service_cases.is_empty() {
+        output.push_str(&service_cases);
+    }
+    if tasks.is_empty() && service_cases.is_empty() {
         output.push_str(&format!(
             "                _ => self.{fallback_step_function}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events),\n"
         ));

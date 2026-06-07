@@ -1,0 +1,41 @@
+[package]
+name = "service_demo"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[component.plan_service]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[component.planner]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+output = ["result:i32"]
+
+[instance.plan_svc]
+component = "plan_service"
+
+[instance.plan_svc.task]
+trigger = "periodic"
+period_ms = 1000
+
+[instance.plan_client]
+component = "planner"
+
+[instance.plan_client.task]
+trigger = "periodic"
+period_ms = 100
+output = ["result"]
+
+[[bind.service]]
+client = "plan_client.plan"
+server = "plan_svc.plan"
+backend = "inproc"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"

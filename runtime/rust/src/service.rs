@@ -1114,18 +1114,13 @@ use std::time::{Duration, Instant};
 use crate::executor::{LaneId, ScheduleWaiter};
 
 /// inproc service 队列溢出策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ServiceOverflowPolicy {
     /// 队列或 in-flight 上限满时返回 `Busy`。
+    #[default]
     Busy,
     /// 队列或 in-flight 上限满时返回硬错误 `Rejected`。
     Error,
-}
-
-impl Default for ServiceOverflowPolicy {
-    fn default() -> Self {
-        Self::Busy
-    }
 }
 
 impl ServiceOverflowPolicy {
@@ -1763,6 +1758,20 @@ pub struct ServiceCallHandle<Resp: Send + 'static> {
 }
 
 impl<Resp: Send + 'static> ServiceCallHandle<Resp> {
+    /// 构造一个已经就绪的错误 handle。
+    ///
+    /// 用于 generated shell 在 transport 尚不可用或调用提交阶段已经失败时，仍保持
+    /// `start_call()` 非阻塞 API 不 panic。调用方随后 `poll()` 会立即返回 true，
+    /// `complete()` 会返回对应 `ServiceError`。
+    pub fn ready_error(error: ServiceError) -> Self {
+        Self {
+            slot: ResponseSlot::new(),
+            deadline: Instant::now(),
+            error: Some(error),
+            stats: None,
+        }
+    }
+
     /// 轮询响应是否已就绪。
     pub fn poll(&self) -> bool {
         if self.error.is_some() {
@@ -1862,6 +1871,18 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceServer<Req, Resp> {
     /// 返回 server 所在 lane。
     pub fn lane(&self) -> LaneId {
         self.endpoint.inner.lane
+    }
+
+    /// 返回当前排队中的 pending request 数量。
+    ///
+    /// 用于 scheduler wake glue：检查是否有待处理的请求需要唤醒 hidden service task。
+    pub fn pending_count(&self) -> usize {
+        self.endpoint
+            .inner
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     /// 返回统计快照。

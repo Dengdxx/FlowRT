@@ -11,6 +11,8 @@ use crate::runtime_plan::{
 };
 use crate::{component_by_name, tasks_for_instance};
 
+use super::service_emit;
+
 pub(super) struct RustStepEmission<'a> {
     pub contract: &'a ContractIr,
     pub graph: &'a GraphIr,
@@ -19,6 +21,8 @@ pub(super) struct RustStepEmission<'a> {
     pub incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     pub outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     pub outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+    /// 需要 Rc<RefCell<...>> 存储的 service server 实例名集合。
+    pub service_server_instances: &'a std::collections::BTreeSet<String>,
 }
 
 pub(super) fn emit_rust_app_step(
@@ -130,6 +134,11 @@ pub(super) fn emit_rust_app_step(
             }
 
             let mut call_args = Vec::new();
+            let service_plans =
+                crate::runtime_plan::service_runtime_plans(emission.contract, emission.graph);
+            for plan in crate::runtime_plan::client_service_plans(&service_plans, &instance.name) {
+                call_args.push(format!("&self.{}", service_emit::client_field_name(plan)));
+            }
             for input in &component.inputs {
                 call_args.push(input.name.clone());
             }
@@ -139,10 +148,21 @@ pub(super) fn emit_rust_app_step(
             for port in &component.outputs {
                 call_args.push(format!("&mut {}", port.name));
             }
+            let on_tick_call = if emission.service_server_instances.contains(&instance.name) {
+                format!(
+                    "self.{name}.borrow_mut().on_tick({args})",
+                    name = instance.name,
+                    args = call_args.join(", ")
+                )
+            } else {
+                format!(
+                    "self.{name}.on_tick({args})",
+                    name = instance.name,
+                    args = call_args.join(", ")
+                )
+            };
             output.push_str(&format!(
-                "{body_indent}match self.{name}.on_tick({args}) {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::Status::Retry,\n{body_inner_indent}flowrt::Status::Error => return flowrt::Status::Error,\n{body_indent}}}\n",
-                name = instance.name,
-                args = call_args.join(", ")
+                "{body_indent}match {on_tick_call} {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::Status::Retry,\n{body_inner_indent}flowrt::Status::Error => return flowrt::Status::Error,\n{body_indent}}}\n",
             ));
 
             if let Some(deadline_ms) = task.deadline_ms {

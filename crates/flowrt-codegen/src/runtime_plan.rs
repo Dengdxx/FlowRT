@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy,
-    ParamIr, Ros2BridgeIr, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness, TriggerKind,
-    TypeExpr,
+    ParamIr, Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -361,4 +361,130 @@ fn fixed_message_abi_size(contract: &ContractIr, type_name: &str) -> Option<usiz
 
 pub(crate) fn runtime_param_name(instance: &InstanceIr, param: &ParamIr) -> String {
     format!("{}.{}", instance.name, param.name)
+}
+
+/// service bind 的 codegen 计划。
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ServiceRuntimePlan {
+    /// service edge 索引。
+    pub(crate) index: usize,
+    /// service canonical name（`{client_instance}.{client_port}`）。
+    pub(crate) service_name: String,
+    /// client 端实例名。
+    pub(crate) client_instance: String,
+    /// client 端 component 名。
+    pub(crate) client_component: String,
+    /// client 端端口名。
+    pub(crate) client_port: String,
+    /// server 端实例名。
+    pub(crate) server_instance: String,
+    /// server 端 component 名。
+    pub(crate) server_component: String,
+    /// server 端端口名。
+    pub(crate) server_port: String,
+    /// request 类型。
+    pub(crate) request_type: TypeExpr,
+    /// response 类型。
+    pub(crate) response_type: TypeExpr,
+    /// backend 名称。
+    pub(crate) backend: BackendName,
+    /// 超时毫秒。
+    pub(crate) timeout_ms: u64,
+    /// 队列深度。
+    pub(crate) queue_depth: u32,
+    /// overflow 策略。
+    pub(crate) overflow: ServiceOverflowPolicy,
+    /// server lane 名称。
+    pub(crate) lane: Option<String>,
+    /// 最大 in-flight 请求数。
+    pub(crate) max_in_flight: u32,
+}
+
+/// 为 graph 中所有 service edge 生成 codegen 计划。
+pub(crate) fn service_runtime_plans(
+    contract: &ContractIr,
+    graph: &GraphIr,
+) -> Vec<ServiceRuntimePlan> {
+    graph
+        .services
+        .iter()
+        .enumerate()
+        .map(|(index, service)| {
+            let client_instance = &service.client.instance.name;
+            let client_port = &service.client.port;
+            let server_instance = &service.server.instance.name;
+            let server_port = &service.server.port;
+            let client_instance_ir = instance_by_name(graph, client_instance);
+            let server_instance_ir = instance_by_name(graph, server_instance);
+
+            // 从 server component 查找 request/response 类型
+            let server_component =
+                crate::component_by_name(contract, &server_instance_ir.component.name);
+            let server_port_ir = server_component
+                .service_servers
+                .iter()
+                .find(|p| p.name == *server_port)
+                .expect("validated service bind must reference existing server port");
+
+            ServiceRuntimePlan {
+                index,
+                service_name: format!("{client_instance}.{client_port}"),
+                client_instance: client_instance.clone(),
+                client_component: client_instance_ir.component.name.clone(),
+                client_port: client_port.clone(),
+                server_instance: server_instance.clone(),
+                server_component: server_instance_ir.component.name.clone(),
+                server_port: server_port.clone(),
+                request_type: server_port_ir.request.clone(),
+                response_type: server_port_ir.response.clone(),
+                backend: service.backend.clone(),
+                timeout_ms: service.policy.timeout_ms,
+                queue_depth: service.policy.queue_depth,
+                overflow: service.policy.overflow,
+                lane: service.policy.lane.clone(),
+                max_in_flight: service.policy.max_in_flight,
+            }
+        })
+        .collect()
+}
+
+/// 获取 service server 的 lane 名称。
+pub(crate) fn service_server_lane(plan: &ServiceRuntimePlan) -> String {
+    plan.lane
+        .clone()
+        .unwrap_or_else(|| format!("{}_serial", plan.server_instance))
+}
+
+/// 获取 service 的 overflow 策略名称。
+#[allow(dead_code)]
+pub(crate) fn ir_service_overflow_name(policy: ServiceOverflowPolicy) -> &'static str {
+    match policy {
+        ServiceOverflowPolicy::Busy => "Busy",
+        ServiceOverflowPolicy::Error => "Error",
+    }
+}
+
+/// 查找指定实例作为 client 的所有 service plans。
+#[allow(dead_code)]
+pub(crate) fn client_service_plans<'a>(
+    plans: &'a [ServiceRuntimePlan],
+    instance_name: &str,
+) -> Vec<&'a ServiceRuntimePlan> {
+    plans
+        .iter()
+        .filter(|plan| plan.client_instance == instance_name)
+        .collect()
+}
+
+/// 查找指定实例作为 server 的所有 service plans。
+#[allow(dead_code)]
+pub(crate) fn server_service_plans<'a>(
+    plans: &'a [ServiceRuntimePlan],
+    instance_name: &str,
+) -> Vec<&'a ServiceRuntimePlan> {
+    plans
+        .iter()
+        .filter(|plan| plan.server_instance == instance_name)
+        .collect()
 }

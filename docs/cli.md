@@ -173,9 +173,9 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 
 ## RSDL Service 写法
 
-Service 是 request/response 语义，不是 dataflow channel。当前版本已经把 service
-端口和 bind 纳入 RSDL、Contract IR、validator 和 launch manifest；runtime RPC 调用
-API 仍未生成，后续版本会在该语义合同上继续扩展。
+Service 是 request/response 语义，不是 dataflow channel。RSDL 声明 service 端口和
+bind 后，codegen 生成 typed client handle 和 server handler trait，用户只接触 typed
+API，不直接调用 backend。
 
 ```toml
 [type.PlanRequest]
@@ -195,6 +195,62 @@ service_server = ["plan:PlanRequest->PlanResponse"]
 [[bind.service]]
 client = "client.plan"
 server = "server.plan"
+backend = "inproc"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"
+```
+
+### Service policy 字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `backend` | string | auto | 传输后端，当前仅支持 `inproc` |
+| `timeout_ms` | u64 | 5000 | 请求超时毫秒 |
+| `queue_depth` | u32 | 32 | pending request 队列深度 |
+| `overflow` | string | "busy" | 队列满策略：`busy` 或 `error` |
+| `lane` | string | auto | server 所在 lane 名称 |
+| `max_in_flight` | u32 | 64 | 并发处理中请求上限 |
+
+### Rust 用户 API
+
+codegen 为每个 service client 生成 `ServiceClient_{instance}_{port}` handle：
+
+```rust
+// 同步阻塞调用
+let result = client.call(request, Duration::from_secs(1));
+match result {
+    flowrt::ServiceResult::Ok(response) => { /* 处理响应 */ }
+    flowrt::ServiceResult::Err(code, msg) => { /* 处理错误 */ }
+}
+
+// 非阻塞调用
+let handle = client.start_call(request, Duration::from_secs(1));
+if handle.poll() {
+    let result = handle.complete();
+}
+```
+
+codegen 为有 service server 端口的 component trait 生成 handler 方法：
+
+```rust
+impl PlanService for MyPlanService {
+    fn on_plan_request(&mut self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse> {
+        flowrt::ServiceResult::ok(PlanResponse { accepted: true })
+    }
+}
+```
+
+### C++ 用户 API
+
+codegen 为有 service server 端口的 C++ component interface 生成虚方法：
+
+```cpp
+class PlanServiceInterface {
+    virtual flowrt::ServiceResult<PlanResponse> on_plan_request(const PlanRequest& request) {
+        return flowrt::ServiceResult<PlanResponse>::err(flowrt::ServiceError::HandlerError);
+    }
+};
 ```
 
 validator 会要求：
