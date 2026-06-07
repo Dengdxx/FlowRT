@@ -12,8 +12,8 @@ use flowrt_selfdesc::{
     SelfDescriptionFrameField, SelfDescriptionGraph, SelfDescriptionInstance,
     SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionPackage,
     SelfDescriptionParam, SelfDescriptionProfile, SelfDescriptionScheduler,
-    SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionTarget,
-    SelfDescriptionTask,
+    SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint,
+    SelfDescriptionTarget, SelfDescriptionTask,
 };
 use sha2::{Digest, Sha256};
 
@@ -226,6 +226,65 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
                 }
             })
             .collect(),
+        services: graph
+            .services
+            .iter()
+            .map(|service| self_description_service_endpoint(contract, graph, service))
+            .collect(),
+    }
+}
+
+fn self_description_service_endpoint(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    service: &flowrt_ir::ServiceEdgeIr,
+) -> SelfDescriptionServiceEndpoint {
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+
+    let (request_type, response_type) = instances
+        .get(service.client.instance.name.as_str())
+        .and_then(|instance| {
+            let component = component_by_name(contract, &instance.component.name);
+            component
+                .service_clients
+                .iter()
+                .find(|port| port.name == service.client.port)
+                .map(|port| {
+                    (
+                        port.request.canonical_syntax(),
+                        port.response.canonical_syntax(),
+                    )
+                })
+        })
+        .unwrap_or_default();
+
+    let name = format!(
+        "{}.{}_to_{}.{}",
+        service.client.instance.name,
+        service.client.port,
+        service.server.instance.name,
+        service.server.port
+    );
+
+    SelfDescriptionServiceEndpoint {
+        name,
+        canonical_id: service.id.0.clone(),
+        client_instance: service.client.instance.name.clone(),
+        client_port: service.client.port.clone(),
+        server_instance: service.server.instance.name.clone(),
+        server_port: service.server.port.clone(),
+        request_type,
+        response_type,
+        backend: String::new(),
+        timeout_ms: None,
+        queue_depth: None,
+        overflow: String::new(),
+        lane: String::new(),
+        max_in_flight: None,
     }
 }
 
