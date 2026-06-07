@@ -216,7 +216,14 @@ pub(crate) fn rust_app_service_fields(contract: &ContractIr, graph: &GraphIr) ->
 // ── App::new() 注册 ────────────────────────────────────────────────────
 
 /// 生成 App::new() 中的 service registry 注册和字段初始化代码。
-pub(crate) fn emit_rust_service_new(contract: &ContractIr, graph: &GraphIr) -> (String, String) {
+///
+/// `dataflow_lane_count` 是 dataflow task 占用的 lane 数量，service lane ID 从
+/// `dataflow_lane_count + 1` 开始分配，与 scheduler 中的 lane 注册保持一致。
+pub(crate) fn emit_rust_service_new(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    dataflow_lane_count: usize,
+) -> (String, String) {
     let plans = service_runtime_plans(contract, graph);
     if plans.is_empty() {
         return (String::new(), String::new());
@@ -227,6 +234,7 @@ pub(crate) fn emit_rust_service_new(contract: &ContractIr, graph: &GraphIr) -> (
     registration.push_str("        let service_registry = flowrt::ServiceRegistry::new();\n");
 
     let mut initializers = String::new();
+    let mut service_lane_offset: usize = 0;
 
     for plan in &plans {
         let is_zenoh = plan.backend.0 == "zenoh";
@@ -261,6 +269,10 @@ pub(crate) fn emit_rust_service_new(contract: &ContractIr, graph: &GraphIr) -> (
         let server_instance = &plan.server_instance;
         let method_name = service_handler_method_name(&plan.server_port);
 
+        // service lane ID 与 scheduler 中的 lane 注册保持一致
+        let service_lane_id = dataflow_lane_count + service_lane_offset + 1;
+        service_lane_offset += 1;
+
         let reg_var = format!("service_reg_{}", plan.index);
         let handler_var = format!("service_handler_{}", plan.index);
         let component_var = format!("{}_handler", server_instance);
@@ -273,7 +285,7 @@ pub(crate) fn emit_rust_service_new(contract: &ContractIr, graph: &GraphIr) -> (
              }};\n\
              let {reg_var} = service_registry.register_result_with_config::<{req_ty}, {resp_ty}, _>(\n\
                  {service_name_literal},\n\
-                 flowrt::LaneId(0), // TODO: use actual scheduler lane ID\n\
+                 flowrt::LaneId({service_lane_id}),\n\
                  flowrt::InprocServiceConfig {{\n\
                      queue_depth: {queue_depth},\n\
                      max_in_flight: {max_in_flight},\n\

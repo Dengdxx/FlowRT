@@ -12,6 +12,7 @@ pub(super) fn emit_rust_app_new(
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    dataflow_lane_count: usize,
 ) -> String {
     let mut output = String::new();
     output.push_str("    pub fn new(\n");
@@ -48,7 +49,7 @@ pub(super) fn emit_rust_app_new(
     }
     // service registration (before Self construction)
     let (service_registration, _service_initializers) =
-        service_emit::emit_rust_service_new(contract, graph);
+        service_emit::emit_rust_service_new(contract, graph, dataflow_lane_count);
     if !service_registration.is_empty() {
         output.push_str(&service_registration);
     }
@@ -88,7 +89,7 @@ pub(super) fn emit_rust_app_new(
     }
     // service field initializers
     let (_service_registration, service_initializers) =
-        service_emit::emit_rust_service_new(contract, graph);
+        service_emit::emit_rust_service_new(contract, graph, dataflow_lane_count);
     if !service_initializers.is_empty() {
         output.push_str(&service_initializers);
     }

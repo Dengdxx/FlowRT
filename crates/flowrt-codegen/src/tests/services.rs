@@ -224,6 +224,34 @@ timeout_ms = 2000
         components.contains("on_plan_request"),
         "C++ plan_service interface must declare on_plan_request handler.\n\n{components}"
     );
+    // C++ runtime shell 应该有 service client wrapper 和 server 字段
+    let shell_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+    assert!(
+        shell_header.contains("ServiceClient_plan_client_plan"),
+        "C++ runtime shell header must have service client wrapper.\n\n{shell_header}"
+    );
+    assert!(
+        shell_header.contains("service_server_plan_svc_plan"),
+        "C++ runtime shell header must have service server field.\n\n{shell_header}"
+    );
+    assert!(
+        shell_header.contains("step_service_plan_svc_plan"),
+        "C++ runtime shell header must have service step function declaration.\n\n{shell_header}"
+    );
+    // C++ runtime shell 应该有 service registration
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    assert!(
+        shell.contains("InprocServiceServer"),
+        "C++ runtime shell must register service server.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("InprocServiceClient"),
+        "C++ runtime shell must create service client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("process_pending()"),
+        "C++ runtime shell must call process_pending in service step.\n\n{shell}"
+    );
 }
 
 /// inproc backend service 生成正确的配置。

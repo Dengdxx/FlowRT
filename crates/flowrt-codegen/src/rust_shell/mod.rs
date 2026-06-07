@@ -176,12 +176,16 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output.push_str("}\n\n");
 
     output.push_str("impl App {\n");
+    let dataflow_tasks = crate::scheduler_tasks_for_order(graph, &order);
+    let dataflow_lane_count =
+        step_emit::scheduler_lane_ids(&dataflow_tasks).len();
     output.push_str(&emit_rust_app_new(
         contract,
         graph,
         &order,
         &bind_plans,
         &bridge_plans,
+        dataflow_lane_count,
     ));
     let service_plans_for_emission = crate::runtime_plan::service_runtime_plans(contract, graph);
     let service_server_instances: std::collections::BTreeSet<String> = service_plans_for_emission

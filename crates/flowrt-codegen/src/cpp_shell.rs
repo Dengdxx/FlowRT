@@ -221,6 +221,19 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             ));
         }
     }
+    // service step functions
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    for plan in &service_plans {
+        let fn_name = cpp_service_step_fn_name(plan);
+        let server_field = cpp_service_server_field_name(plan);
+        let is_zenoh = plan.backend.0 == "zenoh";
+        if is_zenoh {
+            continue;
+        }
+        output.push_str(&format!(
+            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events) {{\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    (void)scheduler_events;\n    {server_field}_.process_pending();\n    return flowrt::Status::Ok;\n}}\n\n"
+        ));
+    }
     output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
         contract,
         function_name: "run",
@@ -281,11 +294,34 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str(
         "#include <cstddef>\n#include <memory>\n#include <optional>\n#include <string_view>\n\n",
     );
-    output.push_str("#include <flowrt/runtime.hpp>\n\n");
+    output.push_str("#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n\n");
     output.push_str(
         "#include \"flowrt_app/components.hpp\"\n#include \"flowrt_app/messages.hpp\"\n\n",
     );
     output.push_str("namespace flowrt_app {\n\n");
+
+    // C++ service client wrapper classes
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    for plan in &service_plans {
+        let handle_name = cpp_service_client_handle_name(plan);
+        let req_ty = cpp_type(&plan.request_type);
+        let resp_ty = cpp_type(&plan.response_type);
+        let is_zenoh = plan.backend.0 == "zenoh";
+
+        if is_zenoh {
+            output.push_str(&format!(
+                "/**\n * @brief `{client}.{port}` service client（zenoh backend，未实现）。\n */\nclass {handle_name} {{\npublic:\n    flowrt::ServiceResult<{resp_ty}> call(const {req_ty}& /*request*/, std::uint64_t /*timeout_ms*/ = 0) {{\n        return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Backend);\n    }}\n}};\n\n",
+                client = plan.client_instance,
+                port = plan.client_port,
+            ));
+        } else {
+            output.push_str(&format!(
+                "/**\n * @brief `{client}.{port}` service client typed wrapper。\n *\n * 封装 `flowrt::InprocServiceClient`，提供同步 `call()` 调用路径。\n */\nclass {handle_name} {{\npublic:\n    explicit {handle_name}(flowrt::InprocServiceClient<{req_ty}, {resp_ty}> client)\n        : client_(std::move(client)) {{}}\n\n    /**\n     * @brief 发起同步阻塞 service 调用。\n     *\n     * @param request 请求消息。\n     * @param timeout_ms 超时毫秒。0 使用 server 默认值。\n     * @return 成功返回响应值，超时或错误返回 ServiceError。\n     */\n    flowrt::ServiceResult<{resp_ty}> call(const {req_ty}& request, std::uint64_t timeout_ms = 0) {{\n        return client_.call(request, timeout_ms);\n    }}\n\n    /**\n     * @brief 发起非阻塞 service 调用。\n     *\n     * @param request 请求消息。\n     * @param timeout_ms 超时毫秒。\n     * @return 非阻塞 handle，支持 `poll()` 和 `complete()`。\n     */\n    flowrt::InprocServiceHandle<{resp_ty}> start_call(const {req_ty}& request, std::uint64_t timeout_ms = 0) {{\n        return client_.start_call(request, timeout_ms);\n    }}\n\nprivate:\n    flowrt::InprocServiceClient<{req_ty}, {resp_ty}> client_;\n}};\n\n",
+                client = plan.client_instance,
+                port = plan.client_port,
+            ));
+        }
+    }
     output.push_str(
         "/**\n * @brief Contract IR 驱动的 C++ inproc 应用 shell。\n *\n * `App` 持有用户组件实现和 FlowRT 管理的 channel 状态。用户代码通过 `flowrt_user::build_app()` 构造该对象，runtime shell 负责生命周期、调度和数据流转发。\n */\n",
     );
@@ -358,6 +394,29 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             "    {} {}_;\n",
             cpp_bridge_runtime_channel_type(bridge),
             bridge.field_name
+        ));
+    }
+    // service client/server fields
+    for plan in &service_plans {
+        let client_field = cpp_service_client_field_name(plan);
+        let handle_name = cpp_service_client_handle_name(plan);
+        output.push_str(&format!("    {handle_name} {client_field}_;\n"));
+
+        let server_field = cpp_service_server_field_name(plan);
+        let req_ty = cpp_type(&plan.request_type);
+        let resp_ty = cpp_type(&plan.response_type);
+        let is_zenoh = plan.backend.0 == "zenoh";
+        if !is_zenoh {
+            output.push_str(&format!(
+                "    flowrt::InprocServiceServer<{req_ty}, {resp_ty}> {server_field}_;\n"
+            ));
+        }
+    }
+    // service step function declarations
+    for plan in &service_plans {
+        let fn_name = cpp_service_step_fn_name(plan);
+        output.push_str(&format!(
+            "    flowrt::Status {fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n"
         ));
     }
     output.push_str("};\n\n");
@@ -476,7 +535,32 @@ fn emit_cpp_app_constructor(
             }
         }
     }
-    output.push_str(" {}\n\n");
+    output.push_str(" {\n");
+
+    // service registration
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    for plan in &service_plans {
+        let is_zenoh = plan.backend.0 == "zenoh";
+        if is_zenoh {
+            continue;
+        }
+        let service_name_literal = cpp_string_literal(&plan.service_name);
+        let client_field = cpp_service_client_field_name(plan);
+        let server_field = cpp_service_server_field_name(plan);
+        let req_ty = cpp_type(&plan.request_type);
+        let resp_ty = cpp_type(&plan.response_type);
+        let queue_depth = plan.queue_depth.max(1);
+        let max_in_flight = plan.max_in_flight.max(1);
+        let default_timeout = plan.timeout_ms.max(1);
+
+        output.push_str(&format!(
+            "    {{\n        flowrt::InprocServiceConfig config;\n        config.queue_depth = {queue_depth};\n        config.max_in_flight = {max_in_flight};\n        config.default_timeout_ms = {default_timeout};\n        {server_field}_ = flowrt::InprocServiceServer<{req_ty}, {resp_ty}>(\n            {service_name_literal},\n            [this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n                return this->{server_field}_->on_{port}_request(request);\n            }},\n            config);\n        {client_field}_ = {cpp_handle_name}(\n            flowrt::InprocServiceClient<{req_ty}, {resp_ty}>(\n                {service_name_literal}, {server_field}_));\n    }}\n",
+            port = crate::snake_identifier(&plan.server_port),
+            cpp_handle_name = cpp_service_client_handle_name(plan),
+        ));
+    }
+
+    output.push_str("}\n\n");
     output
 }
 
@@ -817,6 +901,20 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             ));
         }
     }
+    // service task registration
+    let service_plans = crate::runtime_plan::service_runtime_plans(run.contract, run.graph);
+    let mut next_task_id = tasks.len();
+    for plan in &service_plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        next_task_id += 1;
+        let _server_lane = crate::runtime_plan::service_server_lane(plan);
+        let lane_id = lane_ids.len() + 1; // simplified: use next available lane ID
+        output.push_str(&format!(
+            "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = 0}});\n"
+        ));
+    }
     output.push_str(&emit_cpp_on_message_revision_state(&tasks, run.binds));
     output.push_str(&format!(
         "    const auto scheduler_base_period_ms = std::uint64_t{{{}}};\n",
@@ -829,9 +927,11 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         run.contract,
         run.order,
     ));
+    let has_inproc_service = service_plans.iter().any(|p| p.backend.0 != "zenoh");
     let woke_on_message_decl = if tasks
         .iter()
         .any(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage)
+        || has_inproc_service
     {
         "bool woke_on_message = false;"
     } else {
@@ -844,6 +944,18 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         &emit_cpp_on_message_wake_checks(&tasks, run.binds),
         1,
     ));
+    // service wake checks
+    let mut service_task_id = tasks.len();
+    for plan in &service_plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        service_task_id += 1;
+        let server_field = cpp_service_server_field_name(plan);
+        output.push_str(&format!(
+            "            if ({server_field}_.pending_count() > 0) {{\n                scheduler.wake(flowrt::TaskId{{{service_task_id}}});\n                woke_on_message = true;\n            }}\n"
+        ));
+    }
     output.push_str(
         "            const auto task_statuses = scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, tick_time_ms](flowrt::TaskId task) {\n                switch (task.value) {\n",
     );
@@ -857,7 +969,19 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             "                    case {task_id}: return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n"
         ));
     }
-    if tasks.is_empty() {
+    // service dispatch cases
+    service_task_id = tasks.len();
+    for plan in &service_plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        service_task_id += 1;
+        let fn_name = cpp_service_step_fn_name(plan);
+        output.push_str(&format!(
+            "                    case {service_task_id}: return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n"
+        ));
+    }
+    if tasks.is_empty() && service_plans.iter().all(|p| p.backend.0 == "zenoh") {
         output.push_str(&format!(
             "                    default: return {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n",
             run.step_function_name
@@ -1660,6 +1784,38 @@ fn cpp_optional_size_t_literal(value: Option<usize>) -> String {
     value.map_or_else(
         || "std::nullopt".to_string(),
         |value| format!("std::optional<std::size_t>{{{value}}}"),
+    )
+}
+
+fn cpp_service_client_handle_name(plan: &crate::runtime_plan::ServiceRuntimePlan) -> String {
+    format!(
+        "ServiceClient_{}_{}",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
+fn cpp_service_client_field_name(plan: &crate::runtime_plan::ServiceRuntimePlan) -> String {
+    format!(
+        "service_client_{}_{}",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
+fn cpp_service_server_field_name(plan: &crate::runtime_plan::ServiceRuntimePlan) -> String {
+    format!(
+        "service_server_{}_{}",
+        crate::snake_identifier(&plan.server_instance),
+        crate::snake_identifier(&plan.server_port)
+    )
+}
+
+fn cpp_service_step_fn_name(plan: &crate::runtime_plan::ServiceRuntimePlan) -> String {
+    format!(
+        "step_service_{}_{}",
+        crate::snake_identifier(&plan.server_instance),
+        crate::snake_identifier(&plan.server_port)
     )
 }
 
