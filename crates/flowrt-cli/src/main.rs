@@ -20,8 +20,8 @@ mod introspection;
 
 use introspection::{
     EchoTarget, echo_channel, echo_channel_follow, live_hz_summary, live_status_summary,
-    load_self_description, params_get, params_list, params_set, self_description_nodes,
-    self_description_summary,
+    load_self_description, params_get, params_list, params_set, remote_params_get,
+    remote_params_list, remote_params_set, self_description_nodes, self_description_summary,
 };
 
 #[cfg(test)]
@@ -194,40 +194,67 @@ enum ParamsCommand {
     /// 列出 live runtime 参数。
     List {
         /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
-        image: PathBuf,
+        #[arg(long)]
+        image: Option<PathBuf>,
 
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
     },
 
     /// 读取单个 live runtime 参数。
     Get {
-        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
-        image: PathBuf,
-
         /// 参数名，格式为 `<instance>.<param>`。
         name: String,
+
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
 
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
     },
 
     /// 设置单个 live runtime 参数 pending 值。
     Set {
-        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
-        image: PathBuf,
-
         /// 参数名，格式为 `<instance>.<param>`。
         name: String,
 
         /// JSON 参数值，例如 `2.5`、`true` 或 `"safe"`。
         value: String,
 
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 通过 zenoh control-plane 发现远端 runtime。
+        #[arg(long)]
+        remote: bool,
+
+        /// 远程发现和请求超时毫秒。
+        #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: u64,
     },
 }
 
@@ -326,23 +353,53 @@ fn main() -> Result<()> {
             }
         }
         Command::Params { command } => match command {
-            ParamsCommand::List { image, socket } => {
-                println!("{}", params_list(&image, socket.as_deref())?);
+            ParamsCommand::List {
+                image,
+                socket,
+                remote,
+                timeout_ms,
+            } => {
+                if remote {
+                    let image = require_image_for_remote(image.as_deref())?;
+                    let hash = introspection::self_description_hash_for_image(&image)?;
+                    println!("{}", remote_params_list(&hash, timeout_ms)?);
+                } else {
+                    let image = require_image_for_local(image.as_deref())?;
+                    println!("{}", params_list(&image, socket.as_deref())?);
+                }
             }
             ParamsCommand::Get {
-                image,
                 name,
+                image,
                 socket,
+                remote,
+                timeout_ms,
             } => {
-                println!("{}", params_get(&image, &name, socket.as_deref())?);
+                if remote {
+                    let image = require_image_for_remote(image.as_deref())?;
+                    let hash = introspection::self_description_hash_for_image(&image)?;
+                    println!("{}", remote_params_get(&hash, &name, timeout_ms)?);
+                } else {
+                    let image = require_image_for_local(image.as_deref())?;
+                    println!("{}", params_get(&image, &name, socket.as_deref())?);
+                }
             }
             ParamsCommand::Set {
-                image,
                 name,
                 value,
+                image,
                 socket,
+                remote,
+                timeout_ms,
             } => {
-                println!("{}", params_set(&image, &name, &value, socket.as_deref())?);
+                if remote {
+                    let image = require_image_for_remote(image.as_deref())?;
+                    let hash = introspection::self_description_hash_for_image(&image)?;
+                    println!("{}", remote_params_set(&hash, &name, &value, timeout_ms)?);
+                } else {
+                    let image = require_image_for_local(image.as_deref())?;
+                    println!("{}", params_set(&image, &name, &value, socket.as_deref())?);
+                }
             }
         },
         Command::Status => {
@@ -1530,6 +1587,20 @@ fn summary(contract: &ContractIr) -> String {
         instance_count,
         task_count,
         bind_count
+    )
+}
+
+fn require_image_for_remote(image: Option<&Path>) -> Result<PathBuf> {
+    image.map(Path::to_path_buf).context(
+        "`--remote` requires an image path to extract the self-description hash; \
+         pass `<image>` as a positional argument",
+    )
+}
+
+fn require_image_for_local(image: Option<&Path>) -> Result<PathBuf> {
+    image.map(Path::to_path_buf).context(
+        "missing required argument `<image>`; \
+         pass a FlowRT application binary or selfdesc.json path",
     )
 }
 

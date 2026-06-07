@@ -17,10 +17,11 @@ flowrt-ir = { path = "../flowrt-ir" }
 flowrt-rsdl = { path = "../flowrt-rsdl" }
 flowrt-selfdesc = { path = "../flowrt-selfdesc" }
 flowrt-validate = { path = "../flowrt-validate" }
-flowrt = { path = "../../runtime/rust" }
+flowrt = { path = "../../runtime/rust", features = ["zenoh"] }
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+zenoh = { version = "1.9", default-features = false, features = ["transport_tcp"] }
 
 [dev-dependencies]

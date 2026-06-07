@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use zenoh::Wait;
 
 use flowrt_selfdesc::{
     SelfDescription, SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionFieldAbi,
@@ -1453,5 +1454,269 @@ pub(crate) fn format_hz_summary_from_status_pair(
         Ok("no live FlowRT channels".to_string())
     } else {
         Ok(lines.join("\n"))
+    }
+}
+
+/// 从镜像文件计算 self-description hash，用于远程 discovery 匹配。
+pub(crate) fn self_description_hash_for_image(image: &Path) -> Result<String> {
+    let (_self_description, hash) = load_self_description_with_hash(image)?;
+    Ok(hash)
+}
+
+// ── 远程参数控制面（zenoh） ──────────────────────────────────────────────
+
+/// zenoh 远程 runtime 发现结果。
+#[derive(Debug)]
+pub(crate) struct RemoteRuntimeEntry {
+    pub(crate) key_expr: String,
+    pub(crate) pid: u32,
+    pub(crate) package: String,
+    pub(crate) process: String,
+    pub(crate) runtime: String,
+    pub(crate) self_description_hash: String,
+}
+
+impl std::fmt::Display for RemoteRuntimeEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "pid={} package={} process={} runtime={} selfdesc={} key={}",
+            self.pid,
+            self.package,
+            self.process,
+            self.runtime,
+            self.self_description_hash,
+            self.key_expr
+        )
+    }
+}
+
+/// 解析 `flowrt/params/{package}/{selfdesc_hash}/{pid}` 格式的 key expression。
+pub(crate) fn parse_remote_params_key_expr(key: &str) -> Option<(&str, &str, &str)> {
+    let rest = key.strip_prefix("flowrt/params/")?;
+    let (package, rest) = rest.split_once('/')?;
+    let (hash, pid) = rest.split_once('/')?;
+    if package.is_empty() || hash.is_empty() || pid.is_empty() {
+        return None;
+    }
+    Some((package, hash, pid))
+}
+
+/// 通过 zenoh 扫描所有远程 params 端点，返回匹配 `self_description_hash` 的 runtime。
+pub(crate) fn discover_remote_params_runtimes(
+    self_description_hash: &str,
+    timeout_ms: u64,
+) -> Result<Vec<RemoteRuntimeEntry>> {
+    let zenoh_config = flowrt::zenoh::config_from_environment().map_err(|error| {
+        anyhow::anyhow!("failed to configure zenoh session for params discovery: {error}")
+    })?;
+    let session = zenoh::open(zenoh_config).wait().map_err(|error| {
+        anyhow::anyhow!("failed to open zenoh session for params discovery: {error:?}")
+    })?;
+
+    let request = flowrt::IntrospectionRequest::ParamList;
+    let payload = serde_json::to_vec(&request)
+        .map_err(|error| anyhow::anyhow!("failed to encode params discovery request: {error}"))?;
+    let timeout = Duration::from_millis(timeout_ms);
+
+    let receiver = session
+        .get("flowrt/params/**")
+        .with(zenoh::handlers::FifoChannel::new(64))
+        .payload(zenoh::bytes::ZBytes::from(payload))
+        .timeout(timeout)
+        .wait()
+        .map_err(|error| {
+            anyhow::anyhow!("failed to send zenoh params discovery query: {error:?}")
+        })?;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+
+    while let Ok(Some(reply)) = receiver.recv_timeout(timeout) {
+        let Ok(sample) = reply.result() else {
+            continue;
+        };
+        let key = sample.key_expr().to_string();
+        let Some((package, hash, pid_str)) = parse_remote_params_key_expr(&key) else {
+            continue;
+        };
+        if hash != self_description_hash {
+            continue;
+        }
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        // 克隆借用的字段，避免 move key 后 use-after-move。
+        let entry_hash = hash.to_string();
+        let entry_package_hint = package.to_string();
+        let raw = sample.payload().to_bytes().to_vec();
+        let Ok(response) = serde_json::from_slice::<flowrt::IntrospectionResponse>(&raw) else {
+            continue;
+        };
+        let handshake = match &response {
+            flowrt::IntrospectionResponse::ParamList { handshake, .. } => handshake,
+            flowrt::IntrospectionResponse::Error { handshake, .. } => handshake,
+            _ => continue,
+        };
+        let entry_package = if entry_package_hint.is_empty() {
+            handshake.package.clone()
+        } else {
+            entry_package_hint
+        };
+        entries.push(RemoteRuntimeEntry {
+            key_expr: key,
+            pid,
+            package: entry_package,
+            process: handshake.process.clone(),
+            runtime: handshake.runtime.clone(),
+            self_description_hash: entry_hash,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// 从远程 runtime 列表中选择唯一匹配项；多个匹配时要求用户显式选择。
+pub(crate) fn select_remote_runtime(
+    entries: Vec<RemoteRuntimeEntry>,
+    self_description_hash: &str,
+) -> Result<RemoteRuntimeEntry> {
+    match entries.len() {
+        0 => anyhow::bail!(
+            "no remote FlowRT runtime matches self-description hash `{self_description_hash}`; \
+             check that the runtime is running and the zenoh network is reachable"
+        ),
+        1 => Ok(entries.into_iter().next().expect("non-empty")),
+        _ => {
+            let listing = entries
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| format!("  [{}] {}", i + 1, entry))
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "multiple remote FlowRT runtimes match self-description hash \
+                 `{self_description_hash}`; pass `--socket <key_expr>` to choose one:\n{listing}"
+            )
+        }
+    }
+}
+
+/// 请求远程 runtime 参数列表。
+pub(crate) fn remote_params_list(self_description_hash: &str, timeout_ms: u64) -> Result<String> {
+    let entries = discover_remote_params_runtimes(self_description_hash, timeout_ms)?;
+    let runtime = select_remote_runtime(entries, self_description_hash)?;
+    let zenoh_config = flowrt::zenoh::config_from_environment()
+        .map_err(|error| anyhow::anyhow!("failed to configure zenoh session: {error}"))?;
+    let session = zenoh::open(zenoh_config)
+        .wait()
+        .map_err(|error| anyhow::anyhow!("failed to open zenoh session: {error:?}"))?;
+    let response = flowrt::request_remote_param_list(&session, &runtime.key_expr, timeout_ms)
+        .map_err(|error| {
+            anyhow::anyhow!("failed to list remote params from `{}`: {error}", runtime)
+        })?;
+    let params = match response {
+        flowrt::IntrospectionResponse::ParamList { handshake, params } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            eprintln!("target: {runtime}");
+            params
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!("failed to list remote params from `{runtime}`: {message}");
+        }
+        _ => {
+            anyhow::bail!("remote runtime `{runtime}` returned unexpected response");
+        }
+    };
+    if params.is_empty() {
+        return Ok("no FlowRT parameters".to_string());
+    }
+    Ok(params
+        .iter()
+        .map(format_param_status)
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// 请求远程 runtime 单个参数状态。
+pub(crate) fn remote_params_get(
+    self_description_hash: &str,
+    name: &str,
+    timeout_ms: u64,
+) -> Result<String> {
+    let entries = discover_remote_params_runtimes(self_description_hash, timeout_ms)?;
+    let runtime = select_remote_runtime(entries, self_description_hash)?;
+    let zenoh_config = flowrt::zenoh::config_from_environment()
+        .map_err(|error| anyhow::anyhow!("failed to configure zenoh session: {error}"))?;
+    let session = zenoh::open(zenoh_config)
+        .wait()
+        .map_err(|error| anyhow::anyhow!("failed to open zenoh session: {error:?}"))?;
+    let response = flowrt::request_remote_param_get(&session, &runtime.key_expr, name, timeout_ms)
+        .map_err(|error| {
+            anyhow::anyhow!("failed to get remote param `{name}` from `{runtime}`: {error}")
+        })?;
+    match response {
+        flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            eprintln!("target: {runtime}");
+            Ok(format_param_status(&param))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!("failed to get remote param `{name}` from `{runtime}`: {message}");
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
+/// 请求远程 runtime 设置参数 pending 值。
+pub(crate) fn remote_params_set(
+    self_description_hash: &str,
+    name: &str,
+    raw_value: &str,
+    timeout_ms: u64,
+) -> Result<String> {
+    let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
+        format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
+    })?;
+    let entries = discover_remote_params_runtimes(self_description_hash, timeout_ms)?;
+    let runtime = select_remote_runtime(entries, self_description_hash)?;
+    let zenoh_config = flowrt::zenoh::config_from_environment()
+        .map_err(|error| anyhow::anyhow!("failed to configure zenoh session: {error}"))?;
+    let session = zenoh::open(zenoh_config)
+        .wait()
+        .map_err(|error| anyhow::anyhow!("failed to open zenoh session: {error:?}"))?;
+    let response =
+        flowrt::request_remote_param_set(&session, &runtime.key_expr, name, value, timeout_ms)
+            .map_err(|error| {
+                anyhow::anyhow!("failed to set remote param `{name}` via `{runtime}`: {error}")
+            })?;
+    match response {
+        flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
+            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            eprintln!("target: {runtime}");
+            Ok(format_param_status(&param))
+        }
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            anyhow::bail!("failed to set remote param `{name}` via `{runtime}`: {message}");
+        }
+        _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
+    }
+}
+
+fn ensure_remote_handshake(
+    handshake: &flowrt::IntrospectionHandshake,
+    expected_hash: &str,
+    runtime: &RemoteRuntimeEntry,
+) -> Result<()> {
+    if handshake.self_description_hash == expected_hash {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "remote runtime `{runtime}` self-description hash `{}` does not match expected `{expected_hash}`",
+            handshake.self_description_hash
+        )
     }
 }

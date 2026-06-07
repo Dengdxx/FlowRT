@@ -1,4 +1,5 @@
 use super::*;
+use zenoh::Wait;
 
 #[test]
 fn echo_reads_channel_snapshot_from_fake_status_server() {
@@ -918,4 +919,211 @@ fn echo_reports_structured_live_channel_errors() {
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ── 远程参数控制面测试 ──────────────────────────────────────────────────
+
+#[test]
+fn parse_remote_params_key_expr_extracts_package_hash_and_pid() {
+    let result = introspection::parse_remote_params_key_expr("flowrt/params/robot_demo/abc123/42");
+    assert_eq!(result, Some(("robot_demo", "abc123", "42")));
+}
+
+#[test]
+fn parse_remote_params_key_expr_rejects_invalid_prefix() {
+    assert!(introspection::parse_remote_params_key_expr("flowrt/status/robot/abc/1").is_none());
+}
+
+#[test]
+fn parse_remote_params_key_expr_rejects_empty_segments() {
+    assert!(introspection::parse_remote_params_key_expr("flowrt/params//abc/42").is_none());
+    assert!(introspection::parse_remote_params_key_expr("flowrt/params/robot//42").is_none());
+    assert!(introspection::parse_remote_params_key_expr("flowrt/params/robot/abc/").is_none());
+}
+
+#[test]
+fn parse_remote_params_key_expr_rejects_missing_segments() {
+    assert!(introspection::parse_remote_params_key_expr("flowrt/params/robot/abc").is_none());
+    assert!(introspection::parse_remote_params_key_expr("flowrt/params/robot").is_none());
+}
+
+#[test]
+fn remote_params_list_via_zenoh_returns_registered_params() {
+    // 使用同一 session 测试远程参数查询路径，与 runtime params_remote 测试对齐。
+    let session = zenoh::open(flowrt::zenoh::config_from_environment().unwrap())
+        .wait()
+        .unwrap();
+    let key_expr = format!(
+        "flowrt/params/cli_test/{}/9001",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let expected_hash = "cli_test_hash".to_string();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 9001,
+        started_at_unix_ms: 1000,
+        self_description_hash: expected_hash.clone(),
+        package: "cli_robot".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "planner.kp".to_string(),
+        ty: "f64".to_string(),
+        update: "on_tick".to_string(),
+        current: serde_json::json!(1.5),
+        min: Some(serde_json::json!(0.0)),
+        max: Some(serde_json::json!(100.0)),
+        choices: Vec::new(),
+    });
+
+    let _server = flowrt::ZenohParamsServer::open(&session, &key_expr, handshake, state).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // 直接查询特定 key expression 验证远程参数路径。
+    let response = flowrt::request_remote_param_list(&session, &key_expr, 5000)
+        .expect("remote param list should succeed");
+    let flowrt::IntrospectionResponse::ParamList { params, .. } = response else {
+        panic!("expected ParamList response");
+    };
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "planner.kp");
+    assert_eq!(params[0].current, serde_json::json!(1.5));
+}
+
+#[test]
+fn remote_params_get_returns_error_for_unknown_param() {
+    let session = zenoh::open(flowrt::zenoh::config_from_environment().unwrap())
+        .wait()
+        .unwrap();
+    let key_expr = format!(
+        "flowrt/params/cli_get/{}/9002",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let expected_hash = "cli_get_unknown".to_string();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 9002,
+        started_at_unix_ms: 1000,
+        self_description_hash: expected_hash.clone(),
+        package: "cli_robot".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.kp".to_string(),
+        ty: "f32".to_string(),
+        update: "on_tick".to_string(),
+        current: serde_json::json!(1.0),
+        min: None,
+        max: None,
+        choices: Vec::new(),
+    });
+
+    let _server = flowrt::ZenohParamsServer::open(&session, &key_expr, handshake, state).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let response = flowrt::request_remote_param_get(&session, &key_expr, "missing.param", 5000)
+        .expect("remote param get unknown");
+    let flowrt::IntrospectionResponse::Error { message, .. } = response else {
+        panic!("expected Error response for unknown param");
+    };
+    assert_eq!(message, "unknown FlowRT parameter `missing.param`");
+}
+
+#[test]
+fn remote_params_set_rejects_out_of_range_value() {
+    let session = zenoh::open(flowrt::zenoh::config_from_environment().unwrap())
+        .wait()
+        .unwrap();
+    let key_expr = format!(
+        "flowrt/params/cli_set/{}/9003",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let expected_hash = "cli_set_range".to_string();
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 9003,
+        started_at_unix_ms: 1000,
+        self_description_hash: expected_hash.clone(),
+        package: "cli_robot".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.kp".to_string(),
+        ty: "f32".to_string(),
+        update: "on_tick".to_string(),
+        current: serde_json::json!(1.0),
+        min: Some(serde_json::json!(0.0)),
+        max: Some(serde_json::json!(10.0)),
+        choices: Vec::new(),
+    });
+
+    let _server = flowrt::ZenohParamsServer::open(&session, &key_expr, handshake, state).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let response = flowrt::request_remote_param_set(
+        &session,
+        &key_expr,
+        "controller.kp",
+        serde_json::json!(99.0),
+        5000,
+    )
+    .expect("remote param set out of range");
+    let flowrt::IntrospectionResponse::Error { message, .. } = response else {
+        panic!("expected Error response for out-of-range value");
+    };
+    assert_eq!(message, "FlowRT parameter `controller.kp` is above maximum");
+}
+
+#[test]
+fn select_remote_runtime_rejects_empty_list() {
+    let error = introspection::select_remote_runtime(Vec::new(), "test_hash").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("no remote FlowRT runtime matches")
+    );
+    assert!(error.to_string().contains("test_hash"));
+}
+
+#[test]
+fn select_remote_runtime_rejects_multiple_matches() {
+    let entries = vec![
+        introspection::RemoteRuntimeEntry {
+            key_expr: "flowrt/params/robot/hash1/100".to_string(),
+            pid: 100,
+            package: "robot".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+            self_description_hash: "hash1".to_string(),
+        },
+        introspection::RemoteRuntimeEntry {
+            key_expr: "flowrt/params/robot/hash1/200".to_string(),
+            pid: 200,
+            package: "robot".to_string(),
+            process: "control".to_string(),
+            runtime: "rust".to_string(),
+            self_description_hash: "hash1".to_string(),
+        },
+    ];
+    let error = introspection::select_remote_runtime(entries, "hash1").unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("multiple remote FlowRT runtimes match"));
+    assert!(message.contains("--socket"));
+    assert!(message.contains("pid=100"));
+    assert!(message.contains("pid=200"));
 }

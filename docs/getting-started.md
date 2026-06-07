@@ -107,9 +107,16 @@ FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-steps 500 examples/imu_demo_iox2/rsd
 另开一个终端查询或提交参数：
 
 ```bash
-flowrt params list examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json
-flowrt params get examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity
-flowrt params set examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7
+flowrt params list --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json
+flowrt params get --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity
+flowrt params set --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7
+```
+
+跨机远程参数控制需要 zenoh 网络连通。加上 `--remote` 即可通过 zenoh control-plane 发现远端 runtime：
+
+```bash
+flowrt params list --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json --remote
+flowrt params set --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7 --remote
 ```
 
 `params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。

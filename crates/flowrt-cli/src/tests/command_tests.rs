@@ -160,9 +160,10 @@ fn cli_parses_params_set_command() {
         "flowrt",
         "params",
         "set",
-        "flowrt/selfdesc/selfdesc.json",
         "controller.kp",
         "2.5",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
         "--socket",
         "/tmp/flowrt-main.sock",
     ])
@@ -171,17 +172,18 @@ fn cli_parses_params_set_command() {
     let Command::Params {
         command:
             ParamsCommand::Set {
-                image,
                 name,
                 value,
+                image,
                 socket,
+                ..
             },
     } = cli.command
     else {
         panic!("params set command should parse into Command::Params")
     };
 
-    assert_eq!(image, PathBuf::from("flowrt/selfdesc/selfdesc.json"));
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
     assert_eq!(name, "controller.kp");
     assert_eq!(value, "2.5");
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
