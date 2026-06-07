@@ -267,7 +267,13 @@ flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app
 ```
 
-`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出静态拓扑摘要或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、instance、task、channel 和 Message ABI layout 是否与预期一致。
+`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出静态拓扑摘要或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、instance、task、channel、service 和 Message ABI layout 是否与预期一致。
+
+`list` 的摘要行包含 `services=<N>` 计数；每个 graph 内的 service endpoint 以独立行展示：
+
+```text
+service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse
+```
 
 当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status`、`echo` 和 `params` 使用。
 
@@ -338,6 +344,14 @@ flowrt status
 当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数、active echo observer 数量和 probe drop 计数写入 live status；payload 只在 echo 数据面 probe 启用期间 best-effort 记录。
 
 generated supervisor 会启动自己的 status socket，`runtime=supervisor`，`process=flowrt_supervisor`。它会按子进程 PID socket 轮询 live status，并额外输出 `supervisor_process=<name>` 行，字段包括 `state`、`pid`、`restarts`、`ticks`、`last_seen_ms`、`tick_stale` 和 `exit_code`。`state` 当前取值为 `starting`、`running`、`stale`、`restarting`、`exited` 或 `failed`。内置 restart policy 是 `on-failure`：子进程异常退出时最多重启 3 次，退避 100ms 起步、上限 1000ms；正常退出不重启。
+
+runtime 启动时可以预注册 service endpoint，`status` 会输出每个 service 的运行态健康行：
+
+```text
+service=planner.plan_to_executor.execute ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock
+```
+
+字段说明：`ready` 表示 service 是否就绪；`in_flight` 是当前正在处理的请求数；`queued` 是排队中的请求数；`total_requests` 是累计请求总数；`timeout`/`busy`/`unavailable`/`late_drop` 分别是超时、繁忙拒绝、不可用和迟到响应/丢弃的累计计数。
 
 RSDL 可以用 graph 级 `[[process]]` 覆盖默认进程编排策略：
 
