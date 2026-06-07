@@ -247,20 +247,19 @@ fn self_description_service_endpoint(
 
     let (request_type, response_type) = instances
         .get(service.client.instance.name.as_str())
-        .and_then(|instance| {
+        .map(|instance| {
             let component = component_by_name(contract, &instance.component.name);
-            component
+            let port = component
                 .service_clients
                 .iter()
                 .find(|port| port.name == service.client.port)
-                .map(|port| {
-                    (
-                        port.request.canonical_syntax(),
-                        port.response.canonical_syntax(),
-                    )
-                })
+                .expect("validated service bind must reference existing client service port");
+            (
+                port.request.canonical_syntax(),
+                port.response.canonical_syntax(),
+            )
         })
-        .unwrap_or_default();
+        .expect("validated service bind must reference existing client instance");
 
     let name = format!(
         "{}.{}_to_{}.{}",

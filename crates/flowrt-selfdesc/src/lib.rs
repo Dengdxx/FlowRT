@@ -9,5 +9,8 @@ mod loader;
 mod schema;
 
 pub use format::{format_fixed_abi_fields, format_frame_fields};
-pub use loader::{load_self_description, self_description_hash};
+pub use loader::{
+    load_self_description, load_self_description_json_bytes, load_self_description_with_hash,
+    self_description_hash,
+};
 pub use schema::*;

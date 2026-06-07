@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -10,6 +9,7 @@ use flowrt_selfdesc::{
     SelfDescription, SelfDescriptionChannel, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
     SelfDescriptionInstance, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
     SelfDescriptionParam, load_self_description as load_selfdesc,
+    load_self_description_with_hash as load_selfdesc_with_hash,
 };
 
 pub(crate) use flowrt_selfdesc::self_description_hash;
@@ -24,11 +24,12 @@ pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
 }
 
 fn load_self_description_with_hash(path: &Path) -> Result<(SelfDescription, String)> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read FlowRT image `{}`", path.display()))?;
-    let hash = self_description_hash(&bytes);
-    let self_description = load_self_description(path)?;
-    Ok((self_description, hash))
+    load_selfdesc_with_hash(path).with_context(|| {
+        format!(
+            "failed to read FlowRT self-description from `{}`",
+            path.display()
+        )
+    })
 }
 
 pub(crate) fn self_description_summary(self_description: &SelfDescription) -> String {

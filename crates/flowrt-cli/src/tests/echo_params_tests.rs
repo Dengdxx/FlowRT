@@ -331,6 +331,112 @@ fn echo_online_loads_self_description_and_enables_probe() {
 }
 
 #[test]
+fn echo_with_binary_image_matches_section_selfdesc_hash() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "binary_echo_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.imu",
+      "to": "sink.imu",
+      "message_type": "Imu"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Imu",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-binary-selfdesc-hash");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "echo-binary-selfdesc-hash"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main.rs"),
+        format!(
+            r##"
+#[used]
+#[unsafe(link_section = ".flowrt.selfdesc")]
+static FLOWRT_SELF_DESCRIPTION: [u8; {}] = *br#"{source}"#;
+
+fn main() {{}}
+"##,
+            source.len()
+        ),
+    )
+    .unwrap();
+
+    let status = ProcessCommand::new("cargo")
+        .arg("build")
+        .arg("--quiet")
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let binary_name = if cfg!(windows) {
+        "echo-binary-selfdesc-hash.exe"
+    } else {
+        "echo-binary-selfdesc-hash"
+    };
+    let binary = root.join("target/debug").join(binary_name);
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 91,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "binary_echo_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes(
+        "source.imu_to_sink.imu",
+        "Imu",
+        vec![0x01, 0x02, 0x03, 0x04],
+        Some(123),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channel_from_image(&binary, "source.imu", Some(&socket)).unwrap();
+
+    assert!(output.contains("fields={value=67305985}"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_follow_outputs_changed_snapshots_from_fake_status_server() {
     let source = r#"
 {

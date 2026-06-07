@@ -611,8 +611,10 @@ impl IntrospectionState {
     pub fn register_service(&self, name: impl Into<String>) {
         let name = name.into();
         let mut inner = self.lock_inner();
-        inner.services.entry(name.clone()).or_insert_with(|| {
-            IntrospectionServiceStatus {
+        inner
+            .services
+            .entry(name.clone())
+            .or_insert_with(|| IntrospectionServiceStatus {
                 name,
                 ready: true,
                 in_flight: 0,
@@ -622,8 +624,7 @@ impl IntrospectionState {
                 busy_count: 0,
                 unavailable_count: 0,
                 late_drop_count: 0,
-            }
-        });
+            });
     }
 
     /// 记录 service 运行态健康状态快照。

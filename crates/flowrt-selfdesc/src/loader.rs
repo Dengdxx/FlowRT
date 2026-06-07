@@ -35,22 +35,41 @@ pub enum LoadError {
     },
 }
 
-/// 从 `selfdesc.json` 或二进制 `.flowrt.selfdesc` section 读取 self-description。
-pub fn load_self_description(path: &Path) -> Result<SelfDescription, LoadError> {
+/// 从 `selfdesc.json` 或二进制 `.flowrt.selfdesc` section 读取 self-description JSON bytes。
+pub fn load_self_description_json_bytes(path: &Path) -> Result<Vec<u8>, LoadError> {
     let bytes = fs::read(path).map_err(|source| LoadError::Io {
         path: path.display().to_string(),
         source,
     })?;
-    let json = if path
+    if path
         .file_name()
         .is_some_and(|name| name == OsStr::new("selfdesc.json"))
     {
-        bytes
+        Ok(bytes)
     } else {
-        self_description_section_bytes(&bytes)?
-    };
+        self_description_section_bytes(&bytes)
+    }
+}
+
+/// 从 `selfdesc.json` 或二进制 `.flowrt.selfdesc` section 读取 self-description。
+pub fn load_self_description(path: &Path) -> Result<SelfDescription, LoadError> {
+    let json = load_self_description_json_bytes(path)?;
+    parse_self_description_json(&json)
+}
+
+/// 读取 self-description，并返回与 runtime handshake 一致的 JSON SHA-256。
+pub fn load_self_description_with_hash(
+    path: &Path,
+) -> Result<(SelfDescription, String), LoadError> {
+    let json = load_self_description_json_bytes(path)?;
+    let hash = self_description_hash(&json);
+    let self_description = parse_self_description_json(&json)?;
+    Ok((self_description, hash))
+}
+
+fn parse_self_description_json(json: &[u8]) -> Result<SelfDescription, LoadError> {
     let self_description: SelfDescription =
-        serde_json::from_slice(&json).map_err(LoadError::Json)?;
+        serde_json::from_slice(json).map_err(LoadError::Json)?;
     if self_description.self_description_version != SELF_DESCRIPTION_SCHEMA_VERSION {
         return Err(LoadError::UnsupportedVersion {
             actual: self_description.self_description_version,
@@ -75,7 +94,11 @@ fn self_description_section_bytes(image: &[u8]) -> Result<Vec<u8>, LoadError> {
             section: SELF_DESCRIPTION_SECTION.to_string(),
         })?;
     let data = section.data().map_err(|_| LoadError::SectionData)?;
-    Ok(data.to_vec())
+    let mut data = data.to_vec();
+    while data.last() == Some(&0) {
+        data.pop();
+    }
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -295,7 +318,10 @@ fn main() {{}}
 
         let sd = load_self_description(&path).unwrap();
         assert_eq!(sd.graphs[0].services.len(), 1);
-        assert_eq!(sd.graphs[0].services[0].name, "planner.plan_to_executor.execute");
+        assert_eq!(
+            sd.graphs[0].services[0].name,
+            "planner.plan_to_executor.execute"
+        );
         assert_eq!(sd.graphs[0].services[0].request_type, "PlanRequest");
         assert_eq!(sd.graphs[0].services[0].response_type, "PlanResponse");
 
