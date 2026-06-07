@@ -71,9 +71,15 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
             );
             debug_assert_eq!(client.request, server.request);
             debug_assert_eq!(client.response, server.response);
+            let name = format!("{}.{}", service.client.instance.name, service.client.port);
             serde_json::json!({
+                "name": name,
                 "client": format!("{}.{}", service.client.instance.name, service.client.port),
+                "client_instance": service.client.instance.name,
+                "client_port": service.client.port,
                 "server": format!("{}.{}", service.server.instance.name, service.server.port),
+                "server_instance": service.server.instance.name,
+                "server_port": service.server.port,
                 "request": client.request.canonical_syntax(),
                 "response": client.response.canonical_syntax(),
                 "backend": service.backend.0,
@@ -250,10 +256,12 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
                 "readiness": orchestration.readiness,
                 "startup_delay_ms": orchestration.startup_delay_ms,
                 "env": orchestration.env,
-                "cpu_affinity": orchestration.cpu_affinity,
-                "nice": orchestration.nice,
-                "rt_policy": orchestration.rt_policy,
-                "rt_priority": orchestration.rt_priority,
+                "resource_placement": {
+                    "cpu_affinity": orchestration.cpu_affinity,
+                    "nice": orchestration.nice,
+                    "rt_policy": orchestration.rt_policy,
+                    "rt_priority": orchestration.rt_priority,
+                },
                 "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
                 "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(launch_task).collect::<Vec<_>>(),
             })
@@ -278,10 +286,12 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
             "readiness": "process_started",
             "startup_delay_ms": 0,
             "env": {},
-            "cpu_affinity": [],
-            "nice": null,
-            "rt_policy": null,
-            "rt_priority": null,
+            "resource_placement": {
+                "cpu_affinity": [],
+                "nice": null,
+                "rt_policy": null,
+                "rt_priority": null,
+            },
             "instances": [],
             "tasks": [],
         }));

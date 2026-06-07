@@ -1140,8 +1140,14 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         .as_deref()
                         .map(|wait| format!(" readiness_wait={wait}"))
                         .unwrap_or_default();
+                    let resource_info = process
+                        .resource_placement
+                        .as_ref()
+                        .and_then(|placement| serde_json::to_string(placement).ok())
+                        .map(|placement| format!(" resource_placement={placement}"))
+                        .unwrap_or_default();
                     lines.push(format!(
-                        "supervisor_process={} state={} pid={} restarts={} ticks={} last_seen_ms={} tick_stale={} exit_code={}{} socket={}",
+                        "supervisor_process={} state={} pid={} restarts={} ticks={} last_seen_ms={} tick_stale={} exit_code={}{}{} socket={}",
                         process.name,
                         process.state,
                         option_u32(process.pid),
@@ -1151,6 +1157,7 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         process.tick_stale,
                         option_i32(process.exit_code),
                         readiness_info,
+                        resource_info,
                         socket.display()
                     ));
                 }

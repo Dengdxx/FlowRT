@@ -287,18 +287,33 @@ backend = "iox2"
 
     assert_eq!(sensors["readiness"], "runtime_ready");
     assert_eq!(sensors["startup_delay_ms"], 200);
-    assert_eq!(sensors["cpu_affinity"], serde_json::json!([0, 1]));
-    assert_eq!(sensors["nice"], -5);
-    assert_eq!(sensors["rt_policy"], "fifo");
-    assert_eq!(sensors["rt_priority"], 50);
+    assert_eq!(
+        sensors["resource_placement"]["cpu_affinity"],
+        serde_json::json!([0, 1])
+    );
+    assert_eq!(sensors["resource_placement"]["nice"], -5);
+    assert_eq!(sensors["resource_placement"]["rt_policy"], "fifo");
+    assert_eq!(sensors["resource_placement"]["rt_priority"], 50);
     assert_eq!(sensors["env"], serde_json::json!({}));
 
     assert_eq!(control["readiness"], "service_ready");
     assert_eq!(control["startup_delay_ms"], 0);
-    assert_eq!(control["cpu_affinity"], serde_json::json!([]));
-    assert_eq!(control["nice"], serde_json::Value::Null);
-    assert_eq!(control["rt_policy"], serde_json::Value::Null);
-    assert_eq!(control["rt_priority"], serde_json::Value::Null);
+    assert_eq!(
+        control["resource_placement"]["cpu_affinity"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        control["resource_placement"]["nice"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        control["resource_placement"]["rt_policy"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        control["resource_placement"]["rt_priority"],
+        serde_json::Value::Null
+    );
     assert_eq!(control["env"], serde_json::json!({ "APP_MODE": "control" }));
 }
 
@@ -341,8 +356,13 @@ server = "server.plan"
     let services = launch["graphs"][0]["services"].as_array().unwrap();
 
     assert_eq!(services.len(), 1);
+    assert_eq!(services[0]["name"], "client.plan");
     assert_eq!(services[0]["client"], "client.plan");
+    assert_eq!(services[0]["client_instance"], "client");
+    assert_eq!(services[0]["client_port"], "plan");
     assert_eq!(services[0]["server"], "server.plan");
+    assert_eq!(services[0]["server_instance"], "server");
+    assert_eq!(services[0]["server_port"], "plan");
     assert_eq!(services[0]["request"], "PlanRequest");
     assert_eq!(services[0]["response"], "PlanResponse");
     assert_eq!(services[0]["backend"], "inproc");

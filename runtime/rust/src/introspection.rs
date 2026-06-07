@@ -17,6 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::supervisor::resource_placement::ResourcePlacementStatus;
+
 /// 当前 introspection 协议版本。
 pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
 
@@ -148,6 +150,9 @@ pub struct IntrospectionProcessStatus {
     /// 进程已通过 readiness 检查或不需要等待时为 `None`。
     #[serde(default)]
     pub readiness_wait: Option<String>,
+    /// 资源提示 desired/applied 状态。
+    #[serde(default)]
+    pub resource_placement: Option<ResourcePlacementStatus>,
 }
 
 /// 单个 service endpoint 的运行态健康状态。
@@ -1508,6 +1513,7 @@ mod tests {
             tick_stale: false,
             exit_code: None,
             readiness_wait: None,
+            resource_placement: None,
         });
 
         assert_eq!(
@@ -1522,6 +1528,7 @@ mod tests {
                 tick_stale: false,
                 exit_code: None,
                 readiness_wait: None,
+                resource_placement: None,
             }]
         );
     }

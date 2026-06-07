@@ -165,6 +165,16 @@ fn live_status_summary_displays_supervisor_process_health() {
         tick_stale: true,
         exit_code: None,
         readiness_wait: None,
+        resource_placement: Some(
+            flowrt::supervisor::resource_placement::ResourcePlacementStatus {
+                desired: flowrt::supervisor::resource_placement::ResourcePlacement {
+                    cpu_affinity: vec![0, 1],
+                    nice: Some(5),
+                    ..Default::default()
+                },
+                applied: Default::default(),
+            },
+        ),
     });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
@@ -177,6 +187,9 @@ fn live_status_summary_displays_supervisor_process_health() {
     assert!(output.contains("restarts=2"));
     assert!(output.contains("ticks=10"));
     assert!(output.contains("tick_stale=true"));
+    assert!(output.contains("resource_placement="));
+    assert!(output.contains("\"cpu_affinity\":[0,1]"));
+    assert!(output.contains("\"nice\":5"));
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);

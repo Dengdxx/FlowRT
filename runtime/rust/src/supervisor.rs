@@ -3,6 +3,8 @@
 //! 本模块把 supervisor 核心逻辑从 codegen 字符串下沉为可独立测试的 runtime 深模块。
 //! 生成物只保留 manifest 常量、binary name stems 和 self-description hash 的薄 glue。
 
+pub mod resource_placement;
+
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -12,6 +14,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::introspection::{IntrospectionIdentity, IntrospectionProcessStatus, IntrospectionState};
+
+use self::resource_placement::{ResourceApplied, ResourcePlacement, ResourcePlacementStatus};
 
 /// 子进程健康轮询间隔。
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -51,7 +55,16 @@ pub struct LaunchManifest {
 /// manifest 中的 graph 节点。
 #[derive(Debug, Deserialize)]
 pub struct LaunchGraph {
+    #[serde(default)]
+    pub services: Vec<LaunchService>,
     pub processes: Vec<LaunchProcess>,
+}
+
+/// manifest 中单个 service bind 描述。
+#[derive(Debug, Deserialize)]
+pub struct LaunchService {
+    pub name: String,
+    pub server_instance: String,
 }
 
 /// manifest 中单个进程描述。
@@ -72,6 +85,12 @@ pub struct LaunchProcess {
     /// readiness 通过后的额外启动延迟（ms），用于错峰启动。
     #[serde(default)]
     pub startup_delay_ms: u64,
+    /// 属于该进程的 instance 名称。
+    #[serde(default)]
+    pub instances: Vec<String>,
+    /// 进程资源提示（CPU affinity、nice、RT policy）。
+    #[serde(default)]
+    pub resource_placement: ResourcePlacement,
 }
 
 /// 进程 readiness gate 类型，决定 supervisor 何时认为进程就绪。
@@ -319,7 +338,7 @@ fn wait_for_runtime_ready(
     }
 }
 
-/// 等待子进程 runtime introspection 握手成功且所有 service endpoint 就绪。
+/// 等待子进程 runtime introspection 握手成功且该进程预期承载的 service endpoint 就绪。
 fn wait_for_service_ready(
     supervisor_state: &IntrospectionState,
     child: &mut SupervisedChild,
@@ -361,10 +380,10 @@ fn wait_for_service_ready(
             ));
         }
 
-        // 轮询 introspection socket：需要握手成功且所有 service 就绪。
+        // 轮询 introspection socket：需要握手成功且预期 service 全部就绪。
         match crate::request_status(&child.socket) {
             Ok(crate::IntrospectionResponse::Status { status, .. }) => {
-                if status.services.is_empty() || status.services.iter().all(|s| s.ready) {
+                if expected_services_ready(&child.expected_services, &status.services) {
                     return Ok(());
                 }
                 // 有 service 但未全部就绪，继续等待。
@@ -628,7 +647,10 @@ struct SupervisedChild {
     restart_policy: RestartPolicy,
     failure: String,
     readiness: ReadinessGate,
+    expected_services: Vec<String>,
     startup_delay_ms: u64,
+    resource_placement: ResourcePlacement,
+    resource_placement_status: ResourcePlacementStatus,
     child: Child,
     socket: PathBuf,
     finished: bool,
@@ -692,6 +714,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 );
             };
             let process = pending.remove(index);
+            let expected_services = expected_services_for_process(graph, process);
             let app_exe = app_executable_for_runtime(
                 &current_exe,
                 &process.runtime_kind,
@@ -707,6 +730,8 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 run_ticks,
                 process_zenoh_env.as_ref(),
             )?;
+            let resource_applied =
+                apply_resource_placement_to_pid(&process.resource_placement, Some(child.id()));
             let socket = crate::runtime_socket_path_for_pid(child.id());
             let mut child = SupervisedChild {
                 name: process.name.clone(),
@@ -717,7 +742,13 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 restart_policy: process.restart,
                 failure: process.failure.clone(),
                 readiness: process.readiness,
+                expected_services,
                 startup_delay_ms: process.startup_delay_ms,
+                resource_placement: process.resource_placement.clone(),
+                resource_placement_status: ResourcePlacementStatus {
+                    desired: process.resource_placement.clone(),
+                    applied: resource_applied,
+                },
                 child,
                 socket,
                 finished: false,
@@ -846,6 +877,8 @@ fn restart_child(
         run_ticks,
         child.zenoh_env.as_ref(),
     )?;
+    let resource_applied =
+        apply_resource_placement_to_pid(&child.resource_placement, Some(restarted.id()));
     child.child = restarted;
     child.socket = crate::runtime_socket_path_for_pid(child.child.id());
     child.restart_count = child.restart_count.saturating_add(1);
@@ -855,8 +888,51 @@ fn restart_child(
     child.last_tick_changed_unix_ms = unix_time_ms();
     child.exit_code = None;
     child.state = "starting".to_string();
+    child.resource_placement_status = ResourcePlacementStatus {
+        desired: child.resource_placement.clone(),
+        applied: resource_applied,
+    };
     record_child_health(supervisor_state, child, false);
     Ok(())
+}
+
+fn apply_resource_placement_to_pid(
+    placement: &ResourcePlacement,
+    pid: Option<u32>,
+) -> ResourceApplied {
+    if resource_placement::has_placement(placement) {
+        resource_placement::apply_to_pid(placement, pid)
+    } else {
+        ResourceApplied::default()
+    }
+}
+
+fn expected_services_for_process(graph: &LaunchGraph, process: &LaunchProcess) -> Vec<String> {
+    let instances = process
+        .instances
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    graph
+        .services
+        .iter()
+        .filter(|service| instances.contains(service.server_instance.as_str()))
+        .map(|service| service.name.clone())
+        .collect()
+}
+
+fn expected_services_ready(
+    expected_services: &[String],
+    live_services: &[crate::IntrospectionServiceStatus],
+) -> bool {
+    if expected_services.is_empty() {
+        return true;
+    }
+    expected_services.iter().all(|expected| {
+        live_services
+            .iter()
+            .any(|service| service.name == *expected && service.ready)
+    })
 }
 
 fn propagate_process_failure(
@@ -926,6 +1002,11 @@ fn record_child_health(
         "waiting_readiness" => Some(readiness_gate_label(child.readiness)),
         _ => None,
     };
+    let resource_placement = if resource_placement::has_placement(&child.resource_placement) {
+        Some(child.resource_placement_status.clone())
+    } else {
+        None
+    };
     supervisor_state.record_process_health(IntrospectionProcessStatus {
         name: child.name.clone(),
         state: child.state.clone(),
@@ -936,6 +1017,7 @@ fn record_child_health(
         tick_stale,
         exit_code: child.exit_code,
         readiness_wait: readiness_wait.map(|s| s.to_string()),
+        resource_placement,
     });
 }
 
@@ -984,6 +1066,8 @@ mod tests {
             failure: "propagate".into(),
             readiness: ReadinessGate::ProcessStarted,
             startup_delay_ms: 0,
+            instances: vec![],
+            resource_placement: ResourcePlacement::default(),
         }
     }
 
@@ -1357,6 +1441,7 @@ mod tests {
         assert_eq!(process.failure, "propagate");
         assert_eq!(process.readiness, ReadinessGate::ProcessStarted);
         assert_eq!(process.startup_delay_ms, 0);
+        assert_eq!(process.resource_placement, ResourcePlacement::default());
     }
 
     #[test]
@@ -1384,6 +1469,7 @@ mod tests {
         assert_eq!(process.restart.policy, RestartPolicyKind::Never);
         assert_eq!(process.failure, "isolate");
         assert_eq!(process.readiness, ReadinessGate::ProcessStarted);
+        assert_eq!(process.resource_placement, ResourcePlacement::default());
     }
 
     #[test]
@@ -1422,6 +1508,82 @@ mod tests {
         assert_eq!(process.readiness, ReadinessGate::ServiceReady);
     }
 
+    #[test]
+    fn manifest_deserialization_with_resource_placement() {
+        let json = r#"{
+            "graphs": [{
+                "processes": [{
+                    "name": "control",
+                    "backend": "iox2",
+                    "runtime_kind": "rust",
+                    "resource_placement": {
+                        "cpu_affinity": [0, 1],
+                        "nice": -10,
+                        "rt_policy": "fifo",
+                        "rt_priority": 50
+                    }
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let process = &manifest.graphs[0].processes[0];
+        assert_eq!(process.resource_placement.cpu_affinity, vec![0, 1]);
+        assert_eq!(process.resource_placement.nice, Some(-10));
+        assert_eq!(
+            process.resource_placement.rt_policy,
+            Some(resource_placement::RtPolicy::Fifo)
+        );
+        assert_eq!(process.resource_placement.rt_priority, Some(50));
+    }
+
+    #[test]
+    fn expected_services_for_process_uses_server_instances() {
+        let graph = LaunchGraph {
+            services: vec![
+                LaunchService {
+                    name: "client.plan".to_string(),
+                    server_instance: "server".to_string(),
+                },
+                LaunchService {
+                    name: "client.inspect".to_string(),
+                    server_instance: "inspector".to_string(),
+                },
+            ],
+            processes: vec![],
+        };
+        let mut process = test_process("server_proc", vec![]);
+        process.instances = vec!["server".to_string()];
+
+        assert_eq!(
+            expected_services_for_process(&graph, &process),
+            vec!["client.plan".to_string()]
+        );
+    }
+
+    #[test]
+    fn expected_services_ready_requires_each_expected_ready_endpoint() {
+        let expected = vec!["client.plan".to_string(), "client.inspect".to_string()];
+        let live = vec![
+            service_status("client.plan", true),
+            service_status("client.inspect", true),
+        ];
+        assert!(expected_services_ready(&expected, &live));
+
+        let missing = vec![service_status("client.plan", true)];
+        assert!(!expected_services_ready(&expected, &missing));
+
+        let not_ready = vec![
+            service_status("client.plan", true),
+            service_status("client.inspect", false),
+        ];
+        assert!(!expected_services_ready(&expected, &not_ready));
+    }
+
+    #[test]
+    fn expected_services_ready_falls_back_to_runtime_ready_when_no_expected_services() {
+        assert!(expected_services_ready(&[], &[]));
+    }
+
     // -- readiness timeout 和交互测试 --
 
     fn short_readiness_config() -> ReadinessConfig {
@@ -1449,7 +1611,10 @@ mod tests {
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::RuntimeReady,
+            expected_services: vec![],
             startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
             socket,
             finished: false,
@@ -1499,7 +1664,10 @@ mod tests {
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ServiceReady,
+            expected_services: vec!["planner.plan".to_string()],
             startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
             socket,
             finished: false,
@@ -1538,7 +1706,10 @@ mod tests {
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::RuntimeReady,
+            expected_services: vec![],
             startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
             socket,
             finished: false,
@@ -1588,7 +1759,10 @@ mod tests {
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ProcessStarted,
+            expected_services: vec![],
             startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
             socket,
             finished: false,
@@ -1644,7 +1818,10 @@ mod tests {
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ServiceReady,
+            expected_services: vec!["planner.plan".to_string()],
             startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
             socket,
             finished: false,
@@ -1673,5 +1850,19 @@ mod tests {
         // 清理
         let _ = child.child.kill();
         let _ = child.child.wait();
+    }
+
+    fn service_status(name: &str, ready: bool) -> crate::IntrospectionServiceStatus {
+        crate::IntrospectionServiceStatus {
+            name: name.to_string(),
+            ready,
+            in_flight: 0,
+            queued: 0,
+            total_requests: 0,
+            timeout_count: 0,
+            busy_count: 0,
+            unavailable_count: 0,
+            late_drop_count: 0,
+        }
     }
 }
