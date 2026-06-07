@@ -286,12 +286,17 @@ runtime 和 backend SDK。生成 CMake 不应通过 `FetchContent` 联网拉取 
 smoke 和 release。Linux job 默认运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge
 smoke 覆盖 Jazzy 和 Lyrical 两个发行版，并安装对应的 `rmw_zenoh_cpp`。
 
-CI 会上传 `flowrt-linux-deb` artifact。demo smoke 先安装 deb，再用安装后的
-`flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载 deb
-artifact，从 `CHANGELOG.md` 对应版本段抽取 release notes，并创建 GitHub Release
-上传 `.deb` 与 `SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的 workspace version。
+CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
+Debian package、C++ zenoh runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical
+bridge 都在对应架构 runner 上执行。package job 分别上传
+`flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。demo smoke 先安装同
+架构 deb，再用安装后的 `flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，
+release job 会下载两种架构 deb artifact，从 `CHANGELOG.md` 对应版本段抽取 release
+notes，并创建 GitHub Release 上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一
+`SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的 workspace version。
 
-workflow 暂不做 cache 或多平台矩阵。
+workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
+runner 上构建、安装和通过同等 smoke。
 
 ## 文档维护提示
 

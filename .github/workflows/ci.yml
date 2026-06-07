@@ -47,8 +47,16 @@ jobs:
           echo "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
   rust-fmt:
-    name: Rust Fmt
-    runs-on: ubuntu-latest
+    name: Rust Fmt (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     container:
       image: ros:jazzy-ros-base-noble
 
@@ -65,8 +73,16 @@ jobs:
         run: cargo fmt --check
 
   rust-test:
-    name: Rust Test
-    runs-on: ubuntu-latest
+    name: Rust Test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     container:
       image: ros:jazzy-ros-base-noble
 
@@ -81,8 +97,16 @@ jobs:
         run: cargo test
 
   rust-clippy:
-    name: Rust Clippy
-    runs-on: ubuntu-latest
+    name: Rust Clippy (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     container:
       image: ros:jazzy-ros-base-noble
 
@@ -99,8 +123,16 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   cpp-runtime:
-    name: C++ Runtime
-    runs-on: ubuntu-latest
+    name: C++ Runtime (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     container:
       image: ros:jazzy-ros-base-noble
 
@@ -129,8 +161,18 @@ jobs:
         run: ctest --test-dir build/cpp --output-on-failure
 
   cpp-zenoh-runtime:
-    name: C++ Zenoh Runtime
-    runs-on: ubuntu-latest
+    name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
     container:
       image: ros:jazzy-ros-base-noble
     needs:
@@ -143,7 +185,7 @@ jobs:
       - name: 下载 deb artifact
         uses: actions/download-artifact@v7
         with:
-          name: flowrt-linux-deb
+          name: ${{ matrix.artifact }}
           path: dist
 
       - name: 安装系统构建工具
@@ -170,8 +212,18 @@ jobs:
           ctest --test-dir build/cpp-zenoh --output-on-failure
 
   package:
-    name: Debian Package
-    runs-on: ubuntu-latest
+    name: Debian Package (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
     container:
       image: ros:jazzy-ros-base-noble
     needs:
@@ -194,7 +246,7 @@ jobs:
       - name: 构建并安装 flowrt deb
         shell: bash
         run: |
-          scripts/package-deb.sh --output-dir dist
+          scripts/package-deb.sh --output-dir dist --architecture "${{ matrix.deb_arch }}"
           dpkg -i dist/flowrt_*_*.deb
           version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
@@ -215,13 +267,23 @@ jobs:
       - name: 上传 flowrt Linux artifact
         uses: actions/upload-artifact@v7
         with:
-          name: flowrt-linux-deb
+          name: ${{ matrix.artifact }}
           path: dist/flowrt_*_*.deb
           if-no-files-found: error
 
   demo-smoke:
-    name: Demo Smoke
-    runs-on: ubuntu-latest
+    name: Demo Smoke (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
     container:
       image: ros:jazzy-ros-base-noble
     needs:
@@ -235,7 +297,7 @@ jobs:
       - name: 下载 deb artifact
         uses: actions/download-artifact@v7
         with:
-          name: flowrt-linux-deb
+          name: ${{ matrix.artifact }}
           path: dist
 
       - name: 安装系统构建工具
@@ -275,8 +337,18 @@ jobs:
           FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
 
   ros2-jazzy-bridge:
-    name: ROS2 Jazzy Bridge
-    runs-on: ubuntu-latest
+    name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
     container:
       image: ros:jazzy-ros-base-noble
     needs:
@@ -289,7 +361,7 @@ jobs:
       - name: 下载 deb artifact
         uses: actions/download-artifact@v7
         with:
-          name: flowrt-linux-deb
+          name: ${{ matrix.artifact }}
           path: dist
 
       - name: 安装系统构建工具和 ROS2 zenoh RMW
@@ -319,8 +391,18 @@ jobs:
         run: scripts/test-ros2-bridge-installed.sh --distro jazzy
 
   ros2-lyrical-bridge:
-    name: ROS2 Lyrical Bridge
-    runs-on: ubuntu-latest
+    name: ROS2 Lyrical Bridge (${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            artifact: flowrt-linux-amd64-deb
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: flowrt-linux-arm64-deb
     container:
       image: ros:lyrical-ros-base-resolute
     needs:
@@ -333,7 +415,7 @@ jobs:
       - name: 下载 deb artifact
         uses: actions/download-artifact@v7
         with:
-          name: flowrt-linux-deb
+          name: ${{ matrix.artifact }}
           path: dist
 
       - name: 安装系统构建工具和 ROS2 zenoh RMW
@@ -385,10 +467,16 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v6
 
-      - name: 下载 deb artifact
+      - name: 下载 amd64 deb artifact
         uses: actions/download-artifact@v7
         with:
-          name: flowrt-linux-deb
+          name: flowrt-linux-amd64-deb
+          path: dist
+
+      - name: 下载 arm64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-arm64-deb
           path: dist
 
       - name: 准备 release 说明和校验和

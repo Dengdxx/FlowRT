@@ -172,7 +172,12 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 ## 发布流程
 
-FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待 `guard-generated`、Rust fmt/test/clippy、C++ runtime、C++ zenoh runtime、deb package、demo smoke、ROS2 Jazzy bridge smoke 和 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，并上传 `.deb` 与 `SHA256SUMS`。
+FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待
+`guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
+amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、amd64/arm64 demo smoke、
+amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部
+通过，再创建 GitHub Release，并上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与
+统一 `SHA256SUMS`。
 
 发布前检查：
 
