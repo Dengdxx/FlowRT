@@ -313,8 +313,17 @@ overflow 表示队列满，stale 表示数据过期。两者是不同问题。
 
 ## Service
 
-Service 表达 request/response 拓扑。component 可以声明 service client/server 端口，
-graph 用 `[[bind.service]]` 绑定双方：
+Service 表达 request/response 语义，和 channel（dataflow push）是不同模型。
+
+**Service 与 channel 的区别：** channel 是 publish/subscribe，生产者写入后不等
+消费者处理；Service 是 call/response，client 发起请求后阻塞或轮询等待 server 返回。
+channel 适合高频数据流（IMU、odom），Service 适合低频请求（路径规划、参数查询）。
+
+**Service 与参数热更新的区别：** 参数是 runtime control-plane 的配置值，通过
+`flowrt params set` 提交、在 tick 边界生效；Service 是 graph 业务逻辑的一部分，
+由 RSDL 声明、codegen 生成 typed API、用户组件实现 handler。
+
+component 声明 service client/server 端口，graph 用 `[[bind.service]]` 绑定双方：
 
 ```toml
 [component.client]
@@ -328,10 +337,35 @@ service_server = ["plan:PlanRequest->PlanResponse"]
 [[bind.service]]
 client = "client.plan"
 server = "server.plan"
+backend = "inproc"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"
 ```
 
-当前 Service 已进入 RSDL、Contract IR、validator 和 launch manifest；runtime RPC 用户
-API 还未生成，因此它目前用于稳定系统结构和后续 ABI 边界。
+codegen 为 client 生成 `ServiceClient_{instance}_{port}` typed handle，暴露同步
+`call()` 和非阻塞 `start_call()`；为 server 生成 `on_{port}_request` handler
+方法，用户实现具体的 request -> response 转换。Service 通过 hidden task 集成到
+scheduler，request arrival 直接唤醒 server 处理。
+
+**Service policy：** `backend`（当前支持 `inproc`，`zenoh` 运行时已实现但 codegen
+尚未生成）、`timeout_ms`（默认 5000）、`queue_depth`（默认 32）、`overflow`（`busy`
+或 `error`，默认 `busy`）、`max_in_flight`（默认 64）。auto backend resolver 默认
+同进程选择 `inproc`，跨进程选择 `zenoh`。
+
+**错误语义：** `Timeout`（超时）、`Busy`（队列满）、`Unavailable`（server 未注册）、
+`WouldDeadlock`（同 lane 阻塞调用）、`HandlerError`（用户业务错误）。
+
+**Service 与 Operation 的边界：** Service 是同步 request/response；Operation（v0.5.0
+规划）是 typed long-running command，底层编译期 lower 成 Service + Channel，用户只看
+Operation，调试时才展开底层拓扑。
+
+查看 service 拓扑和运行态健康：
+
+```bash
+flowrt list path/to/selfdesc.json
+flowrt status
+```
 
 ## Backend
 
@@ -456,6 +490,7 @@ flowrt echo channel_name --follow
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | Rust source 与 C++ sink 的 iox2 分进程 contract。 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 无界 variable frame、zenoh 跨主机 transport 和 mixed launch。 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | FlowRT string 输出经 zenoh bridge 发布到 ROS2 topic。 |
+| `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | Service request/response、typed API、inproc call、service policy 和健康观测。 |
 
 完整说明见 [示例矩阵](docs/examples.md)。
 
