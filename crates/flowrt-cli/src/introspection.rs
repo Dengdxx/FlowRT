@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use flowrt_selfdesc::{
-    SelfDescription, SelfDescriptionChannel, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
-    SelfDescriptionInstance, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
-    SelfDescriptionParam, load_self_description as load_selfdesc,
+    SelfDescription, SelfDescriptionChannel, SelfDescriptionComponentType,
+    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionInstance,
+    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionParam,
+    load_self_description as load_selfdesc,
     load_self_description_with_hash as load_selfdesc_with_hash,
 };
 
@@ -39,11 +40,12 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         .map(|graph| graph.services.len())
         .sum();
     let mut output = format!(
-        "package={} selfdesc={} source_hash={} graphs={} instances={} tasks={} channels={} services={} messages={}",
+        "package={} selfdesc={} source_hash={} graphs={} component_types={} instances={} tasks={} channels={} services={} messages={}",
         self_description.package.name,
         self_description.self_description_version,
         self_description.source_hash,
         self_description.graphs.len(),
+        self_description.component_types.len(),
         self_description
             .graphs
             .iter()
@@ -62,31 +64,173 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         total_services,
         self_description.message_abi.len()
     );
+
+    // 按名称索引 component types。
+    let component_types: BTreeMap<&str, &SelfDescriptionComponentType> = self_description
+        .component_types
+        .iter()
+        .map(|ct| (ct.name.as_str(), ct))
+        .collect();
+
     for graph in &self_description.graphs {
         output.push_str(&format!("\ngraph {}", graph.name));
-        for task in &graph.tasks {
-            output.push_str(&format!(
-                "\ntask {} trigger={}",
-                task.instance, task.trigger
-            ));
+
+        // 展示 component types。
+        let graph_component_names: BTreeMap<&str, ()> = graph
+            .instances
+            .iter()
+            .map(|inst| (inst.component.as_str(), ()))
+            .collect();
+        for name in graph_component_names.keys() {
+            if let Some(ct) = component_types.get(name) {
+                output.push_str(&format!(
+                    "\n  component {} language={} kind={}",
+                    ct.name, ct.language, ct.kind
+                ));
+                if !ct.inputs.is_empty() {
+                    let ports: Vec<String> = ct
+                        .inputs
+                        .iter()
+                        .map(|p| format!("{}:{}", p.name, p.ty))
+                        .collect();
+                    output.push_str(&format!("\n    inputs: {}", ports.join(", ")));
+                }
+                if !ct.outputs.is_empty() {
+                    let ports: Vec<String> = ct
+                        .outputs
+                        .iter()
+                        .map(|p| format!("{}:{}", p.name, p.ty))
+                        .collect();
+                    output.push_str(&format!("\n    outputs: {}", ports.join(", ")));
+                }
+                if !ct.service_clients.is_empty() {
+                    let ports: Vec<String> = ct
+                        .service_clients
+                        .iter()
+                        .map(|p| {
+                            format!("{}:{}->{}", p.name, p.request_type, p.response_type)
+                        })
+                        .collect();
+                    output.push_str(&format!("\n    service_clients: {}", ports.join(", ")));
+                }
+                if !ct.service_servers.is_empty() {
+                    let ports: Vec<String> = ct
+                        .service_servers
+                        .iter()
+                        .map(|p| {
+                            format!("{}:{}->{}", p.name, p.request_type, p.response_type)
+                        })
+                        .collect();
+                    output.push_str(&format!("\n    service_servers: {}", ports.join(", ")));
+                }
+                if !ct.params.is_empty() {
+                    let params: Vec<String> = ct
+                        .params
+                        .iter()
+                        .map(|p| format!("{}:{} update={}", p.name, p.ty, p.update))
+                        .collect();
+                    output.push_str(&format!("\n    params: {}", params.join(", ")));
+                }
+            }
         }
-        for channel in &graph.channels {
+
+        // 按 instance 分组展示 tasks、channels、services 和 params。
+        for instance in &graph.instances {
             output.push_str(&format!(
-                "\nchannel {} -> {} type={}",
-                channel.from, channel.to, channel.message_type
+                "\n  instance {} component={} process={} runtime={}",
+                instance.name, instance.component, instance.process, instance.runtime
             ));
+            if let Some(target) = &instance.target {
+                output.push_str(&format!(" target={}", target));
+            }
+
+            // 该 instance 的 tasks。
+            for task in &graph.tasks {
+                if task.instance == instance.name {
+                    output.push_str(&format!(
+                        "\n    task {} trigger={}",
+                        task.name, task.trigger
+                    ));
+                    if !task.lane.is_empty() {
+                        output.push_str(&format!(" lane={}", task.lane));
+                    }
+                    if let Some(period) = task.period_ms {
+                        output.push_str(&format!(" period_ms={}", period));
+                    }
+                    if let Some(deadline) = task.deadline_ms {
+                        output.push_str(&format!(" deadline_ms={}", deadline));
+                    }
+                }
+            }
+
+            // 该 instance 作为 from 或 to 的 channels。
+            for channel in &graph.channels {
+                let from_instance = channel.from.split('.').next().unwrap_or("");
+                let to_instance = channel.to.split('.').next().unwrap_or("");
+                if from_instance == instance.name || to_instance == instance.name {
+                    output.push_str(&format!(
+                        "\n    channel {} -> {} type={} backend={}",
+                        channel.from, channel.to, channel.message_type, channel.backend
+                    ));
+                    if !channel.channel.is_empty() {
+                        output.push_str(&format!(" kind={}", channel.channel));
+                    }
+                }
+            }
+
+            // 该 instance 参与的 services。
+            for service in &graph.services {
+                if service.client_instance == instance.name
+                    || service.server_instance == instance.name
+                {
+                    output.push_str(&format!(
+                        "\n    service {} client={}.{} server={}.{} request={} response={} backend={}",
+                        service.name,
+                        service.client_instance,
+                        service.client_port,
+                        service.server_instance,
+                        service.server_port,
+                        service.request_type,
+                        service.response_type,
+                        service.backend
+                    ));
+                }
+            }
+
+            // 该 instance 的 params。
+            for param in &instance.params {
+                output.push_str(&format!(
+                    "\n    param {}:{} update={} current={}",
+                    param.name,
+                    param.ty,
+                    param.update,
+                    serde_json::to_string(&param.current).unwrap_or_else(|_| "null".to_string())
+                ));
+            }
         }
+
+        // 展示未被任何 instance 引用的 orphan services。
+        let instance_names: BTreeMap<&str, ()> = graph
+            .instances
+            .iter()
+            .map(|inst| (inst.name.as_str(), ()))
+            .collect();
         for service in &graph.services {
-            output.push_str(&format!(
-                "\nservice {} client={}.{} server={}.{} request={} response={}",
-                service.name,
-                service.client_instance,
-                service.client_port,
-                service.server_instance,
-                service.server_port,
-                service.request_type,
-                service.response_type
-            ));
+            if !instance_names.contains_key(service.client_instance.as_str())
+                && !instance_names.contains_key(service.server_instance.as_str())
+            {
+                output.push_str(&format!(
+                    "\n  service {} client={}.{} server={}.{} request={} response={} backend={}",
+                    service.name,
+                    service.client_instance,
+                    service.client_port,
+                    service.server_instance,
+                    service.server_port,
+                    service.request_type,
+                    service.response_type,
+                    service.backend
+                ));
+            }
         }
     }
     for message in &self_description.message_abi {
@@ -99,14 +243,30 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
 }
 
 pub(crate) fn self_description_nodes(self_description: &SelfDescription) -> String {
+    let component_types: BTreeMap<&str, &SelfDescriptionComponentType> = self_description
+        .component_types
+        .iter()
+        .map(|ct| (ct.name.as_str(), ct))
+        .collect();
     let mut lines = Vec::new();
     for graph in &self_description.graphs {
         lines.push(format!("graph {}", graph.name));
         for instance in &graph.instances {
-            lines.push(format!(
-                "{} process={} runtime={} component={}",
-                instance.name, instance.process, instance.runtime, instance.component
-            ));
+            let kind = component_types
+                .get(instance.component.as_str())
+                .map(|ct| ct.kind.as_str())
+                .unwrap_or("");
+            if kind.is_empty() {
+                lines.push(format!(
+                    "{} process={} runtime={} component={}",
+                    instance.name, instance.process, instance.runtime, instance.component
+                ));
+            } else {
+                lines.push(format!(
+                    "{} process={} runtime={} component={} kind={}",
+                    instance.name, instance.process, instance.runtime, instance.component, kind
+                ));
+            }
         }
     }
     if lines.is_empty() {
@@ -952,6 +1112,9 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
     for socket in sockets {
         match flowrt::request_status(&socket) {
             Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
+                // 尝试从同一 socket 获取 self-description，用于关联 service → instance。
+                let service_endpoints = load_service_endpoint_map(&socket);
+
                 let active_observers = status
                     .channels
                     .iter()
@@ -990,19 +1153,41 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                     ));
                 }
                 for service in status.services {
-                    lines.push(format!(
-                        "service={} ready={} in_flight={} queued={} total_requests={} timeout={} busy={} unavailable={} late_drop={} socket={}",
-                        service.name,
-                        service.ready,
-                        service.in_flight,
-                        service.queued,
-                        service.total_requests,
-                        service.timeout_count,
-                        service.busy_count,
-                        service.unavailable_count,
-                        service.late_drop_count,
-                        socket.display()
-                    ));
+                    let (client_inst, server_inst) = service_endpoints
+                        .get(service.name.as_str())
+                        .map(|ep| (ep.client_instance.as_str(), ep.server_instance.as_str()))
+                        .unwrap_or(("", ""));
+                    if client_inst.is_empty() {
+                        lines.push(format!(
+                            "service={} ready={} in_flight={} queued={} total_requests={} timeout={} busy={} unavailable={} late_drop={} socket={}",
+                            service.name,
+                            service.ready,
+                            service.in_flight,
+                            service.queued,
+                            service.total_requests,
+                            service.timeout_count,
+                            service.busy_count,
+                            service.unavailable_count,
+                            service.late_drop_count,
+                            socket.display()
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "service={} client_instance={} server_instance={} ready={} in_flight={} queued={} total_requests={} timeout={} busy={} unavailable={} late_drop={} socket={}",
+                            service.name,
+                            client_inst,
+                            server_inst,
+                            service.ready,
+                            service.in_flight,
+                            service.queued,
+                            service.total_requests,
+                            service.timeout_count,
+                            service.busy_count,
+                            service.unavailable_count,
+                            service.late_drop_count,
+                            socket.display()
+                        ));
+                    }
                 }
             }
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
@@ -1038,6 +1223,40 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
     } else {
         Ok(lines.join("\n"))
     }
+}
+
+/// service endpoint 关联信息（从 self-description 提取）。
+struct ServiceEndpointAssoc {
+    client_instance: String,
+    server_instance: String,
+}
+
+/// 从 runtime socket 请求 self-description，构建 service name → instance 关联映射。
+///
+/// 如果 self-description 请求失败（如 socket 不支持），返回空 map，不报错。
+fn load_service_endpoint_map(socket: &Path) -> BTreeMap<String, ServiceEndpointAssoc> {
+    let Ok(response) = flowrt::request_self_description(socket) else {
+        return BTreeMap::new();
+    };
+    let flowrt::IntrospectionResponse::SelfDescription { json, .. } = response else {
+        return BTreeMap::new();
+    };
+    let Ok(sd) = serde_json::from_str::<SelfDescription>(&json) else {
+        return BTreeMap::new();
+    };
+    let mut map = BTreeMap::new();
+    for graph in &sd.graphs {
+        for ep in &graph.services {
+            map.insert(
+                ep.name.clone(),
+                ServiceEndpointAssoc {
+                    client_instance: ep.client_instance.clone(),
+                    server_instance: ep.server_instance.clone(),
+                },
+            );
+        }
+    }
+    map
 }
 
 fn option_u32(value: Option<u32>) -> String {

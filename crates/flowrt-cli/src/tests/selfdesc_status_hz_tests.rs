@@ -418,3 +418,188 @@ fn live_status_summary_displays_service_health() {
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn self_description_summary_shows_component_types() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "comp_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "src",
+      "component": "sensor",
+      "process": "main",
+      "runtime": "rust"
+    }],
+    "tasks": [],
+    "channels": []
+  }],
+  "component_types": [{
+    "name": "sensor",
+    "language": "rust",
+    "kind": "native",
+    "inputs": [],
+    "outputs": [{ "name": "imu", "type": "Imu" }],
+    "service_clients": [],
+    "service_servers": [],
+    "params": [{ "name": "rate", "type": "f64", "update": "on_tick" }]
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-component-types");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    assert!(list.contains("component_types=1"));
+    assert!(list.contains("component sensor language=rust kind=native"));
+    assert!(list.contains("outputs: imu:Imu"));
+    assert!(list.contains("params: rate:f64 update=on_tick"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn self_description_summary_shows_per_instance_component_view() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "view_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "planner",
+      "component": "planner_comp",
+      "process": "main",
+      "runtime": "rust",
+      "params": [{ "name": "goal_x", "type": "f64", "update": "on_tick", "current": 1.0 }]
+    }, {
+      "name": "executor",
+      "component": "executor_comp",
+      "process": "main",
+      "runtime": "rust"
+    }],
+    "tasks": [{
+      "name": "plan_task",
+      "instance": "planner",
+      "trigger": "on_message",
+      "lane": "plan_lane"
+    }],
+    "channels": [{
+      "from": "planner.cmd",
+      "to": "executor.cmd",
+      "message_type": "Cmd",
+      "backend": "inproc"
+    }],
+    "services": [{
+      "name": "planner.plan_to_executor.execute",
+      "client_instance": "planner",
+      "client_port": "plan",
+      "server_instance": "executor",
+      "server_port": "execute",
+      "request_type": "PlanReq",
+      "response_type": "PlanResp",
+      "backend": "inproc"
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-component-view");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    // instance 下应展示 task、channel、service 和 param。
+    assert!(list.contains("instance planner component=planner_comp process=main runtime=rust"));
+    assert!(list.contains("task plan_task trigger=on_message lane=plan_lane"));
+    assert!(list.contains("channel planner.cmd -> executor.cmd type=Cmd backend=inproc"));
+    assert!(list.contains("service planner.plan_to_executor.execute"));
+    assert!(list.contains("param goal_x:f64 update=on_tick current=1.0"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn self_description_summary_handles_no_component_types() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "old_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "src",
+      "component": "imu_sim",
+      "process": "main",
+      "runtime": "rust"
+    }],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-no-comp-types");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    // 旧版 JSON 没有 component_types 字段，serde(default) 给空 Vec。
+    assert!(list.contains("component_types=0"));
+    assert!(list.contains("instance src component=imu_sim"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn self_description_nodes_shows_kind_when_available() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "kind_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "sensor",
+      "component": "imu_sensor",
+      "process": "main",
+      "runtime": "rust"
+    }]
+  }],
+  "component_types": [{
+    "name": "imu_sensor",
+    "language": "rust",
+    "kind": "native"
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-nodes-kind");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let nodes = self_description_nodes(&self_description);
+
+    assert!(nodes.contains("sensor process=main runtime=rust component=imu_sensor kind=native"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
