@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <flowrt/service.hpp>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -13,8 +14,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-#include <flowrt/service.hpp>
 
 namespace flowrt {
 
@@ -46,10 +45,9 @@ struct InprocServiceStats {
 namespace detail {
 
 inline std::uint64_t monotonic_now_ms() noexcept {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
 }
 
 /**
@@ -163,7 +161,7 @@ class InprocServiceRegistry {
 /**
  * @brief inproc service 调用 handle。
  *
- * 非阻塞 future-like 对象。支持 `wait()` 阻塞等待和 `poll()` 非阻塞查询。
+ * 非阻塞 future-like 对象。支持 `complete()` 阻塞等待和 `poll()` 非阻塞查询。
  * handle 可拷贝，多个 handle 实例共享同一调用状态。
  *
  * @tparam Resp 响应消息类型。
@@ -178,10 +176,10 @@ class InprocServiceHandle {
      *
      * @return 成功返回响应值，超时或错误返回 ServiceError。
      */
-    ServiceResult<Resp> wait() const {
+    ServiceResult<Resp> complete() {
         std::unique_lock lock(state_->mutex);
         if (state_->done) {
-            return make_result();
+            return take_result();
         }
         const auto now_ms = detail::monotonic_now_ms();
         const auto remaining = state_->deadline_ms > now_ms ? state_->deadline_ms - now_ms : 0;
@@ -203,20 +201,22 @@ class InprocServiceHandle {
             }
             return ServiceResult<Resp>::err(ServiceError::Timeout);
         }
-        return make_result();
+        return take_result();
     }
 
     /**
-     * @brief 非阻塞查询响应是否就绪。
-     *
-     * @return 就绪时返回响应值，未就绪返回 nullopt。
+     * @brief `complete()` 的兼容别名。
      */
-    std::optional<ServiceResult<Resp>> poll() const {
+    ServiceResult<Resp> wait() { return complete(); }
+
+    /**
+     * @brief 非阻塞查询响应是否已就绪。
+     *
+     * 只返回 ready 状态，不搬走响应值；调用方使用 `complete()` 取得最终结果。
+     */
+    bool poll() const {
         std::lock_guard lock(state_->mutex);
-        if (!state_->done) {
-            return std::nullopt;
-        }
-        return make_result();
+        return state_->done;
     }
 
     /**
@@ -247,11 +247,11 @@ class InprocServiceHandle {
 
     explicit InprocServiceHandle(std::shared_ptr<State> state) : state_(std::move(state)) {}
 
-    ServiceResult<Resp> make_result() const {
+    ServiceResult<Resp> take_result() {
         if (state_->error != ServiceError::Ok) {
             if (state_->error_message) {
                 return ServiceResult<Resp>::err_with_message(state_->error,
-                                                            std::move(*state_->error_message));
+                                                             std::move(*state_->error_message));
             }
             return ServiceResult<Resp>::err(state_->error);
         }
@@ -291,7 +291,8 @@ class InprocServiceServer {
         state_ = std::make_shared<detail::InprocServiceState>();
         state_->queue_depth = config.queue_depth == 0 ? 1 : config.queue_depth;
         state_->max_in_flight = config.max_in_flight == 0 ? 1 : config.max_in_flight;
-        state_->default_timeout_ms = config.default_timeout_ms == 0 ? 5000 : config.default_timeout_ms;
+        state_->default_timeout_ms =
+            config.default_timeout_ms == 0 ? 5000 : config.default_timeout_ms;
         state_->on_request_arrived = std::move(on_request_arrived);
         InprocServiceRegistry::instance().register_service(name_, state_);
     }
@@ -441,13 +442,25 @@ class InprocServiceClient {
           server_lane_(server_lane) {}
 
     /**
-     * @brief 发起 deadline-bound 请求。
+     * @brief 发起 deadline-bound 阻塞请求。
+     *
+     * @param request 请求消息。
+     * @param timeout_ms 超时毫秒。0 使用 server 默认值。
+     * @return 成功返回响应值，超时或错误返回 ServiceError。
+     */
+    ServiceResult<Resp> call(Req request, std::uint64_t timeout_ms = 0) {
+        auto handle = start_call(std::move(request), timeout_ms);
+        return handle.complete();
+    }
+
+    /**
+     * @brief 发起 deadline-bound 非阻塞请求。
      *
      * @param request 请求消息。
      * @param timeout_ms 超时毫秒。0 使用 server 默认值。
      * @return 非阻塞 handle，可 `wait()` 或 `poll()` 获取响应。
      */
-    InprocServiceHandle<Resp> call(Req request, std::uint64_t timeout_ms = 0) {
+    InprocServiceHandle<Resp> start_call(Req request, std::uint64_t timeout_ms = 0) {
         if (caller_lane_ != 0 && caller_lane_ == server_lane_) {
             auto handle = make_error_handle(ServiceError::WouldDeadlock);
             {
@@ -494,7 +507,7 @@ class InprocServiceClient {
             }
 
             auto on_deliver = [call_state](ServiceError error, std::any &&response_any,
-                                            std::optional<std::string> msg) {
+                                           std::optional<std::string> msg) {
                 std::lock_guard inner(call_state->mutex);
                 if (call_state->done) {
                     // late response：client 已超时或已取消，丢弃响应并计数。
