@@ -1,7 +1,7 @@
 #pragma once
 
 #include <algorithm>
-#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -11,6 +11,8 @@
 #include <flowrt/service.hpp>
 #include <flowrt/wire.hpp>
 #include <functional>
+#include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -27,6 +29,8 @@
 namespace flowrt {
 
 namespace zenoh {
+
+inline constexpr std::uint64_t SERVICE_TRANSPORT_TIMEOUT_GRACE_MS = 1000U;
 
 /**
  * @brief 打开 zenoh publish-subscribe endpoint 时使用的 FlowRT channel 配置。
@@ -408,7 +412,7 @@ class ZenohPubSub {
     struct ZenohInbox {
         explicit ZenohInbox(std::size_t depth) : depth_(std::max<std::size_t>(1, depth)) {}
 
-        void push(::zenoh::Sample& sample) {
+        void push(::zenoh::Sample &sample) {
             {
                 std::lock_guard lock(mutex_);
                 if (frames_.size() >= depth_) {
@@ -465,7 +469,7 @@ class ZenohPubSub {
             publisher_.emplace(session_->declare_publisher(::zenoh::KeyExpr(key_expr_)));
             subscriber_.emplace(session_->declare_subscriber(
                 ::zenoh::KeyExpr(key_expr_),
-                [inbox](::zenoh::Sample& sample) {
+                [inbox](::zenoh::Sample &sample) {
                     if (inbox) {
                         inbox->push(sample);
                     }
@@ -687,7 +691,7 @@ class ZenohServiceClient {
             return ServiceResult<Resp>::err(ServiceError::Unavailable);
         }
 
-        const auto now_ms = detail::monotonic_now_ms();
+        const auto now_ms = unix_now_ms();
         const auto deadline = Deadline::make(timeout_ms, now_ms);
         if (!deadline.has_value()) {
             return ServiceResult<Resp>::err(ServiceError::Timeout);
@@ -705,21 +709,45 @@ class ZenohServiceClient {
                                                          "encode request payload failed");
         }
 
-        const auto header = ServiceFrameHeader::make_request(request_id, *deadline, 0, 0);
+        constexpr std::uint64_t correlation_id = 0;
+        constexpr std::uint64_t schema_hash = 0;
+        const auto header =
+            ServiceFrameHeader::make_request(request_id, *deadline, correlation_id, schema_hash);
         const auto frame = encode_service_frame(header, payload, {});
 
         try {
-            std::optional<::zenoh::Reply> reply_holder;
-            std::atomic<bool> reply_done{false};
-            auto on_reply = [&reply_holder, &reply_done](::zenoh::Reply &reply) {
-                if (!reply_holder.has_value()) {
-                    reply_holder = std::move(reply);
-                }
-                reply_done = true;
+            struct ReplyState {
+                std::mutex mutex;
+                std::condition_variable cv;
+                std::optional<::zenoh::Reply> reply;
+                bool done = false;
             };
-            auto on_drop = [&reply_done]() { reply_done = true; };
+
+            auto state = std::make_shared<ReplyState>();
+            auto on_reply = [state](::zenoh::Reply &reply) {
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (!state->reply.has_value()) {
+                        state->reply = std::move(reply);
+                    }
+                    state->done = true;
+                }
+                state->cv.notify_one();
+            };
+            auto on_drop = [state]() {
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    state->done = true;
+                }
+                state->cv.notify_one();
+            };
+            const auto transport_timeout_ms =
+                timeout_ms > std::numeric_limits<std::uint64_t>::max() -
+                                 SERVICE_TRANSPORT_TIMEOUT_GRACE_MS
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : timeout_ms + SERVICE_TRANSPORT_TIMEOUT_GRACE_MS;
             auto opts = ::zenoh::Session::GetOptions::create_default();
-            opts.timeout_ms = timeout_ms;
+            opts.timeout_ms = transport_timeout_ms;
             opts.payload = ::zenoh::Bytes(std::vector<std::uint8_t>(frame));
             session_->get(::zenoh::KeyExpr(key_expr_), "", std::move(on_reply), std::move(on_drop),
                           std::move(opts));
@@ -727,11 +755,16 @@ class ZenohServiceClient {
             // 等待回调触发或超时
             const auto wait_deadline =
                 std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-            while (!reply_done.load(std::memory_order_acquire)) {
-                if (std::chrono::steady_clock::now() >= wait_deadline) {
+            std::optional<::zenoh::Reply> reply_holder;
+            {
+                std::unique_lock<std::mutex> lock(state->mutex);
+                if (!state->cv.wait_until(lock, wait_deadline,
+                                          [&state]() { return state->done; })) {
                     return ServiceResult<Resp>::err(ServiceError::Timeout);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                if (state->reply.has_value()) {
+                    reply_holder = std::move(state->reply);
+                }
             }
 
             if (!reply_holder.has_value()) {
@@ -748,6 +781,21 @@ class ZenohServiceClient {
             const auto decoded = decode_service_frame(reply_payload);
             const auto &resp_header = decoded.header;
 
+            if (resp_header.service_id != request_id.service_id ||
+                resp_header.session_id != request_id.session_id ||
+                resp_header.sequence != request_id.sequence) {
+                return ServiceResult<Resp>::err_with_message(ServiceError::Protocol,
+                                                             "response request id mismatch");
+            }
+            if (resp_header.correlation_id != correlation_id) {
+                return ServiceResult<Resp>::err_with_message(ServiceError::Protocol,
+                                                             "response correlation id mismatch");
+            }
+            if (resp_header.schema_hash != schema_hash) {
+                return ServiceResult<Resp>::err_with_message(ServiceError::Protocol,
+                                                             "response schema hash mismatch");
+            }
+
             if (resp_header.error_code != static_cast<std::uint16_t>(ServiceError::Ok)) {
                 const auto error =
                     service_error_from_abi(resp_header.error_code).value_or(ServiceError::Backend);
@@ -763,7 +811,8 @@ class ZenohServiceClient {
         } catch (const std::exception &e) {
             return ServiceResult<Resp>::err_with_message(ServiceError::Backend, e.what());
         } catch (...) {
-            return ServiceResult<Resp>::err_with_message(ServiceError::Backend, "zenoh query failed");
+            return ServiceResult<Resp>::err_with_message(ServiceError::Backend,
+                                                         "zenoh query failed");
         }
 #endif
     }
@@ -787,10 +836,10 @@ class ZenohServiceClient {
    private:
     ZenohServiceClient(std::string_view service_name
 #ifdef FLOWRT_HAS_ZENOH_CXX
-                        ,
-                        std::shared_ptr<::zenoh::Session> session
+                       ,
+                       std::shared_ptr<::zenoh::Session> session
 #endif
-                        )
+                       )
         : service_name_(service_name),
           service_id_(fnv1a64(service_name)),
           key_expr_("flowrt/service/" + std::string(service_name) + "/request"),
@@ -844,7 +893,7 @@ class ZenohServiceServer {
                                   ,
                                   std::move(session)
 #endif
-                                  ,
+                                      ,
                                   std::move(handler));
     }
 
@@ -867,11 +916,11 @@ class ZenohServiceServer {
    private:
     ZenohServiceServer(std::string_view service_name
 #ifdef FLOWRT_HAS_ZENOH_CXX
-                        ,
-                        std::shared_ptr<::zenoh::Session> session
+                       ,
+                       std::shared_ptr<::zenoh::Session> session
 #endif
-                        ,
-                        Handler handler)
+                       ,
+                       Handler handler)
         : service_name_(service_name),
           service_id_(fnv1a64(service_name)),
           key_expr_("flowrt/service/" + std::string(service_name) + "/request"),
@@ -884,7 +933,6 @@ class ZenohServiceServer {
         queryable_.emplace(session->declare_queryable(
             ::zenoh::KeyExpr(ke),
             [handler_fn, service_id, ke](::zenoh::Query &query) {
-
                 const auto reply_ke = ::zenoh::KeyExpr(ke);
 
                 std::vector<std::uint8_t> payload;
@@ -895,8 +943,8 @@ class ZenohServiceServer {
                 } else {
                     const auto header = ServiceFrameHeader::make_response(
                         RequestId{0, 0, service_id},
-                        Deadline::make(1000, detail::monotonic_now_ms()).value_or(Deadline{1000, 0}),
-                        0, 0, ServiceError::Protocol);
+                        Deadline::make(1000, unix_now_ms()).value_or(Deadline{1000, 0}), 0, 0,
+                        ServiceError::Protocol);
                     const auto frame = encode_service_frame(header, {}, {});
                     query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
                     return;
@@ -908,20 +956,32 @@ class ZenohServiceServer {
                 } catch (...) {
                     const auto header = ServiceFrameHeader::make_response(
                         RequestId{0, 0, service_id},
-                        Deadline::make(1000, detail::monotonic_now_ms()).value_or(Deadline{1000, 0}),
-                        0, 0, ServiceError::Protocol);
+                        Deadline::make(1000, unix_now_ms()).value_or(Deadline{1000, 0}), 0, 0,
+                        ServiceError::Protocol);
                     const auto frame = encode_service_frame(header, {}, {});
                     query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
                     return;
                 }
 
                 const auto &req_header = decoded.header;
-                const auto now_ms = detail::monotonic_now_ms();
-                const auto deadline = Deadline::make(req_header.timeout_ms, now_ms);
-                if (!deadline.has_value() || deadline->expired(now_ms)) {
+                const auto now_ms = unix_now_ms();
+                const Deadline deadline{req_header.timeout_ms, req_header.absolute_deadline_ms};
+                if (req_header.service_id != service_id) {
                     const auto header = ServiceFrameHeader::make_response(
-                        RequestId{req_header.session_id, req_header.sequence, service_id},
-                        Deadline::make(1000, now_ms).value_or(Deadline{1000, 0}),
+                        RequestId{req_header.session_id, req_header.sequence, service_id}, deadline,
+                        req_header.correlation_id, req_header.schema_hash, ServiceError::Protocol);
+                    const auto message = std::string_view{"request service id mismatch"};
+                    const auto frame = encode_service_frame(
+                        header, {},
+                        std::span<const std::uint8_t>{
+                            reinterpret_cast<const std::uint8_t *>(message.data()),
+                            message.size()});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                    return;
+                }
+                if (deadline.expired(now_ms)) {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{req_header.session_id, req_header.sequence, service_id}, deadline,
                         req_header.correlation_id, req_header.schema_hash, ServiceError::Timeout);
                     const auto frame = encode_service_frame(header, {}, {});
                     query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
@@ -933,15 +993,48 @@ class ZenohServiceServer {
                     request = detail::decode_frame<Req>(decoded.payload);
                 } catch (...) {
                     const auto header = ServiceFrameHeader::make_response(
-                        RequestId{req_header.session_id, req_header.sequence, service_id},
-                        *deadline, req_header.correlation_id, req_header.schema_hash,
-                        ServiceError::Protocol);
+                        RequestId{req_header.session_id, req_header.sequence, service_id}, deadline,
+                        req_header.correlation_id, req_header.schema_hash, ServiceError::Protocol);
                     const auto frame = encode_service_frame(header, {}, {});
                     query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
                     return;
                 }
 
-                auto result = handler_fn(request);
+                const auto handler_wait_now_ms = unix_now_ms();
+                const auto remaining_ms = deadline.absolute_deadline_ms > handler_wait_now_ms
+                                              ? deadline.absolute_deadline_ms - handler_wait_now_ms
+                                              : 0U;
+                auto result_promise = std::make_shared<std::promise<ServiceResult<Resp>>>();
+                auto result_future = result_promise->get_future();
+                std::thread([handler_fn, request, result_promise]() mutable {
+                    try {
+                        result_promise->set_value(handler_fn(request));
+                    } catch (const std::exception &e) {
+                        result_promise->set_value(ServiceResult<Resp>::err_with_message(
+                            ServiceError::HandlerError, e.what()));
+                    } catch (...) {
+                        result_promise->set_value(ServiceResult<Resp>::err_with_message(
+                            ServiceError::HandlerError, "service handler threw"));
+                    }
+                }).detach();
+
+                if (result_future.wait_for(std::chrono::milliseconds{remaining_ms}) !=
+                    std::future_status::ready) {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{req_header.session_id, req_header.sequence, service_id}, deadline,
+                        req_header.correlation_id, req_header.schema_hash, ServiceError::Timeout);
+                    const auto message =
+                        std::string_view{"request deadline expired while handler was running"};
+                    const auto frame = encode_service_frame(
+                        header, {},
+                        std::span<const std::uint8_t>{
+                            reinterpret_cast<const std::uint8_t *>(message.data()),
+                            message.size()});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                    return;
+                }
+
+                auto result = result_future.get();
                 ServiceError error_code = ServiceError::Ok;
                 std::vector<std::uint8_t> response_payload;
                 std::vector<std::uint8_t> error_msg;
@@ -961,7 +1054,7 @@ class ZenohServiceServer {
                 }
 
                 const auto header = ServiceFrameHeader::make_response(
-                    RequestId{req_header.session_id, req_header.sequence, service_id}, *deadline,
+                    RequestId{req_header.session_id, req_header.sequence, service_id}, deadline,
                     req_header.correlation_id, req_header.schema_hash, error_code);
                 const auto frame = encode_service_frame(header, response_payload, error_msg);
                 query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));

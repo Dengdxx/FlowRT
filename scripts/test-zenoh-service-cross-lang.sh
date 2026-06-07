@@ -5,9 +5,8 @@
 #   - cargo test -p flowrt --features zenoh 已通过
 #   - cmake --build build/cpp-zenoh-service 已完成
 #
-# 注意：跨语言测试要求 Rust zenoh crate 与 C++ zenoh-c 版本 wire protocol 兼容。
-# 当前 Rust 使用 zenoh 1.9.0，C++ 使用 zenoh-c 1.6.2（ROS jazzy vendor），
-# 两者 wire protocol 不兼容。跨语言测试需要安装匹配版本的 zenoh-c。
+# 注意：跨语言测试要求 Rust zenoh crate 与 C++ zenoh-c/zenoh-cpp 使用 FlowRT 锁定版本。
+# 当前锁定版本为 zenoh 1.9.0，缺失或版本不匹配都应视为测试失败。
 #
 # 用法：
 #   bash scripts/test-zenoh-service-cross-lang.sh
@@ -15,26 +14,24 @@
 # 测试内容：
 #   1. C++ server + C++ client（跨进程）
 #   2. Rust server + Rust client（跨进程）
-#   3. Rust server + C++ client（跨语言，需版本匹配，失败不阻塞）
-#   4. C++ server + Rust client（跨语言，需版本匹配，失败不阻塞）
+#   3. Rust server + C++ client（跨语言）
+#   4. C++ server + Rust client（跨语言）
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CPP_BUILD="$REPO_DIR/build/cpp-zenoh-service"
+CPP_BUILD="${FLOWRT_CPP_ZENOH_BUILD:-$REPO_DIR/build/cpp-zenoh-service}"
 TIMEOUT=15
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
 NC='\033[0m'
 
 TEST_PORT=18800
 
 pass() { echo -e "${GREEN}PASS${NC}: $1"; }
 fail() { echo -e "${RED}FAIL${NC}: $1"; exit 1; }
-warn() { echo -e "${YELLOW}WARN${NC}: $1"; }
 
 echo "=== Building Rust cross-lang examples ==="
 cd "$REPO_DIR"
@@ -97,20 +94,11 @@ run_cross_process_test "rust_rust" "$RUST_SERVER_BIN" "$RUST_CLIENT_BIN" || fail
 
 echo ""
 echo "=== Test 3: Rust server + C++ client (cross-lang) ==="
-if run_cross_process_test "rust_cpp" "$RUST_SERVER_BIN" "$CPP_CLIENT_BIN"; then
-    pass "Rust server + C++ client"
-else
-    warn "Rust server + C++ client (zenoh wire protocol version mismatch — expected if zenoh-rust != zenoh-c version)"
-fi
+run_cross_process_test "rust_cpp" "$RUST_SERVER_BIN" "$CPP_CLIENT_BIN" || fail "Rust server + C++ client"
 
 echo ""
 echo "=== Test 4: C++ server + Rust client (cross-lang) ==="
-if run_cross_process_test "cpp_rust" "$CPP_SERVER_BIN" "$RUST_CLIENT_BIN"; then
-    pass "C++ server + Rust client"
-else
-    warn "C++ server + Rust client (zenoh wire protocol version mismatch — expected if zenoh-rust != zenoh-c version)"
-fi
+run_cross_process_test "cpp_rust" "$CPP_SERVER_BIN" "$RUST_CLIENT_BIN" || fail "C++ server + Rust client"
 
 echo ""
-echo "=== All same-language cross-process tests PASSED ==="
-echo "=== Cross-language tests require matching zenoh versions (Rust 1.9.0 vs C++ 1.6.2) ==="
+echo "=== All zenoh service cross-process tests PASSED ==="

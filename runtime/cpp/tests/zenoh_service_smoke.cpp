@@ -2,6 +2,7 @@
 ///
 /// 覆盖基本 request/response、timeout、handler error、multiple clients。
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -26,9 +27,8 @@ struct AddRequest {
 
     static AddRequest decode_wire(std::span<const std::uint8_t> input) {
         flowrt::ensure_wire_size(wire_size(), input.size());
-        return AddRequest{
-            flowrt::read_wire_le<std::int32_t>(input, 0),
-            flowrt::read_wire_le<std::int32_t>(input, sizeof(std::int32_t))};
+        return AddRequest{flowrt::read_wire_le<std::int32_t>(input, 0),
+                          flowrt::read_wire_le<std::int32_t>(input, sizeof(std::int32_t))};
     }
 };
 
@@ -73,8 +73,7 @@ int main() {
 
         auto result = client.call(AddRequest{3, 4}, 5000);
         if (result.is_err()) {
-            std::fprintf(stderr, "basic: code=%d msg=%s\n",
-                         static_cast<int>(result.error_code()),
+            std::fprintf(stderr, "basic: code=%d msg=%s\n", static_cast<int>(result.error_code()),
                          result.error_message().value_or("").c_str());
         } else {
             std::fprintf(stderr, "basic: OK sum=%d\n", result.value()->sum);
@@ -111,11 +110,13 @@ int main() {
 
     {
         auto session = std::make_shared<::zenoh::Session>(::zenoh::Config::create_default());
+        std::atomic_bool handler_done{false};
 
         auto server = flowrt::zenoh::ZenohServiceServer<AddRequest, AddResponse>::open(
             "flowrt/test/cpp/timeout", session,
-            [](const AddRequest &) -> flowrt::ServiceResult<AddResponse> {
-                std::this_thread::sleep_for(std::chrono::seconds{5});
+            [&handler_done](const AddRequest &) -> flowrt::ServiceResult<AddResponse> {
+                std::this_thread::sleep_for(std::chrono::milliseconds{200});
+                handler_done.store(true, std::memory_order_release);
                 return flowrt::ServiceResult<AddResponse>::ok(AddResponse{0});
             });
         assert(server.ready());
@@ -124,9 +125,17 @@ int main() {
             "flowrt/test/cpp/timeout", session);
         assert(client.ready());
 
-        auto result = client.call(AddRequest{1, 2}, 200);
+        auto result = client.call(AddRequest{1, 2}, 50);
         assert(result.is_err());
         assert(result.error_code() == flowrt::ServiceError::Timeout);
+
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            if (handler_done.load(std::memory_order_acquire)) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        assert(handler_done.load(std::memory_order_acquire));
     }
 
     // ── Multiple clients ────────────────────────────────────────────────────

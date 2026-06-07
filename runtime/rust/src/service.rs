@@ -217,15 +217,16 @@ pub fn fnv1a64(data: &[u8]) -> u64 {
 
 /// Service 请求/响应截止时间。
 ///
-/// 使用单调时钟毫秒表示绝对截止时间。ABI 中同时携带 timeout_ms（相对超时）和
-/// absolute_deadline_ms（绝对截止），由调用方在发送时计算绝对值。
+/// 使用 transport 约定的绝对毫秒表示截止时间。ABI 中同时携带 timeout_ms（相对超时）
+/// 和 absolute_deadline_ms（绝对截止），由调用方在发送时计算绝对值。inproc 可使用本地
+/// monotonic clock；跨进程 transport 必须使用双方可比较的 clock domain。
 ///
 /// 默认不允许无界等待：timeout_ms 为 0 表示非法值，解码时应报错。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadline {
     /// 相对超时毫秒数。0 表示非法（不允许无界等待）。
     pub timeout_ms: u64,
-    /// 绝对截止时间（单调时钟毫秒）。解码时从 timeout_ms + 当前时间推导。
+    /// 绝对截止时间毫秒，clock domain 由 transport 约定。
     pub absolute_deadline_ms: u64,
 }
 
@@ -263,7 +264,7 @@ impl Deadline {
 /// 24      8     sequence (u64, monotonic sequence)
 /// 32      8     correlation_id (u64, 跨系统关联，0 表示无)
 /// 40      8     timeout_ms (u64, 相对超时，0 为非法)
-/// 48      8     absolute_deadline_ms (u64, 单调时钟绝对截止)
+/// 48      8     absolute_deadline_ms (u64, transport 约定 clock domain 下的绝对截止)
 /// 56      8     schema_hash (u64, 预留，0 表示未使用)
 /// 64      8     payload_span (VarSpan, tail 中的 payload 位置)
 /// 72      8     error_msg_span (VarSpan, tail 中的错误消息位置)
@@ -1114,18 +1115,13 @@ use std::time::{Duration, Instant};
 use crate::executor::{LaneId, ScheduleWaiter};
 
 /// inproc service 队列溢出策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ServiceOverflowPolicy {
     /// 队列或 in-flight 上限满时返回 `Busy`。
+    #[default]
     Busy,
     /// 队列或 in-flight 上限满时返回硬错误 `Rejected`。
     Error,
-}
-
-impl Default for ServiceOverflowPolicy {
-    fn default() -> Self {
-        Self::Busy
-    }
 }
 
 impl ServiceOverflowPolicy {

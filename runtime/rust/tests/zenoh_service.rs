@@ -3,9 +3,12 @@
 #![cfg(feature = "zenoh")]
 
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     thread,
-    time::{Duration},
+    time::Duration,
 };
 
 use flowrt::{
@@ -82,7 +85,9 @@ fn unique_service_name(suffix: &str) -> String {
 }
 
 fn open_session() -> zenoh::Session {
-    zenoh::open(Config::default()).wait().expect("zenoh session should open")
+    zenoh::open(Config::default())
+        .wait()
+        .expect("zenoh session should open")
 }
 
 #[test]
@@ -97,10 +102,8 @@ fn zenoh_service_basic_request_response() {
     )
     .expect("server should open");
 
-    let client = ZenohServiceClient::<AddRequest, AddResponse>::open(
-        &service_name,
-        session.clone(),
-    );
+    let client =
+        ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
 
     let result = client.call(AddRequest { a: 3, b: 4 }, 5000);
     if result.is_err() {
@@ -122,14 +125,14 @@ fn zenoh_service_handler_error() {
     let _server = ZenohServiceServer::<AddRequest, AddResponse>::open(
         &service_name,
         session.clone(),
-        |_req: AddRequest| ServiceResult::err_with_message(ServiceError::HandlerError, "division by zero"),
+        |_req: AddRequest| {
+            ServiceResult::err_with_message(ServiceError::HandlerError, "division by zero")
+        },
     )
     .expect("server should open");
 
-    let client = ZenohServiceClient::<AddRequest, AddResponse>::open(
-        &service_name,
-        session.clone(),
-    );
+    let client =
+        ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
 
     let result = client.call(AddRequest { a: 1, b: 2 }, 5000);
     if result.is_err() {
@@ -148,23 +151,24 @@ fn zenoh_service_handler_error() {
 fn zenoh_service_timeout() {
     let session = open_session();
     let service_name = unique_service_name("timeout");
+    let handler_done = Arc::new(AtomicBool::new(false));
 
+    let handler_done_clone = Arc::clone(&handler_done);
     let _server = ZenohServiceServer::<AddRequest, AddResponse>::open(
         &service_name,
         session.clone(),
-        |_req: AddRequest| {
-            thread::sleep(Duration::from_secs(5));
+        move |_req: AddRequest| {
+            thread::sleep(Duration::from_millis(200));
+            handler_done_clone.store(true, Ordering::Release);
             ServiceResult::ok(AddResponse { sum: 0 })
         },
     )
     .expect("server should open");
 
-    let client = ZenohServiceClient::<AddRequest, AddResponse>::open(
-        &service_name,
-        session.clone(),
-    );
+    let client =
+        ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
 
-    let result = client.call(AddRequest { a: 1, b: 2 }, 200);
+    let result = client.call(AddRequest { a: 1, b: 2 }, 50);
     eprintln!(
         "timeout test: code={:?} msg={:?}",
         result.error_code(),
@@ -172,6 +176,14 @@ fn zenoh_service_timeout() {
     );
     assert!(result.is_err());
     assert_eq!(result.error_code(), ServiceError::Timeout);
+
+    for _ in 0..20 {
+        if handler_done.load(Ordering::Acquire) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timeout test handler did not finish before teardown");
 }
 
 #[test]
@@ -180,10 +192,8 @@ fn zenoh_service_unavailable() {
     let service_name = unique_service_name("unavailable");
 
     // 不创建 server，只创建 client
-    let client = ZenohServiceClient::<AddRequest, AddResponse>::open(
-        &service_name,
-        session.clone(),
-    );
+    let client =
+        ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
 
     // 调用一个没有 server 的 service，应该超时
     let result = client.call(AddRequest { a: 1, b: 2 }, 500);
@@ -208,10 +218,8 @@ fn zenoh_service_multiple_clients() {
         let service_name = service_name.clone();
         let session = session.clone();
         handles.push(thread::spawn(move || {
-            let client = ZenohServiceClient::<AddRequest, AddResponse>::open(
-                &service_name,
-                session,
-            );
+            let client =
+                ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session);
 
             let result = client.call(AddRequest { a: i, b: i * 2 }, 5000);
             if result.is_err() {
