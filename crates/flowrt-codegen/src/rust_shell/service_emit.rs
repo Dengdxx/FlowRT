@@ -94,54 +94,91 @@ pub(crate) fn emit_rust_service_client_handles(
         let handle_name = client_handle_name(plan);
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
+        let is_zenoh = plan.backend.0 == "zenoh";
 
         // struct 定义
-        output.push_str(&format!(
-            "/// `{client}.{port}` service client typed handle。\n\
-             ///\n\
-             /// 封装 `flowrt::InprocServiceClient`，提供同步 `call()` 和\n\
-             /// 非阻塞 `start_call()` 调用路径。\n",
-            client = plan.client_instance,
-            port = plan.client_port,
-        ));
+        if is_zenoh {
+            output.push_str(&format!(
+                "/// `{client}.{port}` service client typed handle（zenoh backend，未实现）。\n\
+                 ///\n\
+                 /// 当前版本不支持 zenoh service transport。所有调用返回 `ServiceError::Backend`。\n",
+                client = plan.client_instance,
+                port = plan.client_port,
+            ));
+        } else {
+            output.push_str(&format!(
+                "/// `{client}.{port}` service client typed handle。\n\
+                 ///\n\
+                 /// 封装 `flowrt::InprocServiceClient`，提供同步 `call()` 和\n\
+                 /// 非阻塞 `start_call()` 调用路径。\n",
+                client = plan.client_instance,
+                port = plan.client_port,
+            ));
+        }
         output.push_str("#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
-        output.push_str(&format!(
-            "    inner: flowrt::InprocServiceClient<{req_ty}, {resp_ty}>,\n",
-        ));
+        if is_zenoh {
+            output.push_str("    _marker: std::marker::PhantomData<()>,\n");
+        } else {
+            output.push_str(&format!(
+                "    inner: flowrt::InprocServiceClient<{req_ty}, {resp_ty}>,\n",
+            ));
+        }
         output.push_str("}\n\n");
 
         // impl 块
         output.push_str(&format!("impl {handle_name} {{\n"));
 
-        // call()
-        output.push_str(&format!(
-            "    /// 发起同步阻塞 service 调用。\n\
-             ///\n\
-             /// 超时返回 `ServiceError::Timeout`，服务不可用返回 `Unavailable`，\n\
-             /// 队列满返回 `Busy`。\n\
-             pub fn call(\n\
-                 &self,\n\
-                 request: {req_ty},\n\
-                 timeout: std::time::Duration,\n\
-             ) -> flowrt::ServiceResult<{resp_ty}> {{\n\
-                 self.inner.call(request, timeout)\n\
-             }}\n\n",
-        ));
-
-        // start_call()
-        output.push_str(&format!(
-            "    /// 发起非阻塞 service 调用，返回 `ServiceCallHandle`。\n\
-             ///\n\
-             /// handle 支持 `poll()` 查询就绪状态和 `complete()` 阻塞等待结果。\n\
-             pub fn start_call(\n\
-                 &self,\n\
-                 request: {req_ty},\n\
-                 timeout: std::time::Duration,\n\
-             ) -> flowrt::ServiceCallHandle<{resp_ty}> {{\n\
-                 self.inner.start_call(request, timeout)\n\
-             }}\n\n",
-        ));
+        if is_zenoh {
+            // zenoh backend: 返回 Unsupported
+            output.push_str(&format!(
+                "    /// zenoh service transport 尚未实现。\n\
+                 pub fn call(\n\
+                     &self,\n\
+                     _request: {req_ty},\n\
+                     _timeout: std::time::Duration,\n\
+                 ) -> flowrt::ServiceResult<{resp_ty}> {{\n\
+                     flowrt::ServiceResult::err(flowrt::ServiceError::Backend)\n\
+                 }}\n\n",
+            ));
+            output.push_str(&format!(
+                "    /// zenoh service transport 尚未实现。\n\
+                 pub fn start_call(\n\
+                     &self,\n\
+                     _request: {req_ty},\n\
+                     _timeout: std::time::Duration,\n\
+                 ) -> flowrt::ServiceCallHandle<{resp_ty}> {{\n\
+                     unimplemented!(\"zenoh service transport is not yet supported\")\n\
+                 }}\n\n",
+            ));
+        } else {
+            // inproc backend
+            output.push_str(&format!(
+                "    /// 发起同步阻塞 service 调用。\n\
+                 ///\n\
+                 /// 超时返回 `ServiceError::Timeout`，服务不可用返回 `Unavailable`，\n\
+                 /// 队列满返回 `Busy`。\n\
+                 pub fn call(\n\
+                     &self,\n\
+                     request: {req_ty},\n\
+                     timeout: std::time::Duration,\n\
+                 ) -> flowrt::ServiceResult<{resp_ty}> {{\n\
+                     self.inner.call(request, timeout)\n\
+                 }}\n\n",
+            ));
+            output.push_str(&format!(
+                "    /// 发起非阻塞 service 调用，返回 `ServiceCallHandle`。\n\
+                 ///\n\
+                 /// handle 支持 `poll()` 查询就绪状态和 `complete()` 阻塞等待结果。\n\
+                 pub fn start_call(\n\
+                     &self,\n\
+                     request: {req_ty},\n\
+                     timeout: std::time::Duration,\n\
+                 ) -> flowrt::ServiceCallHandle<{resp_ty}> {{\n\
+                     self.inner.start_call(request, timeout)\n\
+                 }}\n\n",
+            ));
+        }
 
         output.push_str("}\n\n");
     }
@@ -192,16 +229,35 @@ pub(crate) fn emit_rust_service_new(contract: &ContractIr, graph: &GraphIr) -> (
     let mut initializers = String::new();
 
     for plan in &plans {
-        let service_name_literal = rust_string_literal(&plan.service_name);
+        let is_zenoh = plan.backend.0 == "zenoh";
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
+
+        if is_zenoh {
+            // zenoh backend: skip inproc registration, generate placeholder initializers
+            let client_field = client_field_name(plan);
+            let server_field = server_field_name(plan);
+            let handle_name = client_handle_name(plan);
+            let _req_ty2 = req_ty.clone();
+            let _resp_ty2 = resp_ty.clone();
+
+            initializers.push_str(&format!(
+                "            {client_field}: {handle_name} {{ _marker: std::marker::PhantomData }},\n",
+            ));
+            initializers.push_str(&format!(
+                "            {server_field}: unimplemented!(\"zenoh service transport is not yet supported\"),\n",
+            ));
+            continue;
+        }
+
+        let service_name_literal = rust_string_literal(&plan.service_name);
         let queue_depth = plan.queue_depth.max(1);
         let max_in_flight = plan.max_in_flight.max(1);
         let overflow = match plan.overflow {
             ServiceOverflowPolicy::Busy => "flowrt::ServiceOverflowPolicy::Busy",
             ServiceOverflowPolicy::Error => "flowrt::ServiceOverflowPolicy::Error",
         };
-        let server_lane = service_server_lane(plan);
+        let _server_lane = service_server_lane(plan);
         let server_instance = &plan.server_instance;
         let method_name = service_handler_method_name(&plan.server_port);
 
@@ -217,7 +273,7 @@ pub(crate) fn emit_rust_service_new(contract: &ContractIr, graph: &GraphIr) -> (
              }};\n\
              let {reg_var} = service_registry.register_result_with_config::<{req_ty}, {resp_ty}, _>(\n\
                  {service_name_literal},\n\
-                 flowrt::LaneId(0), // lane for `{server_lane}`\n\
+                 flowrt::LaneId(0), // TODO: use actual scheduler lane ID\n\
                  flowrt::InprocServiceConfig {{\n\
                      queue_depth: {queue_depth},\n\
                      max_in_flight: {max_in_flight},\n\

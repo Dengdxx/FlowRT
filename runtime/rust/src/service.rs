@@ -1864,6 +1864,18 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceServer<Req, Resp> {
         self.endpoint.inner.lane
     }
 
+    /// 返回当前排队中的 pending request 数量。
+    ///
+    /// 用于 scheduler wake glue：检查是否有待处理的请求需要唤醒 hidden service task。
+    pub fn pending_count(&self) -> usize {
+        self.endpoint
+            .inner
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
     /// 返回统计快照。
     pub fn stats(&self) -> ServiceStatsSnapshot {
         let (
