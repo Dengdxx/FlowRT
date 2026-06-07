@@ -78,7 +78,7 @@ if grep -R "FLOWRT_CPP_RUNTIME_DIR=${repo_root}/runtime/cpp" "$user_root/cpp_cou
     exit 1
 fi
 
-if grep -q 'FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK.*ON' "$user_root/cpp_counter_demo/flowrt/build/CMakeLists.txt" 2>/dev/null; then
+if grep -Eq '^[[:space:]]*option\([[:space:]]*FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK[[:space:]]+"[^"]*"[[:space:]]+ON[[:space:]]*\)' "$user_root/cpp_counter_demo/flowrt/build/CMakeLists.txt" 2>/dev/null; then
     printf 'generated CMakeLists.txt has FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK defaulting to ON\n' >&2
     exit 1
 fi
