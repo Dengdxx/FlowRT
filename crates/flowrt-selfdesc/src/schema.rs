@@ -87,6 +87,9 @@ pub struct SelfDescriptionGraph {
     pub tasks: Vec<SelfDescriptionTask>,
     #[serde(default)]
     pub channels: Vec<SelfDescriptionChannel>,
+    /// v0.4+ service endpoint 拓扑。
+    #[serde(default)]
+    pub services: Vec<SelfDescriptionServiceEndpoint>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -194,6 +197,52 @@ pub struct SelfDescriptionChannel {
     #[serde(default)]
     pub stale_policy: String,
     pub max_age_ms: Option<u64>,
+}
+
+/// service endpoint 静态拓扑信息。
+///
+/// 来自 Contract IR 中 `graph.services` 的 request/response 绑定。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionServiceEndpoint {
+    /// service edge 名称，格式 `<client>.<port>_to_<server>.<port>`。
+    #[serde(default)]
+    pub name: String,
+    /// Contract IR 中 service edge 的稳定实体 ID。
+    #[serde(default)]
+    pub canonical_id: String,
+    /// client 端 instance 名称。
+    #[serde(default)]
+    pub client_instance: String,
+    /// client 端 service port 名称。
+    #[serde(default)]
+    pub client_port: String,
+    /// server 端 instance 名称。
+    #[serde(default)]
+    pub server_instance: String,
+    /// server 端 service port 名称。
+    #[serde(default)]
+    pub server_port: String,
+    /// request 消息类型。
+    #[serde(default)]
+    pub request_type: String,
+    /// response 消息类型。
+    #[serde(default)]
+    pub response_type: String,
+    /// 解析后的通信后端名称；当前 IR 尚未直接记录，由 deployment 推导。
+    #[serde(default)]
+    pub backend: String,
+    /// 请求超时（毫秒）。
+    pub timeout_ms: Option<u64>,
+    /// 队列深度。
+    pub queue_depth: Option<u32>,
+    /// 溢出策略。
+    #[serde(default)]
+    pub overflow: String,
+    /// 调度 lane。
+    #[serde(default)]
+    pub lane: String,
+    /// 最大并发 in-flight 请求数。
+    pub max_in_flight: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -236,4 +236,69 @@ fn main() {{}}
         let err = load_self_description(path).unwrap_err();
         assert!(err.to_string().contains("failed to read"), "error: {err}");
     }
+
+    #[test]
+    fn old_json_without_services_field_loads_without_error() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "x" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}"#;
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-nosvc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert!(sd.graphs[0].services.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_json_with_services_field_loads_correctly() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "x" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "services": [{
+      "name": "planner.plan_to_executor.execute",
+      "canonical_id": "svc_001",
+      "client_instance": "planner",
+      "client_port": "plan",
+      "server_instance": "executor",
+      "server_port": "execute",
+      "request_type": "PlanRequest",
+      "response_type": "PlanResponse"
+    }]
+  }],
+  "message_abi": []
+}"#;
+        let dir =
+            std::env::temp_dir().join(format!("flowrt-selfdesc-withsvc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert_eq!(sd.graphs[0].services.len(), 1);
+        assert_eq!(sd.graphs[0].services[0].name, "planner.plan_to_executor.execute");
+        assert_eq!(sd.graphs[0].services[0].request_type, "PlanRequest");
+        assert_eq!(sd.graphs[0].services[0].response_type, "PlanResponse");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
