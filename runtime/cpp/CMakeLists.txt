@@ -95,4 +95,17 @@ if(FLOWRT_CPP_ENABLE_ZENOH_TESTS)
     target_link_libraries(flowrt_runtime_zenoh_smoke PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
     target_compile_definitions(flowrt_runtime_zenoh_smoke PRIVATE FLOWRT_HAS_ZENOH_CXX=1 FLOWRT_ENABLE_TEST_HOOKS=1)
     add_test(NAME flowrt_runtime_zenoh_smoke COMMAND flowrt_runtime_zenoh_smoke)
+
+    add_executable(flowrt_zenoh_service_smoke tests/zenoh_service_smoke.cpp)
+    target_link_libraries(flowrt_zenoh_service_smoke PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
+    target_compile_definitions(flowrt_zenoh_service_smoke PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
+    add_test(NAME flowrt_zenoh_service_smoke COMMAND flowrt_zenoh_service_smoke)
+
+    add_executable(flowrt_zenoh_service_server tests/zenoh_service_server.cpp)
+    target_link_libraries(flowrt_zenoh_service_server PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
+    target_compile_definitions(flowrt_zenoh_service_server PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
+
+    add_executable(flowrt_zenoh_service_client tests/zenoh_service_client.cpp)
+    target_link_libraries(flowrt_zenoh_service_client PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
+    target_compile_definitions(flowrt_zenoh_service_client PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
 endif()

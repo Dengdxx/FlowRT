@@ -181,11 +181,12 @@ struct RequestId {
 /**
  * @brief Service 请求/响应截止时间。
  *
- * 使用单调时钟毫秒表示。不允许无界等待：timeout_ms 为 0 表示非法值。
+ * 使用 transport 约定的绝对毫秒表示。不允许无界等待：timeout_ms 为 0 表示非法值。
+ * inproc 可使用本地 monotonic clock；跨进程 transport 必须使用双方可比较的 clock domain。
  */
 struct Deadline {
     std::uint64_t timeout_ms = 0;            ///< 相对超时毫秒数。0 为非法。
-    std::uint64_t absolute_deadline_ms = 0;  ///< 绝对截止时间（单调时钟毫秒）。
+    std::uint64_t absolute_deadline_ms = 0;  ///< transport 约定 clock domain 下的绝对截止。
 
     /**
      * @brief 构造截止时间。
@@ -224,7 +225,7 @@ struct Deadline {
  * 24      8     sequence (u64, monotonic sequence)
  * 32      8     correlation_id (u64, 跨系统关联，0 表示无)
  * 40      8     timeout_ms (u64, 相对超时)
- * 48      8     absolute_deadline_ms (u64, 单调时钟绝对截止)
+ * 48      8     absolute_deadline_ms (u64, transport 约定 clock domain 下的绝对截止)
  * 56      8     schema_hash (u64, 预留，0 表示未使用)
  * 64      8     payload_span (VarSpan, tail 中的 payload 位置)
  * 72      8     error_msg_span (VarSpan, tail 中的错误消息位置)

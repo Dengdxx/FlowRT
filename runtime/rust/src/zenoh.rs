@@ -1,4 +1,4 @@
-//! 可选 Zenoh transport 的 canonical-wire publish-subscribe endpoint。
+//! 可选 Zenoh transport 的 canonical-wire publish-subscribe 和 service endpoint。
 //!
 //! 该模块只在启用 `zenoh` feature 时编译。endpoint 在 transport 上发送 FlowRT canonical
 //! wire bytes，不发送 Rust native struct 布局；用户组件接口不应直接依赖本模块或 Zenoh 类型。
@@ -11,15 +11,19 @@ use std::{
 use zenoh::{
     Config, Wait,
     pubsub::{Publisher, Subscriber},
+    query::{Query, Queryable},
     session::Session,
 };
 
 use crate::{
-    BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, FrameCodec, Latest,
-    OverflowPolicy, ReconnectPolicy, ScheduleWaiter, StaleConfig, StalePolicy, WireCodecError,
+    BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, Deadline, FrameCodec, Latest,
+    OverflowPolicy, ReconnectPolicy, RequestId, ScheduleWaiter, ServiceError, ServiceFrameHeader,
+    ServiceResult, StaleConfig, StalePolicy, WireCodecError, decode_service_frame,
+    encode_service_frame, fnv1a64,
 };
 
 const PUBLISHED_AT_WIRE_SIZE: usize = std::mem::size_of::<u64>();
+const SERVICE_TRANSPORT_TIMEOUT_GRACE_MS: u64 = 1000;
 const FLOWRT_ZENOH_CONNECT: &str = "FLOWRT_ZENOH_CONNECT";
 const FLOWRT_ZENOH_LISTEN: &str = "FLOWRT_ZENOH_LISTEN";
 const FLOWRT_ZENOH_MODE: &str = "FLOWRT_ZENOH_MODE";
@@ -520,7 +524,8 @@ fn overflow_policy_name(policy: OverflowPolicy) -> &'static str {
     }
 }
 
-fn config_from_environment() -> Result<Config, ZenohError> {
+/// 从 FLOWRT_ZENOH_* 环境变量构建 zenoh session 配置。
+pub fn config_from_environment() -> Result<Config, ZenohError> {
     let mut config = Config::default();
 
     if let Ok(mode) = std::env::var(FLOWRT_ZENOH_MODE) {
@@ -648,6 +653,467 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn deadline_from_service_header(header: &ServiceFrameHeader) -> Deadline {
+    Deadline {
+        timeout_ms: header.timeout_ms,
+        absolute_deadline_ms: header.absolute_deadline_ms,
+    }
+}
+
+fn validate_service_response_header(
+    header: &ServiceFrameHeader,
+    request_id: RequestId,
+    correlation_id: u64,
+    schema_hash: u64,
+) -> Result<(), &'static str> {
+    if header.service_id != request_id.service_id
+        || header.session_id != request_id.session_id
+        || header.sequence != request_id.sequence
+    {
+        return Err("response request id mismatch");
+    }
+    if header.correlation_id != correlation_id {
+        return Err("response correlation id mismatch");
+    }
+    if header.schema_hash != schema_hash {
+        return Err("response schema hash mismatch");
+    }
+    Ok(())
+}
+
+fn service_transport_timeout(timeout_ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(timeout_ms.saturating_add(SERVICE_TRANSPORT_TIMEOUT_GRACE_MS))
+}
+
+/// Zenoh service client。
+///
+/// 使用 zenoh query 实现 request/response 语义。client 发送 query，server 通过 queryable
+/// 接收并回复。client 不持有 session 所有权，session 生命周期由调用方管理。
+pub struct ZenohServiceClient<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> {
+    service_name: String,
+    service_id: u64,
+    key_expr: String,
+    session: Session,
+    health: BackendHealthTracker,
+    session_id: u64,
+    sequence: Mutex<u64>,
+    _phantom: std::marker::PhantomData<(Req, Resp)>,
+}
+
+impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, Resp> {
+    /// 使用已有 session 打开 zenoh service client。
+    pub fn open(service_name: &str, session: Session) -> Self {
+        let service_id = fnv1a64(service_name.as_bytes());
+        let key_expr = format!("flowrt/service/{}/request", service_name);
+
+        Self {
+            service_name: service_name.to_string(),
+            service_id,
+            key_expr,
+            session,
+            health: BackendHealthTracker::new(ReconnectPolicy::default()),
+            session_id: rand::random(),
+            sequence: Mutex::new(0),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// 发送请求并等待响应。
+    pub fn call(&self, request: Req, timeout_ms: u64) -> ServiceResult<Resp> {
+        let now_ms = unix_now_ms();
+        let deadline = match Deadline::new(timeout_ms, now_ms) {
+            Some(d) => d,
+            None => return ServiceResult::err(ServiceError::Timeout),
+        };
+
+        let sequence = {
+            let mut seq = lock_recover(&self.sequence);
+            let s = *seq;
+            *seq = s.wrapping_add(1);
+            s
+        };
+
+        let request_id = RequestId {
+            session_id: self.session_id,
+            sequence,
+            service_id: self.service_id,
+        };
+
+        let payload = match request.to_frame_vec() {
+            Ok(p) => p,
+            Err(e) => {
+                return ServiceResult::err_with_message(
+                    ServiceError::Protocol,
+                    format!("encode request payload: {e}"),
+                );
+            }
+        };
+
+        let correlation_id = 0;
+        let schema_hash = 0;
+        let header = ServiceFrameHeader::request(request_id, deadline, correlation_id, schema_hash);
+        let frame = match encode_service_frame(&header, &payload, &[]) {
+            Ok(f) => f,
+            Err(e) => {
+                return ServiceResult::err_with_message(
+                    ServiceError::Protocol,
+                    format!("encode service frame: {e}"),
+                );
+            }
+        };
+
+        let receiver = match self
+            .session
+            .get(&self.key_expr)
+            .with(zenoh::handlers::FifoChannel::new(10))
+            .payload(zenoh::bytes::ZBytes::from(frame))
+            .timeout(service_transport_timeout(timeout_ms))
+            .wait()
+        {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                return ServiceResult::err_with_message(
+                    ServiceError::Backend,
+                    format!("zenoh query failed: {e}"),
+                );
+            }
+        };
+
+        let reply = match receiver.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+            Ok(Some(reply)) => reply,
+            Ok(None) => {
+                return ServiceResult::err(ServiceError::Timeout);
+            }
+            Err(_) => {
+                // zenoh query timeout closes the channel, treat as service timeout
+                return ServiceResult::err(ServiceError::Timeout);
+            }
+        };
+
+        let sample = match reply.result() {
+            Ok(sample) => sample,
+            Err(reply_err) => {
+                let err_payload = reply_err.payload().to_bytes().to_vec();
+                if let Ok((resp_header, _, error_msg)) = decode_service_frame(&err_payload) {
+                    if let Err(reason) = validate_service_response_header(
+                        &resp_header,
+                        request_id,
+                        correlation_id,
+                        schema_hash,
+                    ) {
+                        return ServiceResult::err_with_message(ServiceError::Protocol, reason);
+                    }
+                    let error = ServiceError::from_abi(resp_header.error_code)
+                        .unwrap_or(ServiceError::Backend);
+                    let message = if error_msg.is_empty() {
+                        None
+                    } else {
+                        Some(String::from_utf8_lossy(&error_msg).to_string())
+                    };
+                    return ServiceResult::Err(error, message);
+                }
+                // zenoh query timeout returns an empty ReplyError with default encoding
+                return ServiceResult::err(ServiceError::Timeout);
+            }
+        };
+
+        let reply_payload = sample.payload().to_bytes().to_vec();
+        let (resp_header, resp_payload, resp_error_msg) = match decode_service_frame(&reply_payload)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                return ServiceResult::err_with_message(
+                    ServiceError::Protocol,
+                    format!("decode response frame: {e}"),
+                );
+            }
+        };
+
+        if let Err(reason) =
+            validate_service_response_header(&resp_header, request_id, correlation_id, schema_hash)
+        {
+            return ServiceResult::err_with_message(ServiceError::Protocol, reason);
+        }
+
+        if resp_header.error_code != ServiceError::Ok as u16 {
+            let error =
+                ServiceError::from_abi(resp_header.error_code).unwrap_or(ServiceError::Backend);
+            let message = if resp_error_msg.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&resp_error_msg).to_string())
+            };
+            return ServiceResult::Err(error, message);
+        }
+
+        match Resp::decode_frame(&resp_payload) {
+            Ok(resp) => ServiceResult::ok(resp),
+            Err(e) => ServiceResult::err_with_message(
+                ServiceError::Protocol,
+                format!("decode response payload: {e}"),
+            ),
+        }
+    }
+
+    /// 返回 service 名称。
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    /// 返回 endpoint 健康快照。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        self.health.snapshot()
+    }
+}
+
+/// Zenoh service server。
+///
+/// 使用 zenoh queryable 实现 request/response 语义。server 注册 queryable，接收请求并回复。
+/// server 不持有 session 所有权，session 生命周期由调用方管理。
+pub struct ZenohServiceServer<
+    Req: FrameCodec + Clone + Send + 'static,
+    Resp: FrameCodec + Clone + Send + 'static,
+> {
+    service_name: String,
+    #[allow(dead_code)]
+    service_id: u64,
+    #[allow(dead_code)]
+    key_expr: String,
+    _queryable: Queryable<()>,
+    #[allow(dead_code)]
+    handler: Arc<dyn Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static>,
+    health: BackendHealthTracker,
+}
+
+impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send + 'static>
+    ZenohServiceServer<Req, Resp>
+{
+    /// 使用已有 session 打开 zenoh service server。
+    pub fn open<F>(service_name: &str, session: Session, handler: F) -> Result<Self, ZenohError>
+    where
+        F: Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
+    {
+        let service_id = fnv1a64(service_name.as_bytes());
+        let key_expr = format!("flowrt/service/{}/request", service_name);
+
+        let handler = Arc::new(handler);
+        let handler_clone = Arc::clone(&handler);
+        let service_id_clone = service_id;
+        let key_expr_clone = key_expr.clone();
+
+        let queryable = session
+            .declare_queryable(&key_expr)
+            .callback(move |query: Query| {
+                let reply_ke = query.key_expr().clone();
+
+                let payload = match query.payload() {
+                    Some(p) => p.to_bytes().to_vec(),
+                    None => {
+                        let header = ServiceFrameHeader::response(
+                            RequestId {
+                                session_id: 0,
+                                sequence: 0,
+                                service_id: service_id_clone,
+                            },
+                            Deadline::new(1000, unix_now_ms())
+                                .unwrap_or_else(|| Deadline::new(1000, 0).unwrap()),
+                            0,
+                            0,
+                            ServiceError::Protocol,
+                        );
+                        let frame = encode_service_frame(&header, &[], b"empty request payload")
+                            .unwrap_or_default();
+                        let _ = query
+                            .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                            .wait();
+                        return;
+                    }
+                };
+
+                let (req_header, req_payload, _) = match decode_service_frame(&payload) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let header = ServiceFrameHeader::response(
+                            RequestId {
+                                session_id: 0,
+                                sequence: 0,
+                                service_id: service_id_clone,
+                            },
+                            Deadline::new(1000, unix_now_ms())
+                                .unwrap_or_else(|| Deadline::new(1000, 0).unwrap()),
+                            0,
+                            0,
+                            ServiceError::Protocol,
+                        );
+                        let msg = format!("decode request frame: {e}");
+                        let frame =
+                            encode_service_frame(&header, &[], msg.as_bytes()).unwrap_or_default();
+                        let _ = query
+                            .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                            .wait();
+                        return;
+                    }
+                };
+                let now_ms = unix_now_ms();
+                let deadline = deadline_from_service_header(&req_header);
+                if req_header.service_id != service_id_clone {
+                    let header = ServiceFrameHeader::response(
+                        RequestId {
+                            session_id: req_header.session_id,
+                            sequence: req_header.sequence,
+                            service_id: service_id_clone,
+                        },
+                        deadline,
+                        req_header.correlation_id,
+                        req_header.schema_hash,
+                        ServiceError::Protocol,
+                    );
+                    let frame = encode_service_frame(&header, &[], b"request service id mismatch")
+                        .unwrap_or_default();
+                    let _ = query
+                        .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                        .wait();
+                    return;
+                }
+                if deadline.expired(now_ms) {
+                    let header = ServiceFrameHeader::response(
+                        RequestId {
+                            session_id: req_header.session_id,
+                            sequence: req_header.sequence,
+                            service_id: service_id_clone,
+                        },
+                        deadline,
+                        req_header.correlation_id,
+                        req_header.schema_hash,
+                        ServiceError::Timeout,
+                    );
+                    let frame = encode_service_frame(&header, &[], b"request deadline expired")
+                        .unwrap_or_default();
+                    let _ = query
+                        .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                        .wait();
+                    return;
+                }
+
+                let request = match Req::decode_frame(&req_payload) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let header = ServiceFrameHeader::response(
+                            RequestId {
+                                session_id: req_header.session_id,
+                                sequence: req_header.sequence,
+                                service_id: service_id_clone,
+                            },
+                            deadline,
+                            req_header.correlation_id,
+                            req_header.schema_hash,
+                            ServiceError::Protocol,
+                        );
+                        let msg = format!("decode request payload: {e}");
+                        let frame =
+                            encode_service_frame(&header, &[], msg.as_bytes()).unwrap_or_default();
+                        let _ = query
+                            .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                            .wait();
+                        return;
+                    }
+                };
+
+                let remaining_ms = deadline.absolute_deadline_ms.saturating_sub(unix_now_ms());
+                let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+                let handler_for_worker = Arc::clone(&handler_clone);
+                std::thread::spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handler_for_worker(request)
+                    }))
+                    .unwrap_or_else(|_| {
+                        ServiceResult::err_with_message(
+                            ServiceError::HandlerError,
+                            "service handler panicked",
+                        )
+                    });
+                    let _ = result_tx.send(result);
+                });
+
+                let result =
+                    match result_rx.recv_timeout(std::time::Duration::from_millis(remaining_ms)) {
+                        Ok(result) => result,
+                        Err(_) => {
+                            let header = ServiceFrameHeader::response(
+                                RequestId {
+                                    session_id: req_header.session_id,
+                                    sequence: req_header.sequence,
+                                    service_id: service_id_clone,
+                                },
+                                deadline,
+                                req_header.correlation_id,
+                                req_header.schema_hash,
+                                ServiceError::Timeout,
+                            );
+                            let frame = encode_service_frame(
+                                &header,
+                                &[],
+                                b"request deadline expired while handler was running",
+                            )
+                            .unwrap_or_default();
+                            let _ = query
+                                .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                                .wait();
+                            return;
+                        }
+                    };
+                let (error_code, response_payload, error_msg) = match result {
+                    ServiceResult::Ok(resp) => {
+                        let payload = resp.to_frame_vec().unwrap_or_default();
+                        (ServiceError::Ok, payload, Vec::new())
+                    }
+                    ServiceResult::Err(code, msg) => {
+                        let msg_bytes = msg.unwrap_or_default().into_bytes();
+                        (code, Vec::new(), msg_bytes)
+                    }
+                };
+
+                let header = ServiceFrameHeader::response(
+                    RequestId {
+                        session_id: req_header.session_id,
+                        sequence: req_header.sequence,
+                        service_id: service_id_clone,
+                    },
+                    deadline,
+                    req_header.correlation_id,
+                    req_header.schema_hash,
+                    error_code,
+                );
+                let frame = encode_service_frame(&header, &response_payload, &error_msg)
+                    .unwrap_or_default();
+                let _ = query
+                    .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                    .wait();
+            })
+            .wait()
+            .map_err(|error| ZenohError::transport("declare Zenoh queryable", error))?;
+
+        Ok(Self {
+            service_name: service_name.to_string(),
+            service_id,
+            key_expr: key_expr_clone,
+            _queryable: queryable,
+            handler,
+            health: BackendHealthTracker::new(ReconnectPolicy::default()),
+        })
+    }
+
+    /// 返回 service 名称。
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    /// 返回 endpoint 健康快照。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        self.health.snapshot()
     }
 }
 
@@ -909,19 +1375,25 @@ mod tests {
                 ZenohChannelConfig::latest(),
             )
             .expect("first sender endpoint should open");
-            sender
-                .publish_at(PaddedMessage { tag: 1, value: 10 }, 100)
-                .expect("first sender should publish");
-            wait_for_latest(&mut receiver, PaddedMessage { tag: 1, value: 10 }, 101);
+            publish_until_latest(
+                &mut sender,
+                &mut receiver,
+                PaddedMessage { tag: 1, value: 10 },
+                100,
+                101,
+            );
         }
 
         let mut sender =
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
                 .expect("restarted sender endpoint should open");
-        sender
-            .publish_at(PaddedMessage { tag: 2, value: 20 }, 110)
-            .expect("restarted sender should publish");
-        wait_for_latest(&mut receiver, PaddedMessage { tag: 2, value: 20 }, 111);
+        publish_until_latest(
+            &mut sender,
+            &mut receiver,
+            PaddedMessage { tag: 2, value: 20 },
+            110,
+            111,
+        );
     }
 
     #[test]
@@ -980,14 +1452,19 @@ mod tests {
         assert_eq!(endpoint.health().state, BackendHealthState::Ready);
     }
 
-    fn wait_for_latest(
-        endpoint: &mut ZenohPubSub<PaddedMessage>,
+    fn publish_until_latest(
+        sender: &mut ZenohPubSub<PaddedMessage>,
+        receiver: &mut ZenohPubSub<PaddedMessage>,
         expected: PaddedMessage,
+        published_at_ms: u64,
         now_ms: u64,
     ) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let latest = endpoint
+            sender
+                .publish_at(expected, published_at_ms)
+                .expect("sender should publish while waiting for peer discovery");
+            let latest = receiver
                 .receive_latest_at(now_ms)
                 .expect("nonblocking latest receive should succeed");
             if latest.as_ref() == Some(&expected) {
