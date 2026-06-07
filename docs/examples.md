@@ -304,7 +304,6 @@ goal = "u32"
 
 [type.PlanResponse]
 accepted = "bool"
-reason = "string"
 
 [component.plan_service]
 language = "rust"
@@ -331,21 +330,20 @@ overflow = "busy"
 impl PlanService for PlanServiceImpl {
     fn on_plan_request(&mut self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse> {
         let accepted = request.goal % 2 == 0;
-        flowrt::ServiceResult::ok(PlanResponse { accepted, reason: "...".into() })
+        flowrt::ServiceResult::ok(PlanResponse { accepted })
     }
 }
 
-// service client：在 on_tick 中通过 typed handle 调用
+// service client：在 on_tick 中通过 typed handle 发起非阻塞调用
 impl Planner for PlannerImpl {
     fn on_tick(
         &mut self,
         plan: &ServiceClient_planner_plan,
         result: &mut flowrt::Output<i32>,
     ) -> flowrt::Status {
-        match plan.call(PlanRequest { goal: 1 }, std::time::Duration::from_millis(500)) {
-            flowrt::ServiceResult::Ok(resp) => { /* 处理响应 */ }
-            flowrt::ServiceResult::Err(code, msg) => { /* 处理错误 */ }
-        }
+        let handle = plan.start_call(PlanRequest { goal: 1 }, std::time::Duration::from_millis(500));
+        // 后续 tick 中通过 handle.poll() / handle.complete() 取得响应。
+        let _ = (handle, result);
         flowrt::Status::ok()
     }
 }
@@ -355,7 +353,7 @@ impl Planner for PlannerImpl {
 
 - RSDL `[[bind.service]]` 声明、service policy 字段（`backend`、`timeout_ms`、`queue_depth`、`overflow`）。
 - Contract IR `ServiceEdgeIr` 归一化和 auto backend resolver。
-- Rust codegen：`ServiceClient_{instance}_{port}` typed handle（`call()` / `start_call()`）。
+- Rust codegen：`ServiceClient_{instance}_{port}` typed handle（`call()` / `start_call()`），示例在 scheduler 回调内使用非阻塞 `start_call()`。
 - Rust codegen：component trait 中 `on_{port}_request` handler 方法。
 - Rust codegen：hidden service task 注册和 scheduler wake glue。
 - `InprocServiceConfig` 生成：`queue_depth`、`max_in_flight`、`overflow`。

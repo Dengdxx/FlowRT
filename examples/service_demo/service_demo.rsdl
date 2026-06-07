@@ -8,7 +8,6 @@ goal = "u32"
 
 [type.PlanResponse]
 accepted = "bool"
-reason = "string"
 
 [component.plan_service]
 language = "rust"

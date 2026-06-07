@@ -69,7 +69,7 @@ pub(crate) fn rust_service_handler_methods(
         output.push_str(&format!(
             "    fn {method_name}(\n\
                  &mut self,\n\
-                 request: &{req_ty},\n\
+                 _request: &{req_ty},\n\
              ) -> flowrt::ServiceResult<{resp_ty}> {{\n\
                  flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError)\n\
              }}\n\n",
@@ -120,7 +120,7 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
                 port = plan.client_port,
             ));
         }
-        output.push_str("#[derive(Clone)]\n");
+        output.push_str("#[allow(non_camel_case_types)]\n#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
         if is_zenoh {
             output.push_str("    pub(crate) _marker: std::marker::PhantomData<()>,\n");
@@ -282,11 +282,11 @@ pub(crate) fn emit_rust_service_new(
         let handler_var = format!("service_handler_{}", plan.index);
         let component_var = format!("{}_handler", server_instance);
 
-        // 注册 handler：捕获 component Rc clone，调用其 service handler 方法
+        // 注册 handler：捕获 component Arc clone，调用其 service handler 方法
         registration.push_str(&format!(
             "        let {component_var} = {server_instance}.clone();\n\
              let {handler_var} = move |req: {req_ty}| -> flowrt::ServiceResult<{resp_ty}> {{\n\
-                 {component_var}.borrow_mut().{method_name}(&req)\n\
+                 {component_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_name}(&req)\n\
              }};\n\
              let {reg_var} = service_registry.register_result_with_config::<{req_ty}, {resp_ty}, _>(\n\
                  {service_name_literal},\n\
@@ -336,16 +336,63 @@ pub(crate) fn emit_rust_service_step_functions(contract: &ContractIr, graph: &Gr
 
         output.push_str(&format!(
             "    /// Hidden service task: process pending requests for `{server_instance}.{server_port}`。\n\
-             fn {fn_name}(&mut self) -> flowrt::Status {{\n\
+             fn {fn_name}(&mut self, introspection_state: &flowrt::IntrospectionState) -> flowrt::Status {{\n\
                  self.{server_field}.process_pending_requests();\n\
+                 {status_update}\
                  flowrt::Status::Ok\n\
              }}\n\n",
             server_instance = server_instance,
             server_port = plan.server_port,
+            status_update = rust_service_status_update(plan),
         ));
     }
 
     output
+}
+
+/// 生成运行开始时的 service introspection 注册代码。
+pub(crate) fn emit_rust_service_introspection_registration(
+    contract: &ContractIr,
+    graph: &GraphIr,
+) -> String {
+    let plans = service_runtime_plans(contract, graph);
+    if plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    for plan in &plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        let service_name = rust_string_literal(&plan.service_name);
+        output.push_str(&format!(
+            "        introspection_state.register_service({service_name});\n"
+        ));
+        output.push_str(&rust_service_status_update(plan));
+    }
+    output
+}
+
+fn rust_service_status_update(plan: &ServiceRuntimePlan) -> String {
+    let server_field = server_field_name(plan);
+    let service_name = rust_string_literal(&plan.service_name);
+    format!(
+        "{{\n\
+             let service_stats = self.{server_field}.stats();\n\
+             introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {{\n\
+                 name: {service_name}.to_string(),\n\
+                 ready: true,\n\
+                 in_flight: self.{server_field}.in_flight_count() as u64,\n\
+                 queued: self.{server_field}.pending_count() as u64,\n\
+                 total_requests: service_stats.requests,\n\
+                 timeout_count: service_stats.timeout,\n\
+                 busy_count: service_stats.busy,\n\
+                 unavailable_count: service_stats.unavailable,\n\
+                 late_drop_count: service_stats.late_dropped,\n\
+             }});\n\
+         }}\n"
+    )
 }
 
 // ── Scheduler 集成 ─────────────────────────────────────────────────────
@@ -415,7 +462,7 @@ pub(crate) fn rust_service_dispatch_cases(
         task_id += 1;
         let fn_name = service_step_fn_name(plan);
         output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => self.{fn_name}(),\n"
+            "                flowrt::TaskId({task_id}) => self.{fn_name}(&introspection_state),\n"
         ));
     }
 

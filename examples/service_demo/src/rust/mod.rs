@@ -14,25 +14,22 @@ impl PlanService for PlanServiceImpl {
     fn on_plan_request(&mut self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse> {
         self.request_count += 1;
         let accepted = request.goal % 2 == 0;
-        let reason = if accepted {
-            format!("goal {} accepted (total: {})", request.goal, self.request_count)
-        } else {
-            format!("goal {} rejected: odd number", request.goal)
-        };
-        flowrt::ServiceResult::ok(PlanResponse {
-            accepted,
-            reason,
-        })
+        flowrt::ServiceResult::ok(PlanResponse { accepted })
+    }
+
+    fn on_tick(&mut self) -> flowrt::Status {
+        flowrt::Status::ok()
     }
 }
 
 /// Service client 实现：周期性调用 plan service，将结果写入输出端口。
 ///
 /// 每次 on_tick 发起一次同步 service call，根据结果更新输出值。
-/// 展示 `ServiceClient_planner_plan` typed handle 的 `call()` 用法。
+/// 展示 `ServiceClient_planner_plan` typed handle 的 `start_call()` 用法。
 #[derive(Default)]
 pub struct PlannerImpl {
-    tick: u64,
+    next_goal: u32,
+    pending: Option<(u32, flowrt::ServiceCallHandle<PlanResponse>)>,
 }
 
 impl Planner for PlannerImpl {
@@ -41,17 +38,28 @@ impl Planner for PlannerImpl {
         plan: &crate::components::ServiceClient_planner_plan,
         result: &mut flowrt::Output<i32>,
     ) -> flowrt::Status {
-        self.tick += 1;
-        let goal = self.tick as u32;
-        match plan.call(PlanRequest { goal }, std::time::Duration::from_millis(500)) {
-            flowrt::ServiceResult::Ok(resp) => {
-                result.write(if resp.accepted { goal as i32 } else { -(goal as i32) });
-            }
-            flowrt::ServiceResult::Err(_code, _msg) => {
-                // service 调用失败时写 0，不影响调度继续
-                result.write(0);
+        if let Some((goal, handle)) = self.pending.take() {
+            if handle.poll() {
+                match handle.complete() {
+                    flowrt::ServiceResult::Ok(resp) => {
+                        result.write(if resp.accepted { goal as i32 } else { -(goal as i32) });
+                    }
+                    flowrt::ServiceResult::Err(_code, _msg) => {
+                        result.write(0);
+                    }
+                }
+            } else {
+                self.pending = Some((goal, handle));
+                return flowrt::Status::ok();
             }
         }
+
+        self.next_goal = self.next_goal.saturating_add(1);
+        let goal = self.next_goal;
+        self.pending = Some((
+            goal,
+            plan.start_call(PlanRequest { goal }, std::time::Duration::from_millis(500)),
+        ));
         flowrt::Status::ok()
     }
 }
@@ -59,7 +67,7 @@ impl Planner for PlannerImpl {
 /// 组装应用：注入 service server 和 client 两个组件。
 pub fn build_app() -> crate::App {
     crate::App::new(
-        Box::new(PlanServiceImpl::default()),
         Box::new(PlannerImpl::default()),
+        Box::new(PlanServiceImpl::default()),
     )
 }

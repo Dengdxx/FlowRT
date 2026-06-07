@@ -16,12 +16,23 @@ pub(super) fn emit_rust_app_new(
 ) -> String {
     let mut output = String::new();
     output.push_str("    pub fn new(\n");
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let server_instances: std::collections::BTreeSet<&str> = service_plans
+        .iter()
+        .map(|p| p.server_instance.as_str())
+        .collect();
     for instance in order {
         let component = crate::component_by_name(contract, &instance.component.name);
+        let send_bound = if server_instances.contains(instance.name.as_str()) {
+            " + Send"
+        } else {
+            ""
+        };
         output.push_str(&format!(
-            "        {}: Box<dyn {}>,\n",
+            "        {}: Box<dyn {}{}>,\n",
             instance.name,
-            crate::component_rust_name(component)
+            crate::component_rust_name(component),
+            send_bound
         ));
     }
     let startup_status_binding = if has_fallible_transport_startup(binds, bridges) {
@@ -32,17 +43,12 @@ pub(super) fn emit_rust_app_new(
     output.push_str(&format!(
         "    ) -> Self {{\n        {startup_status_binding}\n",
     ));
-    // wrap service server components in Rc<RefCell<...>>
-    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
-    let server_instances: std::collections::BTreeSet<&str> = service_plans
-        .iter()
-        .map(|p| p.server_instance.as_str())
-        .collect();
+    // wrap service server components in Arc<Mutex<...>>
     for instance in order {
         if server_instances.contains(instance.name.as_str()) {
             let _component = crate::component_by_name(contract, &instance.component.name);
             output.push_str(&format!(
-                "        let {name} = std::rc::Rc::new(std::cell::RefCell::new({name}));\n",
+                "        let {name} = std::sync::Arc::new(std::sync::Mutex::new({name}));\n",
                 name = instance.name,
             ));
         }
@@ -241,6 +247,10 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             emission.order,
         ),
     );
+    output.push_str(&service_emit::emit_rust_service_introspection_registration(
+        emission.contract,
+        emission.graph,
+    ));
     output.push_str(&format!(
         "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",
         "PACKAGE_NAME",
@@ -316,7 +326,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     output
 }
 
-/// 生成组件方法调用表达式。对于 service server 实例使用 `borrow_mut()`。
+/// 生成组件方法调用表达式。对于 service server 实例使用 `Mutex` 保护可变访问。
 fn component_call_expr(
     instance: &InstanceIr,
     service_server_instances: &std::collections::BTreeSet<String>,
@@ -324,7 +334,7 @@ fn component_call_expr(
 ) -> String {
     if service_server_instances.contains(&instance.name) {
         format!(
-            "self.{name}.borrow_mut().{method_call}",
+            "self.{name}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_call}",
             name = instance.name
         )
     } else {

@@ -1886,6 +1886,11 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceServer<Req, Resp> {
             .len()
     }
 
+    /// 返回当前已提交但尚未完成的请求数量。
+    pub fn in_flight_count(&self) -> usize {
+        self.endpoint.inner.in_flight.load(Ordering::Acquire)
+    }
+
     /// 返回统计快照。
     pub fn stats(&self) -> ServiceStatsSnapshot {
         let (

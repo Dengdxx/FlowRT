@@ -356,7 +356,7 @@ scheduler，request arrival 直接唤醒 server 处理。
 **错误语义：** `Timeout`（超时）、`Busy`（队列满）、`Unavailable`（server 未注册）、
 `WouldDeadlock`（同 lane 阻塞调用）、`HandlerError`（用户业务错误）。
 
-**Service 与 Operation 的边界：** Service 是同步 request/response；Operation（v0.5.0
+**Service 与 Operation 的边界：** Service 是同步 request/response；Operation（v0.6.0
 规划）是 typed long-running command，底层编译期 lower 成 Service + Channel，用户只看
 Operation，调试时才展开底层拓扑。
 

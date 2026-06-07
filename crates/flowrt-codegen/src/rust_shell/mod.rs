@@ -135,7 +135,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         let component = component_by_name(contract, &instance.component.name);
         if server_instances.contains(instance.name.as_str()) {
             output.push_str(&format!(
-                "    {}: std::rc::Rc<std::cell::RefCell<Box<dyn {}>>>,\n",
+                "    {}: std::sync::Arc<std::sync::Mutex<Box<dyn {} + Send>>>,\n",
                 instance.name,
                 component_rust_name(component)
             ));

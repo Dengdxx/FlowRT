@@ -55,6 +55,10 @@ fn rust_service_client_handle_struct_is_generated() {
         "components module must contain service client handle struct.\n\n{components}"
     );
     assert!(
+        components.contains("#[allow(non_camel_case_types)]"),
+        "generated service client handle must suppress intentional generated-name casing warnings.\n\n{components}"
+    );
+    assert!(
         components.contains("fn call("),
         "service client handle must expose call() method.\n\n{components}"
     );
@@ -92,6 +96,10 @@ fn rust_service_server_handler_method_in_trait() {
         "plan_service trait must contain on_plan_request handler method.\n\n{components}"
     );
     assert!(
+        components.contains("_request: &PlanRequest"),
+        "default service handler must not emit an unused request warning.\n\n{components}"
+    );
+    assert!(
         components.contains("ServiceResult<PlanResponse>"),
         "handler must return ServiceResult<PlanResponse>.\n\n{components}"
     );
@@ -119,6 +127,26 @@ fn rust_runtime_shell_registers_service() {
         shell.contains("service_server_plan_svc_plan"),
         "App struct must have server field.\n\n{shell}"
     );
+    assert!(
+        shell.contains("plan_svc: Box<dyn PlanService + Send>"),
+        "App::new must require Send service server components so registry handlers are Send+Sync.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("plan_svc: std::sync::Arc<std::sync::Mutex<Box<dyn PlanService + Send>>>"),
+        "runtime shell must store service server components behind Arc<Mutex<...>>.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("plan_svc_handler.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_plan_request(&req)"),
+        "service handler closure must lock the Arc<Mutex> server component.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("introspection_state.record_service_health"),
+        "runtime shell must publish service health into live introspection status.\n\n{shell}"
+    );
+    assert!(
+        !shell.contains("std::rc::Rc") && !shell.contains("std::cell::RefCell"),
+        "service server shell must not use Rc<RefCell>, because ServiceRegistry requires Send+Sync handlers.\n\n{shell}"
+    );
 }
 
 /// runtime shell 包含 hidden service task step 函数。
@@ -140,7 +168,7 @@ fn rust_scheduler_dispatches_service_tasks() {
     let bundle = emit_artifacts(&contract).unwrap();
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        shell.contains("step_service_plan_svc_plan()"),
+        shell.contains("step_service_plan_svc_plan(&introspection_state)"),
         "scheduler must dispatch service task.\n\n{shell}"
     );
 }
