@@ -59,6 +59,7 @@ impl std::error::Error for ParamsRemoteError {}
 /// 的 schema 校验和 pending/apply 语义。drop 时自动注销 queryable。
 pub struct ZenohParamsServer {
     key_expr: String,
+    _session: Option<Session>,
     _queryable: Queryable<()>,
 }
 
@@ -88,6 +89,42 @@ impl ZenohParamsServer {
 
         Ok(Self {
             key_expr: key_expr_owned,
+            _session: None,
+            _queryable: queryable,
+        })
+    }
+
+    /// 使用 `FLOWRT_ZENOH_*` 环境变量打开独立 zenoh session 并注册参数 queryable。
+    ///
+    /// 生成的 runtime shell 使用该入口暴露远程参数控制面，不需要直接依赖 zenoh crate。
+    pub fn open_from_environment(
+        key_expr: &str,
+        handshake: IntrospectionHandshake,
+        state: IntrospectionState,
+    ) -> Result<Self, ParamsRemoteError> {
+        let session =
+            zenoh::open(crate::zenoh::config_from_environment().map_err(|error| {
+                ParamsRemoteError::new("configure zenoh params session", error)
+            })?)
+            .wait()
+            .map_err(|error| ParamsRemoteError::transport("open zenoh params session", error))?;
+        let key_expr_owned = key_expr.to_string();
+        let shared_state = Arc::new(state);
+        let shared_handshake = Arc::new(handshake);
+
+        let queryable = session
+            .declare_queryable(key_expr_owned.clone())
+            .callback(move |query: Query| {
+                handle_params_query(query, &shared_handshake, &shared_state);
+            })
+            .wait()
+            .map_err(|error| {
+                ParamsRemoteError::transport("declare zenoh params queryable", error)
+            })?;
+
+        Ok(Self {
+            key_expr: key_expr_owned,
+            _session: Some(session),
             _queryable: queryable,
         })
     }

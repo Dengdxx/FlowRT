@@ -35,6 +35,7 @@ output = ["cmd"]
     let bundle = emit_artifacts(&ir).unwrap();
     let components = artifact_content(&bundle, "rust/src/components.rs");
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
     let selfdesc: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
 
@@ -48,6 +49,10 @@ output = ["cmd"]
     assert!(shell.contains("name: \"controller.kp\".to_string()"));
     assert!(shell.contains("take_pending_param(\"controller.kp\")"));
     assert!(shell.contains("self.controller.on_params_update("));
+    assert!(shell.contains("flowrt::params_key_expr(PACKAGE_NAME"));
+    assert!(shell.contains("flowrt::ZenohParamsServer::open_from_environment"));
+    assert!(shell.contains("let _remote_params_server = match"));
+    assert!(cargo_manifest.contains("features = [\"zenoh\"]"));
     assert_eq!(
         selfdesc["graphs"][0]["instances"][0]["params"][0]["name"],
         "kp"
@@ -90,6 +95,41 @@ period_ms = 5
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(!shell.contains("fn decode_flowrt_param_value"));
+    assert!(!shell.contains("ZenohParamsServer::open_from_environment"));
+}
+
+#[test]
+fn generated_rust_shell_exposes_startup_only_params_over_remote_control_plane() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "startup_param_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params.mode]
+type = "string"
+default = "normal"
+update = "startup"
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+
+    assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
+    assert!(!shell.contains("fn decode_flowrt_param_value"));
+    assert!(shell.contains("flowrt::ZenohParamsServer::open_from_environment"));
+    assert!(cargo_manifest.contains("features = [\"zenoh\"]"));
 }
 
 #[test]

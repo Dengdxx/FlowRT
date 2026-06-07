@@ -322,10 +322,35 @@ pub(crate) fn contract_backend_features(contract: &ContractIr) -> Vec<&'static s
     if contract_uses_backend(contract, "iox2") {
         features.push("iox2");
     }
-    if contract_uses_backend(contract, "zenoh") {
+    if contract_uses_backend(contract, "zenoh")
+        || contract_has_params_for_language(contract, flowrt_ir::LanguageKind::Rust)
+    {
         features.push("zenoh");
     }
     features
+}
+
+pub(crate) fn contract_has_params_for_language(
+    contract: &ContractIr,
+    language: flowrt_ir::LanguageKind,
+) -> bool {
+    contract
+        .components
+        .iter()
+        .any(|component| component.language == language && !component.params.is_empty())
+}
+
+pub(crate) fn contract_has_runtime_params_for_language(
+    contract: &ContractIr,
+    language: flowrt_ir::LanguageKind,
+) -> bool {
+    contract.components.iter().any(|component| {
+        component.language == language
+            && component
+                .params
+                .iter()
+                .any(|param| param.update == flowrt_ir::ParamUpdatePolicy::OnTick)
+    })
 }
 
 pub(crate) fn runtime_channel_name(bind: &BindRuntimePlan) -> String {

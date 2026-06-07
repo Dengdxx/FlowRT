@@ -256,6 +256,15 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         "PACKAGE_NAME",
         crate::rust_string_literal(emission.process_name)
     ));
+    if crate::runtime_plan::contract_has_params_for_language(
+        emission.contract,
+        flowrt_ir::LanguageKind::Rust,
+    ) {
+        output.push_str(&format!(
+            "        let remote_params_key_expr = flowrt::params_key_expr(PACKAGE_NAME, selfdesc::self_description_hash(), std::process::id());\n        let _remote_params_server = match flowrt::ZenohParamsServer::open_from_environment(\n            &remote_params_key_expr,\n            flowrt::IntrospectionHandshake {{\n                protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),\n                pid: std::process::id(),\n                started_at_unix_ms: 0,\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: PACKAGE_NAME.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        ) {{\n            Ok(server) => Some(server),\n            Err(error) => {{\n                eprintln!(\"FlowRT: failed to start zenoh params control-plane {{}}: {{error}}\", remote_params_key_expr);\n                None\n            }}\n        }};\n",
+            crate::rust_string_literal(emission.process_name)
+        ));
+    }
     for instance in emission.order {
         output.push_str(&format!(
             "        let mut {name}_initialized = false;\n        let mut {name}_started = false;\n",

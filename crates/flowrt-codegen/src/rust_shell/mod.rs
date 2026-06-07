@@ -9,8 +9,9 @@ mod step_emit;
 use flowrt_ir::{ComponentIr, ContractIr, LanguageKind};
 
 use crate::runtime_plan::{
-    bind_runtime_plans, bridge_runtime_plans, incoming_bind_index_map, outgoing_bind_indices_map,
-    outgoing_bridge_indices_map, process_runtime_plans,
+    bind_runtime_plans, bridge_runtime_plans, contract_has_runtime_params_for_language,
+    incoming_bind_index_map, outgoing_bind_indices_map, outgoing_bridge_indices_map,
+    process_runtime_plans,
 };
 use crate::{component_by_name, component_rust_name, managed_header};
 
@@ -24,16 +25,6 @@ use service_emit::{
     rust_service_handler_methods,
 };
 use step_emit::RustStepEmission;
-
-fn contract_has_runtime_params_for_language(contract: &ContractIr, language: LanguageKind) -> bool {
-    contract.components.iter().any(|component| {
-        component.language == language
-            && component
-                .params
-                .iter()
-                .any(|param| param.update == flowrt_ir::ParamUpdatePolicy::OnTick)
-    })
-}
 
 pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
