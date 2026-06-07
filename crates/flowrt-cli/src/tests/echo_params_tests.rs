@@ -948,6 +948,13 @@ fn parse_remote_params_key_expr_rejects_missing_segments() {
 }
 
 #[test]
+fn parse_remote_params_key_expr_rejects_extra_segments() {
+    assert!(
+        introspection::parse_remote_params_key_expr("flowrt/params/robot/abc/42/extra").is_none()
+    );
+}
+
+#[test]
 fn discover_remote_params_runtimes_filters_by_hash_and_deduplicates() {
     // 测试 discovery 的 hash 过滤逻辑：用同 session 直接查询特定 key expression，
     // 验证 discover_remote_params_runtimes 的 hash 过滤和去重逻辑。
@@ -1184,7 +1191,7 @@ fn select_remote_runtime_rejects_multiple_matches() {
     let error = introspection::select_remote_runtime(entries, "hash1").unwrap_err();
     let message = error.to_string();
     assert!(message.contains("multiple remote FlowRT runtimes match"));
-    assert!(message.contains("--socket"));
+    assert!(message.contains("--runtime"));
     assert!(message.contains("pid=100"));
     assert!(message.contains("pid=200"));
 }

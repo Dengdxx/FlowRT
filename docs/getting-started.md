@@ -119,6 +119,8 @@ flowrt params list --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json 
 flowrt params set --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json estimator.gravity 9.7 --remote
 ```
 
+如果同一 zenoh 网络中有多个匹配的 runtime，CLI 会提示候选 `key expression`，再用 `--runtime <key_expr>` 显式选择目标。`--socket` 只用于本机 Unix socket 路径，不能和 `--remote` 同用。
+
 `params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。
 
 ## Service request/response 示例

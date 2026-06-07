@@ -1496,7 +1496,7 @@ pub(crate) fn parse_remote_params_key_expr(key: &str) -> Option<(&str, &str, &st
     let rest = key.strip_prefix("flowrt/params/")?;
     let (package, rest) = rest.split_once('/')?;
     let (hash, pid) = rest.split_once('/')?;
-    if package.is_empty() || hash.is_empty() || pid.is_empty() {
+    if package.is_empty() || hash.is_empty() || pid.is_empty() || pid.contains('/') {
         return None;
     }
     Some((package, hash, pid))
@@ -1605,17 +1605,25 @@ pub(crate) fn select_remote_runtime(
                 .join("\n");
             anyhow::bail!(
                 "multiple remote FlowRT runtimes match self-description hash \
-                 `{self_description_hash}`; pass `--socket <key_expr>` to choose one:\n{listing}"
+                 `{self_description_hash}`; pass `--runtime <key_expr>` to choose one:\n{listing}"
             )
         }
     }
 }
 
 /// 请求远程 runtime 参数列表。
-pub(crate) fn remote_params_list(self_description_hash: &str, timeout_ms: u64) -> Result<String> {
+pub(crate) fn remote_params_list(
+    self_description_hash: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String> {
     let session = open_zenoh_params_session()?;
-    let entries = discover_remote_params_runtimes(&session, self_description_hash, timeout_ms)?;
-    let runtime = select_remote_runtime(entries, self_description_hash)?;
+    let runtime = select_remote_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
     let response = flowrt::request_remote_param_list(&session, &runtime.key_expr, timeout_ms)
         .map_err(|error| {
             anyhow::anyhow!("failed to list remote params from `{}`: {error}", runtime)
@@ -1647,11 +1655,16 @@ pub(crate) fn remote_params_list(self_description_hash: &str, timeout_ms: u64) -
 pub(crate) fn remote_params_get(
     self_description_hash: &str,
     name: &str,
+    runtime_key_expr: Option<&str>,
     timeout_ms: u64,
 ) -> Result<String> {
     let session = open_zenoh_params_session()?;
-    let entries = discover_remote_params_runtimes(&session, self_description_hash, timeout_ms)?;
-    let runtime = select_remote_runtime(entries, self_description_hash)?;
+    let runtime = select_remote_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
     let response = flowrt::request_remote_param_get(&session, &runtime.key_expr, name, timeout_ms)
         .map_err(|error| {
             anyhow::anyhow!("failed to get remote param `{name}` from `{runtime}`: {error}")
@@ -1674,14 +1687,19 @@ pub(crate) fn remote_params_set(
     self_description_hash: &str,
     name: &str,
     raw_value: &str,
+    runtime_key_expr: Option<&str>,
     timeout_ms: u64,
 ) -> Result<String> {
     let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
         format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
     })?;
     let session = open_zenoh_params_session()?;
-    let entries = discover_remote_params_runtimes(&session, self_description_hash, timeout_ms)?;
-    let runtime = select_remote_runtime(entries, self_description_hash)?;
+    let runtime = select_remote_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
     let response =
         flowrt::request_remote_param_set(&session, &runtime.key_expr, name, value, timeout_ms)
             .map_err(|error| {
@@ -1698,6 +1716,68 @@ pub(crate) fn remote_params_set(
         }
         _ => anyhow::bail!("remote runtime `{runtime}` returned unexpected response"),
     }
+}
+
+fn select_remote_runtime_for_request(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<RemoteRuntimeEntry> {
+    if let Some(key_expr) = runtime_key_expr {
+        return remote_runtime_entry_from_key_expr(
+            session,
+            key_expr,
+            self_description_hash,
+            timeout_ms,
+        );
+    }
+    let entries = discover_remote_params_runtimes(session, self_description_hash, timeout_ms)?;
+    select_remote_runtime(entries, self_description_hash)
+}
+
+fn remote_runtime_entry_from_key_expr(
+    session: &zenoh::Session,
+    key_expr: &str,
+    self_description_hash: &str,
+    timeout_ms: u64,
+) -> Result<RemoteRuntimeEntry> {
+    let Some((package, hash, pid_str)) = parse_remote_params_key_expr(key_expr) else {
+        anyhow::bail!(
+            "invalid remote FlowRT runtime key expression `{key_expr}`; expected `flowrt/params/<package>/<selfdesc_hash>/<pid>`"
+        );
+    };
+    if hash != self_description_hash {
+        anyhow::bail!(
+            "remote FlowRT runtime key expression `{key_expr}` uses self-description hash `{hash}`, expected `{self_description_hash}`"
+        );
+    }
+    let pid = pid_str.parse::<u32>().with_context(|| {
+        format!(
+            "remote FlowRT runtime key expression `{key_expr}` contains invalid pid `{pid_str}`"
+        )
+    })?;
+    let response = flowrt::request_remote_param_list(session, key_expr, timeout_ms)
+        .map_err(|error| anyhow::anyhow!("failed to query remote runtime `{key_expr}`: {error}"))?;
+    let handshake = match response {
+        flowrt::IntrospectionResponse::ParamList { handshake, .. }
+        | flowrt::IntrospectionResponse::Error { handshake, .. } => handshake,
+        _ => anyhow::bail!("remote runtime `{key_expr}` returned unexpected response"),
+    };
+    if handshake.self_description_hash != self_description_hash {
+        anyhow::bail!(
+            "remote runtime `{key_expr}` self-description hash `{}` does not match expected `{self_description_hash}`",
+            handshake.self_description_hash
+        );
+    }
+    Ok(RemoteRuntimeEntry {
+        key_expr: key_expr.to_string(),
+        pid,
+        package: package.to_string(),
+        process: handshake.process,
+        runtime: handshake.runtime,
+        self_description_hash: hash.to_string(),
+    })
 }
 
 fn ensure_remote_handshake(

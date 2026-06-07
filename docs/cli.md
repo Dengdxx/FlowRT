@@ -15,9 +15,9 @@ flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
 flowrt echo <channel> [--socket <path>] [--image <path/to/generated-app-or-selfdesc.json>] [--follow] [--interval-ms <ms>]
 flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>] [--follow] [--interval-ms <ms>]
-flowrt params list --image <path> [--socket <path>] [--remote] [--timeout-ms <ms>]
-flowrt params get <instance.param> --image <path> [--socket <path>] [--remote] [--timeout-ms <ms>]
-flowrt params set <instance.param> <json-value> --image <path> [--socket <path>] [--remote] [--timeout-ms <ms>]
+flowrt params list --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
+flowrt params get <instance.param> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
+flowrt params set <instance.param> <json-value> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt status
 flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
 ```
@@ -356,13 +356,14 @@ flowrt params set --image path/to/generated-app controller.mode '"safe"'
 flowrt params list --image path/to/generated-app --remote
 flowrt params get --image path/to/generated-app controller.kp --remote
 flowrt params set --image path/to/generated-app controller.kp 2.5 --remote
+flowrt params list --image path/to/generated-app --remote --runtime flowrt/params/robot/hash/12345
 ```
 
 `params` 操作运行态参数控制面。静态 self-description 用于确认参数属于该应用，并通过 `self_description_hash` 选择匹配的 live runtime；实际值来自 runtime。
 
 **本机路径**（默认）：`--image` 指定生成应用二进制或 `selfdesc.json`，可选 `--socket` 指定 Unix socket。省略 `--socket` 时使用与 `echo` 相同的自动发现规则，多个同 hash 进程同时存在时需要显式传入 `--socket <path>`。
 
-**远程路径**（`--remote`）：通过 zenoh control-plane 发现远端 runtime。CLI 按 `flowrt/params/{package}/{selfdesc_hash}/{pid}` 格式的 key expression 查询所有远程参数端点，筛选与 `--image` 自描述 hash 匹配的 runtime。多个匹配时要求用户显式选择；无匹配时报错。`--timeout-ms` 控制发现和请求超时，默认 5000ms。CLI 会在 stderr 输出 `target:` 行，明确告知命令打到了哪个 runtime。
+**远程路径**（`--remote`）：通过 zenoh control-plane 发现远端 runtime。CLI 按 `flowrt/params/{package}/{selfdesc_hash}/{pid}` 格式的 key expression 查询所有远程参数端点，筛选与 `--image` 自描述 hash 匹配的 runtime。多个匹配时要求用户用 `--runtime <key_expr>` 显式选择；无匹配时报错。`--socket` 只表示本机 Unix socket，不能和 `--remote` 同用。`--timeout-ms` 控制发现和请求超时，默认 5000ms。CLI 会在 stderr 输出 `target:` 行，明确告知命令打到了哪个 runtime。
 
 参数不是 dataflow channel。RSDL/Contract IR 声明参数 schema，生成 shell 持有 typed params 快照，并在 scheduler tick 边界把 `on_tick` 参数的 pending 值应用到用户组件。用户组件可以实现默认提供的 `on_params_update(old, new, context)` 钩子；该钩子返回 `Ok` 后，新参数才会提交并反映到后续 `on_tick`。
 

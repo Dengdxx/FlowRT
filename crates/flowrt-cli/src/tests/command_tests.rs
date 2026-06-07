@@ -190,6 +190,63 @@ fn cli_parses_params_set_command() {
 }
 
 #[test]
+fn cli_parses_remote_params_runtime_selector() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "params",
+        "get",
+        "controller.kp",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--remote",
+        "--runtime",
+        "flowrt/params/robot/hash1/42",
+    ])
+    .unwrap();
+
+    let Command::Params {
+        command:
+            ParamsCommand::Get {
+                image,
+                remote,
+                runtime,
+                socket,
+                ..
+            },
+    } = cli.command
+    else {
+        panic!("params get command should parse into Command::Params")
+    };
+
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert!(remote);
+    assert_eq!(runtime.as_deref(), Some("flowrt/params/robot/hash1/42"));
+    assert_eq!(socket, None);
+}
+
+#[test]
+fn params_remote_runtime_arg_rejects_socket() {
+    let error = params_remote_runtime_arg(true, Some(Path::new("/tmp/flowrt.sock")), None)
+        .expect_err("--remote must not accept a local socket selector");
+
+    assert!(error.to_string().contains("cannot be used with `--remote`"));
+    assert!(error.to_string().contains("--runtime <key_expr>"));
+}
+
+#[test]
+fn params_runtime_arg_requires_remote_mode() {
+    let error = params_remote_runtime_arg(false, None, Some("flowrt/params/robot/hash1/42"))
+        .expect_err("--runtime must require remote mode");
+
+    assert!(
+        error
+            .to_string()
+            .contains("can only be used with `--remote`")
+    );
+    assert!(error.to_string().contains("--socket <path>"));
+}
+
+#[test]
 fn cli_rejects_zero_echo_follow_interval() {
     let error = Cli::try_parse_from([
         "flowrt",

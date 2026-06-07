@@ -201,6 +201,10 @@ enum ParamsCommand {
         #[arg(long)]
         socket: Option<PathBuf>,
 
+        /// 显式指定远端 runtime key expression；仅 --remote 使用。
+        #[arg(long)]
+        runtime: Option<String>,
+
         /// 通过 zenoh control-plane 发现远端 runtime。
         #[arg(long)]
         remote: bool,
@@ -222,6 +226,10 @@ enum ParamsCommand {
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 显式指定远端 runtime key expression；仅 --remote 使用。
+        #[arg(long)]
+        runtime: Option<String>,
 
         /// 通过 zenoh control-plane 发现远端 runtime。
         #[arg(long)]
@@ -247,6 +255,10 @@ enum ParamsCommand {
         /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
         #[arg(long)]
         socket: Option<PathBuf>,
+
+        /// 显式指定远端 runtime key expression；仅 --remote 使用。
+        #[arg(long)]
+        runtime: Option<String>,
 
         /// 通过 zenoh control-plane 发现远端 runtime。
         #[arg(long)]
@@ -356,13 +368,19 @@ fn main() -> Result<()> {
             ParamsCommand::List {
                 image,
                 socket,
+                runtime,
                 remote,
                 timeout_ms,
             } => {
+                let remote_runtime =
+                    params_remote_runtime_arg(remote, socket.as_deref(), runtime.as_deref())?;
                 if remote {
                     let image = require_image_for_remote(image.as_deref())?;
                     let hash = introspection::self_description_hash_for_image(&image)?;
-                    println!("{}", remote_params_list(&hash, timeout_ms)?);
+                    println!(
+                        "{}",
+                        remote_params_list(&hash, remote_runtime.as_deref(), timeout_ms)?
+                    );
                 } else {
                     let image = require_image_for_local(image.as_deref())?;
                     println!("{}", params_list(&image, socket.as_deref())?);
@@ -372,13 +390,19 @@ fn main() -> Result<()> {
                 name,
                 image,
                 socket,
+                runtime,
                 remote,
                 timeout_ms,
             } => {
+                let remote_runtime =
+                    params_remote_runtime_arg(remote, socket.as_deref(), runtime.as_deref())?;
                 if remote {
                     let image = require_image_for_remote(image.as_deref())?;
                     let hash = introspection::self_description_hash_for_image(&image)?;
-                    println!("{}", remote_params_get(&hash, &name, timeout_ms)?);
+                    println!(
+                        "{}",
+                        remote_params_get(&hash, &name, remote_runtime.as_deref(), timeout_ms)?
+                    );
                 } else {
                     let image = require_image_for_local(image.as_deref())?;
                     println!("{}", params_get(&image, &name, socket.as_deref())?);
@@ -389,13 +413,25 @@ fn main() -> Result<()> {
                 value,
                 image,
                 socket,
+                runtime,
                 remote,
                 timeout_ms,
             } => {
+                let remote_runtime =
+                    params_remote_runtime_arg(remote, socket.as_deref(), runtime.as_deref())?;
                 if remote {
                     let image = require_image_for_remote(image.as_deref())?;
                     let hash = introspection::self_description_hash_for_image(&image)?;
-                    println!("{}", remote_params_set(&hash, &name, &value, timeout_ms)?);
+                    println!(
+                        "{}",
+                        remote_params_set(
+                            &hash,
+                            &name,
+                            &value,
+                            remote_runtime.as_deref(),
+                            timeout_ms
+                        )?
+                    );
                 } else {
                     let image = require_image_for_local(image.as_deref())?;
                     println!("{}", params_set(&image, &name, &value, socket.as_deref())?);
@@ -1593,7 +1629,7 @@ fn summary(contract: &ContractIr) -> String {
 fn require_image_for_remote(image: Option<&Path>) -> Result<PathBuf> {
     image.map(Path::to_path_buf).context(
         "`--remote` requires an image path to extract the self-description hash; \
-         pass `<image>` as a positional argument",
+         pass `--image <path>`",
     )
 }
 
@@ -1602,6 +1638,30 @@ fn require_image_for_local(image: Option<&Path>) -> Result<PathBuf> {
         "missing required argument `<image>`; \
          pass a FlowRT application binary or selfdesc.json path",
     )
+}
+
+fn params_remote_runtime_arg(
+    remote: bool,
+    socket: Option<&Path>,
+    runtime: Option<&str>,
+) -> Result<Option<String>> {
+    if remote {
+        if socket.is_some() {
+            anyhow::bail!(
+                "`--socket` selects a local Unix socket and cannot be used with `--remote`; \
+                 use `--runtime <key_expr>` to select a remote FlowRT runtime"
+            );
+        }
+        Ok(runtime.map(str::to_string))
+    } else {
+        if runtime.is_some() {
+            anyhow::bail!(
+                "`--runtime` can only be used with `--remote`; \
+                 use `--socket <path>` for local params"
+            );
+        }
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
