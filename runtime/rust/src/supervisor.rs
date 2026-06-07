@@ -17,6 +17,26 @@ use crate::introspection::{IntrospectionIdentity, IntrospectionProcessStatus, In
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// tick 无变化超过此阈值则标记 stale。
 const TICK_STALE_AFTER_MS: u64 = 1_000;
+/// readiness 等待轮询间隔。
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// readiness 等待超时时间。
+const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// readiness 等待参数，支持测试注入短超时。
+#[derive(Debug, Clone)]
+struct ReadinessConfig {
+    timeout: Duration,
+    poll_interval: Duration,
+}
+
+impl Default for ReadinessConfig {
+    fn default() -> Self {
+        Self {
+            timeout: READINESS_TIMEOUT,
+            poll_interval: READINESS_POLL_INTERVAL,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // launch manifest 反序列化结构
@@ -46,6 +66,30 @@ pub struct LaunchProcess {
     pub restart: RestartPolicy,
     #[serde(default = "default_failure_propagation")]
     pub failure: String,
+    /// 进程 readiness gate 类型。
+    #[serde(default)]
+    pub readiness: ReadinessGate,
+    /// readiness 通过后的额外启动延迟（ms），用于错峰启动。
+    #[serde(default)]
+    pub startup_delay_ms: u64,
+}
+
+/// 进程 readiness gate 类型，决定 supervisor 何时认为进程就绪。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessGate {
+    /// 进程已启动（PID 存在）即视为就绪。
+    ProcessStarted,
+    /// 进程的 runtime introspection 握手成功即视为就绪。
+    RuntimeReady,
+    /// 进程的 runtime introspection 握手成功且所有 service endpoint 就绪。
+    ServiceReady,
+}
+
+impl Default for ReadinessGate {
+    fn default() -> Self {
+        Self::ProcessStarted
+    }
 }
 
 fn default_restart_policy() -> RestartPolicy {
@@ -180,14 +224,155 @@ pub fn zenoh_launch_env_for_graph(
 // ---------------------------------------------------------------------------
 
 /// 判断进程的所有依赖是否已满足。
+///
+/// 对于 `process_started` readiness gate，依赖进程只需已启动（PID 存在）。
+/// 对于 `runtime_ready` 和 `service_ready` gate，依赖进程必须已通过 readiness 检查。
 pub fn process_dependencies_satisfied(
     process: &LaunchProcess,
     spawned_names: &BTreeSet<String>,
+    ready_names: &BTreeSet<String>,
 ) -> bool {
-    process
-        .depends_on
-        .iter()
-        .all(|dependency| spawned_names.contains(dependency))
+    process.depends_on.iter().all(|dependency| {
+        // 如果依赖进程已通过 readiness gate 则满足；
+        // 否则如果依赖进程已启动且本进程的 readiness 是 process_started 也满足。
+        ready_names.contains(dependency)
+            || (process.readiness == ReadinessGate::ProcessStarted
+                && spawned_names.contains(dependency))
+    })
+}
+
+/// 等待子进程通过 readiness gate。
+///
+/// - `ProcessStarted`：进程已启动即通过，无需额外等待。
+/// - `RuntimeReady`：轮询 introspection socket 直到握手成功或超时。
+/// - `ServiceReady`：轮询 introspection socket 直到握手成功且所有 service endpoint
+///   就绪或超时。
+///
+/// 超时返回错误，同时终止子进程。
+fn wait_for_readiness(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    config: &ReadinessConfig,
+) -> Result<(), String> {
+    match child.readiness {
+        ReadinessGate::ProcessStarted => Ok(()),
+        ReadinessGate::RuntimeReady => {
+            child.state = "waiting_readiness".to_string();
+            record_child_health(supervisor_state, child, false);
+            wait_for_runtime_ready(supervisor_state, child, config)
+        }
+        ReadinessGate::ServiceReady => {
+            child.state = "waiting_readiness".to_string();
+            record_child_health(supervisor_state, child, false);
+            wait_for_service_ready(supervisor_state, child, config)
+        }
+    }
+}
+
+/// 等待子进程 runtime introspection 握手成功。
+fn wait_for_runtime_ready(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    config: &ReadinessConfig,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + config.timeout;
+    loop {
+        // 检查子进程是否已退出。
+        if let Some(status) = child.child.try_wait().map_err(|error| {
+            format!(
+                "failed to poll FlowRT process `{}` during readiness wait: {error}",
+                child.name
+            )
+        })? {
+            child.exit_code = status.code();
+            child.finished = true;
+            child.state = "readiness_failed".to_string();
+            record_child_health(supervisor_state, child, false);
+            return Err(format!(
+                "FlowRT process `{}` exited during readiness wait (code: {})",
+                child.name,
+                child
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ));
+        }
+
+        // 检查是否超时。
+        if std::time::Instant::now() >= deadline {
+            let _ = child.child.kill();
+            let _ = child.child.wait();
+            child.finished = true;
+            child.state = "readiness_timeout".to_string();
+            record_child_health(supervisor_state, child, false);
+            return Err(format!(
+                "FlowRT process `{}` readiness timed out waiting for runtime_ready",
+                child.name
+            ));
+        }
+
+        // 轮询 introspection socket。
+        match crate::request_status(&child.socket) {
+            Ok(crate::IntrospectionResponse::Status { .. }) => return Ok(()),
+            _ => std::thread::sleep(config.poll_interval),
+        }
+    }
+}
+
+/// 等待子进程 runtime introspection 握手成功且所有 service endpoint 就绪。
+fn wait_for_service_ready(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    config: &ReadinessConfig,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + config.timeout;
+    loop {
+        // 检查子进程是否已退出。
+        if let Some(status) = child.child.try_wait().map_err(|error| {
+            format!(
+                "failed to poll FlowRT process `{}` during readiness wait: {error}",
+                child.name
+            )
+        })? {
+            child.exit_code = status.code();
+            child.finished = true;
+            child.state = "readiness_failed".to_string();
+            record_child_health(supervisor_state, child, false);
+            return Err(format!(
+                "FlowRT process `{}` exited during readiness wait (code: {})",
+                child.name,
+                child
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ));
+        }
+
+        // 检查是否超时。
+        if std::time::Instant::now() >= deadline {
+            let _ = child.child.kill();
+            let _ = child.child.wait();
+            child.finished = true;
+            child.state = "readiness_timeout".to_string();
+            record_child_health(supervisor_state, child, false);
+            return Err(format!(
+                "FlowRT process `{}` readiness timed out waiting for service_ready",
+                child.name
+            ));
+        }
+
+        // 轮询 introspection socket：需要握手成功且所有 service 就绪。
+        match crate::request_status(&child.socket) {
+            Ok(crate::IntrospectionResponse::Status { status, .. }) => {
+                if status.services.is_empty() || status.services.iter().all(|s| s.ready) {
+                    return Ok(());
+                }
+                // 有 service 但未全部就绪，继续等待。
+                std::thread::sleep(config.poll_interval);
+            }
+            _ => std::thread::sleep(config.poll_interval),
+        }
+    }
 }
 
 /// 对进程列表做拓扑排序（BFS / Kahn 算法）。
@@ -237,7 +422,9 @@ pub fn resolve_dependency_order(processes: &[LaunchProcess]) -> Result<Vec<Strin
         sorted.push(name.to_string());
         if let Some(deps) = dependents.get(name) {
             for &dep in deps {
-                let deg = in_degree.get_mut(dep).unwrap();
+                let deg = in_degree
+                    .get_mut(dep)
+                    .expect("dependents entry must exist in in_degree map");
                 *deg -= 1;
                 if *deg == 0 {
                     queue.push_back(dep);
@@ -440,6 +627,8 @@ struct SupervisedChild {
     dependencies: Vec<String>,
     restart_policy: RestartPolicy,
     failure: String,
+    readiness: ReadinessGate,
+    startup_delay_ms: u64,
     child: Child,
     socket: PathBuf,
     finished: bool,
@@ -490,12 +679,14 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             HashMap::new()
         };
         let mut pending = graph.processes.iter().collect::<Vec<_>>();
+        // ready_names 包含已通过 readiness gate 的进程名。
+        // spawned_names 包含已启动（PID 存在）的进程名，用于依赖排序。
         let mut spawned_names = BTreeSet::new();
+        let mut ready_names = BTreeSet::new();
         while !pending.is_empty() {
-            let Some(index) = pending
-                .iter()
-                .position(|process| process_dependencies_satisfied(process, &spawned_names))
-            else {
+            let Some(index) = pending.iter().position(|process| {
+                process_dependencies_satisfied(process, &spawned_names, &ready_names)
+            }) else {
                 return Err(
                     "FlowRT process dependencies contain a cycle or unknown process".to_string(),
                 );
@@ -517,7 +708,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 process_zenoh_env.as_ref(),
             )?;
             let socket = crate::runtime_socket_path_for_pid(child.id());
-            let child = SupervisedChild {
+            let mut child = SupervisedChild {
                 name: process.name.clone(),
                 runtime_kind: process.runtime_kind.clone(),
                 app_exe,
@@ -525,6 +716,8 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 dependencies: process.depends_on.clone(),
                 restart_policy: process.restart,
                 failure: process.failure.clone(),
+                readiness: process.readiness,
+                startup_delay_ms: process.startup_delay_ms,
                 child,
                 socket,
                 finished: false,
@@ -538,6 +731,20 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             };
             record_child_health(&supervisor_state, &child, false);
             spawned_names.insert(process.name.clone());
+
+            // 等待 readiness gate，然后再启动依赖此进程的后续进程。
+            wait_for_readiness(&supervisor_state, &mut child, &ReadinessConfig::default())?;
+            ready_names.insert(process.name.clone());
+
+            // readiness 通过后执行错峰启动延迟。
+            if child.startup_delay_ms > 0 {
+                child.state = "delaying".to_string();
+                record_child_health(&supervisor_state, &child, false);
+                std::thread::sleep(Duration::from_millis(child.startup_delay_ms));
+            }
+
+            child.state = "running".to_string();
+            record_child_health(&supervisor_state, &child, false);
             children.push(child);
         }
     }
@@ -715,6 +922,10 @@ fn record_child_health(
     child: &SupervisedChild,
     tick_stale: bool,
 ) {
+    let readiness_wait = match child.state.as_str() {
+        "waiting_readiness" => Some(readiness_gate_label(child.readiness)),
+        _ => None,
+    };
     supervisor_state.record_process_health(IntrospectionProcessStatus {
         name: child.name.clone(),
         state: child.state.clone(),
@@ -724,7 +935,17 @@ fn record_child_health(
         last_seen_unix_ms: child.last_seen_unix_ms,
         tick_stale,
         exit_code: child.exit_code,
+        readiness_wait: readiness_wait.map(|s| s.to_string()),
     });
+}
+
+/// 返回 readiness gate 的可读标签。
+fn readiness_gate_label(gate: ReadinessGate) -> &'static str {
+    match gate {
+        ReadinessGate::ProcessStarted => "process_started",
+        ReadinessGate::RuntimeReady => "runtime_ready",
+        ReadinessGate::ServiceReady => "service_ready",
+    }
 }
 
 fn unix_time_ms() -> u64 {
@@ -751,6 +972,19 @@ mod tests {
             .get_envs()
             .find(|(env_key, _)| env_key.to_string_lossy() == key)
             .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    fn test_process(name: &str, depends_on: Vec<String>) -> LaunchProcess {
+        LaunchProcess {
+            name: name.into(),
+            backend: "inproc".into(),
+            runtime_kind: "rust".into(),
+            depends_on,
+            restart: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::ProcessStarted,
+            startup_delay_ms: 0,
+        }
     }
 
     // -- RestartPolicy 测试 --
@@ -857,24 +1091,7 @@ mod tests {
 
     #[test]
     fn resolve_dependency_order_no_deps() {
-        let processes = vec![
-            LaunchProcess {
-                name: "a".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec![],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "b".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec![],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-        ];
+        let processes = vec![test_process("a", vec![]), test_process("b", vec![])];
         let order = resolve_dependency_order(&processes).unwrap();
         assert_eq!(order.len(), 2);
         assert!(order.contains(&"a".to_string()));
@@ -884,30 +1101,9 @@ mod tests {
     #[test]
     fn resolve_dependency_order_linear_chain() {
         let processes = vec![
-            LaunchProcess {
-                name: "a".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec![],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "b".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["a".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "c".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["b".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
+            test_process("a", vec![]),
+            test_process("b", vec!["a".into()]),
+            test_process("c", vec!["b".into()]),
         ];
         let order = resolve_dependency_order(&processes).unwrap();
         assert_eq!(order, vec!["a", "b", "c"]);
@@ -916,38 +1112,10 @@ mod tests {
     #[test]
     fn resolve_dependency_order_diamond() {
         let processes = vec![
-            LaunchProcess {
-                name: "a".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec![],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "b".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["a".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "c".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["a".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "d".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["b".into(), "c".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
+            test_process("a", vec![]),
+            test_process("b", vec!["a".into()]),
+            test_process("c", vec!["a".into()]),
+            test_process("d", vec!["b".into(), "c".into()]),
         ];
         let order = resolve_dependency_order(&processes).unwrap();
         let a = order.iter().position(|n| n == "a").unwrap();
@@ -963,22 +1131,8 @@ mod tests {
     #[test]
     fn resolve_dependency_order_cycle_detected() {
         let processes = vec![
-            LaunchProcess {
-                name: "a".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["b".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "b".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["a".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
+            test_process("a", vec!["b".into()]),
+            test_process("b", vec!["a".into()]),
         ];
         let err = resolve_dependency_order(&processes).unwrap_err();
         assert!(err.contains("cycle"), "error should mention cycle: {err}");
@@ -986,28 +1140,14 @@ mod tests {
 
     #[test]
     fn resolve_dependency_order_unknown_dep_rejected() {
-        let processes = vec![LaunchProcess {
-            name: "a".into(),
-            backend: "inproc".into(),
-            runtime_kind: "rust".into(),
-            depends_on: vec!["missing".into()],
-            restart: DEFAULT_RESTART_POLICY,
-            failure: "propagate".into(),
-        }];
+        let processes = vec![test_process("a", vec!["missing".into()])];
         let err = resolve_dependency_order(&processes).unwrap_err();
         assert!(err.contains("unknown process"));
     }
 
     #[test]
     fn resolve_dependency_order_self_dep_rejected() {
-        let processes = vec![LaunchProcess {
-            name: "a".into(),
-            backend: "inproc".into(),
-            runtime_kind: "rust".into(),
-            depends_on: vec!["a".into()],
-            restart: DEFAULT_RESTART_POLICY,
-            failure: "propagate".into(),
-        }];
+        let processes = vec![test_process("a", vec!["a".into()])];
         let err = resolve_dependency_order(&processes).unwrap_err();
         assert!(err.contains("depends on itself"));
     }
@@ -1123,32 +1263,12 @@ mod tests {
 
     #[test]
     fn zenoh_launch_env_hub_and_spoke() {
-        let processes = [
-            LaunchProcess {
-                name: "hub".into(),
-                backend: "zenoh".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec![],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "spoke".into(),
-                backend: "zenoh".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec!["hub".into()],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-            LaunchProcess {
-                name: "inproc_only".into(),
-                backend: "inproc".into(),
-                runtime_kind: "rust".into(),
-                depends_on: vec![],
-                restart: DEFAULT_RESTART_POLICY,
-                failure: "propagate".into(),
-            },
-        ];
+        let mut hub = test_process("hub", vec![]);
+        hub.backend = "zenoh".into();
+        let mut spoke = test_process("spoke", vec!["hub".into()]);
+        spoke.backend = "zenoh".into();
+        let inproc_only = test_process("inproc_only", vec![]);
+        let processes = [hub, spoke, inproc_only];
         let refs: Vec<&LaunchProcess> = processes.iter().collect();
         let env = zenoh_launch_env_for_graph(&refs).unwrap();
 
@@ -1163,14 +1283,7 @@ mod tests {
 
     #[test]
     fn zenoh_launch_env_empty_for_no_zenoh() {
-        let processes = [LaunchProcess {
-            name: "a".into(),
-            backend: "inproc".into(),
-            runtime_kind: "rust".into(),
-            depends_on: vec![],
-            restart: DEFAULT_RESTART_POLICY,
-            failure: "propagate".into(),
-        }];
+        let processes = [test_process("a", vec![])];
         let refs: Vec<&LaunchProcess> = processes.iter().collect();
         let env = zenoh_launch_env_for_graph(&refs).unwrap();
         assert!(env.is_empty());
@@ -1179,34 +1292,47 @@ mod tests {
     // -- 依赖满足判断测试 --
 
     #[test]
-    fn dependencies_satisfied_when_all_met() {
-        let process = LaunchProcess {
-            name: "c".into(),
-            backend: "inproc".into(),
-            runtime_kind: "rust".into(),
-            depends_on: vec!["a".into(), "b".into()],
-            restart: DEFAULT_RESTART_POLICY,
-            failure: "propagate".into(),
-        };
+    fn dependencies_satisfied_when_all_met_process_started() {
+        let process = test_process("c", vec!["a".into(), "b".into()]);
         let mut spawned = BTreeSet::new();
         spawned.insert("a".into());
         spawned.insert("b".into());
-        assert!(process_dependencies_satisfied(&process, &spawned));
+        let ready = BTreeSet::new();
+        // process_started gate：依赖只需已启动。
+        assert!(process_dependencies_satisfied(&process, &spawned, &ready));
+    }
+
+    #[test]
+    fn dependencies_satisfied_when_all_met_runtime_ready() {
+        let mut process = test_process("c", vec!["a".into(), "b".into()]);
+        process.readiness = ReadinessGate::RuntimeReady;
+        let mut spawned = BTreeSet::new();
+        spawned.insert("a".into());
+        spawned.insert("b".into());
+        let mut ready = BTreeSet::new();
+        ready.insert("a".into());
+        ready.insert("b".into());
+        assert!(process_dependencies_satisfied(&process, &spawned, &ready));
+    }
+
+    #[test]
+    fn dependencies_not_satisfied_for_runtime_ready_when_dep_only_spawned() {
+        let mut process = test_process("c", vec!["a".into()]);
+        process.readiness = ReadinessGate::RuntimeReady;
+        let mut spawned = BTreeSet::new();
+        spawned.insert("a".into());
+        let ready = BTreeSet::new();
+        // runtime_ready gate：依赖必须已通过 readiness，仅 spawned 不够。
+        assert!(!process_dependencies_satisfied(&process, &spawned, &ready));
     }
 
     #[test]
     fn dependencies_not_satisfied_when_missing() {
-        let process = LaunchProcess {
-            name: "c".into(),
-            backend: "inproc".into(),
-            runtime_kind: "rust".into(),
-            depends_on: vec!["a".into(), "b".into()],
-            restart: DEFAULT_RESTART_POLICY,
-            failure: "propagate".into(),
-        };
+        let process = test_process("c", vec!["a".into(), "b".into()]);
         let mut spawned = BTreeSet::new();
         spawned.insert("a".into());
-        assert!(!process_dependencies_satisfied(&process, &spawned));
+        let ready = BTreeSet::new();
+        assert!(!process_dependencies_satisfied(&process, &spawned, &ready));
     }
 
     // -- manifest 反序列化测试 --
@@ -1229,6 +1355,8 @@ mod tests {
         assert_eq!(process.restart.policy, RestartPolicyKind::OnFailure);
         assert_eq!(process.restart.max_restarts, 3);
         assert_eq!(process.failure, "propagate");
+        assert_eq!(process.readiness, ReadinessGate::ProcessStarted);
+        assert_eq!(process.startup_delay_ms, 0);
     }
 
     #[test]
@@ -1255,5 +1383,295 @@ mod tests {
         assert_eq!(process.depends_on, vec!["sensor"]);
         assert_eq!(process.restart.policy, RestartPolicyKind::Never);
         assert_eq!(process.failure, "isolate");
+        assert_eq!(process.readiness, ReadinessGate::ProcessStarted);
+    }
+
+    #[test]
+    fn manifest_deserialization_with_readiness_gate() {
+        let json = r#"{
+            "graphs": [{
+                "processes": [{
+                    "name": "control",
+                    "backend": "inproc",
+                    "runtime_kind": "rust",
+                    "readiness": "runtime_ready",
+                    "startup_delay_ms": 500
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let process = &manifest.graphs[0].processes[0];
+        assert_eq!(process.readiness, ReadinessGate::RuntimeReady);
+        assert_eq!(process.startup_delay_ms, 500);
+    }
+
+    #[test]
+    fn manifest_deserialization_service_ready_gate() {
+        let json = r#"{
+            "graphs": [{
+                "processes": [{
+                    "name": "server",
+                    "backend": "inproc",
+                    "runtime_kind": "rust",
+                    "readiness": "service_ready"
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let process = &manifest.graphs[0].processes[0];
+        assert_eq!(process.readiness, ReadinessGate::ServiceReady);
+    }
+
+    // -- readiness timeout 和交互测试 --
+
+    fn short_readiness_config() -> ReadinessConfig {
+        ReadinessConfig {
+            timeout: Duration::from_millis(200),
+            poll_interval: Duration::from_millis(10),
+        }
+    }
+
+    #[test]
+    fn readiness_timeout_marks_state_and_returns_error() {
+        // 启动一个不会建立 introspection socket 的子进程（sleep）。
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let socket = crate::runtime_socket_path_for_pid(real_child.id());
+        let supervisor_state = IntrospectionState::new();
+
+        let mut child = SupervisedChild {
+            name: "test_timeout".into(),
+            runtime_kind: "rust".into(),
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::RuntimeReady,
+            startup_delay_ms: 0,
+            child: real_child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "starting".into(),
+            exit_code: None,
+        };
+
+        let config = short_readiness_config();
+        let result = wait_for_runtime_ready(&supervisor_state, &mut child, &config);
+
+        assert!(result.is_err(), "should timeout");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("timed out"),
+            "error should mention timeout: {err}"
+        );
+        assert!(
+            err.contains("test_timeout"),
+            "error should name the process"
+        );
+        assert!(
+            child.finished,
+            "child should be marked finished after timeout"
+        );
+        assert_eq!(child.state, "readiness_timeout");
+    }
+
+    #[test]
+    fn readiness_service_ready_timeout_marks_state() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let socket = crate::runtime_socket_path_for_pid(real_child.id());
+        let supervisor_state = IntrospectionState::new();
+
+        let mut child = SupervisedChild {
+            name: "test_svc_timeout".into(),
+            runtime_kind: "rust".into(),
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::ServiceReady,
+            startup_delay_ms: 0,
+            child: real_child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "starting".into(),
+            exit_code: None,
+        };
+
+        let config = short_readiness_config();
+        let result = wait_for_service_ready(&supervisor_state, &mut child, &config);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timed out"));
+        assert_eq!(child.state, "readiness_timeout");
+        assert!(child.finished);
+    }
+
+    #[test]
+    fn readiness_process_exit_during_wait_marks_failed() {
+        // 启动一个立即退出的进程。
+        let mut cmd = Command::new("true");
+        let real_child = cmd.spawn().unwrap();
+        let socket = crate::runtime_socket_path_for_pid(real_child.id());
+        let supervisor_state = IntrospectionState::new();
+
+        let mut child = SupervisedChild {
+            name: "test_exit".into(),
+            runtime_kind: "rust".into(),
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::RuntimeReady,
+            startup_delay_ms: 0,
+            child: real_child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "starting".into(),
+            exit_code: None,
+        };
+
+        let config = short_readiness_config();
+        let result = wait_for_runtime_ready(&supervisor_state, &mut child, &config);
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("exited during readiness wait"),
+            "error should mention process exit"
+        );
+        assert_eq!(child.state, "readiness_failed");
+        assert!(child.finished);
+        assert_eq!(child.exit_code, Some(0));
+    }
+
+    #[test]
+    fn readiness_config_defaults_use_production_values() {
+        let config = ReadinessConfig::default();
+        assert_eq!(config.timeout, READINESS_TIMEOUT);
+        assert_eq!(config.poll_interval, READINESS_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn readiness_wait_process_started_returns_immediately() {
+        let supervisor_state = IntrospectionState::new();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let socket = crate::runtime_socket_path_for_pid(real_child.id());
+
+        let mut child = SupervisedChild {
+            name: "test_started".into(),
+            runtime_kind: "rust".into(),
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::ProcessStarted,
+            startup_delay_ms: 0,
+            child: real_child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "starting".into(),
+            exit_code: None,
+        };
+
+        let config = ReadinessConfig::default();
+        let result = wait_for_readiness(&supervisor_state, &mut child, &config);
+        assert!(result.is_ok(), "ProcessStarted should return immediately");
+        // 子进程不应被 kill，仍在运行。
+        assert!(!child.finished);
+        // 清理
+        let _ = child.child.kill();
+        let _ = child.child.wait();
+    }
+
+    #[test]
+    fn readiness_gate_label_returns_correct_string() {
+        assert_eq!(
+            readiness_gate_label(ReadinessGate::ProcessStarted),
+            "process_started"
+        );
+        assert_eq!(
+            readiness_gate_label(ReadinessGate::RuntimeReady),
+            "runtime_ready"
+        );
+        assert_eq!(
+            readiness_gate_label(ReadinessGate::ServiceReady),
+            "service_ready"
+        );
+    }
+
+    #[test]
+    fn readiness_record_health_sets_wait_field() {
+        let supervisor_state = IntrospectionState::new();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let socket = crate::runtime_socket_path_for_pid(real_child.id());
+
+        let mut child = SupervisedChild {
+            name: "test_health".into(),
+            runtime_kind: "rust".into(),
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::ServiceReady,
+            startup_delay_ms: 0,
+            child: real_child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "waiting_readiness".into(),
+            exit_code: None,
+        };
+        record_child_health(&supervisor_state, &child, false);
+
+        let status = supervisor_state.status();
+        let proc_status = status
+            .processes
+            .iter()
+            .find(|p| p.name == "test_health")
+            .unwrap();
+        assert_eq!(
+            proc_status.readiness_wait,
+            Some("service_ready".to_string())
+        );
+        assert_eq!(proc_status.state, "waiting_readiness");
+
+        // 清理
+        let _ = child.child.kill();
+        let _ = child.child.wait();
     }
 }

@@ -164,6 +164,7 @@ fn live_status_summary_displays_supervisor_process_health() {
         last_seen_unix_ms: Some(2000),
         tick_stale: true,
         exit_code: None,
+        readiness_wait: None,
     });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");

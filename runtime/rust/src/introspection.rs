@@ -144,6 +144,10 @@ pub struct IntrospectionProcessStatus {
     pub last_seen_unix_ms: Option<u64>,
     pub tick_stale: bool,
     pub exit_code: Option<i32>,
+    /// 当前正在等待的 readiness gate 名称（如 `runtime_ready`、`service_ready`）。
+    /// 进程已通过 readiness 检查或不需要等待时为 `None`。
+    #[serde(default)]
+    pub readiness_wait: Option<String>,
 }
 
 /// 单个 service endpoint 的运行态健康状态。
@@ -1503,6 +1507,7 @@ mod tests {
             last_seen_unix_ms: Some(1000),
             tick_stale: false,
             exit_code: None,
+            readiness_wait: None,
         });
 
         assert_eq!(
@@ -1516,6 +1521,7 @@ mod tests {
                 last_seen_unix_ms: Some(1000),
                 tick_stale: false,
                 exit_code: None,
+                readiness_wait: None,
             }]
         );
     }

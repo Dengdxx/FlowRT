@@ -1135,8 +1135,13 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                     socket.display()
                 ));
                 for process in status.processes {
+                    let readiness_info = process
+                        .readiness_wait
+                        .as_deref()
+                        .map(|wait| format!(" readiness_wait={wait}"))
+                        .unwrap_or_default();
                     lines.push(format!(
-                        "supervisor_process={} state={} pid={} restarts={} ticks={} last_seen_ms={} tick_stale={} exit_code={} socket={}",
+                        "supervisor_process={} state={} pid={} restarts={} ticks={} last_seen_ms={} tick_stale={} exit_code={}{} socket={}",
                         process.name,
                         process.state,
                         option_u32(process.pid),
@@ -1145,6 +1150,7 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         option_u64(process.last_seen_unix_ms),
                         process.tick_stale,
                         option_i32(process.exit_code),
+                        readiness_info,
                         socket.display()
                     ));
                 }
