@@ -2,18 +2,19 @@ use std::collections::BTreeMap;
 
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
-    ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, GraphIr, InstanceIr,
+    ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr,
     OverflowPolicy as IrOverflowPolicy, ServiceOverflowPolicy, StalePolicy as IrStalePolicy,
     TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
-    SelfDescriptionChannel, SelfDescriptionDeployment, SelfDescriptionFieldAbi,
-    SelfDescriptionFrameField, SelfDescriptionGraph, SelfDescriptionInstance,
-    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionPackage,
-    SelfDescriptionParam, SelfDescriptionProfile, SelfDescriptionScheduler,
+    SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionDeployment,
+    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionGraph,
+    SelfDescriptionInstance, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
+    SelfDescriptionPackage, SelfDescriptionParam, SelfDescriptionParamDecl,
+    SelfDescriptionPortDecl, SelfDescriptionProfile, SelfDescriptionScheduler,
     SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint,
-    SelfDescriptionTarget, SelfDescriptionTask,
+    SelfDescriptionServicePortDecl, SelfDescriptionTarget, SelfDescriptionTask,
 };
 use sha2::{Digest, Sha256};
 
@@ -144,6 +145,11 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
             .graphs
             .iter()
             .map(|graph| self_description_graph(contract, graph))
+            .collect(),
+        component_types: contract
+            .components
+            .iter()
+            .map(self_description_component_type)
             .collect(),
         message_abi: fixed_message_abi_expectations(contract)?
             .into_iter()
@@ -291,6 +297,69 @@ fn service_overflow_name(policy: ServiceOverflowPolicy) -> &'static str {
     match policy {
         ServiceOverflowPolicy::Busy => "busy",
         ServiceOverflowPolicy::Error => "error",
+    }
+}
+
+fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionComponentType {
+    SelfDescriptionComponentType {
+        name: component.name.clone(),
+        language: language_name(component.language).to_string(),
+        kind: component_kind_name(component.kind).to_string(),
+        inputs: component
+            .inputs
+            .iter()
+            .map(|port| SelfDescriptionPortDecl {
+                name: port.name.clone(),
+                ty: port.ty.canonical_syntax(),
+            })
+            .collect(),
+        outputs: component
+            .outputs
+            .iter()
+            .map(|port| SelfDescriptionPortDecl {
+                name: port.name.clone(),
+                ty: port.ty.canonical_syntax(),
+            })
+            .collect(),
+        service_clients: component
+            .service_clients
+            .iter()
+            .map(|port| SelfDescriptionServicePortDecl {
+                name: port.name.clone(),
+                request_type: port.request.canonical_syntax(),
+                response_type: port.response.canonical_syntax(),
+            })
+            .collect(),
+        service_servers: component
+            .service_servers
+            .iter()
+            .map(|port| SelfDescriptionServicePortDecl {
+                name: port.name.clone(),
+                request_type: port.request.canonical_syntax(),
+                response_type: port.response.canonical_syntax(),
+            })
+            .collect(),
+        params: component
+            .params
+            .iter()
+            .map(|param| SelfDescriptionParamDecl {
+                name: param.name.clone(),
+                ty: param_type_name(param.ty).to_string(),
+                update: param_update_name(param.update).to_string(),
+                default: Some(param_value_json(&param.default)),
+                min: param.min.as_ref().map(param_value_json),
+                max: param.max.as_ref().map(param_value_json),
+                choices: param.choices.iter().map(param_value_json).collect(),
+            })
+            .collect(),
+    }
+}
+
+fn component_kind_name(kind: ComponentKind) -> &'static str {
+    match kind {
+        ComponentKind::Native => "native",
+        ComponentKind::Adapter => "adapter",
+        ComponentKind::External => "external",
     }
 }
 
