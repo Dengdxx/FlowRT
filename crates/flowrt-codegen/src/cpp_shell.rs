@@ -73,7 +73,7 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str(
-        "#include <cstdint>\n#include <optional>\n#include <string>\n#include <utility>\n\n",
+        "#include <cstdint>\n#include <map>\n#include <optional>\n#include <string>\n#include <utility>\n\n",
     );
     output.push_str(
         "#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n#include <flowrt/service.hpp>\n\n",
@@ -236,7 +236,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             continue;
         }
         output.push_str(&format!(
-            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events) {{\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    (void)scheduler_events;\n    if ({server_field}_.has_value()) {{\n        {server_field}_->process_pending();\n    }}\n    return flowrt::Status::Ok;\n}}\n\n"
+            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    (void)scheduler_events;\n    (void)health_map;\n    if ({server_field}_.has_value()) {{\n        {server_field}_->process_pending();\n    }}\n    return flowrt::Status::Ok;\n}}\n\n"
         ));
     }
     output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
@@ -312,30 +312,30 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
     );
     for task in scheduler_tasks_for_order(graph, &order) {
         output.push_str(&format!(
-            "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+            "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
             cpp_task_step_function_name(task)
         ));
     }
     for process in &process_plans {
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+            "    flowrt::Status step_process_{}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
             process.method_suffix
         ));
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+            "    flowrt::Status step_process_{}_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
             process.method_suffix
         ));
         output.push_str(&format!(
-            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+            "    flowrt::Status step_process_{}_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
             process.method_suffix
         ));
         for task in scheduler_tasks_for_order(graph, &process.instances) {
             output.push_str(&format!(
-                "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n",
+                "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
                 cpp_process_task_step_function_name(process, task)
             ));
         }
@@ -403,7 +403,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         }
         let fn_name = cpp_service_step_fn_name(plan);
         output.push_str(&format!(
-            "    flowrt::Status {fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);\n"
+            "    flowrt::Status {fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n"
         ));
     }
     output.push_str("};\n\n");
@@ -571,7 +571,7 @@ fn emit_cpp_app_step(
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events) {{\n",
+        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
     ));
     if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges) {
         output.push_str(
@@ -583,6 +583,7 @@ fn emit_cpp_app_step(
     output.push_str("    (void)tick_context;\n");
     output.push_str("    (void)introspection_state;\n");
     output.push_str("    (void)scheduler_events;\n");
+    output.push_str("    (void)health_map;\n");
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -635,6 +636,11 @@ fn emit_cpp_app_step(
                             ),
                             true,
                         ));
+                        // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
+                        output.push_str(&indent_generated_block(
+                            &cpp_runtime_stale_health_record(&input_local, &instance.name),
+                            true,
+                        ));
                         output.push_str(&indent_generated_block(
                             &cpp_runtime_stale_error_guard(&input_local, bind),
                             true,
@@ -654,6 +660,14 @@ fn emit_cpp_app_step(
                     ));
                 }
             }
+
+            // 初始化 health_map 条目的 name 和 lane 字段。
+            let lane_name = cpp_task_lane_name(task);
+            output.push_str(&format!(
+                "        health_map[\"{instance}\"].name = \"{instance}\";\n        health_map[\"{instance}\"].lane = \"{lane}\";\n",
+                instance = instance.name,
+                lane = lane_name,
+            ));
 
             if let Some(guard) = &trigger_guard {
                 output.push_str(&format!("        if ({guard}) {{\n"));
@@ -709,11 +723,22 @@ fn emit_cpp_app_step(
 
             if let Some(deadline_ms) = task.deadline_ms {
                 output.push_str(&format!(
-                    "{body_indent}if (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}}) {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
-                    instance = instance.name
+                    "{body_indent}const bool {instance}_deadline_exceeded = (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}});\n\
+                     {body_indent}if ({instance}_deadline_exceeded) {{\n\
+                     {body_inner_indent}health_map[\"{instance}\"].deadline_missed += 1;\n\
+                     {body_indent}}}\n",
+                    instance = instance.name,
                 ));
             }
 
+            // 在 deadline_exceeded 守卫下发布输出：deadline miss 时不发布 late output。
+            let has_deadline = task.deadline_ms.is_some();
+            if has_deadline {
+                output.push_str(&format!(
+                    "{body_indent}if (!{instance}_deadline_exceeded) {{\n",
+                    instance = instance.name
+                ));
+            }
             for port in &component.outputs {
                 if !task_outputs.contains(port.name.as_str()) {
                     continue;
@@ -732,24 +757,32 @@ fn emit_cpp_app_step(
                 if outgoing.is_empty() && bridge_outgoing.is_empty() {
                     continue;
                 }
+                let publish_indent = if has_deadline {
+                    format!("{body_indent}    ")
+                } else {
+                    body_indent.to_string()
+                };
                 output.push_str(&format!(
-                    "{body_indent}if (const auto* value = {local}.as_ref()) {{\n",
+                    "{publish_indent}if (const auto* value = {local}.as_ref()) {{\n",
                     local = output_local
                 ));
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
                     output.push_str(&indent_generated_block_levels(
-                        &cpp_runtime_channel_write(bind),
-                        write_indent_levels,
+                        &cpp_runtime_channel_write_with_health(bind, &instance.name),
+                        write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
                 for bridge_index in bridge_outgoing {
                     let bridge = &emission.bridges[bridge_index];
                     output.push_str(&indent_generated_block_levels(
                         &cpp_bridge_runtime_channel_write(bridge),
-                        write_indent_levels,
+                        write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
+                output.push_str(&format!("{publish_indent}}}\n"));
+            }
+            if has_deadline {
                 output.push_str(&format!("{body_indent}}}\n"));
             }
 
@@ -841,12 +874,12 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events);\n    }}\n",
+        "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);\n    }}\n",
         run.startup_function_name
     ));
     output.push_str(&emit_cpp_scheduler_v2_loop(run));
     output.push_str(&format!(
-        "    if (status == flowrt::Status::Ok) {{\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events);\n    }}\n",
+        "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> shutdown_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, shutdown_health_map);\n    }}\n",
         run.shutdown_function_name
     ));
     for instance in run.order.iter().rev() {
@@ -914,7 +947,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         cpp_scheduler_base_period_ms(&tasks)
     ));
     output.push_str(
-        "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n",
+        "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
     );
     output.push_str(&emit_cpp_apply_pending_params_for_order(
         run.contract,
@@ -950,7 +983,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(
-        "            const auto task_statuses = scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, tick_time_ms](flowrt::TaskId task) {\n                switch (task.value) {\n",
+        "            const auto task_statuses = scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task) {\n                switch (task.value) {\n",
     );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
@@ -959,7 +992,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             None => cpp_task_step_function_name(task),
         };
         output.push_str(&format!(
-            "                    case {task_id}: return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n"
+            "                    case {task_id}: return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n"
         ));
     }
     // service dispatch cases
@@ -971,19 +1004,20 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         service_task_id += 1;
         let fn_name = cpp_service_step_fn_name(plan);
         output.push_str(&format!(
-            "                    case {service_task_id}: return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n"
+            "                    case {service_task_id}: return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n"
         ));
     }
     if tasks.is_empty() && service_plans.iter().all(|p| p.backend.0 == "zenoh") {
         output.push_str(&format!(
-            "                    default: return {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events);\n",
+            "                    default: return {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n",
             run.step_function_name
         ));
     } else {
         output.push_str("                    default: return flowrt::Status::Error;\n");
     }
+    let fairness_check = emit_cpp_fairness_check(&lane_ids);
     output.push_str(&format!(
-        "                }}\n            }});\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (const auto task_status : task_statuses) {{\n                if (task_status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
+        "                }}\n            }});\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (const auto task_status : task_statuses) {{\n                if (task_status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
             next_deadline_expr = cpp_next_periodic_deadline_expr(&tasks)
         )
         .replace(
@@ -1021,6 +1055,17 @@ fn cpp_scheduler_base_period_ms(tasks: &[&flowrt_ir::TaskIr]) -> u64 {
         .filter_map(|task| task.period_ms)
         .min()
         .unwrap_or(1)
+}
+
+/// 生成 C++ lane 饥饿检测代码。
+fn emit_cpp_fairness_check(lane_ids: &std::collections::BTreeMap<String, usize>) -> String {
+    let mut output = String::new();
+    for (lane, lane_id) in lane_ids {
+        output.push_str(&format!(
+            "        if (scheduler.lane_starvation_ticks(flowrt::LaneId{{{lane_id}}}) > fairness_starvation_threshold) {{\n            for (auto &[name, health] : health_map) {{\n                if (health.lane == \"{lane}\") {{\n                    health.fairness_violations += 1;\n                }}\n            }}\n        }}\n"
+        ));
+    }
+    output
 }
 
 fn cpp_next_periodic_deadline_expr(tasks: &[&flowrt_ir::TaskIr]) -> String {
@@ -1374,6 +1419,15 @@ fn cpp_runtime_stale_error_guard(local_name: &str, bind: &BindRuntimePlan) -> St
     )
 }
 
+/// 生成 stale input 健康计数器记录代码（C++）。
+fn cpp_runtime_stale_health_record(local_name: &str, instance_name: &str) -> String {
+    format!(
+        "    if ({local}.stale()) {{\n        health_map[\"{instance}\"].stale_input += 1;\n    }}\n",
+        local = local_name,
+        instance = instance_name,
+    )
+}
+
 fn cpp_step_local_name(instance: &str, port: &str) -> String {
     format!("{instance}_{port}")
 }
@@ -1391,6 +1445,15 @@ fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
 }
 
 fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
+    cpp_runtime_channel_write_inner(bind, None)
+}
+
+/// 生成 channel 写入代码（C++），带健康计数器记录。
+fn cpp_runtime_channel_write_with_health(bind: &BindRuntimePlan, instance_name: &str) -> String {
+    cpp_runtime_channel_write_inner(bind, Some(instance_name))
+}
+
+fn cpp_runtime_channel_write_inner(bind: &BindRuntimePlan, instance_name: Option<&str>) -> String {
     let introspection_record = cpp_introspection_publish_record(bind);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
@@ -1404,10 +1467,20 @@ fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
             "        {field}_.publish_at(*value, tick_time_ms);\n        scheduler_events.notify_data();\n{introspection_record}",
             field = bind.field_name
         ),
-        ChannelKind::Fifo => format!(
-            "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
-            field = bind.field_name
-        ),
+        ChannelKind::Fifo => {
+            if let Some(instance) = instance_name {
+                format!(
+                    "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                if (std::get<flowrt::ChannelWriteOutcome>({field}_result) == flowrt::ChannelWriteOutcome::Backpressured) {{\n                    health_map[\"{instance}\"].backpressure += 1;\n                }}\n            }} else {{\n                health_map[\"{instance}\"].overflow += 1;\n            }}\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
+                    field = bind.field_name,
+                    instance = instance,
+                )
+            } else {
+                format!(
+                    "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
+                    field = bind.field_name,
+                )
+            }
+        }
     }
 }
 

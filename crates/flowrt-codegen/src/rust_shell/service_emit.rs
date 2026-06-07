@@ -336,7 +336,7 @@ pub(crate) fn emit_rust_service_step_functions(contract: &ContractIr, graph: &Gr
 
         output.push_str(&format!(
             "    /// Hidden service task: process pending requests for `{server_instance}.{server_port}`。\n\
-             fn {fn_name}(&mut self, introspection_state: &flowrt::IntrospectionState) -> flowrt::Status {{\n\
+             fn {fn_name}(&mut self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
                  self.{server_field}.process_pending_requests();\n\
                  {status_update}\
                  flowrt::Status::Ok\n\
@@ -462,7 +462,7 @@ pub(crate) fn rust_service_dispatch_cases(
         task_id += 1;
         let fn_name = service_step_fn_name(plan);
         output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => self.{fn_name}(&introspection_state),\n"
+            "                flowrt::TaskId({task_id}) => self.{fn_name}(&introspection_state, &mut health_map),\n"
         ));
     }
 

@@ -8,6 +8,7 @@
 #include <exception>
 #include <flowrt/core.hpp>
 #include <functional>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -183,9 +184,35 @@ class DeterministicExecutor {
         const auto ordered = ready_order();
         for (const auto task : ordered) {
             ready_.erase(task);
+            if (const auto it = tasks_.find(task); it != tasks_.end()) {
+                lane_last_dispatched_tick_[it->second.lane] = current_tick_;
+            }
             results.push_back(std::invoke(fn, task));
         }
         return results;
+    }
+
+    /**
+     * @brief 设置当前调度 tick 编号，用于 lane 饥饿检测。
+     */
+    void set_current_tick(std::uint64_t tick) noexcept { current_tick_ = tick; }
+
+    /**
+     * @brief 返回当前调度 tick 编号。
+     */
+    [[nodiscard]] std::uint64_t current_tick() const noexcept { return current_tick_; }
+
+    /**
+     * @brief 返回指定 lane 距离上次被调度已经过的 tick 数。
+     *
+     * 如果该 lane 从未被调度，返回 `UINT64_MAX`。
+     */
+    [[nodiscard]] std::uint64_t lane_starvation_ticks(LaneId lane) const noexcept {
+        const auto it = lane_last_dispatched_tick_.find(lane);
+        if (it == lane_last_dispatched_tick_.end()) {
+            return (std::numeric_limits<std::uint64_t>::max)();
+        }
+        return current_tick_ - it->second;
     }
 
    private:
@@ -231,11 +258,13 @@ class DeterministicExecutor {
 
     std::size_t worker_threads_;
     std::chrono::milliseconds now_{0};
+    std::uint64_t current_tick_{0};
     bool admission_open_{true};
     std::map<LaneId, LaneKind> lanes_;
     std::map<TaskId, TaskSpec> tasks_;
     std::set<TaskId> ready_;
     std::map<TaskId, PeriodicState> periodic_;
+    std::map<LaneId, std::uint64_t> lane_last_dispatched_tick_;
 };
 
 class ManualExecutor {

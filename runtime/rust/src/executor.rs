@@ -54,11 +54,14 @@ struct PeriodicState {
 pub struct DeterministicExecutor {
     worker_threads: usize,
     now_ms: u64,
+    current_tick: u64,
     admission_open: bool,
     lanes: BTreeMap<LaneId, LaneKind>,
     tasks: BTreeMap<TaskId, TaskState>,
     ready: BTreeSet<TaskId>,
     periodic: BTreeMap<TaskId, PeriodicState>,
+    /// 记录每个 lane 最近一次被调度执行的 tick 编号。
+    lane_last_dispatched_tick: BTreeMap<LaneId, u64>,
 }
 
 type WorkerJob = Box<dyn FnOnce() -> Status + Send + 'static>;
@@ -269,11 +272,13 @@ impl DeterministicExecutor {
         Self {
             worker_threads: worker_threads.max(1),
             now_ms: 0,
+            current_tick: 0,
             admission_open: true,
             lanes: BTreeMap::new(),
             tasks: BTreeMap::new(),
             ready: BTreeSet::new(),
             periodic: BTreeMap::new(),
+            lane_last_dispatched_tick: BTreeMap::new(),
         }
     }
 
@@ -350,6 +355,10 @@ impl DeterministicExecutor {
         let mut output = Vec::new();
         for task in self.ready_order() {
             self.ready.remove(&task);
+            if let Some(state) = self.tasks.get(&task) {
+                self.lane_last_dispatched_tick
+                    .insert(state.spec.lane, self.current_tick);
+            }
             output.push(run(task));
         }
         output
@@ -381,6 +390,26 @@ impl DeterministicExecutor {
             }
         }
         tasks
+    }
+
+    /// 设置当前调度 tick 编号，用于 lane 饥饿检测。
+    pub fn set_current_tick(&mut self, tick: u64) {
+        self.current_tick = tick;
+    }
+
+    /// 返回当前调度 tick 编号。
+    pub fn current_tick(&self) -> u64 {
+        self.current_tick
+    }
+
+    /// 返回指定 lane 距离上次被调度已经过的 tick 数。
+    ///
+    /// 如果该 lane 从未被调度，返回 `u64::MAX`。
+    pub fn lane_starvation_ticks(&self, lane: LaneId) -> u64 {
+        match self.lane_last_dispatched_tick.get(&lane) {
+            Some(last) => self.current_tick.saturating_sub(*last),
+            None => u64::MAX,
+        }
     }
 }
 

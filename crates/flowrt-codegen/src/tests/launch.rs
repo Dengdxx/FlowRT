@@ -618,7 +618,7 @@ backends = ["inproc"]
     let cpp_main = artifact_content(&bundle, "cpp/src/main.cpp");
 
     assert!(cpp_header.contains(
-        "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events);"
+        "flowrt::Status step_process_control(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);"
     ));
     assert!(
             cpp_header

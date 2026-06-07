@@ -168,7 +168,7 @@ fn rust_scheduler_dispatches_service_tasks() {
     let bundle = emit_artifacts(&contract).unwrap();
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        shell.contains("step_service_plan_svc_plan(&introspection_state)"),
+        shell.contains("step_service_plan_svc_plan(&introspection_state, &mut health_map)"),
         "scheduler must dispatch service task.\n\n{shell}"
     );
 }

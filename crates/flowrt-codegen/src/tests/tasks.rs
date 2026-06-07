@@ -482,14 +482,14 @@ period_ms = 5
     let run = &rust_shell[run_start..];
     let startup_call = run
         .find(
-            "self.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events)",
+            "self.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new())",
         )
         .unwrap();
     let scheduler_call = run
         .find("let mut scheduler = flowrt::DeterministicExecutor")
         .unwrap();
     let shutdown_call = run
-        .find("self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events)")
+        .find("self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new())")
         .unwrap();
     let startup_step = generated_function_block(rust_shell, "fn step_startup");
     let shutdown_step = generated_function_block(rust_shell, "fn step_shutdown");
@@ -498,7 +498,7 @@ period_ms = 5
     assert!(startup_call < scheduler_call);
     assert!(scheduler_call < shutdown_call);
     assert!(run.contains(
-        "if status == flowrt::Status::Ok {\n            status = self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events);\n        }"
+        "if status == flowrt::Status::Ok {\n            status = self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }"
     ));
     assert!(run.contains("let shutdown = flowrt::install_signal_shutdown_token();"));
     assert!(run.contains("&& !shutdown.is_requested()"));
@@ -548,17 +548,17 @@ period_ms = 5
     let run_start = cpp_shell.find("flowrt::Status App::run(").unwrap();
     let run = &cpp_shell[run_start..];
     let startup_call = run
-        .find("status = step_startup(0, lifecycle_context, introspection_state, scheduler_events)")
+        .find("status = step_startup(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map)")
         .unwrap();
     let scheduler_call = run.find("flowrt::DeterministicExecutor scheduler").unwrap();
     let shutdown_call = run
-        .find("status = step_shutdown(0, lifecycle_context, introspection_state, scheduler_events)")
+        .find("status = step_shutdown(0, lifecycle_context, introspection_state, scheduler_events, shutdown_health_map)")
         .unwrap();
 
     assert!(startup_call < scheduler_call);
     assert!(scheduler_call < shutdown_call);
     assert!(run.contains(
-        "if (status == flowrt::Status::Ok) {\n        status = step_shutdown(0, lifecycle_context, introspection_state, scheduler_events);\n    }"
+        "if (status == flowrt::Status::Ok) {\n        std::map<std::string, flowrt::IntrospectionTaskHealth> shutdown_health_map;\n        status = step_shutdown(0, lifecycle_context, introspection_state, scheduler_events, shutdown_health_map);\n    }"
     ));
     assert!(run.contains("auto shutdown = flowrt::install_signal_shutdown_token();"));
     assert!(run.contains("!shutdown.is_requested()"));
@@ -1062,7 +1062,7 @@ worker_threads = 2
     assert!(cpp_shell.contains("std::uint64_t bind_0_seen_revision_for_sink_main = 0;"));
     assert!(cpp_shell.contains("if (bind_0_.revision() != bind_0_seen_revision_for_sink_main)"));
     assert!(cpp_shell.contains("scheduler.wake(flowrt::TaskId{"));
-    assert!(cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, tick_time_ms](flowrt::TaskId task)"));
+    assert!(cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"));
     assert!(cpp_shell.contains("bool woke_on_message = false;"));
     assert!(cpp_shell.contains("woke_on_message = true;"));
     assert!(cpp_shell.contains("if (!woke_on_message && task_statuses.empty())"));
@@ -1189,9 +1189,9 @@ overflow = "block"
         .find("let mut scheduler = flowrt::DeterministicExecutor")
         .unwrap()..];
 
-    assert!(source_step.contains(
-        "Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,"
-    ));
+    assert!(source_step.contains("Ok(flowrt::ChannelWriteOutcome::Backpressured) =>"));
+    assert!(source_step.contains("backpressure += 1"));
+    assert!(source_step.contains("return flowrt::Status::Retry"));
     assert!(run_loop.contains("if task_status == flowrt::Status::Error"));
     assert!(!run_loop.contains("if task_status != flowrt::Status::Ok"));
 }

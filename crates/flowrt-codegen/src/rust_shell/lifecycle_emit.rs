@@ -294,7 +294,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         ));
     }
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events);\n        }}\n",
+        "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }}\n",
         startup_function_name = emission.steps.startup
     ));
     output.push_str(&scheduler_emit::emit_rust_scheduler_v2_loop(
@@ -306,7 +306,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         emission.steps.scheduler,
     ));
     output.push_str(&format!(
-        "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events);\n        }}\n",
+        "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }}\n",
         shutdown_function_name = emission.steps.shutdown
     ));
     for instance in emission.order.iter().rev() {

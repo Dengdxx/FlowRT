@@ -34,11 +34,12 @@ pub(super) fn emit_rust_app_step(
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "    #[allow(dead_code)]\n    fn {function_name}(\n        &mut self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n    ) -> flowrt::Status {{\n",
+        "    #[allow(dead_code)]\n    fn {function_name}(\n        &mut self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n        health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>,\n    ) -> flowrt::Status {{\n",
     ));
     output.push_str("        let _ = tick;\n");
     output.push_str("        let _ = introspection_state;\n");
     output.push_str("        let _ = scheduler_events;\n");
+    output.push_str("        let _ = health_map;\n");
     if runtime_step_uses_tick_time(emission.binds, emission.bridges) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
@@ -91,6 +92,11 @@ pub(super) fn emit_rust_app_step(
                         ),
                         true,
                     ));
+                    // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
+                    output.push_str(&indent_generated_block(
+                        &runtime_stale_health_record(input, &instance.name),
+                        true,
+                    ));
                     output.push_str(&indent_generated_block(
                         &runtime_stale_error_guard(input, bind),
                         true,
@@ -102,6 +108,14 @@ pub(super) fn emit_rust_app_step(
                     ));
                 }
             }
+
+            // 初始化 health_map 条目的 name 和 lane 字段。
+            let lane_name = task_lane_name(task);
+            output.push_str(&format!(
+                "            {{\n                let __h = health_map.entry({instance:?}.to_string()).or_default();\n                __h.name = {instance:?}.to_string();\n                __h.lane = {lane:?}.to_string();\n            }}\n",
+                instance = instance.name,
+                lane = lane_name,
+            ));
 
             if let Some(guard) = &trigger_guard {
                 output.push_str(&format!("            if {guard} {{\n"));
@@ -167,11 +181,22 @@ pub(super) fn emit_rust_app_step(
 
             if let Some(deadline_ms) = task.deadline_ms {
                 output.push_str(&format!(
-                    "{body_indent}if {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms}) {{\n{body_inner_indent}return flowrt::Status::Error;\n{body_indent}}}\n",
-                    name = instance.name
+                    "{body_indent}let {name}_deadline_exceeded = {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms});\n\
+                     {body_indent}if {name}_deadline_exceeded {{\n\
+                     {body_inner_indent}health_map.entry({name:?}.to_string()).or_default().deadline_missed += 1;\n\
+                     {body_indent}}}\n",
+                    name = instance.name,
                 ));
             }
 
+            // 在 deadline_exceeded 守卫下发布输出：deadline miss 时不发布 late output。
+            let has_deadline = task.deadline_ms.is_some();
+            if has_deadline {
+                output.push_str(&format!(
+                    "{body_indent}if !{name}_deadline_exceeded {{\n",
+                    name = instance.name
+                ));
+            }
             for port in &component.outputs {
                 if !task_outputs.contains(port.name.as_str()) {
                     continue;
@@ -189,24 +214,35 @@ pub(super) fn emit_rust_app_step(
                 if outgoing.is_empty() && bridge_outgoing.is_empty() {
                     continue;
                 }
+                let publish_indent = if has_deadline {
+                    format!("{body_indent}    ")
+                } else {
+                    body_indent.to_string()
+                };
                 output.push_str(&format!(
-                    "{body_indent}if let Some(value) = {port}.as_ref().cloned() {{\n",
+                    "{publish_indent}if let Some(value) = {port}.as_ref().cloned() {{\n",
                     port = port.name
                 ));
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
                     output.push_str(&indent_generated_block_levels(
-                        &super::backend_emit::runtime_channel_write(bind),
-                        write_indent_levels,
+                        &super::backend_emit::runtime_channel_write_with_health(
+                            bind,
+                            &instance.name,
+                        ),
+                        write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
                 for bridge_index in bridge_outgoing {
                     let bridge = &emission.bridges[bridge_index];
                     output.push_str(&indent_generated_block_levels(
                         &super::backend_emit::bridge_runtime_channel_write(bridge),
-                        write_indent_levels,
+                        write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
+                output.push_str(&format!("{publish_indent}}}\n"));
+            }
+            if has_deadline {
                 output.push_str(&format!("{body_indent}}}\n"));
             }
 
@@ -380,5 +416,16 @@ fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
     format!(
         "        if {input}.stale() {{\n            return flowrt::Status::Error;\n        }}\n",
         input = input.name
+    )
+}
+
+/// 生成 stale input 健康计数器记录代码。
+///
+/// 在 stale error guard 之后调用，记录所有 stale 检测到 health_map。
+fn runtime_stale_health_record(input: &PortIr, instance_name: &str) -> String {
+    format!(
+        "        if {input}.stale() {{\n            health_map.entry({instance:?}.to_string()).or_default().stale_input += 1;\n        }}\n",
+        input = input.name,
+        instance = instance_name,
     )
 }

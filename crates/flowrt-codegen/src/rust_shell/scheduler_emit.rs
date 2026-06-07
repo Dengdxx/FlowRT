@@ -160,7 +160,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         scheduler_base_period_ms(&tasks)
     ));
     output.push_str(
-        "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {\n            let mut observed_data_generation: u64;\n            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n",
+        "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {\n            let mut observed_data_generation: u64;\n            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
     );
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
     let has_service_tasks =
@@ -199,7 +199,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(
             None => rust_task_step_function_name(task),
         };
         output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => self.{function_name}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events),\n"
+            "                flowrt::TaskId({task_id}) => self.{function_name}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut health_map),\n"
         ));
     }
     // service dispatch cases
@@ -210,14 +210,15 @@ pub(super) fn emit_rust_scheduler_v2_loop(
     }
     if tasks.is_empty() && service_cases.is_empty() {
         output.push_str(&format!(
-            "                _ => self.{fallback_step_function}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events),\n"
+            "                _ => self.{fallback_step_function}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut health_map),\n"
         ));
     } else {
         output.push_str("                _ => flowrt::Status::Error,\n");
     }
     output.push_str(&format!(
-        "                }});\n                if !woke_on_message && task_statuses.is_empty() {{\n                    break;\n                }}\n                for task_status in task_statuses {{\n                    if task_status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n            }}\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{}}\n                }}\n            }}\n        }}\n",
-        next_deadline_expr = rust_next_periodic_deadline_expr(&tasks)
+        "                }});\n                if !woke_on_message && task_statuses.is_empty() {{\n                    break;\n                }}\n                for task_status in task_statuses {{\n                    if task_status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{}}\n                }}\n            }}\n        }}\n",
+        next_deadline_expr = rust_next_periodic_deadline_expr(&tasks),
+        fairness_check = emit_rust_fairness_check(&lane_ids),
     ));
     output
 }
@@ -243,6 +244,20 @@ fn scheduler_base_period_ms(tasks: &[&TaskIr]) -> u64 {
         .filter_map(|task| task.period_ms)
         .min()
         .unwrap_or(1)
+}
+
+/// 生成 lane 饥饿检测代码。
+///
+/// 对每个已注册 lane 检查 `lane_starvation_ticks`，超过阈值时
+/// 在 health_map 中为该 lane 的所有 task 记录 fairness_violations。
+fn emit_rust_fairness_check(lane_ids: &std::collections::BTreeMap<String, usize>) -> String {
+    let mut output = String::new();
+    for (lane, lane_id) in lane_ids {
+        output.push_str(&format!(
+            "            if scheduler.lane_starvation_ticks(flowrt::LaneId({lane_id})) > FAIRNESS_STARVATION_THRESHOLD {{\n                for health in health_map.values_mut() {{\n                    if health.lane == {lane:?} {{\n                        health.fairness_violations += 1;\n                    }}\n                }}\n            }}\n"
+        ));
+    }
+    output
 }
 
 fn rust_next_periodic_deadline_expr(tasks: &[&TaskIr]) -> String {
