@@ -12,6 +12,8 @@ pub mod inproc;
 pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
+#[cfg(feature = "zenoh")]
+pub mod params_remote;
 pub mod service;
 pub mod shutdown;
 pub mod supervisor;
@@ -45,6 +47,11 @@ pub use introspection::{
     request_channel_snapshot, request_param_get, request_param_list, request_param_set,
     request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
     spawn_status_server, spawn_status_server_at,
+};
+#[cfg(feature = "zenoh")]
+pub use params_remote::{
+    ParamsRemoteError, ZenohParamsServer, params_key_expr, request_remote_param_get,
+    request_remote_param_list, request_remote_param_set,
 };
 pub use service::{
     Deadline, InprocServiceClient, InprocServiceConfig, InprocServiceServer, LaneGuard, RequestId,
