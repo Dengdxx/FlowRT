@@ -6,6 +6,7 @@
 #include <flowrt/channels.hpp>
 #include <flowrt/core.hpp>
 #include <flowrt/executor.hpp>
+#include <flowrt/inproc_service.hpp>
 #include <flowrt/introspection.hpp>
 #include <flowrt/iox2.hpp>
 #include <flowrt/service.hpp>
