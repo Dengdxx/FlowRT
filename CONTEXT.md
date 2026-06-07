@@ -41,23 +41,27 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | 版本 | 主线 |
 | --- | --- |
 | `v0.4.0` | Service runtime。 |
-| `v0.5.0` | Operation（Action 上位替代）+ lifecycle/supervisor 深化。 |
-| `v0.6.0` | record/replay + simulated clock + deterministic debug。 |
-| `v0.7.0` | external process / driver package 接入边界。 |
-| `v0.8.0` | 跨机器部署、交叉编译、多架构安装包。 |
-| `v0.9.0` | C/Python API、ROS2 互操作扩展。 |
+| `v0.5.0` | launch-grade supervisor、参数控制面和高频调度硬化。 |
+| `v0.6.0` | Operation + record/replay + simulated clock + deterministic debug。 |
+| `v0.7.0` | external process / driver package 接入边界、ARM64/跨机器部署闭环。 |
+| `v0.8.0` | 多目标部署、交叉编译、多架构安装包和发布硬化。 |
+| `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
 
 - `v0.4.0` 先把 Service 做成稳定的 request/response runtime 语义。
-- `v0.5.0` 在 Service 之上引入 Operation，而不是复刻 ROS2 Action。
-- `v0.6.0` 开始让运行时具备可复现调试能力，record/replay、模拟时钟和确定性调试
-  必须共享同一时间与事件模型。
-- `v0.7.0` 只定义 external process / driver package 的接入边界，不把硬件 backend
-  做进 FlowRT 主项目。
-- `v0.8.0` 解决跨机器部署、交叉编译和多架构安装包，使已生成应用可脱离源码仓库交付。
-- `v0.9.0` 扩展 C/Python API 和 ROS2 互操作，但仍以 FlowRT 自身语义为中心。
+- `v0.5.0` 优先补齐复杂应用复刻所需的系统编排基础：条件启动、错峰启动、环境变量、
+  restart policy、CPU affinity、profile、参数发现/远程控制面，以及高频多 lane
+  调度的 deadline、stale、backpressure 和 fairness 语义。
+- `v0.6.0` 在 Service 之上引入 Operation，并让运行时具备可复现调试能力。
+  Operation、record/replay、模拟时钟和确定性调试必须共享同一时间与事件模型。
+- `v0.7.0` 定义 external process / driver package 的 typed 接入边界，并补齐 ARM64、
+  跨机器部署和离线交付闭环。到 `v0.7.0`，FlowRT 应具备复刻一套复杂车载机器人
+  应用的系统能力，但不把硬件 backend 做进 FlowRT 主项目。
+- `v0.8.0` 深化多目标部署、交叉编译、多架构安装包和发布硬化，使已生成应用可脱离
+  源码仓库交付。
+- `v0.9.0` 扩展 C/Python API 和可选生态互操作，但仍以 FlowRT 自身语义为中心。
 - `v1.0.0` 冻结 ABI/schema 基线，并补齐兼容策略、故障注入和性能矩阵。
 
 `v0.4.0` 的 Service runtime 目标是：生成 Rust/C++ service client/server 用户 API；
@@ -74,7 +78,13 @@ control-plane service-like RPC，服务于运行中配置管理；Service 是 gr
 服务于用户组件之间的 typed request/response。两者可以复用 schema、validation、
 structured error、pending/apply 和 self-description 经验，但不能混成同一个概念。
 
-`v0.5.0` 不复制 ROS2 Action。FlowRT 需要的是一等 Operation 语义：typed
+`v0.5.0` 的系统编排目标是让 generated supervisor 足以替代常见 launch 脚本的核心
+职责：process 条件启停、错峰启动、环境注入、CPU affinity、重启策略、故障传播、
+profile 选择和运行态 health。参数系统要从单应用热更新扩展到可发现、可校验、可远程
+操作的 runtime control-plane；Web、HTTP、WebSocket 和 UI 不进入 FlowRT core，只能
+作为应用层或外部工具消费 FlowRT 暴露的 typed introspection / params / record API。
+
+`v0.6.0` 不复制 ROS2 Action。FlowRT 需要的是一等 Operation 语义：typed
 long-running command、generated state machine、explicit policy、observable handle，
 底层编译期 lower 成 Service + Channel。用户只看 Operation，调试时才展开底层拓扑。
 Operation policy 必须显式声明 concurrency、preempt、cancel、timeout 和
