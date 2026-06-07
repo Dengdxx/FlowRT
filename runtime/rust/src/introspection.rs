@@ -100,6 +100,9 @@ pub struct IntrospectionStatus {
     pub channels: Vec<IntrospectionChannelStatus>,
     #[serde(default)]
     pub processes: Vec<IntrospectionProcessStatus>,
+    /// v0.4+ service 运行态健康状态。
+    #[serde(default)]
+    pub services: Vec<IntrospectionServiceStatus>,
 }
 
 /// 单个 channel 的运行态摘要。
@@ -135,6 +138,37 @@ pub struct IntrospectionProcessStatus {
     pub last_seen_unix_ms: Option<u64>,
     pub tick_stale: bool,
     pub exit_code: Option<i32>,
+}
+
+/// 单个 service endpoint 的运行态健康状态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionServiceStatus {
+    /// service edge 名称。
+    pub name: String,
+    /// service 是否就绪。
+    #[serde(default)]
+    pub ready: bool,
+    /// 当前 in-flight 请求数。
+    #[serde(default)]
+    pub in_flight: u64,
+    /// 当前排队请求数。
+    #[serde(default)]
+    pub queued: u64,
+    /// 累计请求总数。
+    #[serde(default)]
+    pub total_requests: u64,
+    /// 累计超时次数。
+    #[serde(default)]
+    pub timeout_count: u64,
+    /// 累计 busy 拒绝次数。
+    #[serde(default)]
+    pub busy_count: u64,
+    /// 累计 unavailable 次数。
+    #[serde(default)]
+    pub unavailable_count: u64,
+    /// 累计 late response / drop 次数。
+    #[serde(default)]
+    pub late_drop_count: u64,
 }
 
 /// 数据面 probe 记录结果。
@@ -374,6 +408,7 @@ struct IntrospectionStateInner {
     channels: BTreeMap<String, ChannelState>,
     params: BTreeMap<String, ParamState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
+    services: BTreeMap<String, IntrospectionServiceStatus>,
 }
 
 impl IntrospectionState {
@@ -562,6 +597,7 @@ impl IntrospectionState {
                 })
                 .collect(),
             processes: inner.processes.values().cloned().collect(),
+            services: inner.services.values().cloned().collect(),
         }
     }
 
@@ -569,6 +605,31 @@ impl IntrospectionState {
     pub fn record_process_health(&self, status: IntrospectionProcessStatus) {
         let mut inner = self.lock_inner();
         inner.processes.insert(status.name.clone(), status);
+    }
+
+    /// 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
+    pub fn register_service(&self, name: impl Into<String>) {
+        let name = name.into();
+        let mut inner = self.lock_inner();
+        inner.services.entry(name.clone()).or_insert_with(|| {
+            IntrospectionServiceStatus {
+                name,
+                ready: true,
+                in_flight: 0,
+                queued: 0,
+                total_requests: 0,
+                timeout_count: 0,
+                busy_count: 0,
+                unavailable_count: 0,
+                late_drop_count: 0,
+            }
+        });
+    }
+
+    /// 记录 service 运行态健康状态快照。
+    pub fn record_service_health(&self, status: IntrospectionServiceStatus) {
+        let mut inner = self.lock_inner();
+        inner.services.insert(status.name.clone(), status);
     }
 
     /// 返回指定 channel 的 raw ABI snapshot。

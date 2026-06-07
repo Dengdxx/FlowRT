@@ -246,11 +246,27 @@ inline IntrospectionObserverGuard IntrospectionChannelProbe::observe() const {
 }
 
 /**
+ * @brief 单个 service endpoint 的运行态健康状态。
+ */
+struct IntrospectionServiceStatus {
+    std::string name;
+    bool ready = true;
+    std::uint64_t in_flight = 0;
+    std::uint64_t queued = 0;
+    std::uint64_t total_requests = 0;
+    std::uint64_t timeout_count = 0;
+    std::uint64_t busy_count = 0;
+    std::uint64_t unavailable_count = 0;
+    std::uint64_t late_drop_count = 0;
+};
+
+/**
  * @brief 运行态 status 快照。
  */
 struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
     std::vector<IntrospectionChannelStatus> channels;
+    std::vector<IntrospectionServiceStatus> services;
 };
 
 /**
@@ -371,6 +387,30 @@ inline std::string channel_status_json(const IntrospectionChannelStatus &channel
     return output;
 }
 
+inline std::string service_status_json(const IntrospectionServiceStatus &service) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(service.name));
+    output.append(",\"ready\":");
+    output.append(service.ready ? "true" : "false");
+    output.append(",\"in_flight\":");
+    output.append(std::to_string(service.in_flight));
+    output.append(",\"queued\":");
+    output.append(std::to_string(service.queued));
+    output.append(",\"total_requests\":");
+    output.append(std::to_string(service.total_requests));
+    output.append(",\"timeout_count\":");
+    output.append(std::to_string(service.timeout_count));
+    output.append(",\"busy_count\":");
+    output.append(std::to_string(service.busy_count));
+    output.append(",\"unavailable_count\":");
+    output.append(std::to_string(service.unavailable_count));
+    output.append(",\"late_drop_count\":");
+    output.append(std::to_string(service.late_drop_count));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string status_json(const IntrospectionStatus &status) {
     std::string output;
     output.append("{\"tick_count\":");
@@ -382,7 +422,14 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(channel_status_json(status.channels[index]));
     }
-    output.append("],\"processes\":[]}");
+    output.append("],\"processes\":[],\"services\":[");
+    for (std::size_t index = 0; index < status.services.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(service_status_json(status.services[index]));
+    }
+    output.append("]}");
     return output;
 }
 
@@ -1013,6 +1060,25 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
+     */
+    void register_service(std::string name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->services.try_emplace(name, IntrospectionServiceStatus{
+                                                .name = name,
+                                                .ready = true,
+                                            });
+    }
+
+    /**
+     * @brief 记录 service 运行态健康状态快照。
+     */
+    void record_service_health(IntrospectionServiceStatus status) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->services.insert_or_assign(status.name, std::move(status));
+    }
+
+    /**
      * @brief 返回当前 status 快照。
      */
     IntrospectionStatus status() const {
@@ -1033,6 +1099,10 @@ class IntrospectionState {
                 .active_observers = channel.probe.active_count(),
                 .dropped_samples = channel.probe.dropped_samples(),
             });
+        }
+        snapshot.services.reserve(inner_->services.size());
+        for (const auto &[name, service] : inner_->services) {
+            snapshot.services.push_back(service);
         }
         return snapshot;
     }
@@ -1176,6 +1246,7 @@ class IntrospectionState {
         std::optional<std::string> self_description_json;
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
+        std::map<std::string, IntrospectionServiceStatus> services;
     };
 
     static IntrospectionParamStatus param_status(const std::string &name, const ParamState &param) {
