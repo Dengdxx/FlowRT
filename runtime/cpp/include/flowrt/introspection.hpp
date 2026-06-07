@@ -261,12 +261,46 @@ struct IntrospectionServiceStatus {
 };
 
 /**
+ * @brief 单个 task 的调度健康快照。
+ *
+ * 由 generated shell 在 scheduler step 边界填充，反映 task 级调度质量。
+ */
+struct IntrospectionTaskHealth {
+    std::string name;
+    std::string lane;
+    std::uint64_t deadline_missed = 0;
+    std::uint64_t stale_input = 0;
+    std::uint64_t backpressure = 0;
+    std::uint64_t overflow = 0;
+    std::uint64_t fairness_violations = 0;
+    std::uint64_t run_count = 0;
+    std::uint64_t success_count = 0;
+    std::uint64_t consecutive_failures = 0;
+    std::optional<std::uint64_t> last_run_ms;
+    std::optional<std::uint64_t> last_success_ms;
+};
+
+/**
+ * @brief 单个 lane 的调度健康快照。
+ *
+ * 反映 lane 级队列深度和公平性状态。
+ */
+struct IntrospectionLaneHealth {
+    std::string name;
+    std::uint64_t queue_depth = 0;
+    std::uint64_t dispatched_count = 0;
+    std::uint64_t fairness_violations = 0;
+};
+
+/**
  * @brief 运行态 status 快照。
  */
 struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
     std::vector<IntrospectionChannelStatus> channels;
     std::vector<IntrospectionServiceStatus> services;
+    std::vector<IntrospectionTaskHealth> tasks;
+    std::vector<IntrospectionLaneHealth> lanes;
 };
 
 /**
@@ -411,6 +445,54 @@ inline std::string service_status_json(const IntrospectionServiceStatus &service
     return output;
 }
 
+inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) {
+    return value ? std::to_string(*value) : "null";
+}
+
+inline std::string task_health_json(const IntrospectionTaskHealth &task) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(task.name));
+    output.append(",\"lane\":");
+    output.append(json_string(task.lane));
+    output.append(",\"deadline_missed\":");
+    output.append(std::to_string(task.deadline_missed));
+    output.append(",\"stale_input\":");
+    output.append(std::to_string(task.stale_input));
+    output.append(",\"backpressure\":");
+    output.append(std::to_string(task.backpressure));
+    output.append(",\"overflow\":");
+    output.append(std::to_string(task.overflow));
+    output.append(",\"fairness_violations\":");
+    output.append(std::to_string(task.fairness_violations));
+    output.append(",\"run_count\":");
+    output.append(std::to_string(task.run_count));
+    output.append(",\"success_count\":");
+    output.append(std::to_string(task.success_count));
+    output.append(",\"consecutive_failures\":");
+    output.append(std::to_string(task.consecutive_failures));
+    output.append(",\"last_run_ms\":");
+    output.append(optional_u64_json(task.last_run_ms));
+    output.append(",\"last_success_ms\":");
+    output.append(optional_u64_json(task.last_success_ms));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string lane_health_json(const IntrospectionLaneHealth &lane) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(lane.name));
+    output.append(",\"queue_depth\":");
+    output.append(std::to_string(lane.queue_depth));
+    output.append(",\"dispatched_count\":");
+    output.append(std::to_string(lane.dispatched_count));
+    output.append(",\"fairness_violations\":");
+    output.append(std::to_string(lane.fairness_violations));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string status_json(const IntrospectionStatus &status) {
     std::string output;
     output.append("{\"tick_count\":");
@@ -428,6 +510,20 @@ inline std::string status_json(const IntrospectionStatus &status) {
             output.push_back(',');
         }
         output.append(service_status_json(status.services[index]));
+    }
+    output.append("],\"tasks\":[");
+    for (std::size_t index = 0; index < status.tasks.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(task_health_json(status.tasks[index]));
+    }
+    output.append("],\"lanes\":[");
+    for (std::size_t index = 0; index < status.lanes.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(lane_health_json(status.lanes[index]));
     }
     output.append("]}");
     return output;
@@ -1079,6 +1175,22 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 记录 task 调度健康快照。
+     */
+    void record_task_health(IntrospectionTaskHealth health) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->tasks.insert_or_assign(health.name, std::move(health));
+    }
+
+    /**
+     * @brief 记录 lane 调度健康快照。
+     */
+    void record_lane_health(IntrospectionLaneHealth health) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->lanes.insert_or_assign(health.name, std::move(health));
+    }
+
+    /**
      * @brief 返回当前 status 快照。
      */
     IntrospectionStatus status() const {
@@ -1103,6 +1215,14 @@ class IntrospectionState {
         snapshot.services.reserve(inner_->services.size());
         for (const auto &[name, service] : inner_->services) {
             snapshot.services.push_back(service);
+        }
+        snapshot.tasks.reserve(inner_->tasks.size());
+        for (const auto &[name, task] : inner_->tasks) {
+            snapshot.tasks.push_back(task);
+        }
+        snapshot.lanes.reserve(inner_->lanes.size());
+        for (const auto &[name, lane] : inner_->lanes) {
+            snapshot.lanes.push_back(lane);
         }
         return snapshot;
     }
@@ -1247,6 +1367,8 @@ class IntrospectionState {
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
         std::map<std::string, IntrospectionServiceStatus> services;
+        std::map<std::string, IntrospectionTaskHealth> tasks;
+        std::map<std::string, IntrospectionLaneHealth> lanes;
     };
 
     static IntrospectionParamStatus param_status(const std::string &name, const ParamState &param) {

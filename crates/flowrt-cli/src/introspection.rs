@@ -1185,6 +1185,40 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         ));
                     }
                 }
+                for task in &status.tasks {
+                    let last_run = task
+                        .last_run_ms
+                        .map_or_else(|| "none".to_string(), |v| v.to_string());
+                    let last_success = task
+                        .last_success_ms
+                        .map_or_else(|| "none".to_string(), |v| v.to_string());
+                    lines.push(format!(
+                        "task_health={} lane={} deadline_missed={} stale_input={} backpressure={} overflow={} fairness_violations={} runs={} successes={} consecutive_failures={} last_run_ms={} last_success_ms={} socket={}",
+                        task.name,
+                        task.lane,
+                        task.deadline_missed,
+                        task.stale_input,
+                        task.backpressure,
+                        task.overflow,
+                        task.fairness_violations,
+                        task.run_count,
+                        task.success_count,
+                        task.consecutive_failures,
+                        last_run,
+                        last_success,
+                        socket.display()
+                    ));
+                }
+                for lane in &status.lanes {
+                    lines.push(format!(
+                        "lane_health={} queue_depth={} dispatched_count={} fairness_violations={} socket={}",
+                        lane.name,
+                        lane.queue_depth,
+                        lane.dispatched_count,
+                        lane.fairness_violations,
+                        socket.display()
+                    ));
+                }
             }
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
                 lines.push(format!(

@@ -362,3 +362,54 @@ pub struct SelfDescriptionFrameField {
     pub header_size_bytes: usize,
     pub tail_max_bytes: Option<usize>,
 }
+
+// ---------------------------------------------------------------------------
+// 调度健康模型 — language-neutral health Interface
+//
+// 以下类型定义 task 级和 lane 级调度健康指标的 schema 声明。
+// 所有字段使用 `serde(default)` 保证前向兼容：旧版 JSON 不含健康字段时
+// 解析为零值，不会让旧应用崩溃。
+// ---------------------------------------------------------------------------
+
+/// task 级健康指标 schema 声明。
+///
+/// 描述单个 task 的调度健康维度。静态 self-description 声明存在哪些健康
+/// 维度；live introspection 填充运行态计数器。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SelfDescriptionTaskHealth {
+    /// 是否声明 deadline miss 观测。
+    #[serde(default)]
+    pub has_deadline: bool,
+    /// 是否声明 stale input 观测。
+    #[serde(default)]
+    pub has_stale: bool,
+    /// 是否声明 backpressure 观测。
+    #[serde(default)]
+    pub has_backpressure: bool,
+    /// 是否声明 overflow 观测。
+    #[serde(default)]
+    pub has_overflow: bool,
+    /// 是否声明 fairness 观测。
+    #[serde(default)]
+    pub has_fairness: bool,
+    /// 声明的 deadline（毫秒）。None 表示无 deadline。
+    pub deadline_ms: Option<u64>,
+    /// 声明的调度周期（毫秒）。None 表示非周期 task。
+    pub period_ms: Option<u64>,
+}
+
+/// lane 级健康指标 schema 声明。
+///
+/// 描述单个 lane 的队列和执行健康维度。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SelfDescriptionLaneHealth {
+    /// 是否声明 queue depth 观测。
+    #[serde(default)]
+    pub has_queue_depth: bool,
+    /// 是否声明 dispatched count 观测。
+    #[serde(default)]
+    pub has_dispatched_count: bool,
+    /// 是否声明 fairness 观测。
+    #[serde(default)]
+    pub has_fairness: bool,
+}

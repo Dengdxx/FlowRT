@@ -103,6 +103,12 @@ pub struct IntrospectionStatus {
     /// v0.4+ service 运行态健康状态。
     #[serde(default)]
     pub services: Vec<IntrospectionServiceStatus>,
+    /// v0.5+ task 级调度健康快照。
+    #[serde(default)]
+    pub tasks: Vec<IntrospectionTaskHealth>,
+    /// v0.5+ lane 级调度健康快照。
+    #[serde(default)]
+    pub lanes: Vec<IntrospectionLaneHealth>,
 }
 
 /// 单个 channel 的运行态摘要。
@@ -169,6 +175,67 @@ pub struct IntrospectionServiceStatus {
     /// 累计 late response / drop 次数。
     #[serde(default)]
     pub late_drop_count: u64,
+}
+
+/// 单个 task 的调度健康快照。
+///
+/// 由 generated shell 在 scheduler step 边界填充，反映 task 级调度质量。
+/// 所有字段使用 `serde(default)` 保证前向兼容。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionTaskHealth {
+    /// task 名称。
+    #[serde(default)]
+    pub name: String,
+    /// 所属 lane 名称。
+    #[serde(default)]
+    pub lane: String,
+    /// 累计 deadline miss 次数。
+    #[serde(default)]
+    pub deadline_missed: u64,
+    /// 累计 stale input 次数。
+    #[serde(default)]
+    pub stale_input: u64,
+    /// 累计 backpressure 事件次数。
+    #[serde(default)]
+    pub backpressure: u64,
+    /// 累计 overflow 事件次数。
+    #[serde(default)]
+    pub overflow: u64,
+    /// 累计 fairness 违规次数（如 lane 内优先级饥饿）。
+    #[serde(default)]
+    pub fairness_violations: u64,
+    /// 累计运行次数。
+    #[serde(default)]
+    pub run_count: u64,
+    /// 累计成功次数。
+    #[serde(default)]
+    pub success_count: u64,
+    /// 连续失败次数。
+    #[serde(default)]
+    pub consecutive_failures: u64,
+    /// 最近一次运行时间戳（Unix 毫秒）。
+    pub last_run_ms: Option<u64>,
+    /// 最近一次成功时间戳（Unix 毫秒）。
+    pub last_success_ms: Option<u64>,
+}
+
+/// 单个 lane 的调度健康快照。
+///
+/// 反映 lane 级队列深度和公平性状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionLaneHealth {
+    /// lane 名称。
+    #[serde(default)]
+    pub name: String,
+    /// 当前队列中的 ready task 数。
+    #[serde(default)]
+    pub queue_depth: u64,
+    /// 累计被调度执行的 task 总数。
+    #[serde(default)]
+    pub dispatched_count: u64,
+    /// 累计 fairness 违规次数（如 lane 间轮转饥饿）。
+    #[serde(default)]
+    pub fairness_violations: u64,
 }
 
 /// 数据面 probe 记录结果。
@@ -409,6 +476,8 @@ struct IntrospectionStateInner {
     params: BTreeMap<String, ParamState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
     services: BTreeMap<String, IntrospectionServiceStatus>,
+    tasks: BTreeMap<String, IntrospectionTaskHealth>,
+    lanes: BTreeMap<String, IntrospectionLaneHealth>,
 }
 
 impl IntrospectionState {
@@ -598,6 +667,8 @@ impl IntrospectionState {
                 .collect(),
             processes: inner.processes.values().cloned().collect(),
             services: inner.services.values().cloned().collect(),
+            tasks: inner.tasks.values().cloned().collect(),
+            lanes: inner.lanes.values().cloned().collect(),
         }
     }
 
@@ -631,6 +702,30 @@ impl IntrospectionState {
     pub fn record_service_health(&self, status: IntrospectionServiceStatus) {
         let mut inner = self.lock_inner();
         inner.services.insert(status.name.clone(), status);
+    }
+
+    /// 记录 task 调度健康快照。
+    pub fn record_task_health(&self, health: IntrospectionTaskHealth) {
+        let mut inner = self.lock_inner();
+        inner.tasks.insert(health.name.clone(), health);
+    }
+
+    /// 记录 lane 调度健康快照。
+    pub fn record_lane_health(&self, health: IntrospectionLaneHealth) {
+        let mut inner = self.lock_inner();
+        inner.lanes.insert(health.name.clone(), health);
+    }
+
+    /// 返回指定 task 的调度健康快照。
+    pub fn task_health(&self, name: &str) -> Option<IntrospectionTaskHealth> {
+        let inner = self.lock_inner();
+        inner.tasks.get(name).cloned()
+    }
+
+    /// 返回指定 lane 的调度健康快照。
+    pub fn lane_health(&self, name: &str) -> Option<IntrospectionLaneHealth> {
+        let inner = self.lock_inner();
+        inner.lanes.get(name).cloned()
     }
 
     /// 返回指定 channel 的 raw ABI snapshot。
@@ -1925,5 +2020,138 @@ mod tests {
 
         drop(server);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_health_recording_and_status_snapshot() {
+        let state = IntrospectionState::new();
+
+        state.record_task_health(IntrospectionTaskHealth {
+            name: "imu_task".to_string(),
+            lane: "sensor_lane".to_string(),
+            deadline_missed: 3,
+            stale_input: 1,
+            backpressure: 0,
+            overflow: 0,
+            fairness_violations: 0,
+            run_count: 100,
+            success_count: 97,
+            consecutive_failures: 0,
+            last_run_ms: Some(1000),
+            last_success_ms: Some(1000),
+        });
+
+        state.record_task_health(IntrospectionTaskHealth {
+            name: "control_task".to_string(),
+            lane: "control_lane".to_string(),
+            deadline_missed: 0,
+            stale_input: 0,
+            backpressure: 5,
+            overflow: 2,
+            fairness_violations: 1,
+            run_count: 50,
+            success_count: 48,
+            consecutive_failures: 1,
+            last_run_ms: Some(2000),
+            last_success_ms: Some(1900),
+        });
+
+        let status = state.status();
+        assert_eq!(status.tasks.len(), 2);
+
+        let imu = state.task_health("imu_task").unwrap();
+        assert_eq!(imu.name, "imu_task");
+        assert_eq!(imu.deadline_missed, 3);
+        assert_eq!(imu.run_count, 100);
+        assert_eq!(imu.success_count, 97);
+        assert_eq!(imu.consecutive_failures, 0);
+
+        let control = state.task_health("control_task").unwrap();
+        assert_eq!(control.backpressure, 5);
+        assert_eq!(control.overflow, 2);
+        assert_eq!(control.consecutive_failures, 1);
+        assert_eq!(control.last_success_ms, Some(1900));
+
+        assert!(state.task_health("missing_task").is_none());
+    }
+
+    #[test]
+    fn lane_health_recording_and_status_snapshot() {
+        let state = IntrospectionState::new();
+
+        state.record_lane_health(IntrospectionLaneHealth {
+            name: "sensor_lane".to_string(),
+            queue_depth: 2,
+            dispatched_count: 500,
+            fairness_violations: 0,
+        });
+
+        state.record_lane_health(IntrospectionLaneHealth {
+            name: "control_lane".to_string(),
+            queue_depth: 0,
+            dispatched_count: 250,
+            fairness_violations: 3,
+        });
+
+        let status = state.status();
+        assert_eq!(status.lanes.len(), 2);
+
+        let sensor = state.lane_health("sensor_lane").unwrap();
+        assert_eq!(sensor.queue_depth, 2);
+        assert_eq!(sensor.dispatched_count, 500);
+
+        let control = state.lane_health("control_lane").unwrap();
+        assert_eq!(control.queue_depth, 0);
+        assert_eq!(control.dispatched_count, 250);
+
+        assert!(state.lane_health("missing_lane").is_none());
+    }
+
+    #[test]
+    fn health_fields_serialize_with_defaults_for_backward_compat() {
+        // 旧版 JSON 不含 tasks/lanes 字段时应解析为默认空列表。
+        let status: IntrospectionStatus =
+            serde_json::from_str(r#"{"tick_count":1,"channels":[],"processes":[],"services":[]}"#)
+                .unwrap();
+        assert!(status.tasks.is_empty());
+        assert!(status.lanes.is_empty());
+    }
+
+    #[test]
+    fn health_fields_serialize_roundtrip() {
+        let status = IntrospectionStatus {
+            tick_count: 42,
+            channels: vec![],
+            processes: vec![],
+            services: vec![],
+            tasks: vec![IntrospectionTaskHealth {
+                name: "t1".to_string(),
+                lane: "l1".to_string(),
+                deadline_missed: 5,
+                stale_input: 2,
+                backpressure: 1,
+                overflow: 0,
+                fairness_violations: 0,
+                run_count: 100,
+                success_count: 95,
+                consecutive_failures: 0,
+                last_run_ms: Some(1000),
+                last_success_ms: Some(999),
+            }],
+            lanes: vec![IntrospectionLaneHealth {
+                name: "l1".to_string(),
+                queue_depth: 3,
+                dispatched_count: 200,
+                fairness_violations: 1,
+            }],
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0].name, "t1");
+        assert_eq!(parsed.tasks[0].deadline_missed, 5);
+        assert_eq!(parsed.lanes.len(), 1);
+        assert_eq!(parsed.lanes[0].queue_depth, 3);
     }
 }

@@ -205,6 +205,8 @@ fn live_hz_summary_formats_channel_delta_rate() {
             }],
             processes: Vec::new(),
             services: Vec::new(),
+            tasks: Vec::new(),
+            lanes: Vec::new(),
         },
     };
     let second = flowrt::IntrospectionResponse::Status {
@@ -229,6 +231,8 @@ fn live_hz_summary_formats_channel_delta_rate() {
             }],
             processes: Vec::new(),
             services: Vec::new(),
+            tasks: Vec::new(),
+            lanes: Vec::new(),
         },
     };
 
@@ -670,5 +674,94 @@ fn self_description_nodes_shows_kind_when_available() {
 
     assert!(nodes.contains("sensor process=main runtime=rust component=imu_sensor kind=native"));
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_displays_task_and_lane_health() {
+    let root = temp_test_dir("live-status-health");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 77,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_task_health(flowrt::IntrospectionTaskHealth {
+        name: "imu_task".to_string(),
+        lane: "sensor_lane".to_string(),
+        deadline_missed: 3,
+        stale_input: 1,
+        backpressure: 0,
+        overflow: 2,
+        fairness_violations: 0,
+        run_count: 100,
+        success_count: 97,
+        consecutive_failures: 0,
+        last_run_ms: Some(1000),
+        last_success_ms: Some(999),
+    });
+    state.record_lane_health(flowrt::IntrospectionLaneHealth {
+        name: "sensor_lane".to_string(),
+        queue_depth: 2,
+        dispatched_count: 500,
+        fairness_violations: 0,
+    });
+
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+    assert!(
+        output.contains("task_health=imu_task"),
+        "expected task_health=imu_task in output: {output}"
+    );
+    assert!(
+        output.contains("lane=sensor_lane"),
+        "expected lane=sensor_lane in output: {output}"
+    );
+    assert!(
+        output.contains("deadline_missed=3"),
+        "expected deadline_missed=3 in output: {output}"
+    );
+    assert!(
+        output.contains("stale_input=1"),
+        "expected stale_input=1 in output: {output}"
+    );
+    assert!(
+        output.contains("overflow=2"),
+        "expected overflow=2 in output: {output}"
+    );
+    assert!(
+        output.contains("fairness_violations=0"),
+        "expected fairness_violations=0 in output: {output}"
+    );
+    assert!(
+        output.contains("runs=100"),
+        "expected runs=100 in output: {output}"
+    );
+    assert!(
+        output.contains("successes=97"),
+        "expected successes=97 in output: {output}"
+    );
+    assert!(
+        output.contains("lane_health=sensor_lane"),
+        "expected lane_health=sensor_lane in output: {output}"
+    );
+    assert!(
+        output.contains("queue_depth=2"),
+        "expected queue_depth=2 in output: {output}"
+    );
+    assert!(
+        output.contains("dispatched_count=500"),
+        "expected dispatched_count=500 in output: {output}"
+    );
+
+    drop(server);
     let _ = std::fs::remove_dir_all(&root);
 }

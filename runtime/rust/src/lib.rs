@@ -37,13 +37,14 @@ pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_ta
 pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{
     INTROSPECTION_PROTOCOL_VERSION, IntrospectionChannelProbe, IntrospectionChannelStatus,
-    IntrospectionHandshake, IntrospectionIdentity, IntrospectionObserverGuard,
-    IntrospectionParamSchema, IntrospectionParamStatus, IntrospectionProbeRecord,
-    IntrospectionProcessStatus, IntrospectionRequest, IntrospectionResponse, IntrospectionServer,
-    IntrospectionServiceStatus, IntrospectionState, IntrospectionStatus, discover_runtime_sockets,
-    observe_channel_stream, request_channel_snapshot, request_param_get, request_param_list,
-    request_param_set, request_self_description, request_status, runtime_socket_dir,
-    runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
+    IntrospectionHandshake, IntrospectionIdentity, IntrospectionLaneHealth,
+    IntrospectionObserverGuard, IntrospectionParamSchema, IntrospectionParamStatus,
+    IntrospectionProbeRecord, IntrospectionProcessStatus, IntrospectionRequest,
+    IntrospectionResponse, IntrospectionServer, IntrospectionServiceStatus, IntrospectionState,
+    IntrospectionStatus, IntrospectionTaskHealth, discover_runtime_sockets, observe_channel_stream,
+    request_channel_snapshot, request_param_get, request_param_list, request_param_set,
+    request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
+    spawn_status_server, spawn_status_server_at,
 };
 pub use service::{
     Deadline, InprocServiceClient, InprocServiceConfig, InprocServiceServer, LaneGuard, RequestId,

@@ -172,6 +172,26 @@ int main() {
     for (std::size_t index = 0; index < 7; ++index) {
         state.record_tick();
     }
+    state.record_task_health(flowrt::IntrospectionTaskHealth{
+        .name = "imu_task",
+        .lane = "sensor_lane",
+        .deadline_missed = 3,
+        .stale_input = 1,
+        .backpressure = 0,
+        .overflow = 0,
+        .fairness_violations = 0,
+        .run_count = 100,
+        .success_count = 97,
+        .consecutive_failures = 0,
+        .last_run_ms = std::optional<std::uint64_t>{1000U},
+        .last_success_ms = std::optional<std::uint64_t>{1000U},
+    });
+    state.record_lane_health(flowrt::IntrospectionLaneHealth{
+        .name = "sensor_lane",
+        .queue_depth = 2,
+        .dispatched_count = 500,
+        .fairness_violations = 0,
+    });
     state.record_channel_publish_bytes(
         "source.imu_to_sink.imu", "Imu",
         std::vector<std::uint8_t>{std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}},
@@ -227,6 +247,14 @@ int main() {
         assert_contains(status_response, R"("message_type":"Imu")");
         assert_contains(status_response, R"("published_count":1)");
         assert_contains(status_response, R"("last_payload_len":3)");
+        assert_contains(status_response, R"("name":"imu_task")");
+        assert_contains(status_response, R"("lane":"sensor_lane")");
+        assert_contains(status_response, R"("deadline_missed":3)");
+        assert_contains(status_response, R"("stale_input":1)");
+        assert_contains(status_response, R"("run_count":100)");
+        assert_contains(status_response, R"("success_count":97)");
+        assert_contains(status_response, R"("queue_depth":2)");
+        assert_contains(status_response, R"("dispatched_count":500)");
 
         const auto snapshot_response = request_line(
             socket_path, R"({"command":"channel_snapshot","channel":"source.imu_to_sink.imu"})");
