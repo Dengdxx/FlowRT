@@ -744,7 +744,8 @@ mod tests {
 
     // ---- Inproc Service Runtime 测试 ----
 
-    use crate::executor::LaneId;
+    use crate::executor::{LaneId, ScheduleEvent, ScheduleWaiter};
+    use crate::shutdown::ShutdownToken;
     use std::sync::atomic::AtomicU64;
     use std::time::Duration;
 
@@ -796,8 +797,7 @@ mod tests {
     fn inproc_service_unavailable_after_registry_drop() {
         // client 持有 Weak 引用，registry drop 后 call() 返回 Unavailable
         let registry = ServiceRegistry::new();
-        let (client, _server) =
-            registry.register("ephemeral", LaneId(1), 8, |req: u32| req);
+        let (client, _server) = registry.register("ephemeral", LaneId(1), 8, |req: u32| req);
 
         // registry 存活时调用正常（需要 server 处理，这里只测 Unavailable 路径）
         drop(registry);
@@ -817,8 +817,7 @@ mod tests {
     #[test]
     fn inproc_service_queue_depth_zero_rejects_all() {
         let registry = ServiceRegistry::new();
-        let (client, _server) =
-            registry.register("no_queue", LaneId(1), 0, |req: u32| req);
+        let (client, _server) = registry.register("no_queue", LaneId(1), 0, |req: u32| req);
 
         // queue_depth=0 表示不允许排队，任何请求都返回 Busy
         let result = client.call(1, Duration::from_secs(1));
@@ -839,6 +838,95 @@ mod tests {
         // 第二个请求应该返回 Busy
         let h2 = client.start_call(2, Duration::from_secs(5));
         assert_eq!(h2.error, Some(ServiceError::Busy));
+    }
+
+    #[test]
+    fn inproc_service_max_in_flight_limits_outstanding_calls() {
+        let registry = ServiceRegistry::new();
+        let config = InprocServiceConfig {
+            queue_depth: 8,
+            max_in_flight: 1,
+            ..InprocServiceConfig::default()
+        };
+        let (client, server) =
+            registry.register_with_config("limited", LaneId(1), config, |req: u32| req + 1);
+
+        let h1 = client.start_call(1, Duration::from_secs(1));
+        assert!(h1.error.is_none());
+
+        let h2 = client.start_call(2, Duration::from_secs(1));
+        assert_eq!(h2.error, Some(ServiceError::Busy));
+
+        server.process_pending_requests();
+        assert_eq!(h1.complete().ok_value(), Some(2));
+
+        let h3 = client.start_call(3, Duration::from_secs(1));
+        server.process_pending_requests();
+        assert_eq!(h3.complete().ok_value(), Some(4));
+    }
+
+    #[test]
+    fn inproc_service_overflow_error_policy_returns_rejected() {
+        let registry = ServiceRegistry::new();
+        let config = InprocServiceConfig {
+            queue_depth: 1,
+            overflow: ServiceOverflowPolicy::Error,
+            ..InprocServiceConfig::default()
+        };
+        let (client, _server) =
+            registry.register_with_config("overflow_error", LaneId(1), config, |req: u32| req);
+
+        let h1 = client.start_call(1, Duration::from_secs(1));
+        assert!(h1.error.is_none());
+
+        let h2 = client.start_call(2, Duration::from_secs(1));
+        assert_eq!(h2.error, Some(ServiceError::Rejected));
+    }
+
+    #[test]
+    fn inproc_service_result_handler_can_return_service_error() {
+        let registry = ServiceRegistry::new();
+        let (client, server) =
+            registry.register_result("fallible", LaneId(1), 8, |req: u32| -> ServiceResult<u32> {
+                if req == 0 {
+                    ServiceResult::err_with_message(ServiceError::Rejected, "zero")
+                } else {
+                    ServiceResult::ok(req * 2)
+                }
+            });
+
+        let rejected = client.start_call(0, Duration::from_secs(1));
+        server.process_pending_requests();
+        let result = rejected.complete();
+        assert_eq!(result.error_code(), ServiceError::Rejected);
+        assert_eq!(result.error_message(), Some("zero"));
+
+        let ok = client.start_call(3, Duration::from_secs(1));
+        server.process_pending_requests();
+        assert_eq!(ok.complete().ok_value(), Some(6));
+    }
+
+    #[test]
+    fn inproc_service_request_arrival_wakes_server_waiter() {
+        let registry = ServiceRegistry::new();
+        let waiter = ScheduleWaiter::new();
+        let config = InprocServiceConfig {
+            schedule_waiter: waiter.clone(),
+            ..InprocServiceConfig::default()
+        };
+        let (client, _server) =
+            registry.register_with_config("wake_service", LaneId(1), config, |req: u32| req);
+
+        let seen = waiter.data_generation();
+        let handle = client.start_call(1, Duration::from_secs(1));
+        assert!(handle.error.is_none());
+
+        let event = waiter.wait_until_after(
+            seen,
+            Some(Instant::now() + Duration::from_millis(50)),
+            &ShutdownToken::default(),
+        );
+        assert_eq!(event, ScheduleEvent::Data);
     }
 
     #[test]
@@ -877,10 +965,25 @@ mod tests {
     }
 
     #[test]
+    fn inproc_service_late_response_is_dropped_after_handle_timeout() {
+        let registry = ServiceRegistry::new();
+        let (client, server) = registry.register("late_drop", LaneId(2), 8, |req: u32| req + 10);
+
+        let handle = client.start_call(1, Duration::from_millis(1));
+        assert_eq!(handle.complete().error_code(), ServiceError::Timeout);
+
+        server.process_pending_requests();
+
+        let stats = server.stats();
+        assert_eq!(stats.timeout, 1);
+        assert_eq!(stats.late_dropped, 1);
+        assert_eq!(stats.success, 0);
+    }
+
+    #[test]
     fn inproc_service_same_lane_blocking_call_returns_would_deadlock() {
         let registry = ServiceRegistry::new();
-        let (client, _server) =
-            registry.register("deadlock", LaneId(5), 8, |req: u32| req);
+        let (client, _server) = registry.register("deadlock", LaneId(5), 8, |req: u32| req);
 
         // 在 lane 5 上标记为活跃（模拟正在执行 task）
         let _guard = enter_lane(LaneId(5));
@@ -912,8 +1015,7 @@ mod tests {
     #[test]
     fn inproc_service_non_blocking_handle_poll_and_complete() {
         let registry = ServiceRegistry::new();
-        let (client, server) =
-            registry.register("async_svc", LaneId(3), 8, |req: u32| req + 1);
+        let (client, server) = registry.register("async_svc", LaneId(3), 8, |req: u32| req + 1);
 
         let handle = client.start_call(10, Duration::from_secs(1));
         assert!(!handle.poll());
@@ -934,8 +1036,7 @@ mod tests {
     #[test]
     fn inproc_service_server_stats_track_outcomes() {
         let registry = ServiceRegistry::new();
-        let (client, server) =
-            registry.register("stats_svc", LaneId(4), 8, |req: u32| req);
+        let (client, server) = registry.register("stats_svc", LaneId(4), 8, |req: u32| req);
 
         // 正常调用
         let server_clone = server.clone();
@@ -956,8 +1057,7 @@ mod tests {
     #[test]
     fn inproc_service_zero_timeout_returns_timeout() {
         let registry = ServiceRegistry::new();
-        let (client, _server) =
-            registry.register("zero_timeout", LaneId(1), 8, |req: u32| req);
+        let (client, _server) = registry.register("zero_timeout", LaneId(1), 8, |req: u32| req);
 
         let result = client.call(42, Duration::ZERO);
         assert!(!result.is_ok());
@@ -1007,11 +1107,59 @@ mod tests {
 
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::executor::LaneId;
+use crate::executor::{LaneId, ScheduleWaiter};
+
+/// inproc service 队列溢出策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceOverflowPolicy {
+    /// 队列或 in-flight 上限满时返回 `Busy`。
+    Busy,
+    /// 队列或 in-flight 上限满时返回硬错误 `Rejected`。
+    Error,
+}
+
+impl Default for ServiceOverflowPolicy {
+    fn default() -> Self {
+        Self::Busy
+    }
+}
+
+impl ServiceOverflowPolicy {
+    fn error_code(self) -> ServiceError {
+        match self {
+            Self::Busy => ServiceError::Busy,
+            Self::Error => ServiceError::Rejected,
+        }
+    }
+}
+
+/// inproc service 运行时配置。
+#[derive(Debug, Clone)]
+pub struct InprocServiceConfig {
+    /// pending request 队列深度。0 表示不允许排队。
+    pub queue_depth: usize,
+    /// queued + executing request 总上限。0 表示不允许新请求。
+    pub max_in_flight: usize,
+    /// 队列或 in-flight 上限满时的错误映射。
+    pub overflow: ServiceOverflowPolicy,
+    /// request arrival 唤醒的 server scheduler waiter。
+    pub schedule_waiter: ScheduleWaiter,
+}
+
+impl Default for InprocServiceConfig {
+    fn default() -> Self {
+        Self {
+            queue_depth: 32,
+            max_in_flight: 64,
+            overflow: ServiceOverflowPolicy::Busy,
+            schedule_waiter: ScheduleWaiter::new(),
+        }
+    }
+}
 
 /// inproc service 统计计数。
 #[derive(Debug, Default)]
@@ -1020,6 +1168,7 @@ struct ServiceStats {
     success: AtomicU64,
     timeout: AtomicU64,
     busy: AtomicU64,
+    late_dropped: AtomicU64,
     unavailable: AtomicU64,
     would_deadlock: AtomicU64,
     handler_error: AtomicU64,
@@ -1038,6 +1187,9 @@ impl ServiceStats {
     fn record_busy(&self) {
         self.busy.fetch_add(1, Ordering::Relaxed);
     }
+    fn record_late_dropped(&self) {
+        self.late_dropped.fetch_add(1, Ordering::Relaxed);
+    }
     // Unavailable 场景下 endpoint 已被 drop，stats 不可达，该方法预留供未来扩展。
     #[allow(dead_code)]
     fn record_unavailable(&self) {
@@ -1051,17 +1203,26 @@ impl ServiceStats {
         self.handler_error.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 返回 (requests, success, timeout, busy, unavailable, would_deadlock, handler_error)。
-    fn snapshot(&self) -> (u64, u64, u64, u64, u64, u64, u64) {
+    /// 返回 (requests, success, timeout, busy, late_dropped, unavailable, would_deadlock, handler_error)。
+    fn snapshot(&self) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
         (
             self.requests.load(Ordering::Relaxed),
             self.success.load(Ordering::Relaxed),
             self.timeout.load(Ordering::Relaxed),
             self.busy.load(Ordering::Relaxed),
+            self.late_dropped.load(Ordering::Relaxed),
             self.unavailable.load(Ordering::Relaxed),
             self.would_deadlock.load(Ordering::Relaxed),
             self.handler_error.load(Ordering::Relaxed),
         )
+    }
+}
+
+fn record_service_result_stats<T>(stats: &ServiceStats, result: &ServiceResult<T>) {
+    if result.is_ok() {
+        stats.record_success();
+    } else if result.error_code() == ServiceError::HandlerError {
+        stats.record_handler_error();
     }
 }
 
@@ -1077,7 +1238,8 @@ type ErasedQueue = Arc<Mutex<VecDeque<ErasedRequest>>>;
 /// handler 执行完毕后将响应写入 slot 并唤醒等待方。
 struct ResponseSlot<T> {
     ready: AtomicBool,
-    value: Mutex<Option<T>>,
+    abandoned: AtomicBool,
+    value: Mutex<Option<ServiceResult<T>>>,
     condvar: Condvar,
 }
 
@@ -1085,19 +1247,27 @@ impl<T> ResponseSlot<T> {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             ready: AtomicBool::new(false),
+            abandoned: AtomicBool::new(false),
             value: Mutex::new(None),
             condvar: Condvar::new(),
         })
     }
 
     /// server 端写入响应并唤醒 client。
-    fn fill(&self, value: T) {
+    fn fill(&self, value: ServiceResult<T>) -> bool {
+        if self.abandoned.load(Ordering::Acquire) {
+            return false;
+        }
         {
             let mut guard = self.value.lock().unwrap_or_else(|e| e.into_inner());
+            if self.abandoned.load(Ordering::Acquire) {
+                return false;
+            }
             *guard = Some(value);
             self.ready.store(true, Ordering::Release);
         }
         self.condvar.notify_one();
+        true
     }
 
     /// client 端轮询是否已就绪。
@@ -1106,11 +1276,12 @@ impl<T> ResponseSlot<T> {
     }
 
     /// client 端阻塞等待响应，直到 deadline 或超时。
-    fn wait_until(&self, deadline: Instant) -> Option<T> {
+    fn wait_until(&self, deadline: Instant) -> Option<ServiceResult<T>> {
         let mut guard = self.value.lock().unwrap_or_else(|e| e.into_inner());
         while !self.ready.load(Ordering::Acquire) {
             let now = Instant::now();
             if now >= deadline {
+                self.abandon();
                 return None;
             }
             let timeout = deadline.duration_since(now);
@@ -1120,10 +1291,15 @@ impl<T> ResponseSlot<T> {
             };
             guard = next;
             if result.timed_out() && !self.ready.load(Ordering::Acquire) {
+                self.abandon();
                 return None;
             }
         }
         guard.take()
+    }
+
+    fn abandon(&self) {
+        self.abandoned.store(true, Ordering::Release);
     }
 }
 
@@ -1138,10 +1314,14 @@ trait ErasedEndpoint: Send + Sync {
 /// 共享 endpoint 内部状态，client 和 server handle 共用。
 struct InprocEndpointInner<Req: Send + 'static, Resp: Send + 'static> {
     queue: ErasedQueue,
-    handler: Arc<dyn Fn(Req) -> Resp + Send + Sync>,
+    handler: Arc<dyn Fn(Req) -> ServiceResult<Resp> + Send + Sync>,
     lane: LaneId,
     stats: Arc<ServiceStats>,
     queue_depth: usize,
+    max_in_flight: usize,
+    in_flight: AtomicUsize,
+    overflow: ServiceOverflowPolicy,
+    schedule_waiter: ScheduleWaiter,
 }
 
 /// inproc service endpoint，承载 typed request/response 队列和 handler。
@@ -1155,9 +1335,9 @@ struct InprocEndpoint<Req: Send + 'static, Resp: Send + 'static> {
 impl<Req: Send + 'static, Resp: Send + 'static> InprocEndpoint<Req, Resp> {
     fn new(
         queue: ErasedQueue,
-        handler: impl Fn(Req) -> Resp + Send + Sync + 'static,
         lane: LaneId,
-        queue_depth: usize,
+        config: InprocServiceConfig,
+        handler: impl Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner: Arc::new(InprocEndpointInner {
@@ -1165,7 +1345,11 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocEndpoint<Req, Resp> {
                 handler: Arc::new(handler),
                 lane,
                 stats: Arc::new(ServiceStats::default()),
-                queue_depth,
+                queue_depth: config.queue_depth,
+                max_in_flight: config.max_in_flight,
+                in_flight: AtomicUsize::new(0),
+                overflow: config.overflow,
+                schedule_waiter: config.schedule_waiter,
             }),
         })
     }
@@ -1178,11 +1362,7 @@ impl<Req: Send + 'static, Resp: Send + 'static> ErasedEndpoint for InprocEndpoin
 
     fn process_pending(&self) {
         let pending: Vec<ErasedRequest> = {
-            let mut queue = self
-                .inner
-                .queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut queue = self.inner.queue.lock().unwrap_or_else(|e| e.into_inner());
             queue.drain(..).collect()
         };
         for req in pending {
@@ -1206,6 +1386,8 @@ pub struct ServiceStatsSnapshot {
     pub timeout: u64,
     /// 队列满拒绝数。
     pub busy: u64,
+    /// client 超时或取消后到达并被丢弃的 late response 数。
+    pub late_dropped: u64,
     /// 服务不可用数。
     pub unavailable: u64,
     /// 死锁检测拒绝数。
@@ -1245,14 +1427,92 @@ impl ServiceRegistry {
         lane: LaneId,
         queue_depth: usize,
         handler: F,
-    ) -> (InprocServiceClient<Req, Resp>, InprocServiceServer<Req, Resp>)
+    ) -> (
+        InprocServiceClient<Req, Resp>,
+        InprocServiceServer<Req, Resp>,
+    )
     where
         Req: Send + 'static,
         Resp: Send + 'static,
         F: Fn(Req) -> Resp + Send + Sync + 'static,
     {
+        self.register_result_with_config(
+            name,
+            lane,
+            InprocServiceConfig {
+                queue_depth,
+                ..InprocServiceConfig::default()
+            },
+            move |req| ServiceResult::ok(handler(req)),
+        )
+    }
+
+    /// 注册返回 `ServiceResult` 的 typed inproc service。
+    pub fn register_result<Req, Resp, F>(
+        self: &Arc<Self>,
+        name: &str,
+        lane: LaneId,
+        queue_depth: usize,
+        handler: F,
+    ) -> (
+        InprocServiceClient<Req, Resp>,
+        InprocServiceServer<Req, Resp>,
+    )
+    where
+        Req: Send + 'static,
+        Resp: Send + 'static,
+        F: Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
+    {
+        self.register_result_with_config(
+            name,
+            lane,
+            InprocServiceConfig {
+                queue_depth,
+                ..InprocServiceConfig::default()
+            },
+            handler,
+        )
+    }
+
+    /// 使用显式配置注册 infallible typed inproc service。
+    pub fn register_with_config<Req, Resp, F>(
+        self: &Arc<Self>,
+        name: &str,
+        lane: LaneId,
+        config: InprocServiceConfig,
+        handler: F,
+    ) -> (
+        InprocServiceClient<Req, Resp>,
+        InprocServiceServer<Req, Resp>,
+    )
+    where
+        Req: Send + 'static,
+        Resp: Send + 'static,
+        F: Fn(Req) -> Resp + Send + Sync + 'static,
+    {
+        self.register_result_with_config(name, lane, config, move |req| {
+            ServiceResult::ok(handler(req))
+        })
+    }
+
+    /// 使用显式配置注册返回 `ServiceResult` 的 typed inproc service。
+    pub fn register_result_with_config<Req, Resp, F>(
+        self: &Arc<Self>,
+        name: &str,
+        lane: LaneId,
+        config: InprocServiceConfig,
+        handler: F,
+    ) -> (
+        InprocServiceClient<Req, Resp>,
+        InprocServiceServer<Req, Resp>,
+    )
+    where
+        Req: Send + 'static,
+        Resp: Send + 'static,
+        F: Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
+    {
         let queue: ErasedQueue = Arc::new(Mutex::new(VecDeque::new()));
-        let endpoint = InprocEndpoint::new(Arc::clone(&queue), handler, lane, queue_depth);
+        let endpoint = InprocEndpoint::new(Arc::clone(&queue), lane, config, handler);
 
         {
             let mut endpoints = self.endpoints.lock().unwrap_or_else(|e| e.into_inner());
@@ -1349,32 +1609,40 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
         let response_slot = ResponseSlot::new();
         let slot_for_closure = Arc::clone(&response_slot);
         let handler = Arc::clone(&inner.handler);
+        let stats = Arc::clone(&inner.stats);
+        let inner_for_closure = Arc::clone(&inner);
 
         let enqueue_result = {
             let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
-            if queue.len() >= inner.queue_depth {
-                Err(())
+            if queue.len() >= inner.queue_depth
+                || inner.in_flight.load(Ordering::Acquire) >= inner.max_in_flight
+            {
+                Err(inner.overflow.error_code())
             } else {
+                inner.in_flight.fetch_add(1, Ordering::AcqRel);
                 queue.push_back(Box::new(move || {
-                    let resp = handler(request);
-                    slot_for_closure.fill(resp);
+                    let result = handler(request);
+                    if !slot_for_closure.fill(result) {
+                        stats.record_late_dropped();
+                    }
+                    inner_for_closure.in_flight.fetch_sub(1, Ordering::AcqRel);
                 }));
                 Ok(())
             }
         };
 
-        if enqueue_result.is_err() {
+        if let Err(error) = enqueue_result {
             inner.stats.record_busy();
-            return ServiceResult::err(ServiceError::Busy);
+            return ServiceResult::err(error);
         }
 
-        REQUEST_WAITER.with(|w| w.notify_data());
+        inner.schedule_waiter.notify_data();
 
         let deadline = Instant::now() + timeout;
         match response_slot.wait_until(deadline) {
-            Some(resp) => {
-                inner.stats.record_success();
-                ServiceResult::ok(resp)
+            Some(result) => {
+                record_service_result_stats(&inner.stats, &result);
+                result
             }
             None => {
                 inner.stats.record_timeout();
@@ -1427,31 +1695,39 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
         let slot_for_closure = Arc::clone(&response_slot);
         let handler = Arc::clone(&inner.handler);
         let stats = Arc::clone(&inner.stats);
+        let stats_for_closure = Arc::clone(&stats);
+        let inner_for_closure = Arc::clone(&inner);
 
         let enqueue_result = {
             let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
-            if queue.len() >= inner.queue_depth {
-                Err(())
+            if queue.len() >= inner.queue_depth
+                || inner.in_flight.load(Ordering::Acquire) >= inner.max_in_flight
+            {
+                Err(inner.overflow.error_code())
             } else {
+                inner.in_flight.fetch_add(1, Ordering::AcqRel);
                 queue.push_back(Box::new(move || {
-                    let resp = handler(request);
-                    slot_for_closure.fill(resp);
+                    let result = handler(request);
+                    if !slot_for_closure.fill(result) {
+                        stats_for_closure.record_late_dropped();
+                    }
+                    inner_for_closure.in_flight.fetch_sub(1, Ordering::AcqRel);
                 }));
                 Ok(())
             }
         };
 
-        if enqueue_result.is_err() {
+        if let Err(error) = enqueue_result {
             inner.stats.record_busy();
             return ServiceCallHandle {
                 slot: ResponseSlot::new(),
                 deadline: Instant::now(),
-                error: Some(ServiceError::Busy),
+                error: Some(error),
                 stats: None,
             };
         }
 
-        REQUEST_WAITER.with(|w| w.notify_data());
+        inner.schedule_waiter.notify_data();
 
         ServiceCallHandle {
             slot: response_slot,
@@ -1502,11 +1778,11 @@ impl<Resp: Send + 'static> ServiceCallHandle<Resp> {
         }
 
         match self.slot.wait_until(self.deadline) {
-            Some(resp) => {
+            Some(result) => {
                 if let Some(stats) = &self.stats {
-                    stats.record_success();
+                    record_service_result_stats(stats, &result);
                 }
-                ServiceResult::ok(resp)
+                result
             }
             None => {
                 if let Some(stats) = &self.stats {
@@ -1522,8 +1798,6 @@ thread_local! {
     /// 当前线程活跃的 lane 集合，用于 same-lane 死锁检测。
     static ACTIVE_LANES: std::cell::RefCell<Vec<LaneId>> = const { std::cell::RefCell::new(Vec::new()) };
 
-    /// 当前线程的 request arrival waiter。
-    static REQUEST_WAITER: crate::executor::ScheduleWaiter = crate::executor::ScheduleWaiter::default();
 }
 
 /// 在当前线程标记 lane 为活跃，返回 RAII guard。
@@ -1551,14 +1825,6 @@ impl Drop for LaneGuard {
             }
         });
     }
-}
-
-/// 获取当前线程的 request arrival waiter。
-///
-/// generated shell 在 scheduler 等待循环中使用该 waiter，当 service request 入队时
-/// 会自动调用 `notify_data()` 唤醒 scheduler。
-pub fn request_waiter() -> crate::executor::ScheduleWaiter {
-    REQUEST_WAITER.with(|w| w.clone())
 }
 
 /// inproc service server handle。
@@ -1600,16 +1866,30 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceServer<Req, Resp> {
 
     /// 返回统计快照。
     pub fn stats(&self) -> ServiceStatsSnapshot {
-        let (requests, success, timeout, busy, unavailable, would_deadlock, handler_error) =
-            self.endpoint.inner.stats.snapshot();
+        let (
+            requests,
+            success,
+            timeout,
+            busy,
+            late_dropped,
+            unavailable,
+            would_deadlock,
+            handler_error,
+        ) = self.endpoint.inner.stats.snapshot();
         ServiceStatsSnapshot {
             requests,
             success,
             timeout,
             busy,
+            late_dropped,
             unavailable,
             would_deadlock,
             handler_error,
         }
+    }
+
+    /// 返回 request arrival 唤醒的 scheduler waiter。
+    pub fn request_waiter(&self) -> ScheduleWaiter {
+        self.endpoint.inner.schedule_waiter.clone()
     }
 }

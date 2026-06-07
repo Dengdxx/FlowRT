@@ -46,10 +46,10 @@ pub use introspection::{
     spawn_status_server, spawn_status_server_at,
 };
 pub use service::{
-    Deadline, InprocServiceClient, InprocServiceServer, LaneGuard, RequestId,
+    Deadline, InprocServiceClient, InprocServiceConfig, InprocServiceServer, LaneGuard, RequestId,
     SERVICE_FRAME_HEADER_SIZE, SERVICE_FRAME_MAGIC, SERVICE_FRAME_VERSION, ServiceCallHandle,
-    ServiceError, ServiceFrameHeader, ServiceRegistry, ServiceResult, ServiceStatsSnapshot,
-    decode_service_frame, encode_service_frame, enter_lane, fnv1a64, request_waiter,
+    ServiceError, ServiceFrameHeader, ServiceOverflowPolicy, ServiceRegistry, ServiceResult,
+    ServiceStatsSnapshot, decode_service_frame, encode_service_frame, enter_lane, fnv1a64,
 };
 pub use shutdown::{ShutdownToken, install_signal_shutdown_token};
 pub use wire::{WireCodec, WireCodecError};
