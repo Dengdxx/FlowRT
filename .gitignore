@@ -4,7 +4,17 @@ dist/
 .worktrees/
 /flowrt/
 examples/*/flowrt/
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/README.md
+!.agents/skills/write-frt-skill/
+!.agents/skills/write-frt-skill/**
+!.agents/skills/frt-subtask-orchestration/
+!.agents/skills/frt-subtask-orchestration/**
+!.agents/skills/frt-core-*/
+!.agents/skills/frt-core-*/**
+.claude/
 
 # 本地设计/规格草案不入库；docs/ 下其他用户和维护者配套文档可入库。
 docs/architecture-plan.md
