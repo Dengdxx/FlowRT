@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ContractIr, GraphIr, InstanceIr,
-    OverflowPolicy as IrOverflowPolicy, StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind,
-    TypeExpr, TypeIr,
+    OverflowPolicy as IrOverflowPolicy, ServiceOverflowPolicy, StalePolicy as IrStalePolicy,
+    TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
@@ -279,12 +279,19 @@ fn self_description_service_endpoint(
         server_port: service.server.port.clone(),
         request_type,
         response_type,
-        backend: String::new(),
-        timeout_ms: None,
-        queue_depth: None,
-        overflow: String::new(),
-        lane: String::new(),
-        max_in_flight: None,
+        backend: service.backend.0.clone(),
+        timeout_ms: Some(service.policy.timeout_ms),
+        queue_depth: Some(service.policy.queue_depth),
+        overflow: service_overflow_name(service.policy.overflow).to_string(),
+        lane: service.policy.lane.clone().unwrap_or_default(),
+        max_in_flight: Some(service.policy.max_in_flight),
+    }
+}
+
+fn service_overflow_name(policy: ServiceOverflowPolicy) -> &'static str {
+    match policy {
+        ServiceOverflowPolicy::Busy => "busy",
+        ServiceOverflowPolicy::Error => "error",
     }
 }
 
