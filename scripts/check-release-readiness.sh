@@ -215,7 +215,11 @@ printf '\n[5/6] README.md 安装示例\n'
 
 readme_file="$repo_root/README.md"
 if [[ -f "$readme_file" ]]; then
-    readme_version="$(grep -oP 'flowrt_[0-9]+\.[0-9]+\.[0-9]+_amd64\.deb' "$readme_file" | head -1 | grep -oP '[0-9]+\.[0-9]+\.[0-9]+')"
+    readme_match="$(grep -oP 'flowrt_[0-9]+\.[0-9]+\.[0-9]+_amd64\.deb' "$readme_file" | head -1 || true)"
+    readme_version=""
+    if [[ -n "$readme_match" ]]; then
+        readme_version="$(grep -oP '[0-9]+\.[0-9]+\.[0-9]+' <<<"$readme_match" | head -1)"
+    fi
     if [[ "$readme_version" == "$expected_version" ]]; then
         pass "README.md 安装示例版本 = $readme_version"
     elif [[ -z "$readme_version" ]]; then

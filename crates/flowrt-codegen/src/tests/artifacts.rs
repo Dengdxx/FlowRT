@@ -1,5 +1,12 @@
 use super::*;
 
+fn current_flowrt_minor_version_req() -> String {
+    let mut parts = env!("CARGO_PKG_VERSION").split('.');
+    let major = parts.next().expect("major version");
+    let minor = parts.next().expect("minor version");
+    format!("{major}.{minor}")
+}
+
 #[test]
 fn plans_rust_artifacts_for_rust_component() {
     let ir = contract_from_source(
@@ -410,7 +417,10 @@ channel = "latest"
 
     let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
     assert!(cmake.contains("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)"));
-    assert!(cmake.contains("find_package(flowrt_runtime 0.3 QUIET)"));
+    assert!(cmake.contains(&format!(
+        "find_package(flowrt_runtime {} QUIET)",
+        current_flowrt_minor_version_req()
+    )));
     assert!(
         cmake.contains("target_link_libraries(robot_demo_flowrt_app INTERFACE flowrt::runtime)")
     );
@@ -522,7 +532,10 @@ backends = ["inproc"]
 
     let bundle = emit_artifacts(&ir).unwrap();
     let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
-    assert!(cargo_manifest.contains("flowrt = { version = \"0.3\" }"));
+    assert!(cargo_manifest.contains(&format!(
+        "flowrt = {{ version = \"{}\" }}",
+        current_flowrt_minor_version_req()
+    )));
 }
 
 #[test]
@@ -637,7 +650,10 @@ backends = ["inproc"]
     assert!(rust_selfdesc.contains("#[allow(dead_code)]\npub fn self_description_hash()"));
 
     let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
-    assert!(cargo_manifest.contains("flowrt = { version = \"0.3\" }"));
+    assert!(cargo_manifest.contains(&format!(
+        "flowrt = {{ version = \"{}\" }}",
+        current_flowrt_minor_version_req()
+    )));
     assert!(cargo_manifest.contains("[[bin]]\nname = \"robot-demo-flowrt-supervisor\""));
     assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
     assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
