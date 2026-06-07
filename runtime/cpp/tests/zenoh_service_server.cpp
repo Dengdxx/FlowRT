@@ -26,9 +26,8 @@ struct AddRequest {
 
     static AddRequest decode_wire(std::span<const std::uint8_t> input) {
         flowrt::ensure_wire_size(wire_size(), input.size());
-        return AddRequest{
-            flowrt::read_wire_le<std::int32_t>(input, 0),
-            flowrt::read_wire_le<std::int32_t>(input, sizeof(std::int32_t))};
+        return AddRequest{flowrt::read_wire_le<std::int32_t>(input, 0),
+                          flowrt::read_wire_le<std::int32_t>(input, sizeof(std::int32_t))};
     }
 };
 
@@ -55,8 +54,7 @@ int main() {
     auto session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());
 
     auto server = flowrt::zenoh::ZenohServiceServer<AddRequest, AddResponse>::open(
-        name, session,
-        [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
+        name, session, [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
             return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
         });
 
