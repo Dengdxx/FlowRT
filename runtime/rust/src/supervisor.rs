@@ -406,20 +406,38 @@ fn wait_for_readiness(
     supervisor_state: &IntrospectionState,
     child: &mut SupervisedChild,
     config: &ReadinessConfig,
+    shutdown: &ShutdownToken,
 ) -> Result<(), String> {
+    abort_child_if_shutdown_requested(supervisor_state, child, shutdown)?;
     match child.readiness {
         ReadinessGate::ProcessStarted => Ok(()),
         ReadinessGate::RuntimeReady => {
             child.state = "waiting_readiness".to_string();
             record_child_health(supervisor_state, child, false);
-            wait_for_runtime_ready(supervisor_state, child, config)
+            wait_for_runtime_ready(supervisor_state, child, config, shutdown)
         }
         ReadinessGate::ServiceReady => {
             child.state = "waiting_readiness".to_string();
             record_child_health(supervisor_state, child, false);
-            wait_for_service_ready(supervisor_state, child, config)
+            wait_for_service_ready(supervisor_state, child, config, shutdown)
         }
     }
+}
+
+fn abort_child_if_shutdown_requested(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    shutdown: &ShutdownToken,
+) -> Result<(), String> {
+    if !shutdown.is_requested() {
+        return Ok(());
+    }
+    child.terminate("shutdown");
+    record_child_health(supervisor_state, child, false);
+    Err(format!(
+        "FlowRT supervisor shutdown requested while waiting for process `{}`",
+        child.name
+    ))
 }
 
 /// 等待子进程 runtime introspection 握手成功。
@@ -427,9 +445,11 @@ fn wait_for_runtime_ready(
     supervisor_state: &IntrospectionState,
     child: &mut SupervisedChild,
     config: &ReadinessConfig,
+    shutdown: &ShutdownToken,
 ) -> Result<(), String> {
     let deadline = std::time::Instant::now() + config.timeout;
     loop {
+        abort_child_if_shutdown_requested(supervisor_state, child, shutdown)?;
         // 检查子进程是否已退出。
         if let Some(status) = child.child.try_wait().map_err(|error| {
             format!(
@@ -464,7 +484,7 @@ fn wait_for_runtime_ready(
         // 轮询 introspection socket。
         match crate::request_status(&child.socket) {
             Ok(crate::IntrospectionResponse::Status { .. }) => return Ok(()),
-            _ => std::thread::sleep(config.poll_interval),
+            _ => sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?,
         }
     }
 }
@@ -474,9 +494,11 @@ fn wait_for_service_ready(
     supervisor_state: &IntrospectionState,
     child: &mut SupervisedChild,
     config: &ReadinessConfig,
+    shutdown: &ShutdownToken,
 ) -> Result<(), String> {
     let deadline = std::time::Instant::now() + config.timeout;
     loop {
+        abort_child_if_shutdown_requested(supervisor_state, child, shutdown)?;
         // 检查子进程是否已退出。
         if let Some(status) = child.child.try_wait().map_err(|error| {
             format!(
@@ -515,11 +537,49 @@ fn wait_for_service_ready(
                     return Ok(());
                 }
                 // 有 service 但未全部就绪，继续等待。
-                std::thread::sleep(config.poll_interval);
+                sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?;
             }
-            _ => std::thread::sleep(config.poll_interval),
+            _ => sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?,
         }
     }
+}
+
+fn sleep_or_abort_child(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    duration: Duration,
+    shutdown: &ShutdownToken,
+) -> Result<(), String> {
+    if duration.is_zero() {
+        return abort_child_if_shutdown_requested(supervisor_state, child, shutdown);
+    }
+    let deadline = Instant::now() + duration;
+    loop {
+        abort_child_if_shutdown_requested(supervisor_state, child, shutdown)?;
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
+}
+
+fn wait_for_startup_delay(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    shutdown: &ShutdownToken,
+) -> Result<(), String> {
+    if child.startup_delay_ms == 0 {
+        return Ok(());
+    }
+    child.state = "delaying".to_string();
+    record_child_health(supervisor_state, child, false);
+    sleep_or_abort_child(
+        supervisor_state,
+        child,
+        Duration::from_millis(child.startup_delay_ms),
+        shutdown,
+    )
 }
 
 /// 对进程列表做拓扑排序（BFS / Kahn 算法）。
@@ -1121,6 +1181,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
 
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let shutdown = crate::install_signal_shutdown_token();
 
     let supervisor_state = IntrospectionState::new();
     let _supervisor_status_server = crate::spawn_status_server(
@@ -1232,15 +1293,16 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             spawned_names.insert(process.name.clone());
 
             // 等待 readiness gate，然后再启动依赖此进程的后续进程。
-            wait_for_readiness(&supervisor_state, &mut child, &ReadinessConfig::default())?;
+            wait_for_readiness(
+                &supervisor_state,
+                &mut child,
+                &ReadinessConfig::default(),
+                &shutdown,
+            )?;
             ready_names.insert(process.name.clone());
 
             // readiness 通过后执行错峰启动延迟。
-            if child.startup_delay_ms > 0 {
-                child.state = "delaying".to_string();
-                record_child_health(&supervisor_state, &child, false);
-                std::thread::sleep(Duration::from_millis(child.startup_delay_ms));
-            }
+            wait_for_startup_delay(&supervisor_state, &mut child, &shutdown)?;
 
             child.state = "running".to_string();
             record_child_health(&supervisor_state, &child, false);
@@ -1252,7 +1314,6 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
         return Err("FlowRT launch manifest does not contain process groups".to_string());
     }
 
-    let shutdown = crate::install_signal_shutdown_token();
     supervise_children(&supervisor_state, &mut children, run_ticks, &shutdown)?;
     drop(zenoh_launch_plans);
 
@@ -1301,7 +1362,7 @@ fn supervise_children(
             if let Some(next_restart_unix_ms) = child.next_restart_unix_ms {
                 if unix_time_ms() >= next_restart_unix_ms {
                     if child_dependencies_satisfied(child, &spawned_names, &ready_names) {
-                        restart_child(supervisor_state, child, run_ticks)?;
+                        restart_child(supervisor_state, child, run_ticks, shutdown)?;
                     } else {
                         child.state = "waiting_dependencies".to_string();
                         child.next_restart_unix_ms = Some(
@@ -1354,6 +1415,7 @@ fn restart_child(
     supervisor_state: &IntrospectionState,
     child: &mut SupervisedChild,
     run_ticks: Option<usize>,
+    shutdown: &ShutdownToken,
 ) -> Result<(), String> {
     let restarted = if child.runtime_kind == "external" {
         let external = child.external.as_ref().ok_or_else(|| {
@@ -1410,12 +1472,13 @@ fn restart_child(
         applied: resource_applied,
     };
     record_child_health(supervisor_state, child, false);
-    wait_for_readiness(supervisor_state, child, &ReadinessConfig::default())?;
-    if child.startup_delay_ms > 0 {
-        child.state = "delaying".to_string();
-        record_child_health(supervisor_state, child, false);
-        std::thread::sleep(Duration::from_millis(child.startup_delay_ms));
-    }
+    wait_for_readiness(
+        supervisor_state,
+        child,
+        &ReadinessConfig::default(),
+        shutdown,
+    )?;
+    wait_for_startup_delay(supervisor_state, child, shutdown)?;
     child.state = "running".to_string();
     record_child_health(supervisor_state, child, false);
     Ok(())
@@ -2526,6 +2589,57 @@ mod tests {
     }
 
     #[test]
+    fn readiness_wait_aborts_when_shutdown_requested() {
+        let supervisor_state = IntrospectionState::new();
+        let shutdown = ShutdownToken::new_for_test();
+        shutdown.request();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let socket = crate::runtime_socket_path_for_pid(real_child.id());
+
+        let mut child = SupervisedChild {
+            name: "test_shutdown".into(),
+            backend: "inproc".into(),
+            runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::RuntimeReady,
+            expected_services: vec![],
+            startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
+            child: real_child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "starting".into(),
+            exit_code: None,
+        };
+
+        let result = wait_for_readiness(
+            &supervisor_state,
+            &mut child,
+            &short_readiness_config(),
+            &shutdown,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("shutdown requested"));
+        assert!(child.finished);
+        assert_eq!(child.state, "shutdown");
+    }
+
+    #[test]
     fn readiness_timeout_marks_state_and_returns_error() {
         // 启动一个不会建立 introspection socket 的子进程（sleep）。
         let mut cmd = Command::new("sleep");
@@ -2563,7 +2677,8 @@ mod tests {
         };
 
         let config = short_readiness_config();
-        let result = wait_for_runtime_ready(&supervisor_state, &mut child, &config);
+        let shutdown = ShutdownToken::new_for_test();
+        let result = wait_for_runtime_ready(&supervisor_state, &mut child, &config, &shutdown);
 
         assert!(result.is_err(), "should timeout");
         let err = result.unwrap_err();
@@ -2619,7 +2734,8 @@ mod tests {
         };
 
         let config = short_readiness_config();
-        let result = wait_for_service_ready(&supervisor_state, &mut child, &config);
+        let shutdown = ShutdownToken::new_for_test();
+        let result = wait_for_service_ready(&supervisor_state, &mut child, &config, &shutdown);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("timed out"));
@@ -2664,7 +2780,8 @@ mod tests {
         };
 
         let config = short_readiness_config();
-        let result = wait_for_runtime_ready(&supervisor_state, &mut child, &config);
+        let shutdown = ShutdownToken::new_for_test();
+        let result = wait_for_runtime_ready(&supervisor_state, &mut child, &config, &shutdown);
 
         assert!(result.is_err());
         assert!(
@@ -2720,7 +2837,8 @@ mod tests {
         };
 
         let config = ReadinessConfig::default();
-        let result = wait_for_readiness(&supervisor_state, &mut child, &config);
+        let shutdown = ShutdownToken::new_for_test();
+        let result = wait_for_readiness(&supervisor_state, &mut child, &config, &shutdown);
         assert!(result.is_ok(), "ProcessStarted should return immediately");
         // 子进程不应被 kill，仍在运行。
         assert!(!child.finished);
