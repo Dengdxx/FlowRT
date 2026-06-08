@@ -966,7 +966,7 @@ fn discover_remote_params_runtimes_filters_by_hash_and_deduplicates() {
 
     let ke_match_1 = format!("flowrt/params/pkg_a/{expected_hash}/8001");
     let ke_match_2 = format!("flowrt/params/pkg_b/{expected_hash}/8002");
-    let ke_mismatch = format!("flowrt/params/pkg_c/other_hash/8003");
+    let ke_mismatch = "flowrt/params/pkg_c/other_hash/8003".to_string();
 
     let hs_match_1 = flowrt::IntrospectionHandshake {
         protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),

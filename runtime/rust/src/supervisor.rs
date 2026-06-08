@@ -94,21 +94,16 @@ pub struct LaunchProcess {
 }
 
 /// 进程 readiness gate 类型，决定 supervisor 何时认为进程就绪。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessGate {
     /// 进程已启动（PID 存在）即视为就绪。
+    #[default]
     ProcessStarted,
     /// 进程的 runtime introspection 握手成功即视为就绪。
     RuntimeReady,
     /// 进程的 runtime introspection 握手成功且所有 service endpoint 就绪。
     ServiceReady,
-}
-
-impl Default for ReadinessGate {
-    fn default() -> Self {
-        Self::ProcessStarted
-    }
 }
 
 fn default_restart_policy() -> RestartPolicy {
