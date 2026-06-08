@@ -83,6 +83,11 @@ where
     node: &'a mut Option<IpcNode>,
 }
 
+enum Iox2PublishOutcome {
+    Sent,
+    SentWakeFailed(Iox2Error),
+}
+
 impl Iox2WakeHandle {
     fn start(service_name: String, waiter: crate::ScheduleWaiter) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -310,15 +315,12 @@ where
     pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
         self.ensure_ready("publish iceoryx2 sample")?;
         match self.publish_slot(value, published_at_ms) {
-            Ok(()) => {
-                self.health.mark_ready();
-                Ok(())
-            }
+            Ok(outcome) => self.finish_publish_outcome(outcome),
             Err(error) => {
                 self.mark_transport_error(&error);
                 self.recover_after_transport_error("publish iceoryx2 sample")?;
                 self.publish_slot(value, published_at_ms)
-                    .inspect(|_| self.health.mark_ready())
+                    .and_then(|outcome| self.finish_publish_outcome(outcome))
                     .inspect_err(|error| self.mark_transport_error(error))
             }
         }
@@ -334,22 +336,43 @@ where
         self.start_wake_listener(waiter);
     }
 
-    fn publish_slot(&self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| Iox2Error::new("publish iceoryx2 sample", "endpoint is not ready"))?;
-        let sample = publisher
-            .loan_uninit()
-            .map_err(|error| Iox2Error::new("failed to loan iceoryx2 sample", error))?;
-        let mut sample = sample;
-        sample.user_header_mut().published_at_ms = published_at_ms;
-        sample
-            .write_payload(value)
-            .send()
-            .map_err(|error| Iox2Error::new("failed to send iceoryx2 sample", error))?;
-        self.notify_wake()?;
-        Ok(())
+    fn finish_publish_outcome(&mut self, outcome: Iox2PublishOutcome) -> Result<(), Iox2Error> {
+        match outcome {
+            Iox2PublishOutcome::Sent => {
+                self.health.mark_ready();
+                Ok(())
+            }
+            Iox2PublishOutcome::SentWakeFailed(error) => {
+                self.mark_transport_error(&error);
+                Ok(())
+            }
+        }
+    }
+
+    fn publish_slot(
+        &self,
+        value: T,
+        published_at_ms: u64,
+    ) -> Result<Iox2PublishOutcome, Iox2Error> {
+        {
+            let publisher = self.publisher.as_ref().ok_or_else(|| {
+                Iox2Error::new("publish iceoryx2 sample", "endpoint is not ready")
+            })?;
+            let sample = publisher
+                .loan_uninit()
+                .map_err(|error| Iox2Error::new("failed to loan iceoryx2 sample", error))?;
+            let mut sample = sample;
+            sample.user_header_mut().published_at_ms = published_at_ms;
+            sample
+                .write_payload(value)
+                .send()
+                .map_err(|error| Iox2Error::new("failed to send iceoryx2 sample", error))?;
+        }
+
+        match self.notify_wake() {
+            Ok(()) => Ok(Iox2PublishOutcome::Sent),
+            Err(error) => Ok(Iox2PublishOutcome::SentWakeFailed(error)),
+        }
     }
 
     fn notify_wake(&self) -> Result<(), Iox2Error> {
@@ -931,6 +954,43 @@ mod tests {
         );
 
         assert_eq!(event, crate::ScheduleEvent::Data);
+    }
+
+    #[test]
+    fn publish_does_not_retry_payload_when_wake_notify_fails() {
+        let service_name = "FlowRT/Smoke/WakeFailureNoRetry";
+        let config = Iox2ChannelConfig::fifo(4, crate::OverflowPolicy::DropOldest);
+        let mut receiver = Iox2PubSub::<Iox2SmokeMessage>::open_with_config(service_name, config)
+            .expect("receiver endpoint should open");
+        let mut sender = Iox2PubSub::<Iox2SmokeMessage>::open_with_config(service_name, config)
+            .expect("sender endpoint should open");
+        sender.notifier = None;
+        let message = Iox2SmokeMessage {
+            timestamp: 51,
+            x: 9.0,
+            y: 10.0,
+        };
+
+        sender
+            .publish_at(message, 400)
+            .expect("payload send should succeed even when wake notify fails");
+
+        assert_eq!(sender.health().state, BackendHealthState::Degraded);
+        receiver
+            .poll_once(Duration::from_millis(1))
+            .expect("receiver node should poll after publish");
+        assert_eq!(
+            receiver
+                .receive()
+                .expect("receiver should read the published sample"),
+            Some(message)
+        );
+        assert_eq!(
+            receiver
+                .receive()
+                .expect("wake failure must not trigger payload retry"),
+            None
+        );
     }
 
     #[test]
