@@ -15,9 +15,9 @@ mod workspace;
 use imports::{canonicalize_existing, expand_imports, logical_source_path, read_source};
 use schema::validate_top_level_sections;
 use tables::{
-    parse_binds, parse_component, parse_instance, parse_module, parse_named_tables, parse_package,
-    parse_processes, parse_profile, parse_ros2_bridges, parse_service_binds, parse_target,
-    parse_type, parse_workspace,
+    parse_binds, parse_component, parse_instance, parse_module, parse_named_tables,
+    parse_operation_binds, parse_package, parse_processes, parse_profile, parse_ros2_bridges,
+    parse_service_binds, parse_target, parse_type, parse_workspace,
 };
 use workspace::expand_workspace;
 
@@ -32,6 +32,7 @@ struct ParsedDocument {
     processes: Vec<RawProcess>,
     binds: Vec<RawDataflowBind>,
     service_binds: Vec<RawServiceBind>,
+    operation_binds: Vec<RawOperationBind>,
     ros2_bridges: Vec<RawRos2Bridge>,
     profiles: BTreeMap<String, RawProfile>,
     targets: BTreeMap<String, RawTarget>,
@@ -141,6 +142,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         processes: parse_processes(root)?,
         binds: parse_binds(root)?,
         service_binds: parse_service_binds(root)?,
+        operation_binds: parse_operation_binds(root)?,
         ros2_bridges: parse_ros2_bridges(root)?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
@@ -157,6 +159,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         processes: parsed.processes,
         binds: parsed.binds,
         service_binds: parsed.service_binds,
+        operation_binds: parsed.operation_binds,
         ros2_bridges: parsed.ros2_bridges,
         profiles: parsed.profiles,
         targets: parsed.targets,
@@ -435,6 +438,93 @@ server = "server.plan"
         assert_eq!(document.service_binds.len(), 1);
         assert_eq!(document.service_binds[0].client, "client.plan");
         assert_eq!(document.service_binds[0].server, "server.plan");
+    }
+
+    #[test]
+    fn parses_operation_ports_and_binds() {
+        let source = r#"
+[package]
+name = "operation_demo"
+rsdl_version = "0.1"
+
+[type.PlanGoal]
+target = "u32"
+
+[type.PlanFeedback]
+progress = "f32"
+
+[type.PlanResult]
+accepted = "bool"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+backend = "auto"
+timeout_ms = 30000
+concurrency = "reject"
+preempt = "cancel_running"
+queue_depth = 8
+max_in_flight = 1
+feedback = "latest"
+result_retention_ms = 60000
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+
+        assert_eq!(document.components["controller"].operation_clients.len(), 1);
+        assert_eq!(
+            document.components["controller"].operation_clients[0].name,
+            "plan"
+        );
+        assert_eq!(
+            document.components["controller"].operation_clients[0].goal,
+            "PlanGoal"
+        );
+        assert_eq!(
+            document.components["controller"].operation_clients[0].feedback,
+            "PlanFeedback"
+        );
+        assert_eq!(
+            document.components["controller"].operation_clients[0].result,
+            "PlanResult"
+        );
+        assert_eq!(document.components["navigator"].operation_servers.len(), 1);
+        assert_eq!(document.operation_binds.len(), 1);
+        assert_eq!(document.operation_binds[0].client, "controller.plan");
+        assert_eq!(document.operation_binds[0].server, "navigator.plan");
+        assert_eq!(document.operation_binds[0].backend.as_deref(), Some("auto"));
+        assert_eq!(document.operation_binds[0].timeout_ms, Some(30000));
+        assert_eq!(
+            document.operation_binds[0].concurrency.as_deref(),
+            Some("reject")
+        );
+        assert_eq!(
+            document.operation_binds[0].preempt.as_deref(),
+            Some("cancel_running")
+        );
+        assert_eq!(document.operation_binds[0].queue_depth, Some(8));
+        assert_eq!(document.operation_binds[0].max_in_flight, Some(1));
+        assert_eq!(
+            document.operation_binds[0].feedback.as_deref(),
+            Some("latest")
+        );
+        assert_eq!(document.operation_binds[0].result_retention_ms, Some(60000));
     }
 
     #[test]

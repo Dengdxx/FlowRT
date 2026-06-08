@@ -113,6 +113,8 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
             "output",
             "service_client",
             "service_server",
+            "operation_client",
+            "operation_server",
             "params",
         ],
     )?;
@@ -124,8 +126,40 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
         output: optional_port_array(table, &context, "output")?,
         service_clients: optional_service_port_array(table, &context, "service_client")?,
         service_servers: optional_service_port_array(table, &context, "service_server")?,
+        operation_clients: optional_operation_port_table(table, &context, "operation_client")?,
+        operation_servers: optional_operation_port_table(table, &context, "operation_server")?,
         params: optional_param_table(table, &context, "params")?,
     })
+}
+
+fn optional_operation_port_table(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+) -> Result<Vec<RawOperationPort>> {
+    let Some(value) = table.get(field) else {
+        return Ok(Vec::new());
+    };
+    let table = expect_table_value(context, field, value)?;
+    let mut ports = Vec::with_capacity(table.len());
+    for (name, value) in table {
+        let port_table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: format!("{context}.{field}"),
+                field: name.clone(),
+                expected: "table",
+            })?;
+        let port_context = format!("{context}.{field}.{name}");
+        validate_known_fields(port_table, &port_context, &["goal", "feedback", "result"])?;
+        ports.push(RawOperationPort {
+            name: name.clone(),
+            goal: required_string(port_table, &port_context, "goal")?,
+            feedback: required_string(port_table, &port_context, "feedback")?,
+            result: required_string(port_table, &port_context, "result")?,
+        });
+    }
+    Ok(ports)
 }
 
 pub(super) fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
@@ -289,7 +323,7 @@ pub(super) fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             field: "bind".to_string(),
             expected: "table",
         })?;
-    validate_known_fields(bind_table, "bind", &["dataflow", "service"])?;
+    validate_known_fields(bind_table, "bind", &["dataflow", "service", "operation"])?;
     let Some(dataflow_value) = bind_table.get("dataflow") else {
         return Ok(Vec::new());
     };
@@ -350,7 +384,7 @@ pub(super) fn parse_service_binds(root: &Table) -> Result<Vec<RawServiceBind>> {
             field: "bind".to_string(),
             expected: "table",
         })?;
-    validate_known_fields(bind_table, "bind", &["dataflow", "service"])?;
+    validate_known_fields(bind_table, "bind", &["dataflow", "service", "operation"])?;
     let Some(service_value) = bind_table.get("service") else {
         return Ok(Vec::new());
     };
@@ -395,6 +429,71 @@ pub(super) fn parse_service_binds(root: &Table) -> Result<Vec<RawServiceBind>> {
             overflow: optional_string(table, &context, "overflow")?,
             lane: optional_string(table, &context, "lane")?,
             max_in_flight: optional_u32(table, &context, "max_in_flight")?,
+        });
+    }
+    Ok(parsed)
+}
+
+pub(super) fn parse_operation_binds(root: &Table) -> Result<Vec<RawOperationBind>> {
+    let Some(bind_value) = root.get("bind") else {
+        return Ok(Vec::new());
+    };
+    let bind_table = bind_value
+        .as_table()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "bind".to_string(),
+            expected: "table",
+        })?;
+    validate_known_fields(bind_table, "bind", &["dataflow", "service", "operation"])?;
+    let Some(operation_value) = bind_table.get("operation") else {
+        return Ok(Vec::new());
+    };
+    let binds = operation_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "bind".to_string(),
+            field: "operation".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(binds.len());
+    for (index, value) in binds.iter().enumerate() {
+        let context = format!("bind.operation[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "bind".to_string(),
+                field: "operation".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &[
+                "client",
+                "server",
+                "backend",
+                "timeout_ms",
+                "concurrency",
+                "preempt",
+                "queue_depth",
+                "max_in_flight",
+                "feedback",
+                "result_retention_ms",
+            ],
+        )?;
+        parsed.push(RawOperationBind {
+            client: required_string(table, &context, "client")?,
+            server: required_string(table, &context, "server")?,
+            backend: optional_string(table, &context, "backend")?,
+            timeout_ms: optional_u64(table, &context, "timeout_ms")?,
+            concurrency: optional_string(table, &context, "concurrency")?,
+            preempt: optional_string(table, &context, "preempt")?,
+            queue_depth: optional_u32(table, &context, "queue_depth")?,
+            max_in_flight: optional_u32(table, &context, "max_in_flight")?,
+            feedback: optional_string(table, &context, "feedback")?,
+            result_retention_ms: optional_u64(table, &context, "result_retention_ms")?,
         });
     }
     Ok(parsed)

@@ -107,6 +107,7 @@ pub(super) fn merge_imported_document(
     document.processes.extend(imported.processes);
     document.binds.extend(imported.binds);
     document.service_binds.extend(imported.service_binds);
+    document.operation_binds.extend(imported.operation_binds);
     document.ros2_bridges.extend(imported.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, imported.profiles)?;
     merge_named_map("target", &mut document.targets, imported.targets)?;

@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, PortIr,
-    PortRef, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr,
-    TaskReadiness, TriggerKind, TypeExpr, param_value_compatible, param_value_kind,
+    BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr,
+    OperationPortIr, OperationPortRef, PortIr, PortRef, ProcessReadinessGate, Ros2BridgeDirection,
+    ServicePortIr, ServicePortRef, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    param_value_compatible, param_value_kind,
 };
 
 use crate::ValidationError;
@@ -34,6 +35,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
         validate_service_binds(&components, &instances, graph, errors);
+        validate_operation_binds(&components, &instances, graph, errors);
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
     }
@@ -300,6 +302,132 @@ fn validate_service_binds(
             )));
         }
     }
+}
+
+fn validate_operation_binds(
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut clients = BTreeSet::new();
+    for operation in &graph.operations {
+        let client_key = format!(
+            "{}.{}",
+            operation.client.instance.name, operation.client.port
+        );
+        let server_key = format!(
+            "{}.{}",
+            operation.server.instance.name, operation.server.port
+        );
+        if !clients.insert(client_key.clone()) {
+            errors.push(ValidationError::new(format!(
+                "operation client `{client_key}` is bound more than once"
+            )));
+        }
+
+        if !flowrt_ir::is_known_operation_backend(&operation.backend.0) {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` uses unsupported backend `{}`; only `inproc` and `zenoh` are allowed",
+                operation.backend.0
+            )));
+        }
+
+        if operation.policy.timeout_ms == 0 {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` has zero timeout_ms"
+            )));
+        }
+        if operation.policy.queue_depth == 0 {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` has zero queue_depth"
+            )));
+        }
+        if operation.policy.max_in_flight == 0 {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` has zero max_in_flight"
+            )));
+        }
+
+        if operation.backend.0 == "inproc"
+            && operation.backend_source == flowrt_ir::OperationBackendSource::Explicit
+            && operation_spans_boundaries(instances, &operation.client, &operation.server)
+        {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` uses explicit `inproc` but spans process or target boundaries"
+            )));
+        }
+
+        let client = match resolve_operation_port(
+            components,
+            instances,
+            &operation.client,
+            OperationDirection::Client,
+        ) {
+            Ok(port) => port,
+            Err(message) => {
+                errors.push(ValidationError::new(message));
+                continue;
+            }
+        };
+        let server = match resolve_operation_port(
+            components,
+            instances,
+            &operation.server,
+            OperationDirection::Server,
+        ) {
+            Ok(port) => port,
+            Err(message) => {
+                errors.push(ValidationError::new(message));
+                continue;
+            }
+        };
+
+        if client.goal != server.goal {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` has mismatched goal type: client uses `{}`, server uses `{}`",
+                client.goal.canonical_syntax(),
+                server.goal.canonical_syntax()
+            )));
+        }
+        if client.feedback != server.feedback {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` has mismatched feedback type: client uses `{}`, server uses `{}`",
+                client.feedback.canonical_syntax(),
+                server.feedback.canonical_syntax()
+            )));
+        }
+        if client.result != server.result {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` has mismatched result type: client uses `{}`, server uses `{}`",
+                client.result.canonical_syntax(),
+                server.result.canonical_syntax()
+            )));
+        }
+    }
+}
+
+fn operation_spans_boundaries(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    client: &OperationPortRef,
+    server: &OperationPortRef,
+) -> bool {
+    let client_instance = instances.get(client.instance.name.as_str());
+    let server_instance = instances.get(server.instance.name.as_str());
+    let client_process = client_instance
+        .and_then(|i| i.process.as_deref())
+        .unwrap_or("main");
+    let server_process = server_instance
+        .and_then(|i| i.process.as_deref())
+        .unwrap_or("main");
+    let client_target = client_instance
+        .and_then(|i| i.target.as_ref())
+        .map(|target| target.name.as_str());
+    let server_target = server_instance
+        .and_then(|i| i.target.as_ref())
+        .map(|target| target.name.as_str());
+    client_process != server_process
+        || (client_target.is_some() && server_target.is_some() && client_target != server_target)
 }
 
 fn validate_instance_targets(
@@ -875,6 +1003,33 @@ fn resolve_service_port<'a>(
         })
 }
 
+fn resolve_operation_port<'a>(
+    components: &'a BTreeMap<&str, &'a ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    endpoint: &OperationPortRef,
+    direction: OperationDirection,
+) -> std::result::Result<&'a OperationPortIr, String> {
+    let instance = instances
+        .get(endpoint.instance.name.as_str())
+        .ok_or_else(|| format!("unknown instance `{}`", endpoint.instance.name))?;
+    let component = components
+        .get(instance.component.name.as_str())
+        .ok_or_else(|| format!("unknown component `{}`", instance.component.name))?;
+    let ports = match direction {
+        OperationDirection::Client => &component.operation_clients,
+        OperationDirection::Server => &component.operation_servers,
+    };
+    ports
+        .iter()
+        .find(|port| port.name == endpoint.port)
+        .ok_or_else(|| {
+            format!(
+                "instance `{}` component `{}` has no {:?} operation `{}`",
+                instance.name, component.name, direction, endpoint.port
+            )
+        })
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PortDirection {
     Input,
@@ -883,6 +1038,12 @@ enum PortDirection {
 
 #[derive(Debug, Clone, Copy)]
 enum ServiceDirection {
+    Client,
+    Server,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OperationDirection {
     Client,
     Server,
 }

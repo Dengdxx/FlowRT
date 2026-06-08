@@ -8,6 +8,7 @@ mod backends;
 mod graphs;
 mod ids;
 mod modules;
+mod operations;
 mod params;
 mod profiles;
 mod resolver;
@@ -123,6 +124,8 @@ fn normalize_document_with_modules(
     let processes = graphs::normalize_processes(document, &instances)?;
     let service_edges =
         services::normalize_service_binds(document, &instance_refs, &instances, &graph_name)?;
+    let operation_edges =
+        operations::normalize_operation_binds(document, &instance_refs, &instances, &graph_name)?;
     let ros2_bridges = services::normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = crate::GraphIr {
         id: graph_id.clone(),
@@ -132,6 +135,7 @@ fn normalize_document_with_modules(
         tasks,
         binds,
         services: service_edges,
+        operations: operation_edges,
         ros2_bridges,
     };
 
@@ -160,11 +164,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OverflowPolicy, ParamType,
-        ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType, ProcessFailurePropagation,
-        ProcessReadinessGate, ProcessRestartPolicyKind, RouteTopology, RtPolicy,
-        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness, TypeExpr,
-        channel_route_capabilities, deployment_capability_decision,
+        CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OperationBackendSource,
+        OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
+        OverflowPolicy, ParamType, ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
+        ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind, RouteTopology,
+        RtPolicy, ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness,
+        TypeExpr, channel_route_capabilities, deployment_capability_decision,
     };
 
     #[test]
@@ -633,6 +638,252 @@ server = "server.plan"
         assert_eq!(service.policy.overflow, ServiceOverflowPolicy::Busy);
         assert_eq!(service.policy.lane, None);
         assert_eq!(service.policy.max_in_flight, 64);
+    }
+
+    #[test]
+    fn normalizes_operation_ports_and_binds() {
+        let source = r#"
+[package]
+name = "operation_demo"
+rsdl_version = "0.1"
+
+[type.PlanGoal]
+target = "u32"
+
+[type.PlanFeedback]
+progress = "f32"
+
+[type.PlanResult]
+accepted = "bool"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator]
+component = "navigator"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let client = ir
+            .components
+            .iter()
+            .find(|component| component.name == "controller")
+            .unwrap();
+        let operation = &ir.graphs[0].operations[0];
+
+        assert_eq!(client.operation_clients[0].name, "plan");
+        assert_eq!(
+            client.operation_clients[0].goal.canonical_syntax(),
+            "PlanGoal"
+        );
+        assert_eq!(
+            client.operation_clients[0].feedback.canonical_syntax(),
+            "PlanFeedback"
+        );
+        assert_eq!(
+            client.operation_clients[0].result.canonical_syntax(),
+            "PlanResult"
+        );
+        assert_eq!(operation.client.instance.name, "controller");
+        assert_eq!(operation.client.port, "plan");
+        assert_eq!(operation.server.instance.name, "navigator");
+        assert_eq!(operation.server.port, "plan");
+        assert_eq!(operation.backend.0, "inproc");
+        assert_eq!(
+            operation.backend_source,
+            OperationBackendSource::AutoResolved
+        );
+        assert_eq!(operation.policy.timeout_ms, 30000);
+        assert_eq!(
+            operation.policy.concurrency,
+            OperationConcurrencyPolicy::Reject
+        );
+        assert_eq!(operation.policy.preempt, OperationPreemptPolicy::Reject);
+        assert_eq!(operation.policy.queue_depth, 8);
+        assert_eq!(operation.policy.max_in_flight, 1);
+        assert_eq!(operation.policy.feedback, OperationFeedbackPolicy::Latest);
+        assert_eq!(operation.policy.result_retention_ms, 60000);
+    }
+
+    #[test]
+    fn operation_auto_backend_resolves_to_zenoh_for_cross_process() {
+        let source = r#"
+[package]
+name = "operation_cross_process"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+process = "control_proc"
+
+[instance.navigator]
+component = "navigator"
+process = "nav_proc"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let operation = &ir.graphs[0].operations[0];
+
+        assert_eq!(operation.backend.0, "zenoh");
+        assert_eq!(
+            operation.backend_source,
+            OperationBackendSource::AutoResolved
+        );
+    }
+
+    #[test]
+    fn operation_bind_with_explicit_policy_fields() {
+        let source = r#"
+[package]
+name = "operation_policy_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator]
+component = "navigator"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+backend = "zenoh"
+timeout_ms = 1000
+concurrency = "queue"
+preempt = "cancel_running"
+queue_depth = 16
+max_in_flight = 4
+feedback = "fifo"
+result_retention_ms = 2000
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let operation = &ir.graphs[0].operations[0];
+
+        assert_eq!(operation.backend.0, "zenoh");
+        assert_eq!(operation.backend_source, OperationBackendSource::Explicit);
+        assert_eq!(operation.policy.timeout_ms, 1000);
+        assert_eq!(
+            operation.policy.concurrency,
+            OperationConcurrencyPolicy::Queue
+        );
+        assert_eq!(
+            operation.policy.preempt,
+            OperationPreemptPolicy::CancelRunning
+        );
+        assert_eq!(operation.policy.queue_depth, 16);
+        assert_eq!(operation.policy.max_in_flight, 4);
+        assert_eq!(operation.policy.feedback, OperationFeedbackPolicy::Fifo);
+        assert_eq!(operation.policy.result_retention_ms, 2000);
+        assert_eq!(operation.policy_source.backend, PolicyValueSource::Explicit);
+        assert_eq!(
+            operation.policy_source.concurrency,
+            PolicyValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn rejects_operation_bind_with_iox2_backend() {
+        let source = r#"
+[package]
+name = "bad_operation"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator]
+component = "navigator"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+backend = "iox2"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("iox2 operation backend should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidEnum {
+                kind: "operation backend",
+                value,
+                ..
+            } if value == "iox2"
+        ));
     }
 
     #[test]

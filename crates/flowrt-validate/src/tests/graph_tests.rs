@@ -594,6 +594,178 @@ server = "server.plan"
 }
 
 #[test]
+fn rejects_operation_bind_with_mismatched_result_type() {
+    let source = r#"
+[package]
+name = "bad_operation"
+rsdl_version = "0.1"
+
+[type.PlanGoal]
+target = "u32"
+
+[type.PlanFeedback]
+progress = "f32"
+
+[type.PlanResult]
+accepted = "bool"
+
+[type.BadResult]
+code = "u32"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "BadResult"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator]
+component = "navigator"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("operation result mismatch should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan -> navigator.plan` has mismatched result type",
+        )
+    }));
+}
+
+#[test]
+fn rejects_operation_client_bound_more_than_once() {
+    let source = r#"
+[package]
+name = "bad_operation"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator_a]
+language = "rust"
+
+[component.navigator_a.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator_b]
+language = "rust"
+
+[component.navigator_b.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator_a]
+component = "navigator_a"
+
+[instance.navigator_b]
+component = "navigator_b"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator_a.plan"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator_b.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("duplicate operation client should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("operation client `controller.plan` is bound more than once")
+    }));
+}
+
+#[test]
+fn rejects_operation_zero_policy_fields_at_validation() {
+    let source = r#"
+[package]
+name = "bad_operation"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator]
+component = "navigator"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].operations[0].policy.timeout_ms = 0;
+    ir.graphs[0].operations[0].policy.queue_depth = 0;
+    ir.graphs[0].operations[0].policy.max_in_flight = 0;
+    let report = validate_contract(&ir).expect_err("zero operation policy should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("operation bind `controller.plan -> navigator.plan` has zero timeout_ms")
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("operation bind `controller.plan -> navigator.plan` has zero queue_depth")
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("operation bind `controller.plan -> navigator.plan` has zero max_in_flight")
+    }));
+}
+
+#[test]
 fn rejects_service_bind_with_iox2_backend() {
     let source = r#"
 [package]

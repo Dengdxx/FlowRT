@@ -53,6 +53,7 @@ pub struct RawCompositionDocument {
     pub processes: Vec<RawProcess>,
     pub binds: Vec<RawDataflowBind>,
     pub service_binds: Vec<RawServiceBind>,
+    pub operation_binds: Vec<RawOperationBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
@@ -70,6 +71,7 @@ pub struct RawDocument {
     pub processes: Vec<RawProcess>,
     pub binds: Vec<RawDataflowBind>,
     pub service_binds: Vec<RawServiceBind>,
+    pub operation_binds: Vec<RawOperationBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
@@ -119,6 +121,8 @@ pub struct RawComponent {
     pub output: Vec<RawPort>,
     pub service_clients: Vec<RawServicePort>,
     pub service_servers: Vec<RawServicePort>,
+    pub operation_clients: Vec<RawOperationPort>,
+    pub operation_servers: Vec<RawOperationPort>,
     pub params: BTreeMap<String, RawValue>,
 }
 
@@ -135,6 +139,15 @@ pub struct RawServicePort {
     pub name: String,
     pub request: String,
     pub response: String,
+}
+
+/// 组件 operation client/server 端口声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawOperationPort {
+    pub name: String,
+    pub goal: String,
+    pub feedback: String,
+    pub result: String,
 }
 
 /// `[instance.<name>]` 表。
@@ -204,6 +217,21 @@ pub struct RawServiceBind {
     pub overflow: Option<String>,
     pub lane: Option<String>,
     pub max_in_flight: Option<u32>,
+}
+
+/// `[[bind.operation]]` 表项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawOperationBind {
+    pub client: String,
+    pub server: String,
+    pub backend: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub concurrency: Option<String>,
+    pub preempt: Option<String>,
+    pub queue_depth: Option<u32>,
+    pub max_in_flight: Option<u32>,
+    pub feedback: Option<String>,
+    pub result_retention_ms: Option<u64>,
 }
 
 /// `[[bridge.ros2]]` 表项。

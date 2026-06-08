@@ -103,6 +103,10 @@ pub struct ComponentIr {
     pub outputs: Vec<PortIr>,
     pub service_clients: Vec<ServicePortIr>,
     pub service_servers: Vec<ServicePortIr>,
+    #[serde(default)]
+    pub operation_clients: Vec<OperationPortIr>,
+    #[serde(default)]
+    pub operation_servers: Vec<OperationPortIr>,
     pub params: Vec<ParamIr>,
     pub lifecycle: LifecycleSurface,
 }
@@ -120,6 +124,15 @@ pub struct ServicePortIr {
     pub name: String,
     pub request: crate::TypeExpr,
     pub response: crate::TypeExpr,
+}
+
+/// 组件 operation client/server 端口声明。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OperationPortIr {
+    pub name: String,
+    pub goal: crate::TypeExpr,
+    pub feedback: crate::TypeExpr,
+    pub result: crate::TypeExpr,
 }
 
 /// 组件参数声明。
@@ -190,6 +203,8 @@ pub struct GraphIr {
     pub tasks: Vec<TaskIr>,
     pub binds: Vec<ChannelEdgeIr>,
     pub services: Vec<ServiceEdgeIr>,
+    #[serde(default)]
+    pub operations: Vec<OperationEdgeIr>,
     pub ros2_bridges: Vec<Ros2BridgeIr>,
 }
 
@@ -310,6 +325,82 @@ pub struct ServicePolicySourceIr {
     pub overflow: PolicyValueSource,
     pub lane: PolicyValueSource,
     pub max_in_flight: PolicyValueSource,
+}
+
+/// 两个 operation 端口之间的 typed long-running command bind。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OperationEdgeIr {
+    pub id: EntityId,
+    pub client: OperationPortRef,
+    pub server: OperationPortRef,
+    pub backend: BackendName,
+    pub backend_source: OperationBackendSource,
+    pub policy: OperationPolicyIr,
+    pub policy_source: OperationPolicySourceIr,
+}
+
+/// operation 端口引用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationPortRef {
+    pub instance: EntityRef,
+    pub port: String,
+}
+
+/// operation backend 字段来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationBackendSource {
+    Explicit,
+    AutoResolved,
+}
+
+/// operation 并发策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationConcurrencyPolicy {
+    Reject,
+    Queue,
+}
+
+/// operation 抢占策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationPreemptPolicy {
+    Reject,
+    CancelRunning,
+}
+
+/// operation feedback 保留策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationFeedbackPolicy {
+    Latest,
+    Fifo,
+}
+
+/// 归一化后的 operation policy。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OperationPolicyIr {
+    pub timeout_ms: u64,
+    pub concurrency: OperationConcurrencyPolicy,
+    pub preempt: OperationPreemptPolicy,
+    pub queue_depth: u32,
+    pub max_in_flight: u32,
+    pub feedback: OperationFeedbackPolicy,
+    pub result_retention_ms: u64,
+}
+
+/// operation policy 各字段是否来自显式 bind 声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationPolicySourceIr {
+    pub backend: PolicyValueSource,
+    pub timeout_ms: PolicyValueSource,
+    pub concurrency: PolicyValueSource,
+    pub preempt: PolicyValueSource,
+    pub queue_depth: PolicyValueSource,
+    pub max_in_flight: PolicyValueSource,
+    pub feedback: PolicyValueSource,
+    pub result_retention_ms: PolicyValueSource,
 }
 
 /// FlowRT 与 ROS2 的静态桥接声明。

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use flowrt_rsdl::{RawDocument, RawModuleDocument, RawPort, RawServicePort};
+use flowrt_rsdl::{RawDocument, RawModuleDocument, RawOperationPort, RawPort, RawServicePort};
 
 use crate::{
     ComponentIr, ComponentKind, EntityId, FieldIr, IrError, LanguageKind, LifecycleSurface,
-    ModuleIr, PortIr, Result, ServicePortIr, TypeIr, parse_type_expr,
+    ModuleIr, OperationPortIr, PortIr, Result, ServicePortIr, TypeIr, parse_type_expr,
 };
 
 use super::ids::entity_id;
@@ -115,6 +115,16 @@ pub(super) fn normalize_components(
                     resolver,
                     current_module,
                 )?,
+                operation_clients: normalize_operation_ports(
+                    &raw.operation_clients,
+                    resolver,
+                    current_module,
+                )?,
+                operation_servers: normalize_operation_ports(
+                    &raw.operation_servers,
+                    resolver,
+                    current_module,
+                )?,
                 params: super::params::normalize_component_params(name, raw)?,
                 lifecycle: LifecycleSurface::reserved_v0_1(),
             })
@@ -159,6 +169,29 @@ pub(super) fn normalize_service_ports(
                     parse_type_expr(&port.response)?,
                     current_module,
                 )?,
+            })
+        })
+        .collect()
+}
+
+pub(super) fn normalize_operation_ports(
+    ports: &[RawOperationPort],
+    resolver: &NameResolver,
+    current_module: Option<&str>,
+) -> Result<Vec<OperationPortIr>> {
+    ports
+        .iter()
+        .map(|port| {
+            Ok(OperationPortIr {
+                name: port.name.clone(),
+                goal: resolver
+                    .resolve_type_expr_in_module(parse_type_expr(&port.goal)?, current_module)?,
+                feedback: resolver.resolve_type_expr_in_module(
+                    parse_type_expr(&port.feedback)?,
+                    current_module,
+                )?,
+                result: resolver
+                    .resolve_type_expr_in_module(parse_type_expr(&port.result)?, current_module)?,
             })
         })
         .collect()

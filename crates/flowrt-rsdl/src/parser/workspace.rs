@@ -69,6 +69,7 @@ pub(super) fn expand_workspace(
                 processes: parsed.processes.clone(),
                 binds: parsed.binds.clone(),
                 service_binds: parsed.service_binds.clone(),
+                operation_binds: parsed.operation_binds.clone(),
                 ros2_bridges: parsed.ros2_bridges.clone(),
                 profiles: parsed.profiles.clone(),
                 targets: parsed.targets.clone(),
@@ -95,6 +96,7 @@ fn validate_module_document(
         (!parsed.processes.is_empty(), "process"),
         (!parsed.binds.is_empty(), "bind"),
         (!parsed.service_binds.is_empty(), "bind.service"),
+        (!parsed.operation_binds.is_empty(), "bind.operation"),
         (!parsed.ros2_bridges.is_empty(), "bridge"),
         (!parsed.profiles.is_empty(), "profile"),
         (!parsed.targets.is_empty(), "target"),
@@ -123,6 +125,7 @@ fn merge_composition_document(
     document.processes.extend(composition.processes);
     document.binds.extend(composition.binds);
     document.service_binds.extend(composition.service_binds);
+    document.operation_binds.extend(composition.operation_binds);
     document.ros2_bridges.extend(composition.ros2_bridges);
     merge_named_map("profile", &mut document.profiles, composition.profiles)?;
     merge_named_map("target", &mut document.targets, composition.targets)?;

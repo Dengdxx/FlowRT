@@ -10,11 +10,13 @@ mod normalize;
 mod type_expr;
 
 pub use backend::{
-    DeploymentCapabilityDecision, RouteTopology, SERVICE_DEFAULT_MAX_IN_FLIGHT,
-    SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS, backend_capabilities,
-    base_deployment_capabilities, channel_capabilities, channel_route_capabilities,
-    deployment_capability_decision, graph_required_capabilities, is_known_backend,
-    is_known_service_backend, message_abi_capabilities, target_capabilities, trigger_capability,
+    DeploymentCapabilityDecision, OPERATION_DEFAULT_MAX_IN_FLIGHT, OPERATION_DEFAULT_QUEUE_DEPTH,
+    OPERATION_DEFAULT_RESULT_RETENTION_MS, OPERATION_DEFAULT_TIMEOUT_MS, RouteTopology,
+    SERVICE_DEFAULT_MAX_IN_FLIGHT, SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS,
+    backend_capabilities, base_deployment_capabilities, channel_capabilities,
+    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
+    is_known_backend, is_known_operation_backend, is_known_service_backend,
+    message_abi_capabilities, target_capabilities, trigger_capability,
 };
 pub use error::{IrError, Result};
 pub use model::*;

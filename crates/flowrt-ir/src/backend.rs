@@ -259,10 +259,29 @@ pub const SERVICE_DEFAULT_QUEUE_DEPTH: u32 = 32;
 /// service 默认最大并发请求数。
 pub const SERVICE_DEFAULT_MAX_IN_FLIGHT: u32 = 64;
 
+/// operation 默认超时时间（毫秒）。
+pub const OPERATION_DEFAULT_TIMEOUT_MS: u64 = 30000;
+
+/// operation 默认队列深度。
+pub const OPERATION_DEFAULT_QUEUE_DEPTH: u32 = 8;
+
+/// operation 默认最大并发请求数。
+pub const OPERATION_DEFAULT_MAX_IN_FLIGHT: u32 = 1;
+
+/// operation 默认结果保留时间（毫秒）。
+pub const OPERATION_DEFAULT_RESULT_RETENTION_MS: u64 = 60000;
+
 /// 判断某个 backend 名称是否可作为 service backend 使用。
 ///
 /// service backend 只支持 `inproc` 和 `zenoh`，不支持 `iox2`。
 pub fn is_known_service_backend(name: &str) -> bool {
+    matches!(name, "inproc" | "zenoh")
+}
+
+/// 判断某个 backend 名称是否可作为 operation backend 使用。
+///
+/// operation 控制面只支持 `inproc` 和 `zenoh`，不支持 `iox2`。
+pub fn is_known_operation_backend(name: &str) -> bool {
     matches!(name, "inproc" | "zenoh")
 }
 
@@ -574,6 +593,8 @@ mod tests {
             outputs,
             service_clients: vec![],
             service_servers: vec![],
+            operation_clients: vec![],
+            operation_servers: vec![],
             params: vec![],
             lifecycle: crate::LifecycleSurface::reserved_v0_1(),
         }
@@ -866,6 +887,7 @@ mod tests {
                 },
             ],
             services: vec![],
+            operations: vec![],
             ros2_bridges: vec![],
         };
         let types = [test_type(

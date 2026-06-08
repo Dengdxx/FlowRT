@@ -54,6 +54,19 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 errors,
             );
         }
+        for port in component
+            .operation_clients
+            .iter()
+            .chain(component.operation_servers.iter())
+        {
+            validate_name(
+                "operation",
+                "operation port name",
+                &port.name,
+                NameStyle::SnakeCase,
+                errors,
+            );
+        }
     }
 
     for profile in &ir.profiles {
