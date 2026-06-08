@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+test "${FLOWRT_PROCESS:-}" = "sensor_proc"
+test "${FLOWRT_BACKEND:-}" = "zenoh"
+test "${FLOWRT_EXTERNAL_PACKAGE:-}" = "fake_sensor_driver"
+test "${FLOWRT_EXTERNAL_EXECUTABLE:-}" = "bin/driver"
+test "${1:-}" = "--mode"
+test "${2:-}" = "smoke"
+
+if [[ -n "${FLOWRT_RUN_STEPS:-}" && "${FLOWRT_RUN_STEPS}" -le 0 ]]; then
+    printf 'FLOWRT_RUN_STEPS must be positive when set\n' >&2
+    exit 1
+fi

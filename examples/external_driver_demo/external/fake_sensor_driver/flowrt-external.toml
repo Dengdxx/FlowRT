@@ -1,0 +1,12 @@
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64", "linux-arm64"]
+backends = ["zenoh"]
+health = "process_started"
