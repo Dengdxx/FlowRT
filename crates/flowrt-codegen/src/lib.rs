@@ -57,6 +57,9 @@ pub enum CodegenError {
     #[error("failed to serialize launch manifest: {0}")]
     LaunchJson(#[from] serde_json::Error),
 
+    #[error("invalid launch manifest: {message}")]
+    InvalidLaunchManifest { message: String },
+
     #[error("failed to derive message ABI expectations: {0}")]
     MessageAbi(#[from] flowrt_conformance::AbiError),
 

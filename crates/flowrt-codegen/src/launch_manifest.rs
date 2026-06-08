@@ -7,42 +7,49 @@ use flowrt_ir::{
 
 use crate::runtime_plan::bridge_runtime_plans;
 use crate::{
-    Result, component_by_name, iox2_service_name_for_edge, language_name, ros2_bridge_key_expr,
-    zenoh_key_expr_for_edge,
+    CodegenError, Result, component_by_name, iox2_service_name_for_edge, language_name,
+    ros2_bridge_key_expr, zenoh_key_expr_for_edge,
 };
 
 pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
+    let graphs = contract
+        .graphs
+        .iter()
+        .map(|graph| {
+            Ok(serde_json::json!({
+                "name": graph.name,
+                "scheduler": launch_scheduler(contract, graph),
+                "processes": launch_processes(contract, graph),
+                "channels": launch_channels(contract, graph),
+                "services": launch_services(contract, graph)?,
+                "ros2_bridges": launch_ros2_bridges(contract, graph),
+                "instances": graph.instances.iter().map(|instance| {
+                    let component = component_by_name(contract, &instance.component.name);
+                    serde_json::json!({
+                        "name": instance.name,
+                        "component": instance.component.name,
+                        "runtime": language_name(component.language),
+                        "process": instance.process,
+                        "target": instance.target.as_ref().map(|target| &target.name),
+                    })
+                }).collect::<Vec<_>>(),
+                "tasks": graph.tasks.iter().map(launch_task).collect::<Vec<_>>(),
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let launch = serde_json::json!({
         "package": contract.package.name,
         "ir_version": contract.ir_version,
         "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
         "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
-        "graphs": contract.graphs.iter().map(|graph| serde_json::json!({
-            "name": graph.name,
-            "scheduler": launch_scheduler(contract, graph),
-            "processes": launch_processes(contract, graph),
-            "channels": launch_channels(contract, graph),
-            "services": launch_services(contract, graph),
-            "ros2_bridges": launch_ros2_bridges(contract, graph),
-            "instances": graph.instances.iter().map(|instance| {
-                let component = component_by_name(contract, &instance.component.name);
-                serde_json::json!({
-                    "name": instance.name,
-                    "component": instance.component.name,
-                    "runtime": language_name(component.language),
-                    "process": instance.process,
-                    "target": instance.target.as_ref().map(|target| &target.name),
-                })
-            }).collect::<Vec<_>>(),
-            "tasks": graph.tasks.iter().map(launch_task).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
+        "graphs": graphs,
     });
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
 }
 
-fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
+fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_json::Value>> {
     let components = contract
         .components
         .iter()
@@ -72,10 +79,32 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
                 service.server.port.as_str(),
                 ServicePortRole::Server,
             );
-            debug_assert_eq!(client.request, server.request);
-            debug_assert_eq!(client.response, server.response);
+            if client.request != server.request {
+                return Err(CodegenError::InvalidLaunchManifest {
+                    message: format!(
+                        "service `{}` request type mismatch: client `{}` uses `{}`, server `{}` uses `{}`",
+                        service.id.0,
+                        service.client.port,
+                        client.request.canonical_syntax(),
+                        service.server.port,
+                        server.request.canonical_syntax()
+                    ),
+                });
+            }
+            if client.response != server.response {
+                return Err(CodegenError::InvalidLaunchManifest {
+                    message: format!(
+                        "service `{}` response type mismatch: client `{}` uses `{}`, server `{}` uses `{}`",
+                        service.id.0,
+                        service.client.port,
+                        client.response.canonical_syntax(),
+                        service.server.port,
+                        server.response.canonical_syntax()
+                    ),
+                });
+            }
             let name = format!("{}.{}", service.client.instance.name, service.client.port);
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "name": name,
                 "client": format!("{}.{}", service.client.instance.name, service.client.port),
                 "client_instance": service.client.instance.name,
@@ -91,7 +120,7 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
                 "overflow": service.policy.overflow,
                 "lane": service.policy.lane,
                 "max_in_flight": service.policy.max_in_flight,
-            })
+            }))
         })
         .collect()
 }

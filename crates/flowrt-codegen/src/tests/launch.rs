@@ -374,6 +374,53 @@ server = "server.plan"
 }
 
 #[test]
+fn launch_manifest_rejects_service_type_mismatch_in_release_path() {
+    let mut ir = contract_from_source(
+        r#"
+[package]
+name = "service_demo"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal_id = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[instance.client]
+component = "client"
+
+[instance.server]
+component = "server"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+"#,
+    );
+    let server = ir
+        .components
+        .iter_mut()
+        .find(|component| component.name == "server")
+        .unwrap();
+    server.service_servers[0].response = flowrt_ir::TypeExpr::Named {
+        name: "PlanRequest".to_string(),
+    };
+
+    let error = crate::launch_manifest::emit_launch_manifest(&ir).unwrap_err();
+
+    assert!(error.to_string().contains("response type mismatch"));
+}
+
+#[test]
 fn launch_manifest_marks_mixed_process_runtime_kind() {
     let ir = contract_from_source(
         r#"
