@@ -211,6 +211,41 @@ fn main() {{}}
     }
 
     #[test]
+    fn old_self_description_defaults_operation_fields() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "old_operation_free" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "component_types": [{
+    "name": "controller",
+    "language": "rust",
+    "kind": "native"
+  }],
+  "message_abi": []
+}"#;
+        let dir = std::env::temp_dir().join(format!(
+            "flowrt-selfdesc-old-operation-defaults-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert!(sd.graphs[0].operations.is_empty());
+        assert!(sd.component_types[0].operation_clients.is_empty());
+        assert!(sd.component_types[0].operation_servers.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn unsupported_version_reports_clear_error() {
         let json = r#"{
   "self_description_version": "99.0",

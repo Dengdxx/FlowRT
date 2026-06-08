@@ -192,6 +192,21 @@ int main() {
         .dispatched_count = 500,
         .fairness_violations = 0,
     });
+    state.register_operation("controller.plan");
+    state.record_operation_health(flowrt::IntrospectionOperationStatus{
+        .name = "controller.plan",
+        .ready = true,
+        .running = 1,
+        .queued = 2,
+        .current_operation_ids = {"111:7:3"},
+        .total_started = 9,
+        .succeeded_count = 5,
+        .failed_count = 1,
+        .canceled_count = 0,
+        .timeout_count = 1,
+        .preempted_count = 0,
+        .last_transition_ms = std::optional<std::uint64_t>{12345U},
+    });
     state.record_channel_publish_bytes(
         "source.imu_to_sink.imu", "Imu",
         std::vector<std::uint8_t>{std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}},
@@ -255,6 +270,27 @@ int main() {
         assert_contains(status_response, R"("success_count":97)");
         assert_contains(status_response, R"("queue_depth":2)");
         assert_contains(status_response, R"("dispatched_count":500)");
+        assert_contains(status_response, R"("operations":[)");
+        assert_contains(status_response, R"("name":"controller.plan")");
+        assert_contains(status_response, R"("running":1)");
+        assert_contains(status_response, R"("current_operation_ids":["111:7:3"])");
+        assert_contains(status_response, R"("total_started":9)");
+        assert_contains(status_response, R"("succeeded_count":5)");
+        assert_contains(status_response, R"("timeout_count":1)");
+        assert_contains(status_response, R"("last_transition_ms":12345)");
+
+        const auto operation_cancel_response = request_line(
+            socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");
+        assert_contains(operation_cancel_response, R"("response":"operation_value")");
+        assert_contains(operation_cancel_response, R"("name":"controller.plan")");
+        assert_contains(operation_cancel_response, R"("running":0)");
+        assert_contains(operation_cancel_response, R"("canceled_count":1)");
+
+        const auto operation_cancel_again_response = request_line(
+            socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");
+        assert_contains(operation_cancel_again_response, R"("response":"error")");
+        assert_contains(operation_cancel_again_response,
+                        R"("message":"unknown FlowRT operation `111:7:3`")");
 
         const auto snapshot_response = request_line(
             socket_path, R"({"command":"channel_snapshot","channel":"source.imu_to_sink.imu"})");

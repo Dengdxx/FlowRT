@@ -261,6 +261,24 @@ struct IntrospectionServiceStatus {
 };
 
 /**
+ * @brief 单个 Operation endpoint 的运行态健康状态。
+ */
+struct IntrospectionOperationStatus {
+    std::string name;
+    bool ready = true;
+    std::uint64_t running = 0;
+    std::uint64_t queued = 0;
+    std::vector<std::string> current_operation_ids;
+    std::uint64_t total_started = 0;
+    std::uint64_t succeeded_count = 0;
+    std::uint64_t failed_count = 0;
+    std::uint64_t canceled_count = 0;
+    std::uint64_t timeout_count = 0;
+    std::uint64_t preempted_count = 0;
+    std::optional<std::uint64_t> last_transition_ms;
+};
+
+/**
  * @brief 单个 task 的调度健康快照。
  *
  * 由 generated shell 在 scheduler step 边界填充，反映 task 级调度质量。
@@ -299,6 +317,7 @@ struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
     std::vector<IntrospectionChannelStatus> channels;
     std::vector<IntrospectionServiceStatus> services;
+    std::vector<IntrospectionOperationStatus> operations;
     std::vector<IntrospectionTaskHealth> tasks;
     std::vector<IntrospectionLaneHealth> lanes;
 };
@@ -449,6 +468,49 @@ inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) 
     return value ? std::to_string(*value) : "null";
 }
 
+inline std::string json_string_array(const std::vector<std::string> &values) {
+    std::string output;
+    output.push_back('[');
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(json_string(values[index]));
+    }
+    output.push_back(']');
+    return output;
+}
+
+inline std::string operation_status_json(const IntrospectionOperationStatus &operation) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(operation.name));
+    output.append(",\"ready\":");
+    output.append(operation.ready ? "true" : "false");
+    output.append(",\"running\":");
+    output.append(std::to_string(operation.running));
+    output.append(",\"queued\":");
+    output.append(std::to_string(operation.queued));
+    output.append(",\"current_operation_ids\":");
+    output.append(json_string_array(operation.current_operation_ids));
+    output.append(",\"total_started\":");
+    output.append(std::to_string(operation.total_started));
+    output.append(",\"succeeded_count\":");
+    output.append(std::to_string(operation.succeeded_count));
+    output.append(",\"failed_count\":");
+    output.append(std::to_string(operation.failed_count));
+    output.append(",\"canceled_count\":");
+    output.append(std::to_string(operation.canceled_count));
+    output.append(",\"timeout_count\":");
+    output.append(std::to_string(operation.timeout_count));
+    output.append(",\"preempted_count\":");
+    output.append(std::to_string(operation.preempted_count));
+    output.append(",\"last_transition_ms\":");
+    output.append(optional_u64_json(operation.last_transition_ms));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string task_health_json(const IntrospectionTaskHealth &task) {
     std::string output;
     output.append("{\"name\":");
@@ -510,6 +572,13 @@ inline std::string status_json(const IntrospectionStatus &status) {
             output.push_back(',');
         }
         output.append(service_status_json(status.services[index]));
+    }
+    output.append("],\"operations\":[");
+    for (std::size_t index = 0; index < status.operations.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(operation_status_json(status.operations[index]));
     }
     output.append("],\"tasks\":[");
     for (std::size_t index = 0; index < status.tasks.size(); ++index) {
@@ -591,6 +660,17 @@ inline std::string param_value_response_json(const IntrospectionHandshake &hands
     output.append(handshake_json(handshake));
     output.append(",\"param\":");
     output.append(param_status_json(param));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string operation_value_response_json(const IntrospectionHandshake &handshake,
+                                                 const IntrospectionOperationStatus &operation) {
+    std::string output;
+    output.append("{\"response\":\"operation_value\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"operation\":");
+    output.append(operation_status_json(operation));
     output.push_back('}');
     return output;
 }
@@ -755,6 +835,7 @@ enum class IntrospectionRequestKind : std::uint8_t {
     ParamList = 4,
     ParamGet = 5,
     ParamSet = 6,
+    OperationCancel = 7,
 };
 
 struct ParsedIntrospectionRequest {
@@ -762,6 +843,7 @@ struct ParsedIntrospectionRequest {
     std::string channel;
     std::string param_name;
     std::string param_value;
+    std::string operation_id;
 };
 
 inline std::optional<std::size_t> find_json_value_fragment(std::string_view input,
@@ -880,6 +962,14 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
         }
         return ParsedIntrospectionRequest{
             IntrospectionRequestKind::ParamSet, {}, std::move(name), std::move(value)};
+    }
+    if (command == "operation_cancel") {
+        std::string operation_id;
+        if (!find_json_string_value(line, "operation_id", operation_id)) {
+            return std::nullopt;
+        }
+        return ParsedIntrospectionRequest{
+            IntrospectionRequestKind::OperationCancel, {}, {}, {}, std::move(operation_id)};
     }
     return std::nullopt;
 }
@@ -1175,6 +1265,54 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 预注册一个 operation endpoint，使其在尚未收到 goal 时也出现在 status 中。
+     */
+    void register_operation(std::string name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->operations.try_emplace(name, IntrospectionOperationStatus{
+                                                 .name = name,
+                                                 .ready = true,
+                                             });
+    }
+
+    /**
+     * @brief 记录 operation 运行态健康状态快照。
+     */
+    void record_operation_health(IntrospectionOperationStatus status) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->operations.insert_or_assign(status.name, std::move(status));
+    }
+
+    /**
+     * @brief 请求取消指定 operation invocation。
+     */
+    std::variant<IntrospectionOperationStatus, std::string> cancel_operation(
+        std::string_view operation_id) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        for (auto &[name, operation] : inner_->operations) {
+            (void)name;
+            const auto match =
+                std::find(operation.current_operation_ids.begin(),
+                          operation.current_operation_ids.end(), std::string{operation_id});
+            if (match == operation.current_operation_ids.end()) {
+                continue;
+            }
+            if (operation.running == 0U) {
+                return "FlowRT operation `" + std::string{operation_id} +
+                       "` is already finished";
+            }
+            operation.current_operation_ids.erase(match);
+            --operation.running;
+            if (operation.canceled_count != UINT64_MAX) {
+                ++operation.canceled_count;
+            }
+            operation.last_transition_ms = detail::unix_time_ms();
+            return operation;
+        }
+        return "unknown FlowRT operation `" + std::string{operation_id} + "`";
+    }
+
+    /**
      * @brief 记录 task 调度健康快照。
      */
     void record_task_health(IntrospectionTaskHealth health) const {
@@ -1215,6 +1353,10 @@ class IntrospectionState {
         snapshot.services.reserve(inner_->services.size());
         for (const auto &[name, service] : inner_->services) {
             snapshot.services.push_back(service);
+        }
+        snapshot.operations.reserve(inner_->operations.size());
+        for (const auto &[name, operation] : inner_->operations) {
+            snapshot.operations.push_back(operation);
         }
         snapshot.tasks.reserve(inner_->tasks.size());
         for (const auto &[name, task] : inner_->tasks) {
@@ -1367,6 +1509,7 @@ class IntrospectionState {
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
         std::map<std::string, IntrospectionServiceStatus> services;
+        std::map<std::string, IntrospectionOperationStatus> operations;
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
     };
@@ -1535,6 +1678,16 @@ inline void handle_introspection_connection(int client_fd, const IntrospectionHa
                 if (std::holds_alternative<IntrospectionParamStatus>(result)) {
                     response = param_value_response_json(
                         handshake, std::get<IntrospectionParamStatus>(result));
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
+                break;
+            }
+            case IntrospectionRequestKind::OperationCancel: {
+                const auto result = state.cancel_operation(request->operation_id);
+                if (std::holds_alternative<IntrospectionOperationStatus>(result)) {
+                    response = operation_value_response_json(
+                        handshake, std::get<IntrospectionOperationStatus>(result));
                 } else {
                     response = error_response_json(handshake, std::get<std::string>(result));
                 }

@@ -82,7 +82,8 @@ pub struct SelfDescriptionDeployment {
 /// 可复用组件类型声明摘要。
 ///
 /// 记录 component 的语言、kind 和声明端口（inputs、outputs、service_clients、
-/// service_servers、params），让 CLI 在不读 RSDL 的情况下展示组件视图。
+/// service_servers、operation_clients、operation_servers、params），让 CLI 在不读
+/// RSDL 的情况下展示组件视图。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfDescriptionComponentType {
     /// 组件类型名称。
@@ -106,6 +107,12 @@ pub struct SelfDescriptionComponentType {
     /// service server 端口声明。
     #[serde(default)]
     pub service_servers: Vec<SelfDescriptionServicePortDecl>,
+    /// operation client 端口声明。
+    #[serde(default)]
+    pub operation_clients: Vec<SelfDescriptionOperationPortDecl>,
+    /// operation server 端口声明。
+    #[serde(default)]
+    pub operation_servers: Vec<SelfDescriptionOperationPortDecl>,
     /// 参数 schema 声明。
     #[serde(default)]
     pub params: Vec<SelfDescriptionParamDecl>,
@@ -127,6 +134,18 @@ pub struct SelfDescriptionServicePortDecl {
     pub request_type: String,
     #[serde(default)]
     pub response_type: String,
+}
+
+/// operation 端口声明（client/server）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionOperationPortDecl {
+    pub name: String,
+    #[serde(default)]
+    pub goal_type: String,
+    #[serde(default)]
+    pub feedback_type: String,
+    #[serde(default)]
+    pub result_type: String,
 }
 
 /// 参数 schema 声明（来自 component 类型定义）。
@@ -158,6 +177,9 @@ pub struct SelfDescriptionGraph {
     /// v0.4+ service endpoint 拓扑。
     #[serde(default)]
     pub services: Vec<SelfDescriptionServiceEndpoint>,
+    /// v0.6+ operation endpoint 拓扑。
+    #[serde(default)]
+    pub operations: Vec<SelfDescriptionOperationEndpoint>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -311,6 +333,78 @@ pub struct SelfDescriptionServiceEndpoint {
     pub lane: String,
     /// 最大并发 in-flight 请求数。
     pub max_in_flight: Option<u32>,
+}
+
+/// operation endpoint 静态拓扑信息。
+///
+/// Operation 是用户主语义；`lowering` 只用于调试视图展开内部 service/channel。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionOperationEndpoint {
+    /// operation 名称，格式 `<client_instance>.<client_port>`。
+    #[serde(default)]
+    pub name: String,
+    /// Contract IR 中 operation edge 的稳定实体 ID。
+    #[serde(default)]
+    pub canonical_id: String,
+    /// client 端 instance 名称。
+    #[serde(default)]
+    pub client_instance: String,
+    /// client 端 operation port 名称。
+    #[serde(default)]
+    pub client_port: String,
+    /// server 端 instance 名称。
+    #[serde(default)]
+    pub server_instance: String,
+    /// server 端 operation port 名称。
+    #[serde(default)]
+    pub server_port: String,
+    /// goal 消息类型。
+    #[serde(default)]
+    pub goal_type: String,
+    /// feedback 消息类型。
+    #[serde(default)]
+    pub feedback_type: String,
+    /// result 消息类型。
+    #[serde(default)]
+    pub result_type: String,
+    /// 解析后的通信后端名称。
+    #[serde(default)]
+    pub backend: String,
+    /// 请求超时（毫秒）。
+    pub timeout_ms: Option<u64>,
+    /// 并发策略。
+    #[serde(default)]
+    pub concurrency: String,
+    /// 抢占策略。
+    #[serde(default)]
+    pub preempt: String,
+    /// 队列深度。
+    pub queue_depth: Option<u32>,
+    /// 最大并发 in-flight invocation 数。
+    pub max_in_flight: Option<u32>,
+    /// feedback channel 策略。
+    #[serde(default)]
+    pub feedback: String,
+    /// result 保留时间（毫秒）。
+    pub result_retention_ms: Option<u64>,
+    /// 调试视图使用的内部 lowering 引用。
+    #[serde(default)]
+    pub lowering: SelfDescriptionOperationLowering,
+}
+
+/// Operation lowering 后的内部 endpoint 引用。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SelfDescriptionOperationLowering {
+    #[serde(default)]
+    pub start_service: String,
+    #[serde(default)]
+    pub cancel_service: String,
+    #[serde(default)]
+    pub status_service: String,
+    #[serde(default)]
+    pub feedback_channel: String,
+    #[serde(default)]
+    pub result_channel: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

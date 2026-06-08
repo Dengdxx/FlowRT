@@ -151,6 +151,57 @@ fn rust_runtime_shell_lowers_operation_to_internal_endpoints() {
     );
 }
 
+/// Self-description 必须保留 Operation 用户语义和调试用 lowering refs。
+#[test]
+fn self_description_contains_operation_topology_and_lowering_refs() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let operation = &selfdesc["graphs"][0]["operations"][0];
+
+    assert_eq!(operation["name"], "controller.plan");
+    assert_eq!(operation["client_instance"], "controller");
+    assert_eq!(operation["client_port"], "plan");
+    assert_eq!(operation["server_instance"], "navigator");
+    assert_eq!(operation["server_port"], "plan");
+    assert_eq!(operation["goal_type"], "PlanGoal");
+    assert_eq!(operation["feedback_type"], "PlanFeedback");
+    assert_eq!(operation["result_type"], "PlanResult");
+    assert_eq!(operation["backend"], "inproc");
+    assert_eq!(operation["timeout_ms"], 5000);
+    assert_eq!(operation["queue_depth"], 4);
+    assert_eq!(operation["max_in_flight"], 1);
+    assert_eq!(operation["concurrency"], "reject");
+    assert_eq!(operation["preempt"], "reject");
+    assert_eq!(operation["feedback"], "latest");
+    assert_eq!(operation["result_retention_ms"], 60000);
+    assert_eq!(
+        operation["lowering"]["start_service"],
+        "__flowrt_operation_controller_plan_start"
+    );
+    assert_eq!(
+        operation["lowering"]["cancel_service"],
+        "__flowrt_operation_controller_plan_cancel"
+    );
+    assert_eq!(
+        operation["lowering"]["status_service"],
+        "__flowrt_operation_controller_plan_status"
+    );
+    assert_eq!(
+        operation["lowering"]["feedback_channel"],
+        "__flowrt_operation_controller_plan_feedback"
+    );
+    assert_eq!(
+        operation["lowering"]["result_channel"],
+        "__flowrt_operation_controller_plan_result"
+    );
+
+    let component = &selfdesc["component_types"][0];
+    assert_eq!(component["operation_clients"][0]["name"], "plan");
+    assert_eq!(component["operation_clients"][0]["goal_type"], "PlanGoal");
+}
+
 /// zenoh Operation 当前生成 typed placeholder，不创建 inproc hidden task。
 #[test]
 fn rust_zenoh_operation_placeholder_is_non_panicking() {

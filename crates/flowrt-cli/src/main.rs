@@ -20,8 +20,9 @@ mod introspection;
 
 use introspection::{
     EchoTarget, echo_channel, echo_channel_follow, live_hz_summary, live_status_summary,
-    load_self_description, params_get, params_list, params_set, remote_params_get,
-    remote_params_list, remote_params_set, self_description_nodes, self_description_summary,
+    load_self_description, operation_cancel, operation_list, operation_status_summary, params_get,
+    params_list, params_set, remote_params_get, remote_params_list, remote_params_set,
+    self_description_nodes, self_description_summary,
 };
 
 #[cfg(test)]
@@ -30,7 +31,8 @@ use flowrt_selfdesc::SelfDescription;
 use introspection::{
     echo_channel_follow_for_polls, echo_channel_from_image, echo_channel_snapshot_from_image,
     find_echo_channel, format_hz_summary_from_status_pair, live_hz_summary_for_sockets,
-    live_status_summary_for_sockets, select_matching_runtime_socket, self_description_hash,
+    live_status_summary_for_sockets, operation_cancel_for_sockets,
+    operation_status_summary_for_sockets, select_matching_runtime_socket, self_description_hash,
 };
 
 #[derive(Debug, Parser)]
@@ -171,6 +173,12 @@ enum Command {
         command: ParamsCommand,
     },
 
+    /// 观察或控制 live runtime Operation。
+    Op {
+        #[command(subcommand)]
+        command: OpCommand,
+    },
+
     /// 扫描当前用户 runtime socket 并输出 live status。
     Status,
 
@@ -267,6 +275,40 @@ enum ParamsCommand {
         /// 远程发现和请求超时毫秒。
         #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..))]
         timeout_ms: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OpCommand {
+    /// 列出 Operation 拓扑；省略 --image 时从 live runtime 读取 self-description。
+    List {
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
+        /// 显式指定 runtime introspection socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
+    /// 查看 live Operation 健康状态。
+    Status {
+        /// 可选 Operation 名称，格式 `<client_instance>.<client_port>`。
+        name: Option<String>,
+
+        /// 显式指定 runtime introspection socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
+    /// 取消 live Operation invocation。
+    Cancel {
+        /// `flowrt op status` 输出中的 operation id。
+        operation_id: String,
+
+        /// 显式指定 runtime introspection socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 }
 
@@ -436,6 +478,23 @@ fn main() -> Result<()> {
                     let image = require_image_for_local(image.as_deref())?;
                     println!("{}", params_set(&image, &name, &value, socket.as_deref())?);
                 }
+            }
+        },
+        Command::Op { command } => match command {
+            OpCommand::List { image, socket } => {
+                println!("{}", operation_list(image.as_deref(), socket.as_deref())?);
+            }
+            OpCommand::Status { name, socket } => {
+                println!(
+                    "{}",
+                    operation_status_summary(socket.as_deref(), name.as_deref())?
+                );
+            }
+            OpCommand::Cancel {
+                operation_id,
+                socket,
+            } => {
+                println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
             }
         },
         Command::Status => {

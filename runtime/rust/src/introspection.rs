@@ -47,6 +47,8 @@ pub enum IntrospectionRequest {
         name: String,
         value: serde_json::Value,
     },
+    /// 请求取消当前 runtime 中已知的 Operation invocation。
+    OperationCancel { operation_id: String },
 }
 
 /// runtime introspection 响应。
@@ -77,6 +79,10 @@ pub enum IntrospectionResponse {
         handshake: IntrospectionHandshake,
         param: IntrospectionParamStatus,
     },
+    OperationValue {
+        handshake: IntrospectionHandshake,
+        operation: IntrospectionOperationStatus,
+    },
     Error {
         handshake: IntrospectionHandshake,
         message: String,
@@ -105,6 +111,9 @@ pub struct IntrospectionStatus {
     /// v0.4+ service 运行态健康状态。
     #[serde(default)]
     pub services: Vec<IntrospectionServiceStatus>,
+    /// v0.6+ operation 运行态健康状态。
+    #[serde(default)]
+    pub operations: Vec<IntrospectionOperationStatus>,
     /// v0.5+ task 级调度健康快照。
     #[serde(default)]
     pub tasks: Vec<IntrospectionTaskHealth>,
@@ -184,6 +193,46 @@ pub struct IntrospectionServiceStatus {
     /// 累计 late response / drop 次数。
     #[serde(default)]
     pub late_drop_count: u64,
+}
+
+/// 单个 Operation endpoint 的运行态健康状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionOperationStatus {
+    /// operation 名称，格式 `<client_instance>.<client_port>`。
+    #[serde(default)]
+    pub name: String,
+    /// operation endpoint 是否已注册且可接受控制请求。
+    #[serde(default)]
+    pub ready: bool,
+    /// 当前运行中的 invocation 数。
+    #[serde(default)]
+    pub running: u64,
+    /// 当前排队的 invocation 数。
+    #[serde(default)]
+    pub queued: u64,
+    /// 当前非终态 invocation ID。
+    #[serde(default)]
+    pub current_operation_ids: Vec<String>,
+    /// 累计已启动 invocation 数。
+    #[serde(default)]
+    pub total_started: u64,
+    /// 累计成功完成次数。
+    #[serde(default)]
+    pub succeeded_count: u64,
+    /// 累计失败次数。
+    #[serde(default)]
+    pub failed_count: u64,
+    /// 累计取消次数。
+    #[serde(default)]
+    pub canceled_count: u64,
+    /// 累计超时次数。
+    #[serde(default)]
+    pub timeout_count: u64,
+    /// 累计抢占次数。
+    #[serde(default)]
+    pub preempted_count: u64,
+    /// 最近一次状态转换时间戳（Unix 毫秒）。
+    pub last_transition_ms: Option<u64>,
 }
 
 /// 单个 task 的调度健康快照。
@@ -485,6 +534,7 @@ struct IntrospectionStateInner {
     params: BTreeMap<String, ParamState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
     services: BTreeMap<String, IntrospectionServiceStatus>,
+    operations: BTreeMap<String, IntrospectionOperationStatus>,
     tasks: BTreeMap<String, IntrospectionTaskHealth>,
     lanes: BTreeMap<String, IntrospectionLaneHealth>,
 }
@@ -676,6 +726,7 @@ impl IntrospectionState {
                 .collect(),
             processes: inner.processes.values().cloned().collect(),
             services: inner.services.values().cloned().collect(),
+            operations: inner.operations.values().cloned().collect(),
             tasks: inner.tasks.values().cloned().collect(),
             lanes: inner.lanes.values().cloned().collect(),
         }
@@ -711,6 +762,54 @@ impl IntrospectionState {
     pub fn record_service_health(&self, status: IntrospectionServiceStatus) {
         let mut inner = self.lock_inner();
         inner.services.insert(status.name.clone(), status);
+    }
+
+    /// 预注册一个 operation endpoint，使其在尚未收到 goal 时也出现在 status 中。
+    pub fn register_operation(&self, name: impl Into<String>) {
+        let name = name.into();
+        let mut inner = self.lock_inner();
+        inner
+            .operations
+            .entry(name.clone())
+            .or_insert_with(|| IntrospectionOperationStatus {
+                name,
+                ready: true,
+                ..Default::default()
+            });
+    }
+
+    /// 记录 operation 运行态健康状态快照。
+    pub fn record_operation_health(&self, status: IntrospectionOperationStatus) {
+        let mut inner = self.lock_inner();
+        inner.operations.insert(status.name.clone(), status);
+    }
+
+    /// 请求取消指定 operation invocation。
+    pub fn cancel_operation(
+        &self,
+        operation_id: &str,
+    ) -> std::result::Result<IntrospectionOperationStatus, String> {
+        let mut inner = self.lock_inner();
+        for operation in inner.operations.values_mut() {
+            let Some(position) = operation
+                .current_operation_ids
+                .iter()
+                .position(|id| id == operation_id)
+            else {
+                continue;
+            };
+            if operation.running == 0 {
+                return Err(format!(
+                    "FlowRT operation `{operation_id}` is already finished"
+                ));
+            }
+            operation.current_operation_ids.remove(position);
+            operation.running = operation.running.saturating_sub(1);
+            operation.canceled_count = operation.canceled_count.saturating_add(1);
+            operation.last_transition_ms = Some(unix_time_ms());
+            return Ok(operation.clone());
+        }
+        Err(format!("unknown FlowRT operation `{operation_id}`"))
     }
 
     /// 记录 task 调度健康快照。
@@ -1068,6 +1167,19 @@ pub fn request_param_set(
     )
 }
 
+/// 向 introspection socket 请求取消 operation invocation。
+pub fn request_operation_cancel(
+    path: &Path,
+    operation_id: impl Into<String>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::OperationCancel {
+            operation_id: operation_id.into(),
+        },
+    )
+}
+
 fn request(path: &Path, request: &IntrospectionRequest) -> std::io::Result<IntrospectionResponse> {
     let mut stream = UnixStream::connect(path)?;
     let request = serde_json::to_string(request).map_err(std::io::Error::other)?;
@@ -1247,6 +1359,25 @@ fn handle_connection(
                 Ok(param) => IntrospectionResponse::ParamValue {
                     handshake: handshake.clone(),
                     param,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::OperationCancel { operation_id } => {
+            let response = match state.cancel_operation(&operation_id) {
+                Ok(operation) => IntrospectionResponse::OperationValue {
+                    handshake: handshake.clone(),
+                    operation,
                 },
                 Err(message) => IntrospectionResponse::Error {
                     handshake: handshake.clone(),
@@ -2036,6 +2167,78 @@ mod tests {
     }
 
     #[test]
+    fn status_server_reports_and_cancels_operation_status() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-operation-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.register_operation("controller.plan");
+        state.record_operation_health(IntrospectionOperationStatus {
+            name: "controller.plan".to_string(),
+            ready: true,
+            running: 1,
+            queued: 2,
+            current_operation_ids: vec!["111:7:3".to_string()],
+            total_started: 9,
+            succeeded_count: 5,
+            failed_count: 1,
+            canceled_count: 0,
+            timeout_count: 1,
+            preempted_count: 0,
+            last_transition_ms: Some(12345),
+        });
+
+        let server = spawn_status_server_at(socket.clone(), handshake.clone(), state.clone())
+            .expect("server should start");
+
+        let IntrospectionResponse::Status { status, .. } =
+            request_status(server.path()).expect("operation status request should succeed")
+        else {
+            panic!("status returned wrong response")
+        };
+        assert_eq!(status.operations.len(), 1);
+        assert_eq!(status.operations[0].name, "controller.plan");
+        assert_eq!(status.operations[0].running, 1);
+        assert_eq!(
+            status.operations[0].current_operation_ids,
+            vec!["111:7:3".to_string()]
+        );
+
+        let IntrospectionResponse::OperationValue { operation, .. } =
+            request_operation_cancel(server.path(), "111:7:3")
+                .expect("operation cancel request should succeed")
+        else {
+            panic!("operation cancel returned wrong response")
+        };
+        assert_eq!(operation.name, "controller.plan");
+        assert_eq!(operation.running, 0);
+        assert_eq!(operation.canceled_count, 1);
+        assert!(operation.current_operation_ids.is_empty());
+
+        let IntrospectionResponse::Error { message, .. } =
+            request_operation_cancel(server.path(), "111:7:3")
+                .expect("finished operation should return structured error")
+        else {
+            panic!("second operation cancel returned wrong response")
+        };
+        assert_eq!(message, "unknown FlowRT operation `111:7:3`");
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn task_health_recording_and_status_snapshot() {
         let state = IntrospectionState::new();
 
@@ -2122,10 +2325,11 @@ mod tests {
 
     #[test]
     fn health_fields_serialize_with_defaults_for_backward_compat() {
-        // 旧版 JSON 不含 tasks/lanes 字段时应解析为默认空列表。
+        // 旧版 JSON 不含 operations/tasks/lanes 字段时应解析为默认空列表。
         let status: IntrospectionStatus =
             serde_json::from_str(r#"{"tick_count":1,"channels":[],"processes":[],"services":[]}"#)
                 .unwrap();
+        assert!(status.operations.is_empty());
         assert!(status.tasks.is_empty());
         assert!(status.lanes.is_empty());
     }
@@ -2137,6 +2341,20 @@ mod tests {
             channels: vec![],
             processes: vec![],
             services: vec![],
+            operations: vec![IntrospectionOperationStatus {
+                name: "controller.plan".to_string(),
+                ready: true,
+                running: 1,
+                queued: 0,
+                current_operation_ids: vec!["1:2:3".to_string()],
+                total_started: 1,
+                succeeded_count: 0,
+                failed_count: 0,
+                canceled_count: 0,
+                timeout_count: 0,
+                preempted_count: 0,
+                last_transition_ms: Some(998),
+            }],
             tasks: vec![IntrospectionTaskHealth {
                 name: "t1".to_string(),
                 lane: "l1".to_string(),
@@ -2161,6 +2379,8 @@ mod tests {
 
         let json = serde_json::to_string(&status).unwrap();
         let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.operations.len(), 1);
+        assert_eq!(parsed.operations[0].name, "controller.plan");
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0].name, "t1");
         assert_eq!(parsed.tasks[0].deadline_missed, 5);

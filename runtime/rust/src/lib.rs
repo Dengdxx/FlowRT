@@ -41,13 +41,13 @@ pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{
     INTROSPECTION_PROTOCOL_VERSION, IntrospectionChannelProbe, IntrospectionChannelStatus,
     IntrospectionHandshake, IntrospectionIdentity, IntrospectionLaneHealth,
-    IntrospectionObserverGuard, IntrospectionParamSchema, IntrospectionParamStatus,
-    IntrospectionProbeRecord, IntrospectionProcessStatus, IntrospectionRequest,
-    IntrospectionResponse, IntrospectionServer, IntrospectionServiceStatus, IntrospectionState,
-    IntrospectionStatus, IntrospectionTaskHealth, discover_runtime_sockets, observe_channel_stream,
-    request_channel_snapshot, request_param_get, request_param_list, request_param_set,
-    request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
-    spawn_status_server, spawn_status_server_at,
+    IntrospectionObserverGuard, IntrospectionOperationStatus, IntrospectionParamSchema,
+    IntrospectionParamStatus, IntrospectionProbeRecord, IntrospectionProcessStatus,
+    IntrospectionRequest, IntrospectionResponse, IntrospectionServer, IntrospectionServiceStatus,
+    IntrospectionState, IntrospectionStatus, IntrospectionTaskHealth, discover_runtime_sockets,
+    observe_channel_stream, request_channel_snapshot, request_operation_cancel, request_param_get,
+    request_param_list, request_param_set, request_self_description, request_status,
+    runtime_socket_dir, runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
 };
 pub use operation::{
     OperationCancelToken, OperationClientError, OperationConcurrencyPolicy, OperationError,

@@ -9,7 +9,8 @@ use zenoh::Wait;
 use flowrt_selfdesc::{
     SelfDescription, SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionFieldAbi,
     SelfDescriptionFrameField, SelfDescriptionInstance, SelfDescriptionMessageAbi,
-    SelfDescriptionMessageFrame, SelfDescriptionParam, load_self_description as load_selfdesc,
+    SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint, SelfDescriptionParam,
+    load_self_description as load_selfdesc,
     load_self_description_with_hash as load_selfdesc_with_hash,
 };
 
@@ -39,8 +40,13 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         .iter()
         .map(|graph| graph.services.len())
         .sum();
+    let total_operations: usize = self_description
+        .graphs
+        .iter()
+        .map(|graph| graph.operations.len())
+        .sum();
     let mut output = format!(
-        "package={} selfdesc={} source_hash={} graphs={} component_types={} instances={} tasks={} channels={} services={} messages={}",
+        "package={} selfdesc={} source_hash={} graphs={} component_types={} instances={} tasks={} channels={} services={} operations={} messages={}",
         self_description.package.name,
         self_description.self_description_version,
         self_description.source_hash,
@@ -62,6 +68,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
             .map(|graph| graph.channels.len())
             .sum::<usize>(),
         total_services,
+        total_operations,
         self_description.message_abi.len()
     );
 
@@ -118,6 +125,32 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         .map(|p| format!("{}:{}->{}", p.name, p.request_type, p.response_type))
                         .collect();
                     output.push_str(&format!("\n    service_servers: {}", ports.join(", ")));
+                }
+                if !ct.operation_clients.is_empty() {
+                    let ports: Vec<String> = ct
+                        .operation_clients
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{}:{}->{}->{}",
+                                p.name, p.goal_type, p.feedback_type, p.result_type
+                            )
+                        })
+                        .collect();
+                    output.push_str(&format!("\n    operation_clients: {}", ports.join(", ")));
+                }
+                if !ct.operation_servers.is_empty() {
+                    let ports: Vec<String> = ct
+                        .operation_servers
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{}:{}->{}->{}",
+                                p.name, p.goal_type, p.feedback_type, p.result_type
+                            )
+                        })
+                        .collect();
+                    output.push_str(&format!("\n    operation_servers: {}", ports.join(", ")));
                 }
                 if !ct.params.is_empty() {
                     let params: Vec<String> = ct
@@ -193,6 +226,26 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                 }
             }
 
+            // 该 instance 参与的 operations。
+            for operation in &graph.operations {
+                if operation.client_instance == instance.name
+                    || operation.server_instance == instance.name
+                {
+                    output.push_str(&format!(
+                        "\n    operation {} client={}.{} server={}.{} goal={} feedback={} result={} backend={}",
+                        operation.name,
+                        operation.client_instance,
+                        operation.client_port,
+                        operation.server_instance,
+                        operation.server_port,
+                        operation.goal_type,
+                        operation.feedback_type,
+                        operation.result_type,
+                        operation.backend
+                    ));
+                }
+            }
+
             // 该 instance 的 params。
             for param in &instance.params {
                 output.push_str(&format!(
@@ -225,6 +278,24 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     service.request_type,
                     service.response_type,
                     service.backend
+                ));
+            }
+        }
+        for operation in &graph.operations {
+            if !instance_names.contains_key(operation.client_instance.as_str())
+                && !instance_names.contains_key(operation.server_instance.as_str())
+            {
+                output.push_str(&format!(
+                    "\n  operation {} client={}.{} server={}.{} goal={} feedback={} result={} backend={}",
+                    operation.name,
+                    operation.client_instance,
+                    operation.client_port,
+                    operation.server_instance,
+                    operation.server_port,
+                    operation.goal_type,
+                    operation.feedback_type,
+                    operation.result_type,
+                    operation.backend
                 ));
             }
         }
@@ -572,7 +643,8 @@ fn request_echo_snapshot(
             );
         }
         flowrt::IntrospectionResponse::SelfDescription { .. }
-        | flowrt::IntrospectionResponse::ObserveReady { .. } => {
+        | flowrt::IntrospectionResponse::ObserveReady { .. }
+        | flowrt::IntrospectionResponse::OperationValue { .. } => {
             anyhow::bail!(
                 "runtime socket `{}` returned an unexpected introspection response",
                 socket.display()
@@ -1083,6 +1155,253 @@ fn format_param_status(param: &flowrt::IntrospectionParamStatus) -> String {
     )
 }
 
+fn format_operation_status(
+    operation: &flowrt::IntrospectionOperationStatus,
+    socket: Option<&Path>,
+) -> String {
+    let current_ids = if operation.current_operation_ids.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{}]", operation.current_operation_ids.join(","))
+    };
+    let last_transition = operation
+        .last_transition_ms
+        .map_or_else(|| "none".to_string(), |value| value.to_string());
+    let mut line = format!(
+        "operation={} ready={} running={} queued={} current_operation_ids={} total_started={} succeeded={} failed={} canceled={} timeout={} preempted={} last_transition_ms={}",
+        operation.name,
+        operation.ready,
+        operation.running,
+        operation.queued,
+        current_ids,
+        operation.total_started,
+        operation.succeeded_count,
+        operation.failed_count,
+        operation.canceled_count,
+        operation.timeout_count,
+        operation.preempted_count,
+        last_transition
+    );
+    if let Some(socket) = socket {
+        line.push_str(&format!(" socket={}", socket.display()));
+    }
+    line
+}
+
+pub(crate) fn operation_list(image: Option<&Path>, socket: Option<&Path>) -> Result<String> {
+    let self_description = match image {
+        Some(image) => load_self_description(image)?,
+        None => {
+            let (self_description, _hash, _socket) = load_echo_context_from_live_socket(socket)?;
+            self_description
+        }
+    };
+    Ok(operation_topology_summary(&self_description))
+}
+
+fn operation_topology_summary(self_description: &SelfDescription) -> String {
+    let mut lines = Vec::new();
+    for graph in &self_description.graphs {
+        for operation in &graph.operations {
+            lines.push(format_operation_endpoint(operation));
+        }
+    }
+    if lines.is_empty() {
+        "no FlowRT operations".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn format_operation_endpoint(operation: &SelfDescriptionOperationEndpoint) -> String {
+    let mut line = format!(
+        "operation={} canonical_id={} client={}.{} server={}.{} goal={} feedback={} result={} backend={}",
+        operation.name,
+        operation.canonical_id,
+        operation.client_instance,
+        operation.client_port,
+        operation.server_instance,
+        operation.server_port,
+        operation.goal_type,
+        operation.feedback_type,
+        operation.result_type,
+        operation.backend
+    );
+    if let Some(timeout_ms) = operation.timeout_ms {
+        line.push_str(&format!(" timeout_ms={timeout_ms}"));
+    }
+    if let Some(queue_depth) = operation.queue_depth {
+        line.push_str(&format!(" queue_depth={queue_depth}"));
+    }
+    if let Some(max_in_flight) = operation.max_in_flight {
+        line.push_str(&format!(" max_in_flight={max_in_flight}"));
+    }
+    if !operation.concurrency.is_empty() {
+        line.push_str(&format!(" concurrency={}", operation.concurrency));
+    }
+    if !operation.preempt.is_empty() {
+        line.push_str(&format!(" preempt={}", operation.preempt));
+    }
+    if !operation.feedback.is_empty() {
+        line.push_str(&format!(" feedback_policy={}", operation.feedback));
+    }
+    line
+}
+
+pub(crate) fn operation_status_summary(
+    socket: Option<&Path>,
+    name: Option<&str>,
+) -> Result<String> {
+    let sockets = match socket {
+        Some(socket) => vec![socket.to_path_buf()],
+        None => {
+            flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
+        }
+    };
+    operation_status_summary_for_sockets(name, sockets)
+}
+
+pub(crate) fn operation_status_summary_for_sockets(
+    name: Option<&str>,
+    sockets: Vec<PathBuf>,
+) -> Result<String> {
+    let mut lines = Vec::new();
+    for socket in sockets {
+        match flowrt::request_status(&socket) {
+            Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
+                for operation in status.operations {
+                    if name.is_none_or(|name| operation.name == name) {
+                        lines.push(format_operation_status(&operation, Some(&socket)));
+                    }
+                }
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                lines.push(format!("stale socket={} error={message}", socket.display()));
+            }
+            Ok(_) => {
+                lines.push(format!(
+                    "stale socket={} error=unexpected introspection response",
+                    socket.display()
+                ));
+            }
+            Err(error) => {
+                lines.push(format!("stale socket={} error={error}", socket.display()));
+            }
+        }
+    }
+    if lines.is_empty() {
+        if let Some(name) = name {
+            Ok(format!("no live FlowRT operation matches `{name}`"))
+        } else {
+            Ok("no live FlowRT operations".to_string())
+        }
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
+pub(crate) fn operation_cancel(operation_id: &str, socket: Option<&Path>) -> Result<String> {
+    if let Some(socket) = socket {
+        return operation_cancel_on_socket(operation_id, socket);
+    }
+    let sockets =
+        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
+    operation_cancel_for_sockets(operation_id, sockets)
+}
+
+pub(crate) fn operation_cancel_for_sockets(
+    operation_id: &str,
+    sockets: Vec<PathBuf>,
+) -> Result<String> {
+    let mut candidates = Vec::new();
+    let mut errors = Vec::new();
+    for socket in sockets {
+        match flowrt::request_status(&socket) {
+            Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
+                if status.operations.iter().any(|operation| {
+                    operation
+                        .current_operation_ids
+                        .iter()
+                        .any(|id| id == operation_id)
+                }) {
+                    candidates.push(socket);
+                }
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                errors.push(format!("{}: {message}", socket.display()));
+            }
+            Ok(_) => {
+                errors.push(format!(
+                    "{}: unexpected introspection response",
+                    socket.display()
+                ));
+            }
+            Err(error) => {
+                errors.push(format!("{}: {error}", socket.display()));
+            }
+        }
+    }
+    match candidates.len() {
+        0 => {
+            if errors.is_empty() {
+                anyhow::bail!("no live FlowRT process reports operation `{operation_id}`")
+            }
+            anyhow::bail!(
+                "no live FlowRT process reports operation `{}`; status errors: {}",
+                operation_id,
+                errors.join("; ")
+            )
+        }
+        1 => {
+            let socket = candidates.remove(0);
+            operation_cancel_on_socket(operation_id, &socket)
+        }
+        _ => {
+            let sockets = candidates
+                .iter()
+                .map(|socket| socket.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "multiple live FlowRT processes report operation `{operation_id}`: {sockets}; pass `--socket <path>` to choose one"
+            )
+        }
+    }
+}
+
+fn operation_cancel_on_socket(operation_id: &str, socket: &Path) -> Result<String> {
+    match flowrt::request_operation_cancel(socket, operation_id) {
+        Ok(flowrt::IntrospectionResponse::OperationValue { operation, .. }) => Ok(format!(
+            "operation_id={} {}",
+            operation_id,
+            format_operation_status(&operation, Some(socket))
+        )),
+        Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+            anyhow::bail!(
+                "failed to cancel FlowRT operation `{}` on `{}`: {}",
+                operation_id,
+                socket.display(),
+                message
+            )
+        }
+        Ok(_) => {
+            anyhow::bail!(
+                "failed to cancel FlowRT operation `{}` on `{}`: unexpected introspection response",
+                operation_id,
+                socket.display()
+            )
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to cancel FlowRT operation `{}` on `{}`: {}",
+                operation_id,
+                socket.display(),
+                error
+            )
+        }
+    }
+}
+
 fn json_inline(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
@@ -1199,6 +1518,9 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         ));
                     }
                 }
+                for operation in status.operations {
+                    lines.push(format_operation_status(&operation, Some(&socket)));
+                }
                 for task in &status.tasks {
                     let last_run = task
                         .last_run_ms
@@ -1241,7 +1563,8 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                 ));
             }
             Ok(flowrt::IntrospectionResponse::SelfDescription { .. })
-            | Ok(flowrt::IntrospectionResponse::ObserveReady { .. }) => {
+            | Ok(flowrt::IntrospectionResponse::ObserveReady { .. })
+            | Ok(flowrt::IntrospectionResponse::OperationValue { .. }) => {
                 lines.push(format!(
                     "stale socket={} error=unexpected introspection response",
                     socket.display()

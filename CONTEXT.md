@@ -127,6 +127,13 @@ progress、feedback、cancel、result 和状态观测通道；用户只实现业
 钩子，不手写底层协议。这样保留 Action 的实用能力，同时避免让用户维护分散的
 start/cancel/result/progress glue。
 
+Operation 观测路径沿用 FlowRT 自描述和本机 introspection socket：self-description
+记录 operation client/server 端口、goal/feedback/result 类型、policy、backend 和
+内部 lowering refs；runtime status 记录 ready/running/queued、当前 operation id、
+成功/失败/取消/超时/抢占计数和最近状态转换时间；`flowrt op list/status/cancel`
+提供本机观测和 cooperative cancel 控制面。`flowrt op start`、跨机 Operation 控制面
+和 replay 驱动执行不属于 `v0.6.0` 范围。
+
 `v0.6.0` 的录制系统只做 record，不做 replay。录制使用 MCAP 作为容器，FlowRT 自有
 record envelope 作为 schema，覆盖 channel sample、parameter control-plane event、
 service event、operation event、scheduler/time metadata 和 runtime/process metadata。

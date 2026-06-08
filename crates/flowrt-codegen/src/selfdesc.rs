@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr,
+    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
     OverflowPolicy as IrOverflowPolicy, ServiceOverflowPolicy, StalePolicy as IrStalePolicy,
     TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
@@ -11,10 +12,12 @@ use flowrt_selfdesc::{
     SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionDeployment,
     SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionGraph,
     SelfDescriptionInstance, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
-    SelfDescriptionPackage, SelfDescriptionParam, SelfDescriptionParamDecl,
-    SelfDescriptionPortDecl, SelfDescriptionProfile, SelfDescriptionScheduler,
-    SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint,
-    SelfDescriptionServicePortDecl, SelfDescriptionTarget, SelfDescriptionTask,
+    SelfDescriptionOperationEndpoint, SelfDescriptionOperationLowering,
+    SelfDescriptionOperationPortDecl, SelfDescriptionPackage, SelfDescriptionParam,
+    SelfDescriptionParamDecl, SelfDescriptionPortDecl, SelfDescriptionProfile,
+    SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
+    SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
+    SelfDescriptionTask,
 };
 use sha2::{Digest, Sha256};
 
@@ -237,6 +240,7 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
             .iter()
             .map(|service| self_description_service_endpoint(contract, graph, service))
             .collect(),
+        operations: self_description_operation_endpoints(contract, graph),
     }
 }
 
@@ -300,6 +304,105 @@ fn service_overflow_name(policy: ServiceOverflowPolicy) -> &'static str {
     }
 }
 
+fn self_description_operation_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+) -> Vec<SelfDescriptionOperationEndpoint> {
+    crate::runtime_plan::operation_runtime_plans(contract, graph)
+        .iter()
+        .map(|plan| {
+            let operation = &graph.operations[plan.index];
+            SelfDescriptionOperationEndpoint {
+                name: plan.operation_name.clone(),
+                canonical_id: operation.id.0.clone(),
+                client_instance: plan.client_instance.clone(),
+                client_port: plan.client_port.clone(),
+                server_instance: plan.server_instance.clone(),
+                server_port: plan.server_port.clone(),
+                goal_type: plan.goal_type.canonical_syntax(),
+                feedback_type: plan.feedback_type.canonical_syntax(),
+                result_type: plan.result_type.canonical_syntax(),
+                backend: plan.backend.0.clone(),
+                timeout_ms: Some(plan.timeout_ms),
+                concurrency: operation_concurrency_name(plan.concurrency).to_string(),
+                preempt: operation_preempt_name(plan.preempt).to_string(),
+                queue_depth: Some(plan.queue_depth),
+                max_in_flight: Some(plan.max_in_flight),
+                feedback: operation_feedback_name(plan.feedback).to_string(),
+                result_retention_ms: Some(plan.result_retention_ms),
+                lowering: SelfDescriptionOperationLowering {
+                    start_service: operation_start_endpoint_name(plan),
+                    cancel_service: operation_cancel_endpoint_name(plan),
+                    status_service: operation_status_endpoint_name(plan),
+                    feedback_channel: operation_feedback_endpoint_name(plan),
+                    result_channel: operation_result_endpoint_name(plan),
+                },
+            }
+        })
+        .collect()
+}
+
+fn operation_concurrency_name(policy: OperationConcurrencyPolicy) -> &'static str {
+    match policy {
+        OperationConcurrencyPolicy::Reject => "reject",
+        OperationConcurrencyPolicy::Queue => "queue",
+    }
+}
+
+fn operation_preempt_name(policy: OperationPreemptPolicy) -> &'static str {
+    match policy {
+        OperationPreemptPolicy::Reject => "reject",
+        OperationPreemptPolicy::CancelRunning => "cancel_running",
+    }
+}
+
+fn operation_feedback_name(policy: OperationFeedbackPolicy) -> &'static str {
+    match policy {
+        OperationFeedbackPolicy::Latest => "latest",
+        OperationFeedbackPolicy::Fifo => "fifo",
+    }
+}
+
+fn operation_start_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_start",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
+fn operation_cancel_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_cancel",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
+fn operation_status_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_status",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
+fn operation_feedback_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_feedback",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
+fn operation_result_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_result",
+        crate::snake_identifier(&plan.client_instance),
+        crate::snake_identifier(&plan.client_port)
+    )
+}
+
 fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionComponentType {
     SelfDescriptionComponentType {
         name: component.name.clone(),
@@ -337,6 +440,26 @@ fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionCo
                 name: port.name.clone(),
                 request_type: port.request.canonical_syntax(),
                 response_type: port.response.canonical_syntax(),
+            })
+            .collect(),
+        operation_clients: component
+            .operation_clients
+            .iter()
+            .map(|port| SelfDescriptionOperationPortDecl {
+                name: port.name.clone(),
+                goal_type: port.goal.canonical_syntax(),
+                feedback_type: port.feedback.canonical_syntax(),
+                result_type: port.result.canonical_syntax(),
+            })
+            .collect(),
+        operation_servers: component
+            .operation_servers
+            .iter()
+            .map(|port| SelfDescriptionOperationPortDecl {
+                name: port.name.clone(),
+                goal_type: port.goal.canonical_syntax(),
+                feedback_type: port.feedback.canonical_syntax(),
+                result_type: port.result.canonical_syntax(),
             })
             .collect(),
         params: component

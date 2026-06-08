@@ -225,6 +225,65 @@ fn cli_parses_remote_params_runtime_selector() {
 }
 
 #[test]
+fn cli_parses_operation_commands() {
+    let list_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "list",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+    ])
+    .unwrap();
+    let Command::Op {
+        command: OpCommand::List { image, socket },
+    } = list_cli.command
+    else {
+        panic!("op list should parse into Command::Op")
+    };
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, None);
+
+    let status_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "status",
+        "controller.plan",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+    let Command::Op {
+        command: OpCommand::Status { name, socket },
+    } = status_cli.command
+    else {
+        panic!("op status should parse into Command::Op")
+    };
+    assert_eq!(name.as_deref(), Some("controller.plan"));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+
+    let cancel_cli = Cli::try_parse_from([
+        "flowrt",
+        "op",
+        "cancel",
+        "111:7:3",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+    let Command::Op {
+        command: OpCommand::Cancel {
+            operation_id,
+            socket,
+        },
+    } = cancel_cli.command
+    else {
+        panic!("op cancel should parse into Command::Op")
+    };
+    assert_eq!(operation_id, "111:7:3");
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+}
+
+#[test]
 fn params_remote_runtime_arg_rejects_socket() {
     let error = params_remote_runtime_arg(true, Some(Path::new("/tmp/flowrt.sock")), None)
         .expect_err("--remote must not accept a local socket selector");

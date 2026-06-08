@@ -219,6 +219,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             }],
             processes: Vec::new(),
             services: Vec::new(),
+            operations: Vec::new(),
             tasks: Vec::new(),
             lanes: Vec::new(),
         },
@@ -245,6 +246,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             }],
             processes: Vec::new(),
             services: Vec::new(),
+            operations: Vec::new(),
             tasks: Vec::new(),
             lanes: Vec::new(),
         },
@@ -364,6 +366,100 @@ fn self_description_summary_displays_service_endpoints() {
 }
 
 #[test]
+fn self_description_summary_displays_operation_endpoints() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "op_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "controller",
+      "component": "controller_comp",
+      "process": "main",
+      "runtime": "rust"
+    }, {
+      "name": "navigator",
+      "component": "navigator_comp",
+      "process": "main",
+      "runtime": "rust"
+    }],
+    "tasks": [],
+    "channels": [],
+    "operations": [{
+      "name": "controller.plan",
+      "canonical_id": "operation.default.controller.plan_to_navigator.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "inproc",
+      "timeout_ms": 5000,
+      "concurrency": "reject",
+      "preempt": "reject",
+      "queue_depth": 4,
+      "max_in_flight": 1,
+      "feedback": "latest",
+      "result_retention_ms": 60000,
+      "lowering": {
+        "start_service": "__flowrt_operation_controller_plan_start",
+        "cancel_service": "__flowrt_operation_controller_plan_cancel",
+        "status_service": "__flowrt_operation_controller_plan_status",
+        "feedback_channel": "__flowrt_operation_controller_plan_feedback",
+        "result_channel": "__flowrt_operation_controller_plan_result"
+      }
+    }]
+  }],
+  "component_types": [{
+    "name": "controller_comp",
+    "language": "rust",
+    "kind": "native",
+    "operation_clients": [{
+      "name": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult"
+    }]
+  }, {
+    "name": "navigator_comp",
+    "language": "rust",
+    "kind": "native",
+    "operation_servers": [{
+      "name": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult"
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-operations");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    assert!(list.contains("operations=1"));
+    assert!(list.contains("operation controller.plan"));
+    assert!(list.contains("client=controller.plan"));
+    assert!(list.contains("server=navigator.plan"));
+    assert!(list.contains("goal=PlanGoal"));
+    assert!(list.contains("feedback=PlanFeedback"));
+    assert!(list.contains("result=PlanResult"));
+    assert!(list.contains("backend=inproc"));
+    assert!(list.contains("operation_clients: plan:PlanGoal->PlanFeedback->PlanResult"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn self_description_summary_handles_no_services() {
     let source = r#"
 {
@@ -390,6 +486,161 @@ fn self_description_summary_handles_no_services() {
     assert!(list.contains("services=0"));
     assert!(!list.contains("service "));
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_displays_operation_health() {
+    let root = temp_test_dir("live-status-operation-health");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 77,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_health(flowrt::IntrospectionOperationStatus {
+        name: "controller.plan".to_string(),
+        ready: true,
+        running: 1,
+        queued: 2,
+        current_operation_ids: vec!["111:7:3".to_string()],
+        total_started: 9,
+        succeeded_count: 5,
+        failed_count: 1,
+        canceled_count: 0,
+        timeout_count: 1,
+        preempted_count: 0,
+        last_transition_ms: Some(12345),
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+    assert!(output.contains("operation=controller.plan"));
+    assert!(output.contains("ready=true"));
+    assert!(output.contains("running=1"));
+    assert!(output.contains("queued=2"));
+    assert!(output.contains("current_operation_ids=[111:7:3]"));
+    assert!(output.contains("total_started=9"));
+    assert!(output.contains("succeeded=5"));
+    assert!(output.contains("timeout=1"));
+    assert!(output.contains("last_transition_ms=12345"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn operation_cli_status_and_cancel_use_runtime_socket() {
+    let root = temp_test_dir("operation-cli");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_operation_health(flowrt::IntrospectionOperationStatus {
+        name: "controller.plan".to_string(),
+        ready: true,
+        running: 1,
+        queued: 0,
+        current_operation_ids: vec!["111:7:3".to_string()],
+        total_started: 1,
+        succeeded_count: 0,
+        failed_count: 0,
+        canceled_count: 0,
+        timeout_count: 0,
+        preempted_count: 0,
+        last_transition_ms: Some(12345),
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let status = operation_status_summary_for_sockets(None, vec![socket.clone()]).unwrap();
+    assert!(status.contains("operation=controller.plan"));
+    assert!(status.contains("current_operation_ids=[111:7:3]"));
+
+    let canceled = operation_cancel("111:7:3", Some(&socket)).unwrap();
+    assert!(canceled.contains("operation=controller.plan"));
+    assert!(canceled.contains("operation_id=111:7:3"));
+    assert!(canceled.contains("canceled=1"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn operation_cancel_without_socket_refuses_ambiguous_id_without_side_effects() {
+    let root = temp_test_dir("operation-cli-ambiguous-cancel");
+    let socket_a = root.join("main-a.sock");
+    let socket_b = root.join("main-b.sock");
+    let handshake_a = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main_a".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let handshake_b = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 89,
+        started_at_unix_ms: 1235,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main_b".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state_a = flowrt::IntrospectionState::new();
+    let state_b = flowrt::IntrospectionState::new();
+    for state in [&state_a, &state_b] {
+        state.record_operation_health(flowrt::IntrospectionOperationStatus {
+            name: "controller.plan".to_string(),
+            ready: true,
+            running: 1,
+            queued: 0,
+            current_operation_ids: vec!["111:7:3".to_string()],
+            total_started: 1,
+            succeeded_count: 0,
+            failed_count: 0,
+            canceled_count: 0,
+            timeout_count: 0,
+            preempted_count: 0,
+            last_transition_ms: Some(12345),
+        });
+    }
+    let server_a = flowrt::spawn_status_server_at(socket_a.clone(), handshake_a, state_a)
+        .expect("first status server should start");
+    let server_b = flowrt::spawn_status_server_at(socket_b.clone(), handshake_b, state_b)
+        .expect("second status server should start");
+
+    let error = operation_cancel_for_sockets("111:7:3", vec![socket_a.clone(), socket_b.clone()])
+        .expect_err("ambiguous operation id must require --socket");
+    assert!(error.to_string().contains("multiple live FlowRT processes"));
+
+    let status_a = operation_status_summary_for_sockets(None, vec![socket_a.clone()]).unwrap();
+    let status_b = operation_status_summary_for_sockets(None, vec![socket_b.clone()]).unwrap();
+    assert!(status_a.contains("running=1"));
+    assert!(status_a.contains("canceled=0"));
+    assert!(status_a.contains("current_operation_ids=[111:7:3]"));
+    assert!(status_b.contains("running=1"));
+    assert!(status_b.contains("canceled=0"));
+    assert!(status_b.contains("current_operation_ids=[111:7:3]"));
+
+    drop(server_a);
+    drop(server_b);
     let _ = std::fs::remove_dir_all(&root);
 }
 

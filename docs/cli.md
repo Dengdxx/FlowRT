@@ -18,6 +18,9 @@ flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>]
 flowrt params list --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params get <instance.param> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params set <instance.param> <json-value> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
+flowrt op list [--image <path>] [--socket <path>]
+flowrt op status [operation] [--socket <path>]
+flowrt op cancel <operation_id> [--socket <path>]
 flowrt status
 flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
 ```
@@ -330,27 +333,31 @@ flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app
 ```
 
-`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出组件视图或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、component type、instance、task、channel、service 和 params 是否与预期一致。
+`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出组件视图或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、component type、instance、task、channel、service、operation 和 params 是否与预期一致。
 
-`list` 的摘要行包含 `component_types=<N>` 和 `services=<N>` 计数。每个 graph 内先展示 component type 声明，再按 instance 展示其 tasks、channel endpoints、service endpoints 和 params：
+`list` 的摘要行包含 `component_types=<N>`、`services=<N>` 和 `operations=<N>` 计数。每个 graph 内先展示 component type 声明，再按 instance 展示其 tasks、channel endpoints、service endpoints、operation endpoints 和 params：
 
 ```text
-package=robot_demo selfdesc=0.1 source_hash=abc graphs=1 component_types=2 instances=2 tasks=3 channels=2 services=1 messages=1
+package=robot_demo selfdesc=0.1 source_hash=abc graphs=1 component_types=2 instances=2 tasks=3 channels=2 services=1 operations=1 messages=1
 graph default
   component planner language=rust kind=native
     service_clients: plan:PlanRequest->PlanResponse
+    operation_clients: navigate:NavGoal->NavFeedback->NavResult
     params: goal_x:f64 update=on_tick
   component executor language=rust kind=native
     service_servers: execute:PlanRequest->PlanResponse
+    operation_servers: navigate:NavGoal->NavFeedback->NavResult
   instance planner component=planner process=main runtime=rust
     task plan_task trigger=on_message lane=plan_lane
     channel planner.cmd -> executor.cmd type=Cmd backend=inproc
     service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse backend=inproc
+    operation planner.navigate client=planner.navigate server=executor.navigate goal=NavGoal feedback=NavFeedback result=NavResult backend=inproc
     param goal_x:f64 update=on_tick current=1.0
   instance executor component=executor process=main runtime=rust
     task exec_task trigger=on_message
     channel planner.cmd -> executor.cmd type=Cmd backend=inproc
     service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse backend=inproc
+    operation planner.navigate client=planner.navigate server=executor.navigate goal=NavGoal feedback=NavFeedback result=NavResult backend=inproc
 ```
 
 `nodes` 输出 instance 列表，当 self-description 包含 component type 信息时会附加 `kind=` 字段：
@@ -361,7 +368,7 @@ planner process=main runtime=rust component=planner kind=native
 executor process=main runtime=rust component=executor kind=native
 ```
 
-当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status`、`echo` 和 `params` 使用。
+当前这两个命令只读取编译期静态自描述；运行态 socket 由 `status`、`echo`、`params` 和 `op` 使用。
 
 ## `echo`
 
@@ -430,6 +437,28 @@ controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 ch
 
 前四个用于给 runtime session 注入 zenoh 网络配置。`flowrt launch` 在这些变量都未显式设置时，会为同一个 supervisor 本机启动的 zenoh process 自动分配 `127.0.0.1` TCP mesh；只要设置了任一 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT`，就视为用户接管 session 配置。`FLOWRT_TICK_SLEEP_MS` 用于把 demo 的同步调度步间隔拉长到可观察窗口。运行上限由 `flowrt run --run-steps <N>` 或 `flowrt launch --run-steps <N>` 显式传入，不进入核心 runtime scheduler。
 
+## `op`
+
+```bash
+flowrt op list --image path/to/generated-app
+flowrt op list --socket /run/user/1000/flowrt/12345.sock
+flowrt op status
+flowrt op status controller.plan --socket /run/user/1000/flowrt/12345.sock
+flowrt op cancel 111:7:3 --socket /run/user/1000/flowrt/12345.sock
+```
+
+`op` 面向 Operation 的观测和基础控制。Operation 是 typed long-running command，不是 Service 别名；生成器会把 Operation lower 成内部 start/cancel/status service 与 feedback/result channel，但用户和 CLI 的主视图仍是 Operation。
+
+`op list` 读取 self-description：传入 `--image` 时读取生成应用二进制或 `selfdesc.json`，省略 `--image` 时通过 live socket 请求当前进程嵌入的 self-description。输出包含 Operation name、canonical id、client/server 端口、goal/feedback/result 类型、backend 和 policy 摘要。
+
+`op status` 读取 live runtime status。省略 operation 名称时输出所有 live Operation；传入 `<client_instance>.<client_port>` 时只输出该 Operation。输出格式与 `status` 的 operation 行一致：
+
+```text
+operation=controller.plan ready=true running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_transition_ms=1717800000000 socket=...
+```
+
+`op cancel <operation_id>` 通过 runtime introspection socket 发送 `operation_cancel` 请求。`operation_id` 来自 `op status` 的 `current_operation_ids` 字段。省略 `--socket` 时 CLI 会先通过 `status` 无副作用筛选唯一 runtime；如果多个进程都报告同一个 ID，会要求显式传入 `--socket <path>`，不会广播取消。
+
 ## `status`
 
 ```bash
@@ -455,6 +484,14 @@ service=planner.plan_to_executor.execute client_instance=planner server_instance
 ```
 
 字段说明：`client_instance`/`server_instance` 是从 self-description 关联的 service endpoint 参与方；`ready` 表示 service 是否就绪；`in_flight` 是当前正在处理的请求数；`queued` 是排队中的请求数；`total_requests` 是累计请求总数；`timeout`/`busy`/`unavailable`/`late_drop` 分别是超时、繁忙拒绝、不可用和迟到响应/丢弃的累计计数。
+
+runtime 也可以预注册 Operation endpoint，`status` 会输出每个 Operation 的运行态健康行：
+
+```text
+operation=controller.plan ready=true running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_transition_ms=1717800000000 socket=/run/user/1000/flowrt/12345.sock
+```
+
+字段说明：`ready` 表示 Operation endpoint 是否可用；`running` / `queued` 是当前运行和排队 invocation 数；`current_operation_ids` 是可用于 `flowrt op cancel` 的非终态 ID；`total_started`、`succeeded`、`failed`、`canceled`、`timeout` 和 `preempted` 是累计计数；`last_transition_ms` 为最近状态转换时间戳，`none` 表示尚无状态转换。
 
 runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
 
