@@ -116,7 +116,7 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 launch manifest 的关键字段包括：
 
-- process group 的 `runtimes`、`runtime_kind`、`depends_on`、`restart` 和 `failure`
+- process group 的 `runtimes`、`runtime_kind`、`depends_on`、`restart`、`failure`、`readiness`、`startup_delay_ms`、`env`、`cpu_affinity`、`nice`、`rt_policy` 和 `rt_priority`
 - graph instance 的 `runtime`
 - task 的 `name`、`trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
 - graph `channels`
@@ -124,6 +124,53 @@ launch manifest 的关键字段包括：
 - graph `ros2_bridges`
 - iox2 channel 的 canonical service name
 - zenoh channel 的 deterministic key expression
+
+### `[[process]]` 编排字段
+
+RSDL 支持 graph 级 `[[process]]` 声明进程编排策略：
+
+```toml
+[[process]]
+name = "sensors"
+restart = "on_failure"
+max_restarts = 5
+initial_delay_ms = 50
+max_delay_ms = 500
+failure = "propagate"
+readiness = "runtime_ready"
+startup_delay_ms = 200
+cpu_affinity = [0, 1]
+nice = -10
+rt_policy = "fifo"
+rt_priority = 50
+env = { FLOWRT_LOG_LEVEL = "info" }
+
+[[process]]
+name = "control"
+depends_on = ["sensors"]
+restart = "never"
+failure = "isolate"
+readiness = "service_ready"
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `name` | string | — | process group 名称，必须与 `instance.<name>.process` 对应。 |
+| `depends_on` | [string] | [] | 依赖的 process group 列表，supervisor 按依赖顺序启动。 |
+| `restart` | string | `on_failure` | 重启策略：`never`、`on_failure`、`always`。 |
+| `max_restarts` | u32 | 3 | 最大重启次数。 |
+| `initial_delay_ms` | u64 | 100 | 首次重启退避。 |
+| `max_delay_ms` | u64 | 1000 | 重启退避上限。 |
+| `failure` | string | `propagate` | 失败传播：`propagate`（终止依赖进程）或 `isolate`（只记录当前进程失败）。 |
+| `readiness` | string | `process_started` | readiness gate：`process_started`、`runtime_ready`、`service_ready`。 |
+| `startup_delay_ms` | u64 | 0 | 进程启动后的错峰延迟毫秒数。 |
+| `cpu_affinity` | [u32] | [] | 绑定到指定 CPU 核心列表。 |
+| `nice` | i32 | — | 进程 nice 值（-20..=19）。 |
+| `rt_policy` | string | — | 可选 Linux RT 调度策略：`fifo` 或 `round_robin`。 |
+| `rt_priority` | u32 | — | RT 优先级（1..=99），需配合 `rt_policy`。 |
+| `env` | table | {} | 注入子进程的环境变量键值对。 |
+
+未声明 `[[process]]` 的实际 process group 仍使用默认策略。`depends_on` 只依赖同一 graph 内已由 instance 使用的 process group。`runtime_ready` 通过 introspection socket 握手判断 runtime 存活；`service_ready` 额外检查所有 service endpoint 就绪。readiness 超时或进程意外退出时，supervisor 会终止子进程并结构化报错。`cpu_affinity` 使用 `sched_setaffinity` 绑核；`rt_policy` 使用 Linux `SCHED_FIFO`/`SCHED_RR`。权限不足时 `flowrt status` 会展示结构化诊断而非静默忽略。
 
 ## ROS2 Bridge
 
@@ -395,6 +442,12 @@ flowrt status
 
 generated supervisor 会启动自己的 status socket，`runtime=supervisor`，`process=flowrt_supervisor`。它会按子进程 PID socket 轮询 live status，并额外输出 `supervisor_process=<name>` 行，字段包括 `state`、`pid`、`restarts`、`ticks`、`last_seen_ms`、`tick_stale` 和 `exit_code`。`state` 当前取值为 `starting`、`running`、`stale`、`restarting`、`exited` 或 `failed`。内置 restart policy 是 `on-failure`：子进程异常退出时最多重启 3 次，退避 100ms 起步、上限 1000ms；正常退出不重启。
 
+当进程正在等待 readiness gate 时，supervisor_process 行会包含 `readiness_wait=<gate>` 字段。当进程配置了资源提示时，会包含 `resource_placement=<json>` 字段，展示 `desired`（RSDL 声明）和 `applied`（实际生效）的 `cpu_affinity`、`nice`、`rt_policy` 和 `rt_priority`。
+
+```text
+supervisor_process=control state=running pid=12345 restarts=0 ticks=1000 last_seen_ms=... tick_stale=false exit_code=none readiness_wait=service_ready resource_placement={"desired":{"cpu_affinity":[0,1],"nice":-10,"rt_policy":"fifo","rt_priority":50},"applied":{"cpu_affinity":[0,1],"nice":-10,"rt_policy":"fifo","rt_priority":50}} socket=...
+```
+
 runtime 启动时可以预注册 service endpoint，`status` 会输出每个 service 的运行态健康行，并通过 self-description 关联 client/server instance：
 
 ```text
@@ -403,32 +456,39 @@ service=planner.plan_to_executor.execute client_instance=planner server_instance
 
 字段说明：`client_instance`/`server_instance` 是从 self-description 关联的 service endpoint 参与方；`ready` 表示 service 是否就绪；`in_flight` 是当前正在处理的请求数；`queued` 是排队中的请求数；`total_requests` 是累计请求总数；`timeout`/`busy`/`unavailable`/`late_drop` 分别是超时、繁忙拒绝、不可用和迟到响应/丢弃的累计计数。
 
-RSDL 可以用 graph 级 `[[process]]` 覆盖默认进程编排策略：
+runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
 
-```toml
-[[process]]
-name = "sensors"
-restart = "on_failure"
-max_restarts = 5
-initial_delay_ms = 50
-max_delay_ms = 500
-failure = "propagate"
+### 调度健康指标
 
-[[process]]
-name = "control"
-depends_on = ["sensors"]
-restart = "never"
-failure = "isolate"
+`status` 会输出 task 级和 lane 级调度健康行：
+
+```text
+task_health=fast_loop lane=sensor_lane deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=1717800000000 last_success_ms=1717800000000 socket=...
+lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=0 socket=...
 ```
 
-未声明 `[[process]]` 的实际 process group 仍使用默认策略：`restart = "on_failure"`、
-`max_restarts = 3`、`initial_delay_ms = 100`、`max_delay_ms = 1000`、
-`failure = "propagate"`。`depends_on` 只依赖同一 graph 内已经由 instance 使用的
-process group；generated supervisor 按依赖顺序启动 process。依赖进程最终失败且
-`failure = "propagate"` 时，supervisor 会终止依赖它的进程并把整体 launch 判定为
-失败；`failure = "isolate"` 时只记录当前进程失败。
+task 健康字段：
 
-runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
+| 字段 | 说明 |
+| --- | --- |
+| `deadline_missed` | task 执行超过 `deadline_ms` 的累计次数，超限时阻止 late output 发布。 |
+| `stale_input` | 输入数据超过 `max_age_ms` 的累计次数。 |
+| `backpressure` | 下游队列满导致的背压事件累计次数。 |
+| `overflow` | channel 溢出事件累计次数。 |
+| `fairness_violations` | lane 饥饿公平性违规累计次数。 |
+| `runs` / `successes` | 累计运行次数和成功次数。 |
+| `consecutive_failures` | 连续失败次数。 |
+| `last_run_ms` / `last_success_ms` | 最近运行/成功时间戳，`none` 表示尚未运行。 |
+
+lane 健康字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `queue_depth` | lane 当前排队任务数。 |
+| `dispatched_count` | lane 累计调度次数。 |
+| `fairness_violations` | lane 间饥饿违规累计次数。 |
+
+这些指标由 runtime 内置的调度健康策略自动采集。所有健康字段使用 `serde(default)` 保证前向兼容，旧版 JSON 不含健康字段时解析为零值。
 
 ## `hz`
 

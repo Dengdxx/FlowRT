@@ -95,6 +95,48 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 
 `build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` 或 `zenoh` profile 时，Rust 生成物会启用 runtime crate 的对应 feature；含 C++ backend 组件时，生成 CMake 会优先使用 FlowRT 安装包内 `/opt/flowrt/<version>` 的私有 SDK，缺失时才要求显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
 
+## Supervisor readiness 和资源提示
+
+多进程应用可以用 `[[process]]` 声明进程依赖、readiness gate 和资源提示：
+
+```toml
+[[process]]
+name = "sensors"
+readiness = "runtime_ready"
+startup_delay_ms = 200
+
+[[process]]
+name = "control"
+depends_on = ["sensors"]
+readiness = "service_ready"
+cpu_affinity = [0, 1]
+nice = -10
+env = { MY_ROBOT_MODE = "production" }
+```
+
+`readiness` 控制 supervisor 何时认为子进程就绪：
+
+- `process_started`：进程 spawn 即就绪（默认）。
+- `runtime_ready`：等待 introspection socket 握手。
+- `service_ready`：额外检查所有 service endpoint 就绪。
+
+`startup_delay_ms` 在进程之间加入错峰延迟。`cpu_affinity` 绑定 CPU 核心，`nice` 设置进程优先级，`env` 注入环境变量。
+
+构建后用 `flowrt launch` 启动，`flowrt status` 会展示每个进程的 readiness 等待状态和资源应用情况：
+
+```bash
+flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
+flowrt launch examples/mixed_zenoh_demo/rsdl/robot.rsdl
+```
+
+另开终端查看状态：
+
+```bash
+flowrt status
+```
+
+supervisor_process 行会包含 `readiness_wait=runtime_ready`（正在等待 readiness）和 `resource_placement={...}`（desired/applied 资源状态）。
+
 ## 查看运行态参数
 
 含参数的应用运行时会启动 introspection socket。可以在另一个终端用静态 self-description 匹配 live process，并查看或提交参数 pending 更新：
@@ -122,6 +164,38 @@ flowrt params set --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json e
 如果同一 zenoh 网络中有多个匹配的 runtime，CLI 会提示候选 `key expression`，再用 `--runtime <key_expr>` 显式选择目标。`--socket` 只用于本机 Unix socket 路径，不能和 `--remote` 同用。
 
 `params set` 的值必须是合法 JSON。`on_tick` 参数会在下一个 tick 边界通过用户组件的 `on_params_update` 钩子提交；`startup` 参数运行时不可修改。
+
+## 查看调度健康
+
+`flowrt status` 在展示进程状态的同时，还会输出 task 级和 lane 级调度健康指标：
+
+```bash
+flowrt status
+```
+
+task 健康行示例：
+
+```text
+task_health=fast_loop lane=sensor_lane deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=... last_success_ms=... socket=...
+```
+
+lane 健康行示例：
+
+```text
+lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=0 socket=...
+```
+
+关键字段含义：
+
+- `deadline_missed`：task 执行超过 `deadline_ms` 的次数。超限时 runtime 会阻止 late output 发布。
+- `stale_input`：输入数据超过 `max_age_ms` 的次数。
+- `backpressure`：下游队列满导致的背压事件次数。
+- `overflow`：channel 溢出事件次数。
+- `fairness_violations`：lane 饥饿公平性违规次数。
+- `queue_depth`：lane 当前排队任务数。
+- `dispatched_count`：lane 累计调度次数。
+
+这些指标由 runtime 内置的调度健康策略自动采集，Rust 和 C++ 生成 shell 行为一致。所有健康字段使用 `serde(default)` 保证前向兼容，旧版 JSON 不含健康字段时解析为零值。
 
 ## Service request/response 示例
 

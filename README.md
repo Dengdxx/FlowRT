@@ -266,6 +266,19 @@ flowrt params set controller.kp 2.0
 
 `startup` 参数只在启动时生效；支持热更新的参数会先进入 pending 状态，再由生成 shell 在安全边界提交给用户组件。
 
+### 远程参数
+
+跨机器参数控制通过 zenoh control-plane 实现。加上 `--remote` 即可发现远端 runtime 并操作参数：
+
+```bash
+flowrt params list --image path/to/selfdesc.json --remote
+flowrt params set --image path/to/selfdesc.json controller.kp 2.5 --remote
+```
+
+CLI 按 `flowrt/params/{package}/{selfdesc_hash}/{pid}` 格式的 key expression 查询远端参数端点，筛选与 `--image` 自描述 hash 匹配的 runtime。多个匹配时用 `--runtime <key_expr>` 显式选择。`--socket` 和 `--remote` 互斥。
+
+远程参数复用本机 Unix socket 路径相同的 schema 校验、structured error 和 pending/apply 语义。
+
 ## 消息
 
 v0.1 的 native ABI 基线是 fixed-size plain data：
@@ -466,12 +479,27 @@ flowrt echo channel_name --follow
 
 `flowrt echo` 的数据面 probe 按需启用。没有 observer 时，发布路径不会编码 payload、不会拷贝 payload、不会写 socket。
 
+### 调度健康
+
+`flowrt status` 会展示 task 级和 lane 级调度健康指标：
+
+```text
+task_health=fast_loop lane=sensor_lane deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=1717800000000 last_success_ms=1717800000000 socket=...
+lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=0 socket=...
+```
+
+task 健康字段包括：`deadline_missed`（截止时间超限次数）、`stale_input`（输入过期次数）、`backpressure`（背压事件次数）、`overflow`（溢出事件次数）、`fairness_violations`（lane 饥饿公平性违规次数）、`runs`/`successes`/`consecutive_failures`（运行计数）和 `last_run_ms`/`last_success_ms`（最近运行时间戳）。
+
+lane 健康字段包括：`queue_depth`（当前排队任务数）、`dispatched_count`（累计调度次数）和 `fairness_violations`（lane 间饥饿违规次数）。
+
+这些指标来自 runtime 内置的调度健康策略：deadline miss 会阻止 late output 发布、stale input 检测记录到健康计数器、backpressure 和 overflow 事件进入 health counters、lane 饥饿公平性检测通过阈值触发违规记录。Rust 和 C++ 生成 shell 行为一致。
+
 ## Supervisor
 
 `flowrt launch` 会运行 generated supervisor。Supervisor 会：
 
 - 读取 `flowrt/launch/launch.json`。
-- 按 process group 启动 Rust 或 C++ generated app。
+- 按 process 依赖顺序启动 Rust 或 C++ generated app。
 - 启动自己的 introspection socket。
 - 轮询子进程 PID socket。
 - 把子进程 `starting`、`running`、`stale`、`restarting`、`exited`、`failed` 展示给 `flowrt status`。
@@ -479,13 +507,64 @@ flowrt echo channel_name --follow
 
 正常退出不会重启。
 
+### Readiness 条件启动
+
+Supervisor 支持三种 readiness gate，决定子进程何时被视为"就绪"：
+
+| Gate | 含义 |
+| --- | --- |
+| `process_started` | 进程已 spawn 即视为就绪（默认）。 |
+| `runtime_ready` | 等待 introspection socket 握手，确认 runtime 已启动。 |
+| `service_ready` | 在 `runtime_ready` 基础上，额外检查所有 service endpoint 就绪。 |
+
+`startup_delay_ms` 可以在进程之间加入错峰延迟，避免多个进程同时竞争资源。
+
+```toml
+[[process]]
+name = "sensors"
+readiness = "runtime_ready"
+startup_delay_ms = 200
+
+[[process]]
+name = "control"
+depends_on = ["sensors"]
+readiness = "service_ready"
+```
+
+### 进程资源提示
+
+RSDL `[[process]]` 支持 Linux 进程级资源提示：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `cpu_affinity` | `[u32]` | 绑定到指定 CPU 核心列表。 |
+| `nice` | `i32` | 进程 nice 值（-20..=19）。 |
+| `rt_policy` | string | 可选 RT 调度策略：`fifo` 或 `round_robin`。 |
+| `rt_priority` | `u32` | RT 优先级（1..=99），需配合 `rt_policy`。 |
+| `env` | table | 注入子进程的环境变量键值对。 |
+
+```toml
+[[process]]
+name = "control"
+depends_on = ["sensors"]
+cpu_affinity = [0, 1]
+nice = -10
+rt_policy = "fifo"
+rt_priority = 50
+env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
+```
+
+`flowrt status` 会展示每个进程的 `desired` 和 `applied` 资源状态；权限不足时会结构化报错而非静默忽略。
+
 ## 示例
 
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
 | --- | --- | --- | --- | --- |
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | RSDL imports、Rust codegen、inproc run 和 launch。 |
+| `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | workspace / module / composition、跨模块引用。 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | C++ only CMake app 路径。 |
 | `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | mixed contract 的接口和生成物边界。 |
+| `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | mixed iox2 分进程、Rust/C++ 参数接口。 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | profile 驱动 backend 切换。 |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | Rust source 与 C++ sink 的 iox2 分进程 contract。 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 无界 variable frame、zenoh 跨主机 transport 和 mixed launch。 |

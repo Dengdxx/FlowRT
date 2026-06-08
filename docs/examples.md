@@ -374,6 +374,38 @@ flowrt list examples/service_demo/flowrt/selfdesc/selfdesc.json
 flowrt status
 ```
 
+## Supervisor 和调度健康
+
+v0.5.0 新增的 supervisor 特性（readiness 条件启动、错峰启动、env 注入、CPU
+affinity/priority）适用于任何多进程示例。以 `mixed_zenoh_demo` 为例，可以在
+RSDL 中添加 `[[process]]` 声明：
+
+```toml
+[[process]]
+name = "rust_source"
+readiness = "runtime_ready"
+startup_delay_ms = 100
+
+[[process]]
+name = "cpp_sink"
+depends_on = ["rust_source"]
+readiness = "service_ready"
+cpu_affinity = [0, 1]
+nice = -10
+env = { FLOWRT_LOG_LEVEL = "info" }
+```
+
+构建后用 `flowrt launch` 启动，`flowrt status` 会展示每个进程的 readiness 等待
+状态和资源应用情况。
+
+调度健康指标（deadline miss、stale input、backpressure、overflow、fairness
+violations、queue depth、dispatched count）在所有示例中自动采集，通过
+`flowrt status` 即可查看，无需额外配置。带 `deadline_ms` 的 task（如
+`imu_demo_iox2` 的 controller task）会触发 deadline miss 检测。
+
+远程参数控制面适用于任何含参数的示例（如 `imu_demo_iox2`），加上 `--remote`
+即可通过 zenoh 跨机器操作参数。
+
 ## 添加新示例
 
 新增示例时应明确它验证的边界：
