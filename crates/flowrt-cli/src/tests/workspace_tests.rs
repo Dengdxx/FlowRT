@@ -907,6 +907,20 @@ fn built_executables_are_copied_to_local_release_bin() {
 }
 
 #[test]
+fn existing_executable_only_records_real_files() {
+    let root = temp_test_dir("existing-executable");
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("robot_app");
+    let missing = root.join("missing_app");
+    std::fs::write(&file, "binary").unwrap();
+
+    assert_eq!(existing_executable(file.clone()), Some(file));
+    assert_eq!(existing_executable(missing), None);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
     let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
         .lock()

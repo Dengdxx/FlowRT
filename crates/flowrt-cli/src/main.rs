@@ -2616,12 +2616,20 @@ fn run_cmake_configure_and_build(
         build_mode,
     )?;
     run_cmake_build(&build_dir)?;
+    let cpp_app = build_dir.join(cpp_app_executable_name(contract));
+    let ros2_bridge = build_dir.join(ros2_bridge_executable_name(contract));
     Ok(CmakeBuildOutputs {
         cpp_app: has_component_language(contract, LanguageKind::Cpp)
-            .then(|| build_dir.join(cpp_app_executable_name(contract))),
+            .then_some(cpp_app)
+            .and_then(existing_executable),
         ros2_bridge: has_ros2_bridge(contract)
-            .then(|| build_dir.join(ros2_bridge_executable_name(contract))),
+            .then_some(ros2_bridge)
+            .and_then(existing_executable),
     })
+}
+
+fn existing_executable(path: PathBuf) -> Option<PathBuf> {
+    path.is_file().then_some(path)
 }
 
 fn run_cmake_configure(
