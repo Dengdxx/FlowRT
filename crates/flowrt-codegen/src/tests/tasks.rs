@@ -383,6 +383,9 @@ output = ["slow"]
     assert_eq!(scheduler_step.matches("self.worker.on_tick(").count(), 2);
     assert!(scheduler_step.contains("let mut fast = flowrt::Output::<u32>::new();"));
     assert!(scheduler_step.contains("let mut slow = flowrt::Output::<u32>::new();"));
+    assert!(rust_shell.contains("health_map.entry(\"worker.fast_loop\".to_string())"));
+    assert!(rust_shell.contains("health_map.entry(\"worker.slow_loop\".to_string())"));
+    assert!(!rust_shell.contains("health_map.entry(\"worker\".to_string())"));
     assert_eq!(launch["graphs"][0]["tasks"][0]["name"], "fast_loop");
     assert_eq!(launch["graphs"][0]["tasks"][1]["name"], "slow_loop");
 }
@@ -429,6 +432,9 @@ output = ["slow"]
     assert_eq!(scheduler_step.matches("worker_->on_tick(").count(), 2);
     assert!(scheduler_step.contains("flowrt::Output<std::uint32_t> worker_fast;"));
     assert!(scheduler_step.contains("flowrt::Output<std::uint32_t> worker_slow;"));
+    assert!(cpp_shell.contains("health_map[\"worker.fast_loop\"]"));
+    assert!(cpp_shell.contains("health_map[\"worker.slow_loop\"]"));
+    assert!(!cpp_shell.contains("health_map[\"worker\"].name"));
     assert_eq!(selfdesc["graphs"][0]["tasks"][0]["name"], "fast_loop");
     assert_eq!(selfdesc["graphs"][0]["tasks"][1]["name"], "slow_loop");
     assert_eq!(selfdesc["graphs"][0]["scheduler"]["worker_threads"], 1);
@@ -616,13 +622,13 @@ channel = "latest"
     let bundle = emit_artifacts(&ir).unwrap();
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     let deadline_start = rust_shell
-        .find("let source_deadline_started_at = std::time::Instant::now();")
+        .find("let source_main_deadline_started_at = std::time::Instant::now();")
         .unwrap();
     let source_call = rust_shell
         .find("match self.source.on_tick(&mut sample)")
         .unwrap();
     let deadline_guard = rust_shell
-        .find("source_deadline_started_at.elapsed() > std::time::Duration::from_millis(10)")
+        .find("source_main_deadline_started_at.elapsed() > std::time::Duration::from_millis(10)")
         .unwrap();
     let publish = rust_shell
         .find("if let Some(value) = sample.as_ref().cloned()")
@@ -677,13 +683,13 @@ channel = "latest"
     let bundle = emit_artifacts(&ir).unwrap();
     let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
     let deadline_start = cpp_shell
-        .find("const auto source_deadline_started_at = std::chrono::steady_clock::now();")
+        .find("const auto source_main_deadline_started_at = std::chrono::steady_clock::now();")
         .unwrap();
     let source_call = cpp_shell
         .find("switch (source_->on_tick(source_sample))")
         .unwrap();
     let deadline_guard = cpp_shell
-            .find("std::chrono::steady_clock::now() - source_deadline_started_at > std::chrono::milliseconds{10}")
+            .find("std::chrono::steady_clock::now() - source_main_deadline_started_at > std::chrono::milliseconds{10}")
             .unwrap();
     let publish = cpp_shell
         .find("if (const auto* value = source_sample.as_ref())")

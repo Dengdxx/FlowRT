@@ -7,7 +7,7 @@ use super::service_emit;
 use super::step_emit::{
     RustStepEmission, emit_rust_app_step, emit_rust_apply_pending_params_for_order,
     emit_rust_on_message_revision_state, emit_rust_on_message_wake_checks, scheduler_lane_ids,
-    task_lane_name,
+    task_health_name, task_lane_name,
 };
 
 pub(super) fn rust_task_step_function_name(task: &TaskIr) -> String {
@@ -159,9 +159,11 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         "        let scheduler_base_period_ms: u64 = {};\n",
         scheduler_base_period_ms(&tasks)
     ));
+    let task_health_init = emit_rust_task_health_init(&tasks);
     output.push_str(
         "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n        {\n            let mut observed_data_generation: u64;\n            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
     );
+    output.push_str(&task_health_init);
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
     let has_service_tasks =
         !service_emit::emit_rust_service_wake_checks(contract, graph, next_task_id).is_empty();
@@ -244,6 +246,19 @@ fn scheduler_base_period_ms(tasks: &[&TaskIr]) -> u64 {
         .filter_map(|task| task.period_ms)
         .min()
         .unwrap_or(1)
+}
+
+/// 为本轮 scheduler 预注册 task health 条目，确保未运行 task 也能记录公平性计数。
+fn emit_rust_task_health_init(tasks: &[&TaskIr]) -> String {
+    let mut output = String::new();
+    for task in tasks {
+        let task_health = task_health_name(task);
+        let lane = task_lane_name(task);
+        output.push_str(&format!(
+            "            {{\n                let __h = health_map.entry({task_health:?}.to_string()).or_default();\n                __h.name = {task_health:?}.to_string();\n                __h.lane = {lane:?}.to_string();\n            }}\n"
+        ));
+    }
+    output
 }
 
 /// 生成 lane 饥饿检测代码。

@@ -84,6 +84,7 @@ pub(super) fn emit_rust_app_step(
                         .get(&(instance.name.clone(), input.name.clone()))
                         .expect("validated graph must provide a bind for each task input");
                     let bind = &emission.binds[*bind_index];
+                    let task_health = task_health_name(task);
                     output.push_str(&indent_generated_block(
                         &super::backend_emit::runtime_channel_read(
                             input,
@@ -94,7 +95,7 @@ pub(super) fn emit_rust_app_step(
                     ));
                     // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
                     output.push_str(&indent_generated_block(
-                        &runtime_stale_health_record(input, &instance.name),
+                        &runtime_stale_health_record(input, &task_health),
                         true,
                     ));
                     output.push_str(&indent_generated_block(
@@ -111,9 +112,10 @@ pub(super) fn emit_rust_app_step(
 
             // 初始化 health_map 条目的 name 和 lane 字段。
             let lane_name = task_lane_name(task);
+            let task_health = task_health_name(task);
             output.push_str(&format!(
-                "            {{\n                let __h = health_map.entry({instance:?}.to_string()).or_default();\n                __h.name = {instance:?}.to_string();\n                __h.lane = {lane:?}.to_string();\n            }}\n",
-                instance = instance.name,
+                "            {{\n                let __h = health_map.entry({task_health:?}.to_string()).or_default();\n                __h.name = {task_health:?}.to_string();\n                __h.lane = {lane:?}.to_string();\n            }}\n",
+                task_health = task_health,
                 lane = lane_name,
             ));
 
@@ -135,7 +137,7 @@ pub(super) fn emit_rust_app_step(
             if task.deadline_ms.is_some() {
                 output.push_str(&format!(
                     "{body_indent}let {name}_deadline_started_at = std::time::Instant::now();\n",
-                    name = instance.name
+                    name = task_local_name(task)
                 ));
             }
 
@@ -180,12 +182,15 @@ pub(super) fn emit_rust_app_step(
             ));
 
             if let Some(deadline_ms) = task.deadline_ms {
+                let task_local = task_local_name(task);
+                let task_health = task_health_name(task);
                 output.push_str(&format!(
                     "{body_indent}let {name}_deadline_exceeded = {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms});\n\
                      {body_indent}if {name}_deadline_exceeded {{\n\
-                     {body_inner_indent}health_map.entry({name:?}.to_string()).or_default().deadline_missed += 1;\n\
+                     {body_inner_indent}health_map.entry({task_health:?}.to_string()).or_default().deadline_missed += 1;\n\
                      {body_indent}}}\n",
-                    name = instance.name,
+                    name = task_local,
+                    task_health = task_health,
                 ));
             }
 
@@ -194,7 +199,7 @@ pub(super) fn emit_rust_app_step(
             if has_deadline {
                 output.push_str(&format!(
                     "{body_indent}if !{name}_deadline_exceeded {{\n",
-                    name = instance.name
+                    name = task_local_name(task)
                 ));
             }
             for port in &component.outputs {
@@ -225,11 +230,9 @@ pub(super) fn emit_rust_app_step(
                 ));
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
+                    let task_health = task_health_name(task);
                     output.push_str(&indent_generated_block_levels(
-                        &super::backend_emit::runtime_channel_write_with_health(
-                            bind,
-                            &instance.name,
-                        ),
+                        &super::backend_emit::runtime_channel_write_with_health(bind, &task_health),
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
@@ -373,6 +376,18 @@ pub(super) fn task_lane_name(task: &TaskIr) -> String {
         .unwrap_or_else(|| format!("{}_serial", task.instance.name))
 }
 
+pub(super) fn task_health_name(task: &TaskIr) -> String {
+    format!("{}.{}", task.instance.name, task.name)
+}
+
+fn task_local_name(task: &TaskIr) -> String {
+    format!(
+        "{}_{}",
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
 pub(super) fn scheduler_lane_ids(tasks: &[&TaskIr]) -> std::collections::BTreeMap<String, usize> {
     let mut lanes = std::collections::BTreeMap::new();
     for task in tasks {
@@ -422,10 +437,10 @@ fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
 /// 生成 stale input 健康计数器记录代码。
 ///
 /// 在 stale error guard 之后调用，记录所有 stale 检测到 health_map。
-fn runtime_stale_health_record(input: &PortIr, instance_name: &str) -> String {
+fn runtime_stale_health_record(input: &PortIr, task_health_name: &str) -> String {
     format!(
-        "        if {input}.stale() {{\n            health_map.entry({instance:?}.to_string()).or_default().stale_input += 1;\n        }}\n",
+        "        if {input}.stale() {{\n            health_map.entry({task_health:?}.to_string()).or_default().stale_input += 1;\n        }}\n",
         input = input.name,
-        instance = instance_name,
+        task_health = task_health_name,
     )
 }

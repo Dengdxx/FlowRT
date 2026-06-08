@@ -108,22 +108,18 @@ pub(super) fn runtime_channel_read(
     }
 }
 
-pub(super) fn runtime_channel_write(bind: &BindRuntimePlan) -> String {
-    runtime_channel_write_inner(bind, None)
-}
-
 /// 生成 channel 写入代码，带健康计数器记录。
 ///
-/// 当 `instance_name` 为 `Some` 时，FIFO 的 backpressure 和 overflow 事件
+/// 当 `task_health_name` 为 `Some` 时，FIFO 的 backpressure 和 overflow 事件
 /// 会被记录到 `health_map`。
 pub(super) fn runtime_channel_write_with_health(
     bind: &BindRuntimePlan,
-    instance_name: &str,
+    task_health_name: &str,
 ) -> String {
-    runtime_channel_write_inner(bind, Some(instance_name))
+    runtime_channel_write_inner(bind, Some(task_health_name))
 }
 
-fn runtime_channel_write_inner(bind: &BindRuntimePlan, instance_name: Option<&str>) -> String {
+fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<&str>) -> String {
     let introspection_record = runtime_introspection_publish_record(bind);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
@@ -140,11 +136,11 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, instance_name: Option<&st
             )
         }
         ChannelKind::Fifo => {
-            if let Some(instance) = instance_name {
+            if let Some(task_health) = task_health_name {
                 format!(
-                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    health_map.entry({instance:?}.to_string()).or_default().backpressure += 1;\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    health_map.entry({instance:?}.to_string()).or_default().overflow += 1;\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
+                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    health_map.entry({task_health:?}.to_string()).or_default().backpressure += 1;\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    health_map.entry({task_health:?}.to_string()).or_default().overflow += 1;\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
                     field = bind.field_name,
-                    instance = instance,
+                    task_health = task_health,
                 )
             } else {
                 format!(

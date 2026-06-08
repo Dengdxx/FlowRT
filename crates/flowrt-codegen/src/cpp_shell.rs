@@ -627,6 +627,7 @@ fn emit_cpp_app_step(
                         .get(&(instance.name.clone(), input.name.clone()))
                     {
                         let bind = &emission.binds[*bind_index];
+                        let task_health = cpp_task_health_name(task);
                         output.push_str(&indent_generated_block(
                             &cpp_runtime_channel_read(
                                 input,
@@ -638,7 +639,7 @@ fn emit_cpp_app_step(
                         ));
                         // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
                         output.push_str(&indent_generated_block(
-                            &cpp_runtime_stale_health_record(&input_local, &instance.name),
+                            &cpp_runtime_stale_health_record(&input_local, &task_health),
                             true,
                         ));
                         output.push_str(&indent_generated_block(
@@ -663,9 +664,10 @@ fn emit_cpp_app_step(
 
             // 初始化 health_map 条目的 name 和 lane 字段。
             let lane_name = cpp_task_lane_name(task);
+            let task_health = cpp_task_health_name(task);
             output.push_str(&format!(
-                "        health_map[\"{instance}\"].name = \"{instance}\";\n        health_map[\"{instance}\"].lane = \"{lane}\";\n",
-                instance = instance.name,
+                "        health_map[\"{task_health}\"].name = \"{task_health}\";\n        health_map[\"{task_health}\"].lane = \"{lane}\";\n",
+                task_health = task_health,
                 lane = lane_name,
             ));
 
@@ -685,9 +687,10 @@ fn emit_cpp_app_step(
             let write_indent_levels = if trigger_guard.is_some() { 2 } else { 1 };
 
             if task.deadline_ms.is_some() {
+                let task_local = cpp_task_local_name(task);
                 output.push_str(&format!(
                     "{body_indent}const auto {instance}_deadline_started_at = std::chrono::steady_clock::now();\n",
-                    instance = instance.name
+                    instance = task_local
                 ));
             }
 
@@ -722,21 +725,25 @@ fn emit_cpp_app_step(
             ));
 
             if let Some(deadline_ms) = task.deadline_ms {
+                let task_local = cpp_task_local_name(task);
+                let task_health = cpp_task_health_name(task);
                 output.push_str(&format!(
                     "{body_indent}const bool {instance}_deadline_exceeded = (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}});\n\
                      {body_indent}if ({instance}_deadline_exceeded) {{\n\
-                     {body_inner_indent}health_map[\"{instance}\"].deadline_missed += 1;\n\
+                     {body_inner_indent}health_map[\"{task_health}\"].deadline_missed += 1;\n\
                      {body_indent}}}\n",
-                    instance = instance.name,
+                    instance = task_local,
+                    task_health = task_health,
                 ));
             }
 
             // 在 deadline_exceeded 守卫下发布输出：deadline miss 时不发布 late output。
             let has_deadline = task.deadline_ms.is_some();
             if has_deadline {
+                let task_local = cpp_task_local_name(task);
                 output.push_str(&format!(
                     "{body_indent}if (!{instance}_deadline_exceeded) {{\n",
-                    instance = instance.name
+                    instance = task_local
                 ));
             }
             for port in &component.outputs {
@@ -768,8 +775,9 @@ fn emit_cpp_app_step(
                 ));
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
+                    let task_health = cpp_task_health_name(task);
                     output.push_str(&indent_generated_block_levels(
-                        &cpp_runtime_channel_write_with_health(bind, &instance.name),
+                        &cpp_runtime_channel_write_with_health(bind, &task_health),
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
@@ -946,9 +954,11 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "    const auto scheduler_base_period_ms = std::uint64_t{{{}}};\n",
         cpp_scheduler_base_period_ms(&tasks)
     ));
+    let task_health_init = emit_cpp_task_health_init(&tasks);
     output.push_str(
         "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
     );
+    output.push_str(&task_health_init);
     output.push_str(&emit_cpp_apply_pending_params_for_order(
         run.contract,
         run.order,
@@ -1048,6 +1058,18 @@ fn cpp_task_lane_name(task: &flowrt_ir::TaskIr) -> String {
         .unwrap_or_else(|| format!("{}_serial", task.instance.name))
 }
 
+fn cpp_task_health_name(task: &flowrt_ir::TaskIr) -> String {
+    format!("{}.{}", task.instance.name, task.name)
+}
+
+fn cpp_task_local_name(task: &flowrt_ir::TaskIr) -> String {
+    format!(
+        "{}_{}",
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
 fn cpp_scheduler_base_period_ms(tasks: &[&flowrt_ir::TaskIr]) -> u64 {
     tasks
         .iter()
@@ -1055,6 +1077,19 @@ fn cpp_scheduler_base_period_ms(tasks: &[&flowrt_ir::TaskIr]) -> u64 {
         .filter_map(|task| task.period_ms)
         .min()
         .unwrap_or(1)
+}
+
+/// 为本轮 scheduler 预注册 task health 条目，确保未运行 task 也能记录公平性计数。
+fn emit_cpp_task_health_init(tasks: &[&flowrt_ir::TaskIr]) -> String {
+    let mut output = String::new();
+    for task in tasks {
+        let task_health = cpp_task_health_name(task);
+        let lane = cpp_task_lane_name(task);
+        output.push_str(&format!(
+            "        {{\n            auto& health = health_map[\"{task_health}\"];\n            health.name = \"{task_health}\";\n            health.lane = \"{lane}\";\n        }}\n"
+        ));
+    }
+    output
 }
 
 /// 生成 C++ lane 饥饿检测代码。
@@ -1420,11 +1455,11 @@ fn cpp_runtime_stale_error_guard(local_name: &str, bind: &BindRuntimePlan) -> St
 }
 
 /// 生成 stale input 健康计数器记录代码（C++）。
-fn cpp_runtime_stale_health_record(local_name: &str, instance_name: &str) -> String {
+fn cpp_runtime_stale_health_record(local_name: &str, task_health_name: &str) -> String {
     format!(
-        "    if ({local}.stale()) {{\n        health_map[\"{instance}\"].stale_input += 1;\n    }}\n",
+        "    if ({local}.stale()) {{\n        health_map[\"{task_health}\"].stale_input += 1;\n    }}\n",
         local = local_name,
-        instance = instance_name,
+        task_health = task_health_name,
     )
 }
 
@@ -1444,16 +1479,15 @@ fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
     )
 }
 
-fn cpp_runtime_channel_write(bind: &BindRuntimePlan) -> String {
-    cpp_runtime_channel_write_inner(bind, None)
-}
-
 /// 生成 channel 写入代码（C++），带健康计数器记录。
-fn cpp_runtime_channel_write_with_health(bind: &BindRuntimePlan, instance_name: &str) -> String {
-    cpp_runtime_channel_write_inner(bind, Some(instance_name))
+fn cpp_runtime_channel_write_with_health(bind: &BindRuntimePlan, task_health_name: &str) -> String {
+    cpp_runtime_channel_write_inner(bind, Some(task_health_name))
 }
 
-fn cpp_runtime_channel_write_inner(bind: &BindRuntimePlan, instance_name: Option<&str>) -> String {
+fn cpp_runtime_channel_write_inner(
+    bind: &BindRuntimePlan,
+    task_health_name: Option<&str>,
+) -> String {
     let introspection_record = cpp_introspection_publish_record(bind);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
@@ -1468,11 +1502,11 @@ fn cpp_runtime_channel_write_inner(bind: &BindRuntimePlan, instance_name: Option
             field = bind.field_name
         ),
         ChannelKind::Fifo => {
-            if let Some(instance) = instance_name {
+            if let Some(task_health) = task_health_name {
                 format!(
-                    "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                if (std::get<flowrt::ChannelWriteOutcome>({field}_result) == flowrt::ChannelWriteOutcome::Backpressured) {{\n                    health_map[\"{instance}\"].backpressure += 1;\n                }}\n            }} else {{\n                health_map[\"{instance}\"].overflow += 1;\n            }}\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
+                    "        const auto {field}_result = {field}_.push_at(*value, tick_time_ms);\n        if (const auto status = status_from_push_result({field}_result); status != flowrt::Status::Ok) {{\n            if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                if (std::get<flowrt::ChannelWriteOutcome>({field}_result) == flowrt::ChannelWriteOutcome::Backpressured) {{\n                    health_map[\"{task_health}\"].backpressure += 1;\n                }}\n            }} else {{\n                health_map[\"{task_health}\"].overflow += 1;\n            }}\n            return status;\n        }}\n        if (std::holds_alternative<flowrt::ChannelWriteOutcome>({field}_result)) {{\n            switch (std::get<flowrt::ChannelWriteOutcome>({field}_result)) {{\n                case flowrt::ChannelWriteOutcome::Accepted:\n                case flowrt::ChannelWriteOutcome::DroppedOldest:\n                    scheduler_events.notify_data();\n{introspection_record}                    break;\n                case flowrt::ChannelWriteOutcome::DroppedNewest:\n                case flowrt::ChannelWriteOutcome::Backpressured:\n                    break;\n            }}\n        }}\n",
                     field = bind.field_name,
-                    instance = instance,
+                    task_health = task_health,
                 )
             } else {
                 format!(
