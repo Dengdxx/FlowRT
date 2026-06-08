@@ -79,13 +79,15 @@ fi
 
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export CARGO_NET_OFFLINE=true
+export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
 
 user_root="$work_dir/user-project"
 cp -a "$repo_root/examples/ros2_bridge_demo" "$user_root"
 rm -rf "$user_root/flowrt"
 
+flowrt deps "$user_root/rsdl/robot.rsdl" --backend zenoh --build-mode release
 flowrt build --launcher "$user_root/rsdl/robot.rsdl"
-ros2_bridge_binary="$user_root/flowrt/build/cmake/ros2_bridge_demo_ros2_bridge"
+ros2_bridge_binary="$user_root/flowrt/build/bin/release/ros2_bridge_demo_ros2_bridge"
 test -x "$ros2_bridge_binary"
 
 ros_prefix="$(ros2 pkg prefix rmw_zenoh_cpp)"

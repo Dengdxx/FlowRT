@@ -22,6 +22,7 @@ runtime_dir="$work_dir/runtime"
 mkdir -p "$runtime_dir"
 chmod 700 "$runtime_dir"
 export XDG_RUNTIME_DIR="$runtime_dir"
+export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
 
 operation_demo="$work_dir/operation_demo"
 counter_demo="$work_dir/cpp_counter_demo"
@@ -29,13 +30,18 @@ cp -a "$repo_root/examples/operation_demo" "$operation_demo"
 cp -a "$repo_root/examples/cpp_counter_demo" "$counter_demo"
 rm -rf "$operation_demo/flowrt" "$counter_demo/flowrt"
 
+"$flowrt" deps --backend all --build-mode release
 "$flowrt" check "$operation_demo/rsdl/robot.rsdl"
 "$flowrt" build --launcher "$operation_demo/rsdl/robot.rsdl"
+test -x "$operation_demo/flowrt/build/bin/release/operation-demo-flowrt-app"
+test -x "$operation_demo/flowrt/build/bin/release/operation-demo-flowrt-supervisor"
 "$flowrt" op list --image "$operation_demo/flowrt/selfdesc/selfdesc.json" |
     grep -q 'operation=controller.plan'
 FLOWRT_TICK_SLEEP_MS=5 "$flowrt" run --run-steps 5 "$operation_demo/rsdl/robot.rsdl" --process main
 
 "$flowrt" build --launcher "$counter_demo/rsdl/robot.rsdl"
+test -x "$counter_demo/flowrt/build/bin/release/cpp_counter_demo_cpp_app"
+test -x "$counter_demo/flowrt/build/bin/release/cpp-counter-demo-flowrt-supervisor"
 FLOWRT_TICK_SLEEP_MS=10 "$flowrt" run "$counter_demo/rsdl/robot.rsdl" --process control &
 runtime_pid="$!"
 

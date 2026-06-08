@@ -175,6 +175,9 @@ ln -s "${private_prefix}/bin/flowrt" "$staging/usr/bin/flowrt"
 install -d "$private_root/share/flowrt/runtime/rust"
 cp -a "$repo_root/runtime/rust/Cargo.toml" "$repo_root/runtime/rust/src" \
     "$private_root/share/flowrt/runtime/rust/"
+install -d "$private_root/share/flowrt/crates/flowrt-record"
+cp -a "$repo_root/crates/flowrt-record/Cargo.toml" "$repo_root/crates/flowrt-record/src" \
+    "$private_root/share/flowrt/crates/flowrt-record/"
 install -d "$private_root/share/cargo"
 vendor_log="$package_work/cargo-vendor.log"
 if ! cargo vendor --locked --versioned-dirs "$private_root/share/cargo/vendor" \

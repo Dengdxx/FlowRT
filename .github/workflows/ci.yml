@@ -335,6 +335,8 @@ jobs:
           test -x /usr/bin/flowrt
           test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/Cargo.toml"
           test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/src/lib.rs"
+          test -f "/opt/flowrt/${version}/share/flowrt/crates/flowrt-record/Cargo.toml"
+          test -f "/opt/flowrt/${version}/share/flowrt/crates/flowrt-record/src/lib.rs"
           test -d "/opt/flowrt/${version}/share/cargo/vendor"
           test -f "/opt/flowrt/${version}/include/flowrt/runtime.hpp"
           test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
@@ -403,6 +405,8 @@ jobs:
 
       - name: FlowRT demo smoke
         run: |
+          export FLOWRT_CACHE_DIR="${RUNNER_TEMP}/flowrt-cache"
+          flowrt deps --backend all --build-mode release
           flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
           flowrt run --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
           flowrt launch --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl

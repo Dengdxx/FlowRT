@@ -39,21 +39,29 @@ rm -rf "$user_root/import_demo/flowrt" "$user_root/cpp_counter_demo/flowrt" \
 
 export CARGO_HOME="$work_dir/cargo-home"
 export CARGO_NET_OFFLINE=true
+export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
 
+"$flowrt" deps --backend all --build-mode release
 "$flowrt" build --launcher "$user_root/import_demo/rsdl/robot.rsdl"
-test -x "$user_root/import_demo/flowrt/build/target/debug/import-demo-flowrt-app"
+test -x "$user_root/import_demo/flowrt/build/bin/release/import-demo-flowrt-app"
+test -x "$user_root/import_demo/flowrt/build/bin/release/import-demo-flowrt-supervisor"
+test -f "$user_root/import_demo/flowrt/build/build-info.json"
 
 "$flowrt" build --launcher "$user_root/cpp_counter_demo/rsdl/robot.rsdl"
-test -x "$user_root/cpp_counter_demo/flowrt/build/cmake/cpp_counter_demo_cpp_app"
+test -x "$user_root/cpp_counter_demo/flowrt/build/bin/release/cpp_counter_demo_cpp_app"
+test -x "$user_root/cpp_counter_demo/flowrt/build/bin/release/cpp-counter-demo-flowrt-supervisor"
+test -f "$user_root/cpp_counter_demo/flowrt/build/build-info.json"
 
 "$flowrt" prepare "$user_root/mixed_iox2_demo/rsdl/robot.rsdl"
 cmake -S "$user_root/mixed_iox2_demo/flowrt/build" \
-    -B "$user_root/mixed_iox2_demo/flowrt/build/cmake" \
+    -B "$user_root/mixed_iox2_demo/flowrt/build/cmake/release" \
+    -DCMAKE_BUILD_TYPE=Release \
     -DFLOWRT_CPP_RUNTIME_DIR="$private_prefix"
 
 "$flowrt" prepare "$user_root/mixed_zenoh_demo/rsdl/robot.rsdl"
 cmake -S "$user_root/mixed_zenoh_demo/flowrt/build" \
-    -B "$user_root/mixed_zenoh_demo/flowrt/build/cmake" \
+    -B "$user_root/mixed_zenoh_demo/flowrt/build/cmake/release" \
+    -DCMAKE_BUILD_TYPE=Release \
     -DFLOWRT_CPP_RUNTIME_DIR="$private_prefix"
 
 if grep -R "$repo_root/runtime/rust" "$user_root/import_demo/flowrt/build/Cargo.toml" \

@@ -37,6 +37,8 @@ required_paths=(
     "${prefix}/bin/flowrt"
     "${prefix}/share/flowrt/runtime/rust/Cargo.toml"
     "${prefix}/share/flowrt/runtime/rust/src/lib.rs"
+    "${prefix}/share/flowrt/crates/flowrt-record/Cargo.toml"
+    "${prefix}/share/flowrt/crates/flowrt-record/src/lib.rs"
     "${prefix}/share/cargo/config.toml"
     "${prefix}/share/cargo/vendor"
     "${prefix}/lib/${multiarch}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
