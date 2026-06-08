@@ -5,7 +5,12 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.6.0`。`v0.5.0` 已发布，核心主题是 launch-grade
+当前 workspace 版本为 `0.6.1`。`v0.6.0` 已发布，核心主题是 Operation、
+record-only 录制系统和时间事件模型基础。`v0.6.1` 是构建/打包可靠性小升级：
+引入 `flowrt deps` 预热共享底层依赖 cache，`flowrt build` 默认 release 并只构建
+用户项目，用户二进制统一落在 `flowrt/build/bin/release/`。
+
+`v0.5.0` 已发布，核心主题是 launch-grade
 supervisor、参数控制面、高频调度硬化和 FlowRT core skills 套组：补齐 readiness
 gate、错峰启动、env 注入、CPU affinity / priority 资源提示、远程参数控制面、
 task/lane 调度健康观测和 v0.5.0 focused release gate。
@@ -52,6 +57,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.4.0` | Service runtime。 |
 | `v0.5.0` | launch-grade supervisor、参数控制面、高频调度硬化和 FlowRT core skills 套组。 |
 | `v0.6.0` | Operation + record-only 录制系统 + 时间事件模型基础。 |
+| `v0.6.1` | `flowrt deps`、共享依赖 cache、默认 release 构建和 deb smoke 修复。 |
 | `v0.7.0` | external process / driver package 接入边界、ARM64/跨机器部署闭环。 |
 | `v0.8.0` | 多目标部署、交叉编译、多架构安装包和发布硬化。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
@@ -250,6 +256,8 @@ scripts/
 ```bash
 flowrt check path/to/robot.rsdl
 flowrt prepare path/to/robot.rsdl
+flowrt deps [path/to/robot.rsdl]
+flowrt deps --backend all
 flowrt build path/to/robot.rsdl
 flowrt run path/to/robot.rsdl
 flowrt run path/to/robot.rsdl --process main
@@ -274,6 +282,8 @@ backend 为 `inproc`。
 
 命令职责边界：
 
+- `deps` 只写全局 FlowRT cache，不生成用户项目产物。cache root 默认
+  `~/.cache/flowrt`，可用 `FLOWRT_CACHE_DIR` 覆盖。
 - `prepare` 和 `build` 会写 `flowrt/` 输出目录，必须持有 OS advisory lock。
 - `.flowrt.lock` 文件可残留，PID 只用于诊断，真实占用状态由锁判断。
 - `check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`hz`、`echo`、
@@ -287,6 +297,10 @@ backend 为 `inproc`。
   supervisor-only Rust crate，launch 先构建 CMake app 再运行 supervisor。
 - `inproc` 是单进程 backend；launch 和单独 process run 必须拒绝 inproc dataflow
   跨 RSDL process group。
+- `build` 默认 release。Rust app、generated supervisor、C++ app 和 ROS2 bridge
+  adapter 都复制到 `flowrt/build/bin/<mode>/`；`flowrt/build/build-info.json` 记录
+  build mode、deps target 目录和 executable 相对路径。缺少匹配 deps ready marker 时，
+  `build` 会 fail-fast，提示先运行 `flowrt deps`。
 
 ## Runtime 和观测状态
 
@@ -338,9 +352,10 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 - 基础文档。
 
 包内文件安装到 `/opt/flowrt/<version>` 私有前缀，并通过 `/usr/bin/flowrt` 暴露入口。
-生成 Rust app 会优先使用包内 vendor；生成 CMake 会使用 FlowRT 私有前缀解析 C++
-runtime 和 backend SDK。生成 CMake 不应通过 `FetchContent` 联网拉取 backend SDK；
-缺失依赖应要求安装 FlowRT 包或显式设置 `FLOWRT_CPP_RUNTIME_DIR` / `CMAKE_PREFIX_PATH`。
+`flowrt deps` 会使用包内 vendor 预热全局共享 cache；生成 Rust app 会复用该 cache；
+生成 CMake 会使用 FlowRT 私有前缀解析 C++ runtime 和 backend SDK。生成 CMake 不应
+通过 `FetchContent` 联网拉取 backend SDK；缺失依赖应要求安装 FlowRT 包或显式设置
+`FLOWRT_CPP_RUNTIME_DIR` / `CMAKE_PREFIX_PATH`。
 
 ## CI 和 Release 状态
 
@@ -354,8 +369,8 @@ CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy
 v0.5.0 / v0.6.0 runtime focused smoke、Debian package、C++ zenoh runtime、demo
 smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。package
 job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。demo
-smoke 先安装同架构 deb，再用安装后的 `flowrt ...` 跑示例。推送 `v*` tag 且全部
-gate 成功后，release job 会下载两种架构 deb artifact，从 `CHANGELOG.md` 对应版本段
+smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用 `flowrt ...`
+跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构 deb artifact，从 `CHANGELOG.md` 对应版本段
 抽取 release notes，并创建 GitHub Release 上传 `flowrt_*_amd64.deb`、
 `flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的
 workspace version。
@@ -366,8 +381,8 @@ workspace version。
 runtime/CLI/status、record format、runtime recorder tap 和 CLI MCAP 写入路径，使
 这些新增能力的 CI 失败原因比全量 Rust test 更可定位。发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 / v0.6.0 focused gate 覆盖状态。`v0.6.0` 发布由推送
-`v0.6.0` tag 触发 GitHub Release。
+release notes 抽取和 v0.5.0 / v0.6.0 focused gate 覆盖状态。`v0.6.1` 发布由推送
+`v0.6.1` tag 触发 GitHub Release。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。

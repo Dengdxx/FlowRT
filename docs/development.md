@@ -78,9 +78,9 @@ sudo dpkg -i dist/flowrt_*_*.deb
 scripts/test-ros2-bridge-installed.sh --distro jazzy
 ```
 
-`scripts/test-deb-installed-user-project.sh` 会从 deb 中解包 `flowrt`，在临时用户项目目录里构建示例，验证生成项目不依赖 FlowRT 源码树。ROS2 bridge 安装后 smoke 由 `scripts/test-ros2-bridge-installed.sh` 单独负责；它要求本机已经安装对应 ROS2 发行版、`rmw_zenoh_cpp`，并且 PATH 中的 `flowrt` 来自 FlowRT 安装包或解包后的安装前缀。该脚本会构建并运行 `ros2_bridge_demo`，确认 generated adapter 链接 ROS2 自带 `zenoh_cpp_vendor` 并能被 `ros2 topic echo /flowrt/text --once` 观察到。CI 会在官方 `ros:jazzy-ros-base-noble` 基础容器中运行常规 Linux job，并额外并行运行 `ros2-jazzy-bridge` 与 `ros2-lyrical-bridge` 两个强制 bridge smoke。
+`scripts/test-deb-installed-user-project.sh` 会从 deb 中解包 `flowrt`，在临时用户项目目录里先运行 `flowrt deps --backend all --build-mode release`，再构建示例，验证生成项目不依赖 FlowRT 源码树，并确认用户二进制位于 `flowrt/build/bin/release/`。ROS2 bridge 安装后 smoke 由 `scripts/test-ros2-bridge-installed.sh` 单独负责；它要求本机已经安装对应 ROS2 发行版、`rmw_zenoh_cpp`，并且 PATH 中的 `flowrt` 来自 FlowRT 安装包或解包后的安装前缀。该脚本会先预热 zenoh 依赖，再构建并运行 `ros2_bridge_demo`，确认 generated adapter 链接 ROS2 自带 `zenoh_cpp_vendor` 并能被 `ros2 topic echo /flowrt/text --once` 观察到。CI 会在官方 `ros:jazzy-ros-base-noble` 基础容器中运行常规 Linux job，并额外并行运行 `ros2-jazzy-bridge` 与 `ros2-lyrical-bridge` 两个强制 bridge smoke。
 
-`scripts/test-v060-installed-smoke.sh` 复用系统安装后的 `flowrt`，在临时用户项目中构建
+`scripts/test-v060-installed-smoke.sh` 复用系统安装后的 `flowrt`，在临时用户项目中预热 deps、构建
 `operation_demo` 并运行 `flowrt op list`，再启动 `cpp_counter_demo` runtime 并用
 `flowrt record` 写出 MCAP 文件。它用于验证 v0.6.0 的 Operation 自描述和 record-only
 用户路径已经进入安装包 smoke。
@@ -283,7 +283,7 @@ fix(validate): 拒绝缺失任务输入绑定
 
 Rust runtime 的 iox2 支持通过 feature-gated `iceoryx2 = "0.9"` 编译。C++ iox2 binding 只有在定义 `FLOWRT_HAS_ICEORYX2_CXX` 并链接 `iceoryx2-cxx 0.9.1` 时使用真实 transport。Rust runtime 的 zenoh 支持通过 feature-gated `zenoh = "1.9"` 编译。C++ zenoh binding 只有在定义 `FLOWRT_HAS_ZENOH_CXX` 并链接基于 `zenoh-c` backend 的 `zenohcxx::zenohc` 时使用真实 transport。
 
-FlowRT Debian 包会把锁定版本的 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0`、`zenoh-cpp 1.9.0` 和第三方 license material 放入 `/opt/flowrt/<version>` 私有前缀。安装后的 `flowrt build` 会自动把该前缀传给 generated CMake，并为 generated Rust app 写入离线 Cargo config。生成项目构建不应通过 `FetchContent`、Cargo registry 或其他外部网络路径临时解析 backend SDK。
+FlowRT Debian 包会把锁定版本的 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0`、`zenoh-cpp 1.9.0` 和第三方 license material 放入 `/opt/flowrt/<version>` 私有前缀。安装后的 `flowrt deps` 会用包内 vendor 预热全局共享 cache；`flowrt build` 会复用 cache，只编译用户项目和 generated shell，并自动把私有前缀传给 generated CMake。生成项目构建不应通过 `FetchContent`、Cargo registry 或其他外部网络路径临时解析 backend SDK。
 
 基础 Rust/C++ inproc 验证和 `check` smoke 不要求启用 C++ iox2/zenoh 测试。直接调试 `runtime/cpp` 的 backend smoke 时，需要用 `CMAKE_PREFIX_PATH=/opt/flowrt/<version>` 或等价路径暴露 FlowRT 私有前缀。
 

@@ -2,6 +2,8 @@
 
 本仓库的 `examples/` 目录用于验证 RSDL、Contract IR、validator、codegen、runtime 和 CLI 的端到端切片。每个示例都尽量覆盖一个明确边界，不把所有能力塞进同一个 demo。
 
+首次运行涉及 `flowrt build` 的示例前，先执行 `flowrt deps --backend all`，或对单个示例执行 `flowrt deps <示例 rsdl>`。`flowrt deps` 只预热 FlowRT 底层依赖缓存；示例二进制由 `flowrt build` 写入各自项目的 `flowrt/build/bin/release/`。
+
 ## 示例列表
 
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |

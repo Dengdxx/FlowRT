@@ -7,9 +7,10 @@
 ```bash
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
-flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--launcher]
-flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>]
-flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>]
+flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--build-mode <release|debug>] [--check]
+flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--launcher] [--build-mode <release|debug>]
+flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>]
+flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
@@ -55,16 +56,38 @@ flowrt prepare examples/import_demo/rsdl/robot.rsdl
 
 `prepare` 和 `build` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并持有 OS advisory lock；如果另一个写命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。锁文件可以在进程崩溃后残留，后续命令会重新打开该文件并用 OS 锁判断是否仍被占用；文件中的 PID 只作为诊断信息。`run` 和 `launch` 只读取已生成产物，不写输出目录，也不获取该锁。
 
+## `deps`
+
+```bash
+flowrt deps examples/import_demo/rsdl/robot.rsdl
+flowrt deps --backend all
+flowrt deps examples/profile_switch_demo/rsdl/robot.rsdl --profile iox2
+flowrt deps --backend zenoh --build-mode release --check
+```
+
+`deps` 负责补全并预热 FlowRT 底层依赖缓存。它只编译 FlowRT runtime 依赖，不生成用户项目产物。`flowrt build` 会复用该 cache；如果缺少匹配的 ready marker，会直接失败并提示先运行 `flowrt deps`。
+
+缓存根目录按以下顺序选择：
+
+- `FLOWRT_CACHE_DIR`
+- `XDG_CACHE_HOME/flowrt`
+- `~/.cache/flowrt`
+
+cache key 包含 FlowRT 版本、Rust toolchain identity、target triple、vendor hash、build mode 和 backend feature 组合。`--backend all` 预热的 cache 可以被 `inproc`、`iox2` 或 `zenoh` 子集复用；安装后推荐在项目内运行 `flowrt deps <rsdl>`，CI 或离线镜像准备阶段可以用 `flowrt deps --backend all` 一次性补全。
+
+`--build-mode` 默认是 `release`。`debug` 只用于本地调试，不能和 release 产物混用。
+
 ## `build`
 
 ```bash
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-`build` 先执行 `prepare`，再构建生成应用。
+`build` 先执行 `prepare`，再构建生成应用。默认 build mode 是 `release`。
 
 规则：
 
+- `build` 只编译用户项目和生成 shell，不负责隐式预热 FlowRT 底层依赖。首次构建、切换 backend、切换 FlowRT 版本或清理 cache 后，应先运行匹配的 `flowrt deps`。
 - Rust-only 或含 Rust component 的 contract 当前会触发 Cargo app 构建。
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
@@ -73,7 +96,9 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
 - 声明 `[[bridge.ros2]]` 时，`build` 会额外构建 FlowRT 管理的 C++ ROS2 adapter target；即使没有 C++ 用户 component，也会运行生成 CMake。
 
-Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt build` 会把该私有前缀传给生成 CMake，并为生成 Rust app 写入离线 Cargo config；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
+构建出的用户项目二进制统一位于 `flowrt/build/bin/<release|debug>/`，包括 Rust app、generated supervisor、C++ app 和 ROS2 bridge adapter。`flowrt/build/build-info.json` 记录本次构建的 FlowRT 版本、profile、build mode、依赖 target 目录和相对 executable 路径。
+
+Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt deps` / `flowrt build` 会使用该私有前缀和包内 vendor；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 
 默认情况下，`flowrt build` 和生成 CMake 不会回退到 FlowRT 源码树 `runtime/cpp`。在 FlowRT 仓库内开发时，设置环境变量 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1`，CLI 会同时把 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` 传给 CMake，启用源码树回退。正式用户路径不应依赖此选项。
 
@@ -84,13 +109,13 @@ flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 ```
 
-`run` 只读取 `flowrt/contract/contract.ir.json` 和已构建的 generated app，然后运行单个 process group。它不会执行 `prepare`、不会构建、不会写 `flowrt/` 目录。首次运行或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build`。
+`run` 只读取 `flowrt/contract/contract.ir.json`、`flowrt/build/build-info.json` 和已构建的 generated app，然后运行单个 process group。它不会执行 `prepare`、不会构建、不会写 `flowrt/` 目录。首次运行或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build`。
 
 `--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 
 `--run-steps <N>` 是 CLI 的显式运行上限，主要用于 smoke test 和调试观察。省略时，生成应用会持续运行，直到收到 SIGINT/SIGTERM 或 runtime shell 返回 `Error`。SIGINT/SIGTERM 会触发 runtime shutdown token，生成应用退出 scheduler loop 后继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。`--run-ticks <N>` 作为兼容别名保留；CLI 会把上限转换为生成应用的内部 `--flowrt-run-steps` 参数，核心 runtime scheduler 不读取 CLI 环境变量。
 
-如果传入 `--profile <name>`，`run` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --profile <name>`。
+如果传入 `--profile <name>`，`run` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --profile <name>`。如果传入 `--build-mode <mode>`，`run` 会校验 `build-info.json` 中的模式匹配；省略时使用最近一次成功 build 的模式。
 
 mixed contract 规则：
 
@@ -108,7 +133,7 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-`launch` 只运行已构建的 generated supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable 或 C++ app executable。首次 launch 或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build --launcher`。
+`launch` 只运行已构建的 generated supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable、C++ app executable 或 ROS2 bridge adapter。首次 launch 或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build --launcher`。
 
 含 C++ component 的 contract 需要先通过 `flowrt build --launcher` 显式构建 CMake app 和 generated supervisor；C++ only contract 的 supervisor-only Rust crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
 
@@ -116,7 +141,7 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 `--run-steps <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动，并通过生成应用自己的 shutdown token 响应 SIGINT/SIGTERM。`--run-ticks <N>` 仍可作为兼容别名使用。
 
-如果传入 `--profile <name>`，`launch` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --launcher --profile <name>`。
+如果传入 `--profile <name>`，`launch` 只校验已生成产物是否使用同名 profile；不匹配时会要求重新执行 `flowrt build --launcher --profile <name>`。如果传入 `--build-mode <mode>`，`launch` 会校验 `build-info.json` 中的模式匹配；省略时使用最近一次成功 build 的模式。
 
 launch manifest 的关键字段包括：
 

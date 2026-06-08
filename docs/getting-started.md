@@ -20,6 +20,20 @@ flowrt --version
 
 面向用户的入口是系统安装后的 `flowrt ...`。单包 `flowrt` 会同时安装 CLI、Rust runtime crate、C++ runtime header、CMake package、私有 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0` 和 `zenoh-cpp 1.9.0`。这些版本锁定依赖位于 `/opt/flowrt/<version>` 私有前缀，用户项目不需要克隆 FlowRT 仓库，也不需要手动安装 iox2 或 zenoh C++ SDK。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此目标机仍需要 Rust toolchain；C++ 用户组件仍需要 C++20 编译器、CMake 和 CTest。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
 
+首次构建前先补全底层依赖缓存：
+
+```bash
+flowrt deps --backend all
+```
+
+日常项目内也可以按 RSDL 精确预热：
+
+```bash
+flowrt deps examples/import_demo/rsdl/robot.rsdl
+```
+
+`flowrt deps` 只编译 FlowRT 底层依赖；`flowrt build` 只编译用户项目和生成 shell。默认构建模式是 release，用户二进制位于项目自己的 `flowrt/build/bin/release/`。
+
 ## 检查 RSDL
 
 先检查模块化 RSDL 示例：
@@ -63,6 +77,7 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 ## 运行 Rust-only 示例
 
 ```bash
+flowrt deps examples/import_demo/rsdl/robot.rsdl
 flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
 flowrt run examples/import_demo/rsdl/robot.rsdl --process main
 ```
@@ -78,6 +93,7 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 ## 运行 C++ only 示例
 
 ```bash
+flowrt deps examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
@@ -89,6 +105,7 @@ C++ only contract 的普通 `build` / `run` 走 CMake app 路径，不依赖 Car
 
 ```bash
 flowrt check examples/profile_switch_demo/rsdl/robot.rsdl
+flowrt deps examples/profile_switch_demo/rsdl/robot.rsdl --profile iox2
 flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```

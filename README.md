@@ -18,7 +18,7 @@ User code controls algorithms.
 
 - 在 `rsdl/` 中声明系统契约。
 - 在 `src/` 中实现组件算法。
-- 用 `flowrt build` 生成并构建应用。
+- 用 `flowrt deps` 补全底层依赖缓存，用 `flowrt build` 生成并构建应用。
 - 用 `flowrt run` 或 `flowrt launch` 运行应用。
 - 用 `flowrt status`、`flowrt echo`、`flowrt hz`、`flowrt params`、`flowrt op` 和
   `flowrt record` 观察运行状态。
@@ -30,7 +30,7 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-version=v0.6.0  # 替换为要安装的 release tag
+version=v0.6.1  # 替换为要安装的 release tag
 arch="$(dpkg --print-architecture)"  # amd64 或 arm64，以 release 页面实际资产为准
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/flowrt_${version#v}_${arch}.deb"
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/SHA256SUMS"
@@ -50,7 +50,7 @@ flowrt --version
 - `zenoh-c` / `zenoh-cpp 1.9.0` C++ SDK
 - 基础文档和 changelog
 
-除 `/usr/bin/flowrt` 入口外，版本锁定的 runtime、C++ backend SDK 和 Rust vendor 都安装在 `/opt/flowrt/<version>` 私有前缀下。生成的 Rust/C++ 应用会优先使用同一安装包内的依赖；用户不需要手动安装 iox2 或 zenoh C++ SDK，也不需要在生成项目构建时联网拉取 backend 依赖。
+除 `/usr/bin/flowrt` 入口外，版本锁定的 runtime、C++ backend SDK 和 Rust vendor 都安装在 `/opt/flowrt/<version>` 私有前缀下。`flowrt deps` 会把 FlowRT 底层 Rust 依赖预热到全局共享 cache；生成的 Rust/C++ 应用会优先使用同一安装包内的依赖。用户不需要手动安装 iox2 或 zenoh C++ SDK，也不需要在生成项目构建时联网拉取 backend 依赖。
 
 安装后，应用项目不需要克隆 FlowRT 仓库；用户项目只保留自己的 RSDL、业务代码和可重建的 `flowrt/` 生成目录。
 
@@ -103,7 +103,7 @@ my_robot/
 - `src/` 放用户业务算法。
 - `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑。
 
-`flowrt/` 删除后可以通过 `flowrt build` 重新生成。
+`flowrt/` 删除后可以通过 `flowrt build` 重新生成。构建出的用户项目二进制位于当前项目自己的 `flowrt/build/bin/release/`；全局 cache 只用于复用底层依赖编译产物，不是应用部署事实源。
 
 ## 最小 RSDL
 
@@ -205,8 +205,11 @@ flowrt check rsdl/robot.rsdl
 生成并构建应用：
 
 ```bash
+flowrt deps rsdl/robot.rsdl
 flowrt build --launcher rsdl/robot.rsdl
 ```
+
+`flowrt deps` 负责补全并预热 FlowRT 底层依赖缓存。项目只使用单一 backend 时通常不需要显式指定；要一次性补全所有内置 backend，可以运行 `flowrt deps --backend all`。`flowrt build` 默认使用 release 构建，只编译用户项目和生成 shell，并把二进制写入 `flowrt/build/bin/release/`。
 
 运行单个 process group：
 
@@ -220,7 +223,7 @@ flowrt run rsdl/robot.rsdl --process control
 flowrt launch rsdl/robot.rsdl
 ```
 
-`run` 和 `launch` 只读取已生成、已构建产物；修改 RSDL、profile、生成模板或用户代码后，需要重新执行 `flowrt build`。
+`run` 和 `launch` 只读取已生成、已构建产物；修改 RSDL、profile、生成模板或用户代码后，需要重新执行 `flowrt build`。修改 backend 组合、FlowRT 版本或清理全局 cache 后，需要先重新执行 `flowrt deps`。
 
 ## 用户组件
 
