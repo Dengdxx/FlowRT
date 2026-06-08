@@ -21,7 +21,7 @@ pub(super) struct RustStepEmission<'a> {
     pub incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     pub outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     pub outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
-    /// 需要 Arc<Mutex<...>> 存储的 service server 实例名集合。
+    /// 需要 Arc<Mutex<...>> 存储的 service / Operation server 实例名集合。
     pub service_server_instances: &'a std::collections::BTreeSet<String>,
 }
 

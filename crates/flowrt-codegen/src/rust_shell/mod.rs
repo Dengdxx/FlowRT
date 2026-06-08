@@ -200,9 +200,16 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         dataflow_lane_count,
     ));
     let service_plans_for_emission = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let operation_plans_for_emission =
+        crate::runtime_plan::operation_runtime_plans(contract, graph);
     let service_server_instances: std::collections::BTreeSet<String> = service_plans_for_emission
         .iter()
         .map(|p| p.server_instance.clone())
+        .chain(
+            operation_plans_for_emission
+                .iter()
+                .map(|p| p.server_instance.clone()),
+        )
         .collect();
     let step_emission = RustStepEmission {
         contract,

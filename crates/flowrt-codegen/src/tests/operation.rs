@@ -149,6 +149,12 @@ fn rust_runtime_shell_lowers_operation_to_internal_endpoints() {
         shell.contains("self.controller.on_tick(&self.operation_client_controller_plan)"),
         "runtime shell must pass operation client handle into on_tick.\n\n{shell}"
     );
+    assert!(
+        shell.contains(
+            "self.navigator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick()"
+        ),
+        "operation server component must be locked for ordinary task callbacks because the handler also owns it.\n\n{shell}"
+    );
 }
 
 /// Self-description 必须保留 Operation 用户语义和调试用 lowering refs。
