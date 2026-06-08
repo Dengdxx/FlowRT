@@ -1289,6 +1289,7 @@ fn deploy_bundle(
     remote_dir: &str,
     dry_run: bool,
 ) -> Result<String> {
+    validate_deploy_host(host)?;
     let manifest = load_bundle_manifest(bundle)?;
     if manifest.target != target {
         anyhow::bail!(
@@ -1308,6 +1309,7 @@ fn deploy_bundle(
     }
 
     let version_check = ProcessCommand::new("ssh")
+        .arg("--")
         .arg(host)
         .arg("flowrt --version")
         .status()
@@ -1319,6 +1321,7 @@ fn deploy_bundle(
     let remote = format!("{host}:{remote_dir}");
     let upload = ProcessCommand::new("scp")
         .arg("-r")
+        .arg("--")
         .arg(bundle)
         .arg(&remote)
         .status()
@@ -1332,6 +1335,16 @@ fn deploy_bundle(
         bundle.display(),
         remote
     ))
+}
+
+fn validate_deploy_host(host: &str) -> Result<()> {
+    if host.is_empty() {
+        anyhow::bail!("deploy host must not be empty");
+    }
+    if host.starts_with('-') {
+        anyhow::bail!("deploy host `{host}` is invalid: host must not start with `-`");
+    }
+    Ok(())
 }
 
 fn load_bundle_manifest(bundle: &Path) -> Result<BundleManifest> {

@@ -343,6 +343,81 @@ fn deploy_bundle_rejects_target_mismatch() {
 }
 
 #[test]
+fn deploy_bundle_rejects_option_like_host_even_in_dry_run() {
+    let root = temp_test_dir("deploy-host-option");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = deploy_bundle(
+        &bundle,
+        "-oProxyCommand=sh",
+        "pi",
+        "/tmp/flowrt-demo",
+        true,
+    )
+    .unwrap_err();
+
+    assert!(
+        error.to_string().contains("must not start with `-`"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_rejects_empty_host_even_in_dry_run() {
+    let root = temp_test_dir("deploy-host-empty");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = deploy_bundle(&bundle, "", "pi", "/tmp/flowrt-demo", true).unwrap_err();
+
+    assert!(
+        error.to_string().contains("must not be empty"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn prepared_profile_must_match_explicit_run_profile() {
     let contract = contract_from_source(
         r#"
