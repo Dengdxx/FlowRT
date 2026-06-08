@@ -97,6 +97,12 @@ control-plane。参数远程控制必须支持跨机器，推荐走 zenoh contro
 高频调度硬化主线：deadline、stale、backpressure 和 fairness 要进入 runtime 行为和
 status 观测，补齐多 lane 调度的语义硬化。
 
+已知后续项：当前 task health 的 backpressure/overflow 语义主要覆盖 inproc FIFO
+写入路径；`iox2` / `zenoh` route 仍主要按 backend publish error 处理。后续深化
+backend health / reconnect 时，应把 route-level backend backpressure、publish
+error 和恢复状态统一纳入 health/self-description/status，而不是继续只暴露粗粒度
+backend error。
+
 FlowRT core skills 套组：入库事实源为 `.agents/skills/`，当前只落地 `frt-core-*`。
 `frt-core-*` 面向 FlowRT 仓库维护者，覆盖 RSDL/IR、codegen、runtime、backend、
 CLI、CI 和 release。`frt-app-*` 是 1.0.0 之后的保留命名空间；在 schema、runtime、
@@ -224,7 +230,9 @@ flowrt nodes path/to/generated-app
 flowrt status
 flowrt hz [channel] [--socket path/to/runtime.sock] [--window-ms 1000]
 flowrt echo <channel> [--socket path/to/runtime.sock] [--image path/to/generated-app-or-selfdesc.json] [--follow]
-flowrt params list|get|set path/to/generated-app-or-selfdesc.json ...
+flowrt params list --image path/to/generated-app-or-selfdesc.json
+flowrt params get <instance.param> --image path/to/generated-app-or-selfdesc.json
+flowrt params set <instance.param> <json-value> --image path/to/generated-app-or-selfdesc.json
 flowrt inspect flowrt/contract/contract.ir.json
 ```
 
