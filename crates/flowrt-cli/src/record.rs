@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -76,9 +76,15 @@ impl RecordWriterChannels {
 }
 
 pub(crate) fn record_runtime(options: RecordOptions) -> Result<String> {
-    let sockets =
-        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
+    let sockets = record_runtime_sockets_for_options(&options)?;
     record_runtime_for_sockets(options, sockets)
+}
+
+pub(crate) fn record_runtime_sockets_for_options(options: &RecordOptions) -> Result<Vec<PathBuf>> {
+    if options.socket.is_some() {
+        return Ok(Vec::new());
+    }
+    flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")
 }
 
 pub(crate) fn record_runtime_for_sockets(
@@ -89,7 +95,8 @@ pub(crate) fn record_runtime_for_sockets(
     let filters = build_record_filters(&options)?;
     validate_record_filters(&socket, &options.channels, &options.operations)?;
 
-    let file = open_record_output(&options)?;
+    let mut output_file = RecordOutputFile::create(&options)?;
+    let file = output_file.take_file();
     let mut writer = FlowrtMcapWriter::new(file).context("failed to create FlowRT MCAP writer")?;
     let channels = RecordWriterChannels::register(&mut writer)
         .context("failed to register FlowRT record MCAP channels")?;
@@ -152,6 +159,8 @@ pub(crate) fn record_runtime_for_sockets(
     let _file = writer
         .finish_into_inner()
         .context("failed to finish FlowRT MCAP writer")?;
+    drop(_file);
+    output_file.commit(options.force)?;
 
     Ok(format!(
         "recorded output={} socket={} event_count={} dropped_count={} bytes_written={} active_filters=[{}]",
@@ -278,27 +287,107 @@ fn validate_record_filters(
     Ok(())
 }
 
-fn open_record_output(options: &RecordOptions) -> Result<File> {
-    let mut open = OpenOptions::new();
-    open.write(true);
-    if options.force {
-        open.create(true).truncate(true);
-    } else {
-        open.create_new(true);
-    }
-    open.open(&options.output).with_context(|| {
+struct RecordOutputFile {
+    final_path: PathBuf,
+    temp_path: PathBuf,
+    file: Option<File>,
+    committed: bool,
+}
+
+impl RecordOutputFile {
+    fn create(options: &RecordOptions) -> Result<Self> {
         if options.output.exists() && !options.force {
-            format!(
+            anyhow::bail!(
                 "record output `{}` already exists; pass `--force` to overwrite",
                 options.output.display()
-            )
-        } else {
+            );
+        }
+        let parent = options
+            .output
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        if !parent.is_dir() {
+            anyhow::bail!(
+                "record output directory `{}` does not exist",
+                parent.display()
+            );
+        }
+        let file_name = options.output.file_name().with_context(|| {
             format!(
-                "failed to open record output `{}`",
+                "record output `{}` must name a file",
                 options.output.display()
             )
+        })?;
+        let file_name = file_name.to_string_lossy();
+        for attempt in 0..1000u32 {
+            let temp_path = parent.join(format!(
+                ".{file_name}.flowrt-record.tmp.{}.{}",
+                std::process::id(),
+                attempt
+            ));
+            let mut open = OpenOptions::new();
+            open.write(true).create_new(true);
+            match open.open(&temp_path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        final_path: options.output.clone(),
+                        temp_path,
+                        file: Some(file),
+                        committed: false,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to open temporary record output `{}`",
+                            temp_path.display()
+                        )
+                    });
+                }
+            }
         }
-    })
+        anyhow::bail!(
+            "failed to allocate temporary record output for `{}`",
+            options.output.display()
+        )
+    }
+
+    fn take_file(&mut self) -> File {
+        self.file
+            .take()
+            .expect("record output file should only be taken once")
+    }
+
+    fn commit(mut self, force: bool) -> Result<()> {
+        drop(self.file.take());
+        if force && self.final_path.exists() {
+            fs::remove_file(&self.final_path).with_context(|| {
+                format!(
+                    "failed to replace existing record output `{}`",
+                    self.final_path.display()
+                )
+            })?;
+        }
+        fs::rename(&self.temp_path, &self.final_path).with_context(|| {
+            format!(
+                "failed to move temporary record output `{}` to `{}`",
+                self.temp_path.display(),
+                self.final_path.display()
+            )
+        })?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for RecordOutputFile {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.temp_path);
+        }
+    }
 }
 
 fn drain_record_events(

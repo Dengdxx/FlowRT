@@ -91,6 +91,52 @@ fn record_refuses_existing_output_without_force() {
 }
 
 #[test]
+fn record_runtime_skips_discovery_when_socket_is_explicit() {
+    let root = temp_test_dir("record-explicit-socket-no-discovery");
+    let options = record_options(root.join("run.mcap"), Some(root.join("missing.sock")));
+
+    let sockets = record::record_runtime_sockets_for_options(&options)
+        .expect("explicit socket should not scan runtime socket directory");
+
+    assert!(sockets.is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn record_start_failure_does_not_leave_output_file() {
+    let root = temp_test_dir("record-start-failure-clean-output");
+    std::fs::create_dir_all(&root).unwrap();
+    let socket = root.join("missing.sock");
+    let output = root.join("run.mcap");
+    let options = record_options(output.clone(), Some(socket));
+
+    let error = record::record_runtime_for_sockets(options, Vec::new())
+        .expect_err("missing socket should fail recorder start");
+
+    assert!(
+        error.to_string().contains("failed to start recorder"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !output.exists(),
+        "failed record start must not leave output"
+    );
+    let leaked_temp = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".flowrt-record.tmp.")
+        });
+    assert!(!leaked_temp, "temporary record output should be removed");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn record_without_socket_rejects_multiple_live_runtimes() {
     let root = temp_test_dir("record-ambiguous-runtime");
     let socket_a = root.join("main-a.sock");
