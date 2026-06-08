@@ -5,7 +5,7 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.4.0`。`v0.4.0` 已发布，核心主题是 Service runtime：
+当前 workspace 版本为 `0.5.0`。`v0.4.0` 已发布，核心主题是 Service runtime：
 生成 Rust/C++ service client/server 用户 API，支持 `inproc` 与 `zenoh` service
 transport，补齐 request/response frame、错误语义、self-description、`flowrt list` /
 `flowrt status` 观测和示例文档，并完成 amd64 + arm64 release 安装包闭环。
@@ -332,9 +332,9 @@ notes，并创建 GitHub Release 上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.d
 远程参数控制面、status/hz 健康展示、scheduler health 和 runtime introspection 相关
 测试，使这些新增能力的 CI 失败原因比全量 Rust test 更可定位。发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 focused gate 覆盖状态。当前开发分支仍是 `0.4.0`
-workspace version，发布 `v0.5.0` 前还需要版本 bump、`Cargo.lock` 更新和
-`CHANGELOG.md` 正式版本段切分。
+release notes 抽取和 v0.5.0 focused gate 覆盖状态。当前开发分支已完成
+`0.5.0` 版本 bump、`Cargo.lock` 更新和 `CHANGELOG.md` 正式版本段切分；tag 和
+GitHub Release 仍由后续显式发布动作触发。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。
