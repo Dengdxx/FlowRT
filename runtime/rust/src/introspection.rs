@@ -1271,6 +1271,14 @@ pub fn request_status(path: &Path) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::Status)
 }
 
+/// 向 introspection socket 请求 status，并限制 socket 读写等待时间。
+pub fn request_status_with_timeout(
+    path: &Path,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(path, &IntrospectionRequest::Status, timeout)
+}
+
 /// 向 introspection socket 请求 channel snapshot。
 pub fn request_channel_snapshot(
     path: &Path,
@@ -1397,6 +1405,24 @@ pub fn request_recorder_drain(path: &Path) -> std::io::Result<IntrospectionRespo
 
 fn request(path: &Path, request: &IntrospectionRequest) -> std::io::Result<IntrospectionResponse> {
     let mut stream = UnixStream::connect(path)?;
+    send_request_and_read_response(&mut stream, request)
+}
+
+fn request_with_timeout(
+    path: &Path,
+    request: &IntrospectionRequest,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    let mut stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    send_request_and_read_response(&mut stream, request)
+}
+
+fn send_request_and_read_response(
+    stream: &mut UnixStream,
+    request: &IntrospectionRequest,
+) -> std::io::Result<IntrospectionResponse> {
     let request = serde_json::to_string(request).map_err(std::io::Error::other)?;
     stream.write_all(request.as_bytes())?;
     stream.write_all(b"\n")?;
@@ -2796,6 +2822,35 @@ mod tests {
 
         let status = state.status();
         assert!(status.services[0].ready);
+    }
+
+    #[test]
+    fn request_status_with_timeout_returns_when_peer_stalls() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-stall-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("stall.sock");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test temp dir should be created");
+        let listener = UnixListener::bind(&socket).expect("test listener should bind");
+        let handle = thread::spawn(move || {
+            let (_stream, _addr) = listener.accept().expect("test listener should accept");
+            thread::sleep(Duration::from_millis(100));
+        });
+
+        let error = request_status_with_timeout(&socket, Duration::from_millis(10))
+            .expect_err("stalled peer should time out");
+
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "unexpected error kind: {error:?}"
+        );
+        handle.join().expect("stall thread should exit");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -484,8 +484,11 @@ fn wait_for_runtime_ready(
             ));
         }
 
-        // 轮询 introspection socket。
-        match crate::request_status(&child.socket) {
+        // 轮询 introspection socket；单次 socket 读写不能超过外层 readiness deadline。
+        match crate::introspection::request_status_with_timeout(
+            &child.socket,
+            readiness_socket_timeout(deadline, config.poll_interval),
+        ) {
             Ok(crate::IntrospectionResponse::Status { .. }) => return Ok(()),
             _ => sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?,
         }
@@ -534,7 +537,10 @@ fn wait_for_service_ready(
         }
 
         // 轮询 introspection socket：需要握手成功且预期 service 全部就绪。
-        match crate::request_status(&child.socket) {
+        match crate::introspection::request_status_with_timeout(
+            &child.socket,
+            readiness_socket_timeout(deadline, config.poll_interval),
+        ) {
             Ok(crate::IntrospectionResponse::Status { status, .. }) => {
                 if expected_services_ready(&child.expected_services, &status.services) {
                     return Ok(());
@@ -544,6 +550,16 @@ fn wait_for_service_ready(
             }
             _ => sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?,
         }
+    }
+}
+
+fn readiness_socket_timeout(deadline: Instant, poll_interval: Duration) -> Duration {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let timeout = remaining.min(poll_interval);
+    if timeout.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        timeout
     }
 }
 
