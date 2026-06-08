@@ -658,3 +658,67 @@ backends = ["inproc"]
     assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
     assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
 }
+
+#[test]
+fn emits_supervisor_only_rust_crate_for_external_only_launch() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "external_only"
+rsdl_version = "0.1"
+
+[component.driver]
+language = "external"
+kind = "external"
+output = ["value:u32"]
+
+[instance.driver]
+component = "driver"
+process = "driver_proc"
+target = "edge"
+
+[[external_process]]
+process = "driver_proc"
+package = "external_driver"
+executable = "driver-node"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.edge]
+runtime = ["external"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let paths = bundle
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(paths.contains(&"rust/src/supervisor.rs".to_string()));
+    assert!(paths.contains(&"rust/src/supervisor_main.rs".to_string()));
+    assert!(paths.contains(&"rust/src/lib.rs".to_string()));
+    assert!(paths.contains(&"rust/src/selfdesc.rs".to_string()));
+    assert!(!paths.contains(&"rust/src/runtime_shell.rs".to_string()));
+    assert!(!paths.contains(&"rust/src/main.rs".to_string()));
+    assert!(!paths.contains(&"rust/src/components.rs".to_string()));
+    assert!(!paths.contains(&"cpp/include/flowrt_app/components.hpp".to_string()));
+
+    let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
+    assert!(rust_lib.contains("pub(crate) mod selfdesc;"));
+    assert!(rust_lib.contains("pub mod supervisor;"));
+    assert!(!rust_lib.contains("pub mod runtime_shell;"));
+    assert!(!rust_lib.contains("pub mod user;"));
+
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+    assert!(cargo_manifest.contains(&format!(
+        "flowrt = {{ version = \"{}\" }}",
+        current_flowrt_minor_version_req()
+    )));
+    assert!(cargo_manifest.contains("[[bin]]\nname = \"external-only-flowrt-supervisor\""));
+    assert!(cargo_manifest.contains("path = \"../rust/src/supervisor_main.rs\""));
+    assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
+}

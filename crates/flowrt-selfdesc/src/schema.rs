@@ -168,6 +168,9 @@ pub struct SelfDescriptionGraph {
     pub name: String,
     #[serde(default)]
     pub scheduler: SelfDescriptionScheduler,
+    /// v0.7+ external process package/executable 摘要。
+    #[serde(default)]
+    pub external_processes: Vec<SelfDescriptionExternalProcess>,
     #[serde(default)]
     pub instances: Vec<SelfDescriptionInstance>,
     #[serde(default)]
@@ -180,6 +183,25 @@ pub struct SelfDescriptionGraph {
     /// v0.6+ operation endpoint 拓扑。
     #[serde(default)]
     pub operations: Vec<SelfDescriptionOperationEndpoint>,
+}
+
+/// external process 静态包元数据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionExternalProcess {
+    #[serde(default)]
+    pub process: String,
+    #[serde(default)]
+    pub package: String,
+    #[serde(default)]
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_dir: String,
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub required_backends: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

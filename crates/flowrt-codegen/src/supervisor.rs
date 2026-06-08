@@ -1,4 +1,5 @@
 use flowrt_ir::ContractIr;
+use sha2::{Digest, Sha256};
 
 use crate::ros2_bridge::ros2_bridge_stem;
 use crate::{contract_has_ros2_bridge, managed_header, rust_string_literal, sanitize_package_name};
@@ -11,16 +12,28 @@ pub(crate) fn emit_rust_supervisor_main() -> String {
     output
 }
 
-pub(crate) fn emit_rust_supervisor(contract: &ContractIr) -> String {
+pub(crate) fn emit_rust_supervisor(contract: &ContractIr, launch_manifest: &str) -> String {
     let mut output = managed_header();
+    let launch_manifest_hash = hex_sha256(launch_manifest);
     output.push_str(&format!(
-        "\nconst LAUNCH_MANIFEST: &str = include_str!(\"../../launch/launch.json\");\n\nstatic SUPERVISOR_CONFIG: flowrt::supervisor::SupervisorConfig = flowrt::supervisor::SupervisorConfig {{\n    manifest_json: LAUNCH_MANIFEST,\n    rust_app_stem: {},\n    cpp_app_stem: {},\n    ros2_bridge_stem: {},\n    package_name: {},\n    self_description_hash: crate::selfdesc::self_description_hash,\n}};\n\npub fn launch(run_ticks: Option<usize>) -> Result<(), String> {{\n    flowrt::supervisor::launch(&SUPERVISOR_CONFIG, run_ticks)\n}}\n",
+        "\nconst LAUNCH_MANIFEST_HASH: &str = {};\nconst LAUNCH_MANIFEST: &str = include_str!(\"../../launch/launch.json\");\n\nstatic SUPERVISOR_CONFIG: flowrt::supervisor::SupervisorConfig = flowrt::supervisor::SupervisorConfig {{\n    manifest_json: LAUNCH_MANIFEST,\n    rust_app_stem: {},\n    cpp_app_stem: {},\n    ros2_bridge_stem: {},\n    package_name: {},\n    self_description_hash: crate::selfdesc::self_description_hash,\n}};\n\npub fn launch(run_ticks: Option<usize>) -> Result<(), String> {{\n    let _ = LAUNCH_MANIFEST_HASH;\n    flowrt::supervisor::launch(&SUPERVISOR_CONFIG, run_ticks)\n}}\n",
+        rust_string_literal(&launch_manifest_hash),
         rust_string_literal(&rust_app_stem(contract)),
         rust_string_literal(&cpp_app_stem(contract)),
         rust_string_literal(&ros2_bridge_app_stem(contract)),
         rust_string_literal(&contract.package.name),
     ));
     output
+}
+
+fn hex_sha256(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn rust_app_stem(contract: &ContractIr) -> String {

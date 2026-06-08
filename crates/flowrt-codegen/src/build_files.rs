@@ -3,7 +3,8 @@ use flowrt_ir::{ContractIr, LanguageKind};
 use crate::ros2_bridge::ros2_bridge_stem;
 use crate::runtime_plan::{contract_backend_features, contract_uses_backend};
 use crate::{
-    contract_has_ros2_bridge, fixed_message_abi_expectations, has_language, sanitize_package_name,
+    contract_has_external_process, contract_has_ros2_bridge, fixed_message_abi_expectations,
+    has_language, sanitize_package_name,
 };
 
 const FLOWRT_RUNTIME_VERSION_REQ: &str = concat!(
@@ -132,8 +133,10 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
 pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
     let package_name = sanitize_package_name(&contract.package.name).replace('_', "-");
     let has_rust = has_language(contract, LanguageKind::Rust);
-    let has_supervisor =
-        has_rust || has_language(contract, LanguageKind::Cpp) || contract_has_ros2_bridge(contract);
+    let has_supervisor = has_rust
+        || has_language(contract, LanguageKind::Cpp)
+        || contract_has_ros2_bridge(contract)
+        || contract_has_external_process(contract);
     let mut output = format!(
         "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[dependencies]\n",
         package_name

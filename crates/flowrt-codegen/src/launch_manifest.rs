@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use flowrt_ir::{ComponentIr, ContractIr, GraphIr, InstanceIr, ProcessIr, ServicePortIr, TaskIr};
+use flowrt_ir::{
+    ComponentIr, ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr,
+    InstanceIr, ProcessIr, ServicePortIr, TaskIr,
+};
 
 use crate::runtime_plan::bridge_runtime_plans;
 use crate::{
@@ -217,6 +220,11 @@ fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
 
 fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
     let mut processes = BTreeMap::<String, Vec<&InstanceIr>>::new();
+    let external_processes = graph
+        .external_processes
+        .iter()
+        .map(|external| (external.process.as_str(), external))
+        .collect::<BTreeMap<_, _>>();
     for instance in &graph.instances {
         processes
             .entry(
@@ -239,12 +247,21 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
             let runtimes = process_runtimes(contract, &instances);
             let target = common_process_target(&instances);
             let orchestration = process_orchestration(graph, &name);
+            let external = external_processes
+                .get(name.as_str())
+                .map(|external| launch_external_process(external));
+            let backend = process_backend(
+                graph,
+                &instance_names,
+                external_processes.get(name.as_str()).copied(),
+            );
             serde_json::json!({
                 "name": name,
-                "backend": process_backend(graph, &instance_names),
+                "backend": backend,
                 "target": target,
                 "runtimes": runtimes,
                 "runtime_kind": process_runtime_kind(&runtimes),
+                "external": external,
                 "depends_on": orchestration.depends_on,
                 "restart": {
                     "policy": orchestration.restart.policy,
@@ -273,9 +290,10 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
             "name": "ros2_bridge",
             "backend": "zenoh",
             "target": null,
-            "runtimes": ["ros2_bridge"],
-            "runtime_kind": "ros2_bridge",
-            "depends_on": [],
+        "runtimes": ["ros2_bridge"],
+        "runtime_kind": "ros2_bridge",
+        "external": null,
+        "depends_on": [],
             "restart": {
                 "policy": "on_failure",
                 "max_restarts": 3,
@@ -300,6 +318,35 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
     launch_processes
 }
 
+fn launch_external_process(external: &ExternalProcessIr) -> serde_json::Value {
+    serde_json::json!({
+        "package": &external.package,
+        "executable": &external.executable,
+        "args": &external.args,
+        "working_dir": external_working_dir_name(external.working_dir),
+        "health": external_health_name(external.health),
+        "required_backends": external
+            .required_backends
+            .iter()
+            .map(|backend| backend.0.as_str())
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn external_working_dir_name(kind: ExternalWorkingDir) -> &'static str {
+    match kind {
+        ExternalWorkingDir::Package => "package",
+        ExternalWorkingDir::Workspace => "workspace",
+    }
+}
+
+fn external_health_name(kind: ExternalHealthKind) -> &'static str {
+    match kind {
+        ExternalHealthKind::ProcessStarted => "process_started",
+        ExternalHealthKind::RuntimeSocket => "runtime_socket",
+    }
+}
+
 fn process_orchestration<'a>(graph: &'a GraphIr, process_name: &str) -> &'a ProcessIr {
     graph
         .processes
@@ -308,7 +355,11 @@ fn process_orchestration<'a>(graph: &'a GraphIr, process_name: &str) -> &'a Proc
         .expect("normalized graph must contain process orchestration for every process")
 }
 
-fn process_backend(graph: &GraphIr, instance_names: &BTreeSet<&str>) -> String {
+fn process_backend(
+    graph: &GraphIr,
+    instance_names: &BTreeSet<&str>,
+    external: Option<&ExternalProcessIr>,
+) -> String {
     if graph.ros2_bridges.iter().any(|bridge| {
         bridge.backend.0 == "zenoh" && instance_names.contains(bridge.flowrt.instance.name.as_str())
     }) {
@@ -327,6 +378,18 @@ fn process_backend(graph: &GraphIr, instance_names: &BTreeSet<&str>) -> String {
                 || instance_names.contains(bind.to.instance.name.as_str()))
     }) {
         return "iox2".to_string();
+    }
+    if let Some(external) = external {
+        if external
+            .required_backends
+            .iter()
+            .any(|backend| backend.0 == "zenoh")
+        {
+            return "zenoh".to_string();
+        }
+        if let Some(backend) = external.required_backends.first() {
+            return backend.0.clone();
+        }
     }
     "inproc".to_string()
 }

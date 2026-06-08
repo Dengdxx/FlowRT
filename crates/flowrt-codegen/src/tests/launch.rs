@@ -429,6 +429,159 @@ backends = ["inproc"]
 }
 
 #[test]
+fn launch_manifest_exposes_external_process_package_metadata() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "external_demo"
+rsdl_version = "0.1"
+
+[type.Frame]
+seq = "u32"
+
+[component.camera]
+language = "external"
+kind = "external"
+output = ["frame:Frame"]
+
+[component.viewer]
+language = "rust"
+input = ["frame:Frame"]
+
+[instance.camera]
+component = "camera"
+process = "camera_proc"
+target = "edge"
+
+[instance.viewer]
+component = "viewer"
+process = "viewer_proc"
+target = "edge"
+
+[instance.viewer.task]
+trigger = "on_message"
+input = ["frame"]
+
+[[bind.dataflow]]
+from = "camera.frame"
+to = "viewer.frame"
+channel = "latest"
+
+[[external_process]]
+process = "camera_proc"
+package = "camera_driver"
+executable = "camera-node"
+args = ["--device", "/dev/video0"]
+working_dir = "workspace"
+health = "runtime_socket"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.edge]
+runtime = ["external", "rust"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let processes = launch["graphs"][0]["processes"].as_array().unwrap();
+    let camera = processes
+        .iter()
+        .find(|process| process["name"] == "camera_proc")
+        .unwrap();
+    let channel = &launch["graphs"][0]["channels"][0];
+
+    assert_eq!(camera["runtime_kind"], "external");
+    assert_eq!(camera["runtimes"], serde_json::json!(["external"]));
+    assert_eq!(camera["backend"], "zenoh");
+    assert_eq!(
+        camera["external"],
+        serde_json::json!({
+            "package": "camera_driver",
+            "executable": "camera-node",
+            "args": ["--device", "/dev/video0"],
+            "working_dir": "workspace",
+            "health": "runtime_socket",
+            "required_backends": ["zenoh"]
+        })
+    );
+    assert_eq!(channel["backend"], "zenoh");
+    assert!(
+        channel["key_expr"]
+            .as_str()
+            .unwrap()
+            .contains("camera_frame")
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    assert_eq!(
+        selfdesc["graphs"][0]["external_processes"][0],
+        serde_json::json!({
+            "process": "camera_proc",
+            "package": "camera_driver",
+            "executable": "camera-node",
+            "args": ["--device", "/dev/video0"],
+            "working_dir": "workspace",
+            "health": "runtime_socket",
+            "required_backends": ["zenoh"]
+        })
+    );
+    assert_eq!(
+        selfdesc["component_types"][0]["kind"],
+        serde_json::json!("external")
+    );
+}
+
+#[test]
+fn launch_manifest_uses_external_required_backend_without_routes() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "external_only_demo"
+rsdl_version = "0.1"
+
+[component.sensor]
+language = "external"
+kind = "external"
+output = ["value:u32"]
+
+[instance.sensor]
+component = "sensor"
+process = "sensor_proc"
+target = "edge"
+
+[[external_process]]
+process = "sensor_proc"
+package = "sensor_driver"
+executable = "bin/driver"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.edge]
+runtime = ["external"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let process = &launch["graphs"][0]["processes"][0];
+
+    assert_eq!(process["runtime_kind"], "external");
+    assert_eq!(process["backend"], "zenoh");
+    assert_eq!(
+        process["external"]["required_backends"],
+        serde_json::json!(["zenoh"])
+    );
+}
+
+#[test]
 fn launch_manifest_exposes_iox2_channel_services() {
     let ir = contract_from_source(
         r#"
@@ -696,6 +849,7 @@ backends = ["iox2"]
 
     assert!(paths.contains(&"rust/src/supervisor.rs".to_string()));
     assert!(paths.contains(&"rust/src/supervisor_main.rs".to_string()));
+    assert!(supervisor.contains("const LAUNCH_MANIFEST_HASH: &str = "));
     assert!(
         supervisor
             .contains("const LAUNCH_MANIFEST: &str = include_str!(\"../../launch/launch.json\");")

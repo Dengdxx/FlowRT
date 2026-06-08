@@ -131,6 +131,8 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     let has_ros2_bridge = contract_has_ros2_bridge(contract);
     let has_cpp = has_cpp_components || has_ros2_bridge;
     let has_rust = has_language(contract, LanguageKind::Rust);
+    let has_supervisor = has_cpp || has_rust || contract_has_external_process(contract);
+    let launch_manifest = emit_launch_manifest(contract)?;
 
     if has_cpp {
         artifacts.push(artifact(
@@ -176,7 +178,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         }
     }
 
-    if has_cpp || has_rust {
+    if has_supervisor {
         artifacts.push(artifact(
             "rust/src/selfdesc.rs",
             emit_rust_selfdesc(contract),
@@ -210,10 +212,10 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         emit_self_description(contract)?,
     ));
 
-    if has_cpp || has_rust {
+    if has_supervisor {
         artifacts.push(artifact(
             "rust/src/supervisor.rs",
-            emit_rust_supervisor(contract),
+            emit_rust_supervisor(contract, &launch_manifest),
         ));
         artifacts.push(artifact(
             "rust/src/lib.rs",
@@ -225,10 +227,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
         ));
     }
 
-    artifacts.push(artifact(
-        "launch/launch.json",
-        emit_launch_manifest(contract)?,
-    ));
+    artifacts.push(artifact("launch/launch.json", launch_manifest));
     artifacts.push(artifact("build/CMakeLists.txt", emit_cmake(contract)));
     artifacts.push(artifact("build/Cargo.toml", emit_cargo_manifest(contract)));
 
@@ -256,10 +255,18 @@ pub(crate) fn contract_has_ros2_bridge(contract: &ContractIr) -> bool {
         .any(|graph| !graph.ros2_bridges.is_empty())
 }
 
+pub(crate) fn contract_has_external_process(contract: &ContractIr) -> bool {
+    contract
+        .graphs
+        .iter()
+        .any(|graph| !graph.external_processes.is_empty())
+}
+
 pub(crate) fn language_name(language: LanguageKind) -> &'static str {
     match language {
         LanguageKind::Cpp => "cpp",
         LanguageKind::Rust => "rust",
+        LanguageKind::External => "external",
     }
 }
 

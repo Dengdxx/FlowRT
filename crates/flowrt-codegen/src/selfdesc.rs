@@ -10,14 +10,14 @@ use flowrt_ir::{
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
     SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionDeployment,
-    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionGraph,
-    SelfDescriptionInstance, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
-    SelfDescriptionOperationEndpoint, SelfDescriptionOperationLowering,
-    SelfDescriptionOperationPortDecl, SelfDescriptionPackage, SelfDescriptionParam,
-    SelfDescriptionParamDecl, SelfDescriptionPortDecl, SelfDescriptionProfile,
-    SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
-    SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
-    SelfDescriptionTask,
+    SelfDescriptionExternalProcess, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
+    SelfDescriptionGraph, SelfDescriptionInstance, SelfDescriptionMessageAbi,
+    SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
+    SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
+    SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
+    SelfDescriptionProfile, SelfDescriptionScheduler, SelfDescriptionSchedulerLane,
+    SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl,
+    SelfDescriptionTarget, SelfDescriptionTask,
 };
 use sha2::{Digest, Sha256};
 
@@ -170,6 +170,23 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
     SelfDescriptionGraph {
         name: graph.name.clone(),
         scheduler: self_description_scheduler(contract, graph),
+        external_processes: graph
+            .external_processes
+            .iter()
+            .map(|external| SelfDescriptionExternalProcess {
+                process: external.process.clone(),
+                package: external.package.clone(),
+                executable: external.executable.clone(),
+                args: external.args.clone(),
+                working_dir: external_working_dir_name(external.working_dir).to_string(),
+                health: external_health_name(external.health).to_string(),
+                required_backends: external
+                    .required_backends
+                    .iter()
+                    .map(|backend| backend.0.clone())
+                    .collect(),
+            })
+            .collect(),
         instances: graph
             .instances
             .iter()
@@ -483,6 +500,20 @@ fn component_kind_name(kind: ComponentKind) -> &'static str {
         ComponentKind::Native => "native",
         ComponentKind::Adapter => "adapter",
         ComponentKind::External => "external",
+    }
+}
+
+fn external_working_dir_name(kind: flowrt_ir::ExternalWorkingDir) -> &'static str {
+    match kind {
+        flowrt_ir::ExternalWorkingDir::Package => "package",
+        flowrt_ir::ExternalWorkingDir::Workspace => "workspace",
+    }
+}
+
+fn external_health_name(kind: flowrt_ir::ExternalHealthKind) -> &'static str {
+    match kind {
+        flowrt_ir::ExternalHealthKind::ProcessStarted => "process_started",
+        flowrt_ir::ExternalHealthKind::RuntimeSocket => "runtime_socket",
     }
 }
 

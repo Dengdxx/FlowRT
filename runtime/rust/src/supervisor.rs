@@ -73,6 +73,9 @@ pub struct LaunchProcess {
     pub name: String,
     pub backend: String,
     pub runtime_kind: String,
+    /// external process package/executable 元数据。
+    #[serde(default)]
+    pub external: Option<LaunchExternalProcess>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default = "default_restart_policy")]
@@ -93,6 +96,41 @@ pub struct LaunchProcess {
     pub resource_placement: ResourcePlacement,
 }
 
+/// manifest 中 external process package/executable 描述。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LaunchExternalProcess {
+    pub package: String,
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_dir: LaunchExternalWorkingDir,
+    #[serde(default)]
+    pub health: LaunchExternalHealth,
+    #[serde(default)]
+    pub required_backends: Vec<String>,
+    #[serde(default)]
+    pub package_root: Option<PathBuf>,
+}
+
+/// external process 工作目录策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchExternalWorkingDir {
+    #[default]
+    Package,
+    Workspace,
+}
+
+/// external process 健康检查策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchExternalHealth {
+    ProcessStarted,
+    #[default]
+    RuntimeSocket,
+}
+
 /// 进程 readiness gate 类型，决定 supervisor 何时认为进程就绪。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +142,18 @@ pub enum ReadinessGate {
     RuntimeReady,
     /// 进程的 runtime introspection 握手成功且所有 service endpoint 就绪。
     ServiceReady,
+}
+
+fn effective_readiness(process: &LaunchProcess) -> ReadinessGate {
+    match process.external.as_ref().map(|external| external.health) {
+        Some(LaunchExternalHealth::ProcessStarted) => ReadinessGate::ProcessStarted,
+        Some(LaunchExternalHealth::RuntimeSocket)
+            if process.readiness == ReadinessGate::ProcessStarted =>
+        {
+            ReadinessGate::RuntimeReady
+        }
+        _ => process.readiness,
+    }
 }
 
 fn default_restart_policy() -> RestartPolicy {
@@ -523,6 +573,128 @@ fn binary_name(stem: &str) -> String {
     format!("{stem}{}", std::env::consts::EXE_SUFFIX)
 }
 
+/// external process 可执行文件解析结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalExecutableResolution {
+    pub executable: PathBuf,
+    pub package_root: PathBuf,
+    pub workspace_root: PathBuf,
+}
+
+/// 解析 external package 的可执行文件路径。
+pub fn external_app_executable(
+    current_exe: &Path,
+    external: &LaunchExternalProcess,
+) -> Result<ExternalExecutableResolution, String> {
+    let executable = PathBuf::from(&external.executable);
+    let workspace_root = workspace_root_from_supervisor(current_exe)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    if executable.is_absolute() {
+        if executable.exists() {
+            let package_root = executable
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| workspace_root.clone());
+            return Ok(ExternalExecutableResolution {
+                executable,
+                package_root,
+                workspace_root,
+            });
+        }
+        return Err(format!(
+            "external package `{}` executable `{}` does not exist",
+            external.package,
+            executable.display()
+        ));
+    }
+
+    let mut searched = Vec::new();
+    for root in external_package_roots(current_exe, external, &workspace_root) {
+        let candidate = root.join(&external.executable);
+        searched.push(candidate.clone());
+        if candidate.exists() {
+            return Ok(ExternalExecutableResolution {
+                executable: candidate,
+                package_root: root,
+                workspace_root,
+            });
+        }
+    }
+
+    Err(format!(
+        "external package `{}` executable `{}` was not found; searched: {}",
+        external.package,
+        external.executable,
+        searched
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn external_package_roots(
+    current_exe: &Path,
+    external: &LaunchExternalProcess,
+    workspace_root: &Path,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = &external.package_root {
+        push_unique_path(&mut roots, root.clone());
+    }
+    if let Some(paths) = std::env::var_os("FLOWRT_EXTERNAL_PATH") {
+        for entry in std::env::split_paths(&paths) {
+            push_external_search_entry(&mut roots, entry, &external.package);
+        }
+    }
+    push_unique_path(
+        &mut roots,
+        PathBuf::from("/opt/flowrt/external").join(&external.package),
+    );
+    push_unique_path(
+        &mut roots,
+        workspace_root.join("external").join(&external.package),
+    );
+    if let Some(supervisor_workspace) = workspace_root_from_supervisor(current_exe) {
+        push_unique_path(
+            &mut roots,
+            supervisor_workspace
+                .join("external")
+                .join(&external.package),
+        );
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_unique_path(
+            &mut roots,
+            current_dir.join("external").join(&external.package),
+        );
+    }
+    roots
+}
+
+fn push_external_search_entry(roots: &mut Vec<PathBuf>, entry: PathBuf, package: &str) {
+    push_unique_path(roots, entry.clone());
+    push_unique_path(roots, entry.join(package));
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn workspace_root_from_supervisor(current_exe: &Path) -> Option<PathBuf> {
+    current_exe
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
 // ---------------------------------------------------------------------------
 // 进程启动
 // ---------------------------------------------------------------------------
@@ -561,6 +733,84 @@ pub fn build_process_command(
     command
 }
 
+/// 构造 external process Command。
+pub fn build_external_process_command(
+    app_exe: &Path,
+    process_name: &str,
+    backend: &str,
+    run_ticks: Option<usize>,
+    zenoh_env: Option<&ZenohLaunchEnv>,
+    external: &LaunchExternalProcess,
+    resolution: &ExternalExecutableResolution,
+) -> Command {
+    let mut command = Command::new(app_exe);
+    command.args(&external.args);
+    command.current_dir(match external.working_dir {
+        LaunchExternalWorkingDir::Package => &resolution.package_root,
+        LaunchExternalWorkingDir::Workspace => &resolution.workspace_root,
+    });
+    command.env("FLOWRT_PROCESS", process_name);
+    command.env("FLOWRT_BACKEND", backend);
+    command.env("FLOWRT_EXTERNAL_PACKAGE", &external.package);
+    command.env("FLOWRT_EXTERNAL_EXECUTABLE", &external.executable);
+    command.env("FLOWRT_EXTERNAL_PACKAGE_ROOT", &resolution.package_root);
+    command.env("FLOWRT_WORKSPACE_ROOT", &resolution.workspace_root);
+    if let Some(run_ticks) = run_ticks {
+        command.env("FLOWRT_RUN_STEPS", run_ticks.to_string());
+    }
+    if let Some(env) = zenoh_env {
+        command.env("FLOWRT_ZENOH_MODE", "peer");
+        if !env.listen.is_empty() {
+            command.env("FLOWRT_ZENOH_LISTEN", &env.listen);
+        }
+        if !env.connect.is_empty() {
+            command.env("FLOWRT_ZENOH_CONNECT", &env.connect);
+        }
+        command.env("FLOWRT_ZENOH_NO_MULTICAST", "1");
+    }
+    command
+}
+
+fn build_launch_process_command(
+    app_exe: &Path,
+    process: &LaunchProcess,
+    run_ticks: Option<usize>,
+    zenoh_env: Option<&ZenohLaunchEnv>,
+    external_resolution: Option<&ExternalExecutableResolution>,
+) -> Result<Command, String> {
+    if process.runtime_kind == "external" {
+        let external = process.external.as_ref().ok_or_else(|| {
+            format!(
+                "external process `{}` is missing launch manifest external metadata",
+                process.name
+            )
+        })?;
+        let resolution = external_resolution.ok_or_else(|| {
+            format!(
+                "external process `{}` package `{}` executable `{}` was not resolved",
+                process.name, external.package, external.executable
+            )
+        })?;
+        Ok(build_external_process_command(
+            app_exe,
+            &process.name,
+            &process.backend,
+            run_ticks,
+            zenoh_env,
+            external,
+            resolution,
+        ))
+    } else {
+        Ok(build_process_command(
+            app_exe,
+            &process.name,
+            &process.runtime_kind,
+            run_ticks,
+            zenoh_env,
+        ))
+    }
+}
+
 /// 启动子进程。
 pub fn spawn_flowrt_process(
     app_exe: &Path,
@@ -572,6 +822,24 @@ pub fn spawn_flowrt_process(
     build_process_command(app_exe, process_name, runtime_kind, run_ticks, zenoh_env)
         .spawn()
         .map_err(|error| format!("failed to start FlowRT process `{process_name}`: {error}"))
+}
+
+fn spawn_launch_process(
+    app_exe: &Path,
+    process: &LaunchProcess,
+    run_ticks: Option<usize>,
+    zenoh_env: Option<&ZenohLaunchEnv>,
+    external_resolution: Option<&ExternalExecutableResolution>,
+) -> Result<Child, String> {
+    build_launch_process_command(app_exe, process, run_ticks, zenoh_env, external_resolution)?
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "failed to start FlowRT process `{}` executable `{}`: {error}",
+                process.name,
+                app_exe.display()
+            )
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -641,7 +909,10 @@ pub struct SupervisorConfig {
 
 struct SupervisedChild {
     name: String,
+    backend: String,
     runtime_kind: String,
+    external: Option<LaunchExternalProcess>,
+    external_resolution: Option<ExternalExecutableResolution>,
     app_exe: PathBuf,
     zenoh_env: Option<ZenohLaunchEnv>,
     dependencies: Vec<String>,
@@ -716,33 +987,58 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             };
             let process = pending.remove(index);
             let expected_services = expected_services_for_process(graph, process);
-            let app_exe = app_executable_for_runtime(
-                &current_exe,
-                &process.runtime_kind,
-                config.rust_app_stem,
-                config.cpp_app_stem,
-                config.ros2_bridge_stem,
-            )?;
+            let external_resolution = if process.runtime_kind == "external" {
+                let external = process.external.as_ref().ok_or_else(|| {
+                    format!(
+                        "external process `{}` is missing launch manifest external metadata",
+                        process.name
+                    )
+                })?;
+                Some(
+                    external_app_executable(&current_exe, external).map_err(|error| {
+                        format!(
+                            "failed to resolve external process `{}`: {error}",
+                            process.name
+                        )
+                    })?,
+                )
+            } else {
+                None
+            };
+            let app_exe = if let Some(resolution) = &external_resolution {
+                resolution.executable.clone()
+            } else {
+                app_executable_for_runtime(
+                    &current_exe,
+                    &process.runtime_kind,
+                    config.rust_app_stem,
+                    config.cpp_app_stem,
+                    config.ros2_bridge_stem,
+                )?
+            };
             let process_zenoh_env = zenoh_env.get(&process.name).cloned();
-            let child = spawn_flowrt_process(
+            let child = spawn_launch_process(
                 &app_exe,
-                &process.name,
-                &process.runtime_kind,
+                process,
                 run_ticks,
                 process_zenoh_env.as_ref(),
+                external_resolution.as_ref(),
             )?;
             let resource_applied =
                 apply_resource_placement_to_pid(&process.resource_placement, Some(child.id()));
             let socket = crate::runtime_socket_path_for_pid(child.id());
             let mut child = SupervisedChild {
                 name: process.name.clone(),
+                backend: process.backend.clone(),
                 runtime_kind: process.runtime_kind.clone(),
+                external: process.external.clone(),
+                external_resolution,
                 app_exe,
                 zenoh_env: process_zenoh_env,
                 dependencies: process.depends_on.clone(),
                 restart_policy: process.restart,
                 failure: process.failure.clone(),
-                readiness: process.readiness,
+                readiness: effective_readiness(process),
                 expected_services,
                 startup_delay_ms: process.startup_delay_ms,
                 resource_placement: process.resource_placement.clone(),
@@ -871,13 +1167,45 @@ fn restart_child(
     child: &mut SupervisedChild,
     run_ticks: Option<usize>,
 ) -> Result<(), String> {
-    let restarted = spawn_flowrt_process(
-        &child.app_exe,
-        &child.name,
-        &child.runtime_kind,
-        run_ticks,
-        child.zenoh_env.as_ref(),
-    )?;
+    let restarted = if child.runtime_kind == "external" {
+        let external = child.external.as_ref().ok_or_else(|| {
+            format!(
+                "external process `{}` is missing restart metadata",
+                child.name
+            )
+        })?;
+        let resolution = child.external_resolution.as_ref().ok_or_else(|| {
+            format!(
+                "external process `{}` package `{}` executable `{}` lost resolved path",
+                child.name, external.package, external.executable
+            )
+        })?;
+        build_external_process_command(
+            &child.app_exe,
+            &child.name,
+            &child.backend,
+            run_ticks,
+            child.zenoh_env.as_ref(),
+            external,
+            resolution,
+        )
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "failed to restart FlowRT process `{}` executable `{}`: {error}",
+                child.name,
+                child.app_exe.display()
+            )
+        })?
+    } else {
+        spawn_flowrt_process(
+            &child.app_exe,
+            &child.name,
+            &child.runtime_kind,
+            run_ticks,
+            child.zenoh_env.as_ref(),
+        )?
+    };
     let resource_applied =
         apply_resource_placement_to_pid(&child.resource_placement, Some(restarted.id()));
     child.child = restarted;
@@ -1044,6 +1372,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     static ZENOH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static EXTERNAL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct EnvOverride {
         key: &'static str,
@@ -1095,6 +1424,7 @@ mod tests {
             name: name.into(),
             backend: "inproc".into(),
             runtime_kind: "rust".into(),
+            external: None,
             depends_on,
             restart: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
@@ -1255,6 +1585,97 @@ mod tests {
 
         assert_eq!(resolved, bridge);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_runtime_executable_resolves_from_external_path() {
+        let _lock = EXTERNAL_ENV_LOCK
+            .lock()
+            .expect("external env lock should work");
+        let root = temp_test_dir("external-path");
+        let package_root = root.join("packages/camera_driver");
+        let executable = package_root.join("bin/camera-node");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "").unwrap();
+        let _path = EnvOverride::set(
+            "FLOWRT_EXTERNAL_PATH",
+            Some(root.join("packages").to_str().unwrap()),
+        );
+        let current_exe = root.join("workspace/flowrt/build/bin/release/app-supervisor");
+        let external = LaunchExternalProcess {
+            package: "camera_driver".into(),
+            executable: "bin/camera-node".into(),
+            args: vec![],
+            working_dir: LaunchExternalWorkingDir::Package,
+            health: LaunchExternalHealth::RuntimeSocket,
+            required_backends: vec!["zenoh".into()],
+            package_root: None,
+        };
+
+        let resolved = external_app_executable(&current_exe, &external).unwrap();
+
+        assert_eq!(resolved.executable, executable);
+        assert_eq!(resolved.package_root, package_root);
+        assert_eq!(resolved.workspace_root, root.join("workspace"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_process_command_uses_manifest_args_and_env_contract() {
+        let external = LaunchExternalProcess {
+            package: "camera_driver".into(),
+            executable: "bin/camera-node".into(),
+            args: vec!["--device".into(), "/dev/video0".into()],
+            working_dir: LaunchExternalWorkingDir::Package,
+            health: LaunchExternalHealth::RuntimeSocket,
+            required_backends: vec!["zenoh".into()],
+            package_root: None,
+        };
+        let resolution = ExternalExecutableResolution {
+            executable: PathBuf::from("/opt/flowrt/external/camera_driver/bin/camera-node"),
+            package_root: PathBuf::from("/opt/flowrt/external/camera_driver"),
+            workspace_root: PathBuf::from("/tmp/robot_ws"),
+        };
+        let zenoh = ZenohLaunchEnv {
+            listen: "tcp/127.0.0.1:7447".into(),
+            connect: String::new(),
+        };
+
+        let command = build_external_process_command(
+            &resolution.executable,
+            "camera_proc",
+            "zenoh",
+            Some(5),
+            Some(&zenoh),
+            &external,
+            &resolution,
+        );
+
+        assert_eq!(command_args(&command), vec!["--device", "/dev/video0"]);
+        assert_eq!(
+            command.get_current_dir(),
+            Some(Path::new("/opt/flowrt/external/camera_driver"))
+        );
+        assert_eq!(
+            command_env(&command, "FLOWRT_PROCESS").as_deref(),
+            Some("camera_proc")
+        );
+        assert_eq!(
+            command_env(&command, "FLOWRT_EXTERNAL_PACKAGE").as_deref(),
+            Some("camera_driver")
+        );
+        assert_eq!(
+            command_env(&command, "FLOWRT_BACKEND").as_deref(),
+            Some("zenoh")
+        );
+        assert_eq!(
+            command_env(&command, "FLOWRT_RUN_STEPS").as_deref(),
+            Some("5")
+        );
+        assert_eq!(
+            command_env(&command, "FLOWRT_ZENOH_LISTEN").as_deref(),
+            Some("tcp/127.0.0.1:7447")
+        );
     }
 
     #[test]
@@ -1541,6 +1962,59 @@ mod tests {
     }
 
     #[test]
+    fn manifest_deserialization_with_external_process_metadata() {
+        let json = r#"{
+            "graphs": [{
+                "processes": [{
+                    "name": "camera_proc",
+                    "backend": "zenoh",
+                    "runtime_kind": "external",
+                    "external": {
+                        "package": "camera_driver",
+                        "executable": "bin/camera-node",
+                        "args": ["--device", "/dev/video0"],
+                        "working_dir": "workspace",
+                        "health": "process_started",
+                        "required_backends": ["zenoh"]
+                    }
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let process = &manifest.graphs[0].processes[0];
+        let external = process.external.as_ref().unwrap();
+
+        assert_eq!(external.package, "camera_driver");
+        assert_eq!(external.executable, "bin/camera-node");
+        assert_eq!(external.args, vec!["--device", "/dev/video0"]);
+        assert_eq!(external.working_dir, LaunchExternalWorkingDir::Workspace);
+        assert_eq!(external.health, LaunchExternalHealth::ProcessStarted);
+        assert_eq!(effective_readiness(process), ReadinessGate::ProcessStarted);
+    }
+
+    #[test]
+    fn external_runtime_socket_health_upgrades_default_readiness() {
+        let json = r#"{
+            "graphs": [{
+                "processes": [{
+                    "name": "camera_proc",
+                    "backend": "zenoh",
+                    "runtime_kind": "external",
+                    "external": {
+                        "package": "camera_driver",
+                        "executable": "bin/camera-node"
+                    }
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let process = &manifest.graphs[0].processes[0];
+
+        assert_eq!(process.readiness, ReadinessGate::ProcessStarted);
+        assert_eq!(effective_readiness(process), ReadinessGate::RuntimeReady);
+    }
+
+    #[test]
     fn manifest_deserialization_with_custom_policy() {
         let json = r#"{
             "graphs": [{
@@ -1700,7 +2174,10 @@ mod tests {
 
         let mut child = SupervisedChild {
             name: "test_timeout".into(),
+            backend: "inproc".into(),
             runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
@@ -1753,7 +2230,10 @@ mod tests {
 
         let mut child = SupervisedChild {
             name: "test_svc_timeout".into(),
+            backend: "inproc".into(),
             runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
@@ -1795,7 +2275,10 @@ mod tests {
 
         let mut child = SupervisedChild {
             name: "test_exit".into(),
+            backend: "inproc".into(),
             runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
@@ -1848,7 +2331,10 @@ mod tests {
 
         let mut child = SupervisedChild {
             name: "test_started".into(),
+            backend: "inproc".into(),
             runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
@@ -1907,7 +2393,10 @@ mod tests {
 
         let mut child = SupervisedChild {
             name: "test_health".into(),
+            backend: "inproc".into(),
             runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
