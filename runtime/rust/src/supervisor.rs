@@ -5,7 +5,7 @@
 
 pub mod resource_placement;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -91,6 +91,9 @@ pub struct LaunchProcess {
     pub external: Option<LaunchExternalProcess>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// 用户在 process orchestration 中声明的环境变量。
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     #[serde(default = "default_restart_policy")]
     pub restart: RestartPolicy,
     #[serde(default = "default_failure_propagation")]
@@ -862,16 +865,16 @@ fn configure_supervised_command(command: &mut Command) {
 /// - 注入 zenoh 环境变量
 pub fn build_process_command(
     app_exe: &Path,
-    process_name: &str,
-    runtime_kind: &str,
+    process: &LaunchProcess,
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
 ) -> Command {
     let mut command = Command::new(app_exe);
-    if runtime_kind == "ros2_bridge" {
+    apply_process_env(&mut command, &process.env);
+    if process.runtime_kind == "ros2_bridge" {
         command.env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp");
     } else {
-        command.arg("--process").arg(process_name);
+        command.arg("--process").arg(&process.name);
     }
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
@@ -893,21 +896,21 @@ pub fn build_process_command(
 /// 构造 external process Command。
 pub fn build_external_process_command(
     app_exe: &Path,
-    process_name: &str,
-    backend: &str,
+    process: &LaunchProcess,
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
     external: &LaunchExternalProcess,
     resolution: &ExternalExecutableResolution,
 ) -> Command {
     let mut command = Command::new(app_exe);
+    apply_process_env(&mut command, &process.env);
     command.args(&external.args);
     command.current_dir(match external.working_dir {
         LaunchExternalWorkingDir::Package => &resolution.package_root,
         LaunchExternalWorkingDir::Workspace => &resolution.workspace_root,
     });
-    command.env("FLOWRT_PROCESS", process_name);
-    command.env("FLOWRT_BACKEND", backend);
+    command.env("FLOWRT_PROCESS", &process.name);
+    command.env("FLOWRT_BACKEND", &process.backend);
     command.env("FLOWRT_EXTERNAL_PACKAGE", &external.package);
     command.env("FLOWRT_EXTERNAL_EXECUTABLE", &external.executable);
     command.env("FLOWRT_EXTERNAL_PACKAGE_ROOT", &resolution.package_root);
@@ -927,6 +930,12 @@ pub fn build_external_process_command(
     }
     configure_supervised_command(&mut command);
     command
+}
+
+fn apply_process_env(command: &mut Command, env: &BTreeMap<String, String>) {
+    for (key, value) in env {
+        command.env(key, value);
+    }
 }
 
 fn build_launch_process_command(
@@ -950,21 +959,11 @@ fn build_launch_process_command(
             )
         })?;
         Ok(build_external_process_command(
-            app_exe,
-            &process.name,
-            &process.backend,
-            run_ticks,
-            zenoh_env,
-            external,
-            resolution,
+            app_exe, process, run_ticks, zenoh_env, external, resolution,
         ))
     } else {
         Ok(build_process_command(
-            app_exe,
-            &process.name,
-            &process.runtime_kind,
-            run_ticks,
-            zenoh_env,
+            app_exe, process, run_ticks, zenoh_env,
         ))
     }
 }
@@ -977,7 +976,21 @@ pub fn spawn_flowrt_process(
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
 ) -> Result<Child, String> {
-    build_process_command(app_exe, process_name, runtime_kind, run_ticks, zenoh_env)
+    let process = LaunchProcess {
+        name: process_name.to_string(),
+        backend: "inproc".to_string(),
+        runtime_kind: runtime_kind.to_string(),
+        external: None,
+        depends_on: Vec::new(),
+        env: BTreeMap::new(),
+        restart: DEFAULT_RESTART_POLICY,
+        failure: default_failure_propagation(),
+        readiness: ReadinessGate::ProcessStarted,
+        startup_delay_ms: 0,
+        instances: Vec::new(),
+        resource_placement: ResourcePlacement::default(),
+    };
+    build_process_command(app_exe, &process, run_ticks, zenoh_env)
         .spawn()
         .map_err(|error| format!("failed to start FlowRT process `{process_name}`: {error}"))
 }
@@ -1074,6 +1087,7 @@ struct SupervisedChild {
     app_exe: PathBuf,
     zenoh_env: Option<ZenohLaunchEnv>,
     dependencies: Vec<String>,
+    env: BTreeMap<String, String>,
     restart_policy: RestartPolicy,
     failure: String,
     readiness: ReadinessGate,
@@ -1268,6 +1282,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 app_exe,
                 zenoh_env: process_zenoh_env,
                 dependencies: process.depends_on.clone(),
+                env: process.env.clone(),
                 restart_policy: process.restart,
                 failure: process.failure.clone(),
                 readiness: effective_readiness(process),
@@ -1417,6 +1432,20 @@ fn restart_child(
     run_ticks: Option<usize>,
     shutdown: &ShutdownToken,
 ) -> Result<(), String> {
+    let restart_process = LaunchProcess {
+        name: child.name.clone(),
+        backend: child.backend.clone(),
+        runtime_kind: child.runtime_kind.clone(),
+        external: child.external.clone(),
+        depends_on: child.dependencies.clone(),
+        env: child.env.clone(),
+        restart: child.restart_policy,
+        failure: child.failure.clone(),
+        readiness: child.readiness,
+        startup_delay_ms: child.startup_delay_ms,
+        instances: Vec::new(),
+        resource_placement: child.resource_placement.clone(),
+    };
     let restarted = if child.runtime_kind == "external" {
         let external = child.external.as_ref().ok_or_else(|| {
             format!(
@@ -1432,8 +1461,7 @@ fn restart_child(
         })?;
         build_external_process_command(
             &child.app_exe,
-            &child.name,
-            &child.backend,
+            &restart_process,
             run_ticks,
             child.zenoh_env.as_ref(),
             external,
@@ -1448,13 +1476,20 @@ fn restart_child(
             )
         })?
     } else {
-        spawn_flowrt_process(
+        build_process_command(
             &child.app_exe,
-            &child.name,
-            &child.runtime_kind,
+            &restart_process,
             run_ticks,
             child.zenoh_env.as_ref(),
-        )?
+        )
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "failed to restart FlowRT process `{}` executable `{}`: {error}",
+                child.name,
+                child.app_exe.display()
+            )
+        })?
     };
     let resource_applied =
         apply_resource_placement_to_pid(&child.resource_placement, Some(restarted.id()));
@@ -1720,6 +1755,7 @@ mod tests {
             runtime_kind: "rust".into(),
             external: None,
             depends_on,
+            env: BTreeMap::new(),
             restart: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ProcessStarted,
@@ -1751,6 +1787,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ProcessStarted,
@@ -1930,13 +1967,9 @@ mod tests {
 
     #[test]
     fn process_command_uses_runtime_kind_not_process_name_for_ros2_bridge() {
-        let command = build_process_command(
-            Path::new("/tmp/flowrt_app"),
-            "ros2_bridge",
-            "rust",
-            Some(5),
-            None,
-        );
+        let mut process = test_process("ros2_bridge", vec![]);
+        process.runtime_kind = "rust".into();
+        let command = build_process_command(Path::new("/tmp/flowrt_app"), &process, Some(5), None);
 
         assert_eq!(
             command_args(&command),
@@ -1947,10 +1980,11 @@ mod tests {
 
     #[test]
     fn ros2_bridge_runtime_command_sets_rmw_without_process_arg() {
+        let mut process = test_process("adapter", vec![]);
+        process.runtime_kind = "ros2_bridge".into();
         let command = build_process_command(
             Path::new("/tmp/flowrt_ros2_bridge"),
-            "adapter",
-            "ros2_bridge",
+            &process,
             Some(7),
             None,
         );
@@ -1959,6 +1993,19 @@ mod tests {
         assert_eq!(
             command_env(&command, "RMW_IMPLEMENTATION").as_deref(),
             Some("rmw_zenoh_cpp")
+        );
+    }
+
+    #[test]
+    fn process_command_applies_manifest_env() {
+        let mut process = test_process("control", vec![]);
+        process.env.insert("APP_MODE".into(), "control".into());
+
+        let command = build_process_command(Path::new("/tmp/flowrt_app"), &process, None, None);
+
+        assert_eq!(
+            command_env(&command, "APP_MODE").as_deref(),
+            Some("control")
         );
     }
 
@@ -2056,11 +2103,17 @@ mod tests {
             listen: "tcp/127.0.0.1:7447".into(),
             connect: String::new(),
         };
+        let mut process = test_process("camera_proc", vec![]);
+        process.backend = "zenoh".into();
+        process.runtime_kind = "external".into();
+        process.env.insert("APP_MODE".into(), "driver".into());
+        process
+            .env
+            .insert("FLOWRT_PROCESS".into(), "user_override".into());
 
         let command = build_external_process_command(
             &resolution.executable,
-            "camera_proc",
-            "zenoh",
+            &process,
             Some(5),
             Some(&zenoh),
             &external,
@@ -2092,6 +2145,7 @@ mod tests {
             command_env(&command, "FLOWRT_ZENOH_LISTEN").as_deref(),
             Some("tcp/127.0.0.1:7447")
         );
+        assert_eq!(command_env(&command, "APP_MODE").as_deref(), Some("driver"));
     }
 
     #[test]
@@ -2382,8 +2436,31 @@ mod tests {
         assert_eq!(process.restart.max_restarts, 3);
         assert_eq!(process.failure, "propagate");
         assert_eq!(process.readiness, ReadinessGate::ProcessStarted);
+        assert!(process.env.is_empty());
         assert_eq!(process.startup_delay_ms, 0);
         assert_eq!(process.resource_placement, ResourcePlacement::default());
+    }
+
+    #[test]
+    fn manifest_deserialization_with_process_env() {
+        let json = r#"{
+            "graphs": [{
+                "processes": [{
+                    "name": "control",
+                    "backend": "inproc",
+                    "runtime_kind": "rust",
+                    "env": {
+                        "APP_MODE": "control",
+                        "LOG_LEVEL": "debug"
+                    }
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let process = &manifest.graphs[0].processes[0];
+
+        assert_eq!(process.env["APP_MODE"], "control");
+        assert_eq!(process.env["LOG_LEVEL"], "debug");
     }
 
     #[test]
@@ -2607,6 +2684,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::RuntimeReady,
@@ -2657,6 +2735,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::RuntimeReady,
@@ -2714,6 +2793,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ServiceReady,
@@ -2760,6 +2840,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::RuntimeReady,
@@ -2817,6 +2898,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ProcessStarted,
@@ -2880,6 +2962,7 @@ mod tests {
             app_exe: PathBuf::from("/tmp/fake"),
             zenoh_env: None,
             dependencies: vec![],
+            env: BTreeMap::new(),
             restart_policy: DEFAULT_RESTART_POLICY,
             failure: "propagate".into(),
             readiness: ReadinessGate::ServiceReady,
