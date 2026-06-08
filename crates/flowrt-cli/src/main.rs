@@ -1010,6 +1010,19 @@ struct BundleExternalProcess {
     path: PathBuf,
 }
 
+#[derive(Debug)]
+struct LoadedBundleManifest {
+    manifest: BundleManifest,
+    version_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlowrtReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
 fn bundle_workspace(
     rsdl: &Path,
     contract: &ContractIr,
@@ -1290,21 +1303,28 @@ fn deploy_bundle(
     dry_run: bool,
 ) -> Result<String> {
     validate_deploy_host(host)?;
-    let manifest = load_bundle_manifest(bundle)?;
+    let loaded = load_bundle_manifest(bundle)?;
+    let manifest = loaded.manifest;
     if manifest.target != target {
         anyhow::bail!(
             "bundle target `{}` does not match requested target `{target}`",
             manifest.target
         );
     }
+    let warning = loaded
+        .version_warning
+        .as_deref()
+        .map(|message| format!(" warning={message}"))
+        .unwrap_or_default();
     if dry_run {
         return Ok(format!(
-            "deploy plan bundle={} host={} target={} remote_dir={} entry={}",
+            "deploy plan bundle={} host={} target={} remote_dir={} entry={}{}",
             bundle.display(),
             host,
             target,
             remote_dir,
-            manifest.entry
+            manifest.entry,
+            warning
         ));
     }
 
@@ -1331,9 +1351,10 @@ fn deploy_bundle(
     }
 
     Ok(format!(
-        "deployed FlowRT bundle {} to {}",
+        "deployed FlowRT bundle {} to {}{}",
         bundle.display(),
-        remote
+        remote,
+        warning
     ))
 }
 
@@ -1347,7 +1368,7 @@ fn validate_deploy_host(host: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_bundle_manifest(bundle: &Path) -> Result<BundleManifest> {
+fn load_bundle_manifest(bundle: &Path) -> Result<LoadedBundleManifest> {
     let path = bundle.join("bundle.toml");
     let source = fs::read_to_string(&path)
         .with_context(|| format!("failed to read bundle manifest `{}`", path.display()))?;
@@ -1360,14 +1381,54 @@ fn load_bundle_manifest(bundle: &Path) -> Result<BundleManifest> {
             path.display()
         );
     }
-    if manifest.flowrt_version != env!("CARGO_PKG_VERSION") {
-        anyhow::bail!(
-            "bundle was created with FlowRT {}, but this CLI is {}",
-            manifest.flowrt_version,
-            env!("CARGO_PKG_VERSION")
-        );
+    let version_warning =
+        bundle_version_warning(&manifest.flowrt_version, env!("CARGO_PKG_VERSION"))?;
+    Ok(LoadedBundleManifest {
+        manifest,
+        version_warning,
+    })
+}
+
+fn bundle_version_warning(bundle_version: &str, cli_version: &str) -> Result<Option<String>> {
+    if bundle_version == cli_version {
+        return Ok(None);
     }
-    Ok(manifest)
+    let bundle = parse_flowrt_release_version(bundle_version)
+        .with_context(|| format!("invalid FlowRT bundle version `{bundle_version}`"))?;
+    let cli = parse_flowrt_release_version(cli_version)
+        .with_context(|| format!("invalid FlowRT CLI version `{cli_version}`"))?;
+    if bundle.major == cli.major && bundle.minor == cli.minor {
+        return Ok(Some(format!(
+            "bundle patch version {bundle_version} differs from CLI {cli_version}; deploy is allowed within the same major.minor release line"
+        )));
+    }
+    anyhow::bail!(
+        "incompatible FlowRT version: bundle was created with FlowRT {bundle_version}, but this CLI is {cli_version}"
+    );
+}
+
+fn parse_flowrt_release_version(version: &str) -> Result<FlowrtReleaseVersion> {
+    let mut parts = version.split('.');
+    let major = parse_release_version_part(parts.next(), "major")?;
+    let minor = parse_release_version_part(parts.next(), "minor")?;
+    let patch = parse_release_version_part(parts.next(), "patch")?;
+    if parts.next().is_some() {
+        anyhow::bail!("expected MAJOR.MINOR.PATCH");
+    }
+    Ok(FlowrtReleaseVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn parse_release_version_part(part: Option<&str>, name: &str) -> Result<u64> {
+    let part = part.with_context(|| format!("missing {name} version part"))?;
+    if part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
+        anyhow::bail!("{name} version part `{part}` is not a non-negative integer");
+    }
+    part.parse::<u64>()
+        .with_context(|| format!("failed to parse {name} version part `{part}`"))
 }
 
 #[derive(Debug)]

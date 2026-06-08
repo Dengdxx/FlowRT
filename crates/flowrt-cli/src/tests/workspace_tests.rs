@@ -3,6 +3,24 @@ use super::*;
 static REPO_RUNTIME_FALLBACK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static FLOWRT_CACHE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn patch_mismatched_flowrt_version() -> String {
+    let parts = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    format!("{}.{}.{}", parts[0], parts[1], parts[2] + 1)
+}
+
+fn minor_mismatched_flowrt_version() -> String {
+    let parts = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    format!("{}.{}.0", parts[0], parts[1] + 1)
+}
+
 struct EnvOverride {
     key: &'static str,
     previous: Option<std::ffi::OsString>,
@@ -337,6 +355,81 @@ fn deploy_bundle_rejects_target_mismatch() {
         error
             .to_string()
             .contains("does not match requested target")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_allows_patch_version_mismatch_with_warning() {
+    let root = temp_test_dir("deploy-patch-version-mismatch");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: patch_mismatched_flowrt_version(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap();
+
+    assert!(output.contains("warning="), "unexpected output: {output}");
+    assert!(
+        output.contains("patch version"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        output.contains("deploy plan"),
+        "unexpected output: {output}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_rejects_minor_version_mismatch() {
+    let root = temp_test_dir("deploy-minor-version-mismatch");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: minor_mismatched_flowrt_version(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap_err();
+
+    assert!(
+        error.to_string().contains("incompatible FlowRT version"),
+        "unexpected error: {error}"
     );
 
     let _ = std::fs::remove_dir_all(&root);
