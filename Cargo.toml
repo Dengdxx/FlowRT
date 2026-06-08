@@ -5,6 +5,7 @@ members = [
     "crates/flowrt-codegen",
     "crates/flowrt-conformance",
     "crates/flowrt-ir",
+    "crates/flowrt-record",
     "crates/flowrt-rsdl",
     "crates/flowrt-selfdesc",
     "crates/flowrt-validate",
@@ -27,3 +28,4 @@ sha2 = "0.10"
 thiserror = "2"
 toml = { version = "0.8", features = ["preserve_order"] }
 object = { version = "0.39.1", default-features = false, features = ["read_core", "elf", "macho", "pe"] }
+mcap = { version = "0.24.0", default-features = false }
