@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use flowrt_ir::{
-    ComponentIr, ContractIr, FieldIr, GraphIr, InstanceIr, LanguageKind, ParamIr, ParamType,
-    ParamUpdatePolicy, ParamValue, PortIr, TaskIr, TypeExpr, TypeIr,
+    ComponentIr, ComponentKind, ContractIr, FieldIr, GraphIr, InstanceIr, LanguageKind, ParamIr,
+    ParamType, ParamUpdatePolicy, ParamValue, PortIr, TaskIr, TypeExpr, TypeIr,
 };
 use flowrt_validate::validate_contract;
 
@@ -59,6 +59,9 @@ pub enum CodegenError {
 
     #[error("invalid launch manifest: {message}")]
     InvalidLaunchManifest { message: String },
+
+    #[error("unsupported generated transport: {message}")]
+    UnsupportedGeneratedTransport { message: String },
 
     #[error("failed to derive message ABI expectations: {0}")]
     MessageAbi(#[from] flowrt_conformance::AbiError),
@@ -127,6 +130,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             count: contract.graphs.len(),
         });
     }
+    ensure_generated_transport_supported(contract)?;
 
     let mut artifacts = Vec::new();
     let abi_expectations = fixed_message_abi_expectations(contract)?;
@@ -235,6 +239,83 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     artifacts.push(artifact("build/Cargo.toml", emit_cargo_manifest(contract)));
 
     Ok(ArtifactBundle { artifacts })
+}
+
+fn ensure_generated_transport_supported(contract: &ContractIr) -> Result<()> {
+    for graph in &contract.graphs {
+        for service in &graph.services {
+            if service.backend.0 == "zenoh"
+                && (service_endpoint_requires_generated_code(contract, graph, &service.client)
+                    || service_endpoint_requires_generated_code(contract, graph, &service.server))
+            {
+                return Err(CodegenError::UnsupportedGeneratedTransport {
+                    message: format!(
+                        "service bind `{}.{}` -> `{}.{}` uses backend `zenoh`, but generated Service codegen is not wired to zenoh transport yet",
+                        service.client.instance.name,
+                        service.client.port,
+                        service.server.instance.name,
+                        service.server.port
+                    ),
+                });
+            }
+        }
+
+        for operation in &graph.operations {
+            if operation.backend.0 == "zenoh"
+                && (operation_endpoint_requires_generated_code(contract, graph, &operation.client)
+                    || operation_endpoint_requires_generated_code(
+                        contract,
+                        graph,
+                        &operation.server,
+                    ))
+            {
+                return Err(CodegenError::UnsupportedGeneratedTransport {
+                    message: format!(
+                        "operation bind `{}.{}` -> `{}.{}` uses backend `zenoh`, but generated Operation codegen is not wired to zenoh transport yet",
+                        operation.client.instance.name,
+                        operation.client.port,
+                        operation.server.instance.name,
+                        operation.server.port
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn service_endpoint_requires_generated_code(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    endpoint: &flowrt_ir::ServicePortRef,
+) -> bool {
+    endpoint_requires_generated_code(contract, graph, &endpoint.instance.name)
+}
+
+fn operation_endpoint_requires_generated_code(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    endpoint: &flowrt_ir::OperationPortRef,
+) -> bool {
+    endpoint_requires_generated_code(contract, graph, &endpoint.instance.name)
+}
+
+fn endpoint_requires_generated_code(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    instance_name: &str,
+) -> bool {
+    let Some(instance) = graph
+        .instances
+        .iter()
+        .find(|instance| instance.name == instance_name)
+    else {
+        return false;
+    };
+    let component = component_by_name(contract, &instance.component.name);
+    component.kind != ComponentKind::External
+        && matches!(component.language, LanguageKind::Cpp | LanguageKind::Rust)
 }
 
 fn artifact(path: impl Into<PathBuf>, content: String) -> Artifact {

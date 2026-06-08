@@ -91,7 +91,7 @@ backends = ["iox2"]
 }
 
 #[test]
-fn enables_flowrt_zenoh_feature_when_service_uses_zenoh() {
+fn rejects_native_zenoh_service_before_placeholder_codegen() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -128,10 +128,12 @@ runtime = ["rust"]
 backends = ["inproc", "zenoh"]
 "#,
     );
-    let bundle = emit_artifacts(&ir).unwrap();
-    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+    let error = emit_artifacts(&ir).expect_err("native zenoh service codegen must fail fast");
 
-    assert!(cargo_manifest.contains("features = [\"zenoh\"]"));
+    assert!(
+        error.to_string().contains("generated Service codegen"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

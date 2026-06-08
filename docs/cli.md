@@ -365,7 +365,7 @@ overflow = "busy"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `backend` | string | auto | 传输后端：`inproc`（同进程）、`zenoh`（跨进程，runtime 已实现，codegen 尚未生成用户 API）；`auto` 同进程默认 `inproc`，跨进程默认 `zenoh` |
+| `backend` | string | auto | 传输后端：native generated Service 当前支持 `inproc`；`zenoh` runtime 已实现但 generated Service/Operation 尚未接线，native endpoint 会在 codegen fail-fast；external endpoint 可在 manifest 中选择 `zenoh` |
 | `timeout_ms` | u64 | 5000 | 请求超时毫秒 |
 | `queue_depth` | u32 | 32 | pending request 队列深度 |
 | `overflow` | string | "busy" | 队列满策略：`busy` 或 `error` |

@@ -491,8 +491,8 @@ flowrt op list --image examples/operation_demo/flowrt/selfdesc/selfdesc.json
 ```
 
 当前 inproc Operation 会在生成物内部 lower 成 start/cancel/status service 与
-feedback/result endpoint；用户文档和 CLI 的主视图仍是 Operation。跨进程 `zenoh`
-Operation 当前只生成非 panic placeholder，不作为可运行示例。
+feedback/result endpoint；用户文档和 CLI 的主视图仍是 Operation。native generated
+`zenoh` Operation 尚未接线到真实 transport，codegen 会 fail-fast，不生成 placeholder。
 
 ## record smoke
 

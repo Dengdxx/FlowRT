@@ -208,31 +208,19 @@ fn self_description_contains_operation_topology_and_lowering_refs() {
     assert_eq!(component["operation_clients"][0]["goal_type"], "PlanGoal");
 }
 
-/// zenoh Operation 当前生成 typed placeholder，不创建 inproc hidden task。
+/// zenoh Operation runtime 语义未接入 generated app 时必须 fail-fast，不能生成 placeholder。
 #[test]
-fn rust_zenoh_operation_placeholder_is_non_panicking() {
+fn rust_zenoh_operation_codegen_rejects_placeholder_output() {
     let source = RUST_OPERATION_RSDL.replace("backend = \"inproc\"", "backend = \"zenoh\"");
     let contract = contract_from_source(&source);
-    let bundle = emit_artifacts(&contract).unwrap();
-    let components = artifact_content(&bundle, "rust/src/components.rs");
-    assert!(
-        components.contains("pub struct OperationClient_controller_plan"),
-        "Rust components must expose zenoh operation client placeholder.\n\n{components}"
-    );
-    assert!(
-        components.contains("OperationClientError::Backend"),
-        "zenoh operation placeholder must return backend error.\n\n{components}"
-    );
 
-    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let error = emit_artifacts(&contract).expect_err("zenoh operation codegen must fail fast");
+
     assert!(
-        !shell.contains("unimplemented!"),
-        "zenoh operation generation must not panic at runtime.\n\n{shell}"
+        error.to_string().contains("generated Operation codegen"),
+        "unexpected error: {error}"
     );
-    assert!(
-        !shell.contains("fn step_operation_navigator_plan"),
-        "zenoh operation generation must not create inproc operation task.\n\n{shell}"
-    );
+    assert!(error.to_string().contains("backend `zenoh`"));
 }
 
 /// C++ components 应生成和 Rust 等价的 Operation typed API。
@@ -284,38 +272,19 @@ fn cpp_operation_components_are_generated() {
     );
 }
 
-/// C++ zenoh Operation 当前生成 typed placeholder，不创建 inproc hidden task。
+/// C++ zenoh Operation 也必须 fail-fast，不能生成 Backend placeholder。
 #[test]
-fn cpp_zenoh_operation_placeholder_is_non_panicking() {
+fn cpp_zenoh_operation_codegen_rejects_placeholder_output() {
     let source = RUST_OPERATION_RSDL
         .replace("language = \"rust\"", "language = \"cpp\"")
         .replace("backend = \"inproc\"", "backend = \"zenoh\"");
     let contract = contract_from_source(&source);
-    let bundle = emit_artifacts(&contract).unwrap();
 
-    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
-    assert!(
-        components.contains("class OperationClient_controller_plan"),
-        "C++ components must expose zenoh operation client placeholder.\n\n{components}"
-    );
-    assert!(
-        components.contains("OperationClientError::Backend"),
-        "C++ zenoh placeholder must return backend error.\n\n{components}"
-    );
+    let error = emit_artifacts(&contract).expect_err("C++ zenoh operation codegen must fail fast");
 
-    let shell_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
     assert!(
-        !shell_header.contains("operation_start_server_navigator_plan"),
-        "C++ zenoh operation generation must not create inproc server field.\n\n{shell_header}"
+        error.to_string().contains("generated Operation codegen"),
+        "unexpected error: {error}"
     );
-    assert!(
-        !shell_header.contains("step_operation_navigator_plan"),
-        "C++ zenoh operation generation must not create hidden inproc operation task.\n\n{shell_header}"
-    );
-
-    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
-    assert!(
-        !shell.contains("unimplemented!"),
-        "C++ zenoh operation generation must not panic at runtime.\n\n{shell}"
-    );
+    assert!(error.to_string().contains("backend `zenoh`"));
 }

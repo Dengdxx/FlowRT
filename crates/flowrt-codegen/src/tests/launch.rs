@@ -637,11 +637,13 @@ name = "service_backend_demo"
 rsdl_version = "0.1"
 
 [component.client]
-language = "rust"
+language = "external"
+kind = "external"
 service_client = ["plan:u32->bool"]
 
 [component.server]
-language = "rust"
+language = "external"
+kind = "external"
 service_server = ["plan:u32->bool"]
 
 [instance.client]
@@ -658,11 +660,23 @@ target = "linux"
 client = "client.plan"
 server = "server.plan"
 
+[[external_process]]
+process = "client_proc"
+package = "client_pkg"
+executable = "client-node"
+required_backends = ["zenoh"]
+
+[[external_process]]
+process = "server_proc"
+package = "server_pkg"
+executable = "server-node"
+required_backends = ["zenoh"]
+
 [profile.default]
 backend = "inproc"
 
 [target.linux]
-runtime = ["rust"]
+runtime = ["external"]
 backends = ["inproc", "zenoh"]
 "#,
     );
@@ -687,7 +701,8 @@ name = "operation_backend_demo"
 rsdl_version = "0.1"
 
 [component.client]
-language = "rust"
+language = "external"
+kind = "external"
 
 [component.client.operation_client.plan]
 goal = "u32"
@@ -695,7 +710,8 @@ feedback = "u32"
 result = "bool"
 
 [component.server]
-language = "rust"
+language = "external"
+kind = "external"
 
 [component.server.operation_server.plan]
 goal = "u32"
@@ -716,11 +732,23 @@ target = "linux"
 client = "client.plan"
 server = "server.plan"
 
+[[external_process]]
+process = "client_proc"
+package = "client_pkg"
+executable = "client-node"
+required_backends = ["zenoh"]
+
+[[external_process]]
+process = "server_proc"
+package = "server_pkg"
+executable = "server-node"
+required_backends = ["zenoh"]
+
 [profile.default]
 backend = "inproc"
 
 [target.linux]
-runtime = ["rust"]
+runtime = ["external"]
 backends = ["inproc", "zenoh"]
 "#,
     );

@@ -423,42 +423,18 @@ backend = "inproc"
     );
 }
 
-/// zenoh service transport 尚未实现时，generated API 返回 Backend 错误且不 panic。
+/// zenoh service transport runtime 已存在，但 generated app 尚未接线；codegen 必须 fail-fast，
+/// 不能生成只会返回 Backend 的 placeholder。
 #[test]
-fn zenoh_service_placeholder_does_not_generate_panics_or_inproc_tasks() {
+fn zenoh_service_codegen_rejects_placeholder_output() {
     let source = SERVICE_RSDL.replace("backend = \"inproc\"", "backend = \"zenoh\"");
     let contract = contract_from_source(&source);
-    let bundle = emit_artifacts(&contract).unwrap();
 
-    let rust_components = artifact_content(&bundle, "rust/src/components.rs");
-    assert!(
-        rust_components.contains("pub struct ServiceClient_planner_plan"),
-        "Rust components must expose zenoh service client placeholder.\n\n{rust_components}"
-    );
-    assert!(
-        rust_components.contains("ServiceError::Backend"),
-        "Rust zenoh placeholder must return Backend error.\n\n{rust_components}"
-    );
-    assert!(
-        rust_components.contains("ServiceCallHandle::ready_error"),
-        "Rust zenoh start_call must return a ready error handle.\n\n{rust_components}"
-    );
+    let error = emit_artifacts(&contract).expect_err("zenoh service codegen must fail fast");
 
-    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        !rust_shell.contains("unimplemented!"),
-        "Rust zenoh service generation must not panic at runtime.\n\n{rust_shell}"
+        error.to_string().contains("generated Service codegen"),
+        "unexpected error: {error}"
     );
-    assert!(
-        !rust_shell.contains("ServiceRegistry::new()"),
-        "zenoh-only service generation must not create inproc registry.\n\n{rust_shell}"
-    );
-    assert!(
-        !rust_shell.contains("service_server_plan_svc_plan"),
-        "zenoh service generation must not create inproc server field.\n\n{rust_shell}"
-    );
-    assert!(
-        !rust_shell.contains("fn step_service_plan_svc_plan"),
-        "zenoh service generation must not create hidden inproc service task.\n\n{rust_shell}"
-    );
+    assert!(error.to_string().contains("backend `zenoh`"));
 }
