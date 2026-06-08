@@ -2842,8 +2842,8 @@ fn run_cargo_build_bin(
     target_dir: &Path,
 ) -> Result<PathBuf> {
     let invocation = cargo_build_invocation(manifest, bin_name, build_mode, target_dir)?;
-    remove_stale_generated_binary_outputs(manifest, &invocation)?;
-    clean_generated_cargo_package(manifest, &invocation)?;
+    remove_stale_generated_binary_outputs(&invocation)?;
+    clean_generated_cargo_package(&invocation)?;
     let mut command = ProcessCommand::new("cargo");
     command
         .current_dir(&invocation.current_dir)
@@ -2856,10 +2856,7 @@ fn run_cargo_build_bin(
     Ok(invocation.executable_path())
 }
 
-fn remove_stale_generated_binary_outputs(
-    manifest: &Path,
-    invocation: &CargoBuildInvocation,
-) -> Result<()> {
+fn remove_stale_generated_binary_outputs(invocation: &CargoBuildInvocation) -> Result<()> {
     let profile_dir = invocation
         .target_dir
         .join(invocation.build_mode.cargo_profile_dir());
@@ -2873,7 +2870,7 @@ fn remove_stale_generated_binary_outputs(
     let deps_dir = profile_dir.join("deps");
     if deps_dir.is_dir() {
         let mut dep_prefixes = vec![invocation.bin_name.replace('-', "_")];
-        if let Some(lib_name) = cargo_manifest_lib_name(manifest)? {
+        if let Some(lib_name) = cargo_manifest_lib_name(&invocation.manifest_path)? {
             dep_prefixes.push(lib_name.clone());
             dep_prefixes.push(format!("lib{lib_name}"));
         }
@@ -2903,14 +2900,14 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-fn clean_generated_cargo_package(manifest: &Path, invocation: &CargoBuildInvocation) -> Result<()> {
-    let package_name = cargo_manifest_package_name(manifest)?;
+fn clean_generated_cargo_package(invocation: &CargoBuildInvocation) -> Result<()> {
+    let package_name = cargo_manifest_package_name(&invocation.manifest_path)?;
     let mut command = ProcessCommand::new("cargo");
     command
         .current_dir(&invocation.current_dir)
         .arg("clean")
         .arg("--manifest-path")
-        .arg(manifest)
+        .arg(&invocation.manifest_path)
         .arg("-p")
         .arg(&package_name)
         .env("CARGO_TARGET_DIR", &invocation.target_dir);
@@ -2959,6 +2956,7 @@ fn cargo_manifest_lib_name(manifest: &Path) -> Result<Option<String>> {
 }
 
 struct CargoBuildInvocation {
+    manifest_path: PathBuf,
     current_dir: PathBuf,
     args: Vec<String>,
     target_dir: PathBuf,
@@ -2984,7 +2982,8 @@ fn cargo_build_invocation(
         .with_context(|| format!("failed to resolve `{}`", manifest.display()))?;
     let manifest_dir = manifest
         .parent()
-        .with_context(|| format!("manifest path has no parent: `{}`", manifest.display()))?;
+        .with_context(|| format!("manifest path has no parent: `{}`", manifest.display()))?
+        .to_path_buf();
     let mut args = vec![
         "build".to_string(),
         "--manifest-path".to_string(),
@@ -2997,7 +2996,8 @@ fn cargo_build_invocation(
         args.push("--offline".to_string());
     }
     Ok(CargoBuildInvocation {
-        current_dir: manifest_dir.to_path_buf(),
+        manifest_path: manifest,
+        current_dir: manifest_dir,
         args,
         target_dir: target_dir.to_path_buf(),
         bin_name: bin_name.to_string(),
