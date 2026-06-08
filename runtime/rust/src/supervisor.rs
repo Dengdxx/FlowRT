@@ -7,13 +7,16 @@ pub mod resource_placement;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
 use crate::introspection::{IntrospectionIdentity, IntrospectionProcessStatus, IntrospectionState};
+use crate::shutdown::ShutdownToken;
 
 use self::resource_placement::{ResourceApplied, ResourcePlacement, ResourcePlacementStatus};
 
@@ -25,6 +28,10 @@ const TICK_STALE_AFTER_MS: u64 = 1_000;
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// readiness 等待超时时间。
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// supervisor 主动终止子进程时等待其自行退出的宽限时间。
+const CHILD_TERMINATE_GRACE: Duration = Duration::from_millis(500);
+/// 主动终止子进程时的轮询间隔。
+const CHILD_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// readiness 等待参数，支持测试注入短超时。
 #[derive(Debug, Clone)]
@@ -364,10 +371,7 @@ fn wait_for_runtime_ready(
 
         // 检查是否超时。
         if std::time::Instant::now() >= deadline {
-            let _ = child.child.kill();
-            let _ = child.child.wait();
-            child.finished = true;
-            child.state = "readiness_timeout".to_string();
+            child.terminate("readiness_timeout");
             record_child_health(supervisor_state, child, false);
             return Err(format!(
                 "FlowRT process `{}` readiness timed out waiting for runtime_ready",
@@ -414,10 +418,7 @@ fn wait_for_service_ready(
 
         // 检查是否超时。
         if std::time::Instant::now() >= deadline {
-            let _ = child.child.kill();
-            let _ = child.child.wait();
-            child.finished = true;
-            child.state = "readiness_timeout".to_string();
+            child.terminate("readiness_timeout");
             record_child_health(supervisor_state, child, false);
             return Err(format!(
                 "FlowRT process `{}` readiness timed out waiting for service_ready",
@@ -699,6 +700,19 @@ fn workspace_root_from_supervisor(current_exe: &Path) -> Option<PathBuf> {
 // 进程启动
 // ---------------------------------------------------------------------------
 
+fn configure_supervised_command(command: &mut Command) {
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
 /// 构造子进程 Command。
 ///
 /// - 非 ros2_bridge runtime 进程传 `--process <name>`
@@ -730,6 +744,7 @@ pub fn build_process_command(
         }
         command.env("FLOWRT_ZENOH_NO_MULTICAST", "1");
     }
+    configure_supervised_command(&mut command);
     command
 }
 
@@ -768,6 +783,7 @@ pub fn build_external_process_command(
         }
         command.env("FLOWRT_ZENOH_NO_MULTICAST", "1");
     }
+    configure_supervised_command(&mut command);
     command
 }
 
@@ -935,6 +951,78 @@ struct SupervisedChild {
     exit_code: Option<i32>,
 }
 
+impl SupervisedChild {
+    fn terminate(&mut self, state: &'static str) {
+        if self.finished {
+            return;
+        }
+        self.request_termination();
+        let deadline = Instant::now() + CHILD_TERMINATE_GRACE;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    self.exit_code = status.code();
+                    self.finished = true;
+                    self.state = state.to_string();
+                    return;
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(CHILD_TERMINATE_POLL_INTERVAL);
+                }
+                Ok(None) => {
+                    self.force_kill();
+                    let status = self.child.wait().ok();
+                    self.exit_code = status.and_then(|status| status.code());
+                    self.finished = true;
+                    self.state = state.to_string();
+                    return;
+                }
+                Err(_) => {
+                    self.finished = true;
+                    self.state = state.to_string();
+                    self.exit_code = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    fn request_termination(&mut self) {
+        #[cfg(unix)]
+        {
+            let pid = self.child.id();
+            if pid <= i32::MAX as u32 {
+                let pgid = -(pid as i32);
+                // 子进程启动时已经 setpgid(0, 0)。若遇到旧进程或 setpgid 失败，
+                // 后面的 Child::kill 回退仍会终止直接子进程。
+                let signaled = unsafe { libc::kill(pgid, libc::SIGTERM) == 0 };
+                if signaled {
+                    return;
+                }
+            }
+        }
+        let _ = self.child.kill();
+    }
+
+    fn force_kill(&mut self) {
+        #[cfg(unix)]
+        {
+            let pid = self.child.id();
+            if pid <= i32::MAX as u32 {
+                let pgid = -(pid as i32);
+                let _ = unsafe { libc::kill(pgid, libc::SIGKILL) };
+            }
+        }
+        let _ = self.child.kill();
+    }
+}
+
+impl Drop for SupervisedChild {
+    fn drop(&mut self) {
+        self.terminate("terminated");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 主入口
 // ---------------------------------------------------------------------------
@@ -1080,7 +1168,8 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
         return Err("FlowRT launch manifest does not contain process groups".to_string());
     }
 
-    supervise_children(&supervisor_state, &mut children, run_ticks)?;
+    let shutdown = crate::install_signal_shutdown_token();
+    supervise_children(&supervisor_state, &mut children, run_ticks, &shutdown)?;
 
     let mut failures = Vec::new();
     for child in children {
@@ -1111,8 +1200,14 @@ fn supervise_children(
     supervisor_state: &IntrospectionState,
     children: &mut [SupervisedChild],
     run_ticks: Option<usize>,
+    shutdown: &ShutdownToken,
 ) -> Result<(), String> {
     while children.iter().any(|child| !child.finished) {
+        if shutdown.is_requested() {
+            terminate_active_children(supervisor_state, children, "shutdown");
+            return Ok(());
+        }
+        let (spawned_names, ready_names) = child_dependency_snapshot(children);
         let mut failed_to_propagate = Vec::new();
         for child in children.iter_mut() {
             if child.finished {
@@ -1120,7 +1215,15 @@ fn supervise_children(
             }
             if let Some(next_restart_unix_ms) = child.next_restart_unix_ms {
                 if unix_time_ms() >= next_restart_unix_ms {
-                    restart_child(supervisor_state, child, run_ticks)?;
+                    if child_dependencies_satisfied(child, &spawned_names, &ready_names) {
+                        restart_child(supervisor_state, child, run_ticks)?;
+                    } else {
+                        child.state = "waiting_dependencies".to_string();
+                        child.next_restart_unix_ms = Some(
+                            unix_time_ms().saturating_add(HEALTH_POLL_INTERVAL.as_millis() as u64),
+                        );
+                        record_child_health(supervisor_state, child, false);
+                    }
                 } else {
                     record_child_health(supervisor_state, child, false);
                 }
@@ -1222,7 +1325,53 @@ fn restart_child(
         applied: resource_applied,
     };
     record_child_health(supervisor_state, child, false);
+    wait_for_readiness(supervisor_state, child, &ReadinessConfig::default())?;
+    if child.startup_delay_ms > 0 {
+        child.state = "delaying".to_string();
+        record_child_health(supervisor_state, child, false);
+        std::thread::sleep(Duration::from_millis(child.startup_delay_ms));
+    }
+    child.state = "running".to_string();
+    record_child_health(supervisor_state, child, false);
     Ok(())
+}
+
+fn child_dependency_snapshot(children: &[SupervisedChild]) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut spawned_names = BTreeSet::new();
+    let mut ready_names = BTreeSet::new();
+    for child in children {
+        if child.finished || child.next_restart_unix_ms.is_some() {
+            continue;
+        }
+        spawned_names.insert(child.name.clone());
+        if matches!(child.state.as_str(), "running" | "stale") {
+            ready_names.insert(child.name.clone());
+        }
+    }
+    (spawned_names, ready_names)
+}
+
+fn child_dependencies_satisfied(
+    child: &SupervisedChild,
+    spawned_names: &BTreeSet<String>,
+    ready_names: &BTreeSet<String>,
+) -> bool {
+    child.dependencies.iter().all(|dependency| {
+        ready_names.contains(dependency)
+            || (child.readiness == ReadinessGate::ProcessStarted
+                && spawned_names.contains(dependency))
+    })
+}
+
+fn terminate_active_children(
+    supervisor_state: &IntrospectionState,
+    children: &mut [SupervisedChild],
+    state: &'static str,
+) {
+    for child in children.iter_mut().filter(|child| !child.finished) {
+        child.terminate(state);
+        record_child_health(supervisor_state, child, false);
+    }
 }
 
 fn apply_resource_placement_to_pid(
@@ -1280,10 +1429,7 @@ fn propagate_process_failure(
             {
                 continue;
             }
-            let _ = child.child.kill();
-            let _ = child.child.wait();
-            child.finished = true;
-            child.state = "failed".to_string();
+            child.terminate("failed");
             child.exit_code = None;
             record_child_health(supervisor_state, child, false);
             if child.failure == "propagate" {
@@ -1446,6 +1592,58 @@ mod tests {
         root
     }
 
+    fn supervised_child_for_test(name: &str, child: Child) -> SupervisedChild {
+        let socket = crate::runtime_socket_path_for_pid(child.id());
+        SupervisedChild {
+            name: name.into(),
+            backend: "inproc".into(),
+            runtime_kind: "rust".into(),
+            external: None,
+            external_resolution: None,
+            app_exe: PathBuf::from("/tmp/fake"),
+            zenoh_env: None,
+            dependencies: vec![],
+            restart_policy: DEFAULT_RESTART_POLICY,
+            failure: "propagate".into(),
+            readiness: ReadinessGate::ProcessStarted,
+            expected_services: vec![],
+            startup_delay_ms: 0,
+            resource_placement: ResourcePlacement::default(),
+            resource_placement_status: ResourcePlacementStatus::default(),
+            child,
+            socket,
+            finished: false,
+            restart_count: 0,
+            next_restart_unix_ms: None,
+            last_seen_unix_ms: None,
+            last_tick_count: None,
+            last_tick_changed_unix_ms: unix_time_ms(),
+            state: "running".into(),
+            exit_code: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        if result == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    #[cfg(unix)]
+    fn assert_process_exits(pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if !process_exists(pid) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("process {pid} should have exited");
+    }
+
     // -- RestartPolicy 测试 --
 
     #[test]
@@ -1510,6 +1708,76 @@ mod tests {
         // 100 * 2^63 would overflow, but saturating_mul handles it
         assert_eq!(policy.delay_ms_for(63), 1000);
         assert_eq!(policy.delay_ms_for(100), 1000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervised_child_drop_terminates_running_process() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        let supervised = supervised_child_for_test("drop_cleanup", child);
+
+        drop(supervised);
+
+        assert_process_exits(pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_shutdown_token_terminates_active_children() {
+        let supervisor_state = IntrospectionState::new();
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        let mut children = vec![supervised_child_for_test("shutdown_cleanup", child)];
+        let shutdown = ShutdownToken::new_for_test();
+        shutdown.request();
+
+        let result = supervise_children(&supervisor_state, &mut children, None, &shutdown);
+
+        assert!(result.is_ok());
+        assert!(children[0].finished);
+        assert_eq!(children[0].state, "shutdown");
+        assert_process_exits(pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_dependency_check_requires_ready_dependencies_for_runtime_ready() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let child = command.spawn().unwrap();
+        let mut supervised = supervised_child_for_test("worker", child);
+        supervised.readiness = ReadinessGate::RuntimeReady;
+        supervised.dependencies = vec!["driver".to_string()];
+        let mut spawned = BTreeSet::new();
+        spawned.insert("driver".to_string());
+        let ready = BTreeSet::new();
+
+        assert!(!child_dependencies_satisfied(&supervised, &spawned, &ready));
+
+        supervised.terminate("test_cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_dependency_check_allows_spawned_dependency_for_process_started() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let child = command.spawn().unwrap();
+        let mut supervised = supervised_child_for_test("worker", child);
+        supervised.readiness = ReadinessGate::ProcessStarted;
+        supervised.dependencies = vec!["driver".to_string()];
+        let mut spawned = BTreeSet::new();
+        spawned.insert("driver".to_string());
+        let ready = BTreeSet::new();
+
+        assert!(child_dependencies_satisfied(&supervised, &spawned, &ready));
+
+        supervised.terminate("test_cleanup");
     }
 
     #[test]
