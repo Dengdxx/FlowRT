@@ -284,6 +284,29 @@ backends = ["zenoh"]
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
+#[test]
+fn copy_dir_recursive_rejects_symlink_entries() {
+    let root = temp_test_dir("bundle-reject-symlink");
+    let source = root.join("source");
+    let dest = root.join("dest");
+    let outside = root.join("outside.txt");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("regular.txt"), "inside").unwrap();
+    std::fs::write(&outside, "outside").unwrap();
+    std::os::unix::fs::symlink(&outside, source.join("leak.txt")).unwrap();
+
+    let error = copy_dir_recursive(&source, &dest).unwrap_err();
+
+    assert!(
+        error.to_string().contains("symbolic link"),
+        "unexpected error: {error}"
+    );
+    assert!(!dest.join("leak.txt").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn deploy_bundle_dry_run_reports_plan() {
     let root = temp_test_dir("deploy-dry-run");
@@ -502,6 +525,78 @@ fn deploy_bundle_rejects_empty_host_even_in_dry_run() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_rejects_empty_remote_dir_even_in_dry_run() {
+    let root = temp_test_dir("deploy-remote-dir-empty");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "  ", true).unwrap_err();
+
+    assert!(
+        error.to_string().contains("remote_dir must not be empty"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn remote_flowrt_version_output_accepts_same_minor_patch_mismatch() {
+    let warning =
+        validate_remote_flowrt_version_check(true, "flowrt 0.7.9\n", "", "0.7.0").unwrap();
+
+    assert!(
+        warning
+            .as_deref()
+            .is_some_and(|message| message.contains("remote patch version 0.7.9")),
+        "unexpected warning: {warning:?}"
+    );
+}
+
+#[test]
+fn remote_flowrt_version_output_rejects_incompatible_minor() {
+    let error =
+        validate_remote_flowrt_version_check(true, "flowrt 0.8.0\n", "", "0.7.0").unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("incompatible remote FlowRT version"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn remote_flowrt_version_output_rejects_missing_version() {
+    let error =
+        validate_remote_flowrt_version_check(true, "flowrt development build\n", "", "0.7.0")
+            .unwrap_err();
+
+    assert!(
+        error.to_string().contains("did not contain"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

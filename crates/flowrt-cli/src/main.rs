@@ -1229,7 +1229,15 @@ fn push_unique_external_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn copy_required_file(source: &Path, dest: &Path) -> Result<()> {
-    if !source.is_file() {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("failed to inspect bundle file `{}`", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "bundle source `{}` is a symbolic link; symlinks are not allowed",
+            source.display()
+        );
+    }
+    if !metadata.is_file() {
         anyhow::bail!("required bundle file `{}` does not exist", source.display());
     }
     if let Some(parent) = dest.parent() {
@@ -1247,7 +1255,15 @@ fn copy_required_file(source: &Path, dest: &Path) -> Result<()> {
 }
 
 fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
-    if !source.is_dir() {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("failed to inspect bundle directory `{}`", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "bundle source `{}` is a symbolic link; symlinks are not allowed",
+            source.display()
+        );
+    }
+    if !metadata.is_dir() {
         anyhow::bail!(
             "required bundle directory `{}` does not exist",
             source.display()
@@ -1261,9 +1277,17 @@ fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
             entry.with_context(|| format!("failed to read `{}` entry", source.display()))?;
         let path = entry.path();
         let target = dest.join(entry.file_name());
-        if path.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect bundle source `{}`", path.display()))?;
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "bundle source `{}` is a symbolic link; symlinks are not allowed",
+                path.display()
+            );
+        } else if file_type.is_dir() {
             copy_dir_recursive(&path, &target)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             copy_required_file(&path, &target)?;
         }
     }
@@ -1303,6 +1327,7 @@ fn deploy_bundle(
     dry_run: bool,
 ) -> Result<String> {
     validate_deploy_host(host)?;
+    validate_deploy_remote_dir(remote_dir)?;
     let loaded = load_bundle_manifest(bundle)?;
     let manifest = loaded.manifest;
     if manifest.target != target {
@@ -1311,11 +1336,11 @@ fn deploy_bundle(
             manifest.target
         );
     }
-    let warning = loaded
-        .version_warning
-        .as_deref()
-        .map(|message| format!(" warning={message}"))
-        .unwrap_or_default();
+    let mut warnings = Vec::new();
+    if let Some(version_warning) = loaded.version_warning {
+        warnings.push(version_warning);
+    }
+    let warning = deploy_warning_suffix(&warnings);
     if dry_run {
         return Ok(format!(
             "deploy plan bundle={} host={} target={} remote_dir={} entry={}{}",
@@ -1332,11 +1357,18 @@ fn deploy_bundle(
         .arg("--")
         .arg(host)
         .arg("flowrt --version")
-        .status()
+        .output()
         .with_context(|| format!("failed to spawn ssh for host `{host}`"))?;
-    if !version_check.success() {
-        anyhow::bail!("remote FlowRT version check failed with status {version_check}");
+    let remote_warning = validate_remote_flowrt_version_check(
+        version_check.status.success(),
+        &String::from_utf8_lossy(&version_check.stdout),
+        &String::from_utf8_lossy(&version_check.stderr),
+        &manifest.flowrt_version,
+    )?;
+    if let Some(remote_warning) = remote_warning {
+        warnings.push(remote_warning);
     }
+    let warning = deploy_warning_suffix(&warnings);
 
     let remote = format!("{host}:{remote_dir}");
     let upload = ProcessCommand::new("scp")
@@ -1358,12 +1390,70 @@ fn deploy_bundle(
     ))
 }
 
+fn deploy_warning_suffix(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        String::new()
+    } else {
+        format!(" warning={}", warnings.join("; "))
+    }
+}
+
+fn validate_remote_flowrt_version_check(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+    bundle_version: &str,
+) -> Result<Option<String>> {
+    if !success {
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            anyhow::bail!("remote FlowRT version check failed");
+        }
+        anyhow::bail!("remote FlowRT version check failed: {stderr}");
+    }
+
+    let remote_version = parse_flowrt_version_output(stdout)?;
+    remote_version_warning(remote_version, bundle_version)
+}
+
+fn parse_flowrt_version_output(output: &str) -> Result<&str> {
+    output
+        .split_whitespace()
+        .find(|token| parse_flowrt_release_version(token).is_ok())
+        .context("remote `flowrt --version` output did not contain a MAJOR.MINOR.PATCH version")
+}
+
+fn remote_version_warning(remote_version: &str, bundle_version: &str) -> Result<Option<String>> {
+    if remote_version == bundle_version {
+        return Ok(None);
+    }
+    let remote = parse_flowrt_release_version(remote_version)
+        .with_context(|| format!("invalid remote FlowRT version `{remote_version}`"))?;
+    let bundle = parse_flowrt_release_version(bundle_version)
+        .with_context(|| format!("invalid FlowRT bundle version `{bundle_version}`"))?;
+    if remote.major == bundle.major && remote.minor == bundle.minor {
+        return Ok(Some(format!(
+            "remote patch version {remote_version} differs from bundle {bundle_version}; deploy is allowed within the same major.minor release line"
+        )));
+    }
+    anyhow::bail!(
+        "incompatible remote FlowRT version: remote has FlowRT {remote_version}, but bundle was created with FlowRT {bundle_version}"
+    );
+}
+
 fn validate_deploy_host(host: &str) -> Result<()> {
     if host.is_empty() {
         anyhow::bail!("deploy host must not be empty");
     }
     if host.starts_with('-') {
         anyhow::bail!("deploy host `{host}` is invalid: host must not start with `-`");
+    }
+    Ok(())
+}
+
+fn validate_deploy_remote_dir(remote_dir: &str) -> Result<()> {
+    if remote_dir.trim().is_empty() {
+        anyhow::bail!("deploy remote_dir must not be empty");
     }
     Ok(())
 }
