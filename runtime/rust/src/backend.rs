@@ -24,6 +24,8 @@ pub enum BackendHealthState {
     Reconnecting,
     /// 重连预算耗尽或错误不可恢复。
     Failed,
+    /// backend SDK 未编译进当前构建，配置错误不可恢复。
+    Unsupported,
 }
 
 /// backend 或 endpoint 的健康快照。
@@ -184,6 +186,17 @@ impl BackendHealthTracker {
             state: BackendHealthState::Failed,
             last_error: Some(error.into()),
             attempt,
+            next_retry_unix_ms: None,
+            recoverable: false,
+        };
+    }
+
+    /// 标记 endpoint 所需 backend SDK 未编译进当前构建。
+    pub fn mark_unsupported(&mut self, error: impl Into<String>) {
+        self.snapshot = BackendHealthSnapshot {
+            state: BackendHealthState::Unsupported,
+            last_error: Some(error.into()),
+            attempt: 0,
             next_retry_unix_ms: None,
             recoverable: false,
         };
@@ -602,6 +615,15 @@ mod tests {
         assert_eq!(
             tracker.snapshot().last_error.as_deref(),
             Some("retry budget exhausted")
+        );
+        assert!(!tracker.snapshot().recoverable);
+
+        tracker.mark_unsupported("backend SDK unavailable");
+        assert_eq!(tracker.snapshot().state, BackendHealthState::Unsupported);
+        assert_eq!(tracker.snapshot().attempt, 0);
+        assert_eq!(
+            tracker.snapshot().last_error.as_deref(),
+            Some("backend SDK unavailable")
         );
         assert!(!tracker.snapshot().recoverable);
     }

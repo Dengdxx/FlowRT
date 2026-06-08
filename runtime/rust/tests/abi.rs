@@ -5,10 +5,12 @@ use flowrt::{
     abi::{
         FLOWRT_ABI_VERSION_MAJOR, FLOWRT_ABI_VERSION_MINOR, FLOWRT_BACKEND_HEALTH_DEGRADED,
         FLOWRT_BACKEND_HEALTH_FAILED, FLOWRT_BACKEND_HEALTH_READY,
-        FLOWRT_BACKEND_HEALTH_RECONNECTING, FLOWRT_BACKEND_INPROC, FLOWRT_BACKEND_IOX2,
-        FLOWRT_BACKEND_ZENOH, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
-        FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtReconnectPolicy, FlowrtStringView,
-        backend_health_snapshot_to_abi, reconnect_policy_to_abi, status_to_abi,
+        FLOWRT_BACKEND_HEALTH_RECONNECTING, FLOWRT_BACKEND_HEALTH_UNSUPPORTED,
+        FLOWRT_BACKEND_INPROC, FLOWRT_BACKEND_IOX2, FLOWRT_BACKEND_ZENOH, FLOWRT_STATUS_ERROR,
+        FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY, FlowrtBackendHealthSnapshot, FlowrtBytesView,
+        FlowrtI128, FlowrtReconnectPolicy, FlowrtStringView, FlowrtU128,
+        backend_health_snapshot_to_abi, backend_health_state_to_abi, reconnect_policy_to_abi,
+        status_to_abi,
     },
 };
 
@@ -36,6 +38,12 @@ fn abi_backend_codes_are_stable() {
     assert_eq!(FLOWRT_BACKEND_HEALTH_DEGRADED, 1);
     assert_eq!(FLOWRT_BACKEND_HEALTH_RECONNECTING, 2);
     assert_eq!(FLOWRT_BACKEND_HEALTH_FAILED, 3);
+    assert_eq!(FLOWRT_BACKEND_HEALTH_UNSUPPORTED, 4);
+
+    assert_eq!(
+        backend_health_state_to_abi(BackendHealthState::Unsupported),
+        FLOWRT_BACKEND_HEALTH_UNSUPPORTED
+    );
 }
 
 #[test]
@@ -49,6 +57,19 @@ fn abi_views_have_c_pointer_and_size_layout() {
     assert_eq!(align_of::<FlowrtBytesView>(), align_of::<usize>());
     assert_eq!(offset_of!(FlowrtBytesView, data), 0);
     assert_eq!(offset_of!(FlowrtBytesView, len), size_of::<usize>());
+}
+
+#[test]
+fn abi_128_bit_pods_match_c_layout() {
+    assert_eq!(size_of::<FlowrtU128>(), 16);
+    assert_eq!(align_of::<FlowrtU128>(), 8);
+    assert_eq!(offset_of!(FlowrtU128, lo), 0);
+    assert_eq!(offset_of!(FlowrtU128, hi), 8);
+
+    assert_eq!(size_of::<FlowrtI128>(), 16);
+    assert_eq!(align_of::<FlowrtI128>(), 8);
+    assert_eq!(offset_of!(FlowrtI128, lo), 0);
+    assert_eq!(offset_of!(FlowrtI128, hi), 8);
 }
 
 #[test]

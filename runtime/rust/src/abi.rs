@@ -26,6 +26,7 @@ pub const FLOWRT_BACKEND_HEALTH_READY: FlowrtBackendHealthState = 0;
 pub const FLOWRT_BACKEND_HEALTH_DEGRADED: FlowrtBackendHealthState = 1;
 pub const FLOWRT_BACKEND_HEALTH_RECONNECTING: FlowrtBackendHealthState = 2;
 pub const FLOWRT_BACKEND_HEALTH_FAILED: FlowrtBackendHealthState = 3;
+pub const FLOWRT_BACKEND_HEALTH_UNSUPPORTED: FlowrtBackendHealthState = 4;
 
 /// C ABI string borrowed view.
 #[repr(C)]
@@ -75,6 +76,22 @@ impl FlowrtBytesView {
     }
 }
 
+/// C ABI unsigned 128-bit POD，低 64 位在前，高 64 位在后。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowrtU128 {
+    pub lo: u64,
+    pub hi: u64,
+}
+
+/// C ABI signed 128-bit POD，使用 two's complement 位模式，低 64 位在前。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowrtI128 {
+    pub lo: u64,
+    pub hi: u64,
+}
+
 /// C ABI reconnect policy.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +138,7 @@ pub const fn backend_health_state_to_abi(state: BackendHealthState) -> FlowrtBac
         BackendHealthState::Degraded => FLOWRT_BACKEND_HEALTH_DEGRADED,
         BackendHealthState::Reconnecting => FLOWRT_BACKEND_HEALTH_RECONNECTING,
         BackendHealthState::Failed => FLOWRT_BACKEND_HEALTH_FAILED,
+        BackendHealthState::Unsupported => FLOWRT_BACKEND_HEALTH_UNSUPPORTED,
     }
 }
 
