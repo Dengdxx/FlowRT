@@ -200,6 +200,46 @@ jobs:
           cargo test -p flowrt-codegen tasks -j1
           cargo test -p flowrt executor -j1
 
+  v060-runtime-smoke:
+    name: v0.6.0 Runtime Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Operation RSDL/IR/validator/codegen 测试
+        run: |
+          cargo test -p flowrt-rsdl operation -j1
+          cargo test -p flowrt-ir operation -j1
+          cargo test -p flowrt-validate operation -j1
+          cargo test -p flowrt-codegen operation -j1
+
+      - name: Operation runtime/CLI/status 测试
+        run: |
+          cargo test -p flowrt operation -j1
+          cargo test -p flowrt-cli operation -j1
+          cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
+
+      - name: Record format/runtime/CLI 测试
+        run: |
+          cargo test -p flowrt-record -j1
+          cargo test -p flowrt-cli record -j1
+          cargo test -p flowrt introspection -j1
+
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
     runs-on: ${{ matrix.runner }}
@@ -271,6 +311,7 @@ jobs:
       - rust-test
       - cpp-runtime
       - v050-runtime-smoke
+      - v060-runtime-smoke
 
     steps:
       - name: 检出仓库
@@ -376,6 +417,7 @@ jobs:
           flowrt run --run-steps 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
           flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
           FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+          scripts/test-v060-installed-smoke.sh
 
   ros2-jazzy-bridge:
     name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
@@ -495,6 +537,7 @@ jobs:
       - rust-clippy
       - cpp-runtime
       - v050-runtime-smoke
+      - v060-runtime-smoke
       - cpp-zenoh-runtime
       - package
       - demo-smoke
