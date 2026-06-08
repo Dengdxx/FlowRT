@@ -16,6 +16,7 @@
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证无界 variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
+| `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 
 ## `import_demo`
 
@@ -373,6 +374,111 @@ flowrt run examples/service_demo/service_demo.rsdl --process main --run-steps 50
 flowrt list examples/service_demo/flowrt/selfdesc/selfdesc.json
 flowrt status
 ```
+
+## `operation_demo`
+
+入口文件：
+
+```text
+examples/operation_demo/rsdl/robot.rsdl
+examples/operation_demo/src/rust/mod.rs
+```
+
+该示例验证 Operation 的用户主语义：RSDL 声明 typed operation client/server，
+`[[bind.operation]]` 绑定双方，codegen 生成 typed client handle 和 server handler，
+self-description 保留 Operation endpoint 与 lowering refs，CLI 用 `flowrt op list`
+展示 Operation 主视图。
+
+RSDL 声明 goal、feedback 和 result 类型：
+
+```toml
+[component.controller.operation_client.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator.operation_server.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+backend = "inproc"
+timeout_ms = 5000
+queue_depth = 4
+max_in_flight = 1
+concurrency = "reject"
+preempt = "reject"
+feedback = "latest"
+result_retention_ms = 60000
+```
+
+用户代码实现 server handler：
+
+```rust
+impl Navigator for NavigatorImpl {
+    fn on_plan_operation(
+        &mut self,
+        goal: &PlanGoal,
+        cancel: flowrt::OperationCancelToken,
+        progress: &mut flowrt::OperationProgressPublisher<PlanFeedback>,
+    ) -> flowrt::OperationHandlerResult<PlanResult> {
+        if cancel.is_canceled() {
+            return flowrt::OperationHandlerResult::canceled();
+        }
+        progress.publish(PlanFeedback { progress: 1.0 });
+        flowrt::OperationHandlerResult::succeeded(PlanResult {
+            accepted: goal.target > 0,
+        })
+    }
+}
+```
+
+构建、运行和查看 Operation 拓扑：
+
+```bash
+flowrt check examples/operation_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl
+flowrt run --run-steps 5 examples/operation_demo/rsdl/robot.rsdl --process main
+flowrt op list --image examples/operation_demo/flowrt/selfdesc/selfdesc.json
+```
+
+当前 inproc Operation 会在生成物内部 lower 成 start/cancel/status service 与
+feedback/result endpoint；用户文档和 CLI 的主视图仍是 Operation。跨进程 `zenoh`
+Operation 当前只生成非 panic placeholder，不作为可运行示例。
+
+## record smoke
+
+`flowrt record` 录制 live runtime 事件到 MCAP 文件，不需要 RSDL 源文件或生成应用
+二进制。最小 smoke 可以用 C++ counter demo 启动一个运行中进程，然后按 socket
+录制：
+
+```bash
+export XDG_RUNTIME_DIR="$(mktemp -d)"
+flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=10 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control &
+pid=$!
+flowrt status
+socket="$(
+  flowrt status | awk '/package=cpp_counter_demo/ {
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^socket=/) {
+        sub(/^socket=/, "", $i)
+        print $i
+        exit
+      }
+    }
+  }'
+)"
+flowrt record --output counter.mcap --duration 250ms --all --socket "$socket"
+kill "$pid"
+wait "$pid" 2>/dev/null || true
+```
+
+命令结束后会输出 `event_count`、`dropped_count` 和 `bytes_written`。没有执行
+`flowrt record` 时，runtime recorder tap 处于关闭状态，不持续复制 channel payload。
 
 ## Supervisor 和调度健康
 

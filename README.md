@@ -20,7 +20,8 @@ User code controls algorithms.
 - 在 `src/` 中实现组件算法。
 - 用 `flowrt build` 生成并构建应用。
 - 用 `flowrt run` 或 `flowrt launch` 运行应用。
-- 用 `flowrt status`、`flowrt echo`、`flowrt hz` 和 `flowrt params` 观察运行状态。
+- 用 `flowrt status`、`flowrt echo`、`flowrt hz`、`flowrt params`、`flowrt op` 和
+  `flowrt record` 观察运行状态。
 
 FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/development.md)。
 
@@ -65,6 +66,7 @@ flowrt --version
 | task | instance 的执行单元，描述 trigger、输入、输出、周期和 deadline。 |
 | channel route | 从一个输出端口到一个输入端口的 typed dataflow 边。 |
 | service route | 从 service client 到 service server 的 typed request/response 边。 |
+| operation route | 从 operation client 到 operation server 的 typed long-running command 边。 |
 | profile | 一套构建/部署选择，例如默认 backend、channel policy。 |
 | target | 部署目标能力，例如 runtime 语言和可用 backend。 |
 | backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
@@ -74,7 +76,7 @@ flowrt --version
 核心模型：
 
 ```text
-component -> instance -> task -> channel route / service route
+component -> instance -> task -> channel route / service route / operation route
 ```
 
 FlowRT 的核心对象是可编译、可校验、可重新生成的数据流系统契约。
@@ -369,14 +371,55 @@ scheduler，request arrival 直接唤醒 server 处理。
 **错误语义：** `Timeout`（超时）、`Busy`（队列满）、`Unavailable`（server 未注册）、
 `WouldDeadlock`（同 lane 阻塞调用）、`HandlerError`（用户业务错误）。
 
-**Service 与 Operation 的边界：** Service 是同步 request/response；Operation（v0.6.0
-规划）是 typed long-running command，底层编译期 lower 成 Service + Channel，用户只看
+**Service 与 Operation 的边界：** Service 是同步 request/response；Operation 是
+typed long-running command，底层编译期 lower 成 Service + Channel，用户只看
 Operation，调试时才展开底层拓扑。
 
 查看 service 拓扑和运行态健康：
 
 ```bash
 flowrt list path/to/selfdesc.json
+flowrt status
+```
+
+## Operation
+
+Operation 表达长耗时命令，例如导航、建图任务或一次可取消的规划执行。它和 Service
+的区别是：Service 返回一个同步 response；Operation 有 goal、feedback、result、
+状态机、取消入口和运行态可观测 handle。
+
+component 声明 operation client/server 端口，graph 用 `[[bind.operation]]` 绑定双方：
+
+```toml
+[component.controller.operation_client.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator.operation_server.plan]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+backend = "inproc"
+timeout_ms = 5000
+queue_depth = 4
+max_in_flight = 1
+```
+
+codegen 为 client 生成 `OperationClient_{instance}_{port}` typed handle，为 server
+生成 `on_{port}_operation(goal, cancel, progress)` handler。`inproc` Operation 会被编译期
+lower 成内部 start/cancel/status service 与 feedback/result endpoint；`flowrt list`
+和 `flowrt op list` 默认展示 Operation 主语义，需要调试时再查看 lowering refs。
+
+查看 Operation 拓扑和运行态状态：
+
+```bash
+flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl
+flowrt op list --image examples/operation_demo/flowrt/selfdesc/selfdesc.json
 flowrt status
 ```
 
@@ -479,6 +522,16 @@ flowrt echo channel_name --follow
 
 `flowrt echo` 的数据面 probe 按需启用。没有 observer 时，发布路径不会编码 payload、不会拷贝 payload、不会写 socket。
 
+录制 FlowRT 事件到 MCAP：
+
+```bash
+flowrt record --output run.mcap --duration 10s --all
+flowrt record --output op.mcap --operation controller.plan --force
+```
+
+`flowrt record` 通过 live runtime socket 按需启用 recorder tap。没有录制者时，发布热路径
+不会持续复制 payload；命令结束时会输出 event、drop 和写入字节统计。
+
 ### 调度健康
 
 `flowrt status` 会展示 task 级和 lane 级调度健康指标：
@@ -570,6 +623,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 无界 variable frame、zenoh 跨主机 transport 和 mixed launch。 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | FlowRT string 输出经 zenoh bridge 发布到 ROS2 topic。 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | Service request/response、typed API、inproc call、service policy 和健康观测。 |
+| `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | Operation client/server typed API、自描述和 `flowrt op list`。 |
 
 完整说明见 [示例矩阵](docs/examples.md)。
 

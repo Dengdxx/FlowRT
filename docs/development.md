@@ -54,6 +54,10 @@ flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --run-steps 5 --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl
 FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl
+flowrt run --run-steps 5 examples/operation_demo/rsdl/robot.rsdl --process main
+flowrt op list --image examples/operation_demo/flowrt/selfdesc/selfdesc.json
+scripts/test-v060-installed-smoke.sh
 ```
 
 ROS2 bridge 本地 smoke 需要 ROS2 Jazzy 或之后版本的 C++ 开发环境，以及运行时 `rmw_zenoh_cpp`。该 bridge 只允许 zenoh 路径，不接受 DDS fallback。普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。执行前 source ROS2 环境，生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`：
@@ -75,6 +79,11 @@ scripts/test-ros2-bridge-installed.sh --distro jazzy
 ```
 
 `scripts/test-deb-installed-user-project.sh` 会从 deb 中解包 `flowrt`，在临时用户项目目录里构建示例，验证生成项目不依赖 FlowRT 源码树。ROS2 bridge 安装后 smoke 由 `scripts/test-ros2-bridge-installed.sh` 单独负责；它要求本机已经安装对应 ROS2 发行版、`rmw_zenoh_cpp`，并且 PATH 中的 `flowrt` 来自 FlowRT 安装包或解包后的安装前缀。该脚本会构建并运行 `ros2_bridge_demo`，确认 generated adapter 链接 ROS2 自带 `zenoh_cpp_vendor` 并能被 `ros2 topic echo /flowrt/text --once` 观察到。CI 会在官方 `ros:jazzy-ros-base-noble` 基础容器中运行常规 Linux job，并额外并行运行 `ros2-jazzy-bridge` 与 `ros2-lyrical-bridge` 两个强制 bridge smoke。
+
+`scripts/test-v060-installed-smoke.sh` 复用系统安装后的 `flowrt`，在临时用户项目中构建
+`operation_demo` 并运行 `flowrt op list`，再启动 `cpp_counter_demo` runtime 并用
+`flowrt record` 写出 MCAP 文件。它用于验证 v0.6.0 的 Operation 自描述和 record-only
+用户路径已经进入安装包 smoke。
 
 Mixed contract 的跨语言 Message ABI roundtrip 可用生成工程直接验证。先构建含 C++ 和 Rust 消息生成物的示例，CMake 会在构建 `message_abi` target 后写出 C++ sample bytes fixture；再运行生成 Rust crate 的 `message_abi` 测试读取并重建这些 fixture：
 
@@ -174,15 +183,20 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
-amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 C++ zenoh runtime、
-amd64/arm64 deb package、amd64/arm64 demo smoke、amd64/arm64 ROS2 Jazzy bridge
-smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，
+amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused smoke、
+amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、amd64/arm64 demo smoke、
+amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，
 并上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
 
 `v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
 supervisor readiness/resource、远程参数控制面、status/hz 健康展示、scheduler
 health 和 runtime introspection。它不替代 workspace 全量 Rust 测试，而是让 v0.5.0
 主线能力失败时能直接定位到对应 job step。
+
+`v0.6.0 Runtime Smoke` 使用同样的 amd64/arm64 gate，覆盖 Operation 的
+RSDL/IR/validator/codegen/runtime/CLI/status 路径，以及 record format、runtime tap 和
+CLI 写 MCAP 路径。安装包后的 demo smoke 会继续运行 `scripts/test-v060-installed-smoke.sh`，
+验证用户从系统安装的 `flowrt` 入口使用 Operation 和 record。
 
 发布前检查：
 
