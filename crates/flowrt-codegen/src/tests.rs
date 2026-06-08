@@ -9,6 +9,7 @@ mod channels;
 mod introspection;
 mod launch;
 mod messages;
+mod operation;
 mod params;
 mod ros2_bridge;
 mod services;

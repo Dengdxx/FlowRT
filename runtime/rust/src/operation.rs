@@ -12,6 +12,8 @@ use std::{
     time::Duration,
 };
 
+use crate::ServiceError;
+
 /// 唯一标识一次 Operation invocation。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OperationId {
@@ -109,6 +111,35 @@ impl std::fmt::Display for OperationError {
 }
 
 impl std::error::Error for OperationError {}
+
+/// Operation client 调用错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperationClientError {
+    Timeout,
+    Unavailable,
+    Busy,
+    Rejected,
+    Cancelled,
+    Backend,
+    WouldDeadlock,
+    HandlerError,
+}
+
+impl OperationClientError {
+    /// 从内部 service 错误映射到 Operation 用户错误。
+    pub const fn from_service_error(error: ServiceError) -> Self {
+        match error {
+            ServiceError::Timeout | ServiceError::DeadlineExceeded => Self::Timeout,
+            ServiceError::Unavailable => Self::Unavailable,
+            ServiceError::Busy => Self::Busy,
+            ServiceError::Rejected => Self::Rejected,
+            ServiceError::Cancelled => Self::Cancelled,
+            ServiceError::Backend | ServiceError::Protocol => Self::Backend,
+            ServiceError::WouldDeadlock => Self::WouldDeadlock,
+            ServiceError::HandlerError | ServiceError::Ok => Self::HandlerError,
+        }
+    }
+}
 
 /// Operation policy。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +307,20 @@ pub struct OperationStatusSnapshot {
     pub health: OperationHealthSnapshot,
 }
 
+/// Operation start 请求被 runtime 接受后的响应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperationStartAck {
+    pub id: OperationId,
+    pub accepted: bool,
+}
+
+impl OperationStartAck {
+    /// 构造 accepted ack。
+    pub const fn accepted(id: OperationId) -> Self {
+        Self { id, accepted: true }
+    }
+}
+
 /// Operation progress event carrier。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationProgress<T> {
@@ -292,6 +337,71 @@ impl<T> OperationProgress<T> {
             sequence,
             value,
         }
+    }
+}
+
+/// Operation progress 发布器。
+///
+/// 生成的 server handler 通过该类型发布 typed feedback。当前 inproc lowering 在 handler
+/// 返回后统一取走事件；后续跨进程 backend 可把相同事件流接到 transport channel。
+#[derive(Debug, Clone)]
+pub struct OperationProgressPublisher<T> {
+    id: OperationId,
+    next_sequence: u64,
+    events: Vec<OperationProgress<T>>,
+}
+
+impl<T> OperationProgressPublisher<T> {
+    /// 构造指定 invocation 的 progress 发布器。
+    pub const fn new(id: OperationId) -> Self {
+        Self {
+            id,
+            next_sequence: 0,
+            events: Vec::new(),
+        }
+    }
+
+    /// 发布一条 progress event。
+    pub fn publish(&mut self, value: T) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.events
+            .push(OperationProgress::new(self.id, sequence, value));
+    }
+
+    /// 借用当前已发布事件。
+    pub fn events(&self) -> &[OperationProgress<T>] {
+        &self.events
+    }
+
+    /// 取走当前已发布事件。
+    pub fn drain(&mut self) -> Vec<OperationProgress<T>> {
+        std::mem::take(&mut self.events)
+    }
+}
+
+/// Operation server handler 的 typed 结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationHandlerResult<T> {
+    Succeeded(T),
+    Failed,
+    Canceled,
+}
+
+impl<T> OperationHandlerResult<T> {
+    /// 构造成功结果。
+    pub const fn succeeded(value: T) -> Self {
+        Self::Succeeded(value)
+    }
+
+    /// 构造失败结果。
+    pub const fn failed() -> Self {
+        Self::Failed
+    }
+
+    /// 构造取消结果。
+    pub const fn canceled() -> Self {
+        Self::Canceled
     }
 }
 
@@ -396,4 +506,54 @@ fn valid_transition(from: OperationState, to: OperationState) -> bool {
             | (S::Canceling, S::Failed)
             | (S::Canceling, S::Timeout)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_progress_publisher_assigns_monotonic_sequences() {
+        let id = OperationId::new(1, 2, 3);
+        let mut publisher = OperationProgressPublisher::new(id);
+        publisher.publish(10u32);
+        publisher.publish(20u32);
+
+        assert_eq!(publisher.events()[0], OperationProgress::new(id, 0, 10));
+        assert_eq!(publisher.events()[1], OperationProgress::new(id, 1, 20));
+        assert_eq!(publisher.drain().len(), 2);
+        assert!(publisher.events().is_empty());
+    }
+
+    #[test]
+    fn operation_client_error_maps_service_error() {
+        assert_eq!(
+            OperationClientError::from_service_error(ServiceError::Backend),
+            OperationClientError::Backend
+        );
+        assert_eq!(
+            OperationClientError::from_service_error(ServiceError::WouldDeadlock),
+            OperationClientError::WouldDeadlock
+        );
+        assert_eq!(
+            OperationClientError::from_service_error(ServiceError::DeadlineExceeded),
+            OperationClientError::Timeout
+        );
+    }
+
+    #[test]
+    fn operation_handler_result_constructors_are_typed() {
+        assert_eq!(
+            OperationHandlerResult::succeeded(7u32),
+            OperationHandlerResult::Succeeded(7)
+        );
+        assert_eq!(
+            OperationHandlerResult::<u32>::failed(),
+            OperationHandlerResult::Failed
+        );
+        assert_eq!(
+            OperationHandlerResult::<u32>::canceled(),
+            OperationHandlerResult::Canceled
+        );
+    }
 }

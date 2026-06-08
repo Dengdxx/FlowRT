@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OverflowPolicy as IrOverflowPolicy,
-    ParamIr, Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr,
-    TaskReadiness, TriggerKind, TypeExpr,
+    BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OperationConcurrencyPolicy,
+    OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ParamIr,
+    Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness,
+    TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -315,6 +316,11 @@ pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> boo
             .iter()
             .flat_map(|graph| &graph.ros2_bridges)
             .any(|bridge| bridge.backend.0 == backend)
+        || contract
+            .graphs
+            .iter()
+            .flat_map(|graph| &graph.operations)
+            .any(|operation| operation.backend.0 == backend)
 }
 
 pub(crate) fn contract_backend_features(contract: &ContractIr) -> Vec<&'static str> {
@@ -508,6 +514,126 @@ pub(crate) fn server_service_plans<'a>(
     plans: &'a [ServiceRuntimePlan],
     instance_name: &str,
 ) -> Vec<&'a ServiceRuntimePlan> {
+    plans
+        .iter()
+        .filter(|plan| plan.server_instance == instance_name)
+        .collect()
+}
+
+/// operation bind 的 codegen 计划。
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct OperationRuntimePlan {
+    /// operation edge 索引。
+    pub(crate) index: usize,
+    /// operation canonical name（`{client_instance}.{client_port}`）。
+    pub(crate) operation_name: String,
+    /// client 端实例名。
+    pub(crate) client_instance: String,
+    /// client 端 component 名。
+    pub(crate) client_component: String,
+    /// client 端端口名。
+    pub(crate) client_port: String,
+    /// server 端实例名。
+    pub(crate) server_instance: String,
+    /// server 端 component 名。
+    pub(crate) server_component: String,
+    /// server 端端口名。
+    pub(crate) server_port: String,
+    /// goal 类型。
+    pub(crate) goal_type: TypeExpr,
+    /// feedback 类型。
+    pub(crate) feedback_type: TypeExpr,
+    /// result 类型。
+    pub(crate) result_type: TypeExpr,
+    /// backend 名称。
+    pub(crate) backend: BackendName,
+    /// 超时毫秒。
+    pub(crate) timeout_ms: u64,
+    /// 并发策略。
+    pub(crate) concurrency: OperationConcurrencyPolicy,
+    /// 抢占策略。
+    pub(crate) preempt: OperationPreemptPolicy,
+    /// 等待队列深度。
+    pub(crate) queue_depth: u32,
+    /// 最大 in-flight invocation 数。
+    pub(crate) max_in_flight: u32,
+    /// feedback 保留策略。
+    pub(crate) feedback: OperationFeedbackPolicy,
+    /// result 保留毫秒。
+    pub(crate) result_retention_ms: u64,
+}
+
+/// 为 graph 中所有 operation edge 生成 codegen 计划。
+pub(crate) fn operation_runtime_plans(
+    contract: &ContractIr,
+    graph: &GraphIr,
+) -> Vec<OperationRuntimePlan> {
+    graph
+        .operations
+        .iter()
+        .enumerate()
+        .map(|(index, operation)| {
+            let client_instance = &operation.client.instance.name;
+            let client_port = &operation.client.port;
+            let server_instance = &operation.server.instance.name;
+            let server_port = &operation.server.port;
+            let client_instance_ir = instance_by_name(graph, client_instance);
+            let server_instance_ir = instance_by_name(graph, server_instance);
+            let server_component = component_by_name(contract, &server_instance_ir.component.name);
+            let server_port_ir = server_component
+                .operation_servers
+                .iter()
+                .find(|port| port.name == *server_port)
+                .expect("validated operation bind must reference existing server port");
+
+            OperationRuntimePlan {
+                index,
+                operation_name: format!("{client_instance}.{client_port}"),
+                client_instance: client_instance.clone(),
+                client_component: client_instance_ir.component.name.clone(),
+                client_port: client_port.clone(),
+                server_instance: server_instance.clone(),
+                server_component: server_instance_ir.component.name.clone(),
+                server_port: server_port.clone(),
+                goal_type: server_port_ir.goal.clone(),
+                feedback_type: server_port_ir.feedback.clone(),
+                result_type: server_port_ir.result.clone(),
+                backend: operation.backend.clone(),
+                timeout_ms: operation.policy.timeout_ms,
+                concurrency: operation.policy.concurrency,
+                preempt: operation.policy.preempt,
+                queue_depth: operation.policy.queue_depth,
+                max_in_flight: operation.policy.max_in_flight,
+                feedback: operation.policy.feedback,
+                result_retention_ms: operation.policy.result_retention_ms,
+            }
+        })
+        .collect()
+}
+
+/// 获取 operation server 的 lane 名称。
+pub(crate) fn operation_server_lane(plan: &OperationRuntimePlan) -> String {
+    format!("{}_operation_serial", plan.server_instance)
+}
+
+/// 查找指定实例作为 client 的所有 operation plans。
+pub(crate) fn client_operation_plans<'a>(
+    plans: &'a [OperationRuntimePlan],
+    instance_name: &str,
+) -> Vec<&'a OperationRuntimePlan> {
+    plans
+        .iter()
+        .filter(|plan| plan.client_instance == instance_name)
+        .collect()
+}
+
+/// 查找指定实例作为 server 的所有 operation plans。
+#[allow(dead_code)]
+pub(crate) fn server_operation_plans<'a>(
+    plans: &'a [OperationRuntimePlan],
+    instance_name: &str,
+) -> Vec<&'a OperationRuntimePlan> {
     plans
         .iter()
         .filter(|plan| plan.server_instance == instance_name)

@@ -11,7 +11,7 @@ use crate::runtime_plan::{
 };
 use crate::{component_by_name, tasks_for_instance};
 
-use super::service_emit;
+use super::{operation_emit, service_emit};
 
 pub(super) struct RustStepEmission<'a> {
     pub contract: &'a ContractIr,
@@ -154,6 +154,16 @@ pub(super) fn emit_rust_app_step(
                 crate::runtime_plan::service_runtime_plans(emission.contract, emission.graph);
             for plan in crate::runtime_plan::client_service_plans(&service_plans, &instance.name) {
                 call_args.push(format!("&self.{}", service_emit::client_field_name(plan)));
+            }
+            let operation_plans =
+                crate::runtime_plan::operation_runtime_plans(emission.contract, emission.graph);
+            for plan in
+                crate::runtime_plan::client_operation_plans(&operation_plans, &instance.name)
+            {
+                call_args.push(format!(
+                    "&self.{}",
+                    operation_emit::operation_client_field_name(plan)
+                ));
             }
             for input in &component.inputs {
                 call_args.push(input.name.clone());

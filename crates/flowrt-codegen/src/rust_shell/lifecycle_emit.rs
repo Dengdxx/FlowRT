@@ -3,6 +3,7 @@ use flowrt_ir::{ContractIr, GraphIr, InstanceIr};
 use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, bind_backend};
 
 use super::backend_emit;
+use super::operation_emit;
 use super::scheduler_emit;
 use super::service_emit;
 
@@ -17,9 +18,11 @@ pub(super) fn emit_rust_app_new(
     let mut output = String::new();
     output.push_str("    pub fn new(\n");
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     let server_instances: std::collections::BTreeSet<&str> = service_plans
         .iter()
         .map(|p| p.server_instance.as_str())
+        .chain(operation_plans.iter().map(|p| p.server_instance.as_str()))
         .collect();
     for instance in order {
         let component = crate::component_by_name(contract, &instance.component.name);
@@ -58,6 +61,18 @@ pub(super) fn emit_rust_app_new(
         service_emit::emit_rust_service_new(contract, graph, dataflow_lane_count);
     if !service_registration.is_empty() {
         output.push_str(&service_registration);
+    }
+    let inproc_service_count = service_plans
+        .iter()
+        .filter(|plan| plan.backend.0 != "zenoh")
+        .count();
+    let (operation_registration, _operation_initializers) = operation_emit::emit_rust_operation_new(
+        contract,
+        graph,
+        dataflow_lane_count + inproc_service_count,
+    );
+    if !operation_registration.is_empty() {
+        output.push_str(&operation_registration);
     }
     output.push_str("        Self {\n");
     for instance in order {
@@ -102,6 +117,14 @@ pub(super) fn emit_rust_app_new(
     if !service_initializers.is_empty() {
         output.push_str(&service_initializers);
     }
+    let (_operation_registration, operation_initializers) = operation_emit::emit_rust_operation_new(
+        contract,
+        graph,
+        dataflow_lane_count + inproc_service_count,
+    );
+    if !operation_initializers.is_empty() {
+        output.push_str(&operation_initializers);
+    }
     output.push_str("            startup_status,\n");
     output.push_str("        }\n    }\n");
     output
@@ -124,9 +147,11 @@ pub(super) fn emit_rust_app_run(
     binds: &[BindRuntimePlan],
 ) -> String {
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     let service_server_instances: std::collections::BTreeSet<String> = service_plans
         .iter()
         .map(|p| p.server_instance.clone())
+        .chain(operation_plans.iter().map(|p| p.server_instance.clone()))
         .collect();
     emit_rust_app_run_function(RustRunFunctionEmission {
         contract,
@@ -170,9 +195,11 @@ pub(super) fn emit_process_run_functions(
     output: &mut String,
 ) {
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     let service_server_instances: std::collections::BTreeSet<String> = service_plans
         .iter()
         .map(|p| p.server_instance.clone())
+        .chain(operation_plans.iter().map(|p| p.server_instance.clone()))
         .collect();
     for process in processes {
         let step_function_name = format!("step_process_{}", process.method_suffix);

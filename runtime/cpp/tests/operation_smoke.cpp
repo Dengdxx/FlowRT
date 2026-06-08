@@ -81,6 +81,36 @@ int main() {
     assert(progress.id.operation_key == 9U);
     assert(progress.sequence == 3U);
     assert(progress.value == 42);
+    flowrt::OperationProgressPublisher<int> publisher{flowrt::OperationId{7U, 8U, 9U}};
+    publisher.publish(1);
+    publisher.publish(2);
+    assert(publisher.events().size() == 2U);
+    assert(publisher.events()[0].sequence == 0U);
+    assert(publisher.events()[1].sequence == 1U);
+    assert(publisher.drain().size() == 2U);
+    assert(publisher.events().empty());
+
+    const auto ack = flowrt::OperationStartAck::accepted_ack(id);
+    assert(ack.accepted);
+    assert(ack.id == id);
+    assert(flowrt::operation_client_error_from_service_error(flowrt::ServiceError::Backend) ==
+           flowrt::OperationClientError::Backend);
+    assert(flowrt::operation_client_error_from_service_error(flowrt::ServiceError::WouldDeadlock) ==
+           flowrt::OperationClientError::WouldDeadlock);
+    const auto client_ok = flowrt::OperationClientResult<int>::ok(12);
+    assert(client_ok.is_ok());
+    assert(client_ok.value().has_value());
+    assert(*client_ok.value() == 12);
+    const auto client_err =
+        flowrt::OperationClientResult<int>::err(flowrt::OperationClientError::Backend);
+    assert(client_err.is_err());
+    assert(client_err.error_code() == flowrt::OperationClientError::Backend);
+    auto handler_result = flowrt::OperationHandlerResult<int>::succeeded(5);
+    assert(handler_result.kind() == flowrt::OperationHandlerResult<int>::Kind::Succeeded);
+    assert(handler_result.value().has_value());
+    assert(*handler_result.value() == 5);
+    assert(flowrt::OperationHandlerResult<int>::failed().kind() ==
+           flowrt::OperationHandlerResult<int>::Kind::Failed);
 
     flowrt::OperationHealthCounters counters;
     counters.record_state(flowrt::OperationState::Running);

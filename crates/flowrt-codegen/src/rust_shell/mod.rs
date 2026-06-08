@@ -1,6 +1,7 @@
 pub(crate) mod backend_emit;
 mod introspection_emit;
 mod lifecycle_emit;
+pub(crate) mod operation_emit;
 pub(crate) mod params_emit;
 mod scheduler_emit;
 pub(crate) mod service_emit;
@@ -18,6 +19,10 @@ use crate::{component_by_name, component_rust_name, managed_header};
 use backend_emit::selected_backend_name;
 use introspection_emit::emit_rust_introspection_helpers;
 use lifecycle_emit::{emit_rust_app_new, emit_rust_app_run};
+use operation_emit::{
+    emit_rust_operation_client_handles, emit_rust_operation_step_functions,
+    operation_client_handle_name, rust_operation_handler_methods,
+};
 use params_emit::rust_params_struct;
 use scheduler_emit::emit_all_step_functions;
 use service_emit::{
@@ -30,13 +35,17 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("\nuse crate::messages::*;\n\n");
 
-    // 预先计算 service plans（整个 contract 的）
+    // 预先计算 service/operation plans（整个 contract 的）
     let graph = contract.graphs.first();
     let service_plans = graph
         .map(|g| crate::runtime_plan::service_runtime_plans(contract, g))
         .unwrap_or_default();
+    let operation_plans = graph
+        .map(|g| crate::runtime_plan::operation_runtime_plans(contract, g))
+        .unwrap_or_default();
     if let Some(g) = graph {
         output.push_str(&emit_rust_service_client_handles(contract, g));
+        output.push_str(&emit_rust_operation_client_handles(contract, g));
     }
 
     for component in contract
@@ -76,8 +85,17 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
         // service handler 方法
         if let Some(g) = graph {
             output.push_str(&rust_service_handler_methods(component, g, &service_plans));
+            output.push_str(&rust_operation_handler_methods(
+                component,
+                g,
+                &operation_plans,
+            ));
         }
-        output.push_str(&rust_tick_signature(component, &service_plans));
+        output.push_str(&rust_tick_signature(
+            component,
+            &service_plans,
+            &operation_plans,
+        ));
         output.push_str("}\n\n");
     }
     output
@@ -118,9 +136,11 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output.push_str("pub struct App {\n");
     output.push_str("    startup_status: flowrt::Status,\n");
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     let server_instances: std::collections::BTreeSet<&str> = service_plans
         .iter()
         .map(|p| p.server_instance.as_str())
+        .chain(operation_plans.iter().map(|p| p.server_instance.as_str()))
         .collect();
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
@@ -165,6 +185,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     }
     // service client/server fields
     output.push_str(&service_emit::rust_app_service_fields(contract, graph));
+    output.push_str(&operation_emit::rust_app_operation_fields(contract, graph));
     output.push_str("}\n\n");
 
     output.push_str("impl App {\n");
@@ -198,6 +219,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     scheduler_emit::emit_process_step_functions(&step_emission, graph, &process_plans, &mut output);
     // service hidden task step functions
     output.push_str(&emit_rust_service_step_functions(contract, graph));
+    output.push_str(&emit_rust_operation_step_functions(contract, graph));
     output.push_str(&emit_rust_app_run(contract, graph, &order, &bind_plans));
     output.push_str(&lifecycle_emit::emit_rust_app_run_process_dispatch(
         &process_plans,
@@ -239,6 +261,7 @@ pub(crate) fn emit_rust_main() -> String {
 fn rust_callback_args(
     component: &ComponentIr,
     service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
+    operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
 ) -> Vec<String> {
     let mut args = Vec::new();
     let mut emitted_service_args = std::collections::BTreeSet::new();
@@ -250,6 +273,20 @@ fn rust_callback_args(
         let arg_name = crate::snake_identifier(&plan.client_port);
         if emitted_service_args.insert(arg_name.clone()) {
             args.push(format!("{arg_name}: &{}", client_handle_name(plan)));
+        }
+    }
+    let mut emitted_operation_args = std::collections::BTreeSet::new();
+    for plan in operation_plans.iter().filter(|plan| {
+        plan.client_component == component.name
+            || plan.client_component == component.generated_name
+            || plan.client_component == component.qualified_name
+    }) {
+        let arg_name = crate::snake_identifier(&plan.client_port);
+        if emitted_operation_args.insert(arg_name.clone()) {
+            args.push(format!(
+                "{arg_name}: &{}",
+                operation_client_handle_name(plan)
+            ));
         }
     }
     for input in &component.inputs {
@@ -275,9 +312,10 @@ fn rust_callback_args(
 fn rust_tick_signature(
     component: &ComponentIr,
     service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
+    operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
 ) -> String {
-    let args = rust_callback_args(component, service_plans);
-    let doc = rust_tick_doc(component, service_plans);
+    let args = rust_callback_args(component, service_plans, operation_plans);
+    let doc = rust_tick_doc(component, service_plans, operation_plans);
     if args.is_empty() {
         format!("{doc}    fn on_tick(&mut self) -> flowrt::Status;\n")
     } else {
@@ -306,6 +344,7 @@ fn rust_lifecycle_doc(brief: &str) -> String {
 fn rust_tick_doc(
     component: &ComponentIr,
     service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
+    operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
 ) -> String {
     let mut output = format!(
         "    /// 执行一次 `{}` 组件调度回调。\n    ///\n    /// runtime shell 按 Contract IR 中的 task 和 dataflow 顺序调用该方法。输入使用 latest snapshot 视图，输出通过 `flowrt::Output<T>` 写入，本方法不得保存输入引用到回调之外。\n",
@@ -330,6 +369,19 @@ fn rust_tick_doc(
         if emitted_service_args.insert(arg_name.clone()) {
             output.push_str(&format!(
                 "    /// - `{arg_name}`: typed service client handle。\n"
+            ));
+        }
+    }
+    let mut emitted_operation_args = std::collections::BTreeSet::new();
+    for plan in operation_plans.iter().filter(|plan| {
+        plan.client_component == component.name
+            || plan.client_component == component.generated_name
+            || plan.client_component == component.qualified_name
+    }) {
+        let arg_name = crate::snake_identifier(&plan.client_port);
+        if emitted_operation_args.insert(arg_name.clone()) {
+            output.push_str(&format!(
+                "    /// - `{arg_name}`: typed Operation client handle。\n"
             ));
         }
     }

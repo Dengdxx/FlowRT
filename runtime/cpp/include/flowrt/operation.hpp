@@ -3,9 +3,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <flowrt/service.hpp>
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace flowrt {
 
@@ -41,6 +44,20 @@ enum class OperationError : std::uint8_t {
     Ok = 0,                 ///< 操作成功。
     InvalidTransition = 1,  ///< 状态转换不合法。
     InvalidPolicy = 2,      ///< policy 字段非法。
+};
+
+/**
+ * @brief Operation client 调用错误。
+ */
+enum class OperationClientError : std::uint8_t {
+    Timeout = 0,
+    Unavailable = 1,
+    Busy = 2,
+    Rejected = 3,
+    Cancelled = 4,
+    Backend = 5,
+    WouldDeadlock = 6,
+    HandlerError = 7,
 };
 
 /**
@@ -97,6 +114,74 @@ inline std::string_view to_string(OperationError error) noexcept {
             return "InvalidPolicy";
     }
     return "Unknown";
+}
+
+inline OperationClientError operation_client_error_from_service_error(ServiceError error) noexcept {
+    switch (error) {
+        case ServiceError::Timeout:
+        case ServiceError::DeadlineExceeded:
+            return OperationClientError::Timeout;
+        case ServiceError::Unavailable:
+            return OperationClientError::Unavailable;
+        case ServiceError::Busy:
+            return OperationClientError::Busy;
+        case ServiceError::Rejected:
+            return OperationClientError::Rejected;
+        case ServiceError::Cancelled:
+            return OperationClientError::Cancelled;
+        case ServiceError::Backend:
+        case ServiceError::Protocol:
+            return OperationClientError::Backend;
+        case ServiceError::WouldDeadlock:
+            return OperationClientError::WouldDeadlock;
+        case ServiceError::HandlerError:
+        case ServiceError::Ok:
+            return OperationClientError::HandlerError;
+    }
+    return OperationClientError::HandlerError;
+}
+
+/**
+ * @brief Operation client typed result。
+ */
+template <typename T>
+class OperationClientResult {
+   public:
+    static OperationClientResult ok(T value) {
+        OperationClientResult result;
+        result.value_ = std::move(value);
+        return result;
+    }
+
+    static OperationClientResult err(OperationClientError error) {
+        OperationClientResult result;
+        result.error_ = error;
+        return result;
+    }
+
+    constexpr bool is_ok() const noexcept { return value_.has_value(); }
+
+    constexpr bool is_err() const noexcept { return !is_ok(); }
+
+    constexpr OperationClientError error_code() const noexcept { return error_; }
+
+    const std::optional<T> &value() const noexcept { return value_; }
+
+   private:
+    std::optional<T> value_;
+    OperationClientError error_{OperationClientError::HandlerError};
+};
+
+template <typename T>
+OperationClientResult<T> operation_client_result_from_service(ServiceResult<T> result) {
+    if (result.is_ok()) {
+        auto value = std::move(result).take_value();
+        if (value.has_value()) {
+            return OperationClientResult<T>::ok(std::move(*value));
+        }
+        return OperationClientResult<T>::err(OperationClientError::HandlerError);
+    }
+    return OperationClientResult<T>::err(operation_client_error_from_service_error(result.error_code()));
 }
 
 /**
@@ -230,6 +315,18 @@ struct OperationStatusSnapshot {
 };
 
 /**
+ * @brief Operation start 请求被 runtime 接受后的响应。
+ */
+struct OperationStartAck {
+    OperationId id{};
+    bool accepted = false;
+
+    static constexpr OperationStartAck accepted_ack(OperationId value) noexcept {
+        return OperationStartAck{.id = value, .accepted = true};
+    }
+};
+
+/**
  * @brief Operation progress event carrier。
  */
 template <typename T>
@@ -237,6 +334,73 @@ struct OperationProgress {
     OperationId id{};
     std::uint64_t sequence = 0;
     T value{};
+};
+
+/**
+ * @brief Operation progress 发布器。
+ */
+template <typename T>
+class OperationProgressPublisher {
+   public:
+    explicit OperationProgressPublisher(OperationId id) : id_(id) {}
+
+    void publish(T value) {
+        events_.push_back(OperationProgress<T>{.id = id_, .sequence = next_sequence_++,
+                                               .value = std::move(value)});
+    }
+
+    const std::vector<OperationProgress<T>> &events() const noexcept { return events_; }
+
+    std::vector<OperationProgress<T>> drain() {
+        auto events = std::move(events_);
+        events_.clear();
+        return events;
+    }
+
+   private:
+    OperationId id_{};
+    std::uint64_t next_sequence_ = 0;
+    std::vector<OperationProgress<T>> events_;
+};
+
+/**
+ * @brief Operation server handler 的 typed 结果。
+ */
+template <typename T>
+class OperationHandlerResult {
+   public:
+    enum class Kind : std::uint8_t {
+        Succeeded,
+        Failed,
+        Canceled,
+    };
+
+    static OperationHandlerResult succeeded(T value) {
+        OperationHandlerResult result;
+        result.kind_ = Kind::Succeeded;
+        result.value_ = std::move(value);
+        return result;
+    }
+
+    static OperationHandlerResult failed() {
+        OperationHandlerResult result;
+        result.kind_ = Kind::Failed;
+        return result;
+    }
+
+    static OperationHandlerResult canceled() {
+        OperationHandlerResult result;
+        result.kind_ = Kind::Canceled;
+        return result;
+    }
+
+    constexpr Kind kind() const noexcept { return kind_; }
+
+    const std::optional<T> &value() const noexcept { return value_; }
+
+   private:
+    Kind kind_{Kind::Failed};
+    std::optional<T> value_;
 };
 
 /**

@@ -50,9 +50,10 @@ pub use introspection::{
     spawn_status_server, spawn_status_server_at,
 };
 pub use operation::{
-    OperationCancelToken, OperationConcurrencyPolicy, OperationError, OperationHealthCounters,
-    OperationHealthSnapshot, OperationId, OperationLifecycle, OperationPolicy,
-    OperationPreemptPolicy, OperationProgress, OperationState, OperationStatusSnapshot,
+    OperationCancelToken, OperationClientError, OperationConcurrencyPolicy, OperationError,
+    OperationHandlerResult, OperationHealthCounters, OperationHealthSnapshot, OperationId,
+    OperationLifecycle, OperationPolicy, OperationPreemptPolicy, OperationProgress,
+    OperationProgressPublisher, OperationStartAck, OperationState, OperationStatusSnapshot,
 };
 #[cfg(feature = "zenoh")]
 pub use params_remote::{
