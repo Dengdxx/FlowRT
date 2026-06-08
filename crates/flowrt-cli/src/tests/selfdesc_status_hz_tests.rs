@@ -364,6 +364,45 @@ fn live_hz_summary_reports_stale_socket_without_failing_scan() {
 }
 
 #[test]
+fn live_hz_summary_reports_non_status_response_as_stale() {
+    let root = temp_test_dir("live-hz-non-status");
+    let socket = root.join("non-status.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let response = flowrt::IntrospectionResponse::SelfDescription {
+        handshake: flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 78,
+            started_at_unix_ms: 1234,
+            self_description_hash: "feedface".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        },
+        json: "{}".to_string(),
+    };
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        std::io::BufRead::read_line(&mut reader, &mut request).unwrap();
+        let response = serde_json::to_string(&response).unwrap();
+        std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+        std::io::Write::write_all(&mut stream, b"\n").unwrap();
+    });
+
+    let output = live_hz_summary_for_sockets(None, vec![socket.clone()], Duration::from_millis(1))
+        .expect("non-status response should be reported as stale");
+
+    assert!(output.contains(&format!(
+        "stale socket={} error=unexpected introspection response",
+        socket.display()
+    )));
+    server.join().unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn self_description_summary_displays_service_endpoints() {
     let source = r#"
 {

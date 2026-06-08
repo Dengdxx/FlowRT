@@ -1713,7 +1713,11 @@ pub(crate) fn live_hz_summary_for_sockets(
     let mut lines = Vec::new();
     for socket in &sockets {
         match flowrt::request_status(socket) {
-            Ok(response) => first.push((socket.clone(), response)),
+            Ok(response) => {
+                if let Some(status) = hz_status_or_stale(socket, response, &mut lines) {
+                    first.push((socket.clone(), status));
+                }
+            }
             Err(error) => lines.push(format!("stale socket={} error={error}", socket.display())),
         }
     }
@@ -1726,7 +1730,12 @@ pub(crate) fn live_hz_summary_for_sockets(
 
     for (socket, first_status) in first {
         let second_status = match flowrt::request_status(&socket) {
-            Ok(response) => response,
+            Ok(response) => {
+                let Some(status) = hz_status_or_stale(&socket, response, &mut lines) else {
+                    continue;
+                };
+                status
+            }
             Err(error) => {
                 lines.push(format!("stale socket={} error={error}", socket.display()));
                 continue;
@@ -1747,6 +1756,27 @@ pub(crate) fn live_hz_summary_for_sockets(
         }
     } else {
         Ok(lines.join("\n"))
+    }
+}
+
+fn hz_status_or_stale(
+    socket: &Path,
+    response: flowrt::IntrospectionResponse,
+    lines: &mut Vec<String>,
+) -> Option<flowrt::IntrospectionResponse> {
+    match response {
+        status @ flowrt::IntrospectionResponse::Status { .. } => Some(status),
+        flowrt::IntrospectionResponse::Error { message, .. } => {
+            lines.push(format!("stale socket={} error={message}", socket.display()));
+            None
+        }
+        _ => {
+            lines.push(format!(
+                "stale socket={} error=unexpected introspection response",
+                socket.display()
+            ));
+            None
+        }
     }
 }
 
