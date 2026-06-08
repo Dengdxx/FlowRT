@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <flowrt/abi.h>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -11,6 +12,18 @@
 #include <vector>
 
 namespace flowrt {
+
+using UInt128 = flowrt_u128_t;
+using Int128 = flowrt_i128_t;
+
+static_assert(sizeof(UInt128) == 16U);
+static_assert(sizeof(Int128) == 16U);
+static_assert(alignof(UInt128) == alignof(std::uint64_t));
+static_assert(alignof(Int128) == alignof(std::uint64_t));
+static_assert(std::is_standard_layout_v<UInt128>);
+static_assert(std::is_standard_layout_v<Int128>);
+static_assert(std::is_trivially_copyable_v<UInt128>);
+static_assert(std::is_trivially_copyable_v<Int128>);
 
 /**
  * @brief canonical wire codec 错误。
@@ -121,6 +134,16 @@ void write_wire_le(std::span<std::uint8_t> output, std::size_t offset, T value) 
     }
 }
 
+inline void write_wire_le(std::span<std::uint8_t> output, std::size_t offset, UInt128 value) {
+    write_wire_le(output, offset, value.lo);
+    write_wire_le(output, offset + sizeof(std::uint64_t), value.hi);
+}
+
+inline void write_wire_le(std::span<std::uint8_t> output, std::size_t offset, Int128 value) {
+    write_wire_le(output, offset, value.lo);
+    write_wire_le(output, offset + sizeof(std::uint64_t), value.hi);
+}
+
 /**
  * @brief 按 little-endian 读取一个 fixed-size scalar。
  */
@@ -131,6 +154,18 @@ T read_wire_le(std::span<const std::uint8_t> input, std::size_t offset) {
         storage |= static_cast<detail::WireStorageT<T>>(input[offset + index]) << (index * 8U);
     }
     return detail::wire_from_storage<T>(storage);
+}
+
+template <>
+inline UInt128 read_wire_le<UInt128>(std::span<const std::uint8_t> input, std::size_t offset) {
+    return UInt128{read_wire_le<std::uint64_t>(input, offset),
+                   read_wire_le<std::uint64_t>(input, offset + sizeof(std::uint64_t))};
+}
+
+template <>
+inline Int128 read_wire_le<Int128>(std::span<const std::uint8_t> input, std::size_t offset) {
+    return Int128{read_wire_le<std::uint64_t>(input, offset),
+                  read_wire_le<std::uint64_t>(input, offset + sizeof(std::uint64_t))};
 }
 
 inline constexpr std::size_t VAR_SPAN_WIRE_SIZE = 8U;

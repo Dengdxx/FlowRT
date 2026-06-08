@@ -1,4 +1,5 @@
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -7,7 +8,7 @@
 #include <flowrt/runtime.hpp>
 #include <optional>
 #include <string_view>
-#include <atomic>
+#include <type_traits>
 #include <vector>
 
 struct Sample {
@@ -74,6 +75,14 @@ int main() {
     static_assert(offsetof(flowrt_backend_health_snapshot_t, attempt) == 4U);
     static_assert(offsetof(flowrt_backend_health_snapshot_t, next_retry_unix_ms) == 8U);
     static_assert(offsetof(flowrt_backend_health_snapshot_t, last_error) == 16U);
+    static_assert(sizeof(flowrt_u128_t) == 16U);
+    static_assert(sizeof(flowrt_i128_t) == 16U);
+    static_assert(offsetof(flowrt_u128_t, lo) == 0U);
+    static_assert(offsetof(flowrt_u128_t, hi) == 8U);
+    static_assert(offsetof(flowrt_i128_t, lo) == 0U);
+    static_assert(offsetof(flowrt_i128_t, hi) == 8U);
+    static_assert(std::is_same_v<flowrt::UInt128, flowrt_u128_t>);
+    static_assert(std::is_same_v<flowrt::Int128, flowrt_i128_t>);
 
     flowrt::Context context;
     (void)context;
@@ -92,6 +101,21 @@ int main() {
     };
     assert(bytes_view.data[2] == 3U);
     assert(bytes_view.len == 3U);
+
+    const flowrt::UInt128 wide_unsigned{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    std::array<std::uint8_t, 16> wide_wire{};
+    flowrt::write_wire_le(wide_wire, 0, wide_unsigned);
+    assert((wide_wire == std::array<std::uint8_t, 16>{0xEFU, 0xCDU, 0xABU, 0x89U, 0x67U, 0x45U,
+                                                      0x23U, 0x01U, 0x10U, 0x32U, 0x54U, 0x76U,
+                                                      0x98U, 0xBAU, 0xDCU, 0xFEU}));
+    const auto wide_unsigned_roundtrip = flowrt::read_wire_le<flowrt::UInt128>(wide_wire, 0);
+    assert(wide_unsigned_roundtrip.lo == wide_unsigned.lo);
+    assert(wide_unsigned_roundtrip.hi == wide_unsigned.hi);
+    const flowrt::Int128 wide_signed{0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL};
+    flowrt::write_wire_le(wide_wire, 0, wide_signed);
+    const auto wide_signed_roundtrip = flowrt::read_wire_le<flowrt::Int128>(wide_wire, 0);
+    assert(wide_signed_roundtrip.lo == wide_signed.lo);
+    assert(wide_signed_roundtrip.hi == wide_signed.hi);
 
     const flowrt_reconnect_policy_t abi_policy{
         .initial_delay_ms = 100U,
@@ -302,8 +326,8 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
         data_waiter.notify_data();
     });
-    assert(data_waiter.wait_until(std::chrono::steady_clock::now() + std::chrono::seconds{1}, data_shutdown) ==
-           flowrt::ScheduleEvent::Data);
+    assert(data_waiter.wait_until(std::chrono::steady_clock::now() + std::chrono::seconds{1},
+                                  data_shutdown) == flowrt::ScheduleEvent::Data);
     data_notifier.join();
 
     const flowrt::ScheduleWaiter const_notifier = data_waiter;
@@ -315,23 +339,27 @@ int main() {
     auto barrier_shutdown = flowrt::ShutdownToken::new_for_test();
     barrier_waiter.notify_data();
     const auto seen_generation = barrier_waiter.data_generation();
-    assert(barrier_waiter.wait_until_after(seen_generation,
-                                           std::chrono::steady_clock::now() + std::chrono::milliseconds{1},
-                                           barrier_shutdown) == flowrt::ScheduleEvent::Timer);
+    assert(barrier_waiter.wait_until_after(
+               seen_generation, std::chrono::steady_clock::now() + std::chrono::milliseconds{1},
+               barrier_shutdown) == flowrt::ScheduleEvent::Timer);
 
     flowrt::ScheduleWaiter timer_waiter;
     auto timer_shutdown = flowrt::ShutdownToken::new_for_test();
-    assert(timer_waiter.wait_until(std::chrono::steady_clock::now(), timer_shutdown) == flowrt::ScheduleEvent::Timer);
+    assert(timer_waiter.wait_until(std::chrono::steady_clock::now(), timer_shutdown) ==
+           flowrt::ScheduleEvent::Timer);
 
     flowrt::ScheduleWaiter shutdown_waiter;
     auto shutdown_for_waiter = flowrt::ShutdownToken::new_for_test();
     shutdown_for_waiter.request();
-    assert(shutdown_waiter.wait_until(std::nullopt, shutdown_for_waiter) == flowrt::ScheduleEvent::Shutdown);
+    assert(shutdown_waiter.wait_until(std::nullopt, shutdown_for_waiter) ==
+           flowrt::ScheduleEvent::Shutdown);
 
     flowrt::DeterministicExecutor executor{1};
     executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 10});
-    executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
+    executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 10});
+    executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
     executor.wake(flowrt::TaskId{1});
     executor.wake(flowrt::TaskId{2});
     std::vector<flowrt::TaskId> executor_order;
@@ -344,9 +372,12 @@ int main() {
     flowrt::DeterministicExecutor fair_executor{1};
     fair_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
     fair_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
-    fair_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    fair_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
-    fair_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{3}, .lane = flowrt::LaneId{2}, .priority = 99});
+    fair_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    fair_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
+    fair_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{3}, .lane = flowrt::LaneId{2}, .priority = 99});
     fair_executor.wake(flowrt::TaskId{1});
     fair_executor.wake(flowrt::TaskId{2});
     fair_executor.wake(flowrt::TaskId{3});
@@ -355,12 +386,15 @@ int main() {
         fair_order.push_back(task);
         return flowrt::Status::Ok;
     });
-    assert((fair_order == std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{3}, flowrt::TaskId{2}}));
+    assert((fair_order ==
+            std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{3}, flowrt::TaskId{2}}));
 
     flowrt::DeterministicExecutor timer_executor{1};
     timer_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    timer_executor.add_task(flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    timer_executor.add_periodic(flowrt::PeriodicSpec{.task = flowrt::TaskId{1}, .period = std::chrono::milliseconds{10}});
+    timer_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    timer_executor.add_periodic(
+        flowrt::PeriodicSpec{.task = flowrt::TaskId{1}, .period = std::chrono::milliseconds{10}});
     timer_executor.advance_to(std::chrono::milliseconds{35});
     std::vector<flowrt::TaskId> timer_order;
     timer_executor.run_ready([&timer_order](flowrt::TaskId task) {

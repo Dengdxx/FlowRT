@@ -45,6 +45,16 @@ typedef struct flowrt_bytes_view_t {
     size_t len;
 } flowrt_bytes_view_t;
 
+typedef struct flowrt_u128_t {
+    uint64_t lo;
+    uint64_t hi;
+} flowrt_u128_t;
+
+typedef struct flowrt_i128_t {
+    uint64_t lo;
+    uint64_t hi;
+} flowrt_i128_t;
+
 typedef struct flowrt_reconnect_policy_t {
     uint64_t initial_delay_ms;
     uint64_t max_delay_ms;

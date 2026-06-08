@@ -678,12 +678,12 @@ fn cpp_primitive(primitive: PrimitiveType) -> &'static str {
         PrimitiveType::U16 => "std::uint16_t",
         PrimitiveType::U32 => "std::uint32_t",
         PrimitiveType::U64 => "std::uint64_t",
-        PrimitiveType::U128 => "unsigned __int128",
+        PrimitiveType::U128 => "flowrt::UInt128",
         PrimitiveType::I8 => "std::int8_t",
         PrimitiveType::I16 => "std::int16_t",
         PrimitiveType::I32 => "std::int32_t",
         PrimitiveType::I64 => "std::int64_t",
-        PrimitiveType::I128 => "__int128",
+        PrimitiveType::I128 => "flowrt::Int128",
         PrimitiveType::F32 => "float",
         PrimitiveType::F64 => "double",
     }
@@ -1437,12 +1437,18 @@ fn cpp_primitive_sample(primitive: PrimitiveType, seed: usize) -> String {
         PrimitiveType::U16 => format!("std::uint16_t{{{value}}}"),
         PrimitiveType::U32 => format!("std::uint32_t{{{value}}}"),
         PrimitiveType::U64 => format!("std::uint64_t{{{value}}}"),
-        PrimitiveType::U128 => format!("static_cast<unsigned __int128>({value})"),
+        PrimitiveType::U128 => {
+            format!("flowrt::UInt128{{std::uint64_t{{{value}}}, std::uint64_t{{0}}}}")
+        }
         PrimitiveType::I8 => format!("std::int8_t{{-{value}}}"),
         PrimitiveType::I16 => format!("std::int16_t{{-{value}}}"),
         PrimitiveType::I32 => format!("std::int32_t{{-{value}}}"),
         PrimitiveType::I64 => format!("std::int64_t{{-{value}}}"),
-        PrimitiveType::I128 => format!("static_cast<__int128>(-{value})"),
+        PrimitiveType::I128 => {
+            format!(
+                "flowrt::Int128{{std::uint64_t{{0}} - std::uint64_t{{{value}}}, std::numeric_limits<std::uint64_t>::max()}}"
+            )
+        }
         PrimitiveType::F32 => format!("{value}.25F"),
         PrimitiveType::F64 => format!("{value}.25"),
     }

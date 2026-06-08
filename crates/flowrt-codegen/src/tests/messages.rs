@@ -183,6 +183,52 @@ input = ["packet:Packet"]
 }
 
 #[test]
+fn cpp_messages_use_standard_128_bit_pod_types() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "wide_demo"
+rsdl_version = "0.1"
+
+[type.Wide]
+unsigned_value = "u128"
+signed_value = "i128"
+
+[component.producer]
+language = "cpp"
+output = ["wide:Wide"]
+
+[instance.producer]
+component = "producer"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["wide"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+    let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+
+    assert!(cpp_messages.contains("flowrt::UInt128 unsigned_value"));
+    assert!(cpp_messages.contains("flowrt::Int128 signed_value"));
+    assert!(cpp_messages.contains("flowrt::read_wire_le<flowrt::UInt128>"));
+    assert!(cpp_messages.contains("flowrt::read_wire_le<flowrt::Int128>"));
+    assert!(!cpp_messages.contains("__int128"));
+    assert!(cpp_abi.contains("flowrt::UInt128{"));
+    assert!(cpp_abi.contains("flowrt::Int128{"));
+    assert!(!cpp_abi.contains("__int128"));
+}
+
+#[test]
 fn message_abi_tests_assert_default_initialization_zeroes_padding_bytes() {
     let ir = contract_from_source(
         r#"
