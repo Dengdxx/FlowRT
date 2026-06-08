@@ -32,7 +32,20 @@ impl ContractIr {
 
     /// 解析已落盘的 Contract IR JSON 文档。
     pub fn from_json_str(source: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(source)
+        use serde::de::Error as _;
+
+        let mut ignored_fields = Vec::new();
+        let mut deserializer = serde_json::Deserializer::from_str(source);
+        let contract = serde_ignored::deserialize(&mut deserializer, |path| {
+            ignored_fields.push(path.to_string());
+        })?;
+        deserializer.end()?;
+        if let Some(path) = ignored_fields.first() {
+            return Err(serde_json::Error::custom(format!(
+                "unknown Contract IR field `{path}`"
+            )));
+        }
+        Ok(contract)
     }
 }
 
@@ -667,5 +680,73 @@ impl LifecycleSurface {
             on_stop: true,
             on_shutdown: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, RSDL_VERSION};
+
+    fn minimal_contract() -> ContractIr {
+        ContractIr {
+            ir_version: CONTRACT_IR_VERSION.to_string(),
+            schema_version: CONTRACT_SCHEMA_VERSION.to_string(),
+            source_hash: "sha256:test".to_string(),
+            package_id: EntityId("package:demo".to_string()),
+            package: PackageIr {
+                name: "demo".to_string(),
+                version: None,
+                rsdl_version: RSDL_VERSION.to_string(),
+                imports: Vec::new(),
+            },
+            modules: Vec::new(),
+            types: Vec::new(),
+            components: Vec::new(),
+            graphs: Vec::new(),
+            profiles: Vec::new(),
+            targets: Vec::new(),
+            deployments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn from_json_str_rejects_unknown_top_level_field() {
+        let mut value = serde_json::to_value(minimal_contract()).unwrap();
+        value["unexpected"] = serde_json::json!(true);
+        let source = serde_json::to_string(&value).unwrap();
+
+        let error = ContractIr::from_json_str(&source).expect_err("unknown field must fail");
+
+        assert!(
+            error.to_string().contains("unknown Contract IR field"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("unexpected"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn from_json_str_rejects_unknown_nested_field() {
+        let mut value = serde_json::to_value(minimal_contract()).unwrap();
+        value["package"]["unexpected"] = serde_json::json!("bad");
+        let source = serde_json::to_string(&value).unwrap();
+
+        let error = ContractIr::from_json_str(&source).expect_err("nested unknown field must fail");
+
+        assert!(
+            error.to_string().contains("unknown Contract IR field"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("package"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains("unexpected"),
+            "unexpected error: {error}"
+        );
     }
 }
