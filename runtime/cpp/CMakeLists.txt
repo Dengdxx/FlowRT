@@ -61,6 +61,10 @@ add_executable(flowrt_service_smoke tests/service_smoke.cpp)
 target_link_libraries(flowrt_service_smoke PRIVATE flowrt_runtime)
 add_test(NAME flowrt_service_smoke COMMAND flowrt_service_smoke)
 
+add_executable(flowrt_operation_smoke tests/operation_smoke.cpp)
+target_link_libraries(flowrt_operation_smoke PRIVATE flowrt_runtime)
+add_test(NAME flowrt_operation_smoke COMMAND flowrt_operation_smoke)
+
 add_executable(flowrt_inproc_service_smoke tests/inproc_service_smoke.cpp)
 target_link_libraries(flowrt_inproc_service_smoke PRIVATE flowrt_runtime)
 add_test(NAME flowrt_inproc_service_smoke COMMAND flowrt_inproc_service_smoke)

@@ -12,6 +12,7 @@ pub mod inproc;
 pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
+pub mod operation;
 #[cfg(feature = "zenoh")]
 pub mod params_remote;
 pub mod service;
@@ -47,6 +48,11 @@ pub use introspection::{
     request_channel_snapshot, request_param_get, request_param_list, request_param_set,
     request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
     spawn_status_server, spawn_status_server_at,
+};
+pub use operation::{
+    OperationCancelToken, OperationConcurrencyPolicy, OperationError, OperationHealthCounters,
+    OperationHealthSnapshot, OperationId, OperationLifecycle, OperationPolicy,
+    OperationPreemptPolicy, OperationProgress, OperationState, OperationStatusSnapshot,
 };
 #[cfg(feature = "zenoh")]
 pub use params_remote::{
