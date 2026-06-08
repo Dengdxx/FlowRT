@@ -159,7 +159,7 @@ FLOWRT_TICK_SLEEP_MS=20 flowrt launch --run-steps 500 examples/imu_demo_iox2/rsd
 另开一个终端查看 live 参数：
 
 ```bash
-flowrt params list examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json
+flowrt params list --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json
 ```
 
 ## `profile_switch_demo`
