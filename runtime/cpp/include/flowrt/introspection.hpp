@@ -82,17 +82,22 @@ struct IntrospectionProbeRecord {
  * 这里不启动后台线程，也不在 recorder 关闭时复制 payload。
  */
 struct IntrospectionRecorderEvent {
-    std::string kind;
+    std::uint16_t schema_version = 1;
+    std::string event_kind;
     std::string package;
     std::string process;
     std::uint32_t runtime_pid = 0;
-    std::string self_description_hash;
+    std::string selfdesc_hash;
+    std::uint64_t monotonic_ns = 0;
+    std::uint64_t wall_unix_ns = 0;
+    std::uint64_t sequence = 0;
     std::string entity_kind;
     std::string entity_name;
-    std::string message_type;
+    std::optional<std::string> entity_instance;
+    std::optional<std::string> entity_task;
+    std::optional<std::string> entity_type_name;
     std::string payload_encoding;
     std::string payload_schema;
-    std::optional<std::uint64_t> monotonic_ns;
     std::vector<std::uint8_t> payload;
 };
 
@@ -404,6 +409,12 @@ inline std::uint64_t unix_time_ms() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
     return millis < 0 ? 0U : static_cast<std::uint64_t>(millis);
+}
+
+inline std::uint64_t unix_time_ns() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    return nanos < 0 ? 0U : static_cast<std::uint64_t>(nanos);
 }
 
 inline std::string json_string(std::string_view value) {
@@ -769,30 +780,54 @@ inline std::string payload_json(const std::optional<std::vector<std::uint8_t>> &
     return output;
 }
 
-inline std::string recorder_event_json(const IntrospectionRecorderEvent &event) {
+inline std::string recorder_entity_json(const IntrospectionRecorderEvent &event) {
     std::string output;
     output.append("{\"kind\":");
-    output.append(json_string(event.kind));
+    output.append(json_string(event.entity_kind));
+    output.append(",\"name\":");
+    output.append(json_string(event.entity_name));
+    if (event.entity_instance) {
+        output.append(",\"instance\":");
+        output.append(json_string(*event.entity_instance));
+    }
+    if (event.entity_task) {
+        output.append(",\"task\":");
+        output.append(json_string(*event.entity_task));
+    }
+    if (event.entity_type_name) {
+        output.append(",\"type_name\":");
+        output.append(json_string(*event.entity_type_name));
+    }
+    output.push_back('}');
+    return output;
+}
+
+inline std::string recorder_event_json(const IntrospectionRecorderEvent &event) {
+    std::string output;
+    output.append("{\"schema_version\":");
+    output.append(std::to_string(event.schema_version));
+    output.append(",\"event_kind\":");
+    output.append(json_string(event.event_kind));
     output.append(",\"package\":");
     output.append(json_string(event.package));
     output.append(",\"process\":");
     output.append(json_string(event.process));
     output.append(",\"runtime_pid\":");
     output.append(std::to_string(event.runtime_pid));
-    output.append(",\"self_description_hash\":");
-    output.append(json_string(event.self_description_hash));
-    output.append(",\"entity_kind\":");
-    output.append(json_string(event.entity_kind));
-    output.append(",\"entity_name\":");
-    output.append(json_string(event.entity_name));
-    output.append(",\"message_type\":");
-    output.append(json_string(event.message_type));
+    output.append(",\"selfdesc_hash\":");
+    output.append(json_string(event.selfdesc_hash));
+    output.append(",\"monotonic_ns\":");
+    output.append(std::to_string(event.monotonic_ns));
+    output.append(",\"wall_unix_ns\":");
+    output.append(std::to_string(event.wall_unix_ns));
+    output.append(",\"sequence\":");
+    output.append(std::to_string(event.sequence));
+    output.append(",\"entity\":");
+    output.append(recorder_entity_json(event));
     output.append(",\"payload_encoding\":");
     output.append(json_string(event.payload_encoding));
     output.append(",\"payload_schema\":");
     output.append(json_string(event.payload_schema));
-    output.append(",\"monotonic_ns\":");
-    output.append(event.monotonic_ns ? std::to_string(*event.monotonic_ns) : "null");
     output.append(",\"payload\":");
     output.append(payload_json(std::optional<std::vector<std::uint8_t>>{event.payload}));
     output.push_back('}');
@@ -1403,6 +1438,7 @@ class IntrospectionState {
         inner_->recorder.events.clear();
         inner_->recorder.dropped_count = 0;
         inner_->recorder.bytes_written = 0;
+        inner_->recorder.sequence = 0;
         inner_->recorder.output = std::move(start.output);
         inner_->recorder.filters = std::move(start.filters);
         inner_->recorder.queue_depth = start.queue_depth;
@@ -1617,8 +1653,15 @@ class IntrospectionState {
      * @brief 记录 service 运行态健康状态快照。
      */
     void record_service_health(IntrospectionServiceStatus status) const {
+        const auto payload = "{\"ready\":" + std::string(status.ready ? "true" : "false") +
+                             ",\"in_flight\":" + std::to_string(status.in_flight) +
+                             ",\"queued\":" + std::to_string(status.queued) +
+                             ",\"total_requests\":" + std::to_string(status.total_requests) + "}";
+        const auto name = status.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->services.insert_or_assign(status.name, std::move(status));
+        record_event_locked("service", name, "service_event", "service", name, "", "json",
+                            "service_health", string_bytes(payload), std::nullopt);
     }
 
     /**
@@ -1915,6 +1958,7 @@ class IntrospectionState {
         std::size_t queue_depth = 1024;
         std::uint64_t dropped_count = 0;
         std::uint64_t bytes_written = 0;
+        std::uint64_t sequence = 0;
         std::vector<IntrospectionRecorderEvent> events;
         std::string package;
         std::string process;
@@ -1949,6 +1993,14 @@ class IntrospectionState {
 
     static std::vector<std::uint8_t> string_bytes(std::string_view value) {
         return std::vector<std::uint8_t>{value.begin(), value.end()};
+    }
+
+    static std::optional<std::string> instance_from_endpoint(std::string_view name) {
+        const auto dot = name.find('.');
+        if (dot == std::string_view::npos) {
+            return std::nullopt;
+        }
+        return std::string{name.substr(0, dot)};
     }
 
     static std::string trim_recorder_filter(std::string filter) {
@@ -2003,18 +2055,31 @@ class IntrospectionState {
             }
             return IntrospectionProbeRecord{.recorded = false, .dropped = true};
         }
+        const auto sequence = inner_->recorder.sequence;
+        if (inner_->recorder.sequence != UINT64_MAX) {
+            ++inner_->recorder.sequence;
+        }
         IntrospectionRecorderEvent event{
-            .kind = std::string{event_kind},
+            .schema_version = 1,
+            .event_kind = std::string{event_kind},
             .package = inner_->recorder.package,
             .process = inner_->recorder.process,
             .runtime_pid = inner_->recorder.runtime_pid,
-            .self_description_hash = inner_->recorder.self_description_hash,
+            .selfdesc_hash = inner_->recorder.self_description_hash,
+            .monotonic_ns = monotonic_ns.value_or(0U),
+            .wall_unix_ns = detail::unix_time_ns(),
+            .sequence = sequence,
             .entity_kind = std::string{entity_kind},
             .entity_name = std::string{entity_name},
-            .message_type = std::string{message_type},
+            .entity_instance = instance_from_endpoint(entity_name),
+            .entity_task = entity_kind == "task"
+                               ? std::optional<std::string>{std::string{entity_name}}
+                               : std::nullopt,
+            .entity_type_name = message_type.empty()
+                                    ? std::nullopt
+                                    : std::optional<std::string>{std::string{message_type}},
             .payload_encoding = std::string{payload_encoding},
             .payload_schema = std::string{payload_schema},
-            .monotonic_ns = monotonic_ns,
             .payload = std::vector<std::uint8_t>{payload.begin(), payload.end()},
         };
         inner_->recorder.bytes_written =

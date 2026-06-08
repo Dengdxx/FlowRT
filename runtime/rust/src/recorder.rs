@@ -252,6 +252,40 @@ impl RecorderTap {
         )
     }
 
+    pub fn record_service_event_json(
+        &self,
+        name: &str,
+        payload_schema: &str,
+        payload: serde_json::Value,
+    ) -> RecorderTapOutcome {
+        if !self.enabled() {
+            return RecorderTapOutcome::default();
+        }
+        let Ok(payload) = serde_json::to_vec(&payload) else {
+            return RecorderTapOutcome {
+                recorded: false,
+                dropped: true,
+            };
+        };
+        let entity = RecordEntity {
+            kind: RecordEntityKind::Service,
+            name: name.to_string(),
+            instance: instance_from_endpoint(name),
+            task: None,
+            type_name: None,
+        };
+        self.record_bytes(
+            "service",
+            name,
+            RecordEventKind::ServiceEvent,
+            entity,
+            PayloadEncoding::Json,
+            payload_schema,
+            &payload,
+            None,
+        )
+    }
+
     pub fn record_scheduler_event_json(
         &self,
         kind: RecordEntityKind,

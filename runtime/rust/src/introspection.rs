@@ -868,8 +868,18 @@ impl IntrospectionState {
 
     /// 记录 service 运行态健康状态快照。
     pub fn record_service_health(&self, status: IntrospectionServiceStatus) {
+        let name = status.name.clone();
+        let payload = serde_json::json!({
+            "ready": status.ready,
+            "in_flight": status.in_flight,
+            "queued": status.queued,
+            "total_requests": status.total_requests,
+        });
         let mut inner = self.lock_inner();
-        inner.services.insert(status.name.clone(), status);
+        inner.services.insert(name.clone(), status);
+        drop(inner);
+        self.recorder
+            .record_service_event_json(&name, "service_health", payload);
     }
 
     /// 预注册一个 operation endpoint，使其在尚未收到 goal 时也出现在 status 中。
@@ -2789,6 +2799,17 @@ mod tests {
             .set_param_pending("controller.kp", serde_json::json!(2.0))
             .expect("param set should be accepted");
         state.record_param_applied("controller.kp", serde_json::json!(2.0));
+        state.record_service_health(IntrospectionServiceStatus {
+            name: "planner.plan_to_executor.execute".to_string(),
+            ready: true,
+            in_flight: 1,
+            queued: 0,
+            total_requests: 1,
+            timeout_count: 0,
+            busy_count: 0,
+            unavailable_count: 0,
+            late_drop_count: 0,
+        });
         state.record_operation_health(IntrospectionOperationStatus {
             name: "controller.plan".to_string(),
             ready: true,
@@ -2821,6 +2842,10 @@ mod tests {
         assert!(events.iter().any(|event| {
             event.event_kind == flowrt_record::RecordEventKind::ParamEvent
                 && event.entity.name == "controller.kp"
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_kind == flowrt_record::RecordEventKind::ServiceEvent
+                && event.entity.name == "planner.plan_to_executor.execute"
         }));
         assert!(events.iter().any(|event| {
             event.event_kind == flowrt_record::RecordEventKind::OperationEvent

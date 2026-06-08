@@ -184,17 +184,42 @@ int main() {
     assert(recorder_status.bytes_written == 2U);
     const auto recorder_events = recorder_state.drain_recorder_events();
     assert(recorder_events.size() == 1U);
-    assert(recorder_events.front().kind == "channel_sample");
+    assert(recorder_events.front().schema_version == 1U);
+    assert(recorder_events.front().event_kind == "channel_sample");
     assert(recorder_events.front().package == "robot_demo");
     assert(recorder_events.front().process == "main");
     assert(recorder_events.front().runtime_pid == 42U);
-    assert(recorder_events.front().self_description_hash == "abc123");
+    assert(recorder_events.front().selfdesc_hash == "abc123");
+    assert(recorder_events.front().sequence == 0U);
     assert(recorder_events.front().entity_kind == "channel");
     assert(recorder_events.front().entity_name == "source.imu_to_sink.imu");
-    assert(recorder_events.front().message_type == "Imu");
+    assert(recorder_events.front().entity_type_name == std::optional<std::string>{"Imu"});
     assert(recorder_events.front().payload == std::vector<std::uint8_t>({3U, 4U}));
     assert(recorder_state.status().recorder.queued_events == 0U);
     assert(!recorder_state.stop_recorder().enabled);
+
+    flowrt::IntrospectionState service_recorder_state;
+    service_recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
+        .output = std::nullopt,
+        .filters = {"all"},
+        .queue_depth = 2,
+        .package = "robot_demo",
+        .process = "main",
+        .runtime_pid = 42,
+        .self_description_hash = "abc123",
+    });
+    service_recorder_state.record_service_health(flowrt::IntrospectionServiceStatus{
+        .name = "planner.plan_to_executor.execute",
+        .ready = true,
+        .in_flight = 1,
+        .queued = 0,
+        .total_requests = 1,
+    });
+    const auto service_recorder_events = service_recorder_state.drain_recorder_events();
+    assert(service_recorder_events.size() == 1U);
+    assert(service_recorder_events.front().event_kind == "service_event");
+    assert(service_recorder_events.front().entity_kind == "service");
+    assert(service_recorder_events.front().entity_name == "planner.plan_to_executor.execute");
 
     flowrt::IntrospectionState bounded_probe_state;
     bounded_probe_state.register_channel_with_probe_capacity("source.packet_to_sink.packet",
@@ -346,11 +371,15 @@ int main() {
         const auto recorder_drain_response =
             request_line(socket_path, R"({"command":"recorder_drain"})");
         assert_contains(recorder_drain_response, R"("response":"recorder_events")");
-        assert_contains(recorder_drain_response, R"("kind":"channel_sample")");
+        assert_contains(recorder_drain_response, R"("schema_version":1)");
+        assert_contains(recorder_drain_response, R"("event_kind":"channel_sample")");
         assert_contains(recorder_drain_response, R"("package":"robot_demo")");
         assert_contains(recorder_drain_response, R"("runtime_pid":42)");
-        assert_contains(recorder_drain_response, R"("self_description_hash":"abc123")");
-        assert_contains(recorder_drain_response, R"("entity_name":"source.imu_to_sink.imu")");
+        assert_contains(recorder_drain_response, R"("selfdesc_hash":"abc123")");
+        assert_contains(recorder_drain_response, R"("sequence":0)");
+        assert_contains(recorder_drain_response,
+                        R"("entity":{"kind":"channel","name":"source.imu_to_sink.imu")");
+        assert_contains(recorder_drain_response, R"("type_name":"Imu")");
         assert_contains(recorder_drain_response, R"("payload":[7,8])");
         const auto recorder_stop_response =
             request_line(socket_path, R"({"command":"recorder_stop"})");
