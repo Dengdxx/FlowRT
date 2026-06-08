@@ -23,8 +23,8 @@ namespace flowrt {
  * 队列满时返回 `Busy`，不允许无界阻塞。默认 timeout 必须大于 0。
  */
 struct InprocServiceConfig {
-    std::size_t queue_depth = 32;             ///< 请求队列最大深度。0 按 1 处理。
-    std::size_t max_in_flight = 64;           ///< 并发处理中请求上限。0 按 1 处理。
+    std::size_t queue_depth = 32;    ///< 请求队列最大深度。0 表示拒绝新请求。
+    std::size_t max_in_flight = 64;  ///< 并发处理中请求上限。0 表示拒绝新请求。
     std::uint64_t default_timeout_ms = 5000;  ///< 默认超时毫秒。0 按 5000 处理。
 };
 
@@ -32,12 +32,13 @@ struct InprocServiceConfig {
  * @brief inproc service 调用统计。
  */
 struct InprocServiceStats {
-    std::uint64_t completed = 0;     ///< 成功完成次数。
-    std::uint64_t timeouts = 0;      ///< 超时次数。
-    std::uint64_t unavailable = 0;   ///< 服务不可用次数。
-    std::uint64_t busy = 0;          ///< 队列满拒绝次数。
-    std::uint64_t late_dropped = 0;  ///< 响应到达时 client 已丢弃的次数。
-    std::uint64_t deadlocks = 0;     ///< 同 lane 死锁检测次数。
+    std::uint64_t completed = 0;      ///< 成功完成次数。
+    std::uint64_t timeouts = 0;       ///< 超时次数。
+    std::uint64_t unavailable = 0;    ///< 服务不可用次数。
+    std::uint64_t busy = 0;           ///< 队列满拒绝次数。
+    std::uint64_t late_dropped = 0;   ///< 响应到达时 client 已丢弃的次数。
+    std::uint64_t deadlocks = 0;      ///< 同 lane 死锁检测次数。
+    std::uint64_t handler_error = 0;  ///< handler 抛异常或返回 HandlerError 次数。
 
     void reset() noexcept { *this = InprocServiceStats{}; }
 };
@@ -305,8 +306,8 @@ class InprocServiceServer {
                         std::function<void()> on_request_arrived = nullptr)
         : name_(std::move(name)), handler_(std::move(handler)) {
         state_ = std::make_shared<detail::InprocServiceState>();
-        state_->queue_depth = config.queue_depth == 0 ? 1 : config.queue_depth;
-        state_->max_in_flight = config.max_in_flight == 0 ? 1 : config.max_in_flight;
+        state_->queue_depth = config.queue_depth;
+        state_->max_in_flight = config.max_in_flight;
         state_->default_timeout_ms =
             config.default_timeout_ms == 0 ? 5000 : config.default_timeout_ms;
         state_->on_request_arrived = std::move(on_request_arrived);
@@ -374,6 +375,8 @@ class InprocServiceServer {
                 }
                 if (error == ServiceError::Ok) {
                     ++state_->stats.completed;
+                } else if (error == ServiceError::HandlerError) {
+                    ++state_->stats.handler_error;
                 }
             }
         }
@@ -461,10 +464,14 @@ class InprocServiceClient {
      * @brief 发起 deadline-bound 阻塞请求。
      *
      * @param request 请求消息。
-     * @param timeout_ms 超时毫秒。0 使用 server 默认值。
+     * @param timeout_ms 超时毫秒。0 会立即返回 `Timeout`。
      * @return 成功返回响应值，超时或错误返回 ServiceError。
      */
-    ServiceResult<Resp> call(Req request, std::uint64_t timeout_ms = 0) {
+    ServiceResult<Resp> call(Req request) {
+        return call(std::move(request), state_->default_timeout_ms);
+    }
+
+    ServiceResult<Resp> call(Req request, std::uint64_t timeout_ms) {
         auto handle = start_call(std::move(request), timeout_ms);
         return handle.complete();
     }
@@ -473,10 +480,14 @@ class InprocServiceClient {
      * @brief 发起 deadline-bound 非阻塞请求。
      *
      * @param request 请求消息。
-     * @param timeout_ms 超时毫秒。0 使用 server 默认值。
+     * @param timeout_ms 超时毫秒。0 会立即返回 `Timeout`。
      * @return 非阻塞 handle，可 `wait()` 或 `poll()` 获取响应。
      */
-    InprocServiceHandle<Resp> start_call(Req request, std::uint64_t timeout_ms = 0) {
+    InprocServiceHandle<Resp> start_call(Req request) {
+        return start_call(std::move(request), state_->default_timeout_ms);
+    }
+
+    InprocServiceHandle<Resp> start_call(Req request, std::uint64_t timeout_ms) {
         if (caller_lane_ != 0 && caller_lane_ == server_lane_) {
             auto handle = make_error_handle(ServiceError::WouldDeadlock);
             {
@@ -494,8 +505,16 @@ class InprocServiceClient {
             }
         }
 
-        const auto effective_timeout = timeout_ms > 0 ? timeout_ms : state_->default_timeout_ms;
-        const auto deadline_ms = detail::monotonic_now_ms() + effective_timeout;
+        if (timeout_ms == 0) {
+            auto handle = make_error_handle(ServiceError::Timeout);
+            {
+                std::lock_guard lock(state_->mutex);
+                ++state_->stats.timeouts;
+            }
+            return handle;
+        }
+
+        const auto deadline_ms = detail::monotonic_now_ms() + timeout_ms;
 
         auto call_state = std::make_shared<typename InprocServiceHandle<Resp>::State>();
         call_state->deadline_ms = deadline_ms;

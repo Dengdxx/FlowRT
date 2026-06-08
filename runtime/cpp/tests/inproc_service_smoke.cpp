@@ -420,6 +420,7 @@ int main() {
         assert(result.error_code() == flowrt::ServiceError::HandlerError);
         assert(result.error_message().has_value());
         assert(result.error_message()->find("exploded") != std::string::npos);
+        assert(server.stats().handler_error == 1);
     }
 
     registry.clear();
@@ -448,6 +449,7 @@ int main() {
         auto r1 = h1.wait();
         assert(r1.is_err());
         assert(r1.error_code() == flowrt::ServiceError::Rejected);
+        assert(server.stats().handler_error == 0);
 
         auto h2 = client.start_call(AddRequest{3, 5});
         server.process_pending();
@@ -576,6 +578,58 @@ int main() {
 
     registry.clear();
 
+    // ── queue_depth=0 拒绝所有新请求 ─────────────────────────────────────────
+
+    {
+        flowrt::InprocServiceConfig config;
+        config.queue_depth = 0;
+        config.default_timeout_ms = 1000;
+
+        flowrt::InprocServiceServer<AddRequest, AddResponse> server(
+            "no_queue",
+            [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
+                return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
+            },
+            config);
+
+        flowrt::InprocServiceClient<AddRequest, AddResponse> client("no_queue", server);
+
+        auto handle = client.start_call(AddRequest{1, 1});
+        assert(handle.poll());
+        auto result = handle.wait();
+        assert(result.error_code() == flowrt::ServiceError::Busy);
+        assert(server.pending_count() == 0);
+        assert(server.stats().busy == 1);
+    }
+
+    registry.clear();
+
+    // ── max_in_flight=0 拒绝所有新请求 ────────────────────────────────────────
+
+    {
+        flowrt::InprocServiceConfig config;
+        config.max_in_flight = 0;
+        config.default_timeout_ms = 1000;
+
+        flowrt::InprocServiceServer<AddRequest, AddResponse> server(
+            "no_in_flight",
+            [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
+                return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
+            },
+            config);
+
+        flowrt::InprocServiceClient<AddRequest, AddResponse> client("no_in_flight", server);
+
+        auto handle = client.start_call(AddRequest{1, 1});
+        assert(handle.poll());
+        auto result = handle.wait();
+        assert(result.error_code() == flowrt::ServiceError::Busy);
+        assert(server.in_flight_count() == 0);
+        assert(server.stats().busy == 1);
+    }
+
+    registry.clear();
+
     // ── queue_depth=1 边界 ───────────────────────────────────────────────────
 
     {
@@ -616,7 +670,7 @@ int main() {
 
     registry.clear();
 
-    // ── timeout=0 回退到 default_timeout_ms ──────────────────────────────────
+    // ── 无 timeout 参数使用默认超时，显式 timeout=0 返回 Timeout ──────────────
 
     {
         flowrt::InprocServiceConfig config;
@@ -631,12 +685,17 @@ int main() {
 
         flowrt::InprocServiceClient<AddRequest, AddResponse> client("default_timeout", server);
 
-        // timeout_ms=0 应使用 default_timeout_ms（1000ms），不会立即超时
-        auto handle = client.start_call(AddRequest{5, 5}, 0);
+        auto handle = client.start_call(AddRequest{5, 5});
         server.process_pending();
         auto result = handle.wait();
         assert(result.is_ok());
         assert(result.value()->sum == 10);
+
+        auto zero = client.start_call(AddRequest{1, 1}, 0);
+        assert(zero.poll());
+        auto zero_result = zero.wait();
+        assert(zero_result.error_code() == flowrt::ServiceError::Timeout);
+        assert(server.stats().timeouts == 1);
     }
 
     registry.clear();

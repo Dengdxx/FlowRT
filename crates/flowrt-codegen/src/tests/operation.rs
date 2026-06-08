@@ -251,6 +251,10 @@ fn cpp_operation_components_are_generated() {
         "controller interface on_tick must receive operation client handle.\n\n{components}"
     );
     assert!(
+        components.contains("std::uint64_t timeout_ms = 5000"),
+        "C++ operation client wrapper must default to the RSDL policy timeout, not zero.\n\n{components}"
+    );
+    assert!(
         components.contains("on_plan_operation"),
         "navigator interface must declare operation handler.\n\n{components}"
     );

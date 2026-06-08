@@ -291,6 +291,10 @@ timeout_ms = 2000
         components.contains("ServiceClient_planner_plan& plan"),
         "C++ planner interface on_tick must receive typed service client handle.\n\n{components}"
     );
+    assert!(
+        components.contains("std::uint64_t timeout_ms = 2000"),
+        "C++ service client wrapper must default to the RSDL policy timeout, not zero.\n\n{components}"
+    );
     // C++ runtime shell 应该有 service client/server 字段
     let shell_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
     assert!(
