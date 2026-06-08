@@ -75,6 +75,52 @@ struct IntrospectionProbeRecord {
     bool dropped = false;
 };
 
+/**
+ * @brief recorder 的单次运行态事件。
+ *
+ * C++ runtime 先暴露与 Rust recorder 对齐的内存队列 tap。CLI record 写盘由后续任务接入，
+ * 这里不启动后台线程，也不在 recorder 关闭时复制 payload。
+ */
+struct IntrospectionRecorderEvent {
+    std::string kind;
+    std::string package;
+    std::string process;
+    std::uint32_t runtime_pid = 0;
+    std::string self_description_hash;
+    std::string entity_kind;
+    std::string entity_name;
+    std::string message_type;
+    std::string payload_encoding;
+    std::string payload_schema;
+    std::optional<std::uint64_t> monotonic_ns;
+    std::vector<std::uint8_t> payload;
+};
+
+/**
+ * @brief recorder 状态快照，进入 introspection status。
+ */
+struct IntrospectionRecorderStatus {
+    bool enabled = false;
+    std::optional<std::string> output;
+    std::uint64_t dropped_count = 0;
+    std::uint64_t bytes_written = 0;
+    std::vector<std::string> active_filters;
+    std::uint64_t queued_events = 0;
+};
+
+/**
+ * @brief recorder 启动参数。socket 控制面会用当前 handshake 填充身份字段。
+ */
+struct IntrospectionRecorderStart {
+    std::optional<std::string> output;
+    std::vector<std::string> filters;
+    std::size_t queue_depth = 1024;
+    std::string package;
+    std::string process;
+    std::uint32_t runtime_pid = 0;
+    std::string self_description_hash;
+};
+
 namespace detail {
 
 struct IntrospectionProbeLatest {
@@ -320,6 +366,7 @@ struct IntrospectionStatus {
     std::vector<IntrospectionOperationStatus> operations;
     std::vector<IntrospectionTaskHealth> tasks;
     std::vector<IntrospectionLaneHealth> lanes;
+    IntrospectionRecorderStatus recorder;
 };
 
 /**
@@ -481,6 +528,24 @@ inline std::string json_string_array(const std::vector<std::string> &values) {
     return output;
 }
 
+inline std::string recorder_status_json(const IntrospectionRecorderStatus &recorder) {
+    std::string output;
+    output.append("{\"enabled\":");
+    output.append(recorder.enabled ? "true" : "false");
+    output.append(",\"output\":");
+    output.append(recorder.output ? json_string(*recorder.output) : "null");
+    output.append(",\"dropped_count\":");
+    output.append(std::to_string(recorder.dropped_count));
+    output.append(",\"bytes_written\":");
+    output.append(std::to_string(recorder.bytes_written));
+    output.append(",\"active_filters\":");
+    output.append(json_string_array(recorder.active_filters));
+    output.append(",\"queued_events\":");
+    output.append(std::to_string(recorder.queued_events));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string operation_status_json(const IntrospectionOperationStatus &operation) {
     std::string output;
     output.append("{\"name\":");
@@ -559,6 +624,8 @@ inline std::string status_json(const IntrospectionStatus &status) {
     std::string output;
     output.append("{\"tick_count\":");
     output.append(std::to_string(status.tick_count));
+    output.append(",\"recorder\":");
+    output.append(recorder_status_json(status.recorder));
     output.append(",\"channels\":[");
     for (std::size_t index = 0; index < status.channels.size(); ++index) {
         if (index != 0) {
@@ -702,6 +769,36 @@ inline std::string payload_json(const std::optional<std::vector<std::uint8_t>> &
     return output;
 }
 
+inline std::string recorder_event_json(const IntrospectionRecorderEvent &event) {
+    std::string output;
+    output.append("{\"kind\":");
+    output.append(json_string(event.kind));
+    output.append(",\"package\":");
+    output.append(json_string(event.package));
+    output.append(",\"process\":");
+    output.append(json_string(event.process));
+    output.append(",\"runtime_pid\":");
+    output.append(std::to_string(event.runtime_pid));
+    output.append(",\"self_description_hash\":");
+    output.append(json_string(event.self_description_hash));
+    output.append(",\"entity_kind\":");
+    output.append(json_string(event.entity_kind));
+    output.append(",\"entity_name\":");
+    output.append(json_string(event.entity_name));
+    output.append(",\"message_type\":");
+    output.append(json_string(event.message_type));
+    output.append(",\"payload_encoding\":");
+    output.append(json_string(event.payload_encoding));
+    output.append(",\"payload_schema\":");
+    output.append(json_string(event.payload_schema));
+    output.append(",\"monotonic_ns\":");
+    output.append(event.monotonic_ns ? std::to_string(*event.monotonic_ns) : "null");
+    output.append(",\"payload\":");
+    output.append(payload_json(std::optional<std::vector<std::uint8_t>>{event.payload}));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string channel_snapshot_json(const IntrospectionChannelSnapshot &channel) {
     std::string output;
     output.append("{\"published_count\":");
@@ -722,6 +819,36 @@ inline std::string status_response_json(const IntrospectionHandshake &handshake,
     output.append(",\"status\":");
     output.append(status_json(status));
     output.push_back('}');
+    return output;
+}
+
+inline std::string recorder_value_response_json(const IntrospectionHandshake &handshake,
+                                                const IntrospectionRecorderStatus &recorder) {
+    std::string output;
+    output.append("{\"response\":\"recorder_value\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"recorder\":");
+    output.append(recorder_status_json(recorder));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string recorder_events_response_json(
+    const IntrospectionHandshake &handshake, const IntrospectionRecorderStatus &recorder,
+    const std::vector<IntrospectionRecorderEvent> &events) {
+    std::string output;
+    output.append("{\"response\":\"recorder_events\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"recorder\":");
+    output.append(recorder_status_json(recorder));
+    output.append(",\"events\":[");
+    for (std::size_t index = 0; index < events.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(recorder_event_json(events[index]));
+    }
+    output.append("]}");
     return output;
 }
 
@@ -836,6 +963,9 @@ enum class IntrospectionRequestKind : std::uint8_t {
     ParamGet = 5,
     ParamSet = 6,
     OperationCancel = 7,
+    RecorderStart = 8,
+    RecorderStop = 9,
+    RecorderDrain = 10,
 };
 
 struct ParsedIntrospectionRequest {
@@ -844,6 +974,9 @@ struct ParsedIntrospectionRequest {
     std::string param_name;
     std::string param_value;
     std::string operation_id;
+    std::optional<std::string> recorder_output;
+    std::vector<std::string> recorder_filters;
+    std::optional<std::size_t> recorder_queue_depth;
 };
 
 inline std::optional<std::size_t> find_json_value_fragment(std::string_view input,
@@ -914,6 +1047,111 @@ inline std::optional<std::size_t> find_json_value_fragment(std::string_view inpu
     return index;
 }
 
+inline std::optional<std::size_t> find_json_unsigned_value(std::string_view input,
+                                                           std::string_view key) {
+    std::string fragment;
+    if (!find_json_value_fragment(input, key, fragment)) {
+        return std::nullopt;
+    }
+    if (fragment.empty() || std::any_of(fragment.begin(), fragment.end(),
+                                        [](char byte) { return byte < '0' || byte > '9'; })) {
+        return std::nullopt;
+    }
+    errno = 0;
+    char *end = nullptr;
+    const auto parsed = std::strtoull(fragment.c_str(), &end, 10);
+    if (errno != 0 || end == fragment.c_str() || *end != '\0') {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(parsed);
+}
+
+inline std::optional<std::vector<std::string>> find_json_string_array_value(std::string_view input,
+                                                                            std::string_view key) {
+    std::string fragment;
+    if (!find_json_value_fragment(input, key, fragment)) {
+        return std::nullopt;
+    }
+    std::size_t index = 0;
+    while (index < fragment.size() && json_whitespace(fragment[index])) {
+        ++index;
+    }
+    if (index >= fragment.size() || fragment[index] != '[') {
+        return std::nullopt;
+    }
+    ++index;
+    std::vector<std::string> values;
+    while (index < fragment.size()) {
+        while (index < fragment.size() && json_whitespace(fragment[index])) {
+            ++index;
+        }
+        if (index < fragment.size() && fragment[index] == ']') {
+            ++index;
+            while (index < fragment.size() && json_whitespace(fragment[index])) {
+                ++index;
+            }
+            return index == fragment.size() ? std::optional<std::vector<std::string>>{values}
+                                            : std::nullopt;
+        }
+        if (index >= fragment.size() || fragment[index] != '"') {
+            return std::nullopt;
+        }
+        ++index;
+        std::string value;
+        while (index < fragment.size()) {
+            const char byte = fragment[index++];
+            if (byte == '"') {
+                break;
+            }
+            if (byte != '\\') {
+                value.push_back(byte);
+                continue;
+            }
+            if (index >= fragment.size()) {
+                return std::nullopt;
+            }
+            const char escape = fragment[index++];
+            switch (escape) {
+                case '"':
+                case '\\':
+                case '/':
+                    value.push_back(escape);
+                    break;
+                case 'b':
+                    value.push_back('\b');
+                    break;
+                case 'f':
+                    value.push_back('\f');
+                    break;
+                case 'n':
+                    value.push_back('\n');
+                    break;
+                case 'r':
+                    value.push_back('\r');
+                    break;
+                case 't':
+                    value.push_back('\t');
+                    break;
+                default:
+                    return std::nullopt;
+            }
+        }
+        values.push_back(std::move(value));
+        while (index < fragment.size() && json_whitespace(fragment[index])) {
+            ++index;
+        }
+        if (index < fragment.size() && fragment[index] == ',') {
+            ++index;
+            continue;
+        }
+        if (index < fragment.size() && fragment[index] == ']') {
+            continue;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
     std::string_view line) {
     std::string command;
@@ -970,6 +1208,25 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
         }
         return ParsedIntrospectionRequest{
             IntrospectionRequestKind::OperationCancel, {}, {}, {}, std::move(operation_id)};
+    }
+    if (command == "recorder_start") {
+        std::string output;
+        const auto output_end = find_json_string_value(line, "output", output);
+        auto filters =
+            find_json_string_array_value(line, "filters").value_or(std::vector<std::string>{});
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::RecorderStart, {}, {}, {}, {}};
+        if (output_end) {
+            request.recorder_output = std::move(output);
+        }
+        request.recorder_filters = std::move(filters);
+        request.recorder_queue_depth = find_json_unsigned_value(line, "queue_depth");
+        return request;
+    }
+    if (command == "recorder_stop") {
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::RecorderStop, {}, {}, {}};
+    }
+    if (command == "recorder_drain") {
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::RecorderDrain, {}, {}, {}};
     }
     return std::nullopt;
 }
@@ -1121,10 +1378,101 @@ class IntrospectionState {
      * @brief 增加 scheduler tick 计数。
      */
     void record_tick() const {
-        std::lock_guard<std::mutex> lock(inner_->mutex);
-        if (inner_->tick_count != UINT64_MAX) {
-            ++inner_->tick_count;
+        std::uint64_t tick_count = 0;
+        {
+            std::lock_guard<std::mutex> lock(inner_->mutex);
+            if (inner_->tick_count != UINT64_MAX) {
+                ++inner_->tick_count;
+            }
+            tick_count = inner_->tick_count;
         }
+        record_json_event("runtime", "clock", "flowrt.clock", "clock_event", "clock_tick",
+                          "{\"tick_count\":" + std::to_string(tick_count) + "}", std::nullopt);
+    }
+
+    /**
+     * @brief 启动 runtime recorder。
+     */
+    IntrospectionRecorderStatus start_recorder(IntrospectionRecorderStart start) const {
+        if (start.queue_depth == 0U) {
+            start.queue_depth = 1U;
+        }
+        start.filters = normalize_recorder_filters(std::move(start.filters));
+
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->recorder.events.clear();
+        inner_->recorder.dropped_count = 0;
+        inner_->recorder.bytes_written = 0;
+        inner_->recorder.output = std::move(start.output);
+        inner_->recorder.filters = std::move(start.filters);
+        inner_->recorder.queue_depth = start.queue_depth;
+        inner_->recorder.package = std::move(start.package);
+        inner_->recorder.process = std::move(start.process);
+        inner_->recorder.runtime_pid = start.runtime_pid;
+        inner_->recorder.self_description_hash = std::move(start.self_description_hash);
+        inner_->recorder_enabled.store(true, std::memory_order_release);
+        return recorder_status_locked();
+    }
+
+    /**
+     * @brief 停止 runtime recorder；已暂存事件保留到调用方 drain。
+     */
+    IntrospectionRecorderStatus stop_recorder() const {
+        inner_->recorder_enabled.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->recorder.output = std::nullopt;
+        inner_->recorder.filters.clear();
+        return recorder_status_locked();
+    }
+
+    /**
+     * @brief 取走 recorder 暂存事件。
+     */
+    std::vector<IntrospectionRecorderEvent> drain_recorder_events() const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto events = std::move(inner_->recorder.events);
+        inner_->recorder.events.clear();
+        return events;
+    }
+
+    /**
+     * @brief 判断指定 channel 是否会被当前 recorder 采集。
+     */
+    bool recorder_enabled_for_channel(std::string_view name) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return recorder_filter_matches(inner_->recorder.filters, "channel", name);
+    }
+
+    /**
+     * @brief 按需记录 channel 样本到 recorder。
+     */
+    IntrospectionProbeRecord try_record_channel_sample_bytes(
+        std::string_view name, std::string_view message_type,
+        const std::vector<std::uint8_t> &payload,
+        std::optional<std::uint64_t> published_at_ms) const {
+        return try_record_channel_sample_bytes(
+            name, message_type, std::span<const std::uint8_t>{payload.data(), payload.size()},
+            published_at_ms);
+    }
+
+    /**
+     * @brief 按需记录 channel 样本到 recorder。
+     */
+    IntrospectionProbeRecord try_record_channel_sample_bytes(
+        std::string_view name, std::string_view message_type, std::span<const std::uint8_t> payload,
+        std::optional<std::uint64_t> published_at_ms) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return record_event_locked("channel", name, "channel_sample", "channel", name, message_type,
+                                   "raw_abi", message_type, payload,
+                                   published_at_ms
+                                       ? std::optional<std::uint64_t>{*published_at_ms * 1000000U}
+                                       : std::nullopt);
     }
 
     /**
@@ -1133,6 +1481,7 @@ class IntrospectionState {
     void record_channel_publish_bytes(std::string name, std::string message_type,
                                       std::vector<std::uint8_t> payload,
                                       std::optional<std::uint64_t> published_at_ms) const {
+        try_record_channel_sample_bytes(name, message_type, payload, published_at_ms);
         std::lock_guard<std::mutex> lock(inner_->mutex);
         auto [iterator, _inserted] =
             inner_->channels.try_emplace(std::move(name), ChannelState{
@@ -1212,6 +1561,8 @@ class IntrospectionState {
         std::string name, std::string message_type, std::span<const std::uint8_t> payload,
         std::optional<std::uint64_t> published_at_ms) const {
         IntrospectionChannelProbe probe;
+        const std::string channel_name = name;
+        const std::string channel_message_type = message_type;
         {
             std::lock_guard<std::mutex> lock(inner_->mutex);
             auto [iterator, _inserted] = inner_->channels.try_emplace(
@@ -1222,7 +1573,13 @@ class IntrospectionState {
             iterator->second.message_type = std::move(message_type);
             probe = iterator->second.probe;
         }
-        return probe.try_record_bytes(payload, published_at_ms);
+        const auto probe_record = probe.try_record_bytes(payload, published_at_ms);
+        const auto recorder_record = try_record_channel_sample_bytes(
+            channel_name, channel_message_type, payload, published_at_ms);
+        return IntrospectionProbeRecord{
+            .recorded = probe_record.recorded || recorder_record.recorded,
+            .dropped = probe_record.dropped || recorder_record.dropped,
+        };
     }
 
     /**
@@ -1235,7 +1592,7 @@ class IntrospectionState {
         static_assert(std::is_trivially_copyable_v<T>,
                       "FlowRT introspection payload snapshot requires trivially copyable values");
         const auto probe = channel_probe(name);
-        if (!probe || !probe->enabled()) {
+        if ((!probe || !probe->enabled()) && !recorder_enabled_for_channel(name)) {
             return IntrospectionProbeRecord{};
         }
         return try_probe_channel_publish_bytes(
@@ -1251,9 +1608,9 @@ class IntrospectionState {
     void register_service(std::string name) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->services.try_emplace(name, IntrospectionServiceStatus{
-                                                .name = name,
-                                                .ready = true,
-                                            });
+                                               .name = name,
+                                               .ready = true,
+                                           });
     }
 
     /**
@@ -1279,8 +1636,14 @@ class IntrospectionState {
      * @brief 记录 operation 运行态健康状态快照。
      */
     void record_operation_health(IntrospectionOperationStatus status) const {
+        const auto payload = "{\"running\":" + std::to_string(status.running) +
+                             ",\"queued\":" + std::to_string(status.queued) +
+                             ",\"total_started\":" + std::to_string(status.total_started) + "}";
+        const auto name = status.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->operations.insert_or_assign(status.name, std::move(status));
+        record_event_locked("operation", name, "operation_event", "operation", name, "", "json",
+                            "operation_status", string_bytes(payload), std::nullopt);
     }
 
     /**
@@ -1298,8 +1661,7 @@ class IntrospectionState {
                 continue;
             }
             if (operation.running == 0U) {
-                return "FlowRT operation `" + std::string{operation_id} +
-                       "` is already finished";
+                return "FlowRT operation `" + std::string{operation_id} + "` is already finished";
             }
             operation.current_operation_ids.erase(match);
             --operation.running;
@@ -1307,8 +1669,18 @@ class IntrospectionState {
                 ++operation.canceled_count;
             }
             operation.last_transition_ms = detail::unix_time_ms();
+            record_event_locked(
+                "operation", operation.name, "operation_event", "operation", operation.name, "",
+                "json", "operation_cancel",
+                string_bytes("{\"operation_id\":" + detail::json_string(operation_id) + "}"),
+                std::nullopt);
             return operation;
         }
+        record_event_locked(
+            "operation", operation_id, "operation_event", "operation", operation_id, "", "json",
+            "operation_cancel_error",
+            string_bytes("{\"operation_id\":" + detail::json_string(operation_id) + "}"),
+            std::nullopt);
         return "unknown FlowRT operation `" + std::string{operation_id} + "`";
     }
 
@@ -1316,16 +1688,27 @@ class IntrospectionState {
      * @brief 记录 task 调度健康快照。
      */
     void record_task_health(IntrospectionTaskHealth health) const {
+        const auto payload = "{\"run_count\":" + std::to_string(health.run_count) +
+                             ",\"deadline_missed\":" + std::to_string(health.deadline_missed) + "}";
+        const auto name = health.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->tasks.insert_or_assign(health.name, std::move(health));
+        record_event_locked("scheduler", name, "scheduler_event", "task", name, "", "json",
+                            "task_health", string_bytes(payload), std::nullopt);
     }
 
     /**
      * @brief 记录 lane 调度健康快照。
      */
     void record_lane_health(IntrospectionLaneHealth health) const {
+        const auto payload = "{\"queue_depth\":" + std::to_string(health.queue_depth) +
+                             ",\"dispatched_count\":" + std::to_string(health.dispatched_count) +
+                             "}";
+        const auto name = health.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->lanes.insert_or_assign(health.name, std::move(health));
+        record_event_locked("scheduler", name, "scheduler_event", "lane", name, "", "json",
+                            "lane_health", string_bytes(payload), std::nullopt);
     }
 
     /**
@@ -1366,6 +1749,7 @@ class IntrospectionState {
         for (const auto &[name, lane] : inner_->lanes) {
             snapshot.lanes.push_back(lane);
         }
+        snapshot.recorder = recorder_status_locked();
         return snapshot;
     }
 
@@ -1420,12 +1804,20 @@ class IntrospectionState {
      * @brief 返回单个参数状态。
      */
     std::optional<IntrospectionParamStatus> param(std::string_view name) const {
+        std::optional<IntrospectionParamStatus> snapshot;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         const auto param = inner_->params.find(std::string{name});
         if (param == inner_->params.end()) {
+            record_event_locked(
+                "param", name, "param_event", "param", name, "", "json", "param_get_error",
+                string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
             return std::nullopt;
         }
-        return param_status(param->first, param->second);
+        snapshot = param_status(param->first, param->second);
+        record_event_locked("param", name, "param_event", "param", name, "", "json", "param_get",
+                            string_bytes("{\"name\":" + detail::json_string(name) + "}"),
+                            std::nullopt);
+        return snapshot;
     }
 
     /**
@@ -1436,15 +1828,27 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         const auto param = inner_->params.find(std::string{name});
         if (param == inner_->params.end()) {
+            record_event_locked(
+                "param", name, "param_event", "param", name, "", "json", "param_set_error",
+                string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
             return "unknown FlowRT parameter `" + std::string{name} + "`";
         }
         if (param->second.update != "on_tick") {
+            record_event_locked(
+                "param", name, "param_event", "param", name, "", "json", "param_set_error",
+                string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
             return "FlowRT parameter `" + std::string{name} + "` is startup-only";
         }
         if (const auto error = validate_param_json_value(param->first, param->second, value)) {
+            record_event_locked(
+                "param", name, "param_event", "param", name, "", "json", "param_set_error",
+                string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
             return *error;
         }
         param->second.pending = std::move(value);
+        record_event_locked(
+            "param", name, "param_event", "param", name, "", "json", "param_set_pending",
+            string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
         return param_status(param->first, param->second);
     }
 
@@ -1484,6 +1888,9 @@ class IntrospectionState {
             param->second.current = std::move(value);
             param->second.pending = std::nullopt;
         }
+        record_event_locked(
+            "param", name, "param_event", "param", name, "", "json", "param_applied",
+            string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
     }
 
    private:
@@ -1502,7 +1909,21 @@ class IntrospectionState {
         std::vector<std::string> choices;
     };
 
+    struct RecorderState {
+        std::optional<std::string> output;
+        std::vector<std::string> filters;
+        std::size_t queue_depth = 1024;
+        std::uint64_t dropped_count = 0;
+        std::uint64_t bytes_written = 0;
+        std::vector<IntrospectionRecorderEvent> events;
+        std::string package;
+        std::string process;
+        std::uint32_t runtime_pid = 0;
+        std::string self_description_hash;
+    };
+
     struct Inner {
+        std::atomic_bool recorder_enabled{false};
         std::mutex mutex;
         std::uint64_t tick_count = 0;
         std::optional<std::string> self_description_json;
@@ -1512,7 +1933,111 @@ class IntrospectionState {
         std::map<std::string, IntrospectionOperationStatus> operations;
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
+        RecorderState recorder;
     };
+
+    IntrospectionRecorderStatus recorder_status_locked() const {
+        return IntrospectionRecorderStatus{
+            .enabled = inner_->recorder_enabled.load(std::memory_order_acquire),
+            .output = inner_->recorder.output,
+            .dropped_count = inner_->recorder.dropped_count,
+            .bytes_written = inner_->recorder.bytes_written,
+            .active_filters = inner_->recorder.filters,
+            .queued_events = static_cast<std::uint64_t>(inner_->recorder.events.size()),
+        };
+    }
+
+    static std::vector<std::uint8_t> string_bytes(std::string_view value) {
+        return std::vector<std::uint8_t>{value.begin(), value.end()};
+    }
+
+    static std::string trim_recorder_filter(std::string filter) {
+        while (!filter.empty() && detail::json_whitespace(filter.front())) {
+            filter.erase(filter.begin());
+        }
+        while (!filter.empty() && detail::json_whitespace(filter.back())) {
+            filter.pop_back();
+        }
+        return filter;
+    }
+
+    static std::vector<std::string> normalize_recorder_filters(std::vector<std::string> filters) {
+        std::vector<std::string> normalized;
+        normalized.reserve(filters.size());
+        for (auto &filter : filters) {
+            auto trimmed = trim_recorder_filter(std::move(filter));
+            if (!trimmed.empty()) {
+                normalized.push_back(std::move(trimmed));
+            }
+        }
+        if (normalized.empty()) {
+            normalized.push_back("all");
+        }
+        std::sort(normalized.begin(), normalized.end());
+        normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
+        return normalized;
+    }
+
+    static bool recorder_filter_matches(const std::vector<std::string> &filters,
+                                        std::string_view kind, std::string_view name) {
+        const std::string exact = std::string{kind} + ":" + std::string{name};
+        return std::any_of(filters.begin(), filters.end(), [&](const std::string &filter) {
+            return filter == "all" || filter == kind || filter == exact;
+        });
+    }
+
+    IntrospectionProbeRecord record_event_locked(
+        std::string_view filter_kind, std::string_view filter_name, std::string_view event_kind,
+        std::string_view entity_kind, std::string_view entity_name, std::string_view message_type,
+        std::string_view payload_encoding, std::string_view payload_schema,
+        std::span<const std::uint8_t> payload, std::optional<std::uint64_t> monotonic_ns) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        if (!recorder_filter_matches(inner_->recorder.filters, filter_kind, filter_name)) {
+            return IntrospectionProbeRecord{};
+        }
+        if (inner_->recorder.events.size() >= inner_->recorder.queue_depth) {
+            if (inner_->recorder.dropped_count != UINT64_MAX) {
+                ++inner_->recorder.dropped_count;
+            }
+            return IntrospectionProbeRecord{.recorded = false, .dropped = true};
+        }
+        IntrospectionRecorderEvent event{
+            .kind = std::string{event_kind},
+            .package = inner_->recorder.package,
+            .process = inner_->recorder.process,
+            .runtime_pid = inner_->recorder.runtime_pid,
+            .self_description_hash = inner_->recorder.self_description_hash,
+            .entity_kind = std::string{entity_kind},
+            .entity_name = std::string{entity_name},
+            .message_type = std::string{message_type},
+            .payload_encoding = std::string{payload_encoding},
+            .payload_schema = std::string{payload_schema},
+            .monotonic_ns = monotonic_ns,
+            .payload = std::vector<std::uint8_t>{payload.begin(), payload.end()},
+        };
+        inner_->recorder.bytes_written =
+            inner_->recorder.bytes_written >
+                    UINT64_MAX - static_cast<std::uint64_t>(event.payload.size())
+                ? UINT64_MAX
+                : inner_->recorder.bytes_written + static_cast<std::uint64_t>(event.payload.size());
+        inner_->recorder.events.push_back(std::move(event));
+        return IntrospectionProbeRecord{.recorded = true, .dropped = false};
+    }
+
+    IntrospectionProbeRecord record_json_event(
+        std::string_view filter_kind, std::string_view entity_kind, std::string_view entity_name,
+        std::string_view event_kind, std::string_view payload_schema, std::string_view payload_json,
+        std::optional<std::uint64_t> monotonic_ns) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        const auto payload = string_bytes(payload_json);
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return record_event_locked(filter_kind, entity_name, event_kind, entity_kind, entity_name,
+                                   "", "json", payload_schema, payload, monotonic_ns);
+    }
 
     static IntrospectionParamStatus param_status(const std::string &name, const ParamState &param) {
         return IntrospectionParamStatus{
@@ -1691,6 +2216,28 @@ inline void handle_introspection_connection(int client_fd, const IntrospectionHa
                 } else {
                     response = error_response_json(handshake, std::get<std::string>(result));
                 }
+                break;
+            }
+            case IntrospectionRequestKind::RecorderStart: {
+                const auto recorder = state.start_recorder(IntrospectionRecorderStart{
+                    .output = request->recorder_output,
+                    .filters = request->recorder_filters,
+                    .queue_depth = request->recorder_queue_depth.value_or(1024U),
+                    .package = handshake.package,
+                    .process = handshake.process,
+                    .runtime_pid = handshake.pid,
+                    .self_description_hash = handshake.self_description_hash,
+                });
+                response = recorder_value_response_json(handshake, recorder);
+                break;
+            }
+            case IntrospectionRequestKind::RecorderStop:
+                response = recorder_value_response_json(handshake, state.stop_recorder());
+                break;
+            case IntrospectionRequestKind::RecorderDrain: {
+                const auto events = state.drain_recorder_events();
+                response =
+                    recorder_events_response_json(handshake, state.status().recorder, events);
                 break;
             }
         }

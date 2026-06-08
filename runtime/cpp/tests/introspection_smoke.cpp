@@ -144,6 +144,58 @@ int main() {
     probe->record_publish_event();
     assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->published_count == 2U);
 
+    flowrt::IntrospectionState recorder_state;
+    recorder_state.register_channel("source.imu_to_sink.imu", "Imu");
+    assert(!recorder_state.status().recorder.enabled);
+    assert(!recorder_state
+                .try_record_channel_sample_bytes(
+                    "source.imu_to_sink.imu", "Imu",
+                    std::vector<std::uint8_t>{std::uint8_t{1}, std::uint8_t{2}},
+                    std::optional<std::uint64_t>{11U})
+                .recorded);
+    const auto started_recorder = recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
+        .output = std::optional<std::string>{"memory://cpp.mcap"},
+        .filters = {"channel"},
+        .queue_depth = 1,
+        .package = "robot_demo",
+        .process = "main",
+        .runtime_pid = 42,
+        .self_description_hash = "abc123",
+    });
+    assert(started_recorder.enabled);
+    assert(started_recorder.output == std::optional<std::string>{"memory://cpp.mcap"});
+    assert(started_recorder.active_filters == std::vector<std::string>{"channel"});
+    const auto recorded_sample = recorder_state.try_record_channel_sample_bytes(
+        "source.imu_to_sink.imu", "Imu",
+        std::vector<std::uint8_t>{std::uint8_t{3}, std::uint8_t{4}},
+        std::optional<std::uint64_t>{12U});
+    assert(recorded_sample.recorded);
+    assert(!recorded_sample.dropped);
+    const auto dropped_sample = recorder_state.try_record_channel_sample_bytes(
+        "source.imu_to_sink.imu", "Imu",
+        std::vector<std::uint8_t>{std::uint8_t{5}, std::uint8_t{6}},
+        std::optional<std::uint64_t>{13U});
+    assert(!dropped_sample.recorded);
+    assert(dropped_sample.dropped);
+    const auto recorder_status = recorder_state.status().recorder;
+    assert(recorder_status.enabled);
+    assert(recorder_status.queued_events == 1U);
+    assert(recorder_status.dropped_count == 1U);
+    assert(recorder_status.bytes_written == 2U);
+    const auto recorder_events = recorder_state.drain_recorder_events();
+    assert(recorder_events.size() == 1U);
+    assert(recorder_events.front().kind == "channel_sample");
+    assert(recorder_events.front().package == "robot_demo");
+    assert(recorder_events.front().process == "main");
+    assert(recorder_events.front().runtime_pid == 42U);
+    assert(recorder_events.front().self_description_hash == "abc123");
+    assert(recorder_events.front().entity_kind == "channel");
+    assert(recorder_events.front().entity_name == "source.imu_to_sink.imu");
+    assert(recorder_events.front().message_type == "Imu");
+    assert(recorder_events.front().payload == std::vector<std::uint8_t>({3U, 4U}));
+    assert(recorder_state.status().recorder.queued_events == 0U);
+    assert(!recorder_state.stop_recorder().enabled);
+
     flowrt::IntrospectionState bounded_probe_state;
     bounded_probe_state.register_channel_with_probe_capacity("source.packet_to_sink.packet",
                                                              "Packet", std::size_t{4});
@@ -278,16 +330,42 @@ int main() {
         assert_contains(status_response, R"("succeeded_count":5)");
         assert_contains(status_response, R"("timeout_count":1)");
         assert_contains(status_response, R"("last_transition_ms":12345)");
+        assert_contains(status_response, R"("recorder":{"enabled":false)");
 
-        const auto operation_cancel_response = request_line(
-            socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");
+        const auto recorder_start_response = request_line(
+            socket_path,
+            R"({"command":"recorder_start","output":"memory://socket.mcap","filters":["channel"],"queue_depth":2})");
+        assert_contains(recorder_start_response, R"("response":"recorder_value")");
+        assert_contains(recorder_start_response, R"("enabled":true)");
+        assert_contains(recorder_start_response, R"("output":"memory://socket.mcap")");
+        assert_contains(recorder_start_response, R"("active_filters":["channel"])");
+        state.try_record_channel_sample_bytes(
+            "source.imu_to_sink.imu", "Imu",
+            std::vector<std::uint8_t>{std::uint8_t{7}, std::uint8_t{8}},
+            std::optional<std::uint64_t>{15U});
+        const auto recorder_drain_response =
+            request_line(socket_path, R"({"command":"recorder_drain"})");
+        assert_contains(recorder_drain_response, R"("response":"recorder_events")");
+        assert_contains(recorder_drain_response, R"("kind":"channel_sample")");
+        assert_contains(recorder_drain_response, R"("package":"robot_demo")");
+        assert_contains(recorder_drain_response, R"("runtime_pid":42)");
+        assert_contains(recorder_drain_response, R"("self_description_hash":"abc123")");
+        assert_contains(recorder_drain_response, R"("entity_name":"source.imu_to_sink.imu")");
+        assert_contains(recorder_drain_response, R"("payload":[7,8])");
+        const auto recorder_stop_response =
+            request_line(socket_path, R"({"command":"recorder_stop"})");
+        assert_contains(recorder_stop_response, R"("response":"recorder_value")");
+        assert_contains(recorder_stop_response, R"("enabled":false)");
+
+        const auto operation_cancel_response =
+            request_line(socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");
         assert_contains(operation_cancel_response, R"("response":"operation_value")");
         assert_contains(operation_cancel_response, R"("name":"controller.plan")");
         assert_contains(operation_cancel_response, R"("running":0)");
         assert_contains(operation_cancel_response, R"("canceled_count":1)");
 
-        const auto operation_cancel_again_response = request_line(
-            socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");
+        const auto operation_cancel_again_response =
+            request_line(socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");
         assert_contains(operation_cancel_again_response, R"("response":"error")");
         assert_contains(operation_cancel_again_response,
                         R"("message":"unknown FlowRT operation `111:7:3`")");

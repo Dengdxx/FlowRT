@@ -11,6 +11,7 @@ iox2 = ["dep:iceoryx2"]
 zenoh = ["dep:zenoh"]
 
 [dependencies]
+flowrt-record = { path = "../../crates/flowrt-record" }
 iceoryx2 = { version = "0.9", optional = true }
 libc = "0.2"
 rand = "0.9"

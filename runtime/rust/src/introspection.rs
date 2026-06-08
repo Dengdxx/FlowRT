@@ -17,6 +17,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use flowrt_record::{RecordEntityKind, RecordEnvelope};
+
+use crate::recorder::{
+    RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,
+};
 use crate::supervisor::resource_placement::ResourcePlacementStatus;
 
 /// 当前 introspection 协议版本。
@@ -49,6 +54,17 @@ pub enum IntrospectionRequest {
     },
     /// 请求取消当前 runtime 中已知的 Operation invocation。
     OperationCancel { operation_id: String },
+    /// 启动当前 runtime 的按需 recorder。
+    RecorderStart {
+        output: Option<String>,
+        #[serde(default)]
+        filters: Vec<String>,
+        queue_depth: Option<usize>,
+    },
+    /// 停止当前 runtime 的 recorder。
+    RecorderStop,
+    /// 取走当前 runtime recorder 已暂存事件。
+    RecorderDrain,
 }
 
 /// runtime introspection 响应。
@@ -82,6 +98,15 @@ pub enum IntrospectionResponse {
     OperationValue {
         handshake: IntrospectionHandshake,
         operation: IntrospectionOperationStatus,
+    },
+    RecorderValue {
+        handshake: IntrospectionHandshake,
+        recorder: IntrospectionRecorderStatus,
+    },
+    RecorderEvents {
+        handshake: IntrospectionHandshake,
+        recorder: IntrospectionRecorderStatus,
+        events: Vec<RecordEnvelope>,
     },
     Error {
         handshake: IntrospectionHandshake,
@@ -120,6 +145,9 @@ pub struct IntrospectionStatus {
     /// v0.5+ lane 级调度健康快照。
     #[serde(default)]
     pub lanes: Vec<IntrospectionLaneHealth>,
+    /// v0.6+ recorder 运行态状态。
+    #[serde(default)]
+    pub recorder: IntrospectionRecorderStatus,
 }
 
 /// 单个 channel 的运行态摘要。
@@ -233,6 +261,21 @@ pub struct IntrospectionOperationStatus {
     pub preempted_count: u64,
     /// 最近一次状态转换时间戳（Unix 毫秒）。
     pub last_transition_ms: Option<u64>,
+}
+
+/// recorder 运行态状态。
+pub type IntrospectionRecorderStatus = RecorderStatus;
+
+/// recorder 启动参数。socket 控制面会用当前 handshake 填充身份字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntrospectionRecorderStart {
+    pub output: Option<String>,
+    pub filters: Vec<String>,
+    pub queue_depth: Option<usize>,
+    pub package: String,
+    pub process: String,
+    pub runtime_pid: u32,
+    pub selfdesc_hash: String,
 }
 
 /// 单个 task 的调度健康快照。
@@ -524,6 +567,7 @@ struct ParamState {
 #[derive(Debug, Clone, Default)]
 pub struct IntrospectionState {
     inner: Arc<Mutex<IntrospectionStateInner>>,
+    recorder: RecorderTap,
 }
 
 #[derive(Debug, Default)]
@@ -604,6 +648,60 @@ impl IntrospectionState {
     pub fn record_tick(&self) {
         let mut inner = self.lock_inner();
         inner.tick_count = inner.tick_count.saturating_add(1);
+        let tick_count = inner.tick_count;
+        drop(inner);
+        self.recorder.record_runtime_event_json(
+            RecordEntityKind::Clock,
+            "scheduler_tick",
+            "flowrt.clock.tick",
+            serde_json::json!({ "tick_count": tick_count }),
+        );
+    }
+
+    /// 启动 runtime recorder。
+    pub fn start_recorder(&self, start: IntrospectionRecorderStart) -> IntrospectionRecorderStatus {
+        self.recorder.start(RecorderStartConfig {
+            output: start.output,
+            filters: start.filters,
+            queue_depth: start.queue_depth.unwrap_or(1024),
+            metadata: RecorderRuntimeMetadata {
+                package: start.package,
+                process: start.process,
+                runtime_pid: start.runtime_pid,
+                selfdesc_hash: start.selfdesc_hash,
+            },
+        })
+    }
+
+    /// 停止 runtime recorder。
+    pub fn stop_recorder(&self) -> IntrospectionRecorderStatus {
+        self.recorder.stop()
+    }
+
+    /// 取走 recorder 暂存事件。
+    pub fn drain_recorder_events(&self) -> Vec<RecordEnvelope> {
+        self.recorder.drain_events()
+    }
+
+    /// 判断指定 channel 是否会被 recorder 采集。
+    pub fn recorder_enabled_for_channel(&self, name: &str) -> bool {
+        self.recorder.enabled_for_channel(name)
+    }
+
+    /// 按需记录 channel sample。关闭时不复制 payload。
+    pub fn try_record_channel_sample_bytes(
+        &self,
+        name: &str,
+        message_type: impl AsRef<str>,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+    ) -> RecorderTapOutcome {
+        self.recorder.record_channel_sample_bytes(
+            name,
+            message_type.as_ref(),
+            payload,
+            published_at_ms,
+        )
     }
 
     /// 记录 channel 发布的 latest raw ABI payload。
@@ -627,12 +725,16 @@ impl IntrospectionState {
     ) {
         let name = name.into();
         let message_type = message_type.into();
+        self.try_record_channel_sample_bytes(&name, &message_type, &payload, published_at_ms);
         let mut inner = self.lock_inner();
-        let channel = inner.channels.entry(name).or_insert_with(|| ChannelState {
-            message_type: message_type.clone(),
-            probe: IntrospectionChannelProbe::new(None),
-        });
-        channel.message_type = message_type;
+        let channel = inner
+            .channels
+            .entry(name.clone())
+            .or_insert_with(|| ChannelState {
+                message_type: message_type.clone(),
+                probe: IntrospectionChannelProbe::new(None),
+            });
+        channel.message_type = message_type.clone();
         channel.probe.force_record_bytes(payload, published_at_ms);
     }
 
@@ -673,10 +775,16 @@ impl IntrospectionState {
                     message_type: message_type.clone(),
                     probe: IntrospectionChannelProbe::new(None),
                 });
-            channel.message_type = message_type;
+            channel.message_type = message_type.clone();
             channel.probe.clone()
         };
-        probe.try_record_bytes(payload, published_at_ms)
+        let probe_record = probe.try_record_bytes(payload, published_at_ms);
+        let recorder_record =
+            self.try_record_channel_sample_bytes(name, message_type, payload, published_at_ms);
+        IntrospectionProbeRecord {
+            recorded: probe_record.recorded || recorder_record.recorded,
+            dropped: probe_record.dropped || recorder_record.dropped,
+        }
     }
 
     /// 按需记录 channel 发布的 Message ABI 对象表示。
@@ -687,13 +795,12 @@ impl IntrospectionState {
         value: &T,
         published_at_ms: Option<u64>,
     ) -> IntrospectionProbeRecord {
-        let Some(probe) = self.channel_probe(name) else {
-            return IntrospectionProbeRecord {
-                recorded: false,
-                dropped: false,
-            };
-        };
-        if !probe.enabled() {
+        let recorder_enabled = self.recorder_enabled_for_channel(name);
+        if self
+            .channel_probe(name)
+            .is_none_or(|probe| !probe.enabled())
+            && !recorder_enabled
+        {
             return IntrospectionProbeRecord {
                 recorded: false,
                 dropped: false,
@@ -729,6 +836,7 @@ impl IntrospectionState {
             operations: inner.operations.values().cloned().collect(),
             tasks: inner.tasks.values().cloned().collect(),
             lanes: inner.lanes.values().cloned().collect(),
+            recorder: self.recorder.status(),
         }
     }
 
@@ -780,8 +888,27 @@ impl IntrospectionState {
 
     /// 记录 operation 运行态健康状态快照。
     pub fn record_operation_health(&self, status: IntrospectionOperationStatus) {
+        let status_for_record = status.clone();
         let mut inner = self.lock_inner();
         inner.operations.insert(status.name.clone(), status);
+        drop(inner);
+        self.recorder.record_operation_event_json(
+            &status_for_record.name,
+            "flowrt.operation.status",
+            serde_json::json!({
+                "ready": status_for_record.ready,
+                "running": status_for_record.running,
+                "queued": status_for_record.queued,
+                "current_operation_ids": status_for_record.current_operation_ids,
+                "total_started": status_for_record.total_started,
+                "succeeded": status_for_record.succeeded_count,
+                "failed": status_for_record.failed_count,
+                "canceled": status_for_record.canceled_count,
+                "timeout": status_for_record.timeout_count,
+                "preempted": status_for_record.preempted_count,
+                "last_transition_ms": status_for_record.last_transition_ms,
+            }),
+        );
     }
 
     /// 请求取消指定 operation invocation。
@@ -815,13 +942,43 @@ impl IntrospectionState {
     /// 记录 task 调度健康快照。
     pub fn record_task_health(&self, health: IntrospectionTaskHealth) {
         let mut inner = self.lock_inner();
-        inner.tasks.insert(health.name.clone(), health);
+        inner.tasks.insert(health.name.clone(), health.clone());
+        drop(inner);
+        self.recorder.record_scheduler_event_json(
+            RecordEntityKind::Task,
+            &health.name,
+            "flowrt.scheduler.task_health",
+            serde_json::json!({
+                "lane": health.lane,
+                "deadline_missed": health.deadline_missed,
+                "stale_input": health.stale_input,
+                "backpressure": health.backpressure,
+                "overflow": health.overflow,
+                "fairness_violations": health.fairness_violations,
+                "run_count": health.run_count,
+                "success_count": health.success_count,
+                "consecutive_failures": health.consecutive_failures,
+                "last_run_ms": health.last_run_ms,
+                "last_success_ms": health.last_success_ms,
+            }),
+        );
     }
 
     /// 记录 lane 调度健康快照。
     pub fn record_lane_health(&self, health: IntrospectionLaneHealth) {
         let mut inner = self.lock_inner();
-        inner.lanes.insert(health.name.clone(), health);
+        inner.lanes.insert(health.name.clone(), health.clone());
+        drop(inner);
+        self.recorder.record_scheduler_event_json(
+            RecordEntityKind::Lane,
+            &health.name,
+            "flowrt.scheduler.lane_health",
+            serde_json::json!({
+                "queue_depth": health.queue_depth,
+                "dispatched_count": health.dispatched_count,
+                "fairness_violations": health.fairness_violations,
+            }),
+        );
     }
 
     /// 返回指定 task 的调度健康快照。
@@ -894,7 +1051,14 @@ impl IntrospectionState {
         }
         validate_param_json_value(name, param, &value)?;
         param.pending = Some(value);
-        Ok(param_status(name, param))
+        let status = param_status(name, param);
+        drop(inner);
+        self.recorder.record_param_event_json(
+            name,
+            "flowrt.param.set_pending",
+            serde_json::json!({ "pending": status.pending }),
+        );
+        Ok(status)
     }
 
     /// 读取并清空参数 pending 值，供 generated shell 在 tick 边界应用。
@@ -919,8 +1083,14 @@ impl IntrospectionState {
     pub fn record_param_applied(&self, name: &str, value: serde_json::Value) {
         let mut inner = self.lock_inner();
         if let Some(param) = inner.params.get_mut(name) {
-            param.current = value;
+            param.current = value.clone();
             param.pending = None;
+            drop(inner);
+            self.recorder.record_param_event_json(
+                name,
+                "flowrt.param.applied",
+                serde_json::json!({ "current": value }),
+            );
         }
     }
 }
@@ -1180,6 +1350,33 @@ pub fn request_operation_cancel(
     )
 }
 
+/// 向 introspection socket 请求启动 recorder。
+pub fn request_recorder_start(
+    path: &Path,
+    output: Option<String>,
+    filters: Vec<String>,
+    queue_depth: Option<usize>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::RecorderStart {
+            output,
+            filters,
+            queue_depth,
+        },
+    )
+}
+
+/// 向 introspection socket 请求停止 recorder。
+pub fn request_recorder_stop(path: &Path) -> std::io::Result<IntrospectionResponse> {
+    request(path, &IntrospectionRequest::RecorderStop)
+}
+
+/// 向 introspection socket 请求取走 recorder 暂存事件。
+pub fn request_recorder_drain(path: &Path) -> std::io::Result<IntrospectionResponse> {
+    request(path, &IntrospectionRequest::RecorderDrain)
+}
+
 fn request(path: &Path, request: &IntrospectionRequest) -> std::io::Result<IntrospectionResponse> {
     let mut stream = UnixStream::connect(path)?;
     let request = serde_json::to_string(request).map_err(std::io::Error::other)?;
@@ -1383,6 +1580,62 @@ fn handle_connection(
                     handshake: handshake.clone(),
                     message,
                 },
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::RecorderStart {
+            output,
+            filters,
+            queue_depth,
+        } => {
+            let recorder = state.start_recorder(IntrospectionRecorderStart {
+                output,
+                filters,
+                queue_depth,
+                package: handshake.package.clone(),
+                process: handshake.process.clone(),
+                runtime_pid: handshake.pid,
+                selfdesc_hash: handshake.self_description_hash.clone(),
+            });
+            let response = IntrospectionResponse::RecorderValue {
+                handshake: handshake.clone(),
+                recorder,
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::RecorderStop => {
+            let recorder = state.stop_recorder();
+            let response = IntrospectionResponse::RecorderValue {
+                handshake: handshake.clone(),
+                recorder,
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::RecorderDrain => {
+            let events = state.drain_recorder_events();
+            let recorder = state.status().recorder;
+            let response = IntrospectionResponse::RecorderEvents {
+                handshake: handshake.clone(),
+                recorder,
+                events,
             };
             let mut writer = stream;
             writer.write_all(
@@ -2335,6 +2588,252 @@ mod tests {
     }
 
     #[test]
+    fn recorder_disabled_does_not_capture_channel_payload() {
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+
+        let outcome = state.try_record_channel_sample_bytes(
+            "source.imu_to_sink.imu",
+            "Imu",
+            &[1, 2, 3, 4],
+            Some(10),
+        );
+
+        assert!(!outcome.recorded);
+        assert!(!outcome.dropped);
+        let status = state.status();
+        assert!(!status.recorder.enabled);
+        assert_eq!(status.recorder.bytes_written, 0);
+        assert_eq!(state.drain_recorder_events().len(), 0);
+    }
+
+    #[test]
+    fn recorder_start_captures_channel_sample_and_reports_status() {
+        let state = IntrospectionState::new();
+        state.start_recorder(IntrospectionRecorderStart {
+            output: Some("memory://test.mcap".to_string()),
+            filters: vec!["channel:source.imu_to_sink.imu".to_string()],
+            queue_depth: Some(4),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 42,
+            selfdesc_hash: "abc123".to_string(),
+        });
+
+        let outcome = state.try_record_channel_sample_bytes(
+            "source.imu_to_sink.imu",
+            "Imu",
+            &[1, 2, 3, 4],
+            Some(10),
+        );
+
+        assert!(outcome.recorded);
+        assert!(!outcome.dropped);
+        let events = state.drain_recorder_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].entity.name, "source.imu_to_sink.imu");
+        assert_eq!(events[0].payload, vec![1, 2, 3, 4]);
+
+        let status = state.status();
+        assert!(status.recorder.enabled);
+        assert_eq!(
+            status.recorder.output.as_deref(),
+            Some("memory://test.mcap")
+        );
+        assert_eq!(status.recorder.dropped_count, 0);
+        assert_eq!(
+            status.recorder.active_filters,
+            vec!["channel:source.imu_to_sink.imu"]
+        );
+    }
+
+    #[test]
+    fn recorder_makes_probe_publish_report_recorded_without_echo_observer() {
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        state.start_recorder(IntrospectionRecorderStart {
+            output: None,
+            filters: vec!["channel".to_string()],
+            queue_depth: Some(4),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 42,
+            selfdesc_hash: "abc123".to_string(),
+        });
+
+        let outcome = state.try_probe_channel_publish_bytes(
+            "source.imu_to_sink.imu",
+            "Imu",
+            &[9, 8],
+            Some(10),
+        );
+
+        assert!(outcome.recorded);
+        assert!(!outcome.dropped);
+        assert_eq!(
+            state
+                .channel_snapshot("source.imu_to_sink.imu")
+                .unwrap()
+                .published_count,
+            0
+        );
+        let events = state.drain_recorder_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload, vec![9, 8]);
+    }
+
+    #[test]
+    fn recorder_bounded_queue_reports_dropped_count() {
+        let state = IntrospectionState::new();
+        state.start_recorder(IntrospectionRecorderStart {
+            output: None,
+            filters: vec!["all".to_string()],
+            queue_depth: Some(1),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 42,
+            selfdesc_hash: "abc123".to_string(),
+        });
+
+        let first = state.try_record_channel_sample_bytes("a.out_to_b.in", "Msg", &[1], Some(1));
+        let second = state.try_record_channel_sample_bytes("a.out_to_b.in", "Msg", &[2], Some(2));
+
+        assert!(first.recorded);
+        assert!(!first.dropped);
+        assert!(!second.recorded);
+        assert!(second.dropped);
+        let status = state.status();
+        assert_eq!(status.recorder.dropped_count, 1);
+        assert_eq!(status.recorder.queued_events, 1);
+        assert_eq!(state.drain_recorder_events().len(), 1);
+    }
+
+    #[test]
+    fn status_server_controls_recorder_and_drains_events() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-recorder-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        let server = spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("status server should start");
+
+        let started = request_recorder_start(
+            &socket,
+            Some("memory://socket.mcap".to_string()),
+            vec!["channel:source.imu_to_sink.imu".to_string()],
+            Some(4),
+        )
+        .expect("recorder start request should succeed");
+        let IntrospectionResponse::RecorderValue { recorder, .. } = started else {
+            panic!("recorder start returned wrong response")
+        };
+        assert!(recorder.enabled);
+        assert_eq!(recorder.output.as_deref(), Some("memory://socket.mcap"));
+
+        state.try_record_channel_sample_bytes("source.imu_to_sink.imu", "Imu", &[9, 8], Some(11));
+        let drained =
+            request_recorder_drain(&socket).expect("recorder drain request should succeed");
+        let IntrospectionResponse::RecorderEvents {
+            events, recorder, ..
+        } = drained
+        else {
+            panic!("recorder drain returned wrong response")
+        };
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].entity.name, "source.imu_to_sink.imu");
+        assert_eq!(recorder.queued_events, 0);
+
+        let stopped = request_recorder_stop(&socket).expect("recorder stop request should succeed");
+        let IntrospectionResponse::RecorderValue { recorder, .. } = stopped else {
+            panic!("recorder stop returned wrong response")
+        };
+        assert!(!recorder.enabled);
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recorder_captures_param_operation_and_scheduler_events() {
+        let state = IntrospectionState::new();
+        state.start_recorder(IntrospectionRecorderStart {
+            output: None,
+            filters: vec!["all".to_string()],
+            queue_depth: Some(16),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 42,
+            selfdesc_hash: "abc123".to_string(),
+        });
+        state.register_param(IntrospectionParamSchema {
+            name: "controller.kp".to_string(),
+            ty: "f64".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(1.0),
+            min: None,
+            max: None,
+            choices: vec![],
+        });
+        state
+            .set_param_pending("controller.kp", serde_json::json!(2.0))
+            .expect("param set should be accepted");
+        state.record_param_applied("controller.kp", serde_json::json!(2.0));
+        state.record_operation_health(IntrospectionOperationStatus {
+            name: "controller.plan".to_string(),
+            ready: true,
+            running: 1,
+            queued: 0,
+            current_operation_ids: vec!["1:2:3".to_string()],
+            total_started: 1,
+            succeeded_count: 0,
+            failed_count: 0,
+            canceled_count: 0,
+            timeout_count: 0,
+            preempted_count: 0,
+            last_transition_ms: Some(12),
+        });
+        state.record_task_health(IntrospectionTaskHealth {
+            name: "control_loop".to_string(),
+            lane: "control".to_string(),
+            run_count: 1,
+            success_count: 1,
+            ..Default::default()
+        });
+        state.record_lane_health(IntrospectionLaneHealth {
+            name: "control".to_string(),
+            queue_depth: 0,
+            dispatched_count: 1,
+            fairness_violations: 0,
+        });
+
+        let events = state.drain_recorder_events();
+        assert!(events.iter().any(|event| {
+            event.event_kind == flowrt_record::RecordEventKind::ParamEvent
+                && event.entity.name == "controller.kp"
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_kind == flowrt_record::RecordEventKind::OperationEvent
+                && event.entity.name == "controller.plan"
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_kind == flowrt_record::RecordEventKind::SchedulerEvent)
+        );
+    }
+
+    #[test]
     fn health_fields_serialize_roundtrip() {
         let status = IntrospectionStatus {
             tick_count: 42,
@@ -2375,6 +2874,7 @@ mod tests {
                 dispatched_count: 200,
                 fairness_violations: 1,
             }],
+            recorder: Default::default(),
         };
 
         let json = serde_json::to_string(&status).unwrap();

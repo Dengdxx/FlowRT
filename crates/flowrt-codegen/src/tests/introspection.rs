@@ -103,9 +103,17 @@ backends = ["iox2"]
         !sensors_run.contains(&aux_register_marker),
         "sensors process should not register aux channel:\n{sensors_run}"
     );
-    let sensor_record =
-        format!("record_introspection_publish_copy(&self.{sensor_probe}, &value, tick_time_ms);");
+    let sensor_record = format!(
+        "record_introspection_publish_copy(&introspection_state, {channel}, \"Sample\", &self.{sensor_probe}, &value, tick_time_ms);",
+        channel = rust_string_literal(sensor_channel)
+    );
     assert!(rust_shell.contains(&sensor_record));
+    assert!(rust_shell.contains(
+        "if !probe.enabled() && !state.recorder_enabled_for_channel(name) {\n        return;\n    }"
+    ));
+    assert!(rust_shell.contains(
+        "state.try_record_channel_sample_bytes(name, message_type, payload, Some(published_at_ms));"
+    ));
     let sensor_record_at = rust_shell.find(&sensor_record).unwrap();
     let sensor_before_record = &rust_shell[..sensor_record_at];
     assert!(sensor_before_record.contains(".publish_at(value.clone(), tick_time_ms)"));
@@ -318,9 +326,16 @@ backends = ["inproc"]
         !sensors_run.contains(&aux_register_marker),
         "sensors process should not register aux channel:\n{sensors_run}"
     );
-    let sensor_record =
-        format!("record_introspection_publish_copy(this->{sensor_probe}, *value, tick_time_ms);");
+    let sensor_record = format!(
+        "record_introspection_publish_copy(introspection_state, {channel}, \"Sample\", this->{sensor_probe}, *value, tick_time_ms);",
+        channel = cpp_string_literal(sensor_channel)
+    );
     assert!(cpp_shell.contains(&sensor_record));
+    assert!(cpp_shell.contains(
+        "if (!probe.enabled() && !state.recorder_enabled_for_channel(name)) {\n        return;\n    }"
+    ));
+    assert!(cpp_shell.contains("state.try_record_channel_sample_bytes("));
+    assert!(cpp_shell.contains("message_type,\n            payload,"));
     let sensor_record_at = cpp_shell.find(&sensor_record).unwrap();
     let sensor_before_record = &cpp_shell[..sensor_record_at];
     assert!(sensor_before_record.contains("publish_at(*value, tick_time_ms)"));
@@ -332,8 +347,10 @@ backends = ["inproc"]
     );
     let aux_probe = extract_probe_field_for_registration(aux_run, &aux_register_marker)
         .expect("aux process should register aux channel");
-    let aux_record =
-        format!("record_introspection_publish_copy(this->{aux_probe}, *value, tick_time_ms);");
+    let aux_record = format!(
+        "record_introspection_publish_copy(introspection_state, {channel}, \"Sample\", this->{aux_probe}, *value, tick_time_ms);",
+        channel = cpp_string_literal(aux_channel)
+    );
     assert!(cpp_shell.contains(&aux_record));
     let aux_record_at = cpp_shell.find(&aux_record).unwrap();
     let aux_before_record = &cpp_shell[..aux_record_at];

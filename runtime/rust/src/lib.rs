@@ -15,6 +15,7 @@ pub mod iox2;
 pub mod operation;
 #[cfg(feature = "zenoh")]
 pub mod params_remote;
+pub mod recorder;
 pub mod service;
 pub mod shutdown;
 pub mod supervisor;
@@ -43,11 +44,13 @@ pub use introspection::{
     IntrospectionHandshake, IntrospectionIdentity, IntrospectionLaneHealth,
     IntrospectionObserverGuard, IntrospectionOperationStatus, IntrospectionParamSchema,
     IntrospectionParamStatus, IntrospectionProbeRecord, IntrospectionProcessStatus,
-    IntrospectionRequest, IntrospectionResponse, IntrospectionServer, IntrospectionServiceStatus,
-    IntrospectionState, IntrospectionStatus, IntrospectionTaskHealth, discover_runtime_sockets,
-    observe_channel_stream, request_channel_snapshot, request_operation_cancel, request_param_get,
-    request_param_list, request_param_set, request_self_description, request_status,
-    runtime_socket_dir, runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
+    IntrospectionRecorderStart, IntrospectionRecorderStatus, IntrospectionRequest,
+    IntrospectionResponse, IntrospectionServer, IntrospectionServiceStatus, IntrospectionState,
+    IntrospectionStatus, IntrospectionTaskHealth, discover_runtime_sockets, observe_channel_stream,
+    request_channel_snapshot, request_operation_cancel, request_param_get, request_param_list,
+    request_param_set, request_recorder_drain, request_recorder_start, request_recorder_stop,
+    request_self_description, request_status, runtime_socket_dir, runtime_socket_path_for_pid,
+    spawn_status_server, spawn_status_server_at,
 };
 pub use operation::{
     OperationCancelToken, OperationClientError, OperationConcurrencyPolicy, OperationError,
@@ -59,6 +62,9 @@ pub use operation::{
 pub use params_remote::{
     ParamsRemoteError, ZenohParamsServer, params_key_expr, request_remote_param_get,
     request_remote_param_list, request_remote_param_set,
+};
+pub use recorder::{
+    RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,
 };
 pub use service::{
     Deadline, InprocServiceClient, InprocServiceConfig, InprocServiceServer, LaneGuard, RequestId,

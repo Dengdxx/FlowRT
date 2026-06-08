@@ -1612,7 +1612,9 @@ fn cpp_introspection_publish_record(bind: &BindRuntimePlan) -> String {
         "record_introspection_publish_copy"
     };
     format!(
-        "        {helper}(this->{probe}, *value, tick_time_ms);\n",
+        "        {helper}(introspection_state, {channel}, {message_type}, this->{probe}, *value, tick_time_ms);\n",
+        channel = cpp_string_literal(&runtime_channel_name(bind)),
+        message_type = cpp_string_literal(&runtime_channel_message_type(bind)),
         probe = bind.probe_field_name
     )
 }
@@ -1864,36 +1866,56 @@ fn emit_cpp_introspection_helpers() -> String {
 
 template <typename T>
 void record_introspection_publish_copy(
+    flowrt::IntrospectionState& state,
+    std::string_view name,
+    std::string_view message_type,
     const flowrt::IntrospectionChannelProbe& probe,
     const T& value,
     std::uint64_t published_at_ms
 ) {
     probe.record_publish_event();
-    if (!probe.enabled()) {
+    if (!probe.enabled() && !state.recorder_enabled_for_channel(name)) {
         return;
     }
     try {
-        probe.try_record_bytes(
-            std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(&value), sizeof(T)},
+        const auto payload = std::span<const std::uint8_t>{
+            reinterpret_cast<const std::uint8_t*>(&value), sizeof(T)};
+        state.try_record_channel_sample_bytes(
+            name,
+            message_type,
+            payload,
             std::optional<std::uint64_t>{published_at_ms});
+        if (probe.enabled()) {
+            probe.try_record_bytes(payload, std::optional<std::uint64_t>{published_at_ms});
+        }
     } catch (...) {
     }
 }
 
 template <typename T>
 void record_introspection_publish_frame(
+    flowrt::IntrospectionState& state,
+    std::string_view name,
+    std::string_view message_type,
     const flowrt::IntrospectionChannelProbe& probe,
     const T& value,
     std::uint64_t published_at_ms
 ) {
     probe.record_publish_event();
-    if (!probe.enabled()) {
+    if (!probe.enabled() && !state.recorder_enabled_for_channel(name)) {
         return;
     }
     try {
         std::vector<std::uint8_t> payload(flowrt::detail::encoded_frame_size(value));
         flowrt::detail::encode_frame(value, payload);
-        probe.try_record_bytes(payload, std::optional<std::uint64_t>{published_at_ms});
+        state.try_record_channel_sample_bytes(
+            name,
+            message_type,
+            payload,
+            std::optional<std::uint64_t>{published_at_ms});
+        if (probe.enabled()) {
+            probe.try_record_bytes(payload, std::optional<std::uint64_t>{published_at_ms});
+        }
     } catch (...) {
     }
 }

@@ -43,12 +43,15 @@ pub(super) fn emit_rust_introspection_helpers(
         output.push_str(
             r#"#[allow(dead_code)]
 fn record_introspection_publish_copy<T: Copy>(
+    state: &flowrt::IntrospectionState,
+    name: &'static str,
+    message_type: &'static str,
     probe: &flowrt::IntrospectionChannelProbe,
     value: &T,
     published_at_ms: u64,
 ) {
     probe.record_publish_event();
-    if !probe.enabled() {
+    if !probe.enabled() && !state.recorder_enabled_for_channel(name) {
         return;
     }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -58,23 +61,37 @@ fn record_introspection_publish_copy<T: Copy>(
                 std::mem::size_of::<T>(),
             )
         };
-        probe.try_record_bytes(payload, Some(published_at_ms));
+        state.try_record_channel_sample_bytes(name, message_type, payload, Some(published_at_ms));
+        if probe.enabled() {
+            probe.try_record_bytes(payload, Some(published_at_ms));
+        }
     }));
 }
 
 #[allow(dead_code)]
 fn record_introspection_publish_frame<T: flowrt::FrameCodec>(
+    state: &flowrt::IntrospectionState,
+    name: &'static str,
+    message_type: &'static str,
     probe: &flowrt::IntrospectionChannelProbe,
     value: &T,
     published_at_ms: u64,
 ) {
     probe.record_publish_event();
-    if !probe.enabled() {
+    if !probe.enabled() && !state.recorder_enabled_for_channel(name) {
         return;
     }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let Ok(payload) = value.to_frame_vec() {
-            probe.try_record_bytes(&payload, Some(published_at_ms));
+            state.try_record_channel_sample_bytes(
+                name,
+                message_type,
+                &payload,
+                Some(published_at_ms),
+            );
+            if probe.enabled() {
+                probe.try_record_bytes(&payload, Some(published_at_ms));
+            }
         }
     }));
 }

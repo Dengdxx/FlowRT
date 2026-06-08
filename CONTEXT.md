@@ -143,6 +143,12 @@ self-description hash、entity id、monotonic timestamp 和 wall-clock timestamp
 未来 replay / simulated clock / deterministic debug 留稳定输入，但本版本不实现
 `flowrt replay`。
 
+当前开发分支已完成 runtime recorder tap 基础：Rust/C++ runtime 都提供
+`IntrospectionStatus.recorder`、recorder start/stop/drain socket 控制面、有界事件
+队列和 active filters；生成的 Rust/C++ runtime shell 在 channel publish 路径同时
+接入 echo probe 与 recorder tap。该能力仍属于运行态采集基础，`flowrt record` CLI
+和落盘录制命令由后续切片接入。
+
 FlowRT 主项目不做硬件 backend。Linux 和外部 driver package 管硬件；FlowRT 管结构、
 执行、通信、观测、external process 生命周期和 typed 接入边界。
 
@@ -225,7 +231,7 @@ scripts/
 - zenoh-only ROS2 bridge：生成 source process bridge tap 和 FlowRT 管理的 C++ ROS2
   adapter process，ROS2 侧强制 `rmw_zenoh_cpp`。
 - runtime introspection socket、自描述、status、channel snapshot、echo observer、
-  `hz` 采样和参数控制面。
+  `hz` 采样、参数控制面和按需 recorder tap。
 - generated supervisor 对 Rust、C++ 和 ROS2 bridge process 的分流启动、health
   汇总、PID socket 轮询、tick stale/exit/restart 状态展示、process 依赖顺序、
   可配置 restart policy 和失败传播 baseline。

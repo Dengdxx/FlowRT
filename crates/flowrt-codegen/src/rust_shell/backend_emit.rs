@@ -4,7 +4,10 @@ use flowrt_ir::{
 };
 
 use crate::messages::rust_type;
-use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, bind_backend};
+use crate::runtime_plan::{
+    BindRuntimePlan, BridgeRuntimePlan, bind_backend, runtime_channel_message_type,
+    runtime_channel_name,
+};
 use crate::{flowrt_path_part, flowrt_topic_path_part};
 
 pub(super) fn runtime_channel_type(bind: &BindRuntimePlan) -> String {
@@ -272,7 +275,9 @@ fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
         "record_introspection_publish_copy"
     };
     format!(
-        "            {helper}(&self.{probe}, &value, tick_time_ms);\n",
+        "            {helper}(&introspection_state, {channel}, {message_type}, &self.{probe}, &value, tick_time_ms);\n",
+        channel = crate::rust_string_literal(&runtime_channel_name(bind)),
+        message_type = crate::rust_string_literal(&runtime_channel_message_type(bind)),
         probe = bind.probe_field_name
     )
 }

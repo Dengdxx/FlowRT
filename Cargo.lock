@@ -666,6 +666,7 @@ dependencies = [
 name = "flowrt"
 version = "0.5.0"
 dependencies = [
+ "flowrt-record",
  "iceoryx2",
  "libc",
  "rand 0.9.4",
