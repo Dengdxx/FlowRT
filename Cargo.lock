@@ -684,6 +684,7 @@ dependencies = [
  "flowrt",
  "flowrt-codegen",
  "flowrt-ir",
+ "flowrt-record",
  "flowrt-rsdl",
  "flowrt-selfdesc",
  "flowrt-validate",

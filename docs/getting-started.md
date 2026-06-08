@@ -197,6 +197,23 @@ lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=
 
 这些指标由 runtime 内置的调度健康策略自动采集，Rust 和 C++ 生成 shell 行为一致。所有健康字段使用 `serde(default)` 保证前向兼容，旧版 JSON 不含健康字段时解析为零值。
 
+## 录制运行态事件
+
+应用运行时可以用 `flowrt record` 把 FlowRT 事件写入 MCAP 文件。该命令只需要 live runtime socket，不需要 RSDL 源文件：
+
+```bash
+flowrt record --output run.mcap --duration 5s --all
+```
+
+如果同一台机器有多个 FlowRT runtime，先用 `flowrt status` 查看 socket，再显式选择：
+
+```bash
+flowrt status
+flowrt record --output imu.mcap --channel source.imu_to_sink.imu --socket /run/user/1000/flowrt/12345.sock
+```
+
+录制期间 runtime 按需开启数据面 tap；没有执行 `flowrt record` 时，发布热路径不会持续复制 payload。命令结束时会输出 `event_count`、`dropped_count` 和 `bytes_written`，用于判断本次录制是否发生丢弃。
+
 ## Service request/response 示例
 
 Service 是 request/response 语义，和 channel（dataflow push）不同。client 发起请求后

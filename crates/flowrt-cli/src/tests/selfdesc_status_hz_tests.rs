@@ -196,6 +196,46 @@ fn live_status_summary_displays_supervisor_process_health() {
 }
 
 #[test]
+fn live_status_summary_displays_recorder_health() {
+    let root = temp_test_dir("live-status-recorder-health");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 71,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.start_recorder(flowrt::IntrospectionRecorderStart {
+        output: Some("run.mcap".to_string()),
+        filters: vec!["channel:source.imu_to_sink.imu".to_string()],
+        queue_depth: Some(4),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime_pid: 71,
+        selfdesc_hash: "feedface".to_string(),
+    });
+    state.try_record_channel_sample_bytes("source.imu_to_sink.imu", "Imu", &[1, 2], Some(10));
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+
+    assert!(output.contains("recorder enabled=true"));
+    assert!(output.contains("output=run.mcap"));
+    assert!(output.contains("dropped_count=0"));
+    assert!(output.contains("bytes_written=2"));
+    assert!(output.contains("queued_events=1"));
+    assert!(output.contains("active_filters=[channel:source.imu_to_sink.imu]"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_hz_summary_formats_channel_delta_rate() {
     let first = flowrt::IntrospectionResponse::Status {
         handshake: flowrt::IntrospectionHandshake {
@@ -222,6 +262,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             operations: Vec::new(),
             tasks: Vec::new(),
             lanes: Vec::new(),
+            recorder: Default::default(),
         },
     };
     let second = flowrt::IntrospectionResponse::Status {
@@ -249,6 +290,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             operations: Vec::new(),
             tasks: Vec::new(),
             lanes: Vec::new(),
+            recorder: Default::default(),
         },
     };
 

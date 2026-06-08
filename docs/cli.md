@@ -23,6 +23,7 @@ flowrt op status [operation] [--socket <path>]
 flowrt op cancel <operation_id> [--socket <path>]
 flowrt status
 flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
+flowrt record --output <path/to/run.mcap> [--socket <path>] [--duration <10s|500ms|2m>] [--channel <name>] [--operation <name>] [--all] [--force]
 ```
 
 ## `check`
@@ -493,6 +494,14 @@ operation=controller.plan ready=true running=1 queued=0 current_operation_ids=[1
 
 字段说明：`ready` 表示 Operation endpoint 是否可用；`running` / `queued` 是当前运行和排队 invocation 数；`current_operation_ids` 是可用于 `flowrt op cancel` 的非终态 ID；`total_started`、`succeeded`、`failed`、`canceled`、`timeout` 和 `preempted` 是累计计数；`last_transition_ms` 为最近状态转换时间戳，`none` 表示尚无状态转换。
 
+录制开启或存在累计 recorder 计数时，`status` 会输出 recorder 行：
+
+```text
+recorder enabled=true output=run.mcap dropped_count=0 bytes_written=128 queued_events=0 active_filters=[channel:source.imu_to_sink.imu] socket=/run/user/1000/flowrt/12345.sock
+```
+
+字段说明：`enabled` 表示数据面 tap 是否开启；`dropped_count` 是 recorder 有界队列满时丢弃的事件数；`bytes_written` 是 runtime 已接受的事件 payload 字节数；`queued_events` 是等待 CLI drain 的事件数；`active_filters` 是当前 recorder 过滤条件。
+
 runtime 启动 status socket 时会先探测同路径 socket 是否仍可连接：仍可连接时拒绝覆盖，避免同机多个进程互相抢占；不可连接时按 stale socket 回收，处理 SIGKILL 后遗留的 socket 文件。
 
 ### 调度健康指标
@@ -538,6 +547,33 @@ flowrt hz source.imu_to_sink.imu --socket /run/user/1000/flowrt/12345.sock --win
 `hz` 通过 live status 控制面读取 channel `published_count`，等待一个采样窗口后再次读取，并用计数差除以实际 elapsed time 得到发布频率。它不打开 `observe_channel`，不读取 payload，不启用 echo 数据面 probe，因此不会让发布热路径做 payload 拷贝或 frame 编码。
 
 省略 channel 时输出所有 live channel；传入 channel 时只输出完全匹配的 canonical channel 名。省略 `--socket` 时扫描当前用户 runtime socket 目录；多个进程同时存在时会分别输出并带上 socket 路径。`--window-ms` 默认 1000，必须大于 0。
+
+## `record`
+
+```bash
+flowrt record --output run.mcap --duration 10s --all
+flowrt record --output imu.mcap --channel source.imu_to_sink.imu --socket /run/user/1000/flowrt/12345.sock
+flowrt record --output op.mcap --operation controller.plan --force
+```
+
+`record` 通过 live runtime introspection socket 按需开启 recorder tap，把 FlowRT 事件写入 MCAP 文件。它不需要 RSDL 源文件，也不需要生成应用二进制；事件 schema 使用 FlowRT 自有 `RecordEnvelope` v1，覆盖 channel sample、参数控制面、Service、Operation、scheduler/time 和 runtime/process metadata。
+
+省略 `--socket` 时，CLI 扫描当前用户 runtime socket 并要求恰好一个 live FlowRT 进程；如果同机有多个 runtime，必须显式传入 `--socket <path>`。`--duration` 省略时持续录制到 SIGINT/SIGTERM；收到信号后 CLI 会请求 runtime 停止 recorder、drain 剩余事件并关闭 MCAP。已有输出文件默认拒绝覆盖，传入 `--force` 后才会截断重写。
+
+过滤规则：
+
+- 不传 `--channel` / `--operation` 且不传 `--all` 时，默认录制所有支持的 FlowRT 事件。
+- `--channel <name>` 可重复，只录制匹配的 channel sample。
+- `--operation <name>` 可重复，只录制匹配的 Operation event。
+- `--all` 表示录制全部事件，不能与 `--channel` 或 `--operation` 混用。
+
+完成后输出最小摘要：
+
+```text
+recorded output=run.mcap socket=/run/user/1000/flowrt/12345.sock event_count=42 dropped_count=0 bytes_written=4096 active_filters=[all]
+```
+
+`event_count` 是写入 MCAP 的 envelope 数量；`dropped_count` 是 runtime recorder 队列丢弃计数；`bytes_written` 是 runtime 已接受的事件 payload 字节数。默认未录制时，生成的 Rust/C++ runtime shell 只在热路径做轻量开关判断，不持续复制 payload。
 
 ## `--profile`
 

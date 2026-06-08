@@ -143,11 +143,13 @@ self-description hash、entity id、monotonic timestamp 和 wall-clock timestamp
 未来 replay / simulated clock / deterministic debug 留稳定输入，但本版本不实现
 `flowrt replay`。
 
-当前开发分支已完成 runtime recorder tap 基础：Rust/C++ runtime 都提供
+当前开发分支已完成 record-only 录制主路径：Rust/C++ runtime 都提供
 `IntrospectionStatus.recorder`、recorder start/stop/drain socket 控制面、有界事件
 队列和 active filters；生成的 Rust/C++ runtime shell 在 channel publish 路径同时
-接入 echo probe 与 recorder tap。该能力仍属于运行态采集基础，`flowrt record` CLI
-和落盘录制命令由后续切片接入。
+接入 echo probe 与 recorder tap；C++ recorder drain JSON 与 Rust `RecordEnvelope`
+保持同一 schema。`flowrt record` 可以自动发现唯一 live runtime，也可用 `--socket`
+显式选择进程，并把 channel / Operation / control-plane / scheduler / runtime 事件写入
+MCAP 文件。
 
 FlowRT 主项目不做硬件 backend。Linux 和外部 driver package 管硬件；FlowRT 管结构、
 执行、通信、观测、external process 生命周期和 typed 接入边界。
@@ -253,6 +255,7 @@ flowrt nodes path/to/generated-app
 flowrt status
 flowrt hz [channel] [--socket path/to/runtime.sock] [--window-ms 1000]
 flowrt echo <channel> [--socket path/to/runtime.sock] [--image path/to/generated-app-or-selfdesc.json] [--follow]
+flowrt record --output run.mcap [--socket path/to/runtime.sock] [--duration 10s] [--channel name] [--operation name] [--all] [--force]
 flowrt params list --image path/to/generated-app-or-selfdesc.json
 flowrt params get <instance.param> --image path/to/generated-app-or-selfdesc.json
 flowrt params set <instance.param> <json-value> --image path/to/generated-app-or-selfdesc.json
@@ -268,8 +271,8 @@ backend 为 `inproc`。
 
 - `prepare` 和 `build` 会写 `flowrt/` 输出目录，必须持有 OS advisory lock。
 - `.flowrt.lock` 文件可残留，PID 只用于诊断，真实占用状态由锁判断。
-- `check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`hz`、`echo`
-  和 `params` 不写生成物，不应获取生成物锁。
+- `check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`hz`、`echo`、
+  `record` 和 `params` 不写生成物，不应获取生成物锁。
 - `run` / `launch` 省略 `--run-steps` / `--run-ticks` 时长期运行，直到生成应用返回
   `Error` 或收到 SIGINT/SIGTERM。
 - `--run-steps` 是推荐外部名称，`--run-ticks` 是兼容别名。

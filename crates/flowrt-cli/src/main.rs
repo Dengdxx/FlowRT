@@ -17,6 +17,7 @@ use flowrt_ir::{
 use flowrt_validate::validate_contract;
 
 mod introspection;
+mod record;
 
 use introspection::{
     EchoTarget, echo_channel, echo_channel_follow, live_hz_summary, live_status_summary,
@@ -24,6 +25,7 @@ use introspection::{
     params_list, params_set, remote_params_get, remote_params_list, remote_params_set,
     self_description_nodes, self_description_summary,
 };
+use record::{RecordOptions, record_runtime};
 
 #[cfg(test)]
 use flowrt_selfdesc::SelfDescription;
@@ -194,6 +196,37 @@ enum Command {
         /// 采样窗口，单位毫秒。
         #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..))]
         window_ms: u64,
+    },
+
+    /// 按需录制 live runtime 事件到 MCAP 文件。
+    Record {
+        /// 输出 MCAP 文件路径。
+        #[arg(long)]
+        output: PathBuf,
+
+        /// 显式指定 runtime introspection socket；省略时扫描当前用户全部 runtime socket。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// 录制时长，例如 `10s`、`500ms`、`2m`；省略时直到 Ctrl-C。
+        #[arg(long, value_parser = parse_record_duration)]
+        duration: Option<Duration>,
+
+        /// 只录制指定 channel，可重复。
+        #[arg(long)]
+        channel: Vec<String>,
+
+        /// 只录制指定 Operation，可重复。
+        #[arg(long)]
+        operation: Vec<String>,
+
+        /// 录制所有支持的 FlowRT 事件。
+        #[arg(long)]
+        all: bool,
+
+        /// 允许覆盖已有输出文件。
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -510,6 +543,30 @@ fn main() -> Result<()> {
                 live_hz_summary(channel.as_deref(), socket.as_deref(), window_ms)?
             );
         }
+        Command::Record {
+            output,
+            socket,
+            duration,
+            channel,
+            operation,
+            all,
+            force,
+        } => {
+            println!(
+                "{}",
+                record_runtime(RecordOptions {
+                    output,
+                    socket,
+                    duration,
+                    channels: channel,
+                    operations: operation,
+                    all,
+                    force,
+                    poll_interval: Duration::from_millis(100),
+                    shutdown: flowrt::install_signal_shutdown_token(),
+                })?
+            );
+        }
     }
     Ok(())
 }
@@ -518,6 +575,27 @@ fn parse_positive_usize(raw: &str) -> std::result::Result<usize, String> {
     match raw.parse::<usize>() {
         Ok(value) if value > 0 => Ok(value),
         _ => Err("must be a positive integer".to_string()),
+    }
+}
+
+fn parse_record_duration(raw: &str) -> std::result::Result<Duration, String> {
+    let (number, unit) = raw
+        .strip_suffix("ms")
+        .map(|number| (number, "ms"))
+        .or_else(|| raw.strip_suffix('s').map(|number| (number, "s")))
+        .or_else(|| raw.strip_suffix('m').map(|number| (number, "m")))
+        .unwrap_or((raw, "s"));
+    let value = number.parse::<u64>().map_err(|_| {
+        "duration must be a positive integer with optional ms/s/m suffix".to_string()
+    })?;
+    if value == 0 {
+        return Err("duration must be greater than zero".to_string());
+    }
+    match unit {
+        "ms" => Ok(Duration::from_millis(value)),
+        "s" => Ok(Duration::from_secs(value)),
+        "m" => Ok(Duration::from_secs(value.saturating_mul(60))),
+        _ => unreachable!(),
     }
 }
 

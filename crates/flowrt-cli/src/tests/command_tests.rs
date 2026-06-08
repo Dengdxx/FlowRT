@@ -284,6 +284,62 @@ fn cli_parses_operation_commands() {
 }
 
 #[test]
+fn cli_parses_record_command_with_filters() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "record",
+        "--output",
+        "run.mcap",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+        "--duration",
+        "10s",
+        "--channel",
+        "source.imu_to_sink.imu",
+        "--operation",
+        "controller.plan",
+        "--force",
+    ])
+    .unwrap();
+
+    let Command::Record {
+        output,
+        socket,
+        duration,
+        channel,
+        operation,
+        all,
+        force,
+    } = cli.command
+    else {
+        panic!("record command should parse into Command::Record")
+    };
+
+    assert_eq!(output, PathBuf::from("run.mcap"));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(duration, Some(Duration::from_secs(10)));
+    assert_eq!(channel, vec!["source.imu_to_sink.imu"]);
+    assert_eq!(operation, vec!["controller.plan"]);
+    assert!(!all);
+    assert!(force);
+}
+
+#[test]
+fn cli_rejects_zero_record_duration() {
+    let error = Cli::try_parse_from([
+        "flowrt",
+        "record",
+        "--output",
+        "run.mcap",
+        "--duration",
+        "0s",
+    ])
+    .expect_err("zero record duration should be rejected");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+}
+
+#[test]
 fn params_remote_runtime_arg_rejects_socket() {
     let error = params_remote_runtime_arg(true, Some(Path::new("/tmp/flowrt.sock")), None)
         .expect_err("--remote must not accept a local socket selector");

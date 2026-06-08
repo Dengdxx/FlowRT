@@ -650,6 +650,13 @@ fn request_echo_snapshot(
                 socket.display()
             );
         }
+        flowrt::IntrospectionResponse::RecorderValue { .. }
+        | flowrt::IntrospectionResponse::RecorderEvents { .. } => {
+            anyhow::bail!(
+                "runtime socket `{}` returned an unexpected recorder response",
+                socket.display()
+            );
+        }
         flowrt::IntrospectionResponse::ParamList { .. }
         | flowrt::IntrospectionResponse::ParamValue { .. } => {
             anyhow::bail!(
@@ -1430,6 +1437,7 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                 // 尝试从同一 socket 获取 self-description，用于关联 service → instance。
                 let service_endpoints =
                     load_service_endpoint_map(&socket, &handshake.self_description_hash);
+                let recorder = status.recorder.clone();
 
                 let active_observers = status
                     .channels
@@ -1555,6 +1563,23 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                         socket.display()
                     ));
                 }
+                if recorder.enabled
+                    || recorder.dropped_count != 0
+                    || recorder.bytes_written != 0
+                    || recorder.queued_events != 0
+                {
+                    let output = recorder.output.as_deref().unwrap_or("none");
+                    lines.push(format!(
+                        "recorder enabled={} output={} dropped_count={} bytes_written={} queued_events={} active_filters=[{}] socket={}",
+                        recorder.enabled,
+                        output,
+                        recorder.dropped_count,
+                        recorder.bytes_written,
+                        recorder.queued_events,
+                        recorder.active_filters.join(","),
+                        socket.display()
+                    ));
+                }
             }
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
                 lines.push(format!(
@@ -1574,6 +1599,13 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
             | Ok(flowrt::IntrospectionResponse::ParamValue { .. }) => {
                 lines.push(format!(
                     "stale socket={} error=unexpected parameter response",
+                    socket.display()
+                ));
+            }
+            Ok(flowrt::IntrospectionResponse::RecorderValue { .. })
+            | Ok(flowrt::IntrospectionResponse::RecorderEvents { .. }) => {
+                lines.push(format!(
+                    "stale socket={} error=unexpected recorder response",
                     socket.display()
                 ));
             }
