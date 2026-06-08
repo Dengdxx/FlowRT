@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    ChannelBackendSource, ComponentIr, EntityId, GraphIr, InstanceIr, PortRef, RouteTopology,
-    TypeExpr, TypeIr,
+    ChannelBackendSource, ComponentIr, EntityId, GraphIr, InstanceIr, IrError, LanguageKind,
+    PortRef, Result, RouteTopology, TypeExpr, TypeIr,
 };
 
 pub(super) struct ResolvedChannelBackend {
@@ -14,19 +14,35 @@ pub(super) fn resolve_channel_backend(
     requested_backend: &str,
     source_type: Option<&TypeExpr>,
     types: &[TypeIr],
-) -> ResolvedChannelBackend {
+    topology: RouteTopology,
+    explicit: bool,
+) -> Result<ResolvedChannelBackend> {
+    if topology.touches_external {
+        if matches!(requested_backend, "inproc" | "iox2") && explicit {
+            return Err(IrError::InvalidValue {
+                context: "bind.dataflow.backend".to_string(),
+                message: format!(
+                    "external dataflow route cannot use `{requested_backend}` backend"
+                ),
+            });
+        }
+        return Ok(ResolvedChannelBackend {
+            backend: "zenoh".to_string(),
+            source: ChannelBackendSource::AutoFallback,
+        });
+    }
     if requested_backend == "iox2"
         && source_type.is_some_and(|ty| type_expr_contains_variable_data(ty, types))
     {
-        return ResolvedChannelBackend {
+        return Ok(ResolvedChannelBackend {
             backend: "zenoh".to_string(),
             source: ChannelBackendSource::AutoFallback,
-        };
+        });
     }
-    ResolvedChannelBackend {
+    Ok(ResolvedChannelBackend {
         backend: requested_backend.to_string(),
         source: ChannelBackendSource::ProfileDefault,
-    }
+    })
 }
 
 pub(super) fn source_port_types_by_endpoint(
@@ -52,11 +68,18 @@ pub(super) fn source_port_types_by_endpoint(
     ports
 }
 
-pub(super) fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<EntityId, RouteTopology> {
+pub(super) fn route_topology_by_bind_id(
+    graph: &GraphIr,
+    components: &[ComponentIr],
+) -> BTreeMap<EntityId, RouteTopology> {
     let instances = graph
         .instances
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    let components = components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
     graph
         .binds
@@ -64,7 +87,7 @@ pub(super) fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<EntityId, R
         .map(|bind| {
             (
                 bind.id.clone(),
-                route_topology(&instances, &bind.from, &bind.to),
+                route_topology(&instances, Some(&components), &bind.from, &bind.to),
             )
         })
         .collect()
@@ -72,6 +95,7 @@ pub(super) fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<EntityId, R
 
 pub(super) fn route_topology(
     instances: &BTreeMap<&str, &InstanceIr>,
+    components: Option<&BTreeMap<&str, &ComponentIr>>,
     from: &PortRef,
     to: &PortRef,
 ) -> RouteTopology {
@@ -89,10 +113,20 @@ pub(super) fn route_topology(
     let to_target = to_instance
         .and_then(|instance| instance.target.as_ref())
         .map(|target| target.name.as_str());
-    RouteTopology::new(
-        from_process != to_process,
-        from_target.is_some() && to_target.is_some() && from_target != to_target,
-    )
+    let touches_external = components.is_some_and(|components| {
+        [from_instance, to_instance].iter().any(|instance| {
+            instance
+                .and_then(|instance| components.get(instance.component.name.as_str()))
+                .is_some_and(|component| component.language == LanguageKind::External)
+        })
+    });
+    let crosses_process = from_process != to_process;
+    let crosses_target = from_target.is_some() && to_target.is_some() && from_target != to_target;
+    if touches_external {
+        RouteTopology::with_external(crosses_process, crosses_target)
+    } else {
+        RouteTopology::new(crosses_process, crosses_target)
+    }
 }
 
 fn type_expr_contains_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use flowrt_ir::{ComponentIr, ComponentKind, ContractIr, ParamType, ParamUpdatePolicy, TypeExpr};
+use flowrt_ir::{
+    ComponentIr, ComponentKind, ContractIr, LanguageKind, ParamType, ParamUpdatePolicy, TypeExpr,
+};
 
 use crate::ValidationError;
 use crate::types::{type_expr_contains_variable_data, validate_type_expr};
@@ -17,9 +19,17 @@ pub(crate) fn validate_components(
         .collect::<BTreeMap<_, _>>();
 
     for component in &ir.components {
-        if component.kind == ComponentKind::External {
+        if component.kind == ComponentKind::External && component.language != LanguageKind::External
+        {
             errors.push(ValidationError::new(format!(
-                "component `{}` uses external process kind, which is not supported by Contract IR v0.1 runtime shell",
+                "component `{}` uses kind `external` but language is not `external`",
+                component.name
+            )));
+        }
+        if component.language == LanguageKind::External && component.kind != ComponentKind::External
+        {
+            errors.push(ValidationError::new(format!(
+                "component `{}` uses language `external` but kind is not `external`",
                 component.name
             )));
         }

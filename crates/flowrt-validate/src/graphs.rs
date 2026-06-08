@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr,
+    BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind,
     OperationPortIr, OperationPortRef, PortIr, PortRef, ProcessReadinessGate, Ros2BridgeDirection,
     ServicePortIr, ServicePortRef, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
     param_value_compatible, param_value_kind,
@@ -31,6 +31,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_instance_targets(&components, &targets, graph, errors);
         validate_process_targets(graph, errors);
         validate_process_orchestration(graph, errors);
+        validate_external_processes(&components, graph, errors);
         validate_tasks(&components, &instances, graph, errors);
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
@@ -38,6 +39,78 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_operation_binds(&components, &instances, graph, errors);
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
+    }
+}
+
+fn validate_external_processes(
+    components: &BTreeMap<&str, &ComponentIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let external_processes = graph
+        .external_processes
+        .iter()
+        .map(|external| (external.process.as_str(), external))
+        .collect::<BTreeMap<_, _>>();
+    let declared_processes = graph
+        .processes
+        .iter()
+        .map(|process| process.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for external in &graph.external_processes {
+        if !declared_processes.contains(external.process.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "external_process `{}` references unknown process",
+                external.process
+            )));
+        }
+        for backend in &external.required_backends {
+            if !flowrt_ir::is_known_backend(&backend.0) {
+                errors.push(ValidationError::new(format!(
+                    "external_process `{}` requires unknown backend `{}`",
+                    external.process, backend.0
+                )));
+            }
+        }
+    }
+
+    let mut external_instance_count_by_process = BTreeMap::<&str, usize>::new();
+    for instance in &graph.instances {
+        let process = instance.process.as_deref().unwrap_or("main");
+        let is_external = components
+            .get(instance.component.name.as_str())
+            .is_some_and(|component| component.language == LanguageKind::External);
+        if is_external {
+            *external_instance_count_by_process
+                .entry(process)
+                .or_default() += 1;
+            if !external_processes.contains_key(process) {
+                errors.push(ValidationError::new(format!(
+                    "external instance `{}` uses process `{process}` without external_process metadata",
+                    instance.name
+                )));
+            }
+        } else if external_processes.contains_key(process) {
+            errors.push(ValidationError::new(format!(
+                "native instance `{}` cannot run inside external process `{process}`",
+                instance.name
+            )));
+        }
+    }
+
+    for external in &graph.external_processes {
+        if external_instance_count_by_process
+            .get(external.process.as_str())
+            .copied()
+            .unwrap_or(0)
+            == 0
+        {
+            errors.push(ValidationError::new(format!(
+                "external_process `{}` has no external instance",
+                external.process
+            )));
+        }
     }
 }
 

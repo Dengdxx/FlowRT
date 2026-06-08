@@ -67,6 +67,7 @@ pub(super) fn expand_workspace(
             let composition = RawCompositionDocument {
                 instances: parsed.instances.clone(),
                 processes: parsed.processes.clone(),
+                external_processes: parsed.external_processes.clone(),
                 binds: parsed.binds.clone(),
                 service_binds: parsed.service_binds.clone(),
                 operation_binds: parsed.operation_binds.clone(),
@@ -94,6 +95,7 @@ fn validate_module_document(
     let invalid = [
         (!parsed.instances.is_empty(), "instance"),
         (!parsed.processes.is_empty(), "process"),
+        (!parsed.external_processes.is_empty(), "external_process"),
         (!parsed.binds.is_empty(), "bind"),
         (!parsed.service_binds.is_empty(), "bind.service"),
         (!parsed.operation_binds.is_empty(), "bind.operation"),
@@ -123,6 +125,9 @@ fn merge_composition_document(
 ) -> Result<()> {
     merge_named_map("instance", &mut document.instances, composition.instances)?;
     document.processes.extend(composition.processes);
+    document
+        .external_processes
+        .extend(composition.external_processes);
     document.binds.extend(composition.binds);
     document.service_binds.extend(composition.service_binds);
     document.operation_binds.extend(composition.operation_binds);

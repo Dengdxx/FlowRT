@@ -122,16 +122,28 @@ fn normalize_document_with_modules(
         &profiles,
     )?;
     let processes = graphs::normalize_processes(document, &instances)?;
-    let service_edges =
-        services::normalize_service_binds(document, &instance_refs, &instances, &graph_name)?;
-    let operation_edges =
-        operations::normalize_operation_binds(document, &instance_refs, &instances, &graph_name)?;
+    let external_processes = graphs::normalize_external_processes(document)?;
+    let service_edges = services::normalize_service_binds(
+        document,
+        &instance_refs,
+        &instances,
+        &components,
+        &graph_name,
+    )?;
+    let operation_edges = operations::normalize_operation_binds(
+        document,
+        &instance_refs,
+        &instances,
+        &components,
+        &graph_name,
+    )?;
     let ros2_bridges = services::normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = crate::GraphIr {
         id: graph_id.clone(),
         name: graph_name.clone(),
         instances,
         processes,
+        external_processes,
         tasks,
         binds,
         services: service_edges,
@@ -221,6 +233,293 @@ backends = ["inproc"]
         );
         assert_eq!(ir.graphs[0].tasks[0].period_ms, Some(5));
         assert_eq!(ir.profiles[0].scheduler.worker_threads, 3);
+    }
+
+    #[test]
+    fn normalizes_external_component_and_process_contract() {
+        let source = r#"
+[package]
+name = "external_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+target = "linux"
+
+[[process]]
+name = "sensor_proc"
+readiness = "runtime_ready"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+args = ["--rate", "50"]
+working_dir = "package"
+health = "runtime_socket"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+platform = "linux-arm64"
+runtime = ["external"]
+backends = ["zenoh"]
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        let component = &ir.components[0];
+        assert_eq!(component.language, crate::LanguageKind::External);
+        assert_eq!(component.kind, crate::ComponentKind::External);
+        assert_eq!(ir.targets[0].runtime, vec![crate::LanguageKind::External]);
+        assert_eq!(ir.graphs[0].external_processes.len(), 1);
+        let external = &ir.graphs[0].external_processes[0];
+        assert_eq!(external.process, "sensor_proc");
+        assert_eq!(external.package, "fake_sensor_driver");
+        assert_eq!(external.executable, "driver");
+        assert_eq!(external.args, vec!["--rate", "50"]);
+        assert_eq!(external.working_dir, crate::ExternalWorkingDir::Package);
+        assert_eq!(external.health, crate::ExternalHealthKind::RuntimeSocket);
+        assert_eq!(
+            external.required_backends,
+            vec![crate::BackendName("zenoh".to_string())]
+        );
+    }
+
+    #[test]
+    fn external_dataflow_auto_backend_resolves_to_zenoh() {
+        let source = r#"
+[package]
+name = "external_route_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[component.monitor]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+target = "linux"
+
+[instance.monitor]
+component = "monitor"
+process = "monitor_proc"
+target = "linux"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[process]]
+name = "sensor_proc"
+
+[[process]]
+name = "monitor_proc"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+
+[[bind.dataflow]]
+from = "fake_sensor.sample"
+to = "monitor.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust", "external"]
+backends = ["inproc", "zenoh"]
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.graphs[0].binds[0].backend.0, "zenoh");
+        assert_eq!(
+            ir.graphs[0].binds[0].backend_source,
+            ChannelBackendSource::AutoFallback
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_inproc_for_external_dataflow() {
+        let source = r#"
+[package]
+name = "external_route_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[component.monitor]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+
+[instance.monitor]
+component = "monitor"
+process = "monitor_proc"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+
+[[bind.dataflow]]
+from = "fake_sensor.sample"
+to = "monitor.sample"
+channel = "latest"
+backend = "inproc"
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let err = normalize_document(&raw, hash_source(source))
+            .expect_err("external dataflow must not use inproc");
+        assert!(format!("{err}").contains("external dataflow route cannot use `inproc`"));
+    }
+
+    #[test]
+    fn external_service_auto_backend_resolves_to_zenoh() {
+        let source = r#"
+[package]
+name = "external_service_demo"
+rsdl_version = "0.1"
+
+[type.Request]
+value = "u32"
+
+[type.Response]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:Request->Response"]
+
+[component.external_planner]
+language = "external"
+kind = "external"
+service_server = ["plan:Request->Response"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+
+[instance.external_planner]
+component = "external_planner"
+process = "planner_proc"
+
+[[external_process]]
+process = "planner_proc"
+package = "planner_driver"
+executable = "planner"
+
+[[bind.service]]
+client = "client.plan"
+server = "external_planner.plan"
+
+[profile.default]
+backend = "inproc"
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.graphs[0].services[0].backend.0, "zenoh");
+        assert_eq!(
+            ir.graphs[0].services[0].backend_source,
+            ServiceBackendSource::AutoResolved
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_inproc_for_external_operation() {
+        let source = r#"
+[package]
+name = "external_operation_demo"
+rsdl_version = "0.1"
+
+[type.Goal]
+target = "u32"
+
+[type.Feedback]
+progress = "u32"
+
+[type.Result]
+ok = "bool"
+
+[component.client]
+language = "rust"
+
+[component.client.operation_client.plan]
+goal = "Goal"
+feedback = "Feedback"
+result = "Result"
+
+[component.external_planner]
+language = "external"
+kind = "external"
+
+[component.external_planner.operation_server.plan]
+goal = "Goal"
+feedback = "Feedback"
+result = "Result"
+
+[instance.client]
+component = "client"
+process = "client_proc"
+
+[instance.external_planner]
+component = "external_planner"
+process = "planner_proc"
+
+[[external_process]]
+process = "planner_proc"
+package = "planner_driver"
+executable = "planner"
+
+[[bind.operation]]
+client = "client.plan"
+server = "external_planner.plan"
+backend = "inproc"
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let err = normalize_document(&raw, hash_source(source))
+            .expect_err("external operation must not use inproc");
+        assert!(format!("{err}").contains("external operation route cannot use `inproc`"));
     }
 
     #[test]

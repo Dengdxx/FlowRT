@@ -105,6 +105,9 @@ pub(super) fn merge_imported_document(
     merge_named_map("component", &mut document.components, imported.components)?;
     merge_named_map("instance", &mut document.instances, imported.instances)?;
     document.processes.extend(imported.processes);
+    document
+        .external_processes
+        .extend(imported.external_processes);
     document.binds.extend(imported.binds);
     document.service_binds.extend(imported.service_binds);
     document.operation_binds.extend(imported.operation_binds);

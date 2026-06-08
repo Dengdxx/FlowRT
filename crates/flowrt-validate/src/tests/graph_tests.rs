@@ -1,6 +1,128 @@
 use super::*;
 
 #[test]
+fn accepts_external_component_with_external_process_and_zenoh_route() {
+    let source = r#"
+[package]
+name = "external_ok"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[component.monitor]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+target = "linux"
+
+[instance.monitor]
+component = "monitor"
+process = "monitor_proc"
+target = "linux"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+required_backends = ["zenoh"]
+
+[[bind.dataflow]]
+from = "fake_sensor.sample"
+to = "monitor.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust", "external"]
+backends = ["inproc", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_external_instance_without_external_process_metadata() {
+    let source = r#"
+[package]
+name = "external_bad"
+rsdl_version = "0.1"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("external metadata should be required");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "external instance `fake_sensor` uses process `sensor_proc` without external_process metadata",
+        )
+    }));
+}
+
+#[test]
+fn rejects_native_instance_inside_external_process() {
+    let source = r#"
+[package]
+name = "external_bad"
+rsdl_version = "0.1"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+
+[component.monitor]
+language = "rust"
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "shared_proc"
+
+[instance.monitor]
+component = "monitor"
+process = "shared_proc"
+
+[[external_process]]
+process = "shared_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report =
+        validate_contract(&ir).expect_err("external process must not mix native instances");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("native instance `monitor` cannot run inside external process `shared_proc`")
+    }));
+}
+
+#[test]
 fn rejects_wrong_bind_direction() {
     let source = r#"
 [package]

@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use flowrt_rsdl::{RawDocument, RawOperationBind};
 
 use crate::{
-    BackendName, EntityRef, InstanceIr, IrError, OPERATION_DEFAULT_MAX_IN_FLIGHT,
-    OPERATION_DEFAULT_QUEUE_DEPTH, OPERATION_DEFAULT_RESULT_RETENTION_MS,
-    OPERATION_DEFAULT_TIMEOUT_MS, OperationBackendSource, OperationConcurrencyPolicy,
-    OperationEdgeIr, OperationFeedbackPolicy, OperationPolicyIr, OperationPolicySourceIr,
-    OperationPortRef, OperationPreemptPolicy, PolicyValueSource, Result,
+    BackendName, ComponentIr, EntityRef, InstanceIr, IrError, LanguageKind,
+    OPERATION_DEFAULT_MAX_IN_FLIGHT, OPERATION_DEFAULT_QUEUE_DEPTH,
+    OPERATION_DEFAULT_RESULT_RETENTION_MS, OPERATION_DEFAULT_TIMEOUT_MS, OperationBackendSource,
+    OperationConcurrencyPolicy, OperationEdgeIr, OperationFeedbackPolicy, OperationPolicyIr,
+    OperationPolicySourceIr, OperationPortRef, OperationPreemptPolicy, PolicyValueSource, Result,
 };
 
 use super::ids::entity_id;
@@ -16,11 +16,16 @@ pub(super) fn normalize_operation_binds(
     document: &RawDocument,
     instance_refs: &BTreeMap<String, EntityRef>,
     instances: &[InstanceIr],
+    components: &[ComponentIr],
     graph_name: &str,
 ) -> Result<Vec<OperationEdgeIr>> {
     let instances_by_name = instances
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    let components_by_name = components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
 
     let mut operations = document
@@ -32,7 +37,8 @@ pub(super) fn normalize_operation_binds(
             let server = parse_operation_port_ref(&raw.server, instance_refs)?;
             let context = format!("bind.operation[{index}]");
 
-            let topology = operation_route_topology(&instances_by_name, &client, &server);
+            let topology =
+                operation_route_topology(&instances_by_name, &components_by_name, &client, &server);
             let (backend, backend_source) =
                 resolve_operation_backend(&context, raw.backend.as_deref(), topology)?;
 
@@ -81,9 +87,10 @@ pub(super) fn normalize_operation_binds(
 
 fn operation_route_topology(
     instances: &BTreeMap<&str, &InstanceIr>,
+    components: &BTreeMap<&str, &ComponentIr>,
     client: &OperationPortRef,
     server: &OperationPortRef,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     let client_instance = instances.get(client.instance.name.as_str());
     let server_instance = instances.get(server.instance.name.as_str());
     let client_process = client_instance
@@ -101,17 +108,22 @@ fn operation_route_topology(
     let crosses_process = client_process != server_process;
     let crosses_target =
         client_target.is_some() && server_target.is_some() && client_target != server_target;
-    (crosses_process, crosses_target)
+    let touches_external = [client_instance, server_instance].iter().any(|instance| {
+        instance
+            .and_then(|instance| components.get(instance.component.name.as_str()))
+            .is_some_and(|component| component.language == LanguageKind::External)
+    });
+    (crosses_process, crosses_target, touches_external)
 }
 
 fn resolve_operation_backend(
     context: &str,
     requested: Option<&str>,
-    (crosses_process, crosses_target): (bool, bool),
+    (crosses_process, crosses_target, touches_external): (bool, bool, bool),
 ) -> Result<(String, OperationBackendSource)> {
     match requested {
         None | Some("auto") => {
-            let resolved = if crosses_process || crosses_target {
+            let resolved = if touches_external || crosses_process || crosses_target {
                 "zenoh"
             } else {
                 "inproc"
@@ -119,7 +131,12 @@ fn resolve_operation_backend(
             Ok((resolved.to_string(), OperationBackendSource::AutoResolved))
         }
         Some("inproc") => {
-            if crosses_process || crosses_target {
+            if touches_external {
+                Err(IrError::InvalidValue {
+                    context: context.to_string(),
+                    message: "external operation route cannot use `inproc` backend".to_string(),
+                })
+            } else if crosses_process || crosses_target {
                 Err(IrError::InvalidValue {
                     context: context.to_string(),
                     message:

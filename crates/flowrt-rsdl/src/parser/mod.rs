@@ -15,9 +15,9 @@ mod workspace;
 use imports::{canonicalize_existing, expand_imports, logical_source_path, read_source};
 use schema::validate_top_level_sections;
 use tables::{
-    parse_binds, parse_component, parse_instance, parse_module, parse_named_tables,
-    parse_operation_binds, parse_package, parse_processes, parse_profile, parse_ros2_bridges,
-    parse_service_binds, parse_target, parse_type, parse_workspace,
+    parse_binds, parse_component, parse_external_processes, parse_instance, parse_module,
+    parse_named_tables, parse_operation_binds, parse_package, parse_processes, parse_profile,
+    parse_ros2_bridges, parse_service_binds, parse_target, parse_type, parse_workspace,
 };
 use workspace::expand_workspace;
 
@@ -30,6 +30,7 @@ struct ParsedDocument {
     components: BTreeMap<String, RawComponent>,
     instances: BTreeMap<String, RawInstance>,
     processes: Vec<RawProcess>,
+    external_processes: Vec<RawExternalProcess>,
     binds: Vec<RawDataflowBind>,
     service_binds: Vec<RawServiceBind>,
     operation_binds: Vec<RawOperationBind>,
@@ -140,6 +141,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         components: parse_named_tables(root, "component", parse_component)?,
         instances: parse_named_tables(root, "instance", parse_instance)?,
         processes: parse_processes(root)?,
+        external_processes: parse_external_processes(root)?,
         binds: parse_binds(root)?,
         service_binds: parse_service_binds(root)?,
         operation_binds: parse_operation_binds(root)?,
@@ -157,6 +159,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         components: parsed.components,
         instances: parsed.instances,
         processes: parsed.processes,
+        external_processes: parsed.external_processes,
         binds: parsed.binds,
         service_binds: parsed.service_binds,
         operation_binds: parsed.operation_binds,
@@ -254,6 +257,63 @@ output = ["slow"]
         assert_eq!(tasks[1].name.as_deref(), Some("slow_loop"));
         assert_eq!(tasks[0].output, vec!["fast"]);
         assert_eq!(tasks[1].output, vec!["slow"]);
+    }
+
+    #[test]
+    fn parses_external_process_declarations() {
+        let source = r#"
+[package]
+name = "external_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+target = "linux"
+
+[[process]]
+name = "sensor_proc"
+readiness = "runtime_ready"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+args = ["--rate", "50"]
+working_dir = "package"
+health = "runtime_socket"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+platform = "linux-arm64"
+runtime = ["external"]
+backends = ["zenoh"]
+"#;
+
+        let document = parse_str(source).expect("external process document should parse");
+        let component = &document.components["fake_sensor"];
+        assert_eq!(component.language, "external");
+        assert_eq!(component.kind.as_deref(), Some("external"));
+        assert_eq!(document.external_processes.len(), 1);
+        let external = &document.external_processes[0];
+        assert_eq!(external.process, "sensor_proc");
+        assert_eq!(external.package, "fake_sensor_driver");
+        assert_eq!(external.executable, "driver");
+        assert_eq!(external.args, vec!["--rate", "50"]);
+        assert_eq!(external.working_dir.as_deref(), Some("package"));
+        assert_eq!(external.health.as_deref(), Some("runtime_socket"));
+        assert_eq!(external.required_backends, vec!["zenoh"]);
     }
 
     #[test]

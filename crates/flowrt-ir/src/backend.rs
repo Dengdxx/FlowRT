@@ -10,6 +10,7 @@ use crate::{
 pub struct RouteTopology {
     pub crosses_process: bool,
     pub crosses_target: bool,
+    pub touches_external: bool,
 }
 
 impl RouteTopology {
@@ -18,6 +19,7 @@ impl RouteTopology {
         Self {
             crosses_process: false,
             crosses_target: false,
+            touches_external: false,
         }
     }
 
@@ -26,6 +28,16 @@ impl RouteTopology {
         Self {
             crosses_process,
             crosses_target,
+            touches_external: false,
+        }
+    }
+
+    /// 构造包含 external process 边界的显式 route 拓扑。
+    pub const fn with_external(crosses_process: bool, crosses_target: bool) -> Self {
+        Self {
+            crosses_process,
+            crosses_target,
+            touches_external: true,
         }
     }
 }
@@ -828,6 +840,7 @@ mod tests {
             name: "default".to_string(),
             instances: vec![],
             processes: vec![],
+            external_processes: vec![],
             tasks: vec![
                 crate::TaskIr {
                     id: crate::EntityId("task_0000000000000001".to_string()),

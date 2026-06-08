@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 
-use flowrt_rsdl::{RawDocument, RawModuleDocument, RawProcess};
+use flowrt_rsdl::{RawDocument, RawExternalProcess, RawModuleDocument, RawProcess};
 
 use crate::{
     BackendName, ChannelBackendSource, ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr,
-    ComponentIr, DeploymentIr, EntityId, EntityRef, GraphIr, InstanceIr, IrError, OverflowPolicy,
-    PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessReadinessGate,
-    ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy,
-    TargetIr, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
-    deployment_capability_decision, graph_required_capabilities,
+    ComponentIr, DeploymentIr, EntityId, EntityRef, ExternalHealthKind, ExternalProcessIr,
+    ExternalWorkingDir, GraphIr, InstanceIr, IrError, OverflowPolicy, PolicyValueSource, PortRef,
+    ProcessFailurePropagation, ProcessIr, ProcessReadinessGate, ProcessRestartPolicy,
+    ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy, TargetIr, TaskIr, TypeIr,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -220,6 +221,74 @@ pub(super) fn normalize_processes(
     Ok(processes)
 }
 
+pub(super) fn normalize_external_processes(
+    document: &RawDocument,
+) -> Result<Vec<ExternalProcessIr>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut processes = document
+        .external_processes
+        .iter()
+        .map(|raw| normalize_external_process(raw, &mut seen))
+        .collect::<Result<Vec<_>>>()?;
+    processes.sort_by(|left, right| left.process.cmp(&right.process));
+    Ok(processes)
+}
+
+fn normalize_external_process(
+    raw: &RawExternalProcess,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> Result<ExternalProcessIr> {
+    if !seen.insert(raw.process.clone()) {
+        return Err(IrError::InvalidValue {
+            context: format!("external_process.{}", raw.process),
+            message: "external process is declared more than once".to_string(),
+        });
+    }
+    Ok(ExternalProcessIr {
+        process: raw.process.clone(),
+        package: raw.package.clone(),
+        executable: raw.executable.clone(),
+        args: raw.args.clone(),
+        working_dir: normalize_external_working_dir(raw)?,
+        health: normalize_external_health(raw)?,
+        required_backends: {
+            let mut backends = raw
+                .required_backends
+                .iter()
+                .cloned()
+                .map(BackendName)
+                .collect::<Vec<_>>();
+            backends.sort();
+            backends.dedup();
+            backends
+        },
+    })
+}
+
+fn normalize_external_working_dir(raw: &RawExternalProcess) -> Result<ExternalWorkingDir> {
+    match raw.working_dir.as_deref().unwrap_or("package") {
+        "package" => Ok(ExternalWorkingDir::Package),
+        "workspace" => Ok(ExternalWorkingDir::Workspace),
+        value => Err(IrError::InvalidEnum {
+            context: format!("external_process.{}.working_dir", raw.process),
+            kind: "external process working directory",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn normalize_external_health(raw: &RawExternalProcess) -> Result<ExternalHealthKind> {
+    match raw.health.as_deref().unwrap_or("runtime_socket") {
+        "process_started" => Ok(ExternalHealthKind::ProcessStarted),
+        "runtime_socket" => Ok(ExternalHealthKind::RuntimeSocket),
+        value => Err(IrError::InvalidEnum {
+            context: format!("external_process.{}.health", raw.process),
+            kind: "external process health",
+            value: value.to_string(),
+        }),
+    }
+}
+
 fn normalize_process_restart(
     process_name: &str,
     raw: Option<&RawProcess>,
@@ -334,6 +403,10 @@ pub(super) fn normalize_binds(
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
         .collect::<BTreeMap<_, _>>();
+    let components_by_name = components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
+        .collect::<BTreeMap<_, _>>();
 
     let mut binds = document
         .binds
@@ -362,12 +435,20 @@ pub(super) fn normalize_binds(
             let to = parse_port_ref(&raw.to, instance_refs)?;
             let source_type =
                 source_port_types.get(&(from.instance.name.clone(), from.port.clone()));
-            let topology = route_topology(&instances_by_name, &from, &to);
+            let topology =
+                route_topology(&instances_by_name, Some(&components_by_name), &from, &to);
             let backend_seed = match raw.backend.as_deref() {
                 Some("auto") | None => default_backend,
                 Some(backend) => backend,
             };
-            let resolved_backend = resolve_channel_backend(backend_seed, source_type, types);
+            let explicit_backend = raw.backend.is_some() && raw.backend.as_deref() != Some("auto");
+            let resolved_backend = resolve_channel_backend(
+                backend_seed,
+                source_type,
+                types,
+                topology,
+                explicit_backend,
+            )?;
             let backend_source = if raw.backend.is_some()
                 && raw.backend.as_deref() != Some("auto")
                 && resolved_backend.source != ChannelBackendSource::AutoFallback

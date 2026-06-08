@@ -312,6 +312,54 @@ pub(super) fn parse_processes(root: &Table) -> Result<Vec<RawProcess>> {
     Ok(parsed)
 }
 
+pub(super) fn parse_external_processes(root: &Table) -> Result<Vec<RawExternalProcess>> {
+    let Some(process_value) = root.get("external_process") else {
+        return Ok(Vec::new());
+    };
+    let processes = process_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "external_process".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(processes.len());
+    for (index, value) in processes.iter().enumerate() {
+        let context = format!("external_process[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "document".to_string(),
+                field: "external_process".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &[
+                "process",
+                "package",
+                "executable",
+                "args",
+                "working_dir",
+                "health",
+                "required_backends",
+            ],
+        )?;
+        parsed.push(RawExternalProcess {
+            process: required_string(table, &context, "process")?,
+            package: required_string(table, &context, "package")?,
+            executable: required_string(table, &context, "executable")?,
+            args: optional_string_array(table, &context, "args")?,
+            working_dir: optional_string(table, &context, "working_dir")?,
+            health: optional_string(table, &context, "health")?,
+            required_backends: optional_string_array(table, &context, "required_backends")?,
+        });
+    }
+    Ok(parsed)
+}
+
 pub(super) fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
     let Some(bind_value) = root.get("bind") else {
         return Ok(Vec::new());

@@ -200,6 +200,8 @@ pub struct GraphIr {
     pub name: String,
     pub instances: Vec<InstanceIr>,
     pub processes: Vec<ProcessIr>,
+    #[serde(default)]
+    pub external_processes: Vec<ExternalProcessIr>,
     pub tasks: Vec<TaskIr>,
     pub binds: Vec<ChannelEdgeIr>,
     pub services: Vec<ServiceEdgeIr>,
@@ -222,6 +224,34 @@ pub struct ProcessIr {
     pub nice: Option<i32>,
     pub rt_policy: Option<RtPolicy>,
     pub rt_priority: Option<u32>,
+}
+
+/// 由外部 package/executable 提供的 graph process。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalProcessIr {
+    pub process: String,
+    pub package: String,
+    pub executable: String,
+    pub args: Vec<String>,
+    pub working_dir: ExternalWorkingDir,
+    pub health: ExternalHealthKind,
+    pub required_backends: Vec<BackendName>,
+}
+
+/// external process 的工作目录策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalWorkingDir {
+    Package,
+    Workspace,
+}
+
+/// external process 的健康检查方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalHealthKind {
+    ProcessStarted,
+    RuntimeSocket,
 }
 
 /// 进程 readiness gate 类型。
@@ -561,6 +591,7 @@ pub enum ParamValue {
 pub enum LanguageKind {
     Cpp,
     Rust,
+    External,
 }
 
 /// 组件接入类型。

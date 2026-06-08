@@ -201,6 +201,7 @@ pub(super) fn parse_language(context: &str, value: &str) -> Result<LanguageKind>
     match value {
         "cpp" => Ok(LanguageKind::Cpp),
         "rust" => Ok(LanguageKind::Rust),
+        "external" => Ok(LanguageKind::External),
         _ => Err(invalid_enum(context, "language", value)),
     }
 }

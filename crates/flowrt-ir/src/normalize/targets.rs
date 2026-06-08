@@ -41,6 +41,7 @@ fn normalize_target_runtime(
     runtime.sort_by_key(|language| match language {
         LanguageKind::Cpp => 0,
         LanguageKind::Rust => 1,
+        LanguageKind::External => 2,
     });
     Ok(runtime)
 }

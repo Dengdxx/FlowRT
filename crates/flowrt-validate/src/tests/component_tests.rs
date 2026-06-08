@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn rejects_external_component_kind_until_process_adapter_semantics_exist() {
+fn rejects_external_component_kind_with_native_language() {
     let source = r#"
 [package]
 name = "bad"
@@ -25,13 +25,13 @@ output = ["sample"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let report = validate_contract(&ir).expect_err("external components should fail");
+    let report = validate_contract(&ir).expect_err("external/native mismatch should fail");
 
     assert!(report.errors.iter().any(|error| {
-            error.message.contains(
-                "component `external_source` uses external process kind, which is not supported by Contract IR v0.1 runtime shell",
-            )
-        }));
+        error.message.contains(
+            "component `external_source` uses kind `external` but language is not `external`",
+        )
+    }));
 }
 
 #[test]

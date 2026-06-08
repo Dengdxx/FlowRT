@@ -106,7 +106,7 @@ pub fn project_contract_to_profile(
 fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileIr) {
     for graph in &mut contract.graphs {
         let type_lookup = source_port_types_by_endpoint(&contract.components, &graph.instances);
-        let topology_lookup = route_topology_by_bind_id(graph);
+        let topology_lookup = route_topology_by_bind_id(graph, &contract.components);
         for bind in &mut graph.binds {
             let source_type =
                 type_lookup.get(&(bind.from.instance.name.clone(), bind.from.port.clone()));
@@ -128,6 +128,11 @@ fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileI
                     profile.backend.0.as_str(),
                     source_type,
                     &contract.types,
+                    topology,
+                    false,
+                )
+                .expect(
+                    "profile default backend resolution should not fail without explicit backend",
                 );
                 bind.backend = BackendName(resolved.backend);
                 bind.backend_source = resolved.source;

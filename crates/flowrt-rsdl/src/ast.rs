@@ -51,6 +51,7 @@ pub struct RawModuleDocument {
 pub struct RawCompositionDocument {
     pub instances: BTreeMap<String, RawInstance>,
     pub processes: Vec<RawProcess>,
+    pub external_processes: Vec<RawExternalProcess>,
     pub binds: Vec<RawDataflowBind>,
     pub service_binds: Vec<RawServiceBind>,
     pub operation_binds: Vec<RawOperationBind>,
@@ -69,6 +70,7 @@ pub struct RawDocument {
     pub components: BTreeMap<String, RawComponent>,
     pub instances: BTreeMap<String, RawInstance>,
     pub processes: Vec<RawProcess>,
+    pub external_processes: Vec<RawExternalProcess>,
     pub binds: Vec<RawDataflowBind>,
     pub service_binds: Vec<RawServiceBind>,
     pub operation_binds: Vec<RawOperationBind>,
@@ -191,6 +193,18 @@ pub struct RawProcess {
     pub nice: Option<i32>,
     pub rt_policy: Option<String>,
     pub rt_priority: Option<u32>,
+}
+
+/// `[[external_process]]` 表项，描述由外部 package/executable 提供的进程。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawExternalProcess {
+    pub process: String,
+    pub package: String,
+    pub executable: String,
+    pub args: Vec<String>,
+    pub working_dir: Option<String>,
+    pub health: Option<String>,
+    pub required_backends: Vec<String>,
 }
 
 /// `[[bind.dataflow]]` 表项。

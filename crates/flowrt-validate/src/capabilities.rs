@@ -238,6 +238,7 @@ pub(crate) fn validate_declared_backends(ir: &ContractIr, errors: &mut Vec<Valid
             let runtime_name = match runtime {
                 LanguageKind::Cpp => "cpp",
                 LanguageKind::Rust => "rust",
+                LanguageKind::External => "external",
             };
             if !runtimes.insert(runtime_name) {
                 errors.push(ValidationError::new(format!(

@@ -749,6 +749,7 @@ fn target_runtime_rank(language: LanguageKind) -> u8 {
     match language {
         LanguageKind::Cpp => 0,
         LanguageKind::Rust => 1,
+        LanguageKind::External => 2,
     }
 }
 
