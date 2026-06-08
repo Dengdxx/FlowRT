@@ -1831,7 +1831,7 @@ max = false
     }
 
     #[test]
-    fn rejects_non_empty_array_override_for_empty_default_array() {
+    fn allows_non_empty_array_override_for_empty_default_array() {
         let source = r#"
 [package]
 name = "robot_demo"
@@ -1850,17 +1850,66 @@ component = "controller"
 gains = [true]
 "#;
         let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let instance = &ir.graphs[0].instances[0];
+
+        assert_eq!(
+            instance.params[0].value,
+            ParamValue::Array(vec![ParamValue::Bool(true)])
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_parameter_values() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+kp = nan
+"#;
+        let raw = parse_str(source).unwrap();
         let error = normalize_document(&raw, hash_source(source))
-            .expect_err("non-empty override for empty array default should fail");
+            .expect_err("non-finite parameter default should fail");
 
         assert!(matches!(
             error,
-            IrError::IncompatibleParamOverride {
-                instance,
+            IrError::InvalidParamSchema {
                 component,
                 param,
-                ..
-            } if instance == "controller" && component == "controller" && param == "gains"
+                message,
+            } if component == "controller" && param == "kp" && message.contains("finite")
+        ));
+    }
+
+    #[test]
+    fn rejects_wide_integer_default_above_float_max_without_rounding() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+limit = { type = "f64", default = 9007199254740993, max = 9007199254740992.0 }
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("wide integer should be compared to float max without f64 rounding");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidParamSchema {
+                component,
+                param,
+                message,
+            } if component == "controller" && param == "limit" && message.contains("above")
         ));
     }
 

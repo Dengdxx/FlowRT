@@ -23,6 +23,7 @@ fn normalize_component_param(
         return Ok(schema);
     }
     let default = convert_param_value(value);
+    validate_param_value_supported(component_name, name, &default)?;
     Ok(ParamIr {
         name: name.to_string(),
         ty: infer_param_type(&default),
@@ -138,6 +139,7 @@ fn validate_param_override_type(
     override_value: &RawValue,
 ) -> Result<()> {
     let override_value = convert_param_value(override_value);
+    validate_param_value_supported(component_name, param_name, &override_value)?;
     if !param_value_compatible(&schema.default, &override_value) {
         Err(IrError::IncompatibleParamOverride {
             instance: instance_name.to_string(),
@@ -173,7 +175,7 @@ pub fn param_value_compatible(default_value: &ParamValue, override_value: &Param
 
 fn array_param_compatible(default_values: &[ParamValue], override_values: &[ParamValue]) -> bool {
     if default_values.is_empty() {
-        return override_values.is_empty();
+        return true;
     }
     if override_values.is_empty() {
         return true;
@@ -249,6 +251,7 @@ fn validate_param_schema_value(
     schema: &ParamIr,
     value: &ParamValue,
 ) -> Result<()> {
+    validate_param_value_supported(component, param, value)?;
     if param_type_accepts_value(schema.ty, value) {
         Ok(())
     } else {
@@ -270,6 +273,7 @@ fn validate_param_value_constraints(
     schema: &ParamIr,
     value: &ParamValue,
 ) -> Result<()> {
+    validate_param_value_supported(component, param, value)?;
     if let Some(min) = &schema.min
         && compare_param_values(value, min).is_some_and(|ordering| ordering.is_lt())
     {
@@ -296,6 +300,29 @@ fn validate_param_value_constraints(
         });
     }
     Ok(())
+}
+
+fn validate_param_value_supported(component: &str, param: &str, value: &ParamValue) -> Result<()> {
+    match value {
+        ParamValue::Float(value) if !value.is_finite() => Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: "float value must be finite".to_string(),
+        }),
+        ParamValue::Array(values) => {
+            for value in values {
+                validate_param_value_supported(component, param, value)?;
+            }
+            Ok(())
+        }
+        ParamValue::Table(values) => {
+            for value in values.values() {
+                validate_param_value_supported(component, param, value)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn param_type_accepts_value(ty: ParamType, value: &ParamValue) -> bool {
@@ -327,10 +354,47 @@ fn compare_param_values(left: &ParamValue, right: &ParamValue) -> Option<std::cm
     match (left, right) {
         (ParamValue::Integer(left), ParamValue::Integer(right)) => Some(left.cmp(right)),
         (ParamValue::Float(left), ParamValue::Float(right)) => left.partial_cmp(right),
-        (ParamValue::Float(left), ParamValue::Integer(right)) => left.partial_cmp(&(*right as f64)),
-        (ParamValue::Integer(left), ParamValue::Float(right)) => (*left as f64).partial_cmp(right),
+        (ParamValue::Float(left), ParamValue::Integer(right)) => {
+            compare_integer_float(*right, *left).map(std::cmp::Ordering::reverse)
+        }
+        (ParamValue::Integer(left), ParamValue::Float(right)) => {
+            compare_integer_float(*left, *right)
+        }
         (ParamValue::String(left), ParamValue::String(right)) => Some(left.cmp(right)),
         _ => None,
+    }
+}
+
+fn compare_integer_float(integer: i64, float: f64) -> Option<std::cmp::Ordering> {
+    if float.is_nan() {
+        return None;
+    }
+    if float == f64::INFINITY {
+        return Some(std::cmp::Ordering::Less);
+    }
+    if float == f64::NEG_INFINITY {
+        return Some(std::cmp::Ordering::Greater);
+    }
+    if float < i64::MIN as f64 {
+        return Some(std::cmp::Ordering::Greater);
+    }
+    if float > i64::MAX as f64 {
+        return Some(std::cmp::Ordering::Less);
+    }
+
+    let truncated = float.trunc() as i64;
+    match integer.cmp(&truncated) {
+        std::cmp::Ordering::Equal => {
+            let fraction = float.fract();
+            if fraction == 0.0 {
+                Some(std::cmp::Ordering::Equal)
+            } else if fraction > 0.0 {
+                Some(std::cmp::Ordering::Less)
+            } else {
+                Some(std::cmp::Ordering::Greater)
+            }
+        }
+        ordering => Some(ordering),
     }
 }
 

@@ -336,15 +336,15 @@ pub(crate) fn param_json_value_literal(value: &ParamValue) -> String {
 }
 
 pub(crate) fn float_literal(value: f64) -> String {
-    if value.is_finite() {
-        let mut output = value.to_string();
-        if !output.contains('.') && !output.contains('e') && !output.contains('E') {
-            output.push_str(".0");
-        }
-        output
-    } else {
-        "0.0".to_string()
+    assert!(
+        value.is_finite(),
+        "non-finite FlowRT float literal must be rejected before codegen"
+    );
+    let mut output = value.to_string();
+    if !output.contains('.') && !output.contains('e') && !output.contains('E') {
+        output.push_str(".0");
     }
+    output
 }
 
 pub(crate) fn rust_string_literal(value: &str) -> String {

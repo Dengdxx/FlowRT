@@ -86,3 +86,10 @@ fn extract_probe_field_for_registration<'a>(
                 .filter(|probe| probe.starts_with("introspection_probe_bind_"))
         })
 }
+
+#[test]
+fn float_literal_rejects_non_finite_values() {
+    assert_eq!(float_literal(1.0), "1.0");
+    assert!(std::panic::catch_unwind(|| float_literal(f64::NAN)).is_err());
+    assert!(std::panic::catch_unwind(|| float_literal(f64::INFINITY)).is_err());
+}
