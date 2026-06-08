@@ -46,7 +46,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | --- | --- |
 | `v0.4.0` | Service runtime。 |
 | `v0.5.0` | launch-grade supervisor、参数控制面、高频调度硬化和 FlowRT core skills 套组。 |
-| `v0.6.0` | Operation + record/replay + simulated clock + deterministic debug。 |
+| `v0.6.0` | Operation + record-only 录制系统 + 时间事件模型基础。 |
 | `v0.7.0` | external process / driver package 接入边界、ARM64/跨机器部署闭环。 |
 | `v0.8.0` | 多目标部署、交叉编译、多架构安装包和发布硬化。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
@@ -59,8 +59,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   restart policy、CPU affinity、profile、参数发现/远程控制面，以及高频多 lane
   调度的 deadline、stale、backpressure 和 fairness 语义。同时引入 FlowRT core
   skills 套组，先沉淀开发 FlowRT 本身的 agent 工作流。
-- `v0.6.0` 在 Service 之上引入 Operation，并让运行时具备可复现调试能力。
-  Operation、record/replay、模拟时钟和确定性调试必须共享同一时间与事件模型。
+- `v0.6.0` 在 Service 之上引入 Operation，并落地只录不放的 record 系统。
+  Operation、录制事件和未来 replay / simulated clock / deterministic debug 必须共享
+  同一时间与事件模型；本版本只稳定事件和 timestamp 字段，不让模拟时钟驱动 scheduler。
 - `v0.7.0` 定义 external process / driver package 的 typed 接入边界，并补齐 ARM64、
   跨机器部署和离线交付闭环。到 `v0.7.0`，FlowRT 应具备复刻一套复杂车载机器人
   应用的系统能力，但不把硬件 backend 做进 FlowRT 主项目。
@@ -109,10 +110,10 @@ CLI、CI 和 release。`frt-app-*` 是 1.0.0 之后的保留命名空间；在 s
 安装包和兼容策略稳定前，不把 app 开发流程固化成 skill。该套组只追求 FlowRT 范围
 内的通用性和抽象性，不写成任意项目都适用的泛用技能。
 
-非目标：Operation、record/replay、Web/HTTP/WebSocket/UI、硬件 backend、新语言
-binding、新 backend、ROS2 bridge 扩展。Web、HTTP、WebSocket 和 UI 不进入 FlowRT
-core，只能作为应用层或外部工具消费 FlowRT 暴露的 typed introspection / params /
-record API。
+非目标：Web/HTTP/WebSocket/UI、硬件 backend、新语言 binding、新 backend、ROS2
+bridge 扩展。`v0.6.0` 仍不做 `flowrt replay`、simulated clock 驱动 scheduler 或
+deterministic replay report。Web、HTTP、WebSocket 和 UI 不进入 FlowRT core，只能
+作为应用层或外部工具消费 FlowRT 暴露的 typed introspection / params / record API。
 
 `v0.6.0` 不复制 ROS2 Action。FlowRT 需要的是一等 Operation 语义：typed
 long-running command、generated state machine、explicit policy、observable handle，
@@ -125,6 +126,15 @@ Operation 解决的不是“长时间 service call”，而是机器人系统里
 progress、feedback、cancel、result 和状态观测通道；用户只实现业务 handler 和策略
 钩子，不手写底层协议。这样保留 Action 的实用能力，同时避免让用户维护分散的
 start/cancel/result/progress glue。
+
+`v0.6.0` 的录制系统只做 record，不做 replay。录制使用 MCAP 作为容器，FlowRT 自有
+record envelope 作为 schema，覆盖 channel sample、parameter control-plane event、
+service event、operation event、scheduler/time metadata 和 runtime/process metadata。
+默认未录制时，runtime 热路径不得持续复制 payload 或 per-sample 分配；开启录制后，
+dropped event 必须计数并进入 introspection/status。record event 必须携带
+self-description hash、entity id、monotonic timestamp 和 wall-clock timestamp，为
+未来 replay / simulated clock / deterministic debug 留稳定输入，但本版本不实现
+`flowrt replay`。
 
 FlowRT 主项目不做硬件 backend。Linux 和外部 driver package 管硬件；FlowRT 管结构、
 执行、通信、观测、external process 生命周期和 typed 接入边界。
