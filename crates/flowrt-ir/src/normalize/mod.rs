@@ -1998,6 +1998,99 @@ kp = 12.0
     }
 
     #[test]
+    fn rejects_integer_param_default_outside_declared_type_range() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gain = { type = "u8", default = 256, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("out-of-range integer parameter default should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidParamSchema {
+                component,
+                param,
+                ..
+            } if component == "controller" && param == "gain"
+        ));
+    }
+
+    #[test]
+    fn rejects_integer_param_override_outside_declared_type_range() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gain = { type = "u8", default = 1, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+gain = -1
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("out-of-range integer parameter override should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidParamSchema {
+                component,
+                param,
+                ..
+            } if component == "controller" && param == "gain"
+        ));
+    }
+
+    #[test]
+    fn rejects_f32_param_default_outside_declared_type_range() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gain = { type = "f32", default = 1e40, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("out-of-range f32 parameter default should fail");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidParamSchema {
+                component,
+                param,
+                ..
+            } if component == "controller" && param == "gain"
+        ));
+    }
+
+    #[test]
     fn rejects_unknown_parameter_update_policy() {
         let source = r#"
 [package]

@@ -274,6 +274,7 @@ fn validate_param_value_constraints(
     value: &ParamValue,
 ) -> Result<()> {
     validate_param_value_supported(component, param, value)?;
+    validate_param_value_range(component, param, schema.ty, value)?;
     if let Some(min) = &schema.min
         && compare_param_values(value, min).is_some_and(|ordering| ordering.is_lt())
     {
@@ -300,6 +301,58 @@ fn validate_param_value_constraints(
         });
     }
     Ok(())
+}
+
+fn validate_param_value_range(
+    component: &str,
+    param: &str,
+    ty: ParamType,
+    value: &ParamValue,
+) -> Result<()> {
+    let valid = match (ty, value) {
+        (
+            ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64,
+            ParamValue::Integer(value),
+        ) => integer_param_bounds(ty).is_some_and(|(min, max)| *value >= min && *value <= max),
+        (ParamType::F32, ParamValue::Float(value)) => {
+            *value >= f64::from(f32::MIN) && *value <= f64::from(f32::MAX)
+        }
+        (ParamType::F32, ParamValue::Integer(_)) => true,
+        _ => true,
+    };
+
+    if valid {
+        Ok(())
+    } else {
+        Err(IrError::InvalidParamSchema {
+            component: component.to_string(),
+            param: param.to_string(),
+            message: format!("value is outside declared `{}` range", param_type_name(ty)),
+        })
+    }
+}
+
+fn integer_param_bounds(ty: ParamType) -> Option<(i64, i64)> {
+    match ty {
+        ParamType::U8 => Some((0, i64::from(u8::MAX))),
+        ParamType::U16 => Some((0, i64::from(u16::MAX))),
+        ParamType::U32 => Some((0, i64::from(u32::MAX))),
+        // RSDL/TOML integer values are normalized as i64 today, so the
+        // representable u64 subset is 0..=i64::MAX.
+        ParamType::U64 => Some((0, i64::MAX)),
+        ParamType::I8 => Some((i64::from(i8::MIN), i64::from(i8::MAX))),
+        ParamType::I16 => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
+        ParamType::I32 => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
+        ParamType::I64 => Some((i64::MIN, i64::MAX)),
+        _ => None,
+    }
 }
 
 fn validate_param_value_supported(component: &str, param: &str, value: &ParamValue) -> Result<()> {
