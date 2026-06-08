@@ -316,23 +316,12 @@ fn validate_service_binds(
             )));
         }
 
-        // 校验显式 inproc 不跨 process。
         if service.backend.0 == "inproc"
-            && service.backend_source == flowrt_ir::ServiceBackendSource::Explicit
+            && service_spans_boundaries(instances, &service.client, &service.server)
         {
-            let client_process = instances
-                .get(service.client.instance.name.as_str())
-                .and_then(|i| i.process.as_deref())
-                .unwrap_or("main");
-            let server_process = instances
-                .get(service.server.instance.name.as_str())
-                .and_then(|i| i.process.as_deref())
-                .unwrap_or("main");
-            if client_process != server_process {
-                errors.push(ValidationError::new(format!(
-                    "service bind `{client_key} -> {server_key}` uses explicit `inproc` but spans processes `{client_process}` and `{server_process}`"
-                )));
-            }
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` uses `inproc` but spans process or target boundaries"
+            )));
         }
 
         let client = match resolve_service_port(
@@ -423,11 +412,10 @@ fn validate_operation_binds(
         }
 
         if operation.backend.0 == "inproc"
-            && operation.backend_source == flowrt_ir::OperationBackendSource::Explicit
             && operation_spans_boundaries(instances, &operation.client, &operation.server)
         {
             errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses explicit `inproc` but spans process or target boundaries"
+                "operation bind `{client_key} -> {server_key}` uses `inproc` but spans process or target boundaries"
             )));
         }
 
@@ -478,6 +466,29 @@ fn validate_operation_binds(
             )));
         }
     }
+}
+
+fn service_spans_boundaries(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    client: &ServicePortRef,
+    server: &ServicePortRef,
+) -> bool {
+    let client_instance = instances.get(client.instance.name.as_str());
+    let server_instance = instances.get(server.instance.name.as_str());
+    let client_process = client_instance
+        .and_then(|i| i.process.as_deref())
+        .unwrap_or("main");
+    let server_process = server_instance
+        .and_then(|i| i.process.as_deref())
+        .unwrap_or("main");
+    let client_target = client_instance
+        .and_then(|i| i.target.as_ref())
+        .map(|target| target.name.as_str());
+    let server_target = server_instance
+        .and_then(|i| i.target.as_ref())
+        .map(|target| target.name.as_str());
+    client_process != server_process
+        || (client_target.is_some() && server_target.is_some() && client_target != server_target)
 }
 
 fn operation_spans_boundaries(

@@ -401,6 +401,20 @@ fn process_backend(
     }) {
         return "zenoh".to_string();
     }
+    if graph.services.iter().any(|service| {
+        service.backend.0 == "zenoh"
+            && (instance_names.contains(service.client.instance.name.as_str())
+                || instance_names.contains(service.server.instance.name.as_str()))
+    }) {
+        return "zenoh".to_string();
+    }
+    if graph.operations.iter().any(|operation| {
+        operation.backend.0 == "zenoh"
+            && (instance_names.contains(operation.client.instance.name.as_str())
+                || instance_names.contains(operation.server.instance.name.as_str()))
+    }) {
+        return "zenoh".to_string();
+    }
     if graph.binds.iter().any(|bind| {
         bind.backend.0 == "iox2"
             && (instance_names.contains(bind.from.instance.name.as_str())

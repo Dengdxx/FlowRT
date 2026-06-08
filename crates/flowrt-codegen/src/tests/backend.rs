@@ -91,6 +91,50 @@ backends = ["iox2"]
 }
 
 #[test]
+fn enables_flowrt_zenoh_feature_when_service_uses_zenoh() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "service_backend_demo"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+
+    assert!(cargo_manifest.contains("features = [\"zenoh\"]"));
+}
+
+#[test]
 fn emits_cpp_iox2_transport_contract_when_profile_selects_iox2() {
     let ir = contract_from_source(
         r#"

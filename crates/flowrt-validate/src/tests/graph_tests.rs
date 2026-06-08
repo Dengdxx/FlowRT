@@ -924,6 +924,54 @@ backend = "iox2"
 }
 
 #[test]
+fn rejects_auto_resolved_inproc_service_that_spans_processes() {
+    let source = r#"
+[package]
+name = "bad_service_ir"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].services[0].backend = flowrt_ir::BackendName("inproc".into());
+    ir.graphs[0].services[0].backend_source = flowrt_ir::ServiceBackendSource::AutoResolved;
+
+    let report = validate_contract(&ir).expect_err("tampered inproc service route should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "service bind `client.plan -> server.plan` uses `inproc` but spans process or target boundaries",
+        )
+    }));
+}
+
+#[test]
 fn rejects_service_bind_with_unknown_backend() {
     let source = r#"
 [package]

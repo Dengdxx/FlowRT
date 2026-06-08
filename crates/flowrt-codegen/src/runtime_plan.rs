@@ -314,6 +314,11 @@ pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> boo
         || contract
             .graphs
             .iter()
+            .flat_map(|graph| &graph.services)
+            .any(|service| service.backend.0 == backend)
+        || contract
+            .graphs
+            .iter()
             .flat_map(|graph| &graph.ros2_bridges)
             .any(|bridge| bridge.backend.0 == backend)
         || contract

@@ -84,6 +84,151 @@ backends = ["iox2"]
 }
 
 #[test]
+fn rejects_service_backend_when_target_does_not_support_it() {
+    let source = r#"
+[package]
+name = "bad_service_target"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report =
+        validate_contract(&ir).expect_err("service backend unsupported by target should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "target `linux` does not support backend `zenoh` selected by service bind `client.plan -> server.plan`",
+        )
+    }));
+}
+
+#[test]
+fn rejects_operation_backend_when_target_does_not_support_it() {
+    let source = r#"
+[package]
+name = "bad_operation_target"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+
+[component.client.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.server]
+language = "rust"
+
+[component.server.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.operation]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report =
+        validate_contract(&ir).expect_err("operation backend unsupported by target should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "target `linux` does not support backend `zenoh` selected by operation bind `client.plan -> server.plan`",
+        )
+    }));
+}
+
+#[test]
+fn rejects_external_required_backend_when_target_does_not_support_it() {
+    let source = r#"
+[package]
+name = "bad_external_target"
+rsdl_version = "0.1"
+
+[component.sensor]
+language = "external"
+kind = "external"
+
+[instance.sensor]
+component = "sensor"
+process = "sensor_proc"
+target = "edge"
+
+[[external_process]]
+process = "sensor_proc"
+package = "sensor_driver"
+executable = "bin/driver"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "inproc"
+
+[target.edge]
+runtime = ["external"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report =
+        validate_contract(&ir).expect_err("external backend unsupported by target should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "target `edge` does not support backend `zenoh` required by external_process `sensor_proc`",
+        )
+    }));
+}
+
+#[test]
 fn rejects_iox2_for_cross_target_dataflow_that_requires_multi_host() {
     let source = r#"
 [package]

@@ -629,6 +629,114 @@ backends = ["zenoh"]
 }
 
 #[test]
+fn launch_manifest_marks_service_zenoh_processes_without_dataflow_routes() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "service_backend_demo"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let processes = launch["graphs"][0]["processes"].as_array().unwrap();
+
+    assert!(
+        processes
+            .iter()
+            .all(|process| process["backend"] == "zenoh")
+    );
+}
+
+#[test]
+fn launch_manifest_marks_operation_zenoh_processes_without_dataflow_routes() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "operation_backend_demo"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+
+[component.client.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.server]
+language = "rust"
+
+[component.server.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.operation]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let processes = launch["graphs"][0]["processes"].as_array().unwrap();
+
+    assert!(
+        processes
+            .iter()
+            .all(|process| process["backend"] == "zenoh")
+    );
+}
+
+#[test]
 fn launch_manifest_exposes_iox2_channel_services() {
     let ir = contract_from_source(
         r#"
