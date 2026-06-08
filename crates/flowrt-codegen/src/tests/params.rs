@@ -209,3 +209,37 @@ output = ["cmd"]
     assert!(shell.contains("take_pending_param(\"controller.kp\")"));
     assert!(shell.contains("controller_->on_params_update("));
 }
+
+#[test]
+fn generated_cpp_param_decoder_checks_integer_ranges() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "cpp"
+
+[component.controller.params]
+small = { type = "u8", default = 1, update = "on_tick" }
+wide = { type = "u64", default = 1844674407370955167, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(shell.contains("#include <limits>"));
+    assert!(shell.contains("std::is_signed_v<T>"));
+    assert!(shell.contains("std::strtoull"));
+    assert!(shell.contains("owned.front() == '-'"));
+    assert!(shell.contains("std::numeric_limits<T>::max()"));
+    assert!(shell.contains("std::numeric_limits<T>::min()"));
+}
