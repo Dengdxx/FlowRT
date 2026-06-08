@@ -366,14 +366,8 @@ fn deploy_bundle_rejects_option_like_host_even_in_dry_run() {
     )
     .unwrap();
 
-    let error = deploy_bundle(
-        &bundle,
-        "-oProxyCommand=sh",
-        "pi",
-        "/tmp/flowrt-demo",
-        true,
-    )
-    .unwrap_err();
+    let error =
+        deploy_bundle(&bundle, "-oProxyCommand=sh", "pi", "/tmp/flowrt-demo", true).unwrap_err();
 
     assert!(
         error.to_string().contains("must not start with `-`"),
