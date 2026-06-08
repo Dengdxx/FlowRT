@@ -19,6 +19,7 @@
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
+| `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
 
 ## `import_demo`
 
@@ -182,6 +183,48 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
 `build --profile <name>` 会先投影 Contract IR，再做 validation 和 codegen。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。默认 profile 仍是 `default` 或首个 profile。未在 `bind.dataflow` 上显式声明的 channel policy 会随选中 profile 的默认值一起投影；显式 bind policy 不会被 profile 覆盖。
+
+## `external_driver_demo`
+
+入口文件：
+
+```text
+examples/external_driver_demo/rsdl/robot.rsdl
+```
+
+该示例声明一个 `language = "external"` 的 `sensor` component，并用
+`[[external_process]]` 绑定到 `examples/external_driver_demo/external/fake_sensor_driver`：
+
+```toml
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "bin/driver"
+args = ["--mode", "smoke"]
+health = "process_started"
+required_backends = ["zenoh"]
+```
+
+external package 自描述文件：
+
+```text
+examples/external_driver_demo/external/fake_sensor_driver/flowrt-external.toml
+```
+
+常用命令：
+
+```bash
+flowrt external check examples/external_driver_demo/external/fake_sensor_driver
+flowrt deps examples/external_driver_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl
+flowrt launch --run-steps 2 examples/external_driver_demo/rsdl/robot.rsdl
+flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/external-driver-demo
+flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-dir /opt/external-driver-demo --dry-run
+```
+
+该示例不访问真实硬件。`bin/driver` 只校验 supervisor 注入的 `FLOWRT_*` 环境变量和
+manifest args，用于证明 external process 可以纳入 FlowRT 的 Contract IR、launch
+manifest、self-description、supervisor 和离线 bundle 主路径。
 
 ## iox2 mixed 示例
 

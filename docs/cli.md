@@ -8,9 +8,13 @@
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--build-mode <release|debug>] [--check]
+flowrt external check <path/to/external-package>
+flowrt external list --path <path/to/search-root>
 flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--launcher] [--build-mode <release|debug>]
 flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
+flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>]
+flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
@@ -102,6 +106,51 @@ Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`ze
 
 默认情况下，`flowrt build` 和生成 CMake 不会回退到 FlowRT 源码树 `runtime/cpp`。在 FlowRT 仓库内开发时，设置环境变量 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1`，CLI 会同时把 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` 传给 CMake，启用源码树回退。正式用户路径不应依赖此选项。
 
+## `external`
+
+```bash
+flowrt external check examples/external_driver_demo/external/fake_sensor_driver
+flowrt external list --path examples/external_driver_demo/external
+```
+
+`external` 子命令用于检查和列出 external package。external package 是独立目录，必须包含 `flowrt-external.toml`：
+
+```toml
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64", "linux-arm64"]
+backends = ["zenoh"]
+health = "process_started"
+```
+
+`check` 会校验 package metadata、executable 路径、platform、backend 和 health 字段；不会启动进程，也不会隐式编译 external package。`list --path <dir>` 会扫描目录下一层 package 并输出 executable/platform/backend 摘要。
+
+RSDL 通过 `language = "external"` 和 graph 级 `[[external_process]]` 引用该 package：
+
+```toml
+[component.sensor]
+language = "external"
+kind = "external"
+output = ["value:u32"]
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "bin/driver"
+args = ["--mode", "smoke"]
+health = "process_started"
+required_backends = ["zenoh"]
+```
+
+external route 默认不走 `inproc`。当前 auto resolver 会把涉及 external component 的 dataflow/service/operation route 选择到 `zenoh`；显式 `inproc` 会被拒绝，`iox2` 在 external package 能力和固定大小约束未完整建模前默认拒绝。
+
 ## `run`
 
 ```bash
@@ -137,6 +186,14 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 含 C++ component 的 contract 需要先通过 `flowrt build --launcher` 显式构建 CMake app 和 generated supervisor；C++ only contract 的 supervisor-only Rust crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
 
+含 external component 的 contract 也会生成 supervisor-only Rust crate。supervisor 按以下顺序解析 external package：
+
+1. `FLOWRT_EXTERNAL_PATH` 中的目录或目录下同名 package。
+2. `/opt/flowrt/external/<package>`。
+3. 当前项目的 `external/<package>`。
+
+external executable 不接收生成 app 的 `--process` 参数；FlowRT 通过环境变量传递上下文：`FLOWRT_PROCESS`、`FLOWRT_BACKEND`、`FLOWRT_EXTERNAL_PACKAGE`、`FLOWRT_EXTERNAL_EXECUTABLE`、`FLOWRT_EXTERNAL_PACKAGE_ROOT`、`FLOWRT_WORKSPACE_ROOT` 和可选 `FLOWRT_RUN_STEPS`。`health = "process_started"` 表示 spawn 成功即通过 readiness；默认 `runtime_socket` 会等待 external process 暴露 FlowRT introspection socket。
+
 `inproc` 是单进程 backend。`launch` 如果发现 dataflow bind 跨越两个 RSDL process group，会拒绝该 contract；需要跨 process 通信时应选择 `iox2` 或 `zenoh` backend，或把相关 instance 放回同一 process group。
 
 `--run-steps <N>` 会传给 supervisor，再由 supervisor 转发给每个生成应用 process；省略时全部 process 按长期运行模式启动，并通过生成应用自己的 shutdown token 响应 SIGINT/SIGTERM。`--run-ticks <N>` 仍可作为兼容别名使用。
@@ -151,10 +208,37 @@ launch manifest 的关键字段包括：
 - graph `channels`
 - graph `services`
 - graph `ros2_bridges`
+- graph `external_processes`
 - iox2 channel 的 canonical service name
 - zenoh channel 的 deterministic key expression
 
-### `[[process]]` 编排字段
+## `bundle`
+
+```bash
+flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/external-demo
+```
+
+`bundle` 只读取已生成、已构建产物，不隐式运行 `deps`、`prepare` 或 `build`。缺少 `flowrt/build/build-info.json`、generated supervisor 或记录的 app binary 时会要求先运行 `flowrt build --launcher`。
+
+bundle 输出是目录，包含：
+
+- `bundle.toml`：FlowRT 版本、package、profile、target、platform、build mode、入口 binary 和 external package 摘要。
+- `bin/`：本项目已构建二进制。
+- `flowrt/contract/contract.ir.json`、`flowrt/launch/launch.json`、`flowrt/selfdesc/selfdesc.json` 和 `flowrt/build/build-info.json`。
+- `external/<package>`：随项目携带的 external package 副本。
+
+输出目录必须不存在或为空，避免覆盖已有部署内容。bundle 不包含 FlowRT 源码仓库、不包含 Cargo target cache，也不内嵌系统 FlowRT runtime；目标机器应安装同版本 FlowRT deb。
+
+## `deploy`
+
+```bash
+flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo
+flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo --dry-run
+```
+
+`deploy` 是 v0.7 的 baseline：读取 `bundle.toml`，校验请求 target 与 bundle target 一致；非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在 FlowRT，再用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
+
+## `[[process]]` 编排字段
 
 RSDL 支持 graph 级 `[[process]]` 声明进程编排策略：
 

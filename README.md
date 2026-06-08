@@ -30,7 +30,7 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-version=v0.6.1  # 替换为要安装的 release tag
+version=v0.7.0  # 替换为要安装的 release tag
 arch="$(dpkg --print-architecture)"  # amd64 或 arm64，以 release 页面实际资产为准
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/flowrt_${version#v}_${arch}.deb"
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/SHA256SUMS"
@@ -71,6 +71,7 @@ flowrt --version
 | target | 部署目标能力，例如 runtime 语言和可用 backend。 |
 | backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
 | bridge | FlowRT 管理的外部系统适配进程；用户组件仍只读写 FlowRT message。 |
+| external component | 由外部 package/executable 提供的 typed 组件，FlowRT 管生命周期、通信绑定和观测，不生成其内部算法代码。 |
 | runtime shell | FlowRT 生成的胶水代码，负责调度、通信、生命周期和观测。 |
 
 核心模型：
@@ -94,6 +95,10 @@ my_robot/
       components.cpp
     rust/
       mod.rs
+  external/
+    driver_package/
+      flowrt-external.toml
+      bin/
   flowrt/              # FlowRT 生成目录，可删除、可重建，不放业务代码
 ```
 
@@ -102,6 +107,7 @@ my_robot/
 - `rsdl/` 放系统契约。
 - `src/` 放用户业务算法。
 - `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑。
+- `external/` 可放本项目随包携带的 external package；系统级 external package 也可安装到 `/opt/flowrt/external/<package>`。
 
 `flowrt/` 删除后可以通过 `flowrt build` 重新生成。构建出的用户项目二进制位于当前项目自己的 `flowrt/build/bin/release/`；全局 cache 只用于复用底层依赖编译产物，不是应用部署事实源。
 
@@ -224,6 +230,81 @@ flowrt launch rsdl/robot.rsdl
 ```
 
 `run` 和 `launch` 只读取已生成、已构建产物；修改 RSDL、profile、生成模板或用户代码后，需要重新执行 `flowrt build`。修改 backend 组合、FlowRT 版本或清理全局 cache 后，需要先重新执行 `flowrt deps`。
+
+## External Package
+
+external component 用于把独立 executable 纳入 FlowRT 的 typed graph。RSDL 中 component 只声明端口和 `language = "external"`，graph 级 `[[external_process]]` 指向 package 和 executable：
+
+```toml
+[component.sensor]
+language = "external"
+kind = "external"
+output = ["value:u32"]
+
+[instance.sensor]
+component = "sensor"
+process = "sensor_proc"
+target = "edge"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "bin/driver"
+args = ["--mode", "smoke"]
+health = "process_started"
+required_backends = ["zenoh"]
+```
+
+external package 根目录包含 `flowrt-external.toml`：
+
+```toml
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64", "linux-arm64"]
+backends = ["zenoh"]
+health = "process_started"
+```
+
+常用命令：
+
+```bash
+flowrt external check external/fake_sensor_driver
+flowrt deps rsdl/robot.rsdl
+flowrt build --launcher rsdl/robot.rsdl
+flowrt launch --run-steps 2 rsdl/robot.rsdl
+```
+
+supervisor 按 `FLOWRT_EXTERNAL_PATH`、`/opt/flowrt/external/<package>`、项目 `external/<package>` 查找 external package。external 进程通过 `FLOWRT_PROCESS`、`FLOWRT_BACKEND`、`FLOWRT_EXTERNAL_PACKAGE`、`FLOWRT_EXTERNAL_PACKAGE_ROOT`、`FLOWRT_WORKSPACE_ROOT` 和 `FLOWRT_RUN_STEPS` 等环境变量获取上下文；FlowRT 不把生成 app 的内部 `--process` 参数强加给 external executable。
+
+## Bundle / Deploy
+
+`flowrt bundle` 把已构建项目整理为离线运行目录，不复制 FlowRT 源码仓库，也不把 Cargo target cache 当作部署事实源：
+
+```bash
+flowrt bundle rsdl/robot.rsdl --output dist/robot-bundle
+```
+
+bundle 内容包括：
+
+- `bundle.toml`
+- `bin/` 下的本项目二进制
+- `flowrt/contract`、`flowrt/launch`、`flowrt/selfdesc` 和 `flowrt/build/build-info.json`
+- `external/` 下随项目携带的 external package 副本
+
+目标机器需要安装同版本 FlowRT deb。baseline deploy 使用 SSH/SCP 上传 bundle 并做远端 FlowRT 版本检查：
+
+```bash
+flowrt deploy dist/robot-bundle --host user@host --target edge --remote-dir /opt/my_robot
+```
+
+只查看计划可加 `--dry-run`。
 
 ## 用户组件
 

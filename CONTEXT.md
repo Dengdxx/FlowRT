@@ -5,10 +5,14 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.6.1`。`v0.6.0` 已发布，核心主题是 Operation、
-record-only 录制系统和时间事件模型基础。`v0.6.1` 是构建/打包可靠性小升级：
-引入 `flowrt deps` 预热共享底层依赖 cache，`flowrt build` 默认 release 并只构建
-用户项目，用户二进制统一落在 `flowrt/build/bin/release/`。
+当前 workspace 版本为 `0.7.0`。`v0.7.0` 核心主题是 external process / driver
+package typed 接入边界、ARM64/跨机器部署 baseline 和离线 bundle 交付闭环。FlowRT
+主项目不做硬件 backend；Linux 和外部 driver package 管硬件，FlowRT 管结构、执行、
+通信、观测、external process 生命周期和 typed 接入边界。
+
+`v0.6.1` 已发布，是构建/打包可靠性小升级：引入 `flowrt deps` 预热共享底层依赖
+cache，`flowrt build` 默认 release 并只构建用户项目，用户二进制统一落在
+`flowrt/build/bin/release/`。
 
 `v0.5.0` 已发布，核心主题是 launch-grade
 supervisor、参数控制面、高频调度硬化和 FlowRT core skills 套组：补齐 readiness
@@ -165,6 +169,24 @@ MCAP 文件。
 FlowRT 主项目不做硬件 backend。Linux 和外部 driver package 管硬件；FlowRT 管结构、
 执行、通信、观测、external process 生命周期和 typed 接入边界。
 
+`v0.7.0` 已落地 external package 主路径：
+
+- RSDL 支持 `language = "external"` / `kind = "external"` 的 component 和 graph 级
+  `[[external_process]]`。
+- Contract IR 记录 external process 的 package、executable、args、working directory、
+  health 和 required backend。
+- external route auto resolver 默认选择 `zenoh`；显式 `inproc` 被拒绝，`iox2` 在
+  package capability 与 fixed-size 条件未完整建模前默认拒绝。
+- `flowrt external check/list` 校验和列出 `flowrt-external.toml` package manifest。
+- launch manifest 和 self-description 暴露 external process/package 摘要。
+- generated supervisor 能按 `FLOWRT_EXTERNAL_PATH`、`/opt/flowrt/external/<package>`、
+  项目 `external/<package>` 查找 package，启动 executable，注入 `FLOWRT_*` 上下文，
+  并纳入 restart/readiness/status 机制。
+- `flowrt bundle` 输出离线 bundle 目录；`flowrt deploy` 提供 SSH/SCP baseline 和
+  `--dry-run`。
+- `examples/external_driver_demo` 覆盖 external package、supervisor、bundle 和 deploy
+  dry-run。
+
 ## 当前仓库状态
 
 仓库已经形成 FlowRT 工具链、Rust/C++ runtime shell、跨进程 backend、ROS2 zenoh
@@ -205,6 +227,8 @@ scripts/
 - `mixed_iox2_demo`：Rust source 与 C++ sink 通过 iox2 分进程连接。
 - `mixed_zenoh_demo`：跨主机 copy backend、variable frame 和 mixed launch。
 - `ros2_bridge_demo`：Rust source 到 ROS2 `/flowrt/text` 的 zenoh-only bridge。
+- `external_driver_demo`：无硬件依赖的 external package、supervisor 和 bundle/deploy
+  baseline。
 
 仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和
 最终回复默认使用安装后的 `flowrt ...` 命令。

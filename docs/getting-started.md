@@ -101,6 +101,27 @@ flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 
 C++ only contract 的普通 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。需要 `launch` 时，先用 `build --launcher` 显式构建 generated supervisor，再由 `launch` 执行已有 supervisor。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
 
+## 运行 external package 示例
+
+external component 由外部 package/executable 提供，FlowRT 负责声明、校验、启动和观测。
+`examples/external_driver_demo` 不依赖真实硬件，只验证 external package 主路径：
+
+```bash
+flowrt external check examples/external_driver_demo/external/fake_sensor_driver
+flowrt deps examples/external_driver_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl
+flowrt launch --run-steps 2 examples/external_driver_demo/rsdl/robot.rsdl
+```
+
+打成离线 bundle：
+
+```bash
+flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/external-driver-demo
+flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-dir /opt/external-driver-demo --dry-run
+```
+
+实际部署时，目标机器需要安装同版本 FlowRT deb；`deploy` baseline 通过 SSH/SCP 上传 bundle，不负责远端安装系统包。
+
 ## 切换 profile
 
 ```bash
