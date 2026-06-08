@@ -5,7 +5,10 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use zenoh::{
@@ -24,6 +27,7 @@ use crate::{
 
 const PUBLISHED_AT_WIRE_SIZE: usize = std::mem::size_of::<u64>();
 const SERVICE_TRANSPORT_TIMEOUT_GRACE_MS: u64 = 1000;
+const DEFAULT_ZENOH_SERVICE_MAX_IN_FLIGHT: usize = 64;
 const FLOWRT_ZENOH_CONNECT: &str = "FLOWRT_ZENOH_CONNECT";
 const FLOWRT_ZENOH_LISTEN: &str = "FLOWRT_ZENOH_LISTEN";
 const FLOWRT_ZENOH_MODE: &str = "FLOWRT_ZENOH_MODE";
@@ -688,6 +692,41 @@ fn service_transport_timeout(timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(timeout_ms.saturating_add(SERVICE_TRANSPORT_TIMEOUT_GRACE_MS))
 }
 
+fn service_error_degrades_health(error: ServiceError) -> bool {
+    matches!(
+        error,
+        ServiceError::Timeout
+            | ServiceError::Unavailable
+            | ServiceError::DeadlineExceeded
+            | ServiceError::Protocol
+            | ServiceError::Backend
+    )
+}
+
+fn record_service_result<T>(health: &Mutex<BackendHealthTracker>, result: &ServiceResult<T>) {
+    match result {
+        ServiceResult::Ok(_) => lock_recover(health).mark_ready(),
+        ServiceResult::Err(error, message) if service_error_degrades_health(*error) => {
+            let detail = message
+                .as_deref()
+                .unwrap_or_else(|| service_error_health_message(*error));
+            lock_recover(health).mark_degraded(detail);
+        }
+        ServiceResult::Err(_, _) => {}
+    }
+}
+
+fn service_error_health_message(error: ServiceError) -> &'static str {
+    match error {
+        ServiceError::Timeout => "zenoh service timeout",
+        ServiceError::Unavailable => "zenoh service unavailable",
+        ServiceError::DeadlineExceeded => "zenoh service deadline exceeded",
+        ServiceError::Protocol => "zenoh service protocol error",
+        ServiceError::Backend => "zenoh service backend error",
+        _ => "zenoh service error",
+    }
+}
+
 /// Zenoh service client。
 ///
 /// 使用 zenoh query 实现 request/response 语义。client 发送 query，server 通过 queryable
@@ -697,7 +736,7 @@ pub struct ZenohServiceClient<Req: FrameCodec + Clone, Resp: FrameCodec + Clone>
     service_id: u64,
     key_expr: String,
     session: Session,
-    health: BackendHealthTracker,
+    health: Mutex<BackendHealthTracker>,
     session_id: u64,
     sequence: Mutex<u64>,
     _phantom: std::marker::PhantomData<(Req, Resp)>,
@@ -714,7 +753,7 @@ impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, 
             service_id,
             key_expr,
             session,
-            health: BackendHealthTracker::new(ReconnectPolicy::default()),
+            health: Mutex::new(BackendHealthTracker::new(ReconnectPolicy::default())),
             session_id: rand::random(),
             sequence: Mutex::new(0),
             _phantom: std::marker::PhantomData,
@@ -723,6 +762,12 @@ impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, 
 
     /// 发送请求并等待响应。
     pub fn call(&self, request: Req, timeout_ms: u64) -> ServiceResult<Resp> {
+        let result = self.call_inner(request, timeout_ms);
+        record_service_result(&self.health, &result);
+        result
+    }
+
+    fn call_inner(&self, request: Req, timeout_ms: u64) -> ServiceResult<Resp> {
         let now_ms = unix_now_ms();
         let deadline = match Deadline::new(timeout_ms, now_ms) {
             Some(d) => d,
@@ -865,7 +910,69 @@ impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, 
 
     /// 返回 endpoint 健康快照。
     pub fn health(&self) -> BackendHealthSnapshot {
-        self.health.snapshot()
+        lock_recover(&self.health).snapshot()
+    }
+}
+
+/// Zenoh service server 的运行时配置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenohServiceConfig {
+    max_in_flight: usize,
+}
+
+impl ZenohServiceConfig {
+    /// 设置同时执行的 handler 数量上限；0 会归一为 1。
+    pub fn with_max_in_flight(mut self, max_in_flight: usize) -> Self {
+        self.max_in_flight = max_in_flight.max(1);
+        self
+    }
+
+    /// 返回同时执行的 handler 数量上限。
+    pub const fn max_in_flight(&self) -> usize {
+        self.max_in_flight
+    }
+}
+
+impl Default for ZenohServiceConfig {
+    fn default() -> Self {
+        Self {
+            max_in_flight: DEFAULT_ZENOH_SERVICE_MAX_IN_FLIGHT,
+        }
+    }
+}
+
+struct ZenohServiceInFlightGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl ZenohServiceInFlightGuard {
+    fn try_acquire(counter: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        let limit = limit.max(1);
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            if current >= limit {
+                return None;
+            }
+            match counter.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(Self {
+                        counter: Arc::clone(counter),
+                    });
+                }
+                Err(next) => current = next,
+            }
+        }
+    }
+}
+
+impl Drop for ZenohServiceInFlightGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -885,7 +992,9 @@ pub struct ZenohServiceServer<
     _queryable: Queryable<()>,
     #[allow(dead_code)]
     handler: Arc<dyn Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static>,
-    health: BackendHealthTracker,
+    health: Arc<Mutex<BackendHealthTracker>>,
+    in_flight: Arc<AtomicUsize>,
+    max_in_flight: usize,
 }
 
 impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send + 'static>
@@ -896,13 +1005,38 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
     where
         F: Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
     {
+        Self::open_with_config(
+            service_name,
+            session,
+            ZenohServiceConfig::default(),
+            handler,
+        )
+    }
+
+    /// 使用已有 session 和显式配置打开 zenoh service server。
+    pub fn open_with_config<F>(
+        service_name: &str,
+        session: Session,
+        config: ZenohServiceConfig,
+        handler: F,
+    ) -> Result<Self, ZenohError>
+    where
+        F: Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
+    {
         let service_id = fnv1a64(service_name.as_bytes());
         let key_expr = format!("flowrt/service/{}/request", service_name);
+        let max_in_flight = config.max_in_flight();
 
         let handler = Arc::new(handler);
         let handler_clone = Arc::clone(&handler);
         let service_id_clone = service_id;
         let key_expr_clone = key_expr.clone();
+        let health = Arc::new(Mutex::new(BackendHealthTracker::new(
+            ReconnectPolicy::default(),
+        )));
+        let health_clone = Arc::clone(&health);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let in_flight_clone = Arc::clone(&in_flight);
 
         let queryable = session
             .declare_queryable(&key_expr)
@@ -926,6 +1060,7 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                         );
                         let frame = encode_service_frame(&header, &[], b"empty request payload")
                             .unwrap_or_default();
+                        lock_recover(&health_clone).mark_degraded("empty request payload");
                         let _ = query
                             .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
                             .wait();
@@ -951,6 +1086,7 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                         let msg = format!("decode request frame: {e}");
                         let frame =
                             encode_service_frame(&header, &[], msg.as_bytes()).unwrap_or_default();
+                        lock_recover(&health_clone).mark_degraded(msg);
                         let _ = query
                             .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
                             .wait();
@@ -973,6 +1109,7 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                     );
                     let frame = encode_service_frame(&header, &[], b"request service id mismatch")
                         .unwrap_or_default();
+                    lock_recover(&health_clone).mark_degraded("request service id mismatch");
                     let _ = query
                         .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
                         .wait();
@@ -992,6 +1129,7 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                     );
                     let frame = encode_service_frame(&header, &[], b"request deadline expired")
                         .unwrap_or_default();
+                    lock_recover(&health_clone).mark_degraded("request deadline expired");
                     let _ = query
                         .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
                         .wait();
@@ -1015,6 +1153,7 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                         let msg = format!("decode request payload: {e}");
                         let frame =
                             encode_service_frame(&header, &[], msg.as_bytes()).unwrap_or_default();
+                        lock_recover(&health_clone).mark_degraded(msg);
                         let _ = query
                             .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
                             .wait();
@@ -1023,9 +1162,38 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                 };
 
                 let remaining_ms = deadline.absolute_deadline_ms.saturating_sub(unix_now_ms());
+                let Some(in_flight_guard) =
+                    ZenohServiceInFlightGuard::try_acquire(&in_flight_clone, max_in_flight)
+                else {
+                    let header = ServiceFrameHeader::response(
+                        RequestId {
+                            session_id: req_header.session_id,
+                            sequence: req_header.sequence,
+                            service_id: service_id_clone,
+                        },
+                        deadline,
+                        req_header.correlation_id,
+                        req_header.schema_hash,
+                        ServiceError::Busy,
+                    );
+                    let frame = encode_service_frame(
+                        &header,
+                        &[],
+                        b"zenoh service max in-flight requests reached",
+                    )
+                    .unwrap_or_default();
+                    lock_recover(&health_clone)
+                        .mark_degraded("zenoh service max in-flight requests reached");
+                    let _ = query
+                        .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                        .wait();
+                    return;
+                };
                 let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
                 let handler_for_worker = Arc::clone(&handler_clone);
+                let health_for_worker = Arc::clone(&health_clone);
                 std::thread::spawn(move || {
+                    let _in_flight_guard = in_flight_guard;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         handler_for_worker(request)
                     }))
@@ -1035,36 +1203,40 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                             "service handler panicked",
                         )
                     });
+                    record_service_result(&health_for_worker, &result);
                     let _ = result_tx.send(result);
                 });
 
-                let result =
-                    match result_rx.recv_timeout(std::time::Duration::from_millis(remaining_ms)) {
-                        Ok(result) => result,
-                        Err(_) => {
-                            let header = ServiceFrameHeader::response(
-                                RequestId {
-                                    session_id: req_header.session_id,
-                                    sequence: req_header.sequence,
-                                    service_id: service_id_clone,
-                                },
-                                deadline,
-                                req_header.correlation_id,
-                                req_header.schema_hash,
-                                ServiceError::Timeout,
-                            );
-                            let frame = encode_service_frame(
-                                &header,
-                                &[],
-                                b"request deadline expired while handler was running",
-                            )
-                            .unwrap_or_default();
-                            let _ = query
-                                .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
-                                .wait();
-                            return;
-                        }
-                    };
+                let result = match result_rx
+                    .recv_timeout(std::time::Duration::from_millis(remaining_ms))
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let header = ServiceFrameHeader::response(
+                            RequestId {
+                                session_id: req_header.session_id,
+                                sequence: req_header.sequence,
+                                service_id: service_id_clone,
+                            },
+                            deadline,
+                            req_header.correlation_id,
+                            req_header.schema_hash,
+                            ServiceError::Timeout,
+                        );
+                        let frame = encode_service_frame(
+                            &header,
+                            &[],
+                            b"request deadline expired while handler was running",
+                        )
+                        .unwrap_or_default();
+                        lock_recover(&health_clone)
+                            .mark_degraded("request deadline expired while handler was running");
+                        let _ = query
+                            .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                            .wait();
+                        return;
+                    }
+                };
                 let (error_code, response_payload, error_msg) = match result {
                     ServiceResult::Ok(resp) => {
                         let payload = resp.to_frame_vec().unwrap_or_default();
@@ -1089,9 +1261,13 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                 );
                 let frame = encode_service_frame(&header, &response_payload, &error_msg)
                     .unwrap_or_default();
-                let _ = query
+                if let Err(error) = query
                     .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
-                    .wait();
+                    .wait()
+                {
+                    lock_recover(&health_clone)
+                        .mark_degraded(format!("zenoh service reply failed: {error:?}"));
+                }
             })
             .wait()
             .map_err(|error| ZenohError::transport("declare Zenoh queryable", error))?;
@@ -1102,7 +1278,9 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
             key_expr: key_expr_clone,
             _queryable: queryable,
             handler,
-            health: BackendHealthTracker::new(ReconnectPolicy::default()),
+            health,
+            in_flight,
+            max_in_flight,
         })
     }
 
@@ -1113,13 +1291,24 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
 
     /// 返回 endpoint 健康快照。
     pub fn health(&self) -> BackendHealthSnapshot {
-        self.health.snapshot()
+        lock_recover(&self.health).snapshot()
+    }
+
+    /// 返回当前正在执行的 handler 数量。
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+
+    /// 返回同时执行的 handler 数量上限。
+    pub const fn max_in_flight(&self) -> usize {
+        self.max_in_flight
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
+        sync::atomic::AtomicUsize,
         sync::atomic::{AtomicU64, Ordering},
         thread,
         time::{Duration, Instant},
@@ -1450,6 +1639,23 @@ mod tests {
         }
 
         assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+    }
+
+    #[test]
+    fn service_in_flight_guard_enforces_bound_and_releases_on_drop() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let first = ZenohServiceInFlightGuard::try_acquire(&counter, 1)
+            .expect("first request should acquire slot");
+
+        assert!(ZenohServiceInFlightGuard::try_acquire(&counter, 1).is_none());
+        assert_eq!(counter.load(Ordering::Acquire), 1);
+
+        drop(first);
+
+        assert_eq!(counter.load(Ordering::Acquire), 0);
+        let second = ZenohServiceInFlightGuard::try_acquire(&counter, 1)
+            .expect("slot should be reusable after guard drops");
+        drop(second);
     }
 
     fn publish_until_latest(

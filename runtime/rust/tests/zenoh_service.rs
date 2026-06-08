@@ -12,8 +12,8 @@ use std::{
 };
 
 use flowrt::{
-    ServiceError, ServiceResult, WireCodec, WireCodecError,
-    zenoh::{ZenohServiceClient, ZenohServiceServer},
+    BackendHealthState, ServiceError, ServiceResult, WireCodec, WireCodecError,
+    zenoh::{ZenohServiceClient, ZenohServiceConfig, ZenohServiceServer},
 };
 use zenoh::{Config, Wait};
 
@@ -184,6 +184,48 @@ fn zenoh_service_timeout() {
         thread::sleep(Duration::from_millis(20));
     }
     panic!("timeout test handler did not finish before teardown");
+}
+
+#[test]
+fn zenoh_service_timeout_degrades_client_health() {
+    let session = open_session();
+    let service_name = unique_service_name("timeout_health");
+
+    let _server = ZenohServiceServer::<AddRequest, AddResponse>::open(
+        &service_name,
+        session.clone(),
+        |_req: AddRequest| {
+            thread::sleep(Duration::from_millis(100));
+            ServiceResult::ok(AddResponse { sum: 0 })
+        },
+    )
+    .expect("server should open");
+
+    let client =
+        ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
+
+    let result = client.call(AddRequest { a: 1, b: 2 }, 10);
+
+    assert!(result.is_err());
+    assert_eq!(result.error_code(), ServiceError::Timeout);
+    assert_eq!(client.health().state, BackendHealthState::Degraded);
+}
+
+#[test]
+fn zenoh_service_server_accepts_bounded_in_flight_config() {
+    let session = open_session();
+    let service_name = unique_service_name("bounded_config");
+
+    let server = ZenohServiceServer::<AddRequest, AddResponse>::open_with_config(
+        &service_name,
+        session.clone(),
+        ZenohServiceConfig::default().with_max_in_flight(1),
+        |req: AddRequest| ServiceResult::ok(AddResponse { sum: req.a + req.b }),
+    )
+    .expect("server should open with explicit service config");
+
+    assert_eq!(server.max_in_flight(), 1);
+    assert_eq!(server.in_flight_count(), 0);
 }
 
 #[test]
