@@ -15,10 +15,14 @@ use flowrt_ir::{
     ContractIr, LanguageKind, hash_source, normalize_loaded_document, project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+mod build_model;
 mod introspection;
 mod record;
 
+use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use introspection::{
     EchoTarget, echo_channel, echo_channel_follow, live_hz_summary, live_status_summary,
     load_self_description, operation_cancel, operation_list, operation_status_summary, params_get,
@@ -84,6 +88,32 @@ enum Command {
         /// 选择用于生成产物的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
+
+        /// 构建模式；默认 release，debug 仅用于本地调试。
+        #[arg(long, default_value_t, value_enum)]
+        build_mode: BuildMode,
+    },
+
+    /// 补全并预热 FlowRT 底层依赖缓存。
+    Deps {
+        /// 可选 RSDL 文件路径；提供时按选定 profile 推导实际 backend feature。
+        rsdl: Option<PathBuf>,
+
+        /// 显式选择要预热的 backend；省略时有 RSDL 则自动推导，无 RSDL 则预热 all。
+        #[arg(long, value_enum)]
+        backend: Option<DepsBackend>,
+
+        /// 选择用于推导 backend feature 的 profile 名称。
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// 依赖预热模式；默认 release。
+        #[arg(long, default_value_t, value_enum)]
+        build_mode: BuildMode,
+
+        /// 只检查依赖缓存是否已存在，不触发编译。
+        #[arg(long)]
+        check: bool,
     },
 
     /// 准备并运行 FlowRT 管理的应用 crate。
@@ -106,6 +136,10 @@ enum Command {
         /// 选择用于生成和运行的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
+
+        /// 要运行的构建模式；省略时使用最近一次成功 build 记录的模式。
+        #[arg(long, value_enum)]
+        build_mode: Option<BuildMode>,
     },
 
     /// 准备、构建并运行生成的 process supervisor。
@@ -124,6 +158,10 @@ enum Command {
         /// 选择用于生成和启动的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
+
+        /// 要启动的构建模式；省略时使用最近一次成功 build 记录的模式。
+        #[arg(long, value_enum)]
+        build_mode: Option<BuildMode>,
     },
 
     /// 查看已落盘的 Contract IR JSON 文档摘要。
@@ -345,6 +383,14 @@ enum OpCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum DepsBackend {
+    Inproc,
+    Iox2,
+    Zenoh,
+    All,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -371,16 +417,40 @@ fn main() -> Result<()> {
             out_dir,
             launcher,
             profile,
+            build_mode,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            build_workspace(&prepared.selected_contract, &out_dir, launcher)?;
+            build_workspace(&prepared.selected_contract, &out_dir, launcher, build_mode)?;
             println!(
                 "built {} and {} artifact(s)",
                 prepared.contract_path.display(),
                 prepared.artifact_count
             );
+        }
+        Command::Deps {
+            rsdl,
+            backend,
+            profile,
+            build_mode,
+            check,
+        } => {
+            let features = deps_runtime_features(rsdl.as_deref(), profile.as_deref(), backend)?;
+            let layout = deps_cache_layout(build_mode, features.clone())?;
+            if check {
+                ensure_deps_ready(&layout, build_mode, &features)?;
+                println!(
+                    "FlowRT dependency cache is ready: {}",
+                    layout.target_dir.display()
+                );
+            } else {
+                prepare_deps_cache(&layout, build_mode, &features)?;
+                println!(
+                    "prepared FlowRT dependency cache: {}",
+                    layout.target_dir.display()
+                );
+            }
         }
         Command::Run {
             rsdl,
@@ -388,24 +458,32 @@ fn main() -> Result<()> {
             process,
             run_ticks,
             profile,
+            build_mode,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let build_hint = build_command_hint(&rsdl, profile.as_deref(), false);
             let contract = load_prepared_contract(&out_dir, &build_hint)?;
             ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
-            run_workspace(&contract, &out_dir, process.as_deref(), run_ticks)?;
+            run_workspace(
+                &contract,
+                &out_dir,
+                process.as_deref(),
+                run_ticks,
+                build_mode,
+            )?;
         }
         Command::Launch {
             rsdl,
             out_dir,
             run_ticks,
             profile,
+            build_mode,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let build_hint = build_command_hint(&rsdl, profile.as_deref(), true);
             let contract = load_prepared_contract(&out_dir, &build_hint)?;
             ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
-            launch_workspace(&contract, &out_dir, run_ticks)?;
+            launch_workspace(&contract, &out_dir, run_ticks, build_mode)?;
         }
         Command::Inspect { ir } => {
             let contract = load_contract_from_json(&ir)?;
@@ -1058,26 +1136,420 @@ fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> R
     Ok(())
 }
 
-fn build_workspace(contract: &ContractIr, out_dir: &Path, include_launcher: bool) -> Result<()> {
+fn deps_runtime_features(
+    rsdl: Option<&Path>,
+    profile: Option<&str>,
+    backend: Option<DepsBackend>,
+) -> Result<RuntimeFeatureSet> {
+    if let Some(backend) = backend {
+        return match backend {
+            DepsBackend::Inproc => Ok(RuntimeFeatureSet::inproc_only()),
+            DepsBackend::Iox2 => RuntimeFeatureSet::from_backend_names(["iox2"]),
+            DepsBackend::Zenoh => RuntimeFeatureSet::from_backend_names(["zenoh"]),
+            DepsBackend::All => Ok(RuntimeFeatureSet::all()),
+        };
+    }
+    let Some(rsdl) = rsdl else {
+        return Ok(RuntimeFeatureSet::all());
+    };
+    let contract = normalize_contract_from_rsdl(rsdl)?;
+    let projected = project_contract_to_profile(&contract, profile)
+        .with_context(|| format!("failed to select profile for `{}`", rsdl.display()))?;
+    validate_contract(&projected).context("contract validation failed")?;
+    RuntimeFeatureSet::from_contract(&projected)
+}
+
+fn deps_cache_layout(build_mode: BuildMode, features: RuntimeFeatureSet) -> Result<CacheLayout> {
+    let root = default_cache_root()
+        .context("failed to resolve FlowRT cache directory; set FLOWRT_CACHE_DIR or HOME")?;
+    let (rustc_identity, target_triple) = rustc_toolchain_identity()?;
+    let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
+    let vendor_hash = flowrt_vendor_hash(rust_runtime_dir.as_deref())?;
+    let key = DepsCacheKey::new(
+        env!("CARGO_PKG_VERSION"),
+        rustc_identity,
+        target_triple,
+        vendor_hash,
+        build_mode,
+        features,
+    );
+    Ok(CacheLayout::new(root, &key))
+}
+
+fn prepare_deps_cache(
+    layout: &CacheLayout,
+    build_mode: BuildMode,
+    features: &RuntimeFeatureSet,
+) -> Result<()> {
+    let _lock = CacheLock::acquire(&layout.lock_file)?;
+    if deps_ready(layout, build_mode, features)? {
+        return Ok(());
+    }
+    let rust_runtime_dir = rust_runtime_dir_for_generated_build()?.context(
+        "FlowRT Rust runtime directory not found; install FlowRT package, set FLOWRT_RUST_RUNTIME_DIR, or set FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1 in repository development mode",
+    )?;
+    write_deps_workspace(&layout.deps_workspace_dir, &rust_runtime_dir, features)?;
+    run_deps_cargo_build(&layout.deps_workspace_dir, &layout.target_dir, build_mode)?;
+    write_deps_ready_marker(layout, build_mode, features)
+}
+
+fn ensure_deps_ready(
+    layout: &CacheLayout,
+    build_mode: BuildMode,
+    features: &RuntimeFeatureSet,
+) -> Result<()> {
+    if deps_ready(layout, build_mode, features)? {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "FlowRT dependency cache is missing for build_mode `{}` and backend features {:?}; run `flowrt deps --backend {} --build-mode {}` or `flowrt deps <rsdl> --build-mode {}` first",
+        build_mode,
+        features.canonical_names(),
+        features.deps_backend_hint(),
+        build_mode,
+        build_mode
+    )
+}
+
+fn select_ready_deps_cache_layout(
+    build_mode: BuildMode,
+    features: &RuntimeFeatureSet,
+) -> Result<CacheLayout> {
+    let exact = deps_cache_layout(build_mode, features.clone())?;
+    if deps_ready(&exact, build_mode, features)? {
+        return Ok(exact);
+    }
+
+    let all_features = RuntimeFeatureSet::all();
+    if features != &all_features && features.is_subset_of(&all_features) {
+        let all = deps_cache_layout(build_mode, all_features.clone())?;
+        if deps_ready(&all, build_mode, &all_features)? {
+            return Ok(all);
+        }
+    }
+
+    ensure_deps_ready(&exact, build_mode, features)?;
+    unreachable!("ensure_deps_ready must return an error when cache is absent")
+}
+
+fn deps_ready(
+    layout: &CacheLayout,
+    build_mode: BuildMode,
+    features: &RuntimeFeatureSet,
+) -> Result<bool> {
+    if !layout.ready_file.exists() {
+        return Ok(false);
+    }
+    let content = fs::read_to_string(&layout.ready_file)
+        .with_context(|| format!("failed to read `{}`", layout.ready_file.display()))?;
+    let marker: DepsReadyMarker = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse `{}`", layout.ready_file.display()))?;
+    Ok(marker.schema_version == 1
+        && marker.flowrt_version == env!("CARGO_PKG_VERSION")
+        && marker.build_mode == build_mode
+        && marker.features == feature_names_owned(features)
+        && marker.target_dir == layout.target_dir)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DepsReadyMarker {
+    schema_version: u32,
+    flowrt_version: String,
+    build_mode: BuildMode,
+    features: Vec<String>,
+    target_dir: PathBuf,
+}
+
+fn write_deps_ready_marker(
+    layout: &CacheLayout,
+    build_mode: BuildMode,
+    features: &RuntimeFeatureSet,
+) -> Result<()> {
+    let marker = DepsReadyMarker {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_mode,
+        features: feature_names_owned(features),
+        target_dir: layout.target_dir.clone(),
+    };
+    if let Some(parent) = layout.ready_file.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    let mut content = serde_json::to_string_pretty(&marker)?;
+    content.push('\n');
+    fs::write(&layout.ready_file, content)
+        .with_context(|| format!("failed to write `{}`", layout.ready_file.display()))
+}
+
+fn feature_names_owned(features: &RuntimeFeatureSet) -> Vec<String> {
+    features
+        .canonical_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn write_deps_workspace(
+    workspace_dir: &Path,
+    rust_runtime_dir: &Path,
+    features: &RuntimeFeatureSet,
+) -> Result<()> {
+    fs::create_dir_all(workspace_dir.join("src"))
+        .with_context(|| format!("failed to create `{}`", workspace_dir.display()))?;
+    let feature_args = features.cargo_feature_args();
+    let feature_suffix = if feature_args.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", features = [{}]",
+            feature_args
+                .iter()
+                .map(|feature| format!("\"{feature}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let manifest = format!(
+        "[package]\nname = \"flowrt-deps-prewarm\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nflowrt = {{ path = {}{} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n",
+        toml_basic_string(rust_runtime_dir),
+        feature_suffix
+    );
+    fs::write(workspace_dir.join("Cargo.toml"), manifest).with_context(|| {
+        format!(
+            "failed to write `{}`",
+            workspace_dir.join("Cargo.toml").display()
+        )
+    })?;
+    fs::write(
+        workspace_dir.join("src").join("lib.rs"),
+        "pub fn flowrt_deps_prewarm_marker() -> flowrt::Status {\n    flowrt::Status::Ok\n}\n",
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            workspace_dir.join("src/lib.rs").display()
+        )
+    })?;
+
+    if let Some(private_prefix) = flowrt_private_prefix_from_runtime_dir(rust_runtime_dir) {
+        let vendor_dir = private_prefix.join("share").join("cargo").join("vendor");
+        if vendor_dir.is_dir() {
+            let cargo_dir = workspace_dir.join(".cargo");
+            fs::create_dir_all(&cargo_dir)
+                .with_context(|| format!("failed to create `{}`", cargo_dir.display()))?;
+            let config = format!(
+                "[source.crates-io]\nreplace-with = \"flowrt-vendor\"\n\n[source.flowrt-vendor]\ndirectory = {}\n\n[net]\noffline = true\n",
+                toml_basic_string(&vendor_dir)
+            );
+            fs::write(cargo_dir.join("config.toml"), config).with_context(|| {
+                format!(
+                    "failed to write `{}`",
+                    cargo_dir.join("config.toml").display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn run_deps_cargo_build(
+    workspace_dir: &Path,
+    target_dir: &Path,
+    build_mode: BuildMode,
+) -> Result<()> {
+    fs::create_dir_all(target_dir)
+        .with_context(|| format!("failed to create `{}`", target_dir.display()))?;
+    let mut command = ProcessCommand::new("cargo");
+    command
+        .current_dir(workspace_dir)
+        .arg("build")
+        .arg("--lib")
+        .env("CARGO_TARGET_DIR", target_dir);
+    for arg in build_mode.cargo_args() {
+        command.arg(arg);
+    }
+    if workspace_dir.join(".cargo").join("config.toml").exists() {
+        command.arg("--offline");
+    }
+    let status = command.status().with_context(|| {
+        format!(
+            "failed to spawn cargo for dependency prewarm in `{}`",
+            workspace_dir.display()
+        )
+    })?;
+    if !status.success() {
+        anyhow::bail!("FlowRT dependency prewarm failed with status {status}");
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CacheLock {
+    file: File,
+}
+
+impl CacheLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("failed to open cache lock `{}`", path.display()))?;
+        if !try_lock_file(&file)? {
+            anyhow::bail!(
+                "FlowRT dependency cache `{}` is already in use by another flowrt command",
+                path.display()
+            );
+        }
+        Ok(Self { file })
+    }
+}
+
+impl Drop for CacheLock {
+    fn drop(&mut self) {
+        let _ = unlock_file(&self.file);
+    }
+}
+
+fn rustc_toolchain_identity() -> Result<(String, String)> {
+    let output = ProcessCommand::new("rustc")
+        .arg("-Vv")
+        .output()
+        .context("failed to spawn rustc -Vv")?;
+    if !output.status.success() {
+        anyhow::bail!("rustc -Vv failed with status {}", output.status);
+    }
+    let stdout = String::from_utf8(output.stdout).context("rustc -Vv output is not UTF-8")?;
+    let identity = stdout
+        .lines()
+        .find(|line| line.starts_with("rustc "))
+        .unwrap_or("rustc unknown")
+        .to_string();
+    let host = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .unwrap_or(std::env::consts::ARCH)
+        .to_string();
+    let target = env::var("CARGO_BUILD_TARGET").unwrap_or(host);
+    Ok((identity, target))
+}
+
+fn flowrt_vendor_hash(rust_runtime_dir: Option<&Path>) -> Result<String> {
+    if let Some(runtime_dir) = rust_runtime_dir {
+        if let Some(private_prefix) = flowrt_private_prefix_from_runtime_dir(runtime_dir) {
+            let hash_file = private_prefix
+                .join("share")
+                .join("cargo")
+                .join("vendor")
+                .join(".flowrt-vendor.sha256");
+            if hash_file.exists() {
+                let content = fs::read_to_string(&hash_file)
+                    .with_context(|| format!("failed to read `{}`", hash_file.display()))?;
+                if let Some(hash) = content.split_whitespace().next() {
+                    return Ok(hash.to_string());
+                }
+            }
+        }
+    }
+    let repo_root = repo_root_dir()?;
+    let mut hasher = Sha256::new();
+    for relative in ["Cargo.lock", "runtime/rust/Cargo.toml", "scripts/deps.lock"] {
+        let path = repo_root.join(relative);
+        if path.exists() {
+            hasher.update(relative.as_bytes());
+            hasher.update(fs::read(&path).with_context(|| {
+                format!("failed to read `{}` for FlowRT vendor hash", path.display())
+            })?);
+        }
+    }
+    Ok(hex_lower(&hasher.finalize())[..16].to_string())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn build_workspace(
+    contract: &ContractIr,
+    out_dir: &Path,
+    include_launcher: bool,
+    build_mode: BuildMode,
+) -> Result<()> {
     ensure_backend_runtime_supported(contract, "build")?;
     let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
+    let mut build_info = build_info_for_contract(contract, build_mode)?;
+    let cargo_cache = if build_steps(contract, include_launcher)
+        .iter()
+        .any(|step| matches!(step, BuildStep::CargoApp | BuildStep::CargoSupervisor))
+    {
+        let features = RuntimeFeatureSet::from_contract(contract)?;
+        let layout = select_ready_deps_cache_layout(build_mode, &features)?;
+        build_info.deps_target_dir = Some(layout.target_dir.clone());
+        Some(layout)
+    } else {
+        None
+    };
     for step in build_steps(contract, include_launcher) {
         match step {
             BuildStep::CargoApp => {
                 let manifest =
                     cargo_manifest_with_runtime_patch(out_dir, rust_runtime_dir.as_deref())?;
-                run_cargo_build_bin(&manifest, &app_bin_name(contract))?;
+                let target_dir = cargo_cache
+                    .as_ref()
+                    .map(|layout| layout.target_dir.as_path())
+                    .context("internal error: Cargo app build missing dependency cache layout")?;
+                let built = run_cargo_build_bin(
+                    &manifest,
+                    &app_bin_name(contract),
+                    build_mode,
+                    target_dir,
+                )?;
+                let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
+                build_info.executables.rust_app = Some(relative_to_out_dir(out_dir, &local)?);
             }
             BuildStep::CargoSupervisor => {
                 let manifest =
                     cargo_manifest_with_runtime_patch(out_dir, rust_runtime_dir.as_deref())?;
-                run_cargo_build_bin(&manifest, &supervisor_bin_name(contract))?;
+                let target_dir = cargo_cache
+                    .as_ref()
+                    .map(|layout| layout.target_dir.as_path())
+                    .context(
+                        "internal error: Cargo supervisor build missing dependency cache layout",
+                    )?;
+                let built = run_cargo_build_bin(
+                    &manifest,
+                    &supervisor_bin_name(contract),
+                    build_mode,
+                    target_dir,
+                )?;
+                let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
+                build_info.executables.supervisor = Some(relative_to_out_dir(out_dir, &local)?);
             }
             BuildStep::CmakeApp => {
-                run_cmake_configure_and_build(out_dir)?;
+                let built = run_cmake_configure_and_build(contract, out_dir, build_mode)?;
+                if let Some(cpp_app) = built.cpp_app {
+                    let local = copy_executable_to_local_bin(out_dir, build_mode, &cpp_app)?;
+                    build_info.executables.cpp_app = Some(relative_to_out_dir(out_dir, &local)?);
+                }
+                if let Some(ros2_bridge) = built.ros2_bridge {
+                    let local = copy_executable_to_local_bin(out_dir, build_mode, &ros2_bridge)?;
+                    build_info.executables.ros2_bridge =
+                        Some(relative_to_out_dir(out_dir, &local)?);
+                }
             }
         }
     }
+    build_info.write(out_dir)?;
     Ok(())
 }
 
@@ -1086,15 +1558,22 @@ fn run_workspace(
     out_dir: &Path,
     process: Option<&str>,
     run_ticks: Option<usize>,
+    requested_build_mode: Option<BuildMode>,
 ) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
     ensure_backend_runtime_supported(contract, "run")?;
     ensure_run_process_boundaries_supported(contract, process)?;
+    let build_info = load_build_info(out_dir, requested_build_mode, false)?;
     match run_mode_for_process(contract, process)
         .context("contract does not contain runnable components")?
     {
         RunMode::CargoApp => {
-            let bin = cargo_app_executable_path(contract, out_dir);
+            let bin = executable_from_build_info(
+                out_dir,
+                build_info.executables.rust_app.as_ref(),
+                "Rust app",
+                "flowrt build",
+            )?;
             if !bin.exists() {
                 anyhow::bail!(
                     "app binary `{}` not found; run `flowrt build` first",
@@ -1104,17 +1583,34 @@ fn run_workspace(
             run_binary(&bin, process, run_ticks)?;
         }
         RunMode::CmakeApp => {
-            run_cmake_app(contract, out_dir, process, run_ticks)?;
+            let bin = executable_from_build_info(
+                out_dir,
+                build_info.executables.cpp_app.as_ref(),
+                "C++ app",
+                "flowrt build",
+            )?;
+            run_cmake_app(&bin, process, run_ticks)?;
         }
     }
     Ok(())
 }
 
-fn launch_workspace(contract: &ContractIr, out_dir: &Path, run_ticks: Option<usize>) -> Result<()> {
+fn launch_workspace(
+    contract: &ContractIr,
+    out_dir: &Path,
+    run_ticks: Option<usize>,
+    requested_build_mode: Option<BuildMode>,
+) -> Result<()> {
     ensure_direct_runtime_supported(contract, "launch")?;
     ensure_backend_runtime_supported(contract, "launch")?;
     ensure_launch_process_boundaries_supported(contract)?;
-    let supervisor = cargo_supervisor_executable_path(contract, out_dir);
+    let build_info = load_build_info(out_dir, requested_build_mode, true)?;
+    let supervisor = executable_from_build_info(
+        out_dir,
+        build_info.executables.supervisor.as_ref(),
+        "FlowRT supervisor",
+        "flowrt build --launcher",
+    )?;
     if !supervisor.exists() {
         anyhow::bail!(
             "FlowRT supervisor `{}` not found; run `flowrt build --launcher` first",
@@ -1123,6 +1619,75 @@ fn launch_workspace(contract: &ContractIr, out_dir: &Path, run_ticks: Option<usi
     }
     run_supervisor_binary(&supervisor, run_ticks)?;
     Ok(())
+}
+
+fn build_info_for_contract(
+    contract: &ContractIr,
+    build_mode: BuildMode,
+) -> Result<build_model::BuildInfo> {
+    Ok(build_model::BuildInfo::new(
+        env!("CARGO_PKG_VERSION"),
+        selected_prepared_profile_name(contract).map(str::to_string),
+        build_mode,
+        None,
+    ))
+}
+
+fn load_build_info(
+    out_dir: &Path,
+    requested_build_mode: Option<BuildMode>,
+    launcher: bool,
+) -> Result<build_model::BuildInfo> {
+    let info = build_model::BuildInfo::read(out_dir).with_context(|| {
+        format!(
+            "FlowRT build metadata is missing; run `{}` with FlowRT 0.6.1 or newer",
+            if launcher {
+                "flowrt build --launcher"
+            } else {
+                "flowrt build"
+            }
+        )
+    })?;
+    if info.flowrt_version != env!("CARGO_PKG_VERSION") {
+        anyhow::bail!(
+            "prepared FlowRT artifacts were built with FlowRT {}, but this CLI is {}; run `{}` again",
+            info.flowrt_version,
+            env!("CARGO_PKG_VERSION"),
+            if launcher {
+                "flowrt build --launcher"
+            } else {
+                "flowrt build"
+            }
+        );
+    }
+    if let Some(requested) = requested_build_mode {
+        if info.build_mode != requested {
+            anyhow::bail!(
+                "prepared FlowRT artifacts use build mode `{}`, but command requested `{}`; run `{}` with `--build-mode {}` first",
+                info.build_mode,
+                requested,
+                if launcher {
+                    "flowrt build --launcher"
+                } else {
+                    "flowrt build"
+                },
+                requested
+            );
+        }
+    }
+    Ok(info)
+}
+
+fn executable_from_build_info(
+    out_dir: &Path,
+    relative: Option<&PathBuf>,
+    label: &str,
+    build_hint: &str,
+) -> Result<PathBuf> {
+    let relative =
+        relative.with_context(|| format!("{label} was not built; run `{build_hint}` first"))?;
+    ensure_safe_relative_path(relative)?;
+    Ok(out_dir.join(relative))
 }
 
 fn ensure_launch_process_boundaries_supported(contract: &ContractIr) -> Result<()> {
@@ -1293,9 +1858,21 @@ fn flowrt_private_prefix_from_runtime_dir(runtime_dir: &Path) -> Option<PathBuf>
     Some(share.parent()?.to_path_buf())
 }
 
-fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
+#[derive(Debug, Default)]
+struct CmakeBuildOutputs {
+    cpp_app: Option<PathBuf>,
+    ros2_bridge: Option<PathBuf>,
+}
+
+fn run_cmake_configure_and_build(
+    contract: &ContractIr,
+    out_dir: &Path,
+    build_mode: BuildMode,
+) -> Result<CmakeBuildOutputs> {
     let source_dir = out_dir.join("build");
-    let build_dir = source_dir.join("cmake");
+    let build_dir = source_dir
+        .join("cmake")
+        .join(build_mode.cargo_profile_dir());
     let runtime_dir = cpp_runtime_dir_for_generated_build()?;
     let cmake_prefix_paths =
         cmake_prefix_paths_for_runtime(runtime_dir.as_deref(), &cmake_prefix_path_from_env());
@@ -1304,8 +1881,15 @@ fn run_cmake_configure_and_build(out_dir: &Path) -> Result<()> {
         &build_dir,
         runtime_dir.as_deref(),
         &cmake_prefix_paths,
+        build_mode,
     )?;
-    run_cmake_build(&build_dir)
+    run_cmake_build(&build_dir)?;
+    Ok(CmakeBuildOutputs {
+        cpp_app: has_component_language(contract, LanguageKind::Cpp)
+            .then(|| build_dir.join(cpp_app_executable_name(contract))),
+        ros2_bridge: has_ros2_bridge(contract)
+            .then(|| build_dir.join(ros2_bridge_executable_name(contract))),
+    })
 }
 
 fn run_cmake_configure(
@@ -1313,8 +1897,15 @@ fn run_cmake_configure(
     build_dir: &Path,
     runtime_dir: Option<&Path>,
     cmake_prefix_paths: &[PathBuf],
+    build_mode: BuildMode,
 ) -> Result<()> {
-    let args = cmake_configure_args(source_dir, build_dir, runtime_dir, cmake_prefix_paths);
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        runtime_dir,
+        cmake_prefix_paths,
+        build_mode,
+    );
     let status = ProcessCommand::new("cmake")
         .args(args)
         .status()
@@ -1330,12 +1921,14 @@ fn cmake_configure_args(
     build_dir: &Path,
     runtime_dir: Option<&Path>,
     cmake_prefix_paths: &[PathBuf],
+    build_mode: BuildMode,
 ) -> Vec<String> {
     let mut args = vec![
         "-S".to_string(),
         source_dir.to_string_lossy().into_owned(),
         "-B".to_string(),
         build_dir.to_string_lossy().into_owned(),
+        format!("-DCMAKE_BUILD_TYPE={}", build_mode.cmake_build_type()),
     ];
     if let Some(runtime_dir) = runtime_dir {
         args.push(format!(
@@ -1415,20 +2008,14 @@ fn run_cmake_build(build_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_cmake_app(
-    contract: &ContractIr,
-    out_dir: &Path,
-    process: Option<&str>,
-    run_ticks: Option<usize>,
-) -> Result<()> {
-    let app = cpp_app_executable_path(contract, out_dir);
+fn run_cmake_app(app: &Path, process: Option<&str>, run_ticks: Option<usize>) -> Result<()> {
     if !app.exists() {
         anyhow::bail!(
             "C++ app executable `{}` not found; run `flowrt build` first",
             app.display()
         );
     }
-    let mut command = ProcessCommand::new(&app);
+    let mut command = ProcessCommand::new(app);
     if let Some(process) = process {
         command.arg("--process").arg(process);
     }
@@ -1444,13 +2031,6 @@ fn run_cmake_app(
     Ok(())
 }
 
-fn cpp_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
-    out_dir
-        .join("build")
-        .join("cmake")
-        .join(cpp_app_executable_name(contract))
-}
-
 fn cpp_app_executable_name(contract: &ContractIr) -> String {
     format!(
         "{}_cpp_app{}",
@@ -1459,20 +2039,51 @@ fn cpp_app_executable_name(contract: &ContractIr) -> String {
     )
 }
 
-fn cargo_app_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
-    cargo_bin_executable_path(out_dir, &app_bin_name(contract))
+fn ros2_bridge_executable_name(contract: &ContractIr) -> String {
+    format!(
+        "{}_ros2_bridge{}",
+        sanitize_package_name(&contract.package.name).replace('-', "_"),
+        std::env::consts::EXE_SUFFIX
+    )
 }
 
-fn cargo_supervisor_executable_path(contract: &ContractIr, out_dir: &Path) -> PathBuf {
-    cargo_bin_executable_path(out_dir, &supervisor_bin_name(contract))
-}
-
-fn cargo_bin_executable_path(out_dir: &Path, bin_name: &str) -> PathBuf {
-    out_dir
+fn copy_executable_to_local_bin(
+    out_dir: &Path,
+    build_mode: BuildMode,
+    built: &Path,
+) -> Result<PathBuf> {
+    let file_name = built
+        .file_name()
+        .context("built executable path has no file name")?;
+    let destination = out_dir
         .join("build")
-        .join("target")
-        .join("debug")
-        .join(format!("{bin_name}{}", std::env::consts::EXE_SUFFIX))
+        .join("bin")
+        .join(build_mode.cargo_profile_dir())
+        .join(file_name);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    fs::copy(built, &destination).with_context(|| {
+        format!(
+            "failed to copy built executable `{}` to `{}`",
+            built.display(),
+            destination.display()
+        )
+    })?;
+    Ok(destination)
+}
+
+fn relative_to_out_dir(out_dir: &Path, path: &Path) -> Result<PathBuf> {
+    path.strip_prefix(out_dir)
+        .map(Path::to_path_buf)
+        .with_context(|| {
+            format!(
+                "built executable `{}` is not under FlowRT output directory `{}`",
+                path.display(),
+                out_dir.display()
+            )
+        })
 }
 
 fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) -> Result<()> {
@@ -1492,25 +2103,47 @@ fn run_binary(binary: &Path, process: Option<&str>, run_ticks: Option<usize>) ->
     Ok(())
 }
 
-fn run_cargo_build_bin(manifest: &Path, bin_name: &str) -> Result<()> {
-    let invocation = cargo_build_invocation(manifest, bin_name)?;
+fn run_cargo_build_bin(
+    manifest: &Path,
+    bin_name: &str,
+    build_mode: BuildMode,
+    target_dir: &Path,
+) -> Result<PathBuf> {
+    let invocation = cargo_build_invocation(manifest, bin_name, build_mode, target_dir)?;
     let mut command = ProcessCommand::new("cargo");
     command
         .current_dir(&invocation.current_dir)
+        .env("CARGO_TARGET_DIR", &invocation.target_dir)
         .args(&invocation.args);
     let status = command.status().context("failed to spawn cargo")?;
     if !status.success() {
         anyhow::bail!("cargo invocation failed with status {status}");
     }
-    Ok(())
+    Ok(invocation.executable_path())
 }
 
 struct CargoBuildInvocation {
     current_dir: PathBuf,
     args: Vec<String>,
+    target_dir: PathBuf,
+    bin_name: String,
+    build_mode: BuildMode,
 }
 
-fn cargo_build_invocation(manifest: &Path, bin_name: &str) -> Result<CargoBuildInvocation> {
+impl CargoBuildInvocation {
+    fn executable_path(&self) -> PathBuf {
+        self.target_dir
+            .join(self.build_mode.cargo_profile_dir())
+            .join(format!("{}{}", self.bin_name, std::env::consts::EXE_SUFFIX))
+    }
+}
+
+fn cargo_build_invocation(
+    manifest: &Path,
+    bin_name: &str,
+    build_mode: BuildMode,
+    target_dir: &Path,
+) -> Result<CargoBuildInvocation> {
     let manifest = fs::canonicalize(manifest)
         .with_context(|| format!("failed to resolve `{}`", manifest.display()))?;
     let manifest_dir = manifest
@@ -1523,12 +2156,16 @@ fn cargo_build_invocation(manifest: &Path, bin_name: &str) -> Result<CargoBuildI
         "--bin".to_string(),
         bin_name.to_string(),
     ];
+    args.extend(build_mode.cargo_args().iter().map(|arg| (*arg).to_string()));
     if manifest_dir.join(".cargo").join("config.toml").exists() {
         args.push("--offline".to_string());
     }
     Ok(CargoBuildInvocation {
         current_dir: manifest_dir.to_path_buf(),
         args,
+        target_dir: target_dir.to_path_buf(),
+        bin_name: bin_name.to_string(),
+        build_mode,
     })
 }
 

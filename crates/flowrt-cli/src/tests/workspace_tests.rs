@@ -1,6 +1,7 @@
 use super::*;
 
 static REPO_RUNTIME_FALLBACK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static FLOWRT_CACHE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct EnvOverride {
     key: &'static str,
@@ -8,10 +9,9 @@ struct EnvOverride {
 }
 
 impl EnvOverride {
-    fn repo_runtime_fallback(value: Option<&str>) -> Self {
-        let key = "FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK";
+    fn set(key: &'static str, value: Option<&std::ffi::OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        // SAFETY: guarded by REPO_RUNTIME_FALLBACK_ENV_LOCK in tests below.
+        // SAFETY: callers must guard process-wide environment mutation with a test mutex.
         unsafe {
             match value {
                 Some(value) => std::env::set_var(key, value),
@@ -19,6 +19,13 @@ impl EnvOverride {
             }
         }
         Self { key, previous }
+    }
+
+    fn repo_runtime_fallback(value: Option<&str>) -> Self {
+        Self::set(
+            "FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK",
+            value.map(std::ffi::OsStr::new),
+        )
     }
 }
 
@@ -108,12 +115,132 @@ language = "rust"
     );
     let root = temp_test_dir("missing-launcher");
 
-    let error = launch_workspace(&contract, &root.join("flowrt"), Some(1)).unwrap_err();
+    let error = launch_workspace(&contract, &root.join("flowrt"), Some(1), None).unwrap_err();
 
     let message = error.to_string();
-    assert!(message.contains("FlowRT supervisor"));
+    assert!(message.contains("build metadata is missing"));
     assert!(message.contains("flowrt build --launcher"));
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn build_info_rejects_version_mismatch() {
+    let root = temp_test_dir("build-info-version");
+    let out_dir = root.join("flowrt");
+    let info = build_model::BuildInfo::new("0.0.1", None, BuildMode::Release, None);
+    info.write(&out_dir).unwrap();
+
+    let error = load_build_info(&out_dir, None, false).unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("built with FlowRT 0.0.1"));
+    assert!(message.contains(env!("CARGO_PKG_VERSION")));
+    assert!(message.contains("flowrt build"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn build_info_rejects_requested_mode_mismatch() {
+    let root = temp_test_dir("build-info-mode");
+    let out_dir = root.join("flowrt");
+    let info =
+        build_model::BuildInfo::new(env!("CARGO_PKG_VERSION"), None, BuildMode::Release, None);
+    info.write(&out_dir).unwrap();
+
+    let error = load_build_info(&out_dir, Some(BuildMode::Debug), true).unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("artifacts use build mode `release`"));
+    assert!(message.contains("requested `debug`"));
+    assert!(message.contains("flowrt build --launcher"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deps_runtime_features_project_profile_before_validation() {
+    let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "main"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "main"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[profile.iox2]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+    let root = temp_test_dir("deps-profile");
+    let rsdl = root.join("robot.rsdl");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&rsdl, source).unwrap();
+
+    assert!(load_contract_from_rsdl(&rsdl).is_err());
+    let features = deps_runtime_features(Some(&rsdl), Some("iox2"), None)
+        .expect("deps feature inference should validate selected profile only");
+
+    assert_eq!(features.canonical_names(), vec!["iox2"]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn build_can_reuse_all_backend_dependency_cache_for_feature_subset() {
+    let _lock = FLOWRT_CACHE_DIR_ENV_LOCK
+        .lock()
+        .expect("cache env lock should not be poisoned");
+    let root = temp_test_dir("deps-cache-all-fallback");
+    let cache = root.join("cache");
+    let _env = EnvOverride::set("FLOWRT_CACHE_DIR", Some(cache.as_os_str()));
+
+    let all_features = RuntimeFeatureSet::all();
+    let all_layout = deps_cache_layout(BuildMode::Release, all_features.clone()).unwrap();
+    write_deps_ready_marker(&all_layout, BuildMode::Release, &all_features).unwrap();
+
+    let inproc = RuntimeFeatureSet::inproc_only();
+    let selected = select_ready_deps_cache_layout(BuildMode::Release, &inproc).unwrap();
+
+    assert_eq!(selected.target_dir, all_layout.target_dir);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -259,11 +386,26 @@ fn cargo_build_invocation_uses_manifest_dir_and_offline_config() {
     )
     .unwrap();
 
-    let invocation = cargo_build_invocation(&manifest, "robot-flowrt-app")
-        .expect("cargo invocation should be derived from manifest");
+    let target_dir = root.join("flowrt-cache").join("target");
+    let invocation = cargo_build_invocation(
+        &manifest,
+        "robot-flowrt-app",
+        BuildMode::Release,
+        &target_dir,
+    )
+    .expect("cargo invocation should be derived from manifest");
 
     assert_eq!(invocation.current_dir, build_dir);
+    assert_eq!(invocation.target_dir, target_dir);
+    assert!(invocation.args.iter().any(|arg| arg == "--release"));
     assert!(invocation.args.iter().any(|arg| arg == "--offline"));
+    assert_eq!(
+        invocation.executable_path(),
+        invocation
+            .target_dir
+            .join("release")
+            .join(format!("robot-flowrt-app{}", std::env::consts::EXE_SUFFIX))
+    );
     let manifest_arg = invocation
         .args
         .windows(2)
@@ -292,16 +434,56 @@ fn cargo_build_invocation_resolves_relative_manifest_before_changing_dir() {
     .unwrap();
     let relative_manifest = manifest.strip_prefix(&repo_dir).unwrap();
 
-    let invocation = cargo_build_invocation(relative_manifest, "robot-flowrt-app")
-        .expect("relative manifest should be resolved before cargo changes directory");
+    let target_dir = root.join("target-cache");
+    let invocation = cargo_build_invocation(
+        relative_manifest,
+        "robot-flowrt-app",
+        BuildMode::Debug,
+        &target_dir,
+    )
+    .expect("relative manifest should be resolved before cargo changes directory");
 
     assert_eq!(invocation.current_dir, build_dir);
+    assert_eq!(invocation.target_dir, target_dir);
+    assert!(!invocation.args.iter().any(|arg| arg == "--release"));
     let manifest_arg = invocation
         .args
         .windows(2)
         .find_map(|args| (args[0] == "--manifest-path").then_some(args[1].as_str()))
         .expect("cargo invocation should pass --manifest-path");
     assert_eq!(Path::new(manifest_arg), manifest.as_path());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn built_executables_are_copied_to_local_release_bin() {
+    let root = temp_test_dir("local-release-bin");
+    let out_dir = root.join("flowrt");
+    let cmake_dir = out_dir.join("build").join("cmake").join("release");
+    std::fs::create_dir_all(&cmake_dir).unwrap();
+    let built = cmake_dir.join(format!("robot_cpp_app{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&built, "binary").unwrap();
+
+    let local = copy_executable_to_local_bin(&out_dir, BuildMode::Release, &built)
+        .expect("built executable should be copied to local bin");
+
+    assert_eq!(
+        local,
+        out_dir
+            .join("build")
+            .join("bin")
+            .join("release")
+            .join(format!("robot_cpp_app{}", std::env::consts::EXE_SUFFIX))
+    );
+    assert_eq!(
+        relative_to_out_dir(&out_dir, &local).unwrap(),
+        PathBuf::from("build")
+            .join("bin")
+            .join("release")
+            .join(format!("robot_cpp_app{}", std::env::consts::EXE_SUFFIX))
+    );
+    assert_eq!(std::fs::read_to_string(local).unwrap(), "binary");
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -315,7 +497,7 @@ fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
 
-    let args = cmake_configure_args(source_dir, build_dir, None, &[]);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release);
 
     assert_eq!(
         args,
@@ -323,7 +505,8 @@ fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
             "-S".to_string(),
             "/tmp/flowrt/build".to_string(),
             "-B".to_string(),
-            "/tmp/flowrt/build/cmake".to_string()
+            "/tmp/flowrt/build/cmake".to_string(),
+            "-DCMAKE_BUILD_TYPE=Release".to_string()
         ]
     );
 }
@@ -343,10 +526,12 @@ fn cmake_configure_args_can_pass_explicit_runtime_dir() {
         build_dir,
         Some(runtime_dir),
         &[runtime_dir.to_path_buf()],
+        BuildMode::Debug,
     );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/opt/flowrt/runtime/cpp".to_string()));
     assert!(args.contains(&"-DCMAKE_PREFIX_PATH=/opt/flowrt/runtime/cpp".to_string()));
+    assert!(args.contains(&"-DCMAKE_BUILD_TYPE=Debug".to_string()));
 }
 
 #[test]
@@ -378,6 +563,7 @@ fn cmake_configure_args_can_split_runtime_headers_from_dependency_prefix() {
         build_dir,
         Some(runtime_dir),
         &[sdk_prefix.to_path_buf()],
+        BuildMode::Release,
     );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/repo/runtime/cpp".to_string()));
@@ -438,7 +624,7 @@ fn cmake_configure_args_include_repo_fallback_flag_when_env_is_set() {
 
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let args = cmake_configure_args(source_dir, build_dir, None, &[]);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release);
 
     assert!(
         args.contains(&"-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON".to_string()),
@@ -455,7 +641,7 @@ fn cmake_configure_args_do_not_include_repo_fallback_flag_by_default() {
 
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let args = cmake_configure_args(source_dir, build_dir, None, &[]);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release);
 
     assert!(
         !args

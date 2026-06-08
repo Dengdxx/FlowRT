@@ -482,22 +482,28 @@ fn rust_app_executable(current_exe: &Path, stem: &str) -> Result<PathBuf, String
 }
 
 fn cpp_app_executable(current_exe: &Path, stem: &str) -> Result<PathBuf, String> {
-    let build_dir = current_exe
-        .parent()
-        .and_then(|profile_dir| profile_dir.parent())
-        .and_then(|target_dir| target_dir.parent())
-        .ok_or_else(|| {
-            format!(
-                "failed to resolve FlowRT build directory from `{}`",
-                current_exe.display()
-            )
-        })?;
-    let mut path = build_dir.join("cmake");
-    path.push(binary_name(stem));
-    Ok(path)
+    let sibling = sibling_executable(current_exe, stem);
+    if sibling.exists() {
+        return Ok(sibling);
+    }
+    legacy_cmake_executable(current_exe, stem)
 }
 
 fn ros2_bridge_executable(current_exe: &Path, stem: &str) -> Result<PathBuf, String> {
+    let sibling = sibling_executable(current_exe, stem);
+    if sibling.exists() {
+        return Ok(sibling);
+    }
+    legacy_cmake_executable(current_exe, stem)
+}
+
+fn sibling_executable(current_exe: &Path, stem: &str) -> PathBuf {
+    let mut path = current_exe.to_path_buf();
+    path.set_file_name(binary_name(stem));
+    path
+}
+
+fn legacy_cmake_executable(current_exe: &Path, stem: &str) -> Result<PathBuf, String> {
     let build_dir = current_exe
         .parent()
         .and_then(|profile_dir| profile_dir.parent())
@@ -1035,7 +1041,40 @@ fn unix_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    static ZENOH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvOverride {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvOverride {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: 测试调用方必须持有对应环境变量 mutex。
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvOverride {
+        fn drop(&mut self) {
+            // SAFETY: 测试调用方必须持有对应环境变量 mutex。
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     fn command_args(command: &Command) -> Vec<String> {
         command
@@ -1064,6 +1103,17 @@ mod tests {
             instances: vec![],
             resource_placement: ResourcePlacement::default(),
         }
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-supervisor-{name}-{}-{}",
+            std::process::id(),
+            unix_time_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test temp dir should be created");
+        root
     }
 
     // -- RestartPolicy 测试 --
@@ -1163,6 +1213,61 @@ mod tests {
         assert_eq!(
             command_env(&command, "RMW_IMPLEMENTATION").as_deref(),
             Some("rmw_zenoh_cpp")
+        );
+    }
+
+    #[test]
+    fn cpp_runtime_executable_prefers_sibling_local_bin() {
+        let root = temp_test_dir("cpp-sibling");
+        let bin_dir = root.join("flowrt/build/bin/release");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let supervisor = bin_dir.join(binary_name("robot-flowrt-supervisor"));
+        let cpp_app = bin_dir.join(binary_name("robot_cpp_app"));
+        std::fs::write(&supervisor, "").unwrap();
+        std::fs::write(&cpp_app, "").unwrap();
+
+        let resolved =
+            app_executable_for_runtime(&supervisor, "cpp", "robot-flowrt-app", "robot_cpp_app", "")
+                .unwrap();
+
+        assert_eq!(resolved, cpp_app);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ros2_bridge_runtime_executable_prefers_sibling_local_bin() {
+        let root = temp_test_dir("ros2-sibling");
+        let bin_dir = root.join("flowrt/build/bin/release");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let supervisor = bin_dir.join(binary_name("robot-flowrt-supervisor"));
+        let bridge = bin_dir.join(binary_name("robot_ros2_bridge"));
+        std::fs::write(&supervisor, "").unwrap();
+        std::fs::write(&bridge, "").unwrap();
+
+        let resolved = app_executable_for_runtime(
+            &supervisor,
+            "ros2_bridge",
+            "robot-flowrt-app",
+            "",
+            "robot_ros2_bridge",
+        )
+        .unwrap();
+
+        assert_eq!(resolved, bridge);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cpp_runtime_executable_keeps_legacy_cmake_fallback() {
+        let supervisor = Path::new("/tmp/app/flowrt/build/bin/release/robot-flowrt-supervisor");
+
+        let resolved =
+            app_executable_for_runtime(supervisor, "cpp", "robot-flowrt-app", "robot_cpp_app", "")
+                .unwrap();
+
+        assert_eq!(
+            resolved,
+            Path::new("/tmp/app/flowrt/build/cmake").join(binary_name("robot_cpp_app"))
         );
     }
 
@@ -1320,24 +1425,20 @@ mod tests {
 
     #[test]
     fn should_auto_configure_zenoh_when_no_env_vars() {
-        // 清理环境变量以确保测试干净
-        unsafe {
-            std::env::remove_var("FLOWRT_ZENOH_MODE");
-            std::env::remove_var("FLOWRT_ZENOH_LISTEN");
-            std::env::remove_var("FLOWRT_ZENOH_CONNECT");
-        }
+        let _lock = ZENOH_ENV_LOCK.lock().expect("zenoh env lock should work");
+        let _mode = EnvOverride::set("FLOWRT_ZENOH_MODE", None);
+        let _listen = EnvOverride::set("FLOWRT_ZENOH_LISTEN", None);
+        let _connect = EnvOverride::set("FLOWRT_ZENOH_CONNECT", None);
+
         assert!(should_auto_configure_zenoh());
     }
 
     #[test]
     fn should_not_auto_configure_when_env_set() {
-        unsafe {
-            std::env::set_var("FLOWRT_ZENOH_MODE", "peer");
-        }
+        let _lock = ZENOH_ENV_LOCK.lock().expect("zenoh env lock should work");
+        let _mode = EnvOverride::set("FLOWRT_ZENOH_MODE", Some("peer"));
+
         assert!(!should_auto_configure_zenoh());
-        unsafe {
-            std::env::remove_var("FLOWRT_ZENOH_MODE");
-        }
     }
 
     #[test]

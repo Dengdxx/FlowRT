@@ -459,6 +459,65 @@ fn cli_parses_build_launcher_flag() {
     assert!(launcher);
 }
 
+#[test]
+fn cli_build_defaults_to_release_mode_and_accepts_debug() {
+    let cli =
+        Cli::try_parse_from(["flowrt", "build", "examples/import_demo/rsdl/robot.rsdl"]).unwrap();
+    let Command::Build { build_mode, .. } = cli.command else {
+        panic!("build command should parse into Command::Build")
+    };
+    assert_eq!(build_mode, BuildMode::Release);
+
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "build",
+        "examples/import_demo/rsdl/robot.rsdl",
+        "--build-mode",
+        "debug",
+    ])
+    .unwrap();
+    let Command::Build { build_mode, .. } = cli.command else {
+        panic!("build command should parse into Command::Build")
+    };
+    assert_eq!(build_mode, BuildMode::Debug);
+}
+
+#[test]
+fn cli_parses_deps_command_with_backend_and_build_mode() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "deps",
+        "examples/import_demo/rsdl/robot.rsdl",
+        "--profile",
+        "default",
+        "--backend",
+        "all",
+        "--build-mode",
+        "debug",
+        "--check",
+    ])
+    .unwrap();
+
+    let Command::Deps {
+        rsdl,
+        backend,
+        profile,
+        build_mode,
+        check,
+    } = cli.command
+    else {
+        panic!("deps command should parse into Command::Deps")
+    };
+    assert_eq!(
+        rsdl,
+        Some(PathBuf::from("examples/import_demo/rsdl/robot.rsdl"))
+    );
+    assert_eq!(backend, Some(DepsBackend::All));
+    assert_eq!(profile.as_deref(), Some("default"));
+    assert_eq!(build_mode, BuildMode::Debug);
+    assert!(check);
+}
+
 /// 兼容测试：`--run-ticks 0` 仍会被 CLI 拒绝。
 #[test]
 fn cli_rejects_zero_run_ticks_compat() {
