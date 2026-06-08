@@ -324,6 +324,13 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }}\n",
         startup_function_name = emission.steps.startup
     ));
+    let service_ready_marks =
+        service_emit::emit_rust_service_ready_marks(emission.contract, emission.graph);
+    if !service_ready_marks.is_empty() {
+        output.push_str("        if status == flowrt::Status::Ok {\n");
+        output.push_str(&service_ready_marks);
+        output.push_str("        }\n");
+    }
     output.push_str(&scheduler_emit::emit_rust_scheduler_v2_loop(
         emission.contract,
         emission.graph,

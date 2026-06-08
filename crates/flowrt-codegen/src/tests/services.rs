@@ -144,6 +144,20 @@ fn rust_runtime_shell_registers_service() {
         "runtime shell must publish service health into live introspection status.\n\n{shell}"
     );
     assert!(
+        shell.contains("introspection_state.mark_service_ready"),
+        "runtime shell must mark service ready only after lifecycle startup.\n\n{shell}"
+    );
+    let startup_index = shell
+        .find("status = self.step_startup")
+        .expect("runtime shell must call startup task");
+    let ready_index = shell
+        .find("introspection_state.mark_service_ready")
+        .expect("runtime shell must mark service ready");
+    assert!(
+        ready_index > startup_index,
+        "service ready marker must be emitted after startup task.\n\n{shell}"
+    );
+    assert!(
         !shell.contains("std::rc::Rc") && !shell.contains("std::cell::RefCell"),
         "service server shell must not use Rc<RefCell>, because ServiceRegistry requires Send+Sync handlers.\n\n{shell}"
     );

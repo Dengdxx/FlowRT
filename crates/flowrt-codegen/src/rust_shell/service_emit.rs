@@ -369,7 +369,26 @@ pub(crate) fn emit_rust_service_introspection_registration(
         output.push_str(&format!(
             "        introspection_state.register_service({service_name});\n"
         ));
-        output.push_str(&rust_service_status_update(plan));
+    }
+    output
+}
+
+/// 生成 lifecycle startup 完成后的 service ready 标记代码。
+pub(crate) fn emit_rust_service_ready_marks(contract: &ContractIr, graph: &GraphIr) -> String {
+    let plans = service_runtime_plans(contract, graph);
+    if plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    for plan in &plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        let service_name = rust_string_literal(&plan.service_name);
+        output.push_str(&format!(
+            "        introspection_state.mark_service_ready({service_name});\n"
+        ));
     }
     output
 }

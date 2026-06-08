@@ -855,7 +855,7 @@ impl IntrospectionState {
             .entry(name.clone())
             .or_insert_with(|| IntrospectionServiceStatus {
                 name,
-                ready: true,
+                ready: false,
                 in_flight: 0,
                 queued: 0,
                 total_requests: 0,
@@ -864,6 +864,14 @@ impl IntrospectionState {
                 unavailable_count: 0,
                 late_drop_count: 0,
             });
+    }
+
+    /// 标记预注册 service 已完成 lifecycle startup，可被 readiness gate 视为可用。
+    pub fn mark_service_ready(&self, name: impl AsRef<str>) {
+        let mut inner = self.lock_inner();
+        if let Some(service) = inner.services.get_mut(name.as_ref()) {
+            service.ready = true;
+        }
     }
 
     /// 记录 service 运行态健康状态快照。
@@ -2772,6 +2780,22 @@ mod tests {
 
         drop(server);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registered_service_is_not_ready_until_marked() {
+        let state = IntrospectionState::new();
+        state.register_service("planner.plan");
+
+        let status = state.status();
+        assert_eq!(status.services.len(), 1);
+        assert_eq!(status.services[0].name, "planner.plan");
+        assert!(!status.services[0].ready);
+
+        state.mark_service_ready("planner.plan");
+
+        let status = state.status();
+        assert!(status.services[0].ready);
     }
 
     #[test]

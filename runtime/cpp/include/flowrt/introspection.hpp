@@ -1645,8 +1645,18 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->services.try_emplace(name, IntrospectionServiceStatus{
                                                .name = name,
-                                               .ready = true,
+                                               .ready = false,
                                            });
+    }
+
+    /**
+     * @brief 标记预注册 service 已完成 lifecycle startup，可被 readiness gate 视为可用。
+     */
+    void mark_service_ready(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        if (auto it = inner_->services.find(std::string(name)); it != inner_->services.end()) {
+            it->second.ready = true;
+        }
     }
 
     /**

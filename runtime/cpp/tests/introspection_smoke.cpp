@@ -221,6 +221,15 @@ int main() {
     assert(service_recorder_events.front().entity_kind == "service");
     assert(service_recorder_events.front().entity_name == "planner.plan_to_executor.execute");
 
+    flowrt::IntrospectionState service_ready_state;
+    service_ready_state.register_service("planner.plan");
+    auto service_ready_status = service_ready_state.status();
+    assert(service_ready_status.services.size() == 1U);
+    assert(!service_ready_status.services.front().ready);
+    service_ready_state.mark_service_ready("planner.plan");
+    service_ready_status = service_ready_state.status();
+    assert(service_ready_status.services.front().ready);
+
     flowrt::IntrospectionState bounded_probe_state;
     bounded_probe_state.register_channel_with_probe_capacity("source.packet_to_sink.packet",
                                                              "Packet", std::size_t{4});
