@@ -80,6 +80,15 @@ dpkg-deb --fsys-tarfile "$package" | tar -xO "${prefix}/share/cargo/config.toml"
 grep -q 'replace-with = "flowrt-vendor"' "$cargo_config"
 grep -q 'offline = true' "$cargo_config"
 
+record_check="$work_dir/flowrt-record"
+mkdir -p "$record_check"
+dpkg-deb --fsys-tarfile "$package" | tar -xO "${prefix}/share/flowrt/crates/flowrt-record/Cargo.toml" \
+    > "$record_check/Cargo.toml"
+mkdir -p "$record_check/src"
+dpkg-deb --fsys-tarfile "$package" | tar -xO "${prefix}/share/flowrt/crates/flowrt-record/src/lib.rs" \
+    > "$record_check/src/lib.rs"
+cargo metadata --format-version 1 --manifest-path "$record_check/Cargo.toml" --no-deps >/dev/null
+
 copyright="$work_dir/copyright"
 dpkg-deb --fsys-tarfile "$package" | tar -xO ./usr/share/doc/flowrt/copyright > "$copyright"
 grep -q 'License: MIT' "$copyright"
