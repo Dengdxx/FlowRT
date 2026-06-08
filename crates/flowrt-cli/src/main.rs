@@ -116,6 +116,56 @@ enum Command {
         check: bool,
     },
 
+    /// 检查和列出 FlowRT external package。
+    External {
+        #[command(subcommand)]
+        command: ExternalCommand,
+    },
+
+    /// 将已构建的 FlowRT 项目打包成本地离线 bundle。
+    Bundle {
+        /// .rsdl 文件路径。
+        rsdl: PathBuf,
+
+        /// FlowRT 管理产物输出目录。
+        #[arg(long, default_value = "flowrt")]
+        out_dir: PathBuf,
+
+        /// bundle 输出目录。
+        #[arg(long)]
+        output: PathBuf,
+
+        /// 选择用于校验 bundle 的 profile 名称。
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// 要打包的构建模式；省略时使用最近一次成功 build 记录的模式。
+        #[arg(long, value_enum)]
+        build_mode: Option<BuildMode>,
+    },
+
+    /// 通过 ssh/scp 部署本地 bundle baseline。
+    Deploy {
+        /// `flowrt bundle` 生成的 bundle 目录。
+        bundle: PathBuf,
+
+        /// 远端主机，格式同 ssh/scp，例如 `user@host`。
+        #[arg(long)]
+        host: String,
+
+        /// 目标 target 名称。
+        #[arg(long)]
+        target: String,
+
+        /// 远端目录。
+        #[arg(long)]
+        remote_dir: String,
+
+        /// 只输出计划，不执行 ssh/scp。
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// 准备并运行 FlowRT 管理的应用 crate。
     Run {
         /// .rsdl 文件路径。
@@ -350,6 +400,22 @@ enum ParamsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ExternalCommand {
+    /// 检查一个 external package manifest 和 executable。
+    Check {
+        /// external package 目录，包含 flowrt-external.toml。
+        package_dir: PathBuf,
+    },
+
+    /// 列出一个目录下可发现的 external package。
+    List {
+        /// external package 搜索目录。
+        #[arg(long, default_value = "external")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum OpCommand {
     /// 列出 Operation 拓扑；省略 --image 时从 live runtime 读取 self-description。
     List {
@@ -451,6 +517,42 @@ fn main() -> Result<()> {
                     layout.target_dir.display()
                 );
             }
+        }
+        Command::External { command } => match command {
+            ExternalCommand::Check { package_dir } => {
+                println!("{}", external_check_package_dir(&package_dir)?);
+            }
+            ExternalCommand::List { path } => {
+                println!("{}", external_list_packages(&path)?);
+            }
+        },
+        Command::Bundle {
+            rsdl,
+            out_dir,
+            output,
+            profile,
+            build_mode,
+        } => {
+            let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
+            let build_hint = build_command_hint(&rsdl, profile.as_deref(), true);
+            let contract = load_prepared_contract(&out_dir, &build_hint)?;
+            ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
+            println!(
+                "{}",
+                bundle_workspace(&rsdl, &contract, &out_dir, &output, build_mode)?
+            );
+        }
+        Command::Deploy {
+            bundle,
+            host,
+            target,
+            remote_dir,
+            dry_run,
+        } => {
+            println!(
+                "{}",
+                deploy_bundle(&bundle, &host, &target, &remote_dir, dry_run)?
+            );
         }
         Command::Run {
             rsdl,
@@ -675,6 +777,584 @@ fn parse_record_duration(raw: &str) -> std::result::Result<Duration, String> {
         "m" => Ok(Duration::from_secs(value.saturating_mul(60))),
         _ => unreachable!(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalPackageManifest {
+    package: ExternalPackageMetadata,
+    #[serde(default)]
+    executable: Vec<ExternalExecutableMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalPackageMetadata {
+    name: String,
+    version: String,
+    flowrt_version: String,
+    license: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalExecutableMetadata {
+    name: String,
+    path: PathBuf,
+    platforms: Vec<String>,
+    backends: Vec<String>,
+    health: String,
+}
+
+fn external_check_package_dir(package_dir: &Path) -> Result<String> {
+    let manifest = load_external_manifest(package_dir)?;
+    validate_external_manifest(package_dir, &manifest)?;
+    Ok(format!(
+        "external package `{}` version={} executable_count={}",
+        manifest.package.name,
+        manifest.package.version,
+        manifest.executable.len()
+    ))
+}
+
+fn external_list_packages(path: &Path) -> Result<String> {
+    let mut package_dirs = Vec::new();
+    if path.join("flowrt-external.toml").is_file() {
+        package_dirs.push(path.to_path_buf());
+    } else {
+        for entry in fs::read_dir(path)
+            .with_context(|| format!("failed to read external package path `{}`", path.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("failed to read external package path `{}`", path.display())
+            })?;
+            let child = entry.path();
+            if child.join("flowrt-external.toml").is_file() {
+                package_dirs.push(child);
+            }
+        }
+    }
+    package_dirs.sort();
+    if package_dirs.is_empty() {
+        anyhow::bail!(
+            "no FlowRT external packages found under `{}`",
+            path.display()
+        );
+    }
+
+    let mut lines = Vec::new();
+    for package_dir in package_dirs {
+        let manifest = load_external_manifest(&package_dir)?;
+        validate_external_manifest(&package_dir, &manifest)?;
+        let executables = manifest
+            .executable
+            .iter()
+            .map(|executable| {
+                format!(
+                    "{} platforms=[{}] backends=[{}] health={}",
+                    executable.name,
+                    executable.platforms.join(","),
+                    executable.backends.join(","),
+                    executable.health
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        lines.push(format!(
+            "package={} version={} path={} executables={}",
+            manifest.package.name,
+            manifest.package.version,
+            package_dir.display(),
+            executables
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn load_external_manifest(package_dir: &Path) -> Result<ExternalPackageManifest> {
+    let path = package_dir.join("flowrt-external.toml");
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read external manifest `{}`", path.display()))?;
+    toml::from_str(&source)
+        .with_context(|| format!("failed to parse external manifest `{}`", path.display()))
+}
+
+fn validate_external_manifest(
+    package_dir: &Path,
+    manifest: &ExternalPackageManifest,
+) -> Result<()> {
+    ensure_non_empty_manifest_field(&manifest.package.name, "package.name")?;
+    ensure_non_empty_manifest_field(&manifest.package.version, "package.version")?;
+    ensure_non_empty_manifest_field(&manifest.package.flowrt_version, "package.flowrt_version")?;
+    ensure_non_empty_manifest_field(&manifest.package.license, "package.license")?;
+    if manifest.executable.is_empty() {
+        anyhow::bail!(
+            "external manifest `{}` must declare at least one [[executable]]",
+            package_dir.join("flowrt-external.toml").display()
+        );
+    }
+
+    let mut names = std::collections::BTreeSet::new();
+    for executable in &manifest.executable {
+        ensure_non_empty_manifest_field(&executable.name, "executable.name")?;
+        if !names.insert(executable.name.as_str()) {
+            anyhow::bail!(
+                "external package `{}` declares executable `{}` more than once",
+                manifest.package.name,
+                executable.name
+            );
+        }
+        if executable.path.as_os_str().is_empty() {
+            anyhow::bail!(
+                "external package `{}` executable `{}` has empty path",
+                manifest.package.name,
+                executable.name
+            );
+        }
+        let exe_path = package_dir.join(&executable.path);
+        if !exe_path.is_file() {
+            anyhow::bail!(
+                "external package `{}` executable `{}` path does not exist: {}",
+                manifest.package.name,
+                executable.name,
+                exe_path.display()
+            );
+        }
+        if executable.platforms.is_empty() {
+            anyhow::bail!(
+                "external package `{}` executable `{}` must declare at least one platform",
+                manifest.package.name,
+                executable.name
+            );
+        }
+        for platform in &executable.platforms {
+            if !matches!(
+                platform.as_str(),
+                "linux-x86_64" | "linux-amd64" | "linux-arm64" | "linux-aarch64"
+            ) {
+                anyhow::bail!(
+                    "external package `{}` executable `{}` declares unsupported platform `{}`",
+                    manifest.package.name,
+                    executable.name,
+                    platform
+                );
+            }
+        }
+        if executable.backends.is_empty() {
+            anyhow::bail!(
+                "external package `{}` executable `{}` must declare at least one backend",
+                manifest.package.name,
+                executable.name
+            );
+        }
+        for backend in &executable.backends {
+            if !flowrt_ir::is_known_backend(backend) {
+                anyhow::bail!(
+                    "external package `{}` executable `{}` declares unknown backend `{}`",
+                    manifest.package.name,
+                    executable.name,
+                    backend
+                );
+            }
+        }
+        if !matches!(
+            executable.health.as_str(),
+            "process_started" | "runtime_socket"
+        ) {
+            anyhow::bail!(
+                "external package `{}` executable `{}` declares unsupported health `{}`",
+                manifest.package.name,
+                executable.name,
+                executable.health
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ensure_non_empty_manifest_field(value: &str, field: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        anyhow::bail!("external manifest field `{field}` must not be empty");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BundleManifest {
+    schema_version: u32,
+    flowrt_version: String,
+    package: String,
+    profile: Option<String>,
+    target: String,
+    platform: Option<String>,
+    build_mode: BuildMode,
+    created_unix_ms: u64,
+    entry: String,
+    #[serde(default)]
+    executables: Vec<BundleExecutable>,
+    #[serde(default)]
+    external_processes: Vec<BundleExternalProcess>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BundleExecutable {
+    kind: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BundleExternalProcess {
+    process: String,
+    package: String,
+    executable: String,
+    path: PathBuf,
+}
+
+fn bundle_workspace(
+    rsdl: &Path,
+    contract: &ContractIr,
+    out_dir: &Path,
+    output: &Path,
+    requested_build_mode: Option<BuildMode>,
+) -> Result<String> {
+    let build_info = load_build_info(out_dir, requested_build_mode, true)?;
+    let supervisor = executable_from_build_info(
+        out_dir,
+        build_info.executables.supervisor.as_ref(),
+        "FlowRT supervisor",
+        "flowrt build --launcher",
+    )?;
+    if !supervisor.exists() {
+        anyhow::bail!(
+            "FlowRT supervisor `{}` not found; run `flowrt build --launcher` first",
+            supervisor.display()
+        );
+    }
+    ensure_bundle_output_dir(output)?;
+
+    copy_required_file(
+        &prepared_contract_path(out_dir),
+        &output.join("flowrt/contract/contract.ir.json"),
+    )?;
+    copy_required_file(
+        &out_dir.join("selfdesc/selfdesc.json"),
+        &output.join("flowrt/selfdesc/selfdesc.json"),
+    )?;
+    copy_required_file(
+        &out_dir.join("launch/launch.json"),
+        &output.join("flowrt/launch/launch.json"),
+    )?;
+    copy_required_file(
+        &build_model::BuildInfo::path(out_dir),
+        &output.join("flowrt/build/build-info.json"),
+    )?;
+
+    let mut executables = Vec::new();
+    for (kind, relative) in [
+        ("supervisor", build_info.executables.supervisor.as_ref()),
+        ("rust_app", build_info.executables.rust_app.as_ref()),
+        ("cpp_app", build_info.executables.cpp_app.as_ref()),
+        ("ros2_bridge", build_info.executables.ros2_bridge.as_ref()),
+    ] {
+        if let Some(relative) = relative {
+            ensure_safe_relative_path(relative)?;
+            let source = out_dir.join(relative);
+            if !source.exists() {
+                anyhow::bail!(
+                    "build-info records {kind} executable `{}`, but it does not exist; run `flowrt build --launcher` first",
+                    source.display()
+                );
+            }
+            let file_name = source.file_name().with_context(|| {
+                format!(
+                    "failed to determine executable file name for `{}`",
+                    source.display()
+                )
+            })?;
+            let dest = PathBuf::from("bin").join(file_name);
+            copy_required_file(&source, &output.join(&dest))?;
+            executables.push(BundleExecutable {
+                kind: kind.to_string(),
+                path: dest,
+            });
+        }
+    }
+
+    let project_root = project_root_for_rsdl(rsdl);
+    let mut external_processes = Vec::new();
+    for graph in &contract.graphs {
+        for external in &graph.external_processes {
+            let package_root = resolve_external_package_root(&project_root, external)?;
+            let dest = PathBuf::from("external").join(&external.package);
+            copy_dir_recursive(&package_root, &output.join(&dest))?;
+            external_processes.push(BundleExternalProcess {
+                process: external.process.clone(),
+                package: external.package.clone(),
+                executable: external.executable.clone(),
+                path: dest,
+            });
+        }
+    }
+
+    let entry = executables
+        .iter()
+        .find(|executable| executable.kind == "supervisor")
+        .map(|executable| executable.path.clone())
+        .context("internal error: bundle entry supervisor executable was not copied")?;
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: contract.package.name.clone(),
+        profile: build_info.rsdl_profile,
+        target: bundle_target_name(contract),
+        platform: bundle_target_platform(contract),
+        build_mode: build_info.build_mode,
+        created_unix_ms: current_unix_ms(),
+        entry: entry.to_string_lossy().into_owned(),
+        executables,
+        external_processes,
+    };
+    let mut manifest_toml = toml::to_string_pretty(&manifest)?;
+    manifest_toml.push('\n');
+    fs::write(output.join("bundle.toml"), manifest_toml)
+        .with_context(|| format!("failed to write `{}`", output.join("bundle.toml").display()))?;
+
+    Ok(format!(
+        "created FlowRT bundle: {} entry={} external_packages={}",
+        output.display(),
+        manifest.entry,
+        manifest.external_processes.len()
+    ))
+}
+
+fn ensure_bundle_output_dir(output: &Path) -> Result<()> {
+    if output.exists() {
+        if !output.is_dir() {
+            anyhow::bail!(
+                "bundle output `{}` exists and is not a directory",
+                output.display()
+            );
+        }
+        if fs::read_dir(output)
+            .with_context(|| format!("failed to read `{}`", output.display()))?
+            .next()
+            .is_some()
+        {
+            anyhow::bail!(
+                "bundle output directory `{}` is not empty",
+                output.display()
+            );
+        }
+    }
+    fs::create_dir_all(output)
+        .with_context(|| format!("failed to create bundle output `{}`", output.display()))
+}
+
+fn project_root_for_rsdl(rsdl: &Path) -> PathBuf {
+    let rsdl_dir = rsdl.parent().unwrap_or_else(|| Path::new("."));
+    if rsdl_dir.file_name() == Some(OsStr::new("rsdl")) {
+        rsdl_dir.parent().unwrap_or(rsdl_dir).to_path_buf()
+    } else {
+        rsdl_dir.to_path_buf()
+    }
+}
+
+fn resolve_external_package_root(
+    project_root: &Path,
+    external: &flowrt_ir::ExternalProcessIr,
+) -> Result<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(paths) = env::var_os("FLOWRT_EXTERNAL_PATH") {
+        for entry in env::split_paths(&paths) {
+            push_external_search_entry(&mut roots, entry, &external.package);
+        }
+    }
+    push_unique_external_path(
+        &mut roots,
+        PathBuf::from("/opt/flowrt/external").join(&external.package),
+    );
+    push_unique_external_path(
+        &mut roots,
+        project_root.join("external").join(&external.package),
+    );
+
+    let mut searched = Vec::new();
+    for root in roots {
+        let manifest_path = root.join("flowrt-external.toml");
+        let executable_path = root.join(&external.executable);
+        searched.push(root.clone());
+        if !manifest_path.exists() || !executable_path.exists() {
+            continue;
+        }
+        let manifest = load_external_manifest(&root)?;
+        if manifest.package.name == external.package {
+            return Ok(root);
+        }
+    }
+
+    anyhow::bail!(
+        "external package `{}` executable `{}` was not found for bundle; searched package roots: {}",
+        external.package,
+        external.executable,
+        searched
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn push_external_search_entry(roots: &mut Vec<PathBuf>, entry: PathBuf, package: &str) {
+    push_unique_external_path(roots, entry.clone());
+    push_unique_external_path(roots, entry.join(package));
+}
+
+fn push_unique_external_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn copy_required_file(source: &Path, dest: &Path) -> Result<()> {
+    if !source.is_file() {
+        anyhow::bail!("required bundle file `{}` does not exist", source.display());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    fs::copy(source, dest).with_context(|| {
+        format!(
+            "failed to copy `{}` to `{}`",
+            source.display(),
+            dest.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
+    if !source.is_dir() {
+        anyhow::bail!(
+            "required bundle directory `{}` does not exist",
+            source.display()
+        );
+    }
+    fs::create_dir_all(dest).with_context(|| format!("failed to create `{}`", dest.display()))?;
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("failed to read directory `{}`", source.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read `{}` entry", source.display()))?;
+        let path = entry.path();
+        let target = dest.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else if path.is_file() {
+            copy_required_file(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn bundle_target_name(contract: &ContractIr) -> String {
+    contract
+        .deployments
+        .first()
+        .map(|deployment| deployment.target.name.clone())
+        .or_else(|| contract.targets.first().map(|target| target.name.clone()))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn bundle_target_platform(contract: &ContractIr) -> Option<String> {
+    let target_name = bundle_target_name(contract);
+    contract
+        .targets
+        .iter()
+        .find(|target| target.name == target_name)
+        .and_then(|target| target.platform.clone())
+}
+
+fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+fn deploy_bundle(
+    bundle: &Path,
+    host: &str,
+    target: &str,
+    remote_dir: &str,
+    dry_run: bool,
+) -> Result<String> {
+    let manifest = load_bundle_manifest(bundle)?;
+    if manifest.target != target {
+        anyhow::bail!(
+            "bundle target `{}` does not match requested target `{target}`",
+            manifest.target
+        );
+    }
+    if dry_run {
+        return Ok(format!(
+            "deploy plan bundle={} host={} target={} remote_dir={} entry={}",
+            bundle.display(),
+            host,
+            target,
+            remote_dir,
+            manifest.entry
+        ));
+    }
+
+    let version_check = ProcessCommand::new("ssh")
+        .arg(host)
+        .arg("flowrt --version")
+        .status()
+        .with_context(|| format!("failed to spawn ssh for host `{host}`"))?;
+    if !version_check.success() {
+        anyhow::bail!("remote FlowRT version check failed with status {version_check}");
+    }
+
+    let remote = format!("{host}:{remote_dir}");
+    let upload = ProcessCommand::new("scp")
+        .arg("-r")
+        .arg(bundle)
+        .arg(&remote)
+        .status()
+        .with_context(|| format!("failed to spawn scp for host `{host}`"))?;
+    if !upload.success() {
+        anyhow::bail!("bundle upload failed with status {upload}");
+    }
+
+    Ok(format!(
+        "deployed FlowRT bundle {} to {}",
+        bundle.display(),
+        remote
+    ))
+}
+
+fn load_bundle_manifest(bundle: &Path) -> Result<BundleManifest> {
+    let path = bundle.join("bundle.toml");
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read bundle manifest `{}`", path.display()))?;
+    let manifest: BundleManifest = toml::from_str(&source)
+        .with_context(|| format!("failed to parse bundle manifest `{}`", path.display()))?;
+    if manifest.schema_version != 1 {
+        anyhow::bail!(
+            "unsupported FlowRT bundle schema version {} in `{}`",
+            manifest.schema_version,
+            path.display()
+        );
+    }
+    if manifest.flowrt_version != env!("CARGO_PKG_VERSION") {
+        anyhow::bail!(
+            "bundle was created with FlowRT {}, but this CLI is {}",
+            manifest.flowrt_version,
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    Ok(manifest)
 }
 
 #[derive(Debug)]
@@ -1012,6 +1692,7 @@ impl ProcessRuntimeFlags {
         match language {
             LanguageKind::Cpp => self.cpp = true,
             LanguageKind::Rust => self.rust = true,
+            LanguageKind::External => {}
         }
     }
 
@@ -1188,8 +1869,12 @@ fn prepare_deps_cache(
     let rust_runtime_dir = rust_runtime_dir_for_generated_build()?.context(
         "FlowRT Rust runtime directory not found; install FlowRT package, set FLOWRT_RUST_RUNTIME_DIR, or set FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1 in repository development mode",
     )?;
-    write_deps_workspace(&layout.deps_workspace_dir, &rust_runtime_dir, features)?;
-    run_deps_cargo_build(&layout.deps_workspace_dir, &layout.target_dir, build_mode)?;
+    if is_repo_rust_runtime_dir(&rust_runtime_dir)? {
+        run_repo_runtime_cargo_build(&layout.target_dir, build_mode, features)?;
+    } else {
+        write_deps_workspace(&layout.deps_workspace_dir, &rust_runtime_dir, features)?;
+        run_deps_cargo_build(&layout.deps_workspace_dir, &layout.target_dir, build_mode)?;
+    }
     write_deps_ready_marker(layout, build_mode, features)
 }
 
@@ -1382,6 +2067,53 @@ fn run_deps_cargo_build(
         anyhow::bail!("FlowRT dependency prewarm failed with status {status}");
     }
     Ok(())
+}
+
+fn run_repo_runtime_cargo_build(
+    target_dir: &Path,
+    build_mode: BuildMode,
+    features: &RuntimeFeatureSet,
+) -> Result<()> {
+    let repo_root = repo_root_dir()?;
+    fs::create_dir_all(target_dir)
+        .with_context(|| format!("failed to create `{}`", target_dir.display()))?;
+    let mut command = ProcessCommand::new("cargo");
+    command
+        .current_dir(&repo_root)
+        .arg("build")
+        .arg("-p")
+        .arg("flowrt")
+        .arg("--lib")
+        .arg("--locked")
+        .env("CARGO_TARGET_DIR", target_dir);
+    for arg in build_mode.cargo_args() {
+        command.arg(arg);
+    }
+    let feature_args = features.cargo_feature_args();
+    if !feature_args.is_empty() {
+        command.arg("--features").arg(feature_args.join(","));
+    }
+    let status = command.status().with_context(|| {
+        format!(
+            "failed to spawn cargo for repository dependency prewarm in `{}`",
+            repo_root.display()
+        )
+    })?;
+    if !status.success() {
+        anyhow::bail!("FlowRT repository dependency prewarm failed with status {status}");
+    }
+    Ok(())
+}
+
+fn is_repo_rust_runtime_dir(path: &Path) -> Result<bool> {
+    let Some(repo_runtime) = repo_runtime_dir("runtime/rust", "Cargo.toml") else {
+        return Ok(false);
+    };
+    let repo_runtime = fs::canonicalize(repo_runtime)
+        .context("failed to canonicalize repository Rust runtime directory")?;
+    let candidate = fs::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize `{}`", path.display()))?;
+    Ok(candidate == repo_runtime)
 }
 
 #[derive(Debug)]
@@ -2110,6 +2842,8 @@ fn run_cargo_build_bin(
     target_dir: &Path,
 ) -> Result<PathBuf> {
     let invocation = cargo_build_invocation(manifest, bin_name, build_mode, target_dir)?;
+    remove_stale_generated_binary_outputs(manifest, &invocation)?;
+    clean_generated_cargo_package(manifest, &invocation)?;
     let mut command = ProcessCommand::new("cargo");
     command
         .current_dir(&invocation.current_dir)
@@ -2120,6 +2854,108 @@ fn run_cargo_build_bin(
         anyhow::bail!("cargo invocation failed with status {status}");
     }
     Ok(invocation.executable_path())
+}
+
+fn remove_stale_generated_binary_outputs(
+    manifest: &Path,
+    invocation: &CargoBuildInvocation,
+) -> Result<()> {
+    let profile_dir = invocation
+        .target_dir
+        .join(invocation.build_mode.cargo_profile_dir());
+    remove_file_if_exists(&profile_dir.join(format!(
+        "{}{}",
+        invocation.bin_name,
+        std::env::consts::EXE_SUFFIX
+    )))?;
+    remove_file_if_exists(&profile_dir.join(format!("{}.d", invocation.bin_name)))?;
+
+    let deps_dir = profile_dir.join("deps");
+    if deps_dir.is_dir() {
+        let mut dep_prefixes = vec![invocation.bin_name.replace('-', "_")];
+        if let Some(lib_name) = cargo_manifest_lib_name(manifest)? {
+            dep_prefixes.push(lib_name.clone());
+            dep_prefixes.push(format!("lib{lib_name}"));
+        }
+        for entry in fs::read_dir(&deps_dir)
+            .with_context(|| format!("failed to read `{}`", deps_dir.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("failed to read entry in `{}`", deps_dir.display()))?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if dep_prefixes
+                .iter()
+                .any(|prefix| file_name.starts_with(prefix))
+            {
+                remove_file_if_exists(&entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove `{}`", path.display())),
+    }
+}
+
+fn clean_generated_cargo_package(manifest: &Path, invocation: &CargoBuildInvocation) -> Result<()> {
+    let package_name = cargo_manifest_package_name(manifest)?;
+    let mut command = ProcessCommand::new("cargo");
+    command
+        .current_dir(&invocation.current_dir)
+        .arg("clean")
+        .arg("--manifest-path")
+        .arg(manifest)
+        .arg("-p")
+        .arg(&package_name)
+        .env("CARGO_TARGET_DIR", &invocation.target_dir);
+    let status = command.status().with_context(|| {
+        format!(
+            "failed to spawn cargo clean for generated package `{}`",
+            package_name
+        )
+    })?;
+    if !status.success() {
+        anyhow::bail!(
+            "cargo clean for generated package `{package_name}` failed with status {status}"
+        );
+    }
+    Ok(())
+}
+
+fn cargo_manifest_package_name(manifest: &Path) -> Result<String> {
+    let content = fs::read_to_string(manifest)
+        .with_context(|| format!("failed to read `{}`", manifest.display()))?;
+    let value: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("failed to parse `{}`", manifest.display()))?;
+    value
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
+        .with_context(|| {
+            format!(
+                "Cargo manifest `{}` is missing package.name",
+                manifest.display()
+            )
+        })
+}
+
+fn cargo_manifest_lib_name(manifest: &Path) -> Result<Option<String>> {
+    let content = fs::read_to_string(manifest)
+        .with_context(|| format!("failed to read `{}`", manifest.display()))?;
+    let value: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("failed to parse `{}`", manifest.display()))?;
+    Ok(value
+        .get("lib")
+        .and_then(|lib| lib.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string))
 }
 
 struct CargoBuildInvocation {

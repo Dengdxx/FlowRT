@@ -190,6 +190,28 @@ fn cli_parses_params_set_command() {
 }
 
 #[test]
+fn cli_parses_external_check_and_list_commands() {
+    let check = Cli::try_parse_from(["flowrt", "external", "check", "external/fake_sensor_driver"])
+        .unwrap();
+    let Command::External {
+        command: ExternalCommand::Check { package_dir },
+    } = check.command
+    else {
+        panic!("external check should parse into Command::External")
+    };
+    assert_eq!(package_dir, PathBuf::from("external/fake_sensor_driver"));
+
+    let list = Cli::try_parse_from(["flowrt", "external", "list", "--path", "external"]).unwrap();
+    let Command::External {
+        command: ExternalCommand::List { path },
+    } = list.command
+    else {
+        panic!("external list should parse into Command::External")
+    };
+    assert_eq!(path, PathBuf::from("external"));
+}
+
+#[test]
 fn cli_parses_remote_params_runtime_selector() {
     let cli = Cli::try_parse_from([
         "flowrt",
@@ -516,6 +538,76 @@ fn cli_parses_deps_command_with_backend_and_build_mode() {
     assert_eq!(profile.as_deref(), Some("default"));
     assert_eq!(build_mode, BuildMode::Debug);
     assert!(check);
+}
+
+#[test]
+fn cli_parses_bundle_command() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "bundle",
+        "examples/external_driver_demo/rsdl/robot.rsdl",
+        "--out-dir",
+        "flowrt",
+        "--output",
+        "dist/external-demo",
+        "--profile",
+        "default",
+        "--build-mode",
+        "release",
+    ])
+    .unwrap();
+
+    let Command::Bundle {
+        rsdl,
+        out_dir,
+        output,
+        profile,
+        build_mode,
+    } = cli.command
+    else {
+        panic!("bundle command should parse into Command::Bundle")
+    };
+    assert_eq!(
+        rsdl,
+        PathBuf::from("examples/external_driver_demo/rsdl/robot.rsdl")
+    );
+    assert_eq!(out_dir, PathBuf::from("flowrt"));
+    assert_eq!(output, PathBuf::from("dist/external-demo"));
+    assert_eq!(profile.as_deref(), Some("default"));
+    assert_eq!(build_mode, Some(BuildMode::Release));
+}
+
+#[test]
+fn cli_parses_deploy_command() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "deploy",
+        "dist/external-demo",
+        "--host",
+        "robot@192.0.2.10",
+        "--target",
+        "pi",
+        "--remote-dir",
+        "/tmp/flowrt-demo",
+        "--dry-run",
+    ])
+    .unwrap();
+
+    let Command::Deploy {
+        bundle,
+        host,
+        target,
+        remote_dir,
+        dry_run,
+    } = cli.command
+    else {
+        panic!("deploy command should parse into Command::Deploy")
+    };
+    assert_eq!(bundle, PathBuf::from("dist/external-demo"));
+    assert_eq!(host, "robot@192.0.2.10");
+    assert_eq!(target, "pi");
+    assert_eq!(remote_dir, "/tmp/flowrt-demo");
+    assert!(dry_run);
 }
 
 /// 兼容测试：`--run-ticks 0` 仍会被 CLI 拒绝。

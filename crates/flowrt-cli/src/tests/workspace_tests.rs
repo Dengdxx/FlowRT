@@ -58,6 +58,291 @@ fn load_prepared_contract_reports_build_required() {
 }
 
 #[test]
+fn external_check_accepts_valid_package_manifest() {
+    let root = temp_test_dir("external-check-valid");
+    let package = root.join("fake_sensor_driver");
+    std::fs::create_dir_all(package.join("bin")).unwrap();
+    std::fs::write(package.join("bin/driver"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        package.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64", "linux-arm64"]
+backends = ["zenoh"]
+health = "runtime_socket"
+"#,
+    )
+    .unwrap();
+
+    let output = external_check_package_dir(&package).unwrap();
+
+    assert!(output.contains("external package `fake_sensor_driver`"));
+    assert!(output.contains("executable_count=1"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn external_list_reports_package_executable_summary() {
+    let root = temp_test_dir("external-list");
+    let package = root.join("fake_sensor_driver");
+    std::fs::create_dir_all(package.join("bin")).unwrap();
+    std::fs::write(package.join("bin/driver"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        package.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-arm64"]
+backends = ["zenoh"]
+health = "process_started"
+"#,
+    )
+    .unwrap();
+
+    let output = external_list_packages(&root).unwrap();
+
+    assert!(output.contains("package=fake_sensor_driver"));
+    assert!(output.contains("driver platforms=[linux-arm64] backends=[zenoh]"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn external_check_rejects_unknown_backend() {
+    let root = temp_test_dir("external-check-backend");
+    let package = root.join("bad_driver");
+    std::fs::create_dir_all(package.join("bin")).unwrap();
+    std::fs::write(package.join("bin/driver"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        package.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "bad_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64"]
+backends = ["mystery"]
+health = "runtime_socket"
+"#,
+    )
+    .unwrap();
+
+    let error = external_check_package_dir(&package).unwrap_err();
+
+    assert!(error.to_string().contains("unknown backend `mystery`"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bundle_workspace_copies_built_artifacts_and_external_package() {
+    let root = temp_test_dir("bundle-workspace");
+    let rsdl_dir = root.join("rsdl");
+    let external_root = root.join("external/fake_sensor_driver");
+    let out_dir = root.join("flowrt");
+    let bundle = root.join("dist/external-demo");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    std::fs::create_dir_all(external_root.join("bin")).unwrap();
+    std::fs::write(external_root.join("bin/driver"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        external_root.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64"]
+backends = ["zenoh"]
+health = "process_started"
+"#,
+    )
+    .unwrap();
+    let source = r#"
+[package]
+name = "external_demo"
+rsdl_version = "0.1"
+
+[component.sensor]
+language = "external"
+kind = "external"
+output = ["value:u32"]
+
+[instance.sensor]
+component = "sensor"
+process = "sensor_proc"
+target = "pi"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "bin/driver"
+health = "process_started"
+required_backends = ["zenoh"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.pi]
+platform = "linux-arm64"
+runtime = ["external"]
+backends = ["zenoh"]
+"#;
+    let rsdl = rsdl_dir.join("robot.rsdl");
+    std::fs::write(&rsdl, source).unwrap();
+    let contract = contract_from_source(source);
+    std::fs::create_dir_all(out_dir.join("contract")).unwrap();
+    std::fs::create_dir_all(out_dir.join("selfdesc")).unwrap();
+    std::fs::create_dir_all(out_dir.join("launch")).unwrap();
+    std::fs::create_dir_all(out_dir.join("build/bin/release")).unwrap();
+    std::fs::write(
+        prepared_contract_path(&out_dir),
+        contract.to_canonical_json().unwrap(),
+    )
+    .unwrap();
+    std::fs::write(out_dir.join("selfdesc/selfdesc.json"), "{}\n").unwrap();
+    std::fs::write(out_dir.join("launch/launch.json"), "{}\n").unwrap();
+    let supervisor = out_dir.join("build/bin/release/external-demo-flowrt-supervisor");
+    std::fs::write(&supervisor, "#!/bin/sh\n").unwrap();
+    let mut info = build_model::BuildInfo::new(
+        env!("CARGO_PKG_VERSION"),
+        Some("default".into()),
+        BuildMode::Release,
+        None,
+    );
+    info.executables.supervisor = Some(PathBuf::from(
+        "build/bin/release/external-demo-flowrt-supervisor",
+    ));
+    info.write(&out_dir).unwrap();
+
+    let output = bundle_workspace(&rsdl, &contract, &out_dir, &bundle, None).unwrap();
+
+    assert!(output.contains("created FlowRT bundle"));
+    assert!(bundle.join("bundle.toml").is_file());
+    assert!(bundle.join("bin/external-demo-flowrt-supervisor").is_file());
+    assert!(bundle.join("flowrt/contract/contract.ir.json").is_file());
+    assert!(
+        bundle
+            .join("external/fake_sensor_driver/flowrt-external.toml")
+            .is_file()
+    );
+    assert!(
+        bundle
+            .join("external/fake_sensor_driver/bin/driver")
+            .is_file()
+    );
+    let manifest: BundleManifest =
+        toml::from_str(&std::fs::read_to_string(bundle.join("bundle.toml")).unwrap()).unwrap();
+    assert_eq!(manifest.target, "pi");
+    assert_eq!(manifest.platform.as_deref(), Some("linux-arm64"));
+    assert_eq!(manifest.entry, "bin/external-demo-flowrt-supervisor");
+    assert_eq!(manifest.external_processes.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_dry_run_reports_plan() {
+    let root = temp_test_dir("deploy-dry-run");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap();
+
+    assert!(output.contains("deploy plan"));
+    assert!(output.contains("robot@192.0.2.10"));
+    assert!(output.contains("target=pi"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_rejects_target_mismatch() {
+    let root = temp_test_dir("deploy-target-mismatch");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = deploy_bundle(
+        &bundle,
+        "robot@192.0.2.10",
+        "desktop",
+        "/tmp/flowrt-demo",
+        true,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not match requested target")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn prepared_profile_must_match_explicit_run_profile() {
     let contract = contract_from_source(
         r#"
@@ -256,6 +541,96 @@ fn workspace_lock_rejects_concurrent_access_to_same_out_dir() {
     assert!(error.to_string().contains("already in use"));
     drop(first);
     WorkspaceLock::acquire(&out_dir).expect("lock should be released on drop");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn repo_runtime_dir_is_detected_for_dependency_prewarm() {
+    let root = temp_test_dir("deps-repo-runtime-detection");
+    let repo_runtime =
+        repo_runtime_dir("runtime/rust", "Cargo.toml").expect("repo runtime should exist");
+    let other_runtime = root.join("runtime/rust");
+    std::fs::create_dir_all(&other_runtime).unwrap();
+    std::fs::write(
+        other_runtime.join("Cargo.toml"),
+        "[package]\nname = \"flowrt\"\n",
+    )
+    .unwrap();
+
+    assert!(is_repo_rust_runtime_dir(&repo_runtime).unwrap());
+    assert!(!is_repo_rust_runtime_dir(&other_runtime).unwrap());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cargo_manifest_package_name_reads_generated_package() {
+    let root = temp_test_dir("cargo-manifest-package-name");
+    let manifest = root.join("Cargo.toml");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        &manifest,
+        r#"
+[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        cargo_manifest_package_name(&manifest).unwrap(),
+        "robot-flowrt-app"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn stale_generated_binary_outputs_are_removed_by_bin_name() {
+    let root = temp_test_dir("stale-generated-bin");
+    let manifest = root.join("Cargo.toml");
+    let target_dir = root.join("target");
+    let release_dir = target_dir.join("release");
+    let deps_dir = release_dir.join("deps");
+    std::fs::create_dir_all(&deps_dir).unwrap();
+    std::fs::write(
+        &manifest,
+        r#"
+[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+
+[lib]
+name = "flowrt_app"
+"#,
+    )
+    .unwrap();
+    std::fs::write(release_dir.join("robot-flowrt-supervisor"), "").unwrap();
+    std::fs::write(release_dir.join("robot-flowrt-supervisor.d"), "").unwrap();
+    std::fs::write(deps_dir.join("robot_flowrt_supervisor-123"), "").unwrap();
+    std::fs::write(deps_dir.join("robot_flowrt_supervisor-123.d"), "").unwrap();
+    std::fs::write(deps_dir.join("flowrt_app-123.rmeta"), "").unwrap();
+    std::fs::write(deps_dir.join("libflowrt_app-123.rlib"), "").unwrap();
+    std::fs::write(deps_dir.join("serde-123"), "").unwrap();
+    let invocation = CargoBuildInvocation {
+        current_dir: root.clone(),
+        args: Vec::new(),
+        target_dir: target_dir.clone(),
+        bin_name: "robot-flowrt-supervisor".to_string(),
+        build_mode: BuildMode::Release,
+    };
+
+    remove_stale_generated_binary_outputs(&manifest, &invocation).unwrap();
+
+    assert!(!release_dir.join("robot-flowrt-supervisor").exists());
+    assert!(!release_dir.join("robot-flowrt-supervisor.d").exists());
+    assert!(!deps_dir.join("robot_flowrt_supervisor-123").exists());
+    assert!(!deps_dir.join("robot_flowrt_supervisor-123.d").exists());
+    assert!(!deps_dir.join("flowrt_app-123.rmeta").exists());
+    assert!(!deps_dir.join("libflowrt_app-123.rlib").exists());
+    assert!(deps_dir.join("serde-123").exists());
 
     let _ = std::fs::remove_dir_all(&root);
 }
