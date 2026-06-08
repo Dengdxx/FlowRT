@@ -379,11 +379,6 @@ impl ServiceFrameHeader {
             ));
         }
         let error_code = u16::from_le_bytes([input[6], input[7]]);
-        if ServiceError::from_abi(error_code).is_none() {
-            return Err(WireCodecError::invalid_frame(
-                "service frame error code is unknown",
-            ));
-        }
         let timeout_ms = u64::from_le_bytes([
             input[40], input[41], input[42], input[43], input[44], input[45], input[46], input[47],
         ]);
@@ -618,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn service_frame_header_rejects_unknown_error_code() {
+    fn service_frame_header_preserves_unknown_error_code() {
         let request_id = RequestId::new(0xAAAA, 1, 0xBBBB);
         let deadline = Deadline::new(1000, 5000).unwrap();
         let header = ServiceFrameHeader::request(request_id, deadline, 0xCCCC, 0xDDDD);
@@ -627,8 +622,9 @@ mod tests {
         header.encode(&mut buf).unwrap();
         buf[6..8].copy_from_slice(&99u16.to_le_bytes());
 
-        let err = ServiceFrameHeader::decode(&buf).unwrap_err();
-        assert!(err.to_string().contains("error code"));
+        let decoded = ServiceFrameHeader::decode(&buf).unwrap();
+        assert_eq!(decoded.error_code, 99);
+        assert!(ServiceError::from_abi(decoded.error_code).is_none());
     }
 
     #[test]

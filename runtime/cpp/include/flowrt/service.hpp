@@ -311,9 +311,6 @@ struct ServiceFrameHeader {
         h.magic = magic_val;
         h.version = version_val;
         h.error_code = read_wire_le<std::uint16_t>(input, 6);
-        if (!service_error_from_abi(h.error_code).has_value()) {
-            throw WireCodecError("service frame error code is unknown");
-        }
         h.service_id = read_wire_le<std::uint64_t>(input, 8);
         h.session_id = read_wire_le<std::uint64_t>(input, 16);
         h.sequence = read_wire_le<std::uint64_t>(input, 24);

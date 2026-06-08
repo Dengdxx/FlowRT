@@ -176,7 +176,7 @@ int main() {
         assert(caught);
     }
 
-    // ── 未知 error code 报错 ───────────────────────────────────────────────
+    // ── 未知 error code 保留 raw code ─────────────────────────────────────
 
     {
         auto d = flowrt::Deadline::make(1000, 500).value();
@@ -185,15 +185,9 @@ int main() {
         header.encode(bad_error_code);
         bad_error_code[6] = 99U;
         bad_error_code[7] = 0U;
-        bool caught = false;
-        try {
-            flowrt::ServiceFrameHeader::decode(bad_error_code);
-        } catch (const flowrt::WireCodecError &error) {
-            caught = true;
-            const auto msg = std::string_view{error.what()};
-            assert(msg.find("error code") != std::string_view::npos);
-        }
-        assert(caught);
+        const auto decoded = flowrt::ServiceFrameHeader::decode(bad_error_code);
+        assert(decoded.error_code == 99U);
+        assert(!flowrt::service_error_from_abi(decoded.error_code).has_value());
     }
 
     // ── zero timeout 报错 ──────────────────────────────────────────────────
