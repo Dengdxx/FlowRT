@@ -314,18 +314,27 @@ runtime 和 backend SDK。生成 CMake 不应通过 `FetchContent` 联网拉取 
 ## CI 和 Release 状态
 
 当前 `.github/workflows/ci.yml` 将 Linux 验证拆为分层 job，覆盖生成物保护、Rust
-格式化/测试/clippy、C++ runtime、打包、C++ zenoh runtime、demo smoke、ROS2 bridge
-smoke 和 release。Linux job 默认运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge
-smoke 覆盖 Jazzy 和 Lyrical 两个发行版，并安装对应的 `rmw_zenoh_cpp`。
+格式化/测试/clippy、C++ runtime、v0.5.0 runtime focused smoke、打包、C++ zenoh
+runtime、demo smoke、ROS2 bridge smoke 和 release。Linux job 默认运行在官方 ROS2
+Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个发行版，并安装对应
+的 `rmw_zenoh_cpp`。
 
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
-Debian package、C++ zenoh runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical
-bridge 都在对应架构 runner 上执行。package job 分别上传
+v0.5.0 runtime focused smoke、Debian package、C++ zenoh runtime、demo smoke、ROS2
+Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。package job 分别上传
 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。demo smoke 先安装同
 架构 deb，再用安装后的 `flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，
 release job 会下载两种架构 deb artifact，从 `CHANGELOG.md` 对应版本段抽取 release
 notes，并创建 GitHub Release 上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一
 `SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的 workspace version。
+
+`v0.5.0 Runtime Smoke` focused gate 使用 `-j1` 聚焦 supervisor readiness/resource、
+远程参数控制面、status/hz 健康展示、scheduler health 和 runtime introspection 相关
+测试，使这些新增能力的 CI 失败原因比全量 Rust test 更可定位。发布前应运行
+`scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
+release notes 抽取和 v0.5.0 focused gate 覆盖状态。当前开发分支仍是 `0.4.0`
+workspace version，发布 `v0.5.0` 前还需要版本 bump、`Cargo.lock` 更新和
+`CHANGELOG.md` 正式版本段切分。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。

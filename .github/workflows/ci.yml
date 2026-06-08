@@ -94,7 +94,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust 测试
-        run: cargo test
+        run: cargo test --workspace -j1
 
   rust-clippy:
     name: Rust Clippy (${{ matrix.arch }})
@@ -120,7 +120,7 @@ jobs:
           components: clippy
 
       - name: Rust Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -j1 -- -D warnings
 
   cpp-runtime:
     name: C++ Runtime (${{ matrix.arch }})
@@ -155,10 +155,50 @@ jobs:
         run: cmake -S runtime/cpp -B build/cpp -G Ninja
 
       - name: C++ runtime 构建
-        run: cmake --build build/cpp
+        run: cmake --build build/cpp -j1
 
       - name: C++ runtime 测试
         run: ctest --test-dir build/cpp --output-on-failure
+
+  v050-runtime-smoke:
+    name: v0.5.0 Runtime Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Supervisor readiness 和资源提示测试
+        run: |
+          cargo test -p flowrt-cli build_runtime_tests -j1
+          cargo test -p flowrt-codegen launch -j1
+          cargo test -p flowrt supervisor -j1
+
+      - name: 远程参数和 status/hz 测试
+        run: |
+          cargo test -p flowrt-cli command_tests -j1
+          cargo test -p flowrt-cli echo_params_tests -j1
+          cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
+          cargo test -p flowrt-codegen params -j1
+          cargo test -p flowrt introspection -j1
+
+      - name: Scheduler health 测试
+        run: |
+          cargo test -p flowrt-codegen tasks -j1
+          cargo test -p flowrt executor -j1
 
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
@@ -208,7 +248,7 @@ jobs:
       - name: C++ runtime zenoh 测试
         run: |
           cmake -S runtime/cpp -B build/cpp-zenoh -G Ninja -DFLOWRT_CPP_ENABLE_ZENOH_TESTS=ON
-          cmake --build build/cpp-zenoh
+          cmake --build build/cpp-zenoh -j1
           ctest --test-dir build/cpp-zenoh --output-on-failure
 
   package:
@@ -230,6 +270,7 @@ jobs:
       - guard-generated
       - rust-test
       - cpp-runtime
+      - v050-runtime-smoke
 
     steps:
       - name: 检出仓库
@@ -453,6 +494,7 @@ jobs:
       - rust-test
       - rust-clippy
       - cpp-runtime
+      - v050-runtime-smoke
       - cpp-zenoh-runtime
       - package
       - demo-smoke

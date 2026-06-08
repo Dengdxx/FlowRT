@@ -174,15 +174,22 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
-amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、amd64/arm64 demo smoke、
-amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部
-通过，再创建 GitHub Release，并上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与
-统一 `SHA256SUMS`。
+amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 C++ zenoh runtime、
+amd64/arm64 deb package、amd64/arm64 demo smoke、amd64/arm64 ROS2 Jazzy bridge
+smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，
+并上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
+
+`v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
+supervisor readiness/resource、远程参数控制面、status/hz 健康展示、scheduler
+health 和 runtime introspection。它不替代 workspace 全量 Rust 测试，而是让 v0.5.0
+主线能力失败时能直接定位到对应 job step。
 
 发布前检查：
 
 ```bash
-tag=v0.2.0
+version=0.5.0
+tag="v${version}"
+scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 ```
 
