@@ -6,7 +6,10 @@
 pub mod resource_placement;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::net::TcpListener;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -32,6 +35,9 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 const CHILD_TERMINATE_GRACE: Duration = Duration::from_millis(500);
 /// 主动终止子进程时的轮询间隔。
 const CHILD_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// 本机 zenoh 自动 mesh 使用 IANA dynamic/private port range。
+const ZENOH_AUTO_PORT_BASE: u16 = 49_152;
+const ZENOH_AUTO_PORT_COUNT: u16 = 16_384;
 
 /// readiness 等待参数，支持测试注入短超时。
 #[derive(Debug, Clone)]
@@ -232,6 +238,37 @@ pub struct ZenohLaunchEnv {
     pub connect: String,
 }
 
+/// Zenoh 启动计划。
+///
+/// `port_lease` 必须和该 graph 的子进程生命周期一起持有，避免同一台机器上多个
+/// FlowRT supervisor 自动选择同一个本机 zenoh 端口。
+#[derive(Debug)]
+pub struct ZenohLaunchPlan {
+    pub env: HashMap<String, ZenohLaunchEnv>,
+    _port_lease: Option<ZenohPortLease>,
+}
+
+impl ZenohLaunchPlan {
+    fn empty() -> Self {
+        Self {
+            env: HashMap::new(),
+            _port_lease: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ZenohPortLease {
+    port: u16,
+    file: File,
+}
+
+impl Drop for ZenohPortLease {
+    fn drop(&mut self) {
+        let _ = unlock_zenoh_port_file(&self.file);
+    }
+}
+
 /// 检查是否需要自动配置 zenoh（用户未显式设置相关环境变量时）。
 pub fn should_auto_configure_zenoh() -> bool {
     std::env::var_os("FLOWRT_ZENOH_MODE").is_none()
@@ -241,37 +278,21 @@ pub fn should_auto_configure_zenoh() -> bool {
 
 /// 为 graph 中的 zenoh 进程生成 hub-and-spoke 拓扑配置。
 ///
-/// 第一个 zenoh backend 进程作为 hub，监听随机端口；其余进程连接该 hub。
-pub fn zenoh_launch_env_for_graph(
-    processes: &[&LaunchProcess],
-) -> Result<HashMap<String, ZenohLaunchEnv>, String> {
+/// 第一个 zenoh backend 进程作为 hub，监听 FlowRT supervisor 持有租约的本机端口；
+/// 其余进程连接该 hub。
+pub fn zenoh_launch_env_for_graph(processes: &[&LaunchProcess]) -> Result<ZenohLaunchPlan, String> {
     let zenoh_processes: Vec<&LaunchProcess> = processes
         .iter()
         .filter(|p| p.backend == "zenoh")
         .copied()
         .collect();
     if zenoh_processes.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(ZenohLaunchPlan::empty());
     }
 
     let hub = zenoh_processes[0];
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| {
-        format!(
-            "failed to reserve local zenoh port for `{}`: {error}",
-            hub.name
-        )
-    })?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| {
-            format!(
-                "failed to read local zenoh port for `{}`: {error}",
-                hub.name
-            )
-        })?
-        .port();
-    let hub_locator = format!("tcp/127.0.0.1:{port}");
-    drop(listener);
+    let port_lease = reserve_zenoh_port_lease(&hub.name)?;
+    let hub_locator = format!("tcp/127.0.0.1:{}", port_lease.port);
 
     let mut env = HashMap::new();
     for process in zenoh_processes {
@@ -287,7 +308,68 @@ pub fn zenoh_launch_env_for_graph(
         };
         env.insert(process.name.clone(), ZenohLaunchEnv { listen, connect });
     }
-    Ok(env)
+    Ok(ZenohLaunchPlan {
+        env,
+        _port_lease: Some(port_lease),
+    })
+}
+
+fn reserve_zenoh_port_lease(process_name: &str) -> Result<ZenohPortLease, String> {
+    let seed = std::process::id() as u16;
+    for offset in 0..ZENOH_AUTO_PORT_COUNT {
+        let port = ZENOH_AUTO_PORT_BASE + seed.wrapping_add(offset) % ZENOH_AUTO_PORT_COUNT;
+        match try_acquire_zenoh_port_lease(port) {
+            Ok(Some(lease)) => return Ok(lease),
+            Ok(None) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to reserve local zenoh port lease for `{process_name}`: {error}"
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "failed to reserve local zenoh port lease for `{process_name}`: no FlowRT auto ports are available"
+    ))
+}
+
+fn try_acquire_zenoh_port_lease(port: u16) -> std::io::Result<Option<ZenohPortLease>> {
+    let path = std::env::temp_dir().join(format!("flowrt.zenoh.{port}.lock"));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    if !try_lock_zenoh_port_file(&file)? {
+        return Ok(None);
+    }
+    file.set_len(0)?;
+    writeln!(file, "pid={}", std::process::id())?;
+    Ok(Some(ZenohPortLease { port, file }))
+}
+
+#[cfg(unix)]
+fn try_lock_zenoh_port_file(file: &File) -> std::io::Result<bool> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => Ok(false),
+        _ => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn unlock_zenoh_port_file(file: &File) -> std::io::Result<()> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,12 +1135,13 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
     .ok();
 
     let mut children = Vec::new();
+    let mut zenoh_launch_plans = Vec::new();
     for graph in &manifest.graphs {
-        let zenoh_env = if should_auto_configure_zenoh() {
+        let zenoh_plan = if should_auto_configure_zenoh() {
             let refs: Vec<&LaunchProcess> = graph.processes.iter().collect();
             zenoh_launch_env_for_graph(&refs)?
         } else {
-            HashMap::new()
+            ZenohLaunchPlan::empty()
         };
         let mut pending = graph.processes.iter().collect::<Vec<_>>();
         // ready_names 包含已通过 readiness gate 的进程名。
@@ -1104,7 +1187,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                     config.ros2_bridge_stem,
                 )?
             };
-            let process_zenoh_env = zenoh_env.get(&process.name).cloned();
+            let process_zenoh_env = zenoh_plan.env.get(&process.name).cloned();
             let child = spawn_launch_process(
                 &app_exe,
                 process,
@@ -1163,6 +1246,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             record_child_health(&supervisor_state, &child, false);
             children.push(child);
         }
+        zenoh_launch_plans.push(zenoh_plan);
     }
     if children.is_empty() {
         return Err("FlowRT launch manifest does not contain process groups".to_string());
@@ -1170,6 +1254,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
 
     let shutdown = crate::install_signal_shutdown_token();
     supervise_children(&supervisor_state, &mut children, run_ticks, &shutdown)?;
+    drop(zenoh_launch_plans);
 
     let mut failures = Vec::new();
     for child in children {
@@ -2139,7 +2224,8 @@ mod tests {
         let inproc_only = test_process("inproc_only", vec![]);
         let processes = [hub, spoke, inproc_only];
         let refs: Vec<&LaunchProcess> = processes.iter().collect();
-        let env = zenoh_launch_env_for_graph(&refs).unwrap();
+        let plan = zenoh_launch_env_for_graph(&refs).unwrap();
+        let env = &plan.env;
 
         assert_eq!(env.len(), 2); // only zenoh processes
         let hub_env = env.get("hub").unwrap();
@@ -2154,8 +2240,16 @@ mod tests {
     fn zenoh_launch_env_empty_for_no_zenoh() {
         let processes = [test_process("a", vec![])];
         let refs: Vec<&LaunchProcess> = processes.iter().collect();
-        let env = zenoh_launch_env_for_graph(&refs).unwrap();
-        assert!(env.is_empty());
+        let plan = zenoh_launch_env_for_graph(&refs).unwrap();
+        assert!(plan.env.is_empty());
+    }
+
+    #[test]
+    fn zenoh_port_lease_skips_locked_port() {
+        let first = reserve_zenoh_port_lease("hub").unwrap();
+        let second = reserve_zenoh_port_lease("spoke").unwrap();
+
+        assert_ne!(first.port, second.port);
     }
 
     // -- 依赖满足判断测试 --
