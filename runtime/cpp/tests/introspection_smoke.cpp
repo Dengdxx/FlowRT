@@ -202,7 +202,7 @@ int main() {
     service_recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
         .output = std::nullopt,
         .filters = {"all"},
-        .queue_depth = 2,
+        .queue_depth = 8,
         .package = "robot_demo",
         .process = "main",
         .runtime_pid = 42,
@@ -215,11 +215,77 @@ int main() {
         .queued = 0,
         .total_requests = 1,
     });
+    service_recorder_state.record_task_health(flowrt::IntrospectionTaskHealth{
+        .name = "imu_task",
+        .lane = "sensor_lane",
+        .deadline_missed = 3,
+        .stale_input = 1,
+        .backpressure = 2,
+        .overflow = 4,
+        .fairness_violations = 5,
+        .run_count = 100,
+        .success_count = 97,
+        .consecutive_failures = 1,
+        .last_run_ms = std::optional<std::uint64_t>{1000U},
+        .last_success_ms = std::optional<std::uint64_t>{900U},
+    });
+    service_recorder_state.record_lane_health(flowrt::IntrospectionLaneHealth{
+        .name = "sensor_lane",
+        .queue_depth = 2,
+        .dispatched_count = 500,
+        .fairness_violations = 6,
+    });
+    service_recorder_state.record_operation_health(flowrt::IntrospectionOperationStatus{
+        .name = "controller.plan",
+        .ready = true,
+        .running = 1,
+        .queued = 2,
+        .current_operation_ids = {"111:7:3"},
+        .total_started = 9,
+        .succeeded_count = 5,
+        .failed_count = 1,
+        .canceled_count = 0,
+        .timeout_count = 1,
+        .preempted_count = 2,
+        .last_transition_ms = std::optional<std::uint64_t>{12345U},
+    });
     const auto service_recorder_events = service_recorder_state.drain_recorder_events();
-    assert(service_recorder_events.size() == 1U);
+    assert(service_recorder_events.size() == 4U);
     assert(service_recorder_events.front().event_kind == "service_event");
     assert(service_recorder_events.front().entity_kind == "service");
     assert(service_recorder_events.front().entity_name == "planner.plan_to_executor.execute");
+    const auto task_event =
+        std::find_if(service_recorder_events.begin(), service_recorder_events.end(),
+                     [](const flowrt::IntrospectionRecorderEvent &event) {
+                         return event.entity_kind == "task" && event.entity_name == "imu_task";
+                     });
+    assert(task_event != service_recorder_events.end());
+    assert(task_event->payload_schema == "flowrt.scheduler.task_health");
+    const auto task_payload = std::string(task_event->payload.begin(), task_event->payload.end());
+    assert_contains(task_payload, R"("lane":"sensor_lane")");
+    assert_contains(task_payload, R"("backpressure":2)");
+    assert_contains(task_payload, R"("consecutive_failures":1)");
+    const auto lane_event =
+        std::find_if(service_recorder_events.begin(), service_recorder_events.end(),
+                     [](const flowrt::IntrospectionRecorderEvent &event) {
+                         return event.entity_kind == "lane" && event.entity_name == "sensor_lane";
+                     });
+    assert(lane_event != service_recorder_events.end());
+    assert(lane_event->payload_schema == "flowrt.scheduler.lane_health");
+    const auto lane_payload = std::string(lane_event->payload.begin(), lane_event->payload.end());
+    assert_contains(lane_payload, R"("fairness_violations":6)");
+    const auto operation_event = std::find_if(
+        service_recorder_events.begin(), service_recorder_events.end(),
+        [](const flowrt::IntrospectionRecorderEvent &event) {
+            return event.entity_kind == "operation" && event.entity_name == "controller.plan";
+        });
+    assert(operation_event != service_recorder_events.end());
+    assert(operation_event->payload_schema == "flowrt.operation.status");
+    const auto operation_payload =
+        std::string(operation_event->payload.begin(), operation_event->payload.end());
+    assert_contains(operation_payload, R"("current_operation_ids":["111:7:3"])");
+    assert_contains(operation_payload, R"("preempted":2)");
+    assert_contains(operation_payload, R"("last_transition_ms":12345)");
 
     flowrt::IntrospectionState service_ready_state;
     service_ready_state.register_service("planner.plan");

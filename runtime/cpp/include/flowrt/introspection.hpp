@@ -1689,14 +1689,23 @@ class IntrospectionState {
      * @brief 记录 operation 运行态健康状态快照。
      */
     void record_operation_health(IntrospectionOperationStatus status) const {
-        const auto payload = "{\"running\":" + std::to_string(status.running) +
-                             ",\"queued\":" + std::to_string(status.queued) +
-                             ",\"total_started\":" + std::to_string(status.total_started) + "}";
+        const auto payload =
+            "{\"ready\":" + std::string(status.ready ? "true" : "false") +
+            ",\"running\":" + std::to_string(status.running) +
+            ",\"queued\":" + std::to_string(status.queued) + ",\"current_operation_ids\":" +
+            detail::json_string_array(status.current_operation_ids) +
+            ",\"total_started\":" + std::to_string(status.total_started) +
+            ",\"succeeded\":" + std::to_string(status.succeeded_count) +
+            ",\"failed\":" + std::to_string(status.failed_count) +
+            ",\"canceled\":" + std::to_string(status.canceled_count) +
+            ",\"timeout\":" + std::to_string(status.timeout_count) +
+            ",\"preempted\":" + std::to_string(status.preempted_count) +
+            ",\"last_transition_ms\":" + detail::optional_u64_json(status.last_transition_ms) + "}";
         const auto name = status.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->operations.insert_or_assign(status.name, std::move(status));
         record_event_locked("operation", name, "operation_event", "operation", name, "", "json",
-                            "operation_status", string_bytes(payload), std::nullopt);
+                            "flowrt.operation.status", string_bytes(payload), std::nullopt);
     }
 
     /**
@@ -1741,27 +1750,38 @@ class IntrospectionState {
      * @brief 记录 task 调度健康快照。
      */
     void record_task_health(IntrospectionTaskHealth health) const {
-        const auto payload = "{\"run_count\":" + std::to_string(health.run_count) +
-                             ",\"deadline_missed\":" + std::to_string(health.deadline_missed) + "}";
+        const auto payload =
+            "{\"lane\":" + detail::json_string(health.lane) +
+            ",\"deadline_missed\":" + std::to_string(health.deadline_missed) +
+            ",\"stale_input\":" + std::to_string(health.stale_input) +
+            ",\"backpressure\":" + std::to_string(health.backpressure) +
+            ",\"overflow\":" + std::to_string(health.overflow) +
+            ",\"fairness_violations\":" + std::to_string(health.fairness_violations) +
+            ",\"run_count\":" + std::to_string(health.run_count) +
+            ",\"success_count\":" + std::to_string(health.success_count) +
+            ",\"consecutive_failures\":" + std::to_string(health.consecutive_failures) +
+            ",\"last_run_ms\":" + detail::optional_u64_json(health.last_run_ms) +
+            ",\"last_success_ms\":" + detail::optional_u64_json(health.last_success_ms) + "}";
         const auto name = health.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->tasks.insert_or_assign(health.name, std::move(health));
         record_event_locked("scheduler", name, "scheduler_event", "task", name, "", "json",
-                            "task_health", string_bytes(payload), std::nullopt);
+                            "flowrt.scheduler.task_health", string_bytes(payload), std::nullopt);
     }
 
     /**
      * @brief 记录 lane 调度健康快照。
      */
     void record_lane_health(IntrospectionLaneHealth health) const {
-        const auto payload = "{\"queue_depth\":" + std::to_string(health.queue_depth) +
-                             ",\"dispatched_count\":" + std::to_string(health.dispatched_count) +
-                             "}";
+        const auto payload =
+            "{\"queue_depth\":" + std::to_string(health.queue_depth) +
+            ",\"dispatched_count\":" + std::to_string(health.dispatched_count) +
+            ",\"fairness_violations\":" + std::to_string(health.fairness_violations) + "}";
         const auto name = health.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->lanes.insert_or_assign(health.name, std::move(health));
         record_event_locked("scheduler", name, "scheduler_event", "lane", name, "", "json",
-                            "lane_health", string_bytes(payload), std::nullopt);
+                            "flowrt.scheduler.lane_health", string_bytes(payload), std::nullopt);
     }
 
     /**
