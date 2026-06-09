@@ -43,6 +43,19 @@ int main() {
     }
 
 #ifdef FLOWRT_ENABLE_TEST_HOOKS
+    const auto revision_before_wake_failure = endpoint.revision();
+    endpoint.reset_wake_notifier_for_test();
+    const auto wake_failed = endpoint.publish_at(Iox2SmokeSample{77U}, 110U);
+    assert(std::holds_alternative<flowrt::ChannelWriteOutcome>(wake_failed));
+    assert(endpoint.health().state == flowrt::BackendHealthState::Degraded);
+    auto after_wake_failure = endpoint.receive_latest_at(115U);
+    assert(!std::holds_alternative<flowrt::ChannelError>(after_wake_failure));
+    assert(endpoint.revision() == revision_before_wake_failure + 1U);
+    auto latest_after_wake_failure =
+        std::get<flowrt::Latest<Iox2SmokeSample>>(after_wake_failure);
+    assert(latest_after_wake_failure.present());
+    assert(latest_after_wake_failure.as_ref()->value == 77U);
+
     endpoint.reset_transport_for_test();
     assert(!endpoint.ready());
     assert(endpoint.health().state == flowrt::BackendHealthState::Degraded);

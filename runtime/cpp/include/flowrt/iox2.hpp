@@ -1,9 +1,12 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
 #include <flowrt/executor.hpp>
+#include <memory>
 #include <flowrt/wire.hpp>
 #include <optional>
 #include <string>
@@ -193,7 +196,9 @@ class Iox2PubSub {
     void set_schedule_waiter(ScheduleWaiter waiter) noexcept {
 #ifdef FLOWRT_HAS_ICEORYX2_CXX
         schedule_waiter_ = std::move(waiter);
-        start_wake_listener();
+        if (!start_wake_listener()) {
+            health_.mark_degraded("failed to start iceoryx2 wake listener");
+        }
 #else
         (void)waiter;
 #endif
@@ -209,6 +214,16 @@ class Iox2PubSub {
 #endif
         health_.mark_degraded("iceoryx2 endpoint reset by test");
     }
+
+    /**
+     * @brief 测试钩子：模拟 payload 已发送但 wake notifier 失效。
+     */
+    void reset_wake_notifier_for_test() noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        notifier_.reset();
+#endif
+        health_.mark_degraded("iceoryx2 wake notifier reset by test");
+    }
 #endif
 
     /**
@@ -222,15 +237,23 @@ class Iox2PubSub {
             return ChannelError::Transport;
         }
 
-        if (publish_payload(std::move(value), published_at_ms)) {
+        auto result = publish_payload(value, published_at_ms);
+        if (result == PublishPayloadResult::Sent) {
             health_.mark_ready();
+            return ChannelWriteOutcome::Accepted;
+        }
+        if (result == PublishPayloadResult::SentWakeFailed) {
             return ChannelWriteOutcome::Accepted;
         }
         if (!recover_after_transport_error("publish iceoryx2 sample")) {
             return ChannelError::Transport;
         }
-        if (!publish_payload(std::move(value), published_at_ms)) {
+        result = publish_payload(value, published_at_ms);
+        if (result == PublishPayloadResult::Failed) {
             return ChannelError::Transport;
+        }
+        if (result == PublishPayloadResult::SentWakeFailed) {
+            return ChannelWriteOutcome::Accepted;
         }
         health_.mark_ready();
         return ChannelWriteOutcome::Accepted;
@@ -319,6 +342,12 @@ class Iox2PubSub {
     using Iox2Publisher = ::iox2::Publisher<::iox2::ServiceType::Ipc, T, FlowrtIox2Header>;
     using Iox2Subscriber = ::iox2::Subscriber<::iox2::ServiceType::Ipc, T, FlowrtIox2Header>;
 
+    enum class PublishPayloadResult {
+        Sent,
+        SentWakeFailed,
+        Failed,
+    };
+
     static constexpr bool safe_overflow(Iox2ChannelConfig config) noexcept {
         return config.overflow() != OverflowPolicy::Block;
     }
@@ -383,27 +412,27 @@ class Iox2PubSub {
         node_.reset();
     }
 
-    bool publish_payload(T value, std::uint64_t published_at_ms) noexcept {
+    PublishPayloadResult publish_payload(const T& value, std::uint64_t published_at_ms) noexcept {
         if (!publisher_) {
             mark_transport_error("iceoryx2 publisher is not ready");
-            return false;
+            return PublishPayloadResult::Failed;
         }
 
         auto sample = publisher_->loan_uninit();
         if (!sample.has_value()) {
             mark_transport_error("loan iceoryx2 sample failed");
-            return false;
+            return PublishPayloadResult::Failed;
         }
 
         auto loaned_sample = std::move(sample).value();
         loaned_sample.user_header_mut().published_at_ms = published_at_ms;
-        auto initialized_sample = loaned_sample.write_payload(std::move(value));
+        auto initialized_sample = loaned_sample.write_payload(value);
         auto sent = ::iox2::send(std::move(initialized_sample));
         if (!sent.has_value()) {
             mark_transport_error("send iceoryx2 sample failed");
-            return false;
+            return PublishPayloadResult::Failed;
         }
-        return notify_wake();
+        return notify_wake() ? PublishPayloadResult::Sent : PublishPayloadResult::SentWakeFailed;
     }
 
     bool notify_wake() noexcept {
@@ -418,34 +447,50 @@ class Iox2PubSub {
         return true;
     }
 
-    void start_wake_listener() noexcept {
+    bool start_wake_listener() noexcept {
         if (!schedule_waiter_.has_value() || wake_thread_.has_value()) {
-            return;
+            return true;
         }
 
         auto service_name = service_name_;
         auto waiter = *schedule_waiter_;
-        wake_thread_.emplace([service_name = std::move(service_name), waiter = std::move(waiter)](
-                                 std::stop_token stop_token) {
+        auto ready = std::make_shared<std::promise<bool>>();
+        auto ready_result = ready->get_future();
+        wake_thread_.emplace([service_name = std::move(service_name), waiter = std::move(waiter),
+                              ready = std::move(ready)](std::stop_token stop_token) mutable {
+            auto fail_ready = [&ready]() {
+                if (ready) {
+                    ready->set_value(false);
+                    ready.reset();
+                }
+            };
             auto name = ::iox2::ServiceName::create(service_name.c_str());
             if (!name.has_value()) {
+                fail_ready();
                 return;
             }
             auto node = ::iox2::NodeBuilder().create<::iox2::ServiceType::Ipc>();
             if (!node.has_value()) {
+                fail_ready();
                 return;
             }
             auto wake_node = std::move(node).value();
             auto event = wake_node.service_builder(std::move(name).value()).event().open_or_create();
             if (!event.has_value()) {
+                fail_ready();
                 return;
             }
             auto wake_event = std::move(event).value();
             auto listener = wake_event.listener_builder().create();
             if (!listener.has_value()) {
+                fail_ready();
                 return;
             }
             auto wake_listener = std::move(listener).value();
+            if (ready) {
+                ready->set_value(true);
+                ready.reset();
+            }
 
             while (!stop_token.stop_requested()) {
                 auto received =
@@ -458,6 +503,13 @@ class Iox2PubSub {
                 }
             }
         });
+        if (ready_result.wait_for(std::chrono::milliseconds{500}) != std::future_status::ready ||
+            !ready_result.get()) {
+            stop_wake_listener();
+            mark_transport_error("failed to start iceoryx2 wake listener");
+            return false;
+        }
+        return true;
     }
 
     void stop_wake_listener() noexcept {
@@ -527,7 +579,10 @@ class Iox2PubSub {
             return false;
         }
         notifier_.emplace(std::move(notifier).value());
-        start_wake_listener();
+        if (!start_wake_listener()) {
+            reset_iox2_endpoint();
+            return false;
+        }
         return true;
     }
 #endif
