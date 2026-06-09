@@ -129,10 +129,6 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         "\nuse crate::components::*;\nuse crate::messages::*;\nuse crate::selfdesc;\nuse crate::user;\n\n",
     );
     output.push_str(&format!(
-        "const SELECTED_BACKEND: &str = {};\n\n",
-        crate::rust_string_literal(&selected_backend)
-    ));
-    output.push_str(&format!(
         "const PACKAGE_NAME: &str = {};\n\n",
         crate::rust_string_literal(&contract.package.name)
     ));

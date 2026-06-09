@@ -180,7 +180,8 @@ input = ["imu:Imu"]
     assert!(rust_messages.contains("std::mem::zeroed()"));
 
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
-    assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"inproc\";"));
+    assert!(!rust_shell.contains("SELECTED_BACKEND"));
+    assert!(rust_shell.contains("Box::new(flowrt::inproc_backend())"));
     assert!(rust_shell.contains("const PACKAGE_NAME: &str = \"robot_demo\";"));
     assert!(rust_shell.contains("flowrt::spawn_status_server("));
     assert!(rust_shell.contains("let introspection_state = flowrt::IntrospectionState::new();"));
