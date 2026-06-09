@@ -1302,7 +1302,19 @@ inline void set_socket_timeout(int fd) {
     (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 }
 
-inline std::optional<std::string> read_line(int fd) {
+enum class ReadLineStatus {
+    Line,
+    Closed,
+    Timeout,
+    Error,
+};
+
+struct ReadLineResult {
+    ReadLineStatus status = ReadLineStatus::Closed;
+    std::string line;
+};
+
+inline ReadLineResult read_line_result(int fd) {
     std::string line;
     char byte = '\0';
     while (line.size() < 65536U) {
@@ -1314,14 +1326,28 @@ inline std::optional<std::string> read_line(int fd) {
             if (errno == EINTR) {
                 continue;
             }
-            return std::nullopt;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return ReadLineResult{ReadLineStatus::Timeout, {}};
+            }
+            return ReadLineResult{ReadLineStatus::Error, {}};
         }
         if (byte == '\n') {
-            return line;
+            return ReadLineResult{ReadLineStatus::Line, std::move(line)};
         }
         line.push_back(byte);
     }
-    return line.empty() ? std::nullopt : std::optional<std::string>{std::move(line)};
+    if (!line.empty()) {
+        return ReadLineResult{ReadLineStatus::Line, std::move(line)};
+    }
+    return ReadLineResult{ReadLineStatus::Closed, {}};
+}
+
+inline std::optional<std::string> read_line(int fd) {
+    auto result = read_line_result(fd);
+    if (result.status == ReadLineStatus::Line) {
+        return std::move(result.line);
+    }
+    return std::nullopt;
 }
 
 }  // namespace detail
@@ -2428,9 +2454,14 @@ inline void handle_introspection_connection(
                 response.push_back('\n');
                 (void)write_all(client_fd, response);
                 while (!stop->load(std::memory_order_relaxed)) {
-                    const auto keepalive = read_line(client_fd);
-                    if (!keepalive) {
-                        break;
+                    const auto keepalive = read_line_result(client_fd);
+                    switch (keepalive.status) {
+                        case ReadLineStatus::Line:
+                        case ReadLineStatus::Timeout:
+                            continue;
+                        case ReadLineStatus::Closed:
+                        case ReadLineStatus::Error:
+                            return;
                     }
                 }
                 return;

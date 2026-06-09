@@ -620,6 +620,10 @@ int main() {
         assert(state.active_probe_count("source.imu_to_sink.imu") ==
                std::optional<std::uint64_t>{flowrt::MAX_INTROSPECTION_OBSERVERS});
 
+        std::this_thread::sleep_for(std::chrono::milliseconds{1200});
+        assert(state.active_probe_count("source.imu_to_sink.imu") ==
+               std::optional<std::uint64_t>{flowrt::MAX_INTROSPECTION_OBSERVERS});
+
         const auto status_while_observing = request_line(socket_path, R"({"command":"status"})");
         assert_contains(status_while_observing, R"("response":"status")");
 
