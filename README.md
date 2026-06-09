@@ -500,6 +500,11 @@ codegen 为 client 生成 `OperationClient_{instance}_{port}` typed handle，为
 lower 成内部 start/cancel/status service 与 feedback/result endpoint；`flowrt list`
 和 `flowrt op list` 默认展示 Operation 主语义，需要调试时再查看 lowering refs。
 
+当前 generated Operation runtime 支持单个运行中的 invocation：`concurrency =
+"reject"`、`preempt = "reject"`、`max_in_flight = 1`。第二个 start 会返回 `Busy`，
+直到当前 invocation 进入终态。`queue`、`cancel_running` 和多 in-flight 策略已保留在
+IR 长期模型中，但在 runtime 完整实现前由 validator 拒绝。
+
 查看 Operation 拓扑和运行态状态：
 
 ```bash

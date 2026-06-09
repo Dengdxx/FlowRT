@@ -134,7 +134,10 @@ deterministic replay report。Web、HTTP、WebSocket 和 UI 不进入 FlowRT cor
 long-running command、generated state machine、explicit policy、observable handle，
 底层编译期 lower 成 Service + Channel。用户只看 Operation，调试时才展开底层拓扑。
 Operation policy 必须显式声明 concurrency、preempt、cancel、timeout 和
-result retention；用户不得手写 start/cancel/result/progress 四套底层协议。
+result retention；用户不得手写 start/cancel/result/progress 四套底层协议。当前
+generated Operation runtime 先支持单 in-flight reject 子集：`concurrency =
+"reject"`、`preempt = "reject"`、`max_in_flight = 1`；`queue`、`cancel_running`
+和多 in-flight 仍保留为长期 IR 语义，在 runtime 完整实现前由 validator 拒绝。
 
 Operation 解决的不是“长时间 service call”，而是机器人系统里常见的可取消、
 可抢占、可观测、可恢复的长任务。生成器负责把 Operation lowered 成 request、
@@ -314,7 +317,10 @@ backend 为 `inproc`。
   `record` 和 `params` 不写生成物，不应获取生成物锁。
 - `run` / `launch` 省略 `--run-steps` / `--run-ticks` 时长期运行，直到生成应用返回
   `Error` 或收到 SIGINT/SIGTERM。
-- `--run-steps` 是推荐外部名称，`--run-ticks` 是兼容别名。
+- `--run-steps` 是推荐外部名称，`--run-ticks` 是兼容别名；`launch` 下 supervisor
+  也会根据 live tick 快照终止达到上限后仍在运行的子进程。
+- `flowrt status --live-only` 只输出成功返回 live status 的 runtime，默认 `status`
+  仍保留 stale socket 诊断行。
 - `flowrt run --process <name>` 运行生成应用中的单个 RSDL process group；mixed
   contract 必须选择一个单语言 process group。
 - `launch` 运行 FlowRT 管理的 Rust supervisor。C++ only contract 会生成
@@ -337,7 +343,8 @@ deterministic `key_expr`。
 runtime introspection socket 使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock` 或
 `/tmp/flowrt.<uid>/<pid>.sock`。socket 路径只用于发现，真实身份来自 handshake。
 启动 status server 时不能覆盖仍可连接的 live socket；SIGKILL 后残留且不可连接的
-socket 文件可以回收。Rust `IntrospectionState` 会在 mutex poison 后恢复访问。
+socket 文件可以回收。status server 对活跃连接线程设置上限，超过上限时返回结构化
+error。Rust `IntrospectionState` 会在 mutex poison 后恢复访问。
 
 Runtime 已提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象。C ABI 当前覆盖
 `Status`、backend kind、backend health state、borrowed string/bytes view、
@@ -380,6 +387,9 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 生成 CMake 会使用 FlowRT 私有前缀解析 C++ runtime 和 backend SDK。生成 CMake 不应
 通过 `FetchContent` 联网拉取 backend SDK；缺失依赖应要求安装 FlowRT 包或显式设置
 `FLOWRT_CPP_RUNTIME_DIR` / `CMAKE_PREFIX_PATH`。
+`flowrt bundle` 复制项目二进制后对 ELF 可执行文件 best-effort 执行
+`strip --strip-unneeded`；非 ELF 文件跳过，strip 失败只进入命令摘要 warning，不修改
+用户工作区原始产物。
 
 ## CI 和 Release 状态
 

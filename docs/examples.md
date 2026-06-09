@@ -460,6 +460,11 @@ feedback = "latest"
 result_retention_ms = 60000
 ```
 
+当前 generated Operation runtime 只支持单 in-flight reject 子集：`concurrency =
+"reject"`、`preempt = "reject"`、`max_in_flight = 1`。多 invocation queue 和
+cancel-running preempt 策略属于长期 IR 语义，在 runtime 完整实现前由 validator
+拒绝。
+
 用户代码实现 server handler：
 
 ```rust
