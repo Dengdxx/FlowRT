@@ -489,6 +489,7 @@ pub struct ChannelEdgeIr {
     pub from: PortRef,
     pub to: PortRef,
     pub backend: BackendName,
+    pub backend_policy_source: PolicyValueSource,
     pub backend_source: ChannelBackendSource,
     pub channel: ChannelKind,
     pub depth: Option<u32>,

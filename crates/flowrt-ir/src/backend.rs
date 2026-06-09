@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    CapabilityAtom, ChannelKind, ComponentIr, GraphIr, OverflowPolicy, PrimitiveType, StalePolicy,
-    TriggerKind, TypeExpr, TypeIr,
+    CapabilityAtom, ChannelBackendSource, ChannelKind, ComponentIr, GraphIr, IrError,
+    OverflowPolicy, PrimitiveType, Result, StalePolicy, TriggerKind, TypeExpr, TypeIr,
 };
 
 /// 单条 dataflow route 的拓扑边界。
@@ -40,6 +40,59 @@ impl RouteTopology {
             touches_external: true,
         }
     }
+}
+
+/// 单条 dataflow route 的 backend 解析结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelBackendResolution {
+    pub backend: String,
+    pub source: ChannelBackendSource,
+}
+
+/// 解析单条 dataflow route 实际使用的 backend。
+///
+/// 该函数是 normalizer 与 validator 的共同事实源：profile/default backend、显式
+/// route backend、外部进程边界和 variable frame fallback 都必须通过这里推导。
+pub fn resolve_channel_backend(
+    requested_backend: &str,
+    source_type: Option<&TypeExpr>,
+    types: &[TypeIr],
+    topology: RouteTopology,
+    explicit: bool,
+) -> Result<ChannelBackendResolution> {
+    if topology.touches_external {
+        if matches!(requested_backend, "inproc" | "iox2") && explicit {
+            return Err(IrError::InvalidValue {
+                context: "bind.dataflow.backend".to_string(),
+                message: format!(
+                    "external dataflow route cannot use `{requested_backend}` backend"
+                ),
+            });
+        }
+        return Ok(ChannelBackendResolution {
+            backend: "zenoh".to_string(),
+            source: ChannelBackendSource::AutoFallback,
+        });
+    }
+    if requested_backend == "iox2"
+        && source_type.is_some_and(|ty| type_expr_contains_variable_data(ty, types))
+    {
+        if explicit {
+            return Err(IrError::InvalidValue {
+                context: "bind.dataflow.backend".to_string(),
+                message: "explicit `iox2` dataflow backend cannot carry variable-frame messages"
+                    .to_string(),
+            });
+        }
+        return Ok(ChannelBackendResolution {
+            backend: "zenoh".to_string(),
+            source: ChannelBackendSource::AutoFallback,
+        });
+    }
+    Ok(ChannelBackendResolution {
+        backend: requested_backend.to_string(),
+        source: ChannelBackendSource::ProfileDefault,
+    })
 }
 
 // 枚举声明顺序是所有已知 capability 的全局 canonical 顺序。
@@ -552,6 +605,41 @@ fn collect_type_expr_abi_capabilities_inner(
     }
 }
 
+fn type_expr_contains_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {
+    let types_by_name = types
+        .iter()
+        .map(|ty| (ty.qualified_name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let mut visiting = BTreeSet::new();
+    type_expr_contains_variable_data_inner(expr, &types_by_name, &mut visiting)
+}
+
+fn type_expr_contains_variable_data_inner(
+    expr: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match expr {
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
+        TypeExpr::Array { element, .. } => {
+            type_expr_contains_variable_data_inner(element, types_by_name, visiting)
+        }
+        TypeExpr::Named { name } => {
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let contains = types_by_name.get(name.as_str()).is_some_and(|ty| {
+                ty.fields.iter().any(|field| {
+                    type_expr_contains_variable_data_inner(&field.ty, types_by_name, visiting)
+                })
+            });
+            visiting.remove(name);
+            contains
+        }
+        TypeExpr::Primitive { .. } => false,
+    }
+}
+
 fn channel_capability(channel: ChannelKind) -> Capability {
     match channel {
         ChannelKind::Latest => Capability::ChannelLatest,
@@ -875,6 +963,7 @@ mod tests {
                     from: port("fifo_out"),
                     to: port("fifo_in"),
                     backend: crate::BackendName("inproc".to_string()),
+                    backend_policy_source: crate::PolicyValueSource::Explicit,
                     backend_source: crate::ChannelBackendSource::Explicit,
                     channel: ChannelKind::Fifo,
                     depth: Some(2),
@@ -889,6 +978,7 @@ mod tests {
                     from: port("latest_out"),
                     to: port("latest_in"),
                     backend: crate::BackendName("inproc".to_string()),
+                    backend_policy_source: crate::PolicyValueSource::Explicit,
                     backend_source: crate::ChannelBackendSource::Explicit,
                     channel: ChannelKind::Latest,
                     depth: Some(1),

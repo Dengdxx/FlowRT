@@ -543,6 +543,79 @@ backends = ["inproc"]
 }
 
 #[test]
+fn rejects_invalid_generated_names_in_contract_ir() {
+    let mut ir = valid_reference_contract();
+    ir.types[0].generated_name.clear();
+    ir.components[0].generated_name = "1bad".to_string();
+
+    let report = validate_contract(&ir).expect_err("invalid generated names should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("type generated name `` must be a non-empty generated identifier")
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("component generated name `1bad` must be a non-empty generated identifier")
+    }));
+}
+
+#[test]
+fn rejects_non_canonical_generated_names_in_contract_ir() {
+    let mut ir = valid_reference_contract();
+    ir.types[0].generated_name = "OtherSample".to_string();
+    ir.components
+        .iter_mut()
+        .find(|component| component.name == "producer")
+        .expect("producer component must exist")
+        .generated_name = "OtherProducer".to_string();
+
+    let report = validate_contract(&ir).expect_err("forged generated names should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "type `Sample` generated name `OtherSample` does not match canonical `Sample`",
+        )
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "component `producer` generated name `OtherProducer` does not match canonical `producer`",
+        )
+    }));
+}
+
+#[test]
+fn rejects_duplicate_generated_symbols_in_contract_ir() {
+    let mut ir = valid_reference_contract();
+    let mut first = ir.types[0].clone();
+    first.id = flowrt_ir::EntityId("type:foo_bar::Baz".to_string());
+    first.module = Some("foo_bar".to_string());
+    first.name = "Baz".to_string();
+    first.qualified_name = "foo_bar::Baz".to_string();
+    first.generated_name = "FooBarBaz".to_string();
+
+    let mut second = ir.types[0].clone();
+    second.id = flowrt_ir::EntityId("type:foo::BarBaz".to_string());
+    second.module = Some("foo".to_string());
+    second.name = "BarBaz".to_string();
+    second.qualified_name = "foo::BarBaz".to_string();
+    second.generated_name = "FooBarBaz".to_string();
+
+    ir.types.push(first);
+    ir.types.push(second);
+
+    let report = validate_contract(&ir).expect_err("generated symbol collision should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("contract has duplicate type generated symbol `FooBarBaz`")
+    }));
+}
+
+#[test]
 fn rejects_duplicate_entity_ids_in_contract_ir_scopes() {
     let mut ir = valid_reference_contract();
     let duplicate_id = ir.types[0].id.clone();

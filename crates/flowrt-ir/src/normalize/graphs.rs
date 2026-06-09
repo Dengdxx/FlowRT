@@ -463,6 +463,11 @@ pub(super) fn normalize_binds(
                 from,
                 to,
                 backend: BackendName(resolved_backend.backend),
+                backend_policy_source: if explicit_backend {
+                    PolicyValueSource::Explicit
+                } else {
+                    PolicyValueSource::ProfileDefault
+                },
                 backend_source,
                 channel,
                 depth,

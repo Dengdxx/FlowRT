@@ -1,49 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    ChannelBackendSource, ComponentIr, EntityId, GraphIr, InstanceIr, IrError, LanguageKind,
-    PortRef, Result, RouteTopology, TypeExpr, TypeIr,
+    ComponentIr, EntityId, GraphIr, InstanceIr, LanguageKind, PortRef, RouteTopology, TypeExpr,
 };
 
-pub(super) struct ResolvedChannelBackend {
-    pub(super) backend: String,
-    pub(super) source: ChannelBackendSource,
-}
-
-pub(super) fn resolve_channel_backend(
-    requested_backend: &str,
-    source_type: Option<&TypeExpr>,
-    types: &[TypeIr],
-    topology: RouteTopology,
-    explicit: bool,
-) -> Result<ResolvedChannelBackend> {
-    if topology.touches_external {
-        if matches!(requested_backend, "inproc" | "iox2") && explicit {
-            return Err(IrError::InvalidValue {
-                context: "bind.dataflow.backend".to_string(),
-                message: format!(
-                    "external dataflow route cannot use `{requested_backend}` backend"
-                ),
-            });
-        }
-        return Ok(ResolvedChannelBackend {
-            backend: "zenoh".to_string(),
-            source: ChannelBackendSource::AutoFallback,
-        });
-    }
-    if requested_backend == "iox2"
-        && source_type.is_some_and(|ty| type_expr_contains_variable_data(ty, types))
-    {
-        return Ok(ResolvedChannelBackend {
-            backend: "zenoh".to_string(),
-            source: ChannelBackendSource::AutoFallback,
-        });
-    }
-    Ok(ResolvedChannelBackend {
-        backend: requested_backend.to_string(),
-        source: ChannelBackendSource::ProfileDefault,
-    })
-}
+pub(super) use crate::resolve_channel_backend;
 
 pub(super) fn source_port_types_by_endpoint(
     components: &[ComponentIr],
@@ -126,40 +87,5 @@ pub(super) fn route_topology(
         RouteTopology::with_external(crosses_process, crosses_target)
     } else {
         RouteTopology::new(crosses_process, crosses_target)
-    }
-}
-
-fn type_expr_contains_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {
-    let types_by_name = types
-        .iter()
-        .map(|ty| (ty.qualified_name.as_str(), ty))
-        .collect::<BTreeMap<_, _>>();
-    let mut visiting = std::collections::BTreeSet::new();
-    type_expr_contains_variable_data_inner(expr, &types_by_name, &mut visiting)
-}
-
-fn type_expr_contains_variable_data_inner(
-    expr: &TypeExpr,
-    types_by_name: &BTreeMap<&str, &TypeIr>,
-    visiting: &mut std::collections::BTreeSet<String>,
-) -> bool {
-    match expr {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
-        TypeExpr::Array { element, .. } => {
-            type_expr_contains_variable_data_inner(element, types_by_name, visiting)
-        }
-        TypeExpr::Named { name } => {
-            if !visiting.insert(name.clone()) {
-                return false;
-            }
-            let contains = types_by_name.get(name.as_str()).is_some_and(|ty| {
-                ty.fields.iter().any(|field| {
-                    type_expr_contains_variable_data_inner(&field.ty, types_by_name, visiting)
-                })
-            });
-            visiting.remove(name);
-            contains
-        }
-        TypeExpr::Primitive { .. } => false,
     }
 }

@@ -234,33 +234,7 @@ impl SymbolInfo {
             module: Some(module.to_string()),
             name: name.to_string(),
             qualified_name: format!("{module}::{name}"),
-            generated_name: generated_module_symbol(module, name),
+            generated_name: crate::canonical_generated_symbol(Some(module), name),
         }
-    }
-}
-
-fn generated_module_symbol(module: &str, name: &str) -> String {
-    let mut output = String::new();
-    let mut capitalize_next = true;
-    for ch in module
-        .chars()
-        .chain(std::iter::once('_'))
-        .chain(name.chars())
-    {
-        if ch.is_ascii_alphanumeric() {
-            if capitalize_next {
-                output.push(ch.to_ascii_uppercase());
-                capitalize_next = false;
-            } else {
-                output.push(ch);
-            }
-        } else {
-            capitalize_next = true;
-        }
-    }
-    if output.is_empty() {
-        name.to_string()
-    } else {
-        output
     }
 }

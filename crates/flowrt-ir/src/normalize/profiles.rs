@@ -1,10 +1,9 @@
 use flowrt_rsdl::{RawDocument, RawProfile};
 
 use crate::{
-    BackendName, ChannelBackendSource, ContractIr, IrError, OverflowPolicy, PolicyDefaults,
-    PolicyValueSource, ProfileIr, Result, RouteTopology, SchedulerDefaults, StalePolicy,
-    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
-    graph_required_capabilities,
+    BackendName, ContractIr, IrError, OverflowPolicy, PolicyDefaults, PolicyValueSource, ProfileIr,
+    Result, RouteTopology, SchedulerDefaults, StalePolicy, channel_capabilities,
+    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
 };
 
 use super::backends::{
@@ -123,7 +122,7 @@ fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileI
             if bind.policy_source.max_age_ms == PolicyValueSource::ProfileDefault {
                 bind.max_age_ms = profile.defaults.max_age_ms;
             }
-            if bind.backend_source != ChannelBackendSource::Explicit {
+            if bind.backend_policy_source != PolicyValueSource::Explicit {
                 let resolved = resolve_channel_backend(
                     profile.backend.0.as_str(),
                     source_type,

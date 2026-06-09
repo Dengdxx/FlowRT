@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, CapabilityAtom, ChannelEdgeIr, ContractIr, GraphIr, InstanceIr, LanguageKind,
-    PolicyValueSource, PortRef, RouteTopology, channel_route_capabilities,
-    deployment_capability_decision, graph_required_capabilities, is_known_backend,
-    target_capabilities,
+    BackendName, CapabilityAtom, ChannelBackendSource, ChannelEdgeIr, ContractIr, GraphIr,
+    InstanceIr, LanguageKind, PolicyValueSource, PortRef, RouteTopology,
+    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
+    is_known_backend, target_capabilities,
 };
 
 use crate::ValidationError;
@@ -63,7 +63,7 @@ pub(crate) fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<Va
 
     for graph in &ir.graphs {
         let source_types = source_types_by_route(ir, graph);
-        let route_topologies = route_topology_by_bind_id(graph);
+        let route_topologies = route_topology_by_bind_id(ir, graph);
         for bind in &graph.binds {
             let Some(source_type) = source_types.get(&bind.id) else {
                 continue;
@@ -130,6 +130,45 @@ pub(crate) fn validate_channel_policy_sources(ir: &ContractIr, errors: &mut Vec<
                 && bind.max_age_ms != profile.defaults.max_age_ms
             {
                 push_policy_source_error(bind, errors);
+            }
+        }
+    }
+}
+
+pub(crate) fn validate_channel_backend_sources(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let Some(profile) = policy_anchor_profile(ir) else {
+        return;
+    };
+
+    for graph in &ir.graphs {
+        let source_types = source_types_by_route(ir, graph);
+        let route_topologies = route_topology_by_bind_id(ir, graph);
+        for bind in &graph.binds {
+            match bind.backend_policy_source {
+                PolicyValueSource::Explicit => {
+                    if bind.backend_source != ChannelBackendSource::Explicit {
+                        push_backend_source_error(bind, errors);
+                    }
+                }
+                PolicyValueSource::ProfileDefault => {
+                    let Some(source_type) = source_types.get(&bind.id) else {
+                        continue;
+                    };
+                    let topology = route_topologies
+                        .get(&bind.id)
+                        .copied()
+                        .unwrap_or_else(RouteTopology::local);
+                    let expected = expected_profile_default_backend(
+                        profile.backend.0.as_str(),
+                        ir,
+                        source_type,
+                        topology,
+                    );
+                    if bind.backend.0 != expected.backend || bind.backend_source != expected.source
+                    {
+                        push_backend_source_error(bind, errors);
+                    }
+                }
             }
         }
     }
@@ -263,7 +302,7 @@ pub(crate) fn validate_declared_backends(ir: &ContractIr, errors: &mut Vec<Valid
 pub(crate) fn validate_route_backends(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     for graph in &ir.graphs {
         let source_types = source_types_by_route(ir, graph);
-        let route_topologies = route_topology_by_bind_id(graph);
+        let route_topologies = route_topology_by_bind_id(ir, graph);
         for bind in &graph.binds {
             let mut checked_targets = BTreeSet::new();
             if !is_known_backend(&bind.backend.0) {
@@ -455,6 +494,38 @@ fn push_policy_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationErr
     )));
 }
 
+fn push_backend_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationError>) {
+    errors.push(ValidationError::new(format!(
+        "bind `{}.{}` -> `{}.{}` backend source metadata is inconsistent with selected profile defaults",
+        bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
+    )));
+}
+
+struct ExpectedChannelBackend {
+    backend: String,
+    source: ChannelBackendSource,
+}
+
+fn expected_profile_default_backend(
+    profile_backend: &str,
+    ir: &ContractIr,
+    source_type: &flowrt_ir::TypeExpr,
+    topology: RouteTopology,
+) -> ExpectedChannelBackend {
+    let resolved = flowrt_ir::resolve_channel_backend(
+        profile_backend,
+        Some(source_type),
+        &ir.types,
+        topology,
+        false,
+    )
+    .expect("profile default backend resolution should not fail without explicit backend");
+    ExpectedChannelBackend {
+        backend: resolved.backend,
+        source: resolved.source,
+    }
+}
+
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
     actual == expected
 }
@@ -488,11 +559,19 @@ fn source_types_by_route(
         .collect()
 }
 
-fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<flowrt_ir::EntityId, RouteTopology> {
+fn route_topology_by_bind_id(
+    ir: &ContractIr,
+    graph: &GraphIr,
+) -> BTreeMap<flowrt_ir::EntityId, RouteTopology> {
     let instances = graph
         .instances
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    let components = ir
+        .components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
         .collect::<BTreeMap<_, _>>();
     graph
         .binds
@@ -500,7 +579,7 @@ fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<flowrt_ir::EntityId, R
         .map(|bind| {
             (
                 bind.id.clone(),
-                route_topology(&instances, &bind.from, &bind.to),
+                route_topology(&instances, &components, &bind.from, &bind.to),
             )
         })
         .collect()
@@ -508,6 +587,7 @@ fn route_topology_by_bind_id(graph: &GraphIr) -> BTreeMap<flowrt_ir::EntityId, R
 
 fn route_topology(
     instances: &BTreeMap<&str, &InstanceIr>,
+    components: &BTreeMap<&str, &flowrt_ir::ComponentIr>,
     from: &PortRef,
     to: &PortRef,
 ) -> RouteTopology {
@@ -525,10 +605,18 @@ fn route_topology(
     let to_target = to_instance
         .and_then(|instance| instance.target.as_ref())
         .map(|target| target.name.as_str());
-    RouteTopology::new(
-        from_process != to_process,
-        from_target.is_some() && to_target.is_some() && from_target != to_target,
-    )
+    let crosses_process = from_process != to_process;
+    let crosses_target = from_target.is_some() && to_target.is_some() && from_target != to_target;
+    let touches_external = [from_instance, to_instance].iter().any(|instance| {
+        instance
+            .and_then(|instance| components.get(instance.component.name.as_str()))
+            .is_some_and(|component| component.language == LanguageKind::External)
+    });
+    if touches_external {
+        RouteTopology::with_external(crosses_process, crosses_target)
+    } else {
+        RouteTopology::new(crosses_process, crosses_target)
+    }
 }
 
 fn instance_target<'a>(

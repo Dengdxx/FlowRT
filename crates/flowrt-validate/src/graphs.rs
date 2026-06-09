@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind,
-    OperationPortIr, OperationPortRef, PortIr, PortRef, ProcessReadinessGate, Ros2BridgeDirection,
-    ServicePortIr, ServicePortRef, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
-    param_value_compatible, param_value_kind,
+    OperationConcurrencyPolicy, OperationPortIr, OperationPortRef, OperationPreemptPolicy, PortIr,
+    PortRef, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr,
 };
 
 use crate::ValidationError;
+use crate::components::{validate_param_value_constraints, validate_param_value_matches_schema};
 
 pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     let components = ir
@@ -410,6 +411,22 @@ fn validate_operation_binds(
                 "operation bind `{client_key} -> {server_key}` has zero max_in_flight"
             )));
         }
+        if operation.policy.concurrency == OperationConcurrencyPolicy::Queue {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` uses unsupported concurrency policy `queue`; generated Operation runtime currently supports only `reject`"
+            )));
+        }
+        if operation.policy.preempt == OperationPreemptPolicy::CancelRunning {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` uses unsupported preempt policy `cancel_running`; generated Operation runtime currently supports only `reject`"
+            )));
+        }
+        if operation.policy.max_in_flight != 1 {
+            errors.push(ValidationError::new(format!(
+                "operation bind `{client_key} -> {server_key}` uses unsupported max_in_flight `{}`; generated Operation runtime currently supports only 1",
+                operation.policy.max_in_flight
+            )));
+        }
 
         if operation.backend.0 == "inproc"
             && operation_spans_boundaries(instances, &operation.client, &operation.server)
@@ -749,7 +766,7 @@ fn validate_instance_params(
         let component_params = component
             .params
             .iter()
-            .map(|param| (param.name.as_str(), &param.default))
+            .map(|param| (param.name.as_str(), param))
             .collect::<BTreeMap<_, _>>();
 
         for param in &component.params {
@@ -760,15 +777,9 @@ fn validate_instance_params(
                 )));
                 continue;
             };
-            if !param_value_compatible(&param.default, value) {
-                errors.push(ValidationError::new(format!(
-                    "instance `{}` param `{}` has incompatible value kind `{}`; expected `{}`",
-                    instance.name,
-                    param.name,
-                    param_value_kind(value),
-                    param_value_kind(&param.default)
-                )));
-            }
+            let context = format!("instance `{}` param `{}`", instance.name, param.name);
+            validate_param_value_matches_schema(&context, param, "", value, errors);
+            validate_param_value_constraints(&context, param, "", value, errors);
         }
 
         for param in &instance.params {

@@ -888,6 +888,66 @@ server = "navigator.plan"
 }
 
 #[test]
+fn rejects_operation_policies_not_supported_by_generated_runtime() {
+    let source = r#"
+[package]
+name = "bad_operation_policy"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+
+[instance.navigator]
+component = "navigator"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let policy = &mut ir.graphs[0].operations[0].policy;
+    policy.concurrency = flowrt_ir::OperationConcurrencyPolicy::Queue;
+    policy.preempt = flowrt_ir::OperationPreemptPolicy::CancelRunning;
+    policy.max_in_flight = 2;
+
+    let report =
+        validate_contract(&ir).expect_err("unsupported generated operation policy should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan -> navigator.plan` uses unsupported concurrency policy `queue`",
+        )
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan -> navigator.plan` uses unsupported preempt policy `cancel_running`",
+        )
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan -> navigator.plan` uses unsupported max_in_flight `2`",
+        )
+    }));
+}
+
+#[test]
 fn rejects_service_bind_with_iox2_backend() {
     let source = r#"
 [package]

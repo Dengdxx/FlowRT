@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use flowrt_ir::ContractIr;
 
 use crate::ValidationError;
@@ -11,8 +13,30 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
         errors,
     );
 
+    let mut type_generated_symbols = BTreeSet::new();
     for ty in &ir.types {
         validate_name("type", "type name", &ty.name, NameStyle::PascalCase, errors);
+        validate_name(
+            "type",
+            "type generated name",
+            &ty.generated_name,
+            NameStyle::GeneratedSymbol,
+            errors,
+        );
+        validate_canonical_generated_name(
+            "type",
+            &ty.qualified_name,
+            ty.module.as_deref(),
+            &ty.name,
+            &ty.generated_name,
+            errors,
+        );
+        if !type_generated_symbols.insert(ty.generated_name.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "contract has duplicate type generated symbol `{}`",
+                ty.generated_name
+            )));
+        }
         for field in &ty.fields {
             validate_name(
                 "field",
@@ -24,6 +48,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
         }
     }
 
+    let mut component_generated_symbols = BTreeSet::new();
     for component in &ir.components {
         validate_name(
             "component",
@@ -32,6 +57,27 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
             NameStyle::SnakeCase,
             errors,
         );
+        validate_name(
+            "component",
+            "component generated name",
+            &component.generated_name,
+            NameStyle::GeneratedSymbol,
+            errors,
+        );
+        validate_canonical_generated_name(
+            "component",
+            &component.qualified_name,
+            component.module.as_deref(),
+            &component.name,
+            &component.generated_name,
+            errors,
+        );
+        if !component_generated_symbols.insert(component.generated_name.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "contract has duplicate component generated symbol `{}`",
+                component.generated_name
+            )));
+        }
         for port in component.inputs.iter().chain(component.outputs.iter()) {
             validate_name(
                 "port",
@@ -168,10 +214,27 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
     }
 }
 
+fn validate_canonical_generated_name(
+    kind: &str,
+    qualified_name: &str,
+    module: Option<&str>,
+    name: &str,
+    generated_name: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let expected = flowrt_ir::canonical_generated_symbol(module, name);
+    if generated_name != expected {
+        errors.push(ValidationError::new(format!(
+            "{kind} `{qualified_name}` generated name `{generated_name}` does not match canonical `{expected}`"
+        )));
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum NameStyle {
     SnakeCase,
     PascalCase,
+    GeneratedSymbol,
 }
 
 impl NameStyle {
@@ -179,6 +242,7 @@ impl NameStyle {
         match self {
             NameStyle::SnakeCase => "snake_case",
             NameStyle::PascalCase => "PascalCase",
+            NameStyle::GeneratedSymbol => "a non-empty generated identifier",
         }
     }
 
@@ -186,6 +250,7 @@ impl NameStyle {
         match self {
             NameStyle::SnakeCase => is_snake_case(name),
             NameStyle::PascalCase => is_pascal_case(name),
+            NameStyle::GeneratedSymbol => is_generated_symbol(name),
         }
     }
 }
@@ -243,4 +308,12 @@ fn is_pascal_case(name: &str) -> bool {
         return false;
     }
     chars.all(|ch| ch.is_ascii_alphanumeric()) && name.chars().any(|ch| ch.is_ascii_lowercase())
+}
+
+fn is_generated_symbol(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic() && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }

@@ -2315,6 +2315,52 @@ backends = ["inproc", "iox2", "zenoh"]
     }
 
     #[test]
+    fn rejects_explicit_iox2_route_backend_for_variable_frames() {
+        let source = r#"
+[package]
+name = "explicit_iox2_variable_route_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes"
+
+[component.producer]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.consumer]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.producer]
+component = "producer"
+
+[instance.consumer]
+component = "consumer"
+
+[[bind.dataflow]]
+from = "producer.packet"
+to = "consumer.packet"
+channel = "latest"
+backend = "iox2"
+
+[target.default]
+runtime = ["rust"]
+backends = ["inproc", "iox2", "zenoh"]
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source)).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("explicit `iox2` dataflow backend cannot carry variable-frame messages"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn explicit_route_backend_survives_profile_projection() {
         let source = r#"
 [package]

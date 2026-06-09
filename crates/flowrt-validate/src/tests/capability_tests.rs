@@ -895,6 +895,25 @@ fn rejects_inconsistent_channel_policy_source_metadata() {
 }
 
 #[test]
+fn rejects_inconsistent_channel_backend_source_metadata() {
+    let mut ir = valid_reference_contract();
+    ir.graphs[0].binds[0].backend_source = flowrt_ir::ChannelBackendSource::Explicit;
+
+    let report =
+        validate_contract(&ir).expect_err("forged channel backend source metadata should fail");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "bind `producer.sample` -> `consumer.sample` backend source metadata is inconsistent",
+            )
+        }),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn rejects_inconsistent_channel_policy_source_metadata_before_profile_projection() {
     let source = r#"
 [package]
