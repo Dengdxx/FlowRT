@@ -243,3 +243,32 @@ period_ms = 5
     assert!(shell.contains("std::numeric_limits<T>::max()"));
     assert!(shell.contains("std::numeric_limits<T>::min()"));
 }
+
+#[test]
+fn generated_cpp_param_decoder_rejects_non_finite_floats() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "cpp"
+
+[component.controller.params]
+gain = { type = "f64", default = 1.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(shell.contains("#include <cmath>"));
+    assert!(shell.contains("!std::isfinite(parsed)"));
+}

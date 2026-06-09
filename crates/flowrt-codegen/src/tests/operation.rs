@@ -157,6 +157,68 @@ fn rust_runtime_shell_lowers_operation_to_internal_endpoints() {
     );
 }
 
+/// Operation start RPC 不能同步执行长 handler，否则 cancel/status 会被 hidden task 阻塞。
+#[test]
+fn rust_operation_start_handler_spawns_background_invocation() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        shell.contains("let operation_cancel_token_0"),
+        "runtime shell must keep a shared cancel token slot for cancel/status handlers.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("std::thread::Builder::new()"),
+        "operation start handler must launch the long-running invocation outside the service task.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt-operation-0"),
+        "operation worker thread should have a stable generated name for diagnostics.\n\n{shell}"
+    );
+    let start_handler = generated_function_block(shell, "let operation_start_handler_0");
+    let spawn_index = start_handler
+        .find("std::thread::Builder::new()")
+        .expect("start handler must spawn worker");
+    let ack_index = start_handler
+        .find("flowrt::ServiceResult::ok(flowrt::OperationStartAck::accepted(id))")
+        .expect("start handler must return accepted ack");
+    assert!(
+        ack_index > spawn_index,
+        "start handler must acknowledge after worker launch is requested.\n\n{start_handler}"
+    );
+    assert!(
+        !start_handler.contains(".on_plan_operation(&goal,"),
+        "start handler itself must not call the user operation handler synchronously.\n\n{start_handler}"
+    );
+}
+
+/// 当前 generated Operation runtime 只支持单个运行中的 invocation，第二个 start 必须被拒绝。
+#[test]
+fn rust_operation_start_handler_rejects_second_active_invocation() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let start_handler = generated_function_block(shell, "let operation_start_handler_0");
+
+    assert!(
+        shell.contains("let operation_active_0"),
+        "runtime shell must keep an active flag for reject concurrency.\n\n{shell}"
+    );
+    assert!(
+        start_handler.contains(".compare_exchange(false, true"),
+        "start handler must atomically reserve the single active invocation.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("flowrt::ServiceError::Busy"),
+        "start handler must reject a second start while one invocation is active.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("operation_worker_active.store(false"),
+        "operation worker must release the active flag after terminal state.\n\n{start_handler}"
+    );
+}
+
 /// Self-description 必须保留 Operation 用户语义和调试用 lowering refs。
 #[test]
 fn self_description_contains_operation_topology_and_lowering_refs() {
@@ -269,6 +331,34 @@ fn cpp_operation_components_are_generated() {
     assert!(
         shell.contains("controller_->on_tick(operation_client_controller_plan_)"),
         "C++ runtime shell must pass operation client handle into on_tick.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("std::thread"),
+        "C++ operation lowering must include a background worker for long handlers.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("operation_cancel_token_0"),
+        "C++ operation lowering must keep a shared cancel token slot.\n\n{shell}"
+    );
+    assert!(
+        !shell.contains("const auto result = this->navigator_->on_plan_operation(goal,"),
+        "C++ start handler itself must not call user operation handler synchronously.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("std::atomic_bool"),
+        "C++ operation lowering must keep an active flag for reject concurrency.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("compare_exchange_strong"),
+        "C++ start handler must atomically reserve the single active invocation.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::ServiceError::Busy"),
+        "C++ start handler must reject a second start while one invocation is active.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("operation_worker_active->store(false"),
+        "C++ operation worker must release the active flag after terminal state.\n\n{shell}"
     );
 }
 

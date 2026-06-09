@@ -217,22 +217,26 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         .push_str("                let task_statuses = scheduler.run_ready(|task| match task {\n");
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
+        let lane_id = lane_ids[&task_lane_name(task)];
         let function_name = match process {
             Some(process) => rust_process_task_step_function_name(process, task),
             None => rust_task_step_function_name(task),
         };
         output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => self.{function_name}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut health_map),\n"
+            "                flowrt::TaskId({task_id}) => {{\n\
+                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
+                 self.{function_name}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut health_map)\n\
+             }},\n"
         ));
     }
     // service dispatch cases
     let (service_cases, _service_case_end) =
-        service_emit::rust_service_dispatch_cases(contract, graph, next_task_id);
+        service_emit::rust_service_dispatch_cases(contract, graph, next_task_id, &lane_ids);
     if !service_cases.is_empty() {
         output.push_str(&service_cases);
     }
     let (operation_cases, _operation_case_end) =
-        operation_emit::rust_operation_dispatch_cases(contract, graph, service_task_end);
+        operation_emit::rust_operation_dispatch_cases(contract, graph, service_task_end, &lane_ids);
     if !operation_cases.is_empty() {
         output.push_str(&operation_cases);
     }

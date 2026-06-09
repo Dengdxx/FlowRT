@@ -31,6 +31,15 @@ use service_emit::{
 };
 use step_emit::RustStepEmission;
 
+fn rust_backend_constructor(selected_backend: &str) -> &'static str {
+    match selected_backend {
+        "inproc" => "flowrt::inproc_backend()",
+        "iox2" => "flowrt::iox2_backend()",
+        "zenoh" => "flowrt::zenoh_backend()",
+        _ => unreachable!("validated contract selected backend must be known"),
+    }
+}
+
 pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("\nuse crate::messages::*;\n\n");
@@ -239,9 +248,10 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         &mut output,
     );
     output.push_str("}\n\n");
-    output.push_str(
-        "pub fn backend() -> Box<dyn flowrt::Backend> {\n    match SELECTED_BACKEND {\n        \"inproc\" => Box::new(flowrt::inproc_backend()),\n        \"iox2\" => Box::new(flowrt::iox2_backend()),\n        \"zenoh\" => Box::new(flowrt::zenoh_backend()),\n        other => panic!(\"unsupported generated FlowRT backend `{other}`\"),\n    }\n}\n\npub fn run(run_ticks: Option<usize>) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref(), run_ticks)\n}\n\npub fn run_process(process: &str, run_ticks: Option<usize>) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process, run_ticks)\n}\n",
-    );
+    let backend_constructor = rust_backend_constructor(&selected_backend);
+    output.push_str(&format!(
+        "pub fn backend() -> Box<dyn flowrt::Backend> {{\n    Box::new({backend_constructor})\n}}\n\npub fn run(run_ticks: Option<usize>) -> flowrt::Status {{\n    let backend = backend();\n    user::build_app().run(backend.as_ref(), run_ticks)\n}}\n\npub fn run_process(process: &str, run_ticks: Option<usize>) -> flowrt::Status {{\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process, run_ticks)\n}}\n",
+    ));
     output
 }
 

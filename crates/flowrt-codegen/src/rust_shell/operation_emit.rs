@@ -208,6 +208,8 @@ pub(crate) fn emit_rust_operation_new(
         let method_name = operation_handler_method_name(&plan.server_port);
         let state_var = format!("operation_state_{}", plan.index);
         let sequence_var = format!("operation_sequence_{}", plan.index);
+        let cancel_token_var = format!("operation_cancel_token_{}", plan.index);
+        let active_var = format!("operation_active_{}", plan.index);
         let start_handler = format!("operation_start_handler_{}", plan.index);
         let cancel_handler = format!("operation_cancel_handler_{}", plan.index);
         let status_handler = format!("operation_status_handler_{}", plan.index);
@@ -229,10 +231,17 @@ pub(crate) fn emit_rust_operation_new(
         registration.push_str(&format!(
             "        let {state_var} = std::sync::Arc::new(std::sync::Mutex::new({default_snapshot}));\n\
              let {sequence_var} = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));\n\
+             let {cancel_token_var} = std::sync::Arc::new(std::sync::Mutex::new(None::<flowrt::OperationCancelToken>));\n\
+             let {active_var} = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));\n\
              let {server_component} = {server_instance}.clone();\n\
              let {start_handler}_state = {state_var}.clone();\n\
              let {start_handler}_sequence = {sequence_var}.clone();\n\
+             let {start_handler}_cancel = {cancel_token_var}.clone();\n\
+             let {start_handler}_active = {active_var}.clone();\n\
              let {start_handler} = move |goal: {goal_ty}| -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n\
+                 if {start_handler}_active.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {{\n\
+                     return flowrt::ServiceResult::err(flowrt::ServiceError::Busy);\n\
+                 }}\n\
                  let id = flowrt::OperationId::new({operation_key}, 0, {start_handler}_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed));\n\
                  let policy = match flowrt::OperationPolicy::new(\n\
                      std::time::Duration::from_millis({timeout_ms}),\n\
@@ -242,34 +251,73 @@ pub(crate) fn emit_rust_operation_new(
                      {max_in_flight},\n\
                  ) {{\n\
                      Ok(policy) => policy,\n\
-                     Err(_) => return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError),\n\
+                     Err(_) => {{\n\
+                         {start_handler}_active.store(false, std::sync::atomic::Ordering::Release);\n\
+                         return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError);\n\
+                     }}\n\
                  }};\n\
                  let mut lifecycle = match flowrt::OperationLifecycle::new(id, policy) {{\n\
                      Ok(lifecycle) => lifecycle,\n\
-                     Err(_) => return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError),\n\
+                     Err(_) => {{\n\
+                         {start_handler}_active.store(false, std::sync::atomic::Ordering::Release);\n\
+                         return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError);\n\
+                     }}\n\
                  }};\n\
                  if lifecycle.transition(flowrt::OperationState::Running).is_err() {{\n\
+                     {start_handler}_active.store(false, std::sync::atomic::Ordering::Release);\n\
                      return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError);\n\
                  }}\n\
                  let cancel = lifecycle.cancel_token();\n\
-                 let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::new(id);\n\
-                 let result = {server_component}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_name}(&goal, cancel, &mut progress);\n\
-                 let terminal_state = match result {{\n\
-                     flowrt::OperationHandlerResult::Succeeded(_) => flowrt::OperationState::Succeeded,\n\
-                     flowrt::OperationHandlerResult::Failed => flowrt::OperationState::Failed,\n\
-                     flowrt::OperationHandlerResult::Canceled => flowrt::OperationState::Canceled,\n\
-                 }};\n\
-                 let _ = lifecycle.transition(terminal_state);\n\
                  *{start_handler}_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = lifecycle.snapshot();\n\
+                 *{start_handler}_cancel.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cancel.clone());\n\
+                 let operation_worker_state = {start_handler}_state.clone();\n\
+                 let operation_worker_server = {server_component}.clone();\n\
+                 let operation_worker_active = {start_handler}_active.clone();\n\
+                 let goal_for_worker = goal;\n\
+                 let spawn_result = std::thread::Builder::new()\n\
+                     .name(\"flowrt-operation-{index}\".to_string())\n\
+                     .spawn(move || {{\n\
+                         let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::new(id);\n\
+                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
+                             operation_worker_server\n\
+                                 .lock()\n\
+                                 .unwrap_or_else(|poisoned| poisoned.into_inner())\n\
+                                 .{method_name}(&goal_for_worker, cancel.clone(), &mut progress)\n\
+                         }}));\n\
+                         let terminal_state = match result {{\n\
+                             Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
+                             Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,\n\
+                             Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Canceled,\n\
+                         }};\n\
+                         if terminal_state == flowrt::OperationState::Canceled {{\n\
+                             let _ = lifecycle.request_cancel();\n\
+                         }}\n\
+                         let _ = lifecycle.transition(terminal_state);\n\
+                         *operation_worker_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = lifecycle.snapshot();\n\
+                         operation_worker_active.store(false, std::sync::atomic::Ordering::Release);\n\
+                     }});\n\
+                 if spawn_result.is_err() {{\n\
+                     let mut snapshot = {start_handler}_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+                     snapshot.state = flowrt::OperationState::Failed;\n\
+                     snapshot.cancel_requested = true;\n\
+                     {start_handler}_active.store(false, std::sync::atomic::Ordering::Release);\n\
+                     return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError);\n\
+                 }}\n\
                  flowrt::ServiceResult::ok(flowrt::OperationStartAck::accepted(id))\n\
              }};\n"
+            ,
+            index = plan.index,
         ));
 
         registration.push_str(&format!(
             "        let {cancel_handler}_state = {state_var}.clone();\n\
+             let {cancel_handler}_cancel = {cancel_token_var}.clone();\n\
              let {cancel_handler} = move |id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
                  let mut snapshot = {cancel_handler}_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
                  if snapshot.id == id {{\n\
+                     if let Some(cancel) = {cancel_handler}_cancel.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {{\n\
+                         cancel.request_cancel();\n\
+                     }}\n\
                      snapshot.cancel_requested = true;\n\
                      if !snapshot.state.is_terminal() {{\n\
                          snapshot.state = flowrt::OperationState::Canceling;\n\
@@ -389,6 +437,7 @@ pub(crate) fn rust_operation_dispatch_cases(
     contract: &ContractIr,
     graph: &GraphIr,
     task_id_offset: usize,
+    lane_ids: &BTreeMap<String, usize>,
 ) -> (String, usize) {
     let plans = operation_runtime_plans(contract, graph);
     if plans.is_empty() {
@@ -402,8 +451,12 @@ pub(crate) fn rust_operation_dispatch_cases(
             continue;
         }
         task_id += 1;
+        let lane_id = lane_ids[&operation_server_lane(plan)];
         output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => self.{fn_name}(&introspection_state, &mut health_map),\n",
+            "                flowrt::TaskId({task_id}) => {{\n\
+                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
+                 self.{fn_name}(&introspection_state, &mut health_map)\n\
+             }},\n",
             fn_name = operation_step_fn_name(plan),
         ));
     }

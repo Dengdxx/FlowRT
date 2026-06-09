@@ -153,7 +153,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <algorithm>\n#include <cerrno>\n#include <chrono>\n#include <cstdint>\n#include <cstdlib>\n#include <limits>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <algorithm>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdlib>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -377,8 +377,13 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push('\n');
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
+        let pointer_type = if cpp_instance_needs_operation_shared_ptr(instance, &operation_plans) {
+            "std::shared_ptr"
+        } else {
+            "std::unique_ptr"
+        };
         output.push_str(&format!(
-            "    std::unique_ptr<{}Interface> {}_;\n",
+            "    {pointer_type}<{}Interface> {}_;\n",
             component_cpp_name(component),
             instance.name
         ));
@@ -515,6 +520,15 @@ fn emit_cpp_app_constructor_declaration(contract: &ContractIr, order: &[&Instanc
     output
 }
 
+fn cpp_instance_needs_operation_shared_ptr(
+    instance: &InstanceIr,
+    operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
+) -> bool {
+    operation_plans
+        .iter()
+        .any(|plan| plan.backend.0 != "zenoh" && plan.server_instance == instance.name)
+}
+
 fn emit_cpp_app_constructor(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -610,36 +624,174 @@ fn emit_cpp_app_constructor(
         if plan.backend.0 == "zenoh" {
             continue;
         }
-        let start_name = cpp_string_literal(&cpp_operation_start_endpoint_name(plan));
-        let cancel_name = cpp_string_literal(&cpp_operation_cancel_endpoint_name(plan));
-        let status_name = cpp_string_literal(&cpp_operation_status_endpoint_name(plan));
-        let feedback_name = cpp_string_literal(&cpp_operation_feedback_endpoint_name(plan));
-        let result_name = cpp_string_literal(&cpp_operation_result_endpoint_name(plan));
-        let operation_key_name = cpp_string_literal(&plan.operation_name);
-        let client_field = cpp_operation_client_field_name(plan);
-        let start_server = cpp_operation_start_server_field_name(plan);
-        let cancel_server = cpp_operation_cancel_server_field_name(plan);
-        let status_server = cpp_operation_status_server_field_name(plan);
-        let handle_name = cpp_operation_client_handle_name(plan);
-        let goal_ty = cpp_type(&plan.goal_type);
-        let feedback_ty = cpp_type(&plan.feedback_type);
-        let result_ty = cpp_type(&plan.result_type);
-        let queue_depth = plan.queue_depth.max(1);
-        let max_in_flight = plan.max_in_flight.max(1);
-        let timeout_ms = plan.timeout_ms.max(1);
-        let concurrency = cpp_operation_concurrency(plan.concurrency);
-        let preempt = cpp_operation_preempt(plan.preempt);
-        let operation_index = plan.index;
-
-        output.push_str(&format!(
-            "    {{\n        (void){feedback_name};\n        (void){result_name};\n        auto operation_state_{operation_index} = std::make_shared<flowrt::OperationStatusSnapshot>(flowrt::OperationStatusSnapshot{{\n            .id = flowrt::OperationId{{.operation_key = flowrt::fnv1a64({operation_key_name}), .client_id = 0, .sequence = 0}},\n            .state = flowrt::OperationState::Accepted,\n            .cancel_requested = false,\n            .health = flowrt::OperationHealthSnapshot{{}},\n        }});\n        auto operation_sequence_{operation_index} = std::make_shared<std::uint64_t>(0);\n        flowrt::InprocServiceConfig config;\n        config.queue_depth = {queue_depth};\n        config.max_in_flight = {max_in_flight};\n        config.default_timeout_ms = {timeout_ms};\n        {start_server}_.emplace(\n            {start_name},\n            [this, operation_state_{operation_index}, operation_sequence_{operation_index}](const {goal_ty}& goal) -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n                if (!this->{server_instance}_) {{\n                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Unavailable);\n                }}\n                const auto sequence = (*operation_sequence_{operation_index})++;\n                const flowrt::OperationId id{{\n                    .operation_key = flowrt::fnv1a64({operation_key_name}),\n                    .client_id = 0,\n                    .sequence = sequence,\n                }};\n                const auto policy = flowrt::OperationPolicy::make(\n                    std::chrono::milliseconds{{{timeout_ms}}},\n                    {concurrency},\n                    {preempt},\n                    {queue_depth}U,\n                    {max_in_flight}U);\n                if (!policy.has_value()) {{\n                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);\n                }}\n                flowrt::OperationLifecycle lifecycle{{id, *policy}};\n                if (lifecycle.transition(flowrt::OperationState::Running) != flowrt::OperationError::Ok) {{\n                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);\n                }}\n                auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id}};\n                const auto result = this->{server_instance}_->on_{port}_operation(goal, lifecycle.cancel_token(), progress);\n                flowrt::OperationState terminal_state = flowrt::OperationState::Failed;\n                switch (result.kind()) {{\n                    case flowrt::OperationHandlerResult<{result_ty}>::Kind::Succeeded:\n                        terminal_state = flowrt::OperationState::Succeeded;\n                        break;\n                    case flowrt::OperationHandlerResult<{result_ty}>::Kind::Failed:\n                        terminal_state = flowrt::OperationState::Failed;\n                        break;\n                    case flowrt::OperationHandlerResult<{result_ty}>::Kind::Canceled:\n                        terminal_state = flowrt::OperationState::Canceled;\n                        break;\n                }}\n                (void)lifecycle.transition(terminal_state);\n                *operation_state_{operation_index} = lifecycle.snapshot();\n                return flowrt::ServiceResult<flowrt::OperationStartAck>::ok(flowrt::OperationStartAck::accepted_ack(id));\n            }},\n            config);\n        {cancel_server}_.emplace(\n            {cancel_name},\n            [operation_state_{operation_index}](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n                if (operation_state_{operation_index}->id == id) {{\n                    operation_state_{operation_index}->cancel_requested = true;\n                    if (!flowrt::is_terminal(operation_state_{operation_index}->state)) {{\n                        operation_state_{operation_index}->state = flowrt::OperationState::Canceling;\n                    }}\n                }}\n                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(*operation_state_{operation_index});\n            }},\n            config);\n        {status_server}_.emplace(\n            {status_name},\n            [operation_state_{operation_index}](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(*operation_state_{operation_index});\n            }},\n            config);\n        {client_field}_ = {handle_name}(\n            flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck>({start_name}, *{start_server}_),\n            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({cancel_name}, *{cancel_server}_),\n            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({status_name}, *{status_server}_));\n    }}\n",
-            port = crate::snake_identifier(&plan.server_port),
-            server_instance = plan.server_instance,
-        ));
+        output.push_str(&cpp_operation_registration_block(plan));
     }
 
     output.push_str("}\n\n");
     output
+}
+
+fn cpp_operation_registration_block(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
+    let start_name = cpp_string_literal(&cpp_operation_start_endpoint_name(plan));
+    let cancel_name = cpp_string_literal(&cpp_operation_cancel_endpoint_name(plan));
+    let status_name = cpp_string_literal(&cpp_operation_status_endpoint_name(plan));
+    let feedback_name = cpp_string_literal(&cpp_operation_feedback_endpoint_name(plan));
+    let result_name = cpp_string_literal(&cpp_operation_result_endpoint_name(plan));
+    let operation_key_name = cpp_string_literal(&plan.operation_name);
+    let client_field = cpp_operation_client_field_name(plan);
+    let start_server = cpp_operation_start_server_field_name(plan);
+    let cancel_server = cpp_operation_cancel_server_field_name(plan);
+    let status_server = cpp_operation_status_server_field_name(plan);
+    let handle_name = cpp_operation_client_handle_name(plan);
+    let goal_ty = cpp_type(&plan.goal_type);
+    let feedback_ty = cpp_type(&plan.feedback_type);
+    let result_ty = cpp_type(&plan.result_type);
+    let queue_depth = plan.queue_depth.max(1);
+    let max_in_flight = plan.max_in_flight.max(1);
+    let timeout_ms = plan.timeout_ms.max(1);
+    let concurrency = cpp_operation_concurrency(plan.concurrency);
+    let preempt = cpp_operation_preempt(plan.preempt);
+    let operation_index = plan.index;
+    let port = crate::snake_identifier(&plan.server_port);
+    let server_instance = &plan.server_instance;
+
+    format!(
+        r#"    {{
+        (void){feedback_name};
+        (void){result_name};
+        auto operation_state_{operation_index} = std::make_shared<flowrt::OperationStatusSnapshot>(flowrt::OperationStatusSnapshot{{
+            .id = flowrt::OperationId{{.operation_key = flowrt::fnv1a64({operation_key_name}), .client_id = 0, .sequence = 0}},
+            .state = flowrt::OperationState::Accepted,
+            .cancel_requested = false,
+            .health = flowrt::OperationHealthSnapshot{{}},
+        }});
+        auto operation_state_mutex_{operation_index} = std::make_shared<std::mutex>();
+        auto operation_cancel_token_{operation_index} = std::make_shared<std::optional<flowrt::OperationCancelToken>>();
+        auto operation_cancel_mutex_{operation_index} = std::make_shared<std::mutex>();
+        auto operation_sequence_{operation_index} = std::make_shared<std::uint64_t>(0);
+        auto operation_active_{operation_index} = std::make_shared<std::atomic_bool>(false);
+        flowrt::InprocServiceConfig config;
+        config.queue_depth = {queue_depth};
+        config.max_in_flight = {max_in_flight};
+        config.default_timeout_ms = {timeout_ms};
+        {start_server}_.emplace(
+            {start_name},
+            [this, operation_state_{operation_index}, operation_state_mutex_{operation_index}, operation_cancel_token_{operation_index}, operation_cancel_mutex_{operation_index}, operation_sequence_{operation_index}, operation_active_{operation_index}](const {goal_ty}& goal) -> flowrt::ServiceResult<flowrt::OperationStartAck> {{
+                auto operation_worker_server = this->{server_instance}_;
+                if (!operation_worker_server) {{
+                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Unavailable);
+                }}
+                bool expected_active = false;
+                if (!operation_active_{operation_index}->compare_exchange_strong(
+                        expected_active,
+                        true,
+                        std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {{
+                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Busy);
+                }}
+                const auto sequence = (*operation_sequence_{operation_index})++;
+                const flowrt::OperationId id{{
+                    .operation_key = flowrt::fnv1a64({operation_key_name}),
+                    .client_id = 0,
+                    .sequence = sequence,
+                }};
+                const auto policy = flowrt::OperationPolicy::make(
+                    std::chrono::milliseconds{{{timeout_ms}}},
+                    {concurrency},
+                    {preempt},
+                    {queue_depth}U,
+                    {max_in_flight}U);
+                if (!policy.has_value()) {{
+                    operation_active_{operation_index}->store(false, std::memory_order_release);
+                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);
+                }}
+                auto lifecycle = std::make_shared<flowrt::OperationLifecycle>(id, *policy);
+                if (lifecycle->transition(flowrt::OperationState::Running) != flowrt::OperationError::Ok) {{
+                    operation_active_{operation_index}->store(false, std::memory_order_release);
+                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);
+                }}
+                const auto cancel = lifecycle->cancel_token();
+                {{
+                    std::lock_guard lock(*operation_state_mutex_{operation_index});
+                    *operation_state_{operation_index} = lifecycle->snapshot();
+                }}
+                {{
+                    std::lock_guard lock(*operation_cancel_mutex_{operation_index});
+                    *operation_cancel_token_{operation_index} = cancel;
+                }}
+                auto goal_for_worker = goal;
+                auto operation_worker_active = operation_active_{operation_index};
+                try {{
+                    std::thread([operation_worker_server, operation_state_{operation_index}, operation_state_mutex_{operation_index}, operation_worker_active, lifecycle, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {{
+                        auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{lifecycle->id()}};
+                        flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
+                        try {{
+                            const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, cancel, progress);
+                            switch (result.kind()) {{
+                                case flowrt::OperationHandlerResult<{result_ty}>::Kind::Succeeded:
+                                    terminal_state = flowrt::OperationState::Succeeded;
+                                    break;
+                                case flowrt::OperationHandlerResult<{result_ty}>::Kind::Failed:
+                                    terminal_state = flowrt::OperationState::Failed;
+                                    break;
+                                case flowrt::OperationHandlerResult<{result_ty}>::Kind::Canceled:
+                                    terminal_state = flowrt::OperationState::Canceled;
+                                    break;
+                            }}
+                        }} catch (...) {{
+                            terminal_state = flowrt::OperationState::Failed;
+                        }}
+                        if (terminal_state == flowrt::OperationState::Canceled) {{
+                            (void)lifecycle->request_cancel();
+                        }}
+                        (void)lifecycle->transition(terminal_state);
+                        std::lock_guard lock(*operation_state_mutex_{operation_index});
+                        *operation_state_{operation_index} = lifecycle->snapshot();
+                        operation_worker_active->store(false, std::memory_order_release);
+                    }}).detach();
+                }} catch (...) {{
+                    (void)lifecycle->transition(flowrt::OperationState::Failed);
+                    std::lock_guard lock(*operation_state_mutex_{operation_index});
+                    *operation_state_{operation_index} = lifecycle->snapshot();
+                    operation_active_{operation_index}->store(false, std::memory_order_release);
+                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);
+                }}
+                return flowrt::ServiceResult<flowrt::OperationStartAck>::ok(flowrt::OperationStartAck::accepted_ack(id));
+            }},
+            config);
+        {cancel_server}_.emplace(
+            {cancel_name},
+            [operation_state_{operation_index}, operation_state_mutex_{operation_index}, operation_cancel_token_{operation_index}, operation_cancel_mutex_{operation_index}](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
+                std::lock_guard state_lock(*operation_state_mutex_{operation_index});
+                if (operation_state_{operation_index}->id == id) {{
+                    {{
+                        std::lock_guard cancel_lock(*operation_cancel_mutex_{operation_index});
+                        if (operation_cancel_token_{operation_index}->has_value()) {{
+                            operation_cancel_token_{operation_index}->value().request_cancel();
+                        }}
+                    }}
+                    operation_state_{operation_index}->cancel_requested = true;
+                    if (!flowrt::is_terminal(operation_state_{operation_index}->state)) {{
+                        operation_state_{operation_index}->state = flowrt::OperationState::Canceling;
+                    }}
+                }}
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(*operation_state_{operation_index});
+            }},
+            config);
+        {status_server}_.emplace(
+            {status_name},
+            [operation_state_{operation_index}, operation_state_mutex_{operation_index}](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
+                std::lock_guard lock(*operation_state_mutex_{operation_index});
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(*operation_state_{operation_index});
+            }},
+            config);
+        {client_field}_ = {handle_name}(
+            flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck>({start_name}, *{start_server}_),
+            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({cancel_name}, *{cancel_server}_),
+            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({status_name}, *{status_server}_));
+    }}
+"#,
+    )
 }
 
 struct CppStepEmission<'a> {
@@ -1037,6 +1189,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     let operation_plans = crate::runtime_plan::operation_runtime_plans(run.contract, run.graph);
     let mut next_task_id = tasks.len();
     let mut next_extra_lane_id = lane_ids.len() + 1;
+    let mut hidden_task_lane_ids = BTreeMap::<usize, usize>::new();
     for plan in &service_plans {
         if plan.backend.0 == "zenoh" {
             continue;
@@ -1045,6 +1198,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         let _server_lane = crate::runtime_plan::service_server_lane(plan);
         let lane_id = next_extra_lane_id;
         next_extra_lane_id += 1;
+        hidden_task_lane_ids.insert(next_task_id, lane_id);
         output.push_str(&format!(
             "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = 0}});\n"
         ));
@@ -1056,6 +1210,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         next_task_id += 1;
         let lane_id = next_extra_lane_id;
         next_extra_lane_id += 1;
+        hidden_task_lane_ids.insert(next_task_id, lane_id);
         output.push_str(&format!(
             "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = 0}});\n"
         ));
@@ -1122,12 +1277,17 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
+        let lane_id = lane_ids[&cpp_task_lane_name(task)];
         let function_name = match run.process {
             Some(process) => cpp_process_task_step_function_name(process, task),
             None => cpp_task_step_function_name(task),
         };
         output.push_str(&format!(
-            "                    case {task_id}: return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n"
+            "                    case {task_id}: {{\n\
+                         auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{{{lane_id}}});\n\
+                         (void)flowrt_lane_guard;\n\
+                         return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n\
+                     }}\n"
         ));
     }
     // service dispatch cases
@@ -1138,8 +1298,13 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         }
         service_task_id += 1;
         let fn_name = cpp_service_step_fn_name(plan);
+        let lane_id = hidden_task_lane_ids[&service_task_id];
         output.push_str(&format!(
-            "                    case {service_task_id}: return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n"
+            "                    case {service_task_id}: {{\n\
+                         auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{{{lane_id}}});\n\
+                         (void)flowrt_lane_guard;\n\
+                         return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n\
+                     }}\n"
         ));
     }
     for plan in &operation_plans {
@@ -1148,8 +1313,13 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         }
         service_task_id += 1;
         let fn_name = cpp_operation_step_fn_name(plan);
+        let lane_id = hidden_task_lane_ids[&service_task_id];
         output.push_str(&format!(
-            "                    case {service_task_id}: return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n"
+            "                    case {service_task_id}: {{\n\
+                         auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{{{lane_id}}});\n\
+                         (void)flowrt_lane_guard;\n\
+                         return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n\
+                     }}\n"
         ));
     }
     if tasks.is_empty()
@@ -2013,7 +2183,7 @@ inline bool decode_flowrt_param_value(std::string_view value, float& output) {
     char* end = nullptr;
     errno = 0;
     const float parsed = std::strtof(owned.c_str(), &end);
-    if (errno != 0 || end == owned.c_str() || *end != '\0') {
+    if (errno != 0 || end == owned.c_str() || *end != '\0' || !std::isfinite(parsed)) {
         return false;
     }
     output = parsed;
@@ -2025,7 +2195,7 @@ inline bool decode_flowrt_param_value(std::string_view value, double& output) {
     char* end = nullptr;
     errno = 0;
     const double parsed = std::strtod(owned.c_str(), &end);
-    if (errno != 0 || end == owned.c_str() || *end != '\0') {
+    if (errno != 0 || end == owned.c_str() || *end != '\0' || !std::isfinite(parsed)) {
         return false;
     }
     output = parsed;

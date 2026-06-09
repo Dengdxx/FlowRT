@@ -28,6 +28,9 @@ default_stale_policy = "warn"
     assert!(cargo_manifest.contains("features = [\"iox2\"]"));
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"iox2\";"));
+    assert!(rust_shell.contains("Box::new(flowrt::iox2_backend())"));
+    assert!(!rust_shell.contains("unsupported generated FlowRT backend"));
+    assert!(!rust_shell.contains("panic!("));
 }
 
 #[test]
@@ -88,6 +91,9 @@ backends = ["iox2"]
     assert!(cargo_manifest.contains("features = [\"iox2\"]"));
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"iox2\";"));
+    assert!(rust_shell.contains("Box::new(flowrt::iox2_backend())"));
+    assert!(!rust_shell.contains("unsupported generated FlowRT backend"));
+    assert!(!rust_shell.contains("panic!("));
 }
 
 #[test]
@@ -467,8 +473,11 @@ backends = ["zenoh"]
 
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(rust_shell.contains("const SELECTED_BACKEND: &str = \"zenoh\";"));
-    assert!(rust_shell.contains("\"zenoh\" => Box::new(flowrt::zenoh_backend())"));
-    assert!(!rust_shell.contains("_ => Box::new(flowrt::inproc_backend())"));
+    assert!(rust_shell.contains("Box::new(flowrt::zenoh_backend())"));
+    assert!(!rust_shell.contains("flowrt::inproc_backend()"));
+    assert!(!rust_shell.contains("flowrt::iox2_backend()"));
+    assert!(!rust_shell.contains("unsupported generated FlowRT backend"));
+    assert!(!rust_shell.contains("panic!("));
     assert!(rust_shell.contains("flowrt::zenoh::ZenohPubSub<Imu>"));
     assert!(rust_shell.contains(
             "flowrt::zenoh::ZenohPubSub::open_with_config(\"flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu\""

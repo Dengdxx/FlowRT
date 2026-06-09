@@ -214,7 +214,11 @@ input = ["imu:Imu"]
     let cpp_selfdesc = artifact_content(&bundle, "cpp/src/selfdesc.cpp");
     assert!(cpp_selfdesc.contains("[[gnu::used, gnu::section(\".flowrt.selfdesc\")]]"));
     assert!(cpp_selfdesc.contains("const char kFlowrtSelfDescription[]"));
-    assert!(rust_shell.contains("flowrt::iox2_backend()"));
+    assert!(rust_shell.contains("Box::new(flowrt::inproc_backend())"));
+    assert!(!rust_shell.contains("flowrt::iox2_backend()"));
+    assert!(!rust_shell.contains("flowrt::zenoh_backend()"));
+    assert!(!rust_shell.contains("unsupported generated FlowRT backend"));
+    assert!(!rust_shell.contains("panic!("));
 }
 
 #[test]

@@ -465,6 +465,7 @@ pub(crate) fn rust_service_dispatch_cases(
     contract: &ContractIr,
     graph: &GraphIr,
     task_id_offset: usize,
+    lane_ids: &BTreeMap<String, usize>,
 ) -> (String, usize) {
     let plans = service_runtime_plans(contract, graph);
     if plans.is_empty() {
@@ -480,8 +481,12 @@ pub(crate) fn rust_service_dispatch_cases(
         }
         task_id += 1;
         let fn_name = service_step_fn_name(plan);
+        let lane_id = lane_ids[&service_server_lane(plan)];
         output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => self.{fn_name}(&introspection_state, &mut health_map),\n"
+            "                flowrt::TaskId({task_id}) => {{\n\
+                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
+                 self.{fn_name}(&introspection_state, &mut health_map)\n\
+             }},\n"
         ));
     }
 

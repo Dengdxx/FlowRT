@@ -185,6 +185,10 @@ fn rust_scheduler_dispatches_service_tasks() {
         shell.contains("step_service_plan_svc_plan(&introspection_state, &mut health_map)"),
         "scheduler must dispatch service task.\n\n{shell}"
     );
+    assert!(
+        shell.contains("let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId("),
+        "scheduler dispatch must mark the active lane for same-lane service deadlock detection.\n\n{shell}"
+    );
 }
 
 /// service policy 参数正确读取。
@@ -326,6 +330,10 @@ timeout_ms = 2000
     assert!(
         shell.contains("process_pending()"),
         "C++ runtime shell must call process_pending in service step.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{"),
+        "C++ scheduler dispatch must mark the active lane for same-lane service deadlock detection.\n\n{shell}"
     );
 }
 
