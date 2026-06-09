@@ -230,6 +230,80 @@ backends = ["inproc"]
 }
 
 #[test]
+fn rejects_forged_external_dataflow_explicit_non_zenoh_backend() {
+    let source = r#"
+[package]
+name = "forged_external_route"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[component.monitor]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.sensor]
+component = "sensor"
+process = "sensor_proc"
+target = "edge"
+
+[instance.monitor]
+component = "monitor"
+process = "monitor_proc"
+target = "edge"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[external_process]]
+process = "sensor_proc"
+package = "sensor_driver"
+executable = "bin/driver"
+required_backends = ["zenoh"]
+
+[[bind.dataflow]]
+from = "sensor.sample"
+to = "monitor.sample"
+channel = "latest"
+backend = "zenoh"
+
+[profile.default]
+backend = "inproc"
+
+[target.edge]
+runtime = ["rust", "external"]
+backends = ["inproc", "iox2", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    validate_contract(&ir).unwrap();
+
+    let bind = &mut ir.graphs[0].binds[0];
+    bind.backend = BackendName("iox2".to_string());
+    bind.backend_policy_source = PolicyValueSource::Explicit;
+    bind.backend_source = ChannelBackendSource::Explicit;
+
+    let report = validate_contract(&ir).expect_err("forged external route backend should fail");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "bind `sensor.sample` -> `monitor.sample` backend source metadata is inconsistent",
+            )
+        }),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn rejects_iox2_for_cross_target_dataflow_that_requires_multi_host() {
     let source = r#"
 [package]

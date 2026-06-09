@@ -146,7 +146,29 @@ pub(crate) fn validate_channel_backend_sources(ir: &ContractIr, errors: &mut Vec
         for bind in &graph.binds {
             match bind.backend_policy_source {
                 PolicyValueSource::Explicit => {
-                    if bind.backend_source != ChannelBackendSource::Explicit {
+                    let Some(source_type) = source_types.get(&bind.id) else {
+                        continue;
+                    };
+                    let topology = route_topologies
+                        .get(&bind.id)
+                        .copied()
+                        .unwrap_or_else(RouteTopology::local);
+                    let expected = expected_explicit_backend(
+                        bind.backend.0.as_str(),
+                        ir,
+                        source_type,
+                        topology,
+                    );
+                    let explicit_semantics_match = expected
+                        .as_ref()
+                        .map(|expected| {
+                            bind.backend.0 == expected.backend
+                                && bind.backend_source == expected.source
+                        })
+                        .unwrap_or(false);
+                    if bind.backend_source != ChannelBackendSource::Explicit
+                        || !explicit_semantics_match
+                    {
                         push_backend_source_error(bind, errors);
                     }
                 }
@@ -505,7 +527,7 @@ fn push_policy_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationErr
 
 fn push_backend_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationError>) {
     errors.push(ValidationError::new(format!(
-        "bind `{}.{}` -> `{}.{}` backend source metadata is inconsistent with selected profile defaults",
+        "bind `{}.{}` -> `{}.{}` backend source metadata is inconsistent with backend resolver semantics",
         bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
     )));
 }
@@ -533,6 +555,21 @@ fn expected_profile_default_backend(
         backend: resolved.backend,
         source: resolved.source,
     }
+}
+
+fn expected_explicit_backend(
+    backend: &str,
+    ir: &ContractIr,
+    source_type: &flowrt_ir::TypeExpr,
+    topology: RouteTopology,
+) -> Option<ExpectedChannelBackend> {
+    let resolved =
+        flowrt_ir::resolve_channel_backend(backend, Some(source_type), &ir.types, topology, true)
+            .ok()?;
+    Some(ExpectedChannelBackend {
+        backend: resolved.backend,
+        source: resolved.source,
+    })
 }
 
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {

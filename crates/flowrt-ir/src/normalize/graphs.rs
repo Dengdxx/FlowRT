@@ -3,13 +3,12 @@ use std::collections::BTreeMap;
 use flowrt_rsdl::{RawDocument, RawExternalProcess, RawModuleDocument, RawProcess};
 
 use crate::{
-    BackendName, ChannelBackendSource, ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr,
-    ComponentIr, DeploymentIr, EntityId, EntityRef, ExternalHealthKind, ExternalProcessIr,
-    ExternalWorkingDir, GraphIr, InstanceIr, IrError, OverflowPolicy, PolicyValueSource, PortRef,
-    ProcessFailurePropagation, ProcessIr, ProcessReadinessGate, ProcessRestartPolicy,
-    ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy, TargetIr, TaskIr, TypeIr,
-    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
-    graph_required_capabilities,
+    BackendName, ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr, ComponentIr, DeploymentIr,
+    EntityId, EntityRef, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr,
+    InstanceIr, IrError, OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation,
+    ProcessIr, ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr,
+    Result, RtPolicy, StalePolicy, TargetIr, TaskIr, TypeIr, channel_capabilities,
+    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -449,14 +448,6 @@ pub(super) fn normalize_binds(
                 topology,
                 explicit_backend,
             )?;
-            let backend_source = if raw.backend.is_some()
-                && raw.backend.as_deref() != Some("auto")
-                && resolved_backend.source != ChannelBackendSource::AutoFallback
-            {
-                ChannelBackendSource::Explicit
-            } else {
-                resolved_backend.source
-            };
 
             Ok(ChannelEdgeIr {
                 id: entity_id("bind", &format!("{}->{}", raw.from, raw.to)),
@@ -468,7 +459,7 @@ pub(super) fn normalize_binds(
                 } else {
                     PolicyValueSource::ProfileDefault
                 },
-                backend_source,
+                backend_source: resolved_backend.source,
                 channel,
                 depth,
                 overflow,

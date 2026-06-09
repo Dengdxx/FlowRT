@@ -97,7 +97,11 @@ pub fn resolve_channel_backend(
     }
     Ok(ChannelBackendResolution {
         backend: requested_backend.to_string(),
-        source: ChannelBackendSource::ProfileDefault,
+        source: if explicit {
+            ChannelBackendSource::Explicit
+        } else {
+            ChannelBackendSource::ProfileDefault
+        },
     })
 }
 
@@ -716,6 +720,24 @@ mod tests {
     fn rejects_unknown_backend_names() {
         assert!(!is_known_backend("typo_backend"));
         assert!(backend_capabilities("typo_backend").is_none());
+    }
+
+    #[test]
+    fn resolve_channel_backend_preserves_explicit_source_for_plain_routes() {
+        let resolved =
+            resolve_channel_backend("zenoh", None, &[], RouteTopology::local(), true).unwrap();
+
+        assert_eq!(resolved.backend, "zenoh");
+        assert_eq!(resolved.source, ChannelBackendSource::Explicit);
+    }
+
+    #[test]
+    fn resolve_channel_backend_marks_default_source_for_plain_routes() {
+        let resolved =
+            resolve_channel_backend("iox2", None, &[], RouteTopology::local(), false).unwrap();
+
+        assert_eq!(resolved.backend, "iox2");
+        assert_eq!(resolved.source, ChannelBackendSource::ProfileDefault);
     }
 
     #[test]
