@@ -117,7 +117,7 @@ impl Iox2WakeHandle {
             })
             .map_err(|error| Iox2Error::new("failed to spawn iceoryx2 wake listener", error))?;
 
-        match ready_rx.recv_timeout(Duration::from_millis(500)) {
+        match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 stop,
                 worker: Some(worker),
@@ -127,14 +127,7 @@ impl Iox2WakeHandle {
                 let _ = worker.join();
                 Err(error)
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                stop.store(true, Ordering::Release);
-                Err(Iox2Error::new(
-                    "timed out waiting for iceoryx2 wake listener",
-                    "timeout",
-                ))
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvError) => {
                 stop.store(true, Ordering::Release);
                 let _ = worker.join();
                 Err(Iox2Error::new(

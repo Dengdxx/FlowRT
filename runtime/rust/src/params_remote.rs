@@ -376,6 +376,14 @@ mod tests {
         state
     }
 
+    fn test_session() -> (std::sync::MutexGuard<'static, ()>, zenoh::Session) {
+        let guard = crate::zenoh_test_guard();
+        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
+            .wait()
+            .unwrap();
+        (guard, session)
+    }
+
     #[test]
     fn params_key_expr_contains_package_hash_and_pid() {
         let key = params_key_expr("robot_demo", "abc123", 42);
@@ -384,9 +392,7 @@ mod tests {
 
     #[test]
     fn remote_param_list_returns_registered_params() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("list");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -414,9 +420,7 @@ mod tests {
 
     #[test]
     fn remote_param_get_returns_param_value() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("get");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -436,9 +440,7 @@ mod tests {
 
     #[test]
     fn remote_param_set_rejects_invalid_value() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("set-reject");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -462,9 +464,7 @@ mod tests {
 
     #[test]
     fn remote_param_set_rejects_startup_only_param() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("set-startup");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -491,9 +491,7 @@ mod tests {
 
     #[test]
     fn remote_param_get_returns_error_for_unknown_param() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("get-unknown");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -511,9 +509,7 @@ mod tests {
 
     #[test]
     fn remote_param_set_applies_pending_value() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("set-apply");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -542,9 +538,7 @@ mod tests {
 
     #[test]
     fn unsupported_command_returns_error() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("unsupported");
         let handshake = make_test_handshake();
         let state = make_test_state();
@@ -574,9 +568,7 @@ mod tests {
 
     #[test]
     fn empty_payload_returns_error() {
-        let session = zenoh::open(crate::zenoh::config_from_environment().unwrap())
-            .wait()
-            .unwrap();
+        let (_zenoh_guard, session) = test_session();
         let key_expr = test_key_expr("empty");
         let handshake = make_test_handshake();
         let state = make_test_state();

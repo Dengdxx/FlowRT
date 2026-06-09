@@ -23,6 +23,14 @@ pub mod wire;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
 
+#[cfg(all(test, feature = "zenoh"))]
+pub(crate) fn zenoh_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static ZENOH_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ZENOH_TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 pub use backend::{
     Backend, BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, BackendKind,
     InprocBackend, InprocScheduler, Iox2Backend, ReconnectPolicy, Scheduler, ZenohBackend,

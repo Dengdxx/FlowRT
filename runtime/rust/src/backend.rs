@@ -343,8 +343,6 @@ const IOX2_CAPABILITIES: &[&str] = &[
     "channel:latest",
     "channel:fifo",
     "overflow:drop_oldest",
-    "overflow:drop_newest",
-    "overflow:error",
     "overflow:block",
     "stale:warn",
     "stale:drop",
@@ -645,6 +643,8 @@ mod tests {
         let capabilities = backend.capabilities();
         assert!(capabilities.contains("topology:multi_process"));
         assert!(capabilities.contains("timing:deadline_aware"));
+        assert!(!capabilities.contains("overflow:drop_newest"));
+        assert!(!capabilities.contains("overflow:error"));
         assert_eq!(
             capabilities.as_slice(),
             &[
@@ -660,8 +660,6 @@ mod tests {
                 "channel:latest",
                 "channel:fifo",
                 "overflow:drop_oldest",
-                "overflow:drop_newest",
-                "overflow:error",
                 "overflow:block",
                 "stale:warn",
                 "stale:drop",

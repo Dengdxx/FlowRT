@@ -27,6 +27,8 @@ use crate::supervisor::resource_placement::ResourcePlacementStatus;
 /// 当前 introspection 协议版本。
 pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
 const MAX_INTROSPECTION_CLIENT_THREADS: usize = 64;
+const MAX_INTROSPECTION_OBSERVERS: usize = 32;
+const INTROSPECTION_INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// runtime introspection 命令。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1204,6 +1206,7 @@ pub fn spawn_status_server_at(
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let active_clients = Arc::new(AtomicUsize::new(0));
+    let active_observers = Arc::new(AtomicUsize::new(0));
     let handle = thread::Builder::new()
         .name("flowrt-introspection-server".to_string())
         .spawn(move || {
@@ -1223,11 +1226,17 @@ pub fn spawn_status_server_at(
                         };
                         let handshake = handshake.clone();
                         let state = state.clone();
+                        let active_observers = Arc::clone(&active_observers);
                         let _ = thread::Builder::new()
                             .name("flowrt-introspection-client".to_string())
                             .spawn(move || {
-                                let _permit = permit;
-                                let _ = handle_connection(stream, &handshake, &state);
+                                let _ = handle_connection(
+                                    stream,
+                                    &handshake,
+                                    &state,
+                                    permit,
+                                    active_observers,
+                                );
                             });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1493,12 +1502,17 @@ fn handle_connection(
     stream: UnixStream,
     handshake: &IntrospectionHandshake,
     state: &IntrospectionState,
+    initial_permit: IntrospectionClientPermit,
+    active_observers: Arc<AtomicUsize>,
 ) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let reader_stream = stream.try_clone()?;
+    reader_stream.set_read_timeout(Some(INTROSPECTION_INITIAL_REQUEST_TIMEOUT))?;
+    let mut reader = BufReader::new(reader_stream);
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let request =
         serde_json::from_str::<IntrospectionRequest>(&line).map_err(std::io::Error::other)?;
+    drop(initial_permit);
     match request {
         IntrospectionRequest::Status => {
             let response = IntrospectionResponse::Status {
@@ -1560,7 +1574,25 @@ fn handle_connection(
             writer.write_all(b"\n")?;
         }
         IntrospectionRequest::ObserveChannel { channel, .. } => {
+            let Some(observer_permit) = try_acquire_introspection_client_permit(
+                &active_observers,
+                MAX_INTROSPECTION_OBSERVERS,
+            ) else {
+                let response = IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message: "FlowRT introspection observe connection limit reached".to_string(),
+                };
+                let mut writer = stream;
+                writer.write_all(
+                    serde_json::to_string(&response)
+                        .map_err(std::io::Error::other)?
+                        .as_bytes(),
+                )?;
+                writer.write_all(b"\n")?;
+                return Ok(());
+            };
             let Some(guard) = state.observe_channel(&channel) else {
+                drop(observer_permit);
                 let response = IntrospectionResponse::Error {
                     handshake: handshake.clone(),
                     message: "unknown FlowRT channel".to_string(),
@@ -1575,6 +1607,7 @@ fn handle_connection(
                 return Ok(());
             };
             let Some(channel_status) = state.channel_status(&channel) else {
+                drop(observer_permit);
                 drop(guard);
                 let response = IntrospectionResponse::Error {
                     handshake: handshake.clone(),
@@ -1601,7 +1634,9 @@ fn handle_connection(
             )?;
             writer.write_all(b"\n")?;
             writer.flush()?;
+            stream.set_read_timeout(None)?;
             let mut reader = BufReader::new(stream);
+            let _observer_permit = observer_permit;
             loop {
                 let mut keepalive = String::new();
                 match reader.read_line(&mut keepalive) {
@@ -2375,6 +2410,94 @@ mod tests {
         }
         assert_eq!(state.active_probe_count("source.imu_to_sink.imu"), Some(0));
 
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn observe_connections_do_not_exhaust_status_control_plane() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-observe-cap-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 44,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        state.register_channel("source.imu_to_sink.imu", "Imu");
+        let server = spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("server should start");
+
+        let mut streams = Vec::new();
+        for _ in 0..MAX_INTROSPECTION_OBSERVERS {
+            let (stream, response) =
+                observe_channel_stream(server.path(), "source.imu_to_sink.imu").unwrap();
+            assert!(matches!(
+                response,
+                IntrospectionResponse::ObserveReady { .. }
+            ));
+            streams.push(stream);
+        }
+        assert_eq!(
+            state.active_probe_count("source.imu_to_sink.imu"),
+            Some(MAX_INTROSPECTION_OBSERVERS as u64)
+        );
+
+        let response = request_status_with_timeout(server.path(), Duration::from_millis(100))
+            .expect("status request should remain available while observe streams are open");
+        assert!(matches!(response, IntrospectionResponse::Status { .. }));
+
+        let (_extra_stream, response) =
+            observe_channel_stream(server.path(), "source.imu_to_sink.imu")
+                .expect("excess observe should receive structured error");
+        assert!(matches!(
+            response,
+            IntrospectionResponse::Error { message, .. }
+                if message == "FlowRT introspection observe connection limit reached"
+        ));
+
+        drop(streams);
+        drop(server);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn idle_clients_are_closed_by_initial_request_timeout() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-idle-cap-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 45,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let server = spawn_status_server_at(socket.clone(), handshake, IntrospectionState::new())
+            .expect("server should start");
+
+        let mut idle_streams = Vec::new();
+        for _ in 0..MAX_INTROSPECTION_CLIENT_THREADS {
+            idle_streams.push(UnixStream::connect(server.path()).unwrap());
+        }
+        thread::sleep(INTROSPECTION_INITIAL_REQUEST_TIMEOUT + Duration::from_millis(100));
+
+        let response = request_status_with_timeout(server.path(), Duration::from_millis(100))
+            .expect("idle clients should time out and release connection slots");
+        assert!(matches!(response, IntrospectionResponse::Status { .. }));
+
+        drop(idle_streams);
         drop(server);
         let _ = fs::remove_dir_all(root);
     }

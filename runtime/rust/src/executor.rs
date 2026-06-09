@@ -255,7 +255,8 @@ fn worker_loop(inner: Arc<WorkerPoolInner>) {
             }
         };
 
-        let status = job();
+        let status =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or(Status::Error);
         let mut state = lock_recover(&inner.state);
         if status == Status::Error {
             state.status = Status::Error;
@@ -743,6 +744,42 @@ mod tests {
         let status = pool.shutdown();
 
         assert_eq!(status, Status::Error);
+    }
+
+    #[test]
+    fn worker_pool_job_panic_marks_error_and_releases_active_slot() {
+        let mut pool = std::mem::ManuallyDrop::new(WorkerPool::new(1));
+        let attempted = Arc::new(AtomicUsize::new(0));
+        let attempted_for_job = Arc::clone(&attempted);
+        assert!(
+            pool.spawn(move || -> Status {
+                attempted_for_job.fetch_add(1, Ordering::SeqCst);
+                panic!("worker job panicked");
+            })
+            .is_some()
+        );
+
+        for _ in 0..100 {
+            let drained = {
+                let state = lock_recover(&pool.inner.state);
+                attempted.load(Ordering::SeqCst) == 1 && state.queue.is_empty() && state.active == 0
+            };
+            if drained {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let state = lock_recover(&pool.inner.state);
+        assert_eq!(state.active, 0);
+        assert_eq!(state.status, Status::Error);
+        drop(state);
+        let status = pool.shutdown();
+        assert_eq!(status, Status::Error);
+        // SAFETY: shutdown 已经 join worker，显式 drop 只释放容器字段。
+        unsafe {
+            std::mem::ManuallyDrop::drop(&mut pool);
+        }
     }
 
     #[test]

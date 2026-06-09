@@ -17,6 +17,13 @@ use flowrt::{
 };
 use zenoh::{Config, Wait};
 
+fn zenoh_service_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static ZENOH_SERVICE_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ZENOH_SERVICE_TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AddRequest {
@@ -92,6 +99,7 @@ fn open_session() -> zenoh::Session {
 
 #[test]
 fn zenoh_service_basic_request_response() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("basic");
 
@@ -119,6 +127,7 @@ fn zenoh_service_basic_request_response() {
 
 #[test]
 fn zenoh_service_handler_error() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("handler_error");
 
@@ -135,13 +144,6 @@ fn zenoh_service_handler_error() {
         ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
 
     let result = client.call(AddRequest { a: 1, b: 2 }, 5000);
-    if result.is_err() {
-        eprintln!(
-            "call failed: code={:?} msg={:?}",
-            result.error_code(),
-            result.error_message()
-        );
-    }
     assert!(result.is_err());
     assert_eq!(result.error_code(), ServiceError::HandlerError);
     assert_eq!(result.error_message(), Some("division by zero"));
@@ -149,6 +151,7 @@ fn zenoh_service_handler_error() {
 
 #[test]
 fn zenoh_service_timeout() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("timeout");
     let handler_done = Arc::new(AtomicBool::new(false));
@@ -169,11 +172,6 @@ fn zenoh_service_timeout() {
         ZenohServiceClient::<AddRequest, AddResponse>::open(&service_name, session.clone());
 
     let result = client.call(AddRequest { a: 1, b: 2 }, 50);
-    eprintln!(
-        "timeout test: code={:?} msg={:?}",
-        result.error_code(),
-        result.error_message()
-    );
     assert!(result.is_err());
     assert_eq!(result.error_code(), ServiceError::Timeout);
 
@@ -188,6 +186,7 @@ fn zenoh_service_timeout() {
 
 #[test]
 fn zenoh_service_timeout_degrades_client_health() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("timeout_health");
 
@@ -213,6 +212,7 @@ fn zenoh_service_timeout_degrades_client_health() {
 
 #[test]
 fn zenoh_service_server_accepts_bounded_in_flight_config() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("bounded_config");
 
@@ -230,6 +230,7 @@ fn zenoh_service_server_accepts_bounded_in_flight_config() {
 
 #[test]
 fn zenoh_service_unavailable() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("unavailable");
 
@@ -245,6 +246,7 @@ fn zenoh_service_unavailable() {
 
 #[test]
 fn zenoh_service_multiple_clients() {
+    let _zenoh_guard = zenoh_service_test_guard();
     let session = open_session();
     let service_name = unique_service_name("multi_client");
 

@@ -37,7 +37,7 @@ fn service_key_expr(service_name: &str) -> String {
     let mut encoded = String::with_capacity(service_name.len());
     for byte in service_name.bytes() {
         match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' | b'-' => {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' => {
                 encoded.push(byte as char);
             }
             _ => encoded.push_str(&format!("_x{byte:02X}_")),
@@ -740,6 +740,27 @@ fn service_error_health_message(error: ServiceError) -> &'static str {
     }
 }
 
+fn service_result_from_response_error_code<T>(
+    error_code: u16,
+    error_msg: &[u8],
+) -> ServiceResult<T> {
+    let message = if error_msg.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(error_msg).to_string())
+    };
+    match ServiceError::from_abi(error_code) {
+        Some(error) => ServiceResult::Err(error, message),
+        None => {
+            let message = match message {
+                Some(message) => format!("unknown service error code {error_code}: {message}"),
+                None => format!("unknown service error code {error_code}"),
+            };
+            ServiceResult::err_with_message(ServiceError::Protocol, message)
+        }
+    }
+}
+
 /// Zenoh service client。
 ///
 /// 使用 zenoh query 实现 request/response 语义。client 发送 query，server 通过 queryable
@@ -864,14 +885,10 @@ impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, 
                     ) {
                         return ServiceResult::err_with_message(ServiceError::Protocol, reason);
                     }
-                    let error = ServiceError::from_abi(resp_header.error_code)
-                        .unwrap_or(ServiceError::Backend);
-                    let message = if error_msg.is_empty() {
-                        None
-                    } else {
-                        Some(String::from_utf8_lossy(&error_msg).to_string())
-                    };
-                    return ServiceResult::Err(error, message);
+                    return service_result_from_response_error_code(
+                        resp_header.error_code,
+                        &error_msg,
+                    );
                 }
                 // zenoh query timeout returns an empty ReplyError with default encoding
                 return ServiceResult::err(ServiceError::Timeout);
@@ -897,14 +914,10 @@ impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, 
         }
 
         if resp_header.error_code != ServiceError::Ok as u16 {
-            let error =
-                ServiceError::from_abi(resp_header.error_code).unwrap_or(ServiceError::Backend);
-            let message = if resp_error_msg.is_empty() {
-                None
-            } else {
-                Some(String::from_utf8_lossy(&resp_error_msg).to_string())
-            };
-            return ServiceResult::Err(error, message);
+            return service_result_from_response_error_code(
+                resp_header.error_code,
+                &resp_error_msg,
+            );
         }
 
         match Resp::decode_frame(&resp_payload) {
@@ -1477,6 +1490,7 @@ mod tests {
 
     #[test]
     fn latest_endpoint_roundtrips_canonical_payload_without_blocking_receive() {
+        let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("latest-roundtrip");
         let mut endpoint =
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
@@ -1511,6 +1525,7 @@ mod tests {
 
     #[test]
     fn latest_endpoint_applies_stale_drop_policy() {
+        let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("stale-drop");
         let config = ZenohChannelConfig::latest()
             .with_stale_config(StaleConfig::new(Some(10), StalePolicy::Drop));
@@ -1554,6 +1569,7 @@ mod tests {
 
     #[test]
     fn fifo_endpoint_consumes_one_oldest_sample_per_receive() {
+        let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("fifo-order");
         let mut endpoint = ZenohPubSub::<PaddedMessage>::open_with_config(
             &key_expr,
@@ -1591,6 +1607,7 @@ mod tests {
 
     #[test]
     fn endpoint_can_receive_after_peer_endpoint_restarts() {
+        let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("peer-restart");
         let mut receiver =
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
@@ -1624,6 +1641,7 @@ mod tests {
 
     #[test]
     fn endpoint_recovers_after_local_session_is_closed() {
+        let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("local-recovery");
         let mut endpoint =
             ZenohPubSub::<PaddedMessage>::open_with_config(&key_expr, ZenohChannelConfig::latest())
@@ -1649,6 +1667,7 @@ mod tests {
 
     #[test]
     fn decode_errors_do_not_mark_endpoint_reconnecting() {
+        let _zenoh_guard = crate::zenoh_test_guard();
         let key_expr = unique_key_expr("decode-error-health");
         let mut endpoint = ZenohPubSub::<DecodeFailingMessage>::open_with_config(
             &key_expr,
@@ -1693,6 +1712,27 @@ mod tests {
         let second = ZenohServiceInFlightGuard::try_acquire(&counter, 1)
             .expect("slot should be reusable after guard drops");
         drop(second);
+    }
+
+    #[test]
+    fn unknown_service_error_code_is_not_classified_as_backend() {
+        let result: ServiceResult<()> =
+            service_result_from_response_error_code(99, b"future service error");
+
+        assert_eq!(result.error_code(), ServiceError::Protocol);
+        assert_eq!(
+            result.error_message(),
+            Some("unknown service error code 99: future service error")
+        );
+    }
+
+    #[test]
+    fn service_key_expr_escapes_underscore_to_avoid_collisions() {
+        assert_ne!(service_key_expr("a/b"), service_key_expr("a_x2F_b"));
+        assert_eq!(
+            service_key_expr("a_x2F_b"),
+            "flowrt/service/a_x5F_x2F_x5F_b/request"
+        );
     }
 
     fn publish_until_latest(

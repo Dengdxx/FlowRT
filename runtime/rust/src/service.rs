@@ -1019,6 +1019,27 @@ mod tests {
     }
 
     #[test]
+    fn inproc_service_drop_releases_unprocessed_pending_request() {
+        let registry = ServiceRegistry::new();
+        let (client, server) = registry.register("pending_drop", LaneId(2), 8, |req: u32| req + 10);
+        let endpoint = client.endpoint.clone();
+
+        let handle = client.start_call(1, Duration::from_millis(1));
+        assert!(handle.error.is_none());
+        assert_eq!(server.pending_count(), 1);
+        assert_eq!(server.in_flight_count(), 1);
+
+        assert_eq!(handle.complete().error_code(), ServiceError::Timeout);
+        drop(server);
+        drop(registry);
+
+        assert!(
+            endpoint.upgrade().is_none(),
+            "unprocessed queued request must not keep endpoint alive"
+        );
+    }
+
+    #[test]
     fn inproc_service_same_lane_blocking_call_returns_would_deadlock() {
         let registry = ServiceRegistry::new();
         let (client, _server) = registry.register("deadlock", LaneId(5), 8, |req: u32| req);
@@ -1361,9 +1382,26 @@ struct InprocEndpointInner<Req: Send + 'static, Resp: Send + 'static> {
     stats: Arc<ServiceStats>,
     queue_depth: usize,
     max_in_flight: usize,
-    in_flight: AtomicUsize,
+    in_flight: Arc<AtomicUsize>,
     overflow: ServiceOverflowPolicy,
     schedule_waiter: ScheduleWaiter,
+}
+
+struct InprocInFlightPermit {
+    counter: Arc<AtomicUsize>,
+}
+
+impl InprocInFlightPermit {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self { counter }
+    }
+}
+
+impl Drop for InprocInFlightPermit {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// inproc service endpoint，承载 typed request/response 队列和 handler。
@@ -1389,7 +1427,7 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocEndpoint<Req, Resp> {
                 stats: Arc::new(ServiceStats::default()),
                 queue_depth: config.queue_depth,
                 max_in_flight: config.max_in_flight,
-                in_flight: AtomicUsize::new(0),
+                in_flight: Arc::new(AtomicUsize::new(0)),
                 overflow: config.overflow,
                 schedule_waiter: config.schedule_waiter,
             }),
@@ -1652,7 +1690,7 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
         let slot_for_closure = Arc::clone(&response_slot);
         let handler = Arc::clone(&inner.handler);
         let stats = Arc::clone(&inner.stats);
-        let inner_for_closure = Arc::clone(&inner);
+        let in_flight = Arc::clone(&inner.in_flight);
 
         let enqueue_result = {
             let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -1661,13 +1699,13 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
             {
                 Err(inner.overflow.error_code())
             } else {
-                inner.in_flight.fetch_add(1, Ordering::AcqRel);
+                let _permit = InprocInFlightPermit::new(in_flight);
                 queue.push_back(Box::new(move || {
                     let result = call_service_handler(&handler, request);
                     if !slot_for_closure.fill(result) {
                         stats.record_late_dropped();
                     }
-                    inner_for_closure.in_flight.fetch_sub(1, Ordering::AcqRel);
+                    drop(_permit);
                 }));
                 Ok(())
             }
@@ -1738,7 +1776,7 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
         let handler = Arc::clone(&inner.handler);
         let stats = Arc::clone(&inner.stats);
         let stats_for_closure = Arc::clone(&stats);
-        let inner_for_closure = Arc::clone(&inner);
+        let in_flight = Arc::clone(&inner.in_flight);
 
         let enqueue_result = {
             let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -1747,13 +1785,13 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
             {
                 Err(inner.overflow.error_code())
             } else {
-                inner.in_flight.fetch_add(1, Ordering::AcqRel);
+                let _permit = InprocInFlightPermit::new(in_flight);
                 queue.push_back(Box::new(move || {
                     let result = call_service_handler(&handler, request);
                     if !slot_for_closure.fill(result) {
                         stats_for_closure.record_late_dropped();
                     }
-                    inner_for_closure.in_flight.fetch_sub(1, Ordering::AcqRel);
+                    drop(_permit);
                 }));
                 Ok(())
             }
