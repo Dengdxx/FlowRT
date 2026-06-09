@@ -367,6 +367,74 @@ backends = ["inproc", "zenoh"]
     }
 
     #[test]
+    fn external_dataflow_explicit_zenoh_keeps_explicit_backend_source() {
+        let source = r#"
+[package]
+name = "external_route_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+output = ["sample:Sample"]
+
+[component.monitor]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+target = "linux"
+
+[instance.monitor]
+component = "monitor"
+process = "monitor_proc"
+target = "linux"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[process]]
+name = "sensor_proc"
+
+[[process]]
+name = "monitor_proc"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "driver"
+
+[[bind.dataflow]]
+from = "fake_sensor.sample"
+to = "monitor.sample"
+channel = "latest"
+backend = "zenoh"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust", "external"]
+backends = ["inproc", "zenoh"]
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.graphs[0].binds[0].backend.0, "zenoh");
+        assert_eq!(
+            ir.graphs[0].binds[0].backend_source,
+            ChannelBackendSource::Explicit
+        );
+    }
+
+    #[test]
     fn rejects_explicit_inproc_for_external_dataflow() {
         let source = r#"
 [package]
@@ -1910,6 +1978,33 @@ limit = { type = "f64", default = 9007199254740993, max = 9007199254740992.0 }
                 param,
                 message,
             } if component == "controller" && param == "limit" && message.contains("above")
+        ));
+    }
+
+    #[test]
+    fn rejects_parameter_enum_choice_outside_schema_range() {
+        let source = r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gain = { type = "u8", default = 1, min = 0, max = 10, enum = [1, 20] }
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("enum choices must obey declared min/max constraints");
+
+        assert!(matches!(
+            error,
+            IrError::InvalidParamSchema {
+                component,
+                param,
+                message,
+            } if component == "controller" && param == "gain" && message.contains("above")
         ));
     }
 

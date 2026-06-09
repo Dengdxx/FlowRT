@@ -1,6 +1,7 @@
 use super::*;
 use flowrt_ir::{
-    EntityId, LanguageKind, RouteTopology, channel_route_capabilities, graph_required_capabilities,
+    BackendName, ChannelBackendSource, EntityId, LanguageKind, PolicyValueSource, RouteTopology,
+    channel_route_capabilities, graph_required_capabilities,
 };
 
 #[test]
@@ -487,6 +488,77 @@ backends = ["zenoh"]
 }
 
 #[test]
+fn rejects_iox2_overflow_policy_without_runtime_capability() {
+    for overflow in ["drop_newest", "error"] {
+        let source = format!(
+            r#"
+[package]
+name = "iox2_overflow_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "sink.sample"
+channel = "fifo"
+depth = 2
+
+[profile.default]
+backend = "iox2"
+default_overflow = "{overflow}"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#
+        );
+        let raw = parse_str(&source).unwrap();
+        let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+        let report = validate_contract(&ir)
+            .expect_err("iox2 must reject overflow policies it does not advertise");
+
+        assert!(
+            report.errors.iter().any(|error| {
+                error.message.contains(
+                    "backend `iox2` selected by bind `source.sample` -> `sink.sample` cannot satisfy route capabilities",
+                )
+            }),
+            "overflow={overflow}; errors={:?}",
+            report.errors
+        );
+    }
+}
+
+#[test]
 fn rejects_duplicate_target_runtime_and_backends() {
     let mut ir = valid_reference_contract();
     ir.targets[0].runtime = vec![LanguageKind::Rust, LanguageKind::Rust];
@@ -906,6 +978,32 @@ fn rejects_inconsistent_channel_backend_source_metadata() {
         report.errors.iter().any(|error| {
             error.message.contains(
                 "bind `producer.sample` -> `consumer.sample` backend source metadata is inconsistent",
+            )
+        }),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn rejects_forged_route_backend_capabilities_without_targets() {
+    let mut ir = variable_frame_contract("zenoh");
+    for instance in &mut ir.graphs[0].instances {
+        instance.target = None;
+    }
+    ir.targets.clear();
+    ir.deployments.clear();
+    let bind = &mut ir.graphs[0].binds[0];
+    bind.backend = BackendName("iox2".to_string());
+    bind.backend_policy_source = PolicyValueSource::Explicit;
+    bind.backend_source = ChannelBackendSource::Explicit;
+
+    let report = validate_contract(&ir).expect_err("forged variable-frame iox2 route should fail");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "backend `iox2` selected by bind `producer.packet` -> `consumer.packet` cannot satisfy route capabilities",
             )
         }),
         "{:?}",

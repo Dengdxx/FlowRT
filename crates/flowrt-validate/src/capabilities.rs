@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, CapabilityAtom, ChannelBackendSource, ChannelEdgeIr, ContractIr, GraphIr,
-    InstanceIr, LanguageKind, PolicyValueSource, PortRef, RouteTopology,
+    InstanceIr, LanguageKind, PolicyValueSource, PortRef, RouteTopology, backend_capabilities,
     channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
     is_known_backend, target_capabilities,
 };
@@ -324,6 +324,22 @@ pub(crate) fn validate_route_backends(ir: &ContractIr, errors: &mut Vec<Validati
                 .copied()
                 .unwrap_or_else(RouteTopology::local);
             let expected = expected_bind_capabilities(ir, bind, source_type, topology);
+            if let Some(backend_capabilities) = backend_capabilities(&bind.backend.0) {
+                let missing_required_capabilities = expected
+                    .iter()
+                    .filter(|required| !backend_capabilities.contains(required))
+                    .collect::<Vec<_>>();
+                if !missing_required_capabilities.is_empty() {
+                    errors.push(ValidationError::new(format!(
+                        "backend `{}` selected by bind `{}.{}` -> `{}.{}` cannot satisfy route capabilities",
+                        bind.backend.0,
+                        bind.from.instance.name,
+                        bind.from.port,
+                        bind.to.instance.name,
+                        bind.to.port
+                    )));
+                }
+            }
             let Some(source_target) = instance_target(ir, graph, &bind.from.instance.name) else {
                 continue;
             };
@@ -350,14 +366,7 @@ pub(crate) fn validate_route_backends(ir: &ContractIr, errors: &mut Vec<Validati
                 if decision.selected_backend_known
                     && !decision.missing_required_capabilities.is_empty()
                 {
-                    errors.push(ValidationError::new(format!(
-                        "backend `{}` selected by bind `{}.{}` -> `{}.{}` cannot satisfy route capabilities",
-                        bind.backend.0,
-                        bind.from.instance.name,
-                        bind.from.port,
-                        bind.to.instance.name,
-                        bind.to.port
-                    )));
+                    continue;
                 }
             }
         }

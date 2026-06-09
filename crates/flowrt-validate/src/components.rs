@@ -229,6 +229,7 @@ fn validate_param_schema(
     }
     for choice in &param.choices {
         validate_param_value_matches_schema(&context, param, "enum choice", choice, errors);
+        validate_param_value_constraints(&context, param, "enum choice", choice, errors);
     }
     validate_param_value_constraints(&context, param, "default", &param.default, errors);
 }

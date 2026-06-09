@@ -61,7 +61,13 @@ pub fn resolve_channel_backend(
     explicit: bool,
 ) -> Result<ChannelBackendResolution> {
     if topology.touches_external {
-        if matches!(requested_backend, "inproc" | "iox2") && explicit {
+        if explicit {
+            if requested_backend == "zenoh" {
+                return Ok(ChannelBackendResolution {
+                    backend: "zenoh".to_string(),
+                    source: ChannelBackendSource::Explicit,
+                });
+            }
             return Err(IrError::InvalidValue {
                 context: "bind.dataflow.backend".to_string(),
                 message: format!(
@@ -291,8 +297,6 @@ const INPROC_BACKEND_CAPABILITIES: &[Capability] = &[
 ];
 
 const IOX2_BACKEND_CAPABILITIES: &[Capability] = &[
-    Capability::OverflowDropNewest,
-    Capability::OverflowError,
     Capability::OverflowBlock,
     Capability::TopologyMultiProcess,
     Capability::TopologySingleHost,
@@ -732,6 +736,16 @@ mod tests {
     }
 
     #[test]
+    fn iox2_reports_only_supported_overflow_capabilities() {
+        let capabilities = backend_capabilities("iox2").unwrap();
+
+        assert!(capabilities.contains(&CapabilityAtom("overflow:drop_oldest".to_string())));
+        assert!(capabilities.contains(&CapabilityAtom("overflow:block".to_string())));
+        assert!(!capabilities.contains(&CapabilityAtom("overflow:drop_newest".to_string())));
+        assert!(!capabilities.contains(&CapabilityAtom("overflow:error".to_string())));
+    }
+
+    #[test]
     fn inproc_and_zenoh_support_unbounded_variable_frames_but_iox2_does_not() {
         for backend in ["inproc", "zenoh"] {
             let capabilities = backend_capabilities(backend).unwrap();
@@ -773,8 +787,6 @@ mod tests {
                 Capability::ChannelLatest.atom(),
                 Capability::ChannelFifo.atom(),
                 Capability::OverflowDropOldest.atom(),
-                Capability::OverflowDropNewest.atom(),
-                Capability::OverflowError.atom(),
                 Capability::OverflowBlock.atom(),
                 Capability::StaleWarn.atom(),
                 Capability::StaleDrop.atom(),

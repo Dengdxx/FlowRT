@@ -93,6 +93,7 @@ fn try_normalize_param_schema(
     }
     for choice in &schema.choices {
         validate_param_schema_value(component_name, name, &schema, choice)?;
+        validate_param_value_constraints(component_name, name, &schema, choice)?;
     }
     validate_param_value_constraints(component_name, name, &schema, &schema.default)?;
     Ok(Some(schema))

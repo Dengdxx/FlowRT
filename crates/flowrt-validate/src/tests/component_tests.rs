@@ -215,6 +215,46 @@ fn rejects_param_values_outside_declared_type_range_in_contract_ir() {
 }
 
 #[test]
+fn rejects_param_enum_choices_outside_declared_constraints_in_contract_ir() {
+    let mut ir = valid_reference_contract();
+    let producer = ir
+        .components
+        .iter_mut()
+        .find(|component| component.name == "producer")
+        .expect("producer component must exist");
+    producer.params = vec![ParamIr {
+        name: "gain".to_string(),
+        ty: ParamType::U8,
+        default: ParamValue::Integer(1),
+        update: ParamUpdatePolicy::OnTick,
+        min: Some(ParamValue::Integer(1)),
+        max: Some(ParamValue::Integer(10)),
+        choices: vec![ParamValue::Integer(1), ParamValue::Integer(20)],
+    }];
+    let producer_instance = ir.graphs[0]
+        .instances
+        .iter_mut()
+        .find(|instance| instance.name == "producer")
+        .expect("producer instance must exist");
+    producer_instance.params = vec![ParamValueIr {
+        name: "gain".to_string(),
+        value: ParamValue::Integer(1),
+    }];
+
+    let report = validate_contract(&ir).expect_err("enum choice must obey schema constraints");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error
+                .message
+                .contains("component `producer` param `gain` enum choice is above declared maximum")
+        }),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn rejects_instance_param_override_outside_schema_constraints() {
     let mut ir = valid_reference_contract();
     let producer = ir
