@@ -1,5 +1,28 @@
 use super::*;
 
+fn spawn_stalled_introspection_socket(socket: std::path::PathBuf) -> std::sync::mpsc::Sender<()> {
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Ok((stream, _addr)) = listener.accept() {
+            let _stream = stream;
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        }
+    });
+    release_tx
+}
+
+fn write_json_line(
+    stream: &mut std::os::unix::net::UnixStream,
+    response: &flowrt::IntrospectionResponse,
+) {
+    let line = serde_json::to_string(response).unwrap();
+    use std::io::Write as _;
+    stream.write_all(line.as_bytes()).unwrap();
+    stream.write_all(b"\n").unwrap();
+}
+
 #[test]
 fn self_description_sidecar_drives_list_and_nodes_output() {
     let source = r#"
@@ -250,6 +273,62 @@ fn live_status_summary_live_only_hides_stale_sockets() {
 }
 
 #[test]
+fn live_status_summary_reports_stalled_socket_as_stale() {
+    let root = temp_test_dir("live-status-stalled-socket");
+    let socket = root.join("stalled.sock");
+    let release = spawn_stalled_introspection_socket(socket.clone());
+
+    let default_output = live_status_summary_for_sockets(vec![socket.clone()], false).unwrap();
+    let live_only_output = live_status_summary_for_sockets(vec![socket], true).unwrap();
+
+    assert!(default_output.contains("stale socket="));
+    assert_eq!(live_only_output, "no live FlowRT processes");
+    let _ = release.send(());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_keeps_status_when_selfdesc_enrichment_stalls() {
+    let root = temp_test_dir("live-status-stalled-selfdesc");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let handshake = flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 81,
+            started_at_unix_ms: 1234,
+            self_description_hash: "feedface".to_string(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        if let Ok((mut stream, _addr)) = listener.accept() {
+            write_json_line(
+                &mut stream,
+                &flowrt::IntrospectionResponse::Status {
+                    handshake,
+                    status: flowrt::IntrospectionStatus::default(),
+                },
+            );
+        }
+        if let Ok((stream, _addr)) = listener.accept() {
+            let _stream = stream;
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        }
+    });
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("pid=81"));
+    assert!(output.contains("package=robot_demo"));
+    assert!(!output.contains("stale socket="));
+    let _ = release_tx.send(());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_hz_summary_formats_channel_delta_rate() {
     let first = flowrt::IntrospectionResponse::Status {
         handshake: flowrt::IntrospectionHandshake {
@@ -374,6 +453,20 @@ fn live_hz_summary_reports_stale_socket_without_failing_scan() {
 
     assert!(output.contains(&format!("stale socket={}", socket.display())));
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_hz_summary_reports_stalled_socket_without_failing_scan() {
+    let root = temp_test_dir("live-hz-stalled");
+    let socket = root.join("stalled.sock");
+    let release = spawn_stalled_introspection_socket(socket.clone());
+
+    let output = live_hz_summary_for_sockets(None, vec![socket.clone()], Duration::from_millis(1))
+        .expect("stalled socket should be reported as stale");
+
+    assert!(output.contains(&format!("stale socket={}", socket.display())));
+    let _ = release.send(());
     let _ = std::fs::remove_dir_all(&root);
 }
 

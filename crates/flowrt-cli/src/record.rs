@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use flowrt_record::{FlowrtMcapWriter, RecordChannel, RecordEnvelope, RecordEventKind};
 
+const LOCAL_INTROSPECTION_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// `flowrt record` 的执行参数。
 #[derive(Debug, Clone)]
 pub(crate) struct RecordOptions {
@@ -101,11 +103,12 @@ pub(crate) fn record_runtime_for_sockets(
     let channels = RecordWriterChannels::register(&mut writer)
         .context("failed to register FlowRT record MCAP channels")?;
 
-    let started = flowrt::request_recorder_start(
+    let started = flowrt::request_recorder_start_with_timeout(
         &socket,
         Some(options.output.display().to_string()),
         filters,
         Some(4096),
+        LOCAL_INTROSPECTION_TIMEOUT,
     )
     .with_context(|| format!("failed to start recorder on `{}`", socket.display()))?;
     let recorder = match started {
@@ -181,7 +184,7 @@ fn select_record_socket(explicit: Option<&PathBuf>, sockets: Vec<PathBuf>) -> Re
     let mut live = Vec::new();
     let mut errors = Vec::new();
     for socket in sockets {
-        match flowrt::request_status(&socket) {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(flowrt::IntrospectionResponse::Status { .. }) => live.push(socket),
             Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
                 errors.push(format!("{}: {message}", socket.display()));
@@ -250,7 +253,7 @@ fn validate_record_filters(
     if channels.is_empty() && operations.is_empty() {
         return Ok(());
     }
-    let response = flowrt::request_status(socket)
+    let response = flowrt::request_status_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
         .with_context(|| format!("failed to request status from `{}`", socket.display()))?;
     let status = match response {
         flowrt::IntrospectionResponse::Status { status, .. } => status,
@@ -396,12 +399,13 @@ fn drain_record_events(
     channels: &RecordWriterChannels,
     counters: &mut RecordCounters,
 ) -> Result<flowrt::IntrospectionRecorderStatus> {
-    let response = flowrt::request_recorder_drain(socket).with_context(|| {
-        format!(
-            "failed to drain recorder events from `{}`",
-            socket.display()
-        )
-    })?;
+    let response = flowrt::request_recorder_drain_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
+        .with_context(|| {
+            format!(
+                "failed to drain recorder events from `{}`",
+                socket.display()
+            )
+        })?;
     match response {
         flowrt::IntrospectionResponse::RecorderEvents {
             recorder, events, ..
@@ -435,7 +439,7 @@ fn write_record_event(
 }
 
 fn stop_recorder(socket: &Path) -> Result<flowrt::IntrospectionRecorderStatus> {
-    let response = flowrt::request_recorder_stop(socket)
+    let response = flowrt::request_recorder_stop_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
         .with_context(|| format!("failed to stop recorder on `{}`", socket.display()))?;
     match response {
         flowrt::IntrospectionResponse::RecorderValue { recorder, .. } => Ok(recorder),

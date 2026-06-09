@@ -29,6 +29,7 @@ pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
 const MAX_INTROSPECTION_CLIENT_THREADS: usize = 64;
 const MAX_INTROSPECTION_OBSERVERS: usize = 32;
 const INTROSPECTION_INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+const INTROSPECTION_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// runtime introspection 命令。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,7 +131,7 @@ pub struct IntrospectionHandshake {
 }
 
 /// 运行态状态快照。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntrospectionStatus {
     pub tick_count: u64,
     pub channels: Vec<IntrospectionChannelStatus>,
@@ -1342,9 +1343,32 @@ pub fn request_channel_snapshot(
     )
 }
 
+/// 向 introspection socket 请求 channel snapshot，并限制 socket 读写等待时间。
+pub fn request_channel_snapshot_with_timeout(
+    path: &Path,
+    channel: impl Into<String>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::ChannelSnapshot {
+            channel: channel.into(),
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求 self-description JSON。
 pub fn request_self_description(path: &Path) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::SelfDescription)
+}
+
+/// 向 introspection socket 请求 self-description JSON，并限制 socket 读写等待时间。
+pub fn request_self_description_with_timeout(
+    path: &Path,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(path, &IntrospectionRequest::SelfDescription, timeout)
 }
 
 /// 向 introspection socket 打开 observe channel 连接。
@@ -1385,9 +1409,60 @@ pub fn observe_channel_stream(
     Ok((stream, response))
 }
 
+/// 向 introspection socket 打开 observe channel 连接，并限制握手读写等待时间。
+pub fn observe_channel_stream_with_timeout(
+    path: &Path,
+    channel: impl Into<String>,
+    timeout: Duration,
+) -> std::io::Result<(UnixStream, IntrospectionResponse)> {
+    let mut stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let request = serde_json::to_string(&IntrospectionRequest::ObserveChannel {
+        channel: channel.into(),
+        mode: Some("latest".to_string()),
+    })
+    .map_err(std::io::Error::other)?;
+    stream.write_all(request.as_bytes())?;
+    stream.write_all(b"\n")?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if line.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "FlowRT observe channel response was empty",
+        ));
+    }
+    let response = serde_json::from_slice(&line).map_err(std::io::Error::other)?;
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok((stream, response))
+}
+
 /// 向 introspection socket 请求参数列表。
 pub fn request_param_list(path: &Path) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::ParamList)
+}
+
+/// 向 introspection socket 请求参数列表，并限制 socket 读写等待时间。
+pub fn request_param_list_with_timeout(
+    path: &Path,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(path, &IntrospectionRequest::ParamList, timeout)
 }
 
 /// 向 introspection socket 请求单个参数状态。
@@ -1396,6 +1471,19 @@ pub fn request_param_get(
     name: impl Into<String>,
 ) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::ParamGet { name: name.into() })
+}
+
+/// 向 introspection socket 请求单个参数状态，并限制 socket 读写等待时间。
+pub fn request_param_get_with_timeout(
+    path: &Path,
+    name: impl Into<String>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::ParamGet { name: name.into() },
+        timeout,
+    )
 }
 
 /// 向 introspection socket 写入参数 pending 值。
@@ -1413,6 +1501,23 @@ pub fn request_param_set(
     )
 }
 
+/// 向 introspection socket 写入参数 pending 值，并限制 socket 读写等待时间。
+pub fn request_param_set_with_timeout(
+    path: &Path,
+    name: impl Into<String>,
+    value: serde_json::Value,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::ParamSet {
+            name: name.into(),
+            value,
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求取消 operation invocation。
 pub fn request_operation_cancel(
     path: &Path,
@@ -1423,6 +1528,21 @@ pub fn request_operation_cancel(
         &IntrospectionRequest::OperationCancel {
             operation_id: operation_id.into(),
         },
+    )
+}
+
+/// 向 introspection socket 请求取消 operation invocation，并限制 socket 读写等待时间。
+pub fn request_operation_cancel_with_timeout(
+    path: &Path,
+    operation_id: impl Into<String>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::OperationCancel {
+            operation_id: operation_id.into(),
+        },
+        timeout,
     )
 }
 
@@ -1443,14 +1563,49 @@ pub fn request_recorder_start(
     )
 }
 
+/// 向 introspection socket 请求启动 recorder，并限制 socket 读写等待时间。
+pub fn request_recorder_start_with_timeout(
+    path: &Path,
+    output: Option<String>,
+    filters: Vec<String>,
+    queue_depth: Option<usize>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::RecorderStart {
+            output,
+            filters,
+            queue_depth,
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求停止 recorder。
 pub fn request_recorder_stop(path: &Path) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::RecorderStop)
 }
 
+/// 向 introspection socket 请求停止 recorder，并限制 socket 读写等待时间。
+pub fn request_recorder_stop_with_timeout(
+    path: &Path,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(path, &IntrospectionRequest::RecorderStop, timeout)
+}
+
 /// 向 introspection socket 请求取走 recorder 暂存事件。
 pub fn request_recorder_drain(path: &Path) -> std::io::Result<IntrospectionResponse> {
     request(path, &IntrospectionRequest::RecorderDrain)
+}
+
+/// 向 introspection socket 请求取走 recorder 暂存事件，并限制 socket 读写等待时间。
+pub fn request_recorder_drain_with_timeout(
+    path: &Path,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(path, &IntrospectionRequest::RecorderDrain, timeout)
 }
 
 fn request(path: &Path, request: &IntrospectionRequest) -> std::io::Result<IntrospectionResponse> {
@@ -1512,7 +1667,8 @@ fn handle_connection(
     reader.read_line(&mut line)?;
     let request =
         serde_json::from_str::<IntrospectionRequest>(&line).map_err(std::io::Error::other)?;
-    drop(initial_permit);
+    let _client_permit = initial_permit;
+    stream.set_write_timeout(Some(INTROSPECTION_RESPONSE_WRITE_TIMEOUT))?;
     match request {
         IntrospectionRequest::Status => {
             let response = IntrospectionResponse::Status {

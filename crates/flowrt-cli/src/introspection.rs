@@ -16,6 +16,8 @@ use flowrt_selfdesc::{
 
 pub(crate) use flowrt_selfdesc::self_description_hash;
 
+const LOCAL_INTROSPECTION_TIMEOUT: Duration = Duration::from_millis(500);
+
 pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
     load_selfdesc(path).with_context(|| {
         format!(
@@ -453,12 +455,14 @@ fn load_echo_context_from_live_socket(
     socket: Option<&Path>,
 ) -> Result<(SelfDescription, String, PathBuf)> {
     let socket = select_live_self_description_socket(socket)?;
-    let response = flowrt::request_self_description(&socket).with_context(|| {
-        format!(
-            "failed to request FlowRT self-description from `{}`",
-            socket.display()
-        )
-    })?;
+    let response =
+        flowrt::request_self_description_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT)
+            .with_context(|| {
+                format!(
+                    "failed to request FlowRT self-description from `{}`",
+                    socket.display()
+                )
+            })?;
     let (handshake, json) = match response {
         flowrt::IntrospectionResponse::SelfDescription { handshake, json } => (handshake, json),
         flowrt::IntrospectionResponse::Error { message, .. } => {
@@ -499,7 +503,7 @@ fn select_live_self_description_socket(socket: Option<&Path>) -> Result<PathBuf>
         flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
     {
         let Ok(flowrt::IntrospectionResponse::SelfDescription { .. }) =
-            flowrt::request_self_description(&socket)
+            flowrt::request_self_description_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT)
         else {
             continue;
         };
@@ -528,14 +532,18 @@ fn open_echo_observer(
     channel_spec: &EchoChannelSpec,
     self_description_hash: &str,
 ) -> Result<Option<std::os::unix::net::UnixStream>> {
-    let (stream, response) = flowrt::observe_channel_stream(socket, &channel_spec.name)
-        .with_context(|| {
-            format!(
-                "failed to observe channel `{}` via `{}`",
-                channel_spec.name,
-                socket.display()
-            )
-        })?;
+    let (stream, response) = flowrt::observe_channel_stream_with_timeout(
+        socket,
+        &channel_spec.name,
+        LOCAL_INTROSPECTION_TIMEOUT,
+    )
+    .with_context(|| {
+        format!(
+            "failed to observe channel `{}` via `{}`",
+            channel_spec.name,
+            socket.display()
+        )
+    })?;
     match response {
         flowrt::IntrospectionResponse::ObserveReady { handshake, .. } => {
             ensure_handshake_hash(&handshake, self_description_hash, socket)?;
@@ -617,13 +625,17 @@ fn request_echo_snapshot(
     channel_spec: &EchoChannelSpec,
     self_description_hash: &str,
 ) -> Result<flowrt::introspection::IntrospectionChannelSnapshot> {
-    let response =
-        flowrt::request_channel_snapshot(socket, &channel_spec.name).with_context(|| {
-            format!(
-                "failed to request channel snapshot from `{}`",
-                socket.display()
-            )
-        })?;
+    let response = flowrt::request_channel_snapshot_with_timeout(
+        socket,
+        &channel_spec.name,
+        LOCAL_INTROSPECTION_TIMEOUT,
+    )
+    .with_context(|| {
+        format!(
+            "failed to request channel snapshot from `{}`",
+            socket.display()
+        )
+    })?;
 
     let (handshake, snapshot) = match response {
         flowrt::IntrospectionResponse::ChannelSnapshot { handshake, channel } => {
@@ -723,7 +735,7 @@ fn ensure_socket_matches_self_description_hash(
     socket: &Path,
     self_description_hash: &str,
 ) -> Result<()> {
-    let response = flowrt::request_status(socket)
+    let response = flowrt::request_status_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
         .with_context(|| format!("failed to request status from `{}`", socket.display()))?;
     let flowrt::IntrospectionResponse::Status { handshake, .. } = response else {
         anyhow::bail!(
@@ -835,7 +847,7 @@ pub(crate) fn select_matching_runtime_socket(
     let mut matches = Vec::new();
     for socket in sockets {
         let Ok(flowrt::IntrospectionResponse::Status { handshake, .. }) =
-            flowrt::request_status(&socket)
+            flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT)
         else {
             continue;
         };
@@ -979,12 +991,13 @@ fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
 pub(crate) fn params_list(image: &Path, socket: Option<&Path>) -> Result<String> {
     let (_self_description, self_description_hash) = load_self_description_with_hash(image)?;
     let socket = select_echo_socket(socket, &self_description_hash)?;
-    let response = flowrt::request_param_list(&socket).with_context(|| {
-        format!(
-            "failed to request parameter list from `{}`",
-            socket.display()
-        )
-    })?;
+    let response = flowrt::request_param_list_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT)
+        .with_context(|| {
+            format!(
+                "failed to request parameter list from `{}`",
+                socket.display()
+            )
+        })?;
     let params = match response {
         flowrt::IntrospectionResponse::ParamList { handshake, params } => {
             ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
@@ -1015,12 +1028,14 @@ pub(crate) fn params_get(image: &Path, name: &str, socket: Option<&Path>) -> Res
     let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
     ensure_param_declared(&self_description, name)?;
     let socket = select_echo_socket(socket, &self_description_hash)?;
-    let response = flowrt::request_param_get(&socket, name).with_context(|| {
-        format!(
-            "failed to request parameter `{name}` from `{}`",
-            socket.display()
-        )
-    })?;
+    let response =
+        flowrt::request_param_get_with_timeout(&socket, name, LOCAL_INTROSPECTION_TIMEOUT)
+            .with_context(|| {
+                format!(
+                    "failed to request parameter `{name}` from `{}`",
+                    socket.display()
+                )
+            })?;
     let param = match response {
         flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
             ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
@@ -1052,12 +1067,14 @@ pub(crate) fn params_set(
         format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
     })?;
     let socket = select_echo_socket(socket, &self_description_hash)?;
-    let response = flowrt::request_param_set(&socket, name, value).with_context(|| {
-        format!(
-            "failed to set parameter `{name}` via `{}`",
-            socket.display()
-        )
-    })?;
+    let response =
+        flowrt::request_param_set_with_timeout(&socket, name, value, LOCAL_INTROSPECTION_TIMEOUT)
+            .with_context(|| {
+            format!(
+                "failed to set parameter `{name}` via `{}`",
+                socket.display()
+            )
+        })?;
     let param = match response {
         flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
             ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
@@ -1280,7 +1297,7 @@ pub(crate) fn operation_status_summary_for_sockets(
 ) -> Result<String> {
     let mut lines = Vec::new();
     for socket in sockets {
-        match flowrt::request_status(&socket) {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
                 for operation in status.operations {
                     if name.is_none_or(|name| operation.name == name) {
@@ -1329,7 +1346,7 @@ pub(crate) fn operation_cancel_for_sockets(
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
     for socket in sockets {
-        match flowrt::request_status(&socket) {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(flowrt::IntrospectionResponse::Status { status, .. }) => {
                 if status.operations.iter().any(|operation| {
                     operation
@@ -1383,7 +1400,11 @@ pub(crate) fn operation_cancel_for_sockets(
 }
 
 fn operation_cancel_on_socket(operation_id: &str, socket: &Path) -> Result<String> {
-    match flowrt::request_operation_cancel(socket, operation_id) {
+    match flowrt::request_operation_cancel_with_timeout(
+        socket,
+        operation_id,
+        LOCAL_INTROSPECTION_TIMEOUT,
+    ) {
         Ok(flowrt::IntrospectionResponse::OperationValue { operation, .. }) => Ok(format!(
             "operation_id={} {}",
             operation_id,
@@ -1441,7 +1462,7 @@ pub(crate) fn live_status_summary_for_sockets(
 ) -> Result<String> {
     let mut lines = Vec::new();
     for socket in sockets {
-        match flowrt::request_status(&socket) {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
                 // 尝试从同一 socket 获取 self-description，用于关联 service → instance。
                 let service_endpoints =
@@ -1664,7 +1685,9 @@ fn load_service_endpoint_map(
     socket: &Path,
     expected_hash: &str,
 ) -> BTreeMap<String, ServiceEndpointAssoc> {
-    let Ok(response) = flowrt::request_self_description(socket) else {
+    let Ok(response) =
+        flowrt::request_self_description_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
+    else {
         return BTreeMap::new();
     };
     let flowrt::IntrospectionResponse::SelfDescription { handshake, json } = response else {
@@ -1739,7 +1762,7 @@ pub(crate) fn live_hz_summary_for_sockets(
     let mut first = Vec::new();
     let mut lines = Vec::new();
     for socket in &sockets {
-        match flowrt::request_status(socket) {
+        match flowrt::request_status_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(response) => {
                 if let Some(status) = hz_status_or_stale(socket, response, &mut lines) {
                     first.push((socket.clone(), status));
@@ -1756,18 +1779,19 @@ pub(crate) fn live_hz_summary_for_sockets(
     let elapsed = started.elapsed();
 
     for (socket, first_status) in first {
-        let second_status = match flowrt::request_status(&socket) {
-            Ok(response) => {
-                let Some(status) = hz_status_or_stale(&socket, response, &mut lines) else {
+        let second_status =
+            match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
+                Ok(response) => {
+                    let Some(status) = hz_status_or_stale(&socket, response, &mut lines) else {
+                        continue;
+                    };
+                    status
+                }
+                Err(error) => {
+                    lines.push(format!("stale socket={} error={error}", socket.display()));
                     continue;
-                };
-                status
-            }
-            Err(error) => {
-                lines.push(format!("stale socket={} error={error}", socket.display()));
-                continue;
-            }
-        };
+                }
+            };
         let summary = format_hz_summary_from_status_pair(&first_status, &second_status, elapsed)?;
         for line in summary.lines() {
             if channel.is_none_or(|selected| hz_summary_line_matches_channel(line, selected)) {

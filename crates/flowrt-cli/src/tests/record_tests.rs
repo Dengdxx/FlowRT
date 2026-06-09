@@ -26,6 +26,19 @@ fn record_options(output: PathBuf, socket: Option<PathBuf>) -> record::RecordOpt
     }
 }
 
+fn spawn_stalled_introspection_socket(socket: std::path::PathBuf) -> std::sync::mpsc::Sender<()> {
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Ok((stream, _addr)) = listener.accept() {
+            let _stream = stream;
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        }
+    });
+    release_tx
+}
+
 #[test]
 fn record_writes_mcap_from_fake_runtime() {
     let root = temp_test_dir("record-writes-mcap");
@@ -64,6 +77,39 @@ fn record_writes_mcap_from_fake_runtime() {
     assert!(!state.status().recorder.enabled);
 
     drop(server);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn record_start_timeout_does_not_leave_output_file() {
+    let root = temp_test_dir("record-start-timeout-clean-output");
+    let socket = root.join("stalled.sock");
+    let output = root.join("run.mcap");
+    let release = spawn_stalled_introspection_socket(socket.clone());
+    let options = record_options(output.clone(), Some(socket));
+
+    let error = record::record_runtime_for_sockets(options, Vec::new())
+        .expect_err("stalled socket should fail recorder start");
+
+    assert!(
+        error.to_string().contains("failed to start recorder"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !output.exists(),
+        "failed record start must not leave output"
+    );
+    let leaked_temp = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".flowrt-record.tmp.")
+        });
+    assert!(!leaked_temp, "temporary record output should be removed");
+    let _ = release.send(());
     let _ = std::fs::remove_dir_all(root);
 }
 
