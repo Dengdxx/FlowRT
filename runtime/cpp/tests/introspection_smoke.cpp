@@ -1,5 +1,5 @@
-#include <cassert>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -16,7 +16,7 @@
 
 namespace {
 
-std::string request_line(const std::filesystem::path &socket_path, const std::string &request) {
+int connect_unix_socket(const std::filesystem::path &socket_path) {
     const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     assert(fd >= 0);
 
@@ -26,10 +26,10 @@ std::string request_line(const std::filesystem::path &socket_path, const std::st
     assert(path.size() < sizeof(address.sun_path));
     std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
     assert(::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+    return fd;
+}
 
-    const std::string line = request + "\n";
-    assert(::write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size()));
-
+std::string read_response_line(int fd) {
     std::string response;
     char byte = '\0';
     while (::read(fd, &byte, 1) == 1) {
@@ -38,25 +38,37 @@ std::string request_line(const std::filesystem::path &socket_path, const std::st
         }
         response.push_back(byte);
     }
+    return response;
+}
+
+std::string request_line(const std::filesystem::path &socket_path, const std::string &request) {
+    const int fd = connect_unix_socket(socket_path);
+
+    const std::string line = request + "\n";
+    assert(::write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size()));
+
+    std::string response = read_response_line(fd);
     ::close(fd);
     return response;
 }
 
 void send_line_and_close(const std::filesystem::path &socket_path, const std::string &request) {
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    assert(fd >= 0);
-
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    const auto path = socket_path.string();
-    assert(path.size() < sizeof(address.sun_path));
-    std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
-    assert(::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+    const int fd = connect_unix_socket(socket_path);
 
     const std::string line = request + "\n";
     assert(::write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size()));
     assert(::shutdown(fd, SHUT_RDWR) == 0);
     ::close(fd);
+}
+
+int observe_channel_stream(const std::filesystem::path &socket_path, std::string_view channel) {
+    const int fd = connect_unix_socket(socket_path);
+    const std::string request = "{\"command\":\"observe_channel\",\"channel\":\"" +
+                                std::string{channel} + "\",\"mode\":\"latest\"}\n";
+    assert(::write(fd, request.data(), request.size()) == static_cast<ssize_t>(request.size()));
+    const auto response = read_response_line(fd);
+    assert(response.find(R"("response":"observe_ready")") != std::string::npos);
+    return fd;
 }
 
 std::filesystem::path temp_socket_path(std::string_view name) {
@@ -599,9 +611,104 @@ int main() {
         const auto status_after_early_close = request_line(socket_path, R"({"command":"status"})");
         assert_contains(status_after_early_close, R"("response":"status")");
         assert_contains(status_after_early_close, R"("tick_count":7)");
+
+        std::vector<int> observer_fds;
+        observer_fds.reserve(flowrt::MAX_INTROSPECTION_OBSERVERS);
+        for (std::size_t index = 0; index < flowrt::MAX_INTROSPECTION_OBSERVERS; ++index) {
+            observer_fds.push_back(observe_channel_stream(socket_path, "source.imu_to_sink.imu"));
+        }
+        assert(state.active_probe_count("source.imu_to_sink.imu") ==
+               std::optional<std::uint64_t>{flowrt::MAX_INTROSPECTION_OBSERVERS});
+
+        const auto status_while_observing = request_line(socket_path, R"({"command":"status"})");
+        assert_contains(status_while_observing, R"("response":"status")");
+
+        const int excess_observer = connect_unix_socket(socket_path);
+        const std::string observe_request =
+            R"({"command":"observe_channel","channel":"source.imu_to_sink.imu","mode":"latest"})"
+            "\n";
+        assert(::write(excess_observer, observe_request.data(), observe_request.size()) ==
+               static_cast<ssize_t>(observe_request.size()));
+        const auto excess_observe_response = read_response_line(excess_observer);
+        assert_contains(excess_observe_response, R"("response":"error")");
+        assert_contains(excess_observe_response,
+                        "FlowRT introspection observe connection limit reached");
+        ::close(excess_observer);
+
+        for (const int observer_fd : observer_fds) {
+            ::close(observer_fd);
+        }
+        for (std::size_t attempt = 0; attempt < 150; ++attempt) {
+            if (state.active_probe_count("source.imu_to_sink.imu") ==
+                std::optional<std::uint64_t>{0U}) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        assert(state.active_probe_count("source.imu_to_sink.imu") ==
+               std::optional<std::uint64_t>{0U});
     }
 
     assert(!std::filesystem::exists(socket_path));
+
+    const auto stop_socket_path = temp_socket_path("observe-stop.sock");
+    flowrt::IntrospectionState stop_state;
+    stop_state.register_channel("source.imu_to_sink.imu", "Imu");
+    int observe_fd = -1;
+    {
+        auto server = flowrt::spawn_status_server_at(
+                          stop_socket_path,
+                          flowrt::IntrospectionHandshake{
+                              .protocol_version = flowrt::INTROSPECTION_PROTOCOL_VERSION,
+                              .pid = 44,
+                              .started_at_unix_ms = 1002,
+                              .self_description_hash = "stop-test",
+                              .package = "robot_demo",
+                              .process = "main",
+                              .runtime = "cpp",
+                          },
+                          stop_state)
+                          .value();
+
+        observe_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        assert(observe_fd >= 0);
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        const auto path = stop_socket_path.string();
+        std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
+        assert(::connect(observe_fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+        const std::string request =
+            R"({"command":"observe_channel","channel":"source.imu_to_sink.imu","mode":"latest"})"
+            "\n";
+        assert(::write(observe_fd, request.data(), request.size()) ==
+               static_cast<ssize_t>(request.size()));
+
+        char byte = '\0';
+        std::string observe_response;
+        while (::read(observe_fd, &byte, 1) == 1) {
+            if (byte == '\n') {
+                break;
+            }
+            observe_response.push_back(byte);
+        }
+        assert_contains(observe_response, R"("response":"observe_ready")");
+        assert(stop_state.active_probe_count("source.imu_to_sink.imu") ==
+               std::optional<std::uint64_t>{1U});
+    }
+    for (std::size_t attempt = 0; attempt < 150; ++attempt) {
+        if (stop_state.active_probe_count("source.imu_to_sink.imu") ==
+            std::optional<std::uint64_t>{0U}) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    assert(stop_state.active_probe_count("source.imu_to_sink.imu") ==
+           std::optional<std::uint64_t>{0U});
+    if (observe_fd >= 0) {
+        ::close(observe_fd);
+    }
+    assert(!std::filesystem::exists(stop_socket_path));
+
     std::filesystem::remove_all(socket_path.parent_path());
     return 0;
 }

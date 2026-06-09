@@ -404,21 +404,30 @@ int main() {
         flowrt::InprocServiceConfig config;
         config.default_timeout_ms = 1000;
         std::size_t callback_count = 0;
+        std::size_t pending_seen_from_callback = 0;
+        flowrt::InprocServiceServer<AddRequest, AddResponse> *server_ptr = nullptr;
 
         flowrt::InprocServiceServer<AddRequest, AddResponse> server(
             "callback_service",
             [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
                 return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
             },
-            config, [&callback_count]() { ++callback_count; });
+            config,
+            [&callback_count, &pending_seen_from_callback, &server_ptr]() {
+                ++callback_count;
+                pending_seen_from_callback = server_ptr->pending_count();
+            });
+        server_ptr = &server;
 
         flowrt::InprocServiceClient<AddRequest, AddResponse> client("callback_service", server);
 
         client.start_call(AddRequest{1, 1});
         assert(callback_count == 1);
+        assert(pending_seen_from_callback == 1);
 
         client.start_call(AddRequest{2, 2});
         assert(callback_count == 2);
+        assert(pending_seen_from_callback == 2);
 
         server.process_pending();
         assert(callback_count == 2);

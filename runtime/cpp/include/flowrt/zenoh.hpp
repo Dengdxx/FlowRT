@@ -36,21 +36,94 @@ namespace zenoh {
 
 inline constexpr std::uint64_t SERVICE_TRANSPORT_TIMEOUT_GRACE_MS = 1000U;
 
+inline std::string json_string(std::string_view value) {
+    std::string output = "\"";
+    for (const char ch : value) {
+        switch (ch) {
+            case '\\':
+                output += "\\\\";
+                break;
+            case '"':
+                output += "\\\"";
+                break;
+            case '\n':
+                output += "\\n";
+                break;
+            case '\r':
+                output += "\\r";
+                break;
+            case '\t':
+                output += "\\t";
+                break;
+            default:
+                output += ch;
+                break;
+        }
+    }
+    output += "\"";
+    return output;
+}
+
+inline std::vector<std::string> endpoint_list_items(std::string_view raw) {
+    std::vector<std::string> endpoints;
+    std::size_t start = 0;
+    while (start <= raw.size()) {
+        const auto comma = raw.find(',', start);
+        const auto end = comma == std::string_view::npos ? raw.size() : comma;
+        auto item = raw.substr(start, end - start);
+        while (!item.empty() && (item.front() == ' ' || item.front() == '\t')) {
+            item.remove_prefix(1);
+        }
+        while (!item.empty() && (item.back() == ' ' || item.back() == '\t')) {
+            item.remove_suffix(1);
+        }
+        if (!item.empty()) {
+            endpoints.emplace_back(item);
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return endpoints;
+}
+
+inline std::string endpoint_list_json(std::string_view raw) {
+    const auto endpoints = endpoint_list_items(raw);
+    if (endpoints.empty()) {
+        return {};
+    }
+
+    std::string json = "[";
+    for (std::size_t index = 0; index < endpoints.size(); ++index) {
+        if (index != 0U) {
+            json += ",";
+        }
+        json += json_string(endpoints[index]);
+    }
+    json += "]";
+    return json;
+}
+
+inline bool env_flag_enabled(const char *value) noexcept {
+    if (value == nullptr) {
+        return false;
+    }
+    const auto flag = std::string_view{value};
+    return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" || flag == "on";
+}
+
 inline std::string service_key_expr(std::string_view service_name) {
     static constexpr char HEX[] = "0123456789ABCDEF";
 
     std::string encoded;
     encoded.reserve(service_name.size());
     for (const unsigned char byte : service_name) {
-        const bool keep = (byte >= static_cast<unsigned char>('a') &&
-                           byte <= static_cast<unsigned char>('z')) ||
-                          (byte >= static_cast<unsigned char>('A') &&
-                           byte <= static_cast<unsigned char>('Z')) ||
-                          (byte >= static_cast<unsigned char>('0') &&
-                           byte <= static_cast<unsigned char>('9')) ||
-                          byte == static_cast<unsigned char>('_') ||
-                          byte == static_cast<unsigned char>('.') ||
-                          byte == static_cast<unsigned char>('-');
+        const bool keep =
+            (byte >= static_cast<unsigned char>('a') && byte <= static_cast<unsigned char>('z')) ||
+            (byte >= static_cast<unsigned char>('A') && byte <= static_cast<unsigned char>('Z')) ||
+            (byte >= static_cast<unsigned char>('0') && byte <= static_cast<unsigned char>('9')) ||
+            byte == static_cast<unsigned char>('.') || byte == static_cast<unsigned char>('-');
         if (keep) {
             encoded.push_back(static_cast<char>(byte));
         } else {
@@ -63,6 +136,23 @@ inline std::string service_key_expr(std::string_view service_name) {
     }
 
     return "flowrt/service/" + encoded + "/request";
+}
+
+template <typename Resp>
+inline ServiceResult<Resp> service_result_from_response_error_code(std::uint16_t error_code,
+                                                                   std::string_view message) {
+    if (const auto parsed = service_error_from_abi(error_code); parsed.has_value()) {
+        if (message.empty()) {
+            return ServiceResult<Resp>::err(parsed.value());
+        }
+        return ServiceResult<Resp>::err_with_message(parsed.value(), std::string(message));
+    }
+    std::string detail = "unknown service error code " + std::to_string(error_code);
+    if (!message.empty()) {
+        detail.append(": ");
+        detail.append(message);
+    }
+    return ServiceResult<Resp>::err_with_message(ServiceError::Protocol, std::move(detail));
 }
 
 /**
@@ -850,17 +940,16 @@ class ZenohServiceClient {
             }
 
             if (resp_header.error_code != static_cast<std::uint16_t>(ServiceError::Ok)) {
-                const auto error =
-                    service_error_from_abi(resp_header.error_code).value_or(ServiceError::Backend);
-                std::optional<std::string> message;
-                if (!decoded.error_msg.empty()) {
-                    message = std::string(decoded.error_msg.begin(), decoded.error_msg.end());
-                }
-                return ServiceResult<Resp>::err_with_message(error, message.value_or(""));
+                return service_result_from_response_error_code<Resp>(
+                    resp_header.error_code,
+                    std::string_view(reinterpret_cast<const char *>(decoded.error_msg.data()),
+                                     decoded.error_msg.size()));
             }
 
             auto resp = detail::decode_frame<Resp>(decoded.payload);
             return ServiceResult<Resp>::ok(std::move(resp));
+        } catch (const WireCodecError &e) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Protocol, e.what());
         } catch (const std::exception &e) {
             return ServiceResult<Resp>::err_with_message(ServiceError::Backend, e.what());
         } catch (...) {
@@ -966,8 +1055,7 @@ class ZenohServiceServer {
                                   std::move(session)
 #endif
                                       ,
-                                  config,
-                                  std::move(handler));
+                                  config, std::move(handler));
     }
 
     /**
@@ -993,8 +1081,7 @@ class ZenohServiceServer {
                        std::shared_ptr<::zenoh::Session> session
 #endif
                        ,
-                       ZenohServiceConfig config,
-                       Handler handler)
+                       ZenohServiceConfig config, Handler handler)
         : service_name_(service_name),
           service_id_(fnv1a64(service_name)),
           key_expr_(service_key_expr(service_name)),
@@ -1081,11 +1168,11 @@ class ZenohServiceServer {
                 const auto remaining_ms = deadline.absolute_deadline_ms > handler_wait_now_ms
                                               ? deadline.absolute_deadline_ms - handler_wait_now_ms
                                               : 0U;
-                auto reply_error = [&query, &reply_ke, &req_header, &deadline,
-                                    service_id](ServiceError error, std::string_view message) {
+                auto reply_error = [&query, &reply_ke, &req_header, &deadline, service_id](
+                                       ServiceError error, std::string_view message) {
                     const auto header = ServiceFrameHeader::make_response(
-                        RequestId{req_header.session_id, req_header.sequence, service_id},
-                        deadline, req_header.correlation_id, req_header.schema_hash, error);
+                        RequestId{req_header.session_id, req_header.sequence, service_id}, deadline,
+                        req_header.correlation_id, req_header.schema_hash, error);
                     const auto frame = encode_service_frame(
                         header, {},
                         std::span<const std::uint8_t>{
@@ -1103,9 +1190,9 @@ class ZenohServiceServer {
 
                 auto result_promise = std::make_shared<std::promise<ServiceResult<Resp>>>();
                 auto result_future = result_promise->get_future();
-                auto release_in_flight = std::shared_ptr<void>(
-                    nullptr,
-                    [in_flight](void *) { in_flight->fetch_sub(1, std::memory_order_acq_rel); });
+                auto release_in_flight = std::shared_ptr<void>(nullptr, [in_flight](void *) {
+                    in_flight->fetch_sub(1, std::memory_order_acq_rel);
+                });
                 try {
                     std::thread([handler_fn, request, result_promise,
                                  release_in_flight = std::move(release_in_flight)]() mutable {
@@ -1194,35 +1281,19 @@ class ZenohServiceServer {
 inline ::zenoh::Config zenoh_config_from_environment() {
     auto config = ::zenoh::Config::create_default();
     if (const auto *mode = std::getenv("FLOWRT_ZENOH_MODE")) {
-        auto s = std::string("\"") + mode + "\"";
-        config.insert_json5(Z_CONFIG_MODE_KEY, s);
+        config.insert_json5(Z_CONFIG_MODE_KEY, json_string(std::string_view{mode}));
     }
     if (const auto *listen = std::getenv("FLOWRT_ZENOH_LISTEN")) {
-        std::string endpoints = "[\"";
-        for (const char *p = listen; *p; ++p) {
-            if (*p == ',') {
-                endpoints += "\",\"";
-            } else if (*p != ' ' && *p != '\t') {
-                endpoints += *p;
-            }
+        if (const auto json = endpoint_list_json(std::string_view{listen}); !json.empty()) {
+            config.insert_json5(Z_CONFIG_LISTEN_KEY, json);
         }
-        endpoints += "\"]";
-        config.insert_json5(Z_CONFIG_LISTEN_KEY, endpoints);
     }
     if (const auto *connect = std::getenv("FLOWRT_ZENOH_CONNECT")) {
-        std::string endpoints = "[\"";
-        for (const char *p = connect; *p; ++p) {
-            if (*p == ',') {
-                endpoints += "\",\"";
-            } else if (*p != ' ' && *p != '\t') {
-                endpoints += *p;
-            }
+        if (const auto json = endpoint_list_json(std::string_view{connect}); !json.empty()) {
+            config.insert_json5(Z_CONFIG_CONNECT_KEY, json);
         }
-        endpoints += "\"]";
-        config.insert_json5(Z_CONFIG_CONNECT_KEY, endpoints);
     }
-    if (const auto *no_mc = std::getenv("FLOWRT_ZENOH_NO_MULTICAST");
-        no_mc && (std::string_view(no_mc) == "1" || std::string_view(no_mc) == "true")) {
+    if (const auto *no_mc = std::getenv("FLOWRT_ZENOH_NO_MULTICAST"); env_flag_enabled(no_mc)) {
         config.insert_json5(Z_CONFIG_MULTICAST_SCOUTING_KEY, "false");
     }
     return config;

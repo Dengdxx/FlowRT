@@ -277,7 +277,7 @@ class Iox2Backend final : public Backend {
     const Scheduler &scheduler() const noexcept override { return scheduler_; }
 
    private:
-    static inline constexpr std::array<std::string_view, 24> kCapabilities = {
+    static inline constexpr std::array<std::string_view, 22> kCapabilities = {
         "abi:fixed_size_plain_data",
         "layout:native_layout",
         "allocation:bounded",
@@ -290,8 +290,6 @@ class Iox2Backend final : public Backend {
         "channel:latest",
         "channel:fifo",
         "overflow:drop_oldest",
-        "overflow:drop_newest",
-        "overflow:error",
         "overflow:block",
         "stale:warn",
         "stale:drop",

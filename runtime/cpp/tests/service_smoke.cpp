@@ -60,6 +60,10 @@ int main() {
 
     assert(flowrt::is_ok(flowrt::ServiceError::Ok));
     assert(!flowrt::is_ok(flowrt::ServiceError::Timeout));
+    assert(flowrt::ServiceResult<int>::err(flowrt::ServiceError::Ok).error_code() ==
+           flowrt::ServiceError::Protocol);
+    assert(flowrt::ServiceResult<int>::err_with_message(flowrt::ServiceError::Ok, "bad")
+               .error_code() == flowrt::ServiceError::Protocol);
 
     assert(flowrt::to_string(flowrt::ServiceError::Ok) == "Ok");
     assert(flowrt::to_string(flowrt::ServiceError::Timeout) == "Timeout");
@@ -72,6 +76,14 @@ int main() {
     assert(flowrt::fnv1a64("service_a") != flowrt::fnv1a64("service_b"));
     assert(flowrt::zenoh::service_key_expr("flowrt/test service") ==
            "flowrt/service/flowrt_x2F_test_x20_service/request");
+    assert(flowrt::zenoh::service_key_expr("a/b") != flowrt::zenoh::service_key_expr("a_x2F_b"));
+    assert(flowrt::zenoh::service_key_expr("a_x2F_b") == "flowrt/service/a_x5F_x2F_x5F_b/request");
+    auto future_error =
+        flowrt::zenoh::service_result_from_response_error_code<int>(99U, "future service error");
+    assert(future_error.error_code() == flowrt::ServiceError::Protocol);
+    assert(future_error.error_message().has_value());
+    assert(future_error.error_message().value() ==
+           "unknown service error code 99: future service error");
     auto zenoh_service_config = flowrt::zenoh::ZenohServiceConfig::defaults();
     assert(zenoh_service_config.max_in_flight() == 64U);
     zenoh_service_config.set_max_in_flight(2U);

@@ -46,7 +46,8 @@ class WireCodecError final : public std::runtime_error {
      *
      * @param message 稳定错误说明。
      */
-    explicit WireCodecError(const char *message) : std::runtime_error(message) {}
+    explicit WireCodecError(const char *message)
+        : std::runtime_error(message), expected_(0U), actual_(0U) {}
 
     /**
      * @brief 返回期望字节数。

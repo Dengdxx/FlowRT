@@ -154,6 +154,9 @@ int main() {
         assert(error.actual() == 1U);
     }
     assert(saw_wire_size_error);
+    const flowrt::WireCodecError content_error("invalid frame");
+    assert(content_error.expected() == 0U);
+    assert(content_error.actual() == 0U);
 
     flowrt::InprocBackend inproc_backend;
     assert(inproc_backend.kind() == flowrt::BackendKind::Inproc);
@@ -195,7 +198,9 @@ int main() {
     flowrt::Iox2Backend iox2_backend;
     assert(iox2_backend.kind() == flowrt::BackendKind::Iox2);
     assert(iox2_backend.capabilities().contains("topology:multi_process"));
-    assert_capabilities_equal(iox2_backend.capabilities(), std::array<std::string_view, 24>{
+    assert(!iox2_backend.capabilities().contains("overflow:drop_newest"));
+    assert(!iox2_backend.capabilities().contains("overflow:error"));
+    assert_capabilities_equal(iox2_backend.capabilities(), std::array<std::string_view, 22>{
                                                                "abi:fixed_size_plain_data",
                                                                "layout:native_layout",
                                                                "allocation:bounded",
@@ -208,8 +213,6 @@ int main() {
                                                                "channel:latest",
                                                                "channel:fifo",
                                                                "overflow:drop_oldest",
-                                                               "overflow:drop_newest",
-                                                               "overflow:error",
                                                                "overflow:block",
                                                                "stale:warn",
                                                                "stale:drop",

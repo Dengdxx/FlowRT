@@ -49,24 +49,37 @@ install(
 
 enable_testing()
 
+function(flowrt_keep_asserts_enabled target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
+endfunction()
+
 add_executable(flowrt_runtime_smoke tests/runtime_smoke.cpp)
 target_link_libraries(flowrt_runtime_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_runtime_smoke)
 add_test(NAME flowrt_runtime_smoke COMMAND flowrt_runtime_smoke)
 
 add_executable(flowrt_runtime_introspection_smoke tests/introspection_smoke.cpp)
 target_link_libraries(flowrt_runtime_introspection_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_runtime_introspection_smoke)
 add_test(NAME flowrt_runtime_introspection_smoke COMMAND flowrt_runtime_introspection_smoke)
 
 add_executable(flowrt_service_smoke tests/service_smoke.cpp)
 target_link_libraries(flowrt_service_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_service_smoke)
 add_test(NAME flowrt_service_smoke COMMAND flowrt_service_smoke)
 
 add_executable(flowrt_operation_smoke tests/operation_smoke.cpp)
 target_link_libraries(flowrt_operation_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_operation_smoke)
 add_test(NAME flowrt_operation_smoke COMMAND flowrt_operation_smoke)
 
 add_executable(flowrt_inproc_service_smoke tests/inproc_service_smoke.cpp)
 target_link_libraries(flowrt_inproc_service_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_inproc_service_smoke)
 add_test(NAME flowrt_inproc_service_smoke COMMAND flowrt_inproc_service_smoke)
 
 option(FLOWRT_CPP_ENABLE_IOX2_TESTS "Build FlowRT C++ runtime tests that require iceoryx2-cxx" OFF)
@@ -81,6 +94,7 @@ if(FLOWRT_CPP_ENABLE_IOX2_TESTS)
     add_executable(flowrt_runtime_iox2_smoke tests/iox2_smoke.cpp)
     target_link_libraries(flowrt_runtime_iox2_smoke PRIVATE flowrt_runtime iceoryx2-cxx::static-lib-cxx)
     target_compile_definitions(flowrt_runtime_iox2_smoke PRIVATE FLOWRT_HAS_ICEORYX2_CXX=1 FLOWRT_ENABLE_TEST_HOOKS=1)
+    flowrt_keep_asserts_enabled(flowrt_runtime_iox2_smoke)
     add_test(NAME flowrt_runtime_iox2_smoke COMMAND flowrt_runtime_iox2_smoke)
 endif()
 
@@ -98,18 +112,22 @@ if(FLOWRT_CPP_ENABLE_ZENOH_TESTS)
     add_executable(flowrt_runtime_zenoh_smoke tests/zenoh_smoke.cpp)
     target_link_libraries(flowrt_runtime_zenoh_smoke PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
     target_compile_definitions(flowrt_runtime_zenoh_smoke PRIVATE FLOWRT_HAS_ZENOH_CXX=1 FLOWRT_ENABLE_TEST_HOOKS=1)
+    flowrt_keep_asserts_enabled(flowrt_runtime_zenoh_smoke)
     add_test(NAME flowrt_runtime_zenoh_smoke COMMAND flowrt_runtime_zenoh_smoke)
 
     add_executable(flowrt_zenoh_service_smoke tests/zenoh_service_smoke.cpp)
     target_link_libraries(flowrt_zenoh_service_smoke PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
     target_compile_definitions(flowrt_zenoh_service_smoke PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
+    flowrt_keep_asserts_enabled(flowrt_zenoh_service_smoke)
     add_test(NAME flowrt_zenoh_service_smoke COMMAND flowrt_zenoh_service_smoke)
 
     add_executable(flowrt_zenoh_service_server tests/zenoh_service_server.cpp)
     target_link_libraries(flowrt_zenoh_service_server PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
     target_compile_definitions(flowrt_zenoh_service_server PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
+    flowrt_keep_asserts_enabled(flowrt_zenoh_service_server)
 
     add_executable(flowrt_zenoh_service_client tests/zenoh_service_client.cpp)
     target_link_libraries(flowrt_zenoh_service_client PRIVATE flowrt_runtime ${FLOWRT_ZENOH_CXX_TARGET})
     target_compile_definitions(flowrt_zenoh_service_client PRIVATE FLOWRT_HAS_ZENOH_CXX=1)
+    flowrt_keep_asserts_enabled(flowrt_zenoh_service_client)
 endif()

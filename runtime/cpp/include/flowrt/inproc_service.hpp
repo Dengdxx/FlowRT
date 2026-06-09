@@ -231,13 +231,19 @@ class InprocServiceRegistry {
  * @brief inproc service 调用 handle。
  *
  * 非阻塞 future-like 对象。支持 `complete()` 阻塞等待和 `poll()` 非阻塞查询。
- * handle 可拷贝，多个 handle 实例共享同一调用状态。
+ * handle 是 move-only future-like 对象。调用结果只能被一个 owner 消费，避免多个
+ * handle 副本重复 move 同一响应。
  *
  * @tparam Resp 响应消息类型。
  */
 template <typename Resp>
 class InprocServiceHandle {
    public:
+    InprocServiceHandle(const InprocServiceHandle &) = delete;
+    InprocServiceHandle &operator=(const InprocServiceHandle &) = delete;
+    InprocServiceHandle(InprocServiceHandle &&) noexcept = default;
+    InprocServiceHandle &operator=(InprocServiceHandle &&) noexcept = default;
+
     /**
      * @brief 阻塞等待响应，带超时。
      *
@@ -255,9 +261,7 @@ class InprocServiceHandle {
         if (remaining == 0) {
             state_->error = ServiceError::Timeout;
             state_->done = true;
-            if (state_->stats) {
-                ++state_->stats->timeouts;
-            }
+            state_->record_timeout();
             return ServiceResult<Resp>::err(ServiceError::Timeout);
         }
         const auto abs_deadline =
@@ -265,9 +269,7 @@ class InprocServiceHandle {
         if (!state_->cv.wait_until(lock, abs_deadline, [this] { return state_->done; })) {
             state_->error = ServiceError::Timeout;
             state_->done = true;
-            if (state_->stats) {
-                ++state_->stats->timeouts;
-            }
+            state_->record_timeout();
             return ServiceResult<Resp>::err(ServiceError::Timeout);
         }
         return take_result();
@@ -311,7 +313,22 @@ class InprocServiceHandle {
         std::optional<std::string> error_message;
         std::uint64_t deadline_ms = 0;
         bool done = false;
-        InprocServiceStats *stats = nullptr;  ///< 指向 server 共享状态的统计计数器。
+        bool consumed = false;
+        std::weak_ptr<detail::InprocServiceState> service_state;
+
+        void record_timeout() {
+            if (auto shared = service_state.lock()) {
+                std::lock_guard service_lock(shared->mutex);
+                ++shared->stats.timeouts;
+            }
+        }
+
+        void record_late_drop() {
+            if (auto shared = service_state.lock()) {
+                std::lock_guard service_lock(shared->mutex);
+                ++shared->stats.late_dropped;
+            }
+        }
     };
 
    public:
@@ -333,6 +350,11 @@ class InprocServiceHandle {
     explicit InprocServiceHandle(std::shared_ptr<State> state) : state_(std::move(state)) {}
 
     ServiceResult<Resp> take_result() {
+        if (state_->consumed) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Protocol,
+                                                         "service result already consumed");
+        }
+        state_->consumed = true;
         if (state_->error != ServiceError::Ok) {
             if (state_->error_message) {
                 return ServiceResult<Resp>::err_with_message(state_->error,
@@ -556,9 +578,8 @@ class InprocServiceClient {
     }
 
     InprocServiceHandle<Resp> start_call(Req request, std::uint64_t timeout_ms) {
-        if (server_lane_ != 0 &&
-            ((caller_lane_ != 0 && caller_lane_ == server_lane_) ||
-             detail::active_inproc_service_lane_contains(server_lane_))) {
+        if (server_lane_ != 0 && ((caller_lane_ != 0 && caller_lane_ == server_lane_) ||
+                                  detail::active_inproc_service_lane_contains(server_lane_))) {
             auto handle = make_error_handle(ServiceError::WouldDeadlock);
             {
                 std::lock_guard lock(state_->mutex);
@@ -588,7 +609,8 @@ class InprocServiceClient {
 
         auto call_state = std::make_shared<typename InprocServiceHandle<Resp>::State>();
         call_state->deadline_ms = deadline_ms;
-        call_state->stats = &state_->stats;
+        call_state->service_state = state_;
+        std::function<void()> on_request_arrived;
 
         {
             std::lock_guard lock(state_->mutex);
@@ -616,9 +638,7 @@ class InprocServiceClient {
                 std::lock_guard inner(call_state->mutex);
                 if (call_state->done) {
                     // late response：client 已超时或已取消，丢弃响应并计数。
-                    if (call_state->stats) {
-                        ++call_state->stats->late_dropped;
-                    }
+                    call_state->record_late_drop();
                     return;
                 }
                 call_state->error = error;
@@ -637,8 +657,14 @@ class InprocServiceClient {
             state_->queue.push_back(
                 detail::InprocCallEntry{std::move(request), std::move(on_deliver)});
             ++state_->in_flight;
-            if (state_->on_request_arrived) {
-                state_->on_request_arrived();
+            on_request_arrived = state_->on_request_arrived;
+        }
+
+        if (on_request_arrived) {
+            try {
+                on_request_arrived();
+            } catch (...) {
+                // 到达通知只用于唤醒 scheduler；通知失败不应破坏已排队的请求。
             }
         }
 

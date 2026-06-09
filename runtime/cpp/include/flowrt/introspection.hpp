@@ -35,6 +35,8 @@ namespace flowrt {
 inline constexpr const char *INTROSPECTION_PROTOCOL_VERSION = "0.1";
 /// 单个 runtime introspection server 允许同时处理的客户端连接数。
 inline constexpr std::size_t MAX_INTROSPECTION_CLIENT_THREADS = 64U;
+/// 单个 runtime introspection server 允许同时保持的 observe 长连接数。
+inline constexpr std::size_t MAX_INTROSPECTION_OBSERVERS = 32U;
 
 /**
  * @brief CLI 连接 socket 后首先验证的进程身份。
@@ -2156,10 +2158,12 @@ class IntrospectionState {
         if (!json_value_matches_param_type(param.type, value)) {
             return "FlowRT parameter `" + name + "` expects `" + param.type + "` value";
         }
-        if (param.min && compare_json_number_by_type(param.type, value, *param.min).value_or(0) < 0) {
+        if (param.min &&
+            compare_json_number_by_type(param.type, value, *param.min).value_or(0) < 0) {
             return "FlowRT parameter `" + name + "` is below minimum";
         }
-        if (param.max && compare_json_number_by_type(param.type, value, *param.max).value_or(0) > 0) {
+        if (param.max &&
+            compare_json_number_by_type(param.type, value, *param.max).value_or(0) > 0) {
             return "FlowRT parameter `" + name + "` is above maximum";
         }
         if (!param.choices.empty() &&
@@ -2378,13 +2382,17 @@ inline std::optional<IntrospectionClientPermit> try_acquire_introspection_client
     }
 }
 
-inline void handle_introspection_connection(int client_fd, const IntrospectionHandshake &handshake,
-                                            const IntrospectionState &state) {
+inline void handle_introspection_connection(
+    int client_fd, const IntrospectionHandshake &handshake, const IntrospectionState &state,
+    const std::shared_ptr<std::atomic_bool> &stop,
+    std::optional<IntrospectionClientPermit> initial_permit,
+    const std::shared_ptr<std::atomic_size_t> &active_observers) {
     const auto line = read_line(client_fd);
     std::string response;
     if (!line) {
         response = error_response_json(handshake, "invalid FlowRT introspection request");
     } else if (const auto request = parse_introspection_request(*line)) {
+        initial_permit.reset();
         switch (request->kind) {
             case IntrospectionRequestKind::Status:
                 response = status_response_json(handshake, state.status());
@@ -2403,6 +2411,13 @@ inline void handle_introspection_connection(int client_fd, const IntrospectionHa
                 break;
             }
             case IntrospectionRequestKind::ObserveChannel: {
+                auto observer_permit = try_acquire_introspection_client_permit(
+                    active_observers, MAX_INTROSPECTION_OBSERVERS);
+                if (!observer_permit.has_value()) {
+                    response = error_response_json(
+                        handshake, "FlowRT introspection observe connection limit reached");
+                    break;
+                }
                 auto guard = state.observe_channel(request->channel);
                 const auto channel = state.channel_status(request->channel);
                 if (!guard || !channel) {
@@ -2412,7 +2427,7 @@ inline void handle_introspection_connection(int client_fd, const IntrospectionHa
                 response = observe_ready_response_json(handshake, *channel);
                 response.push_back('\n');
                 (void)write_all(client_fd, response);
-                while (true) {
+                while (!stop->load(std::memory_order_relaxed)) {
                     const auto keepalive = read_line(client_fd);
                     if (!keepalive) {
                         break;
@@ -2624,18 +2639,18 @@ inline std::optional<IntrospectionServer> spawn_status_server_at(std::filesystem
 
     auto stop = std::make_shared<std::atomic_bool>(false);
     auto active_clients = std::make_shared<std::atomic_size_t>(0U);
+    auto active_observers = std::make_shared<std::atomic_size_t>(0U);
     auto thread_stop = stop;
     std::thread handle;
     try {
         handle = std::thread([listener_fd, thread_stop, handshake = std::move(handshake),
-                              state = std::move(state), active_clients = std::move(active_clients)]()
-                                 mutable {
+                              state = std::move(state), active_clients = std::move(active_clients),
+                              active_observers = std::move(active_observers)]() mutable {
             while (!thread_stop->load(std::memory_order_relaxed)) {
                 const int client_fd = ::accept(listener_fd, nullptr, nullptr);
                 if (client_fd >= 0) {
                     detail::set_socket_timeout(client_fd);
-                    auto permit =
-                        detail::try_acquire_introspection_client_permit(active_clients);
+                    auto permit = detail::try_acquire_introspection_client_permit(active_clients);
                     if (!permit.has_value()) {
                         auto response = detail::error_response_json(
                             handshake, "FlowRT introspection connection limit reached");
@@ -2645,10 +2660,11 @@ inline std::optional<IntrospectionServer> spawn_status_server_at(std::filesystem
                         continue;
                     }
                     try {
-                        std::thread([client_fd, handshake, state,
-                                     permit = std::move(*permit)]() mutable {
-                            (void)permit;
-                            detail::handle_introspection_connection(client_fd, handshake, state);
+                        std::thread([client_fd, handshake, state, thread_stop, active_observers,
+                                     permit = std::move(permit)]() mutable {
+                            detail::handle_introspection_connection(client_fd, handshake, state,
+                                                                    thread_stop, std::move(permit),
+                                                                    active_observers);
                             ::close(client_fd);
                         }).detach();
                     } catch (...) {

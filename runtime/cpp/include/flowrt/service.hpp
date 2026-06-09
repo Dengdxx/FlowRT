@@ -97,14 +97,14 @@ class ServiceResult {
     /// 构造失败结果（无消息）。
     static ServiceResult err(ServiceError code) {
         ServiceResult result;
-        result.error_ = code;
+        result.error_ = normalize_error_code(code);
         return result;
     }
 
     /// 构造失败结果（带消息）。
     static ServiceResult err_with_message(ServiceError code, std::string message) {
         ServiceResult result;
-        result.error_ = code;
+        result.error_ = normalize_error_code(code);
         result.error_message_ = std::move(message);
         return result;
     }
@@ -139,6 +139,10 @@ class ServiceResult {
 
    private:
     ServiceResult() = default;
+
+    static constexpr ServiceError normalize_error_code(ServiceError code) noexcept {
+        return code == ServiceError::Ok ? ServiceError::Protocol : code;
+    }
 
     T value_{};
     ServiceError error_ = ServiceError::Ok;
@@ -305,7 +309,8 @@ struct ServiceFrameHeader {
         }
         const auto version_val = read_wire_le<std::uint16_t>(input, 4);
         if (version_val < SERVICE_FRAME_VERSION) {
-            throw WireCodecError("service frame version is older than the minimum supported version");
+            throw WireCodecError(
+                "service frame version is older than the minimum supported version");
         }
         ServiceFrameHeader h{};
         h.magic = magic_val;
