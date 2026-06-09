@@ -152,6 +152,14 @@ case "$architecture" in
         ;;
 esac
 
+host_architecture="$(dpkg --print-architecture)"
+if [[ "$architecture" != "$host_architecture" ]]; then
+    printf '错误: 当前 package-deb.sh 只支持原生架构打包。\n' >&2
+    printf '请求架构: %s\n当前主机架构: %s\n' "$architecture" "$host_architecture" >&2
+    printf '请在匹配架构的 runner/机器上运行，或等交叉编译打包支持落地后再使用。\n' >&2
+    exit 1
+fi
+
 multiarch="$(dpkg-architecture -a"$architecture" -qDEB_HOST_MULTIARCH)"
 
 package_work_parent="$repo_root/build/package-deb"
@@ -176,8 +184,21 @@ install -d "$private_root/share/flowrt/runtime/rust"
 cp -a "$repo_root/runtime/rust/Cargo.toml" "$repo_root/runtime/rust/src" \
     "$private_root/share/flowrt/runtime/rust/"
 install -d "$private_root/share/flowrt/crates/flowrt-record"
-cp -a "$repo_root/crates/flowrt-record/Cargo.toml" "$repo_root/crates/flowrt-record/src" \
-    "$private_root/share/flowrt/crates/flowrt-record/"
+cp -a "$repo_root/crates/flowrt-record/src" "$private_root/share/flowrt/crates/flowrt-record/"
+cat > "$private_root/share/flowrt/crates/flowrt-record/Cargo.toml" <<EOF
+[package]
+name = "flowrt-record"
+version = "${version}"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[dependencies]
+mcap = { version = "0.24.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+EOF
 install -d "$private_root/share/cargo"
 vendor_log="$package_work/cargo-vendor.log"
 if ! cargo vendor --locked --versioned-dirs "$private_root/share/cargo/vendor" \
@@ -186,7 +207,7 @@ if ! cargo vendor --locked --versioned-dirs "$private_root/share/cargo/vendor" \
     exit 1
 fi
 vendor_hash="$(
-    for relative in Cargo.lock runtime/rust/Cargo.toml scripts/deps.lock; do
+    for relative in Cargo.lock runtime/rust/Cargo.toml crates/flowrt-record/Cargo.toml scripts/deps.lock; do
         path="$repo_root/$relative"
         if [[ -f "$path" ]]; then
             printf '%s' "$relative"

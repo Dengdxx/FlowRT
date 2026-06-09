@@ -5,6 +5,32 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/flowrt-deb-test.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 
+host_architecture="$(dpkg --print-architecture)"
+case "$host_architecture" in
+    amd64)
+        mismatched_architecture="arm64"
+        ;;
+    arm64)
+        mismatched_architecture="amd64"
+        ;;
+    *)
+        mismatched_architecture=""
+        ;;
+esac
+
+if [[ -n "$mismatched_architecture" ]]; then
+    mismatch_log="$work_dir/mismatched-architecture.log"
+    if "$repo_root/scripts/package-deb.sh" \
+        --output-dir "$work_dir/mismatch" \
+        --architecture "$mismatched_architecture" \
+        >"$mismatch_log" 2>&1; then
+        printf 'package-deb unexpectedly accepted mismatched architecture %s on %s\n' \
+            "$mismatched_architecture" "$host_architecture" >&2
+        exit 1
+    fi
+    grep -q '只支持原生架构打包' "$mismatch_log"
+fi
+
 out_dir="$work_dir/dist"
 "$repo_root/scripts/package-deb.sh" --output-dir "$out_dir"
 

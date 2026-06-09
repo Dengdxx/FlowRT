@@ -77,8 +77,15 @@ if [[ -z "$expected_version" ]]; then
     )"
 fi
 
+expected_version="${expected_version#v}"
+
 if [[ -z "$expected_version" ]]; then
     fail "无法从 Cargo.toml 读取 workspace version，请传入 VERSION 参数"
+    exit 1
+fi
+
+if ! [[ "$expected_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    fail "VERSION 必须是 X.Y.Z 或 vX.Y.Z，实际为: $expected_version"
     exit 1
 fi
 
@@ -350,9 +357,12 @@ printf '\n[8/9] README.md 安装示例\n'
 
 readme_file="$repo_root/README.md"
 if [[ -f "$readme_file" ]]; then
+    readme_version="$(first_match '(?<=^version=v)[0-9]+\.[0-9]+\.[0-9]+' "$readme_file")"
+    if [[ -z "$readme_version" ]]; then
+        readme_version="$(first_match '(?<=^version=)[0-9]+\.[0-9]+\.[0-9]+' "$readme_file")"
+    fi
     readme_match="$(first_match 'flowrt_[0-9]+\.[0-9]+\.[0-9]+_amd64\.deb' "$readme_file")"
-    readme_version=""
-    if [[ -n "$readme_match" ]]; then
+    if [[ -z "$readme_version" && -n "$readme_match" ]]; then
         readme_version="$(grep -oP '[0-9]+\.[0-9]+\.[0-9]+' <<<"$readme_match" | head -1)"
     fi
     if [[ "$readme_version" == "$expected_version" ]]; then
@@ -360,7 +370,7 @@ if [[ -f "$readme_file" ]]; then
     elif [[ -z "$readme_version" ]]; then
         info "README.md 中未找到版本化的 deb 文件名（可能是正常模板）"
     else
-        warn "README.md 安装示例版本 = $readme_version，期望 $expected_version"
+        fail "README.md 安装示例版本 = $readme_version，期望 $expected_version"
     fi
 fi
 
