@@ -261,6 +261,8 @@ backends = ["zenoh"]
     let output = bundle_workspace(&rsdl, &contract, &out_dir, &bundle, None).unwrap();
 
     assert!(output.contains("created FlowRT bundle"));
+    assert!(output.contains("stripped_executables=0"));
+    assert!(output.contains("strip_warnings=0"));
     assert!(bundle.join("bundle.toml").is_file());
     assert!(bundle.join("bin/external-demo-flowrt-supervisor").is_file());
     assert!(bundle.join("flowrt/contract/contract.ir.json").is_file());
@@ -280,6 +282,21 @@ backends = ["zenoh"]
     assert_eq!(manifest.platform.as_deref(), Some("linux-arm64"));
     assert_eq!(manifest.entry, "bin/external-demo-flowrt-supervisor");
     assert_eq!(manifest.external_processes.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bundle_strip_skips_non_elf_executables() {
+    let root = temp_test_dir("bundle-strip-non-elf");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("app");
+    std::fs::write(&script, "#!/bin/sh\n").unwrap();
+
+    let outcome = strip_bundle_executable(&script).unwrap();
+
+    assert_eq!(outcome, BundleStripOutcome::Skipped);
+    assert_eq!(std::fs::read_to_string(&script).unwrap(), "#!/bin/sh\n");
 
     let _ = std::fs::remove_dir_all(&root);
 }

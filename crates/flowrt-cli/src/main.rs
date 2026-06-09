@@ -270,7 +270,11 @@ enum Command {
     },
 
     /// 扫描当前用户 runtime socket 并输出 live status。
-    Status,
+    Status {
+        /// 只输出成功响应 status 的 live runtime，隐藏 stale socket 诊断行。
+        #[arg(long)]
+        live_only: bool,
+    },
 
     /// 统计 live channel 发布频率。
     Hz {
@@ -710,8 +714,8 @@ fn main() -> Result<()> {
                 println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
             }
         },
-        Command::Status => {
-            println!("{}", live_status_summary()?);
+        Command::Status { live_only } => {
+            println!("{}", live_status_summary(live_only)?);
         }
         Command::Hz {
             channel,
@@ -1063,6 +1067,7 @@ fn bundle_workspace(
     )?;
 
     let mut executables = Vec::new();
+    let mut strip_stats = BundleStripStats::default();
     for (kind, relative) in [
         ("supervisor", build_info.executables.supervisor.as_ref()),
         ("rust_app", build_info.executables.rust_app.as_ref()),
@@ -1086,6 +1091,7 @@ fn bundle_workspace(
             })?;
             let dest = PathBuf::from("bin").join(file_name);
             copy_required_file(&source, &output.join(&dest))?;
+            strip_stats.record(strip_bundle_executable(&output.join(&dest))?);
             executables.push(BundleExecutable {
                 kind: kind.to_string(),
                 path: dest,
@@ -1133,11 +1139,68 @@ fn bundle_workspace(
         .with_context(|| format!("failed to write `{}`", output.join("bundle.toml").display()))?;
 
     Ok(format!(
-        "created FlowRT bundle: {} entry={} external_packages={}",
+        "created FlowRT bundle: {} entry={} external_packages={} stripped_executables={} strip_warnings={}",
         output.display(),
         manifest.entry,
-        manifest.external_processes.len()
+        manifest.external_processes.len(),
+        strip_stats.stripped,
+        strip_stats.warnings
     ))
+}
+
+#[derive(Default)]
+struct BundleStripStats {
+    stripped: usize,
+    warnings: usize,
+}
+
+impl BundleStripStats {
+    fn record(&mut self, outcome: BundleStripOutcome) {
+        match outcome {
+            BundleStripOutcome::Stripped => self.stripped += 1,
+            BundleStripOutcome::Skipped | BundleStripOutcome::Warning => {
+                if outcome == BundleStripOutcome::Warning {
+                    self.warnings += 1;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleStripOutcome {
+    Stripped,
+    Skipped,
+    Warning,
+}
+
+fn strip_bundle_executable(path: &Path) -> Result<BundleStripOutcome> {
+    if !is_elf_file(path)? {
+        return Ok(BundleStripOutcome::Skipped);
+    }
+    let strip = env::var_os("FLOWRT_STRIP").unwrap_or_else(|| OsStr::new("strip").to_os_string());
+    let output = match ProcessCommand::new(&strip)
+        .arg("--strip-unneeded")
+        .arg(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(BundleStripOutcome::Warning),
+    };
+    if output.status.success() {
+        Ok(BundleStripOutcome::Stripped)
+    } else {
+        Ok(BundleStripOutcome::Warning)
+    }
+}
+
+fn is_elf_file(path: &Path) -> Result<bool> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open `{}`", path.display()))?;
+    let mut magic = [0u8; 4];
+    let read = std::io::Read::read(&mut file, &mut magic)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    Ok(read == magic.len() && magic == [0x7f, b'E', b'L', b'F'])
 }
 
 fn ensure_bundle_output_dir(output: &Path) -> Result<()> {

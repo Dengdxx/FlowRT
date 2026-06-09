@@ -605,11 +605,15 @@ fn params_commands_use_selfdesc_matched_runtime_socket() {
       "component": "controller",
       "process": "main",
       "runtime": "rust",
-      "params": [{
-        "name": "kp",
-        "type": "f32",
-        "update": "on_tick"
-      }]
+	      "params": [{
+	        "name": "kp",
+	        "type": "f32",
+	        "update": "on_tick"
+	      }, {
+	        "name": "mode",
+	        "type": "string",
+	        "update": "startup"
+	      }]
     }],
     "tasks": [],
     "channels": []
@@ -642,6 +646,15 @@ fn params_commands_use_selfdesc_matched_runtime_socket() {
         max: Some(serde_json::json!(10.0)),
         choices: Vec::new(),
     });
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.mode".to_string(),
+        ty: "string".to_string(),
+        update: "startup".to_string(),
+        current: serde_json::json!("safe"),
+        min: None,
+        max: None,
+        choices: Vec::new(),
+    });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
@@ -650,6 +663,11 @@ fn params_commands_use_selfdesc_matched_runtime_socket() {
 
     let get = params_get(&selfdesc, "controller.kp", Some(&socket)).unwrap();
     assert!(get.contains("pending=none"));
+    assert!(get.contains("runtime_update=pending-on-tick"));
+
+    let startup_get = params_get(&selfdesc, "controller.mode", Some(&socket)).unwrap();
+    assert!(startup_get.contains("update=startup"));
+    assert!(startup_get.contains("runtime_update=startup-only"));
 
     let set = params_set(&selfdesc, "controller.kp", "2.5", Some(&socket)).unwrap();
     assert!(set.contains("current=1.0"));

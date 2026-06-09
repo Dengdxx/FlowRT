@@ -306,6 +306,17 @@ fn cli_parses_operation_commands() {
 }
 
 #[test]
+fn cli_parses_status_live_only() {
+    let cli = Cli::try_parse_from(["flowrt", "status", "--live-only"]).unwrap();
+
+    let Command::Status { live_only } = cli.command else {
+        panic!("status command should parse into Command::Status")
+    };
+
+    assert!(live_only);
+}
+
+#[test]
 fn cli_parses_record_command_with_filters() {
     let cli = Cli::try_parse_from([
         "flowrt",

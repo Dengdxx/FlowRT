@@ -1149,8 +1149,13 @@ fn format_param_status(param: &flowrt::IntrospectionParamStatus) -> String {
                 .join(",")
         )
     };
+    let runtime_update = match param.update.as_str() {
+        "startup" => "startup-only",
+        "on_tick" => "pending-on-tick",
+        _ => "unknown",
+    };
     format!(
-        "{} type={} update={} current={} pending={} min={} max={} choices={}",
+        "{} type={} update={} current={} pending={} min={} max={} choices={} runtime_update={}",
         param.name,
         param.ty,
         param.update,
@@ -1158,7 +1163,8 @@ fn format_param_status(param: &flowrt::IntrospectionParamStatus) -> String {
         pending,
         min,
         max,
-        choices
+        choices,
+        runtime_update
     )
 }
 
@@ -1423,13 +1429,16 @@ fn hex_bytes(bytes: &[u8]) -> String {
     output
 }
 
-pub(crate) fn live_status_summary() -> Result<String> {
+pub(crate) fn live_status_summary(live_only: bool) -> Result<String> {
     let sockets =
         flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
-    live_status_summary_for_sockets(sockets)
+    live_status_summary_for_sockets(sockets, live_only)
 }
 
-pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<String> {
+pub(crate) fn live_status_summary_for_sockets(
+    sockets: Vec<PathBuf>,
+    live_only: bool,
+) -> Result<String> {
     let mut lines = Vec::new();
     for socket in sockets {
         match flowrt::request_status(&socket) {
@@ -1582,6 +1591,9 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
                 }
             }
             Ok(flowrt::IntrospectionResponse::ChannelSnapshot { .. }) => {
+                if live_only {
+                    continue;
+                }
                 lines.push(format!(
                     "stale socket={} error=unexpected channel snapshot response",
                     socket.display()
@@ -1590,6 +1602,9 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
             Ok(flowrt::IntrospectionResponse::SelfDescription { .. })
             | Ok(flowrt::IntrospectionResponse::ObserveReady { .. })
             | Ok(flowrt::IntrospectionResponse::OperationValue { .. }) => {
+                if live_only {
+                    continue;
+                }
                 lines.push(format!(
                     "stale socket={} error=unexpected introspection response",
                     socket.display()
@@ -1597,6 +1612,9 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
             }
             Ok(flowrt::IntrospectionResponse::ParamList { .. })
             | Ok(flowrt::IntrospectionResponse::ParamValue { .. }) => {
+                if live_only {
+                    continue;
+                }
                 lines.push(format!(
                     "stale socket={} error=unexpected parameter response",
                     socket.display()
@@ -1604,15 +1622,24 @@ pub(crate) fn live_status_summary_for_sockets(sockets: Vec<PathBuf>) -> Result<S
             }
             Ok(flowrt::IntrospectionResponse::RecorderValue { .. })
             | Ok(flowrt::IntrospectionResponse::RecorderEvents { .. }) => {
+                if live_only {
+                    continue;
+                }
                 lines.push(format!(
                     "stale socket={} error=unexpected recorder response",
                     socket.display()
                 ));
             }
             Ok(flowrt::IntrospectionResponse::Error { message, .. }) => {
+                if live_only {
+                    continue;
+                }
                 lines.push(format!("stale socket={} error={message}", socket.display()));
             }
             Err(error) => {
+                if live_only {
+                    continue;
+                }
                 lines.push(format!("stale socket={} error={error}", socket.display()));
             }
         }

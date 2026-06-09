@@ -128,7 +128,7 @@ fn live_status_summary_reads_runtime_socket_handshake() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(output.contains("pid=77"));
     assert!(output.contains("package=robot_demo"));
@@ -179,7 +179,7 @@ fn live_status_summary_displays_supervisor_process_health() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(output.contains("supervisor_process=sensors"));
     assert!(output.contains("state=stale"));
@@ -222,7 +222,7 @@ fn live_status_summary_displays_recorder_health() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(output.contains("recorder enabled=true"));
     assert!(output.contains("output=run.mcap"));
@@ -232,6 +232,20 @@ fn live_status_summary_displays_recorder_health() {
     assert!(output.contains("active_filters=[channel:source.imu_to_sink.imu]"));
 
     drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_live_only_hides_stale_sockets() {
+    let root = temp_test_dir("live-status-live-only");
+    let socket = root.join("missing.sock");
+
+    let default_output = live_status_summary_for_sockets(vec![socket.clone()], false).unwrap();
+    let live_only_output = live_status_summary_for_sockets(vec![socket], true).unwrap();
+
+    assert!(default_output.contains("stale socket="));
+    assert_eq!(live_only_output, "no live FlowRT processes");
+
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -601,7 +615,7 @@ fn live_status_summary_displays_operation_health() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(output.contains("operation=controller.plan"));
     assert!(output.contains("ready=true"));
@@ -754,7 +768,7 @@ fn live_status_summary_displays_service_health() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(output.contains("service=planner.plan_to_executor.execute"));
     assert!(output.contains("ready=true"));
@@ -821,7 +835,7 @@ fn live_status_summary_associates_service_health_with_instances() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(
         output.contains("client_instance=planner"),
@@ -1061,7 +1075,7 @@ fn live_status_summary_displays_task_and_lane_health() {
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
-    let output = live_status_summary_for_sockets(vec![socket]).unwrap();
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(
         output.contains("task_health=imu_task"),
