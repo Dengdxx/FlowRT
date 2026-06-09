@@ -5,10 +5,16 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.7.0`。`v0.7.0` 核心主题是 external process / driver
-package typed 接入边界、ARM64/跨机器部署 baseline 和离线 bundle 交付闭环。FlowRT
-主项目不做硬件 backend；Linux 和外部 driver package 管硬件，FlowRT 管结构、执行、
-通信、观测、external process 生命周期和 typed 接入边界。
+当前 workspace 版本为 `0.7.1`。`v0.7.1` 是 `v0.7.0` 之后的 hardening 版本，
+聚焦现有能力的生产边界修复：deploy/bundle 参数边界、supervisor 子进程生命周期与
+关闭路径、runtime introspection 控制面、Service / Operation / backend 错误分类、
+Contract IR 派生元数据防篡改、C++/Rust runtime parity、安装包离线依赖标记和
+`--run-steps` / `record` / `hz` 等调试主路径。
+
+`v0.7.0` 已发布，核心主题是 external process / driver package typed 接入边界、
+ARM64/跨机器部署 baseline 和离线 bundle 交付闭环。FlowRT 主项目不做硬件 backend；
+Linux 和外部 driver package 管硬件，FlowRT 管结构、执行、通信、观测、external
+process 生命周期和 typed 接入边界。
 
 `v0.6.1` 已发布，是构建/打包可靠性小升级：引入 `flowrt deps` 预热共享底层依赖
 cache，`flowrt build` 默认 release 并只构建用户项目，用户二进制统一落在
@@ -63,6 +69,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.6.0` | Operation + record-only 录制系统 + 时间事件模型基础。 |
 | `v0.6.1` | `flowrt deps`、共享依赖 cache、默认 release 构建和 deb smoke 修复。 |
 | `v0.7.0` | external process / driver package 接入边界、ARM64/跨机器部署闭环。 |
+| `v0.7.1` | v0.7.0 现有能力 hardening 和发布前缺陷修复。 |
 | `v0.8.0` | 多目标部署、交叉编译、多架构安装包和发布硬化。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |

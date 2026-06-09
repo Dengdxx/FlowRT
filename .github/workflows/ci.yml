@@ -652,6 +652,32 @@ jobs:
             exit 1
           fi
 
+          # 校验 Cargo.lock 中所有本仓库 flowrt* package
+          cargo_lock_mismatches="$(
+            awk -v expected="$version" '
+              /^\[\[package\]\]/ {
+                name = "";
+                next;
+              }
+              /^name = "/ {
+                name = $3;
+                gsub(/"/, "", name);
+                next;
+              }
+              /^version = "/ {
+                package_version = $3;
+                gsub(/"/, "", package_version);
+                if (name ~ /^flowrt/ && package_version != expected) {
+                  printf "%s=%s\n", name, package_version;
+                }
+              }
+            ' Cargo.lock
+          )"
+          if [[ -n "$cargo_lock_mismatches" ]]; then
+            printf 'tag version %s does not match Cargo.lock flowrt* packages:\n%s\n' "$version" "$cargo_lock_mismatches" >&2
+            exit 1
+          fi
+
           scripts/extract-release-notes.sh "$tag" CHANGELOG.md > dist/release-notes.md
 
           # 校验 release notes 非空

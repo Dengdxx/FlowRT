@@ -127,21 +127,31 @@ check_version_in_file \
     "$repo_root/runtime/cpp/CMakeLists.txt" \
     '(?<=FLOWRT_RUNTIME_CPP_VERSION ")[0-9]+\.[0-9]+\.[0-9]+'
 
-# Cargo.lock: 检查 flowrt 包的版本
-cargo_lock_version="$(
-    awk '
-        /^name = "flowrt"$/ { found = 1; next }
-        found && /^version = "/ {
-            gsub(/"/, "", $3);
-            print $3;
-            exit;
+# Cargo.lock: 检查所有本仓库 flowrt* 包的版本，避免新增 workspace member 后漏检。
+cargo_lock_mismatches="$(
+    awk -v expected="$expected_version" '
+        /^\[\[package\]\]/ {
+            name = "";
+            next;
+        }
+        /^name = "/ {
+            name = $3;
+            gsub(/"/, "", name);
+            next;
+        }
+        /^version = "/ {
+            version = $3;
+            gsub(/"/, "", version);
+            if (name ~ /^flowrt/ && version != expected) {
+                printf "%s=%s\n", name, version;
+            }
         }
     ' "$repo_root/Cargo.lock"
 )"
-if [[ "$cargo_lock_version" == "$expected_version" ]]; then
-    pass "Cargo.lock (flowrt) = $cargo_lock_version"
+if [[ -z "$cargo_lock_mismatches" ]]; then
+    pass "Cargo.lock (flowrt*) = $expected_version"
 else
-    fail "Cargo.lock: flowrt 版本不一致 — 期望 $expected_version，实际 $cargo_lock_version"
+    fail "Cargo.lock: flowrt* 版本不一致 — 期望 $expected_version，实际: $cargo_lock_mismatches"
 fi
 
 # ── 2. CHANGELOG 版本段格式 ──────────────────────────────────
@@ -212,6 +222,11 @@ else
         pass "release job 包含 tag vs Cargo.toml 版本校验"
     else
         fail "release job 缺少 tag vs Cargo.toml 版本校验"
+    fi
+    if grep -q 'cargo_lock_mismatches' "$ci_file" && grep -qF 'flowrt* packages' "$ci_file"; then
+        pass "release job 包含 Cargo.lock flowrt* 版本校验"
+    else
+        fail "release job 缺少 Cargo.lock flowrt* 版本校验"
     fi
 
     # 检查 release job 是否校验了 release notes 非空
