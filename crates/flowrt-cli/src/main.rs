@@ -1518,6 +1518,24 @@ fn validate_deploy_remote_dir(remote_dir: &str) -> Result<()> {
     if remote_dir.trim().is_empty() {
         anyhow::bail!("deploy remote_dir must not be empty");
     }
+    if !remote_dir.starts_with('/') {
+        anyhow::bail!("deploy remote_dir `{remote_dir}` is invalid: path must be absolute");
+    }
+    if remote_dir
+        .split('/')
+        .any(|segment| segment == ".." || segment == ".")
+    {
+        anyhow::bail!(
+            "deploy remote_dir `{remote_dir}` is invalid: `.` and `..` path segments are not allowed"
+        );
+    }
+    if !remote_dir.bytes().all(|byte| {
+        byte == b'/' || byte == b'.' || byte == b'_' || byte == b'-' || byte.is_ascii_alphanumeric()
+    }) {
+        anyhow::bail!(
+            "deploy remote_dir `{remote_dir}` is invalid: only POSIX-safe characters [A-Za-z0-9._/-] are allowed"
+        );
+    }
     Ok(())
 }
 
@@ -2414,7 +2432,15 @@ fn flowrt_vendor_hash(rust_runtime_dir: Option<&Path>) -> Result<String> {
                 if let Some(hash) = content.split_whitespace().next() {
                     return Ok(hash.to_string());
                 }
+                anyhow::bail!(
+                    "FlowRT vendor hash marker `{}` is empty; reinstall the FlowRT package",
+                    hash_file.display()
+                );
             }
+            anyhow::bail!(
+                "FlowRT vendor hash marker is missing at `{}`; reinstall the FlowRT package",
+                hash_file.display()
+            );
         }
     }
     let repo_root = repo_root_dir()?;

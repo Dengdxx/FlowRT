@@ -185,6 +185,16 @@ if ! cargo vendor --locked --versioned-dirs "$private_root/share/cargo/vendor" \
     cat "$vendor_log" >&2
     exit 1
 fi
+vendor_hash="$(
+    for relative in Cargo.lock runtime/rust/Cargo.toml scripts/deps.lock; do
+        path="$repo_root/$relative"
+        if [[ -f "$path" ]]; then
+            printf '%s' "$relative"
+            cat "$path"
+        fi
+    done | sha256sum | awk '{print substr($1, 1, 16)}'
+)"
+printf '%s  -\n' "$vendor_hash" > "$private_root/share/cargo/vendor/.flowrt-vendor.sha256"
 cat > "$private_root/share/cargo/config.toml" <<EOF
 [source.crates-io]
 replace-with = "flowrt-vendor"

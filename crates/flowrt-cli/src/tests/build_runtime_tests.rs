@@ -247,7 +247,7 @@ default_stale_policy = "warn"
 
 #[test]
 fn mixed_runtime_readiness_rejects_inproc_cross_process_components() {
-    let contract = contract_from_source(
+    let contract = unchecked_contract_from_source(
         r#"
 [package]
 name = "mixed_demo"
@@ -416,7 +416,7 @@ backends = ["zenoh"]
 
 #[test]
 fn launch_readiness_rejects_inproc_dataflow_across_process_groups() {
-    let contract = contract_from_source(
+    let contract = unchecked_contract_from_source(
         r#"
 [package]
 name = "split_rust_demo"
@@ -524,7 +524,7 @@ default_stale_policy = "warn"
 
 #[test]
 fn run_process_readiness_rejects_inproc_dataflow_across_process_groups() {
-    let contract = contract_from_source(
+    let contract = unchecked_contract_from_source(
         r#"
 [package]
 name = "split_rust_demo"

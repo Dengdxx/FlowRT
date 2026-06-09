@@ -579,6 +579,48 @@ fn deploy_bundle_rejects_empty_remote_dir_even_in_dry_run() {
 }
 
 #[test]
+fn deploy_bundle_rejects_unsafe_remote_dir_even_in_dry_run() {
+    let root = temp_test_dir("deploy-remote-dir-unsafe");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 1,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "external_demo".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/external-demo-flowrt-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    for remote_dir in [
+        "relative/path",
+        "/tmp/flowrt-demo;touch /tmp/pwned",
+        "/tmp/flowrt demo",
+        "/tmp/flowrt`id`",
+        "/tmp/flowrt$(id)",
+        "/tmp/../root",
+    ] {
+        let error = deploy_bundle(&bundle, "robot@192.0.2.10", "pi", remote_dir, true).unwrap_err();
+        assert!(
+            error.to_string().contains("deploy remote_dir"),
+            "unexpected error for {remote_dir:?}: {error}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn remote_flowrt_version_output_accepts_same_minor_patch_mismatch() {
     let warning =
         validate_remote_flowrt_version_check(true, "flowrt 0.7.9\n", "", "0.7.0").unwrap();
@@ -1251,6 +1293,54 @@ fn installed_runtime_candidates_include_private_prefix_layout() {
             .iter()
             .any(|path| path == Path::new("/opt/flowrt/0.1.0"))
     );
+}
+
+#[test]
+fn installed_runtime_vendor_hash_requires_packaged_marker() {
+    let root = temp_test_dir("vendor-hash-missing-marker");
+    let runtime_dir = root.join("opt/flowrt/0.7.1/share/flowrt/runtime/rust");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    std::fs::write(
+        runtime_dir.join("Cargo.toml"),
+        "[package]\nname = \"flowrt\"\n",
+    )
+    .unwrap();
+
+    let error = flowrt_vendor_hash(Some(&runtime_dir)).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("FlowRT vendor hash marker is missing"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn installed_runtime_vendor_hash_reads_packaged_marker() {
+    let root = temp_test_dir("vendor-hash-marker");
+    let runtime_dir = root.join("opt/flowrt/0.7.1/share/flowrt/runtime/rust");
+    let vendor_dir = root.join("opt/flowrt/0.7.1/share/cargo/vendor");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    std::fs::create_dir_all(&vendor_dir).unwrap();
+    std::fs::write(
+        runtime_dir.join("Cargo.toml"),
+        "[package]\nname = \"flowrt\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        vendor_dir.join(".flowrt-vendor.sha256"),
+        "abcdef1234567890  -\n",
+    )
+    .unwrap();
+
+    let hash = flowrt_vendor_hash(Some(&runtime_dir)).unwrap();
+
+    assert_eq!(hash, "abcdef1234567890");
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

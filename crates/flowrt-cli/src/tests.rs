@@ -12,6 +12,11 @@ fn contract_from_source(source: &str) -> ContractIr {
     contract
 }
 
+fn unchecked_contract_from_source(source: &str) -> ContractIr {
+    let raw = parse_str(source).unwrap();
+    normalize_document(&raw, hash_source(source)).unwrap()
+}
+
 fn temp_test_dir(test_name: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

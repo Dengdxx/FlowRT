@@ -41,6 +41,7 @@ required_paths=(
     "${prefix}/share/flowrt/crates/flowrt-record/src/lib.rs"
     "${prefix}/share/cargo/config.toml"
     "${prefix}/share/cargo/vendor"
+    "${prefix}/share/cargo/vendor/.flowrt-vendor.sha256"
     "${prefix}/lib/${multiarch}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
     "${prefix}/lib/${multiarch}/libiceoryx2_cxx.a"
     "${prefix}/lib/cmake/zenohc/zenohcConfig.cmake"
