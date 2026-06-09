@@ -123,6 +123,42 @@ executable = "driver"
 }
 
 #[test]
+fn rejects_external_process_executable_escape_paths() {
+    for executable in ["/bin/sh", "../driver", "bin/../driver", "./driver"] {
+        let source = format!(
+            r#"
+[package]
+name = "external_bad"
+rsdl_version = "0.1"
+
+[component.fake_sensor]
+language = "external"
+kind = "external"
+
+[instance.fake_sensor]
+component = "fake_sensor"
+process = "sensor_proc"
+
+[[external_process]]
+process = "sensor_proc"
+package = "fake_sensor_driver"
+executable = "{executable}"
+"#
+        );
+        let raw = parse_str(&source).unwrap();
+        let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+        let report = validate_contract(&ir).expect_err("escape executable should be rejected");
+
+        assert!(
+            report.errors.iter().any(|error| error.message.contains(
+                "external_process `sensor_proc` executable must be a package-relative path"
+            )),
+            "missing executable path error for {executable}: {report:?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_wrong_bind_direction() {
     let source = r#"
 [package]

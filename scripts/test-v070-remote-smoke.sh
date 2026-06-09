@@ -15,7 +15,12 @@ if [[ -z "$bundle" || ! -d "$bundle" ]]; then
     exit 1
 fi
 
-ssh "$FLOWRT_REMOTE_HOST" 'flowrt --version'
+if [[ "$FLOWRT_REMOTE_HOST" == -* ]]; then
+    printf 'FLOWRT_REMOTE_HOST must not start with "-": %s\n' "$FLOWRT_REMOTE_HOST" >&2
+    exit 1
+fi
+
+ssh -- "$FLOWRT_REMOTE_HOST" 'flowrt --version'
 "$flowrt" deploy "$bundle" \
     --host "$FLOWRT_REMOTE_HOST" \
     --target "$target" \

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path};
 
 use flowrt_ir::{
     BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind,
@@ -66,6 +67,7 @@ fn validate_external_processes(
                 external.process
             )));
         }
+        validate_external_executable_path(&external.process, &external.executable, errors);
         for backend in &external.required_backends {
             if !flowrt_ir::is_known_backend(&backend.0) {
                 errors.push(ValidationError::new(format!(
@@ -112,6 +114,29 @@ fn validate_external_processes(
                 external.process
             )));
         }
+    }
+}
+
+fn validate_external_executable_path(
+    process: &str,
+    executable: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let path = Path::new(executable);
+    if executable.trim().is_empty() {
+        errors.push(ValidationError::new(format!(
+            "external_process `{process}` executable must not be empty"
+        )));
+        return;
+    }
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        errors.push(ValidationError::new(format!(
+            "external_process `{process}` executable must be a package-relative path without `.` or `..` components"
+        )));
     }
 }
 

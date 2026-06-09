@@ -109,6 +109,75 @@ health = "runtime_socket"
 }
 
 #[test]
+fn external_check_rejects_absolute_executable_path() {
+    let root = temp_test_dir("external-check-absolute-path");
+    let package = root.join("fake_sensor_driver");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "/bin/sh"
+platforms = ["linux-x86_64"]
+backends = ["zenoh"]
+health = "process_started"
+"#,
+    )
+    .unwrap();
+
+    let error = external_check_package_dir(&package)
+        .expect_err("absolute executable path should be rejected");
+
+    assert!(error.to_string().contains("path must be package-relative"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn external_check_rejects_executable_symlink_escape() {
+    let root = temp_test_dir("external-check-symlink-escape");
+    let package = root.join("fake_sensor_driver");
+    let outside = root.join("outside/driver");
+    std::fs::create_dir_all(package.join("bin")).unwrap();
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    std::fs::write(&outside, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, package.join("bin/driver")).unwrap();
+    std::fs::write(
+        package.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "fake_sensor_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-x86_64"]
+backends = ["zenoh"]
+health = "process_started"
+"#,
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        let error = external_check_package_dir(&package)
+            .expect_err("symlink escaping package root should be rejected");
+        assert!(error.to_string().contains("escapes package root"));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn external_list_reports_package_executable_summary() {
     let root = temp_test_dir("external-list");
     let package = root.join("fake_sensor_driver");

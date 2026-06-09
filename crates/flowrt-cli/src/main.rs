@@ -915,7 +915,8 @@ fn validate_external_manifest(
                 executable.name
             );
         }
-        let exe_path = package_dir.join(&executable.path);
+        let exe_path =
+            validate_manifest_executable_path(package_dir, &manifest.package.name, executable)?;
         if !exe_path.is_file() {
             anyhow::bail!(
                 "external package `{}` executable `{}` path does not exist: {}",
@@ -974,6 +975,51 @@ fn validate_external_manifest(
         }
     }
     Ok(())
+}
+
+fn validate_manifest_executable_path(
+    package_dir: &Path,
+    package_name: &str,
+    executable: &ExternalExecutableMetadata,
+) -> Result<PathBuf> {
+    let path = &executable.path;
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        anyhow::bail!(
+            "external package `{}` executable `{}` path must be package-relative without `.` or `..` components",
+            package_name,
+            executable.name
+        );
+    }
+    let exe_path = package_dir.join(path);
+    if exe_path.exists() {
+        let package_root = package_dir.canonicalize().with_context(|| {
+            format!(
+                "failed to canonicalize external package root `{}`",
+                package_dir.display()
+            )
+        })?;
+        let canonical_exe = exe_path.canonicalize().with_context(|| {
+            format!(
+                "failed to canonicalize external package `{}` executable `{}` path `{}`",
+                package_name,
+                executable.name,
+                exe_path.display()
+            )
+        })?;
+        if !canonical_exe.starts_with(&package_root) {
+            anyhow::bail!(
+                "external package `{}` executable `{}` path escapes package root: {}",
+                package_name,
+                executable.name,
+                exe_path.display()
+            );
+        }
+    }
+    Ok(exe_path)
 }
 
 fn ensure_non_empty_manifest_field(value: &str, field: &str) -> Result<()> {

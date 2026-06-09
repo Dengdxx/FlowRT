@@ -12,7 +12,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -842,38 +842,41 @@ pub fn external_app_executable(
     current_exe: &Path,
     external: &LaunchExternalProcess,
 ) -> Result<ExternalExecutableResolution, String> {
-    let executable = PathBuf::from(&external.executable);
+    validate_external_executable_fragment(external)?;
     let workspace_root = workspace_root_from_supervisor(current_exe)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
-
-    if executable.is_absolute() {
-        if executable.exists() {
-            let package_root = executable
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| workspace_root.clone());
-            return Ok(ExternalExecutableResolution {
-                executable,
-                package_root,
-                workspace_root,
-            });
-        }
-        return Err(format!(
-            "external package `{}` executable `{}` does not exist",
-            external.package,
-            executable.display()
-        ));
-    }
 
     let mut searched = Vec::new();
     for root in external_package_roots(current_exe, external, &workspace_root) {
         let candidate = root.join(&external.executable);
         searched.push(candidate.clone());
         if candidate.exists() {
+            let package_root = root.canonicalize().map_err(|error| {
+                format!(
+                    "failed to canonicalize external package `{}` root `{}`: {error}",
+                    external.package,
+                    root.display()
+                )
+            })?;
+            let executable = candidate.canonicalize().map_err(|error| {
+                format!(
+                    "failed to canonicalize external package `{}` executable `{}`: {error}",
+                    external.package,
+                    candidate.display()
+                )
+            })?;
+            if !executable.starts_with(&package_root) {
+                return Err(format!(
+                    "external package `{}` executable `{}` escapes package root `{}`",
+                    external.package,
+                    external.executable,
+                    package_root.display()
+                ));
+            }
             return Ok(ExternalExecutableResolution {
-                executable: candidate,
-                package_root: root,
+                executable,
+                package_root,
                 workspace_root,
             });
         }
@@ -889,6 +892,27 @@ pub fn external_app_executable(
             .collect::<Vec<_>>()
             .join(", ")
     ))
+}
+
+fn validate_external_executable_fragment(external: &LaunchExternalProcess) -> Result<(), String> {
+    let executable = Path::new(&external.executable);
+    if external.executable.trim().is_empty() {
+        return Err(format!(
+            "external package `{}` executable must not be empty",
+            external.package
+        ));
+    }
+    if executable.is_absolute()
+        || executable
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "external package `{}` executable `{}` must be package-relative without `.` or `..` components",
+            external.package, external.executable
+        ));
+    }
+    Ok(())
 }
 
 fn external_package_roots(
@@ -2328,9 +2352,65 @@ mod tests {
 
         let resolved = external_app_executable(&current_exe, &external).unwrap();
 
-        assert_eq!(resolved.executable, executable);
-        assert_eq!(resolved.package_root, package_root);
+        assert_eq!(resolved.executable, executable.canonicalize().unwrap());
+        assert_eq!(resolved.package_root, package_root.canonicalize().unwrap());
         assert_eq!(resolved.workspace_root, root.join("workspace"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_runtime_executable_rejects_escape_paths() {
+        let root = temp_test_dir("external-escape-paths");
+        let current_exe = root.join("workspace/flowrt/build/bin/release/app-supervisor");
+        for executable in ["/bin/sh", "../driver", "bin/../driver", "./driver"] {
+            let external = LaunchExternalProcess {
+                package: "camera_driver".into(),
+                executable: executable.into(),
+                args: vec![],
+                working_dir: LaunchExternalWorkingDir::Package,
+                health: LaunchExternalHealth::RuntimeSocket,
+                required_backends: vec!["zenoh".into()],
+                package_root: Some(root.join("packages/camera_driver")),
+            };
+
+            let error = external_app_executable(&current_exe, &external)
+                .expect_err("escape executable path should be rejected");
+
+            assert!(
+                error.contains("must be package-relative"),
+                "unexpected error for {executable}: {error}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_runtime_executable_rejects_symlink_escape() {
+        let root = temp_test_dir("external-symlink-escape");
+        let package_root = root.join("packages/camera_driver");
+        let outside = root.join("outside/camera-node");
+        std::fs::create_dir_all(package_root.join("bin")).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, package_root.join("bin/camera-node")).unwrap();
+        let current_exe = root.join("workspace/flowrt/build/bin/release/app-supervisor");
+        let external = LaunchExternalProcess {
+            package: "camera_driver".into(),
+            executable: "bin/camera-node".into(),
+            args: vec![],
+            working_dir: LaunchExternalWorkingDir::Package,
+            health: LaunchExternalHealth::RuntimeSocket,
+            required_backends: vec!["zenoh".into()],
+            package_root: Some(package_root),
+        };
+
+        #[cfg(unix)]
+        {
+            let error = external_app_executable(&current_exe, &external)
+                .expect_err("symlink escaping package root should be rejected");
+            assert!(error.contains("escapes package root"));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
