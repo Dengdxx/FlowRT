@@ -328,15 +328,11 @@ fn param_type_accepts_value(ty: ParamType, value: &ParamValue) -> bool {
 fn param_value_range_error(ty: ParamType, value: &ParamValue) -> Option<&'static str> {
     match value {
         ParamValue::Float(value) if !value.is_finite() => return Some("must be finite"),
-        ParamValue::Array(values) => {
-            if values.iter().any(param_value_contains_non_finite_float) {
-                return Some("contains non-finite float");
-            }
+        ParamValue::Array(values) if values.iter().any(param_value_contains_non_finite_float) => {
+            return Some("contains non-finite float");
         }
-        ParamValue::Table(values) => {
-            if values.values().any(param_value_contains_non_finite_float) {
-                return Some("contains non-finite float");
-            }
+        ParamValue::Table(values) if values.values().any(param_value_contains_non_finite_float) => {
+            return Some("contains non-finite float");
         }
         _ => {}
     }
