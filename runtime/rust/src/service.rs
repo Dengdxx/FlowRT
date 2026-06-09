@@ -373,9 +373,9 @@ impl ServiceFrameHeader {
             ));
         }
         let version = u16::from_le_bytes([input[4], input[5]]);
-        if version != SERVICE_FRAME_VERSION {
+        if version < SERVICE_FRAME_VERSION {
             return Err(WireCodecError::invalid_frame(
-                "service frame version mismatch",
+                "service frame version is older than the minimum supported version",
             ));
         }
         let error_code = u16::from_le_bytes([input[6], input[7]]);
@@ -604,12 +604,29 @@ mod tests {
     }
 
     #[test]
-    fn service_frame_header_rejects_bad_version() {
+    fn service_frame_header_rejects_older_version() {
         let mut buf = [0u8; 80];
         buf[0..4].copy_from_slice(&SERVICE_FRAME_MAGIC.to_le_bytes());
-        buf[4..6].copy_from_slice(&99u16.to_le_bytes());
+        buf[4..6].copy_from_slice(&0u16.to_le_bytes());
         let err = ServiceFrameHeader::decode(&buf).unwrap_err();
         assert!(err.to_string().contains("version"));
+    }
+
+    #[test]
+    fn service_frame_header_accepts_future_compatible_version() {
+        let request_id = RequestId::new(0xAAAA, 1, 0xBBBB);
+        let deadline = Deadline::new(1000, 5000).unwrap();
+        let header = ServiceFrameHeader::request(request_id, deadline, 0xCCCC, 0xDDDD);
+
+        let mut buf = [0u8; 80];
+        header.encode(&mut buf).unwrap();
+        buf[4..6].copy_from_slice(&(SERVICE_FRAME_VERSION + 1).to_le_bytes());
+
+        let decoded = ServiceFrameHeader::decode(&buf).unwrap();
+        assert_eq!(decoded.version, SERVICE_FRAME_VERSION + 1);
+        assert_eq!(decoded.service_id, request_id.service_id);
+        assert_eq!(decoded.session_id, request_id.session_id);
+        assert_eq!(decoded.sequence, request_id.sequence);
     }
 
     #[test]
@@ -901,6 +918,30 @@ mod tests {
         let ok = client.start_call(3, Duration::from_secs(1));
         server.process_pending_requests();
         assert_eq!(ok.complete().ok_value(), Some(6));
+    }
+
+    #[test]
+    fn inproc_service_handler_panic_returns_handler_error() {
+        let registry = ServiceRegistry::new();
+        let (client, server) =
+            registry.register_result("panic", LaneId(1), 8, |_req: u32| -> ServiceResult<u32> {
+                panic!("handler exploded");
+            });
+
+        let handle = client.start_call(1, Duration::from_secs(1));
+        let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            server.process_pending_requests()
+        }));
+
+        assert!(
+            processed.is_ok(),
+            "handler panic must not escape service runtime"
+        );
+        let result = handle.complete();
+        assert_eq!(result.error_code(), ServiceError::HandlerError);
+        assert_eq!(result.error_message(), Some("handler panicked"));
+        assert_eq!(server.in_flight_count(), 0);
+        assert_eq!(server.stats().handler_error, 1);
     }
 
     #[test]
@@ -1216,6 +1257,15 @@ fn record_service_result_stats<T>(stats: &ServiceStats, result: &ServiceResult<T
     } else if result.error_code() == ServiceError::HandlerError {
         stats.record_handler_error();
     }
+}
+
+fn call_service_handler<Req, Resp>(
+    handler: &Arc<dyn Fn(Req) -> ServiceResult<Resp> + Send + Sync>,
+    request: Req,
+) -> ServiceResult<Resp> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(request))).unwrap_or_else(
+        |_| ServiceResult::err_with_message(ServiceError::HandlerError, "handler panicked"),
+    )
 }
 
 /// type-erased request closure，携带 typed response slot。
@@ -1613,7 +1663,7 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
             } else {
                 inner.in_flight.fetch_add(1, Ordering::AcqRel);
                 queue.push_back(Box::new(move || {
-                    let result = handler(request);
+                    let result = call_service_handler(&handler, request);
                     if !slot_for_closure.fill(result) {
                         stats.record_late_dropped();
                     }
@@ -1699,7 +1749,7 @@ impl<Req: Send + 'static, Resp: Send + 'static> InprocServiceClient<Req, Resp> {
             } else {
                 inner.in_flight.fetch_add(1, Ordering::AcqRel);
                 queue.push_back(Box::new(move || {
-                    let result = handler(request);
+                    let result = call_service_handler(&handler, request);
                     if !slot_for_closure.fill(result) {
                         stats_for_closure.record_late_dropped();
                     }

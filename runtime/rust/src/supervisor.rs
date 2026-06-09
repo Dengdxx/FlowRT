@@ -38,6 +38,7 @@ const CHILD_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// 本机 zenoh 自动 mesh 使用 IANA dynamic/private port range。
 const ZENOH_AUTO_PORT_BASE: u16 = 49_152;
 const ZENOH_AUTO_PORT_COUNT: u16 = 16_384;
+const SUPPORTED_LAUNCH_IR_VERSION: &str = "0.1";
 
 /// readiness 等待参数，支持测试注入短超时。
 #[derive(Debug, Clone)]
@@ -61,30 +62,68 @@ impl Default for ReadinessConfig {
 
 /// supervisor 消费的 launch manifest 顶层。
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LaunchManifest {
+    pub package: String,
+    pub ir_version: String,
+    pub profiles: Vec<String>,
+    pub targets: Vec<String>,
     pub graphs: Vec<LaunchGraph>,
 }
 
 /// manifest 中的 graph 节点。
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LaunchGraph {
+    pub name: String,
+    #[serde(default)]
+    pub scheduler: serde_json::Value,
+    #[serde(default)]
+    pub channels: Vec<serde_json::Value>,
     #[serde(default)]
     pub services: Vec<LaunchService>,
+    #[serde(default)]
+    pub ros2_bridges: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub instances: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub tasks: Vec<serde_json::Value>,
     pub processes: Vec<LaunchProcess>,
 }
 
 /// manifest 中单个 service bind 描述。
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LaunchService {
     pub name: String,
+    pub client: String,
+    pub client_instance: String,
+    pub client_port: String,
+    pub server: String,
     pub server_instance: String,
+    pub server_port: String,
+    pub request: String,
+    pub response: String,
+    pub backend: String,
+    pub timeout_ms: u64,
+    pub queue_depth: u32,
+    pub overflow: String,
+    #[serde(default)]
+    pub lane: Option<String>,
+    #[serde(default)]
+    pub max_in_flight: u32,
 }
 
 /// manifest 中单个进程描述。
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LaunchProcess {
     pub name: String,
     pub backend: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub runtimes: Vec<String>,
     pub runtime_kind: String,
     /// external process package/executable 元数据。
     #[serde(default)]
@@ -107,6 +146,8 @@ pub struct LaunchProcess {
     /// 属于该进程的 instance 名称。
     #[serde(default)]
     pub instances: Vec<String>,
+    #[serde(default)]
+    pub tasks: Vec<serde_json::Value>,
     /// 进程资源提示（CPU affinity、nice、RT policy）。
     #[serde(default)]
     pub resource_placement: ResourcePlacement,
@@ -114,6 +155,7 @@ pub struct LaunchProcess {
 
 /// manifest 中 external process package/executable 描述。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LaunchExternalProcess {
     pub package: String,
     pub executable: String,
@@ -195,6 +237,7 @@ pub enum RestartPolicyKind {
 
 /// 重启策略参数。
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RestartPolicy {
     pub policy: RestartPolicyKind,
     pub max_restarts: u32,
@@ -209,6 +252,18 @@ pub const DEFAULT_RESTART_POLICY: RestartPolicy = RestartPolicy {
     initial_delay_ms: 100,
     max_delay_ms: 1_000,
 };
+
+fn parse_launch_manifest(manifest_json: &str) -> Result<LaunchManifest, String> {
+    let manifest: LaunchManifest = serde_json::from_str(manifest_json)
+        .map_err(|error| format!("failed to parse FlowRT launch manifest: {error}"))?;
+    if manifest.ir_version != SUPPORTED_LAUNCH_IR_VERSION {
+        return Err(format!(
+            "unsupported FlowRT launch manifest IR version `{}`; expected `{SUPPORTED_LAUNCH_IR_VERSION}`",
+            manifest.ir_version
+        ));
+    }
+    Ok(manifest)
+}
 
 impl RestartPolicy {
     /// 判断当前状态是否允许重启。
@@ -490,7 +545,13 @@ fn wait_for_runtime_ready(
             readiness_socket_timeout(deadline, config.poll_interval),
         ) {
             Ok(crate::IntrospectionResponse::Status { .. }) => return Ok(()),
-            _ => sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?,
+            _ => sleep_or_abort_child(
+                supervisor_state,
+                child,
+                config.poll_interval,
+                shutdown,
+                "readiness wait",
+            )?,
         }
     }
 }
@@ -546,9 +607,21 @@ fn wait_for_service_ready(
                     return Ok(());
                 }
                 // 有 service 但未全部就绪，继续等待。
-                sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?;
+                sleep_or_abort_child(
+                    supervisor_state,
+                    child,
+                    config.poll_interval,
+                    shutdown,
+                    "readiness wait",
+                )?;
             }
-            _ => sleep_or_abort_child(supervisor_state, child, config.poll_interval, shutdown)?,
+            _ => sleep_or_abort_child(
+                supervisor_state,
+                child,
+                config.poll_interval,
+                shutdown,
+                "readiness wait",
+            )?,
         }
     }
 }
@@ -568,6 +641,7 @@ fn sleep_or_abort_child(
     child: &mut SupervisedChild,
     duration: Duration,
     shutdown: &ShutdownToken,
+    wait_context: &str,
 ) -> Result<(), String> {
     if duration.is_zero() {
         return abort_child_if_shutdown_requested(supervisor_state, child, shutdown);
@@ -575,6 +649,25 @@ fn sleep_or_abort_child(
     let deadline = Instant::now() + duration;
     loop {
         abort_child_if_shutdown_requested(supervisor_state, child, shutdown)?;
+        if let Some(status) = child.child.try_wait().map_err(|error| {
+            format!(
+                "failed to poll FlowRT process `{}` while waiting: {error}",
+                child.name
+            )
+        })? {
+            child.exit_code = status.code();
+            child.finished = true;
+            child.state = "readiness_failed".to_string();
+            record_child_health(supervisor_state, child, false);
+            return Err(format!(
+                "FlowRT process `{}` exited during {wait_context} (code: {})",
+                child.name,
+                child
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ));
+        }
         let now = Instant::now();
         if now >= deadline {
             return Ok(());
@@ -598,6 +691,7 @@ fn wait_for_startup_delay(
         child,
         Duration::from_millis(child.startup_delay_ms),
         shutdown,
+        "startup delay",
     )
 }
 
@@ -995,6 +1089,8 @@ pub fn spawn_flowrt_process(
     let process = LaunchProcess {
         name: process_name.to_string(),
         backend: "inproc".to_string(),
+        target: None,
+        runtimes: Vec::new(),
         runtime_kind: runtime_kind.to_string(),
         external: None,
         depends_on: Vec::new(),
@@ -1004,6 +1100,7 @@ pub fn spawn_flowrt_process(
         readiness: ReadinessGate::ProcessStarted,
         startup_delay_ms: 0,
         instances: Vec::new(),
+        tasks: Vec::new(),
         resource_placement: ResourcePlacement::default(),
     };
     build_process_command(app_exe, &process, run_ticks, zenoh_env)
@@ -1203,8 +1300,7 @@ impl Drop for SupervisedChild {
 ///
 /// 解析 manifest，按依赖顺序启动进程，执行监控循环。
 pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(), String> {
-    let manifest: LaunchManifest = serde_json::from_str(config.manifest_json)
-        .map_err(|error| format!("failed to parse FlowRT launch manifest: {error}"))?;
+    let manifest = parse_launch_manifest(config.manifest_json)?;
     if manifest.graphs.is_empty() {
         return Err("FlowRT launch manifest does not contain a graph".to_string());
     }
@@ -1225,8 +1321,8 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
     )
     .ok();
 
-    let mut children = Vec::new();
     let mut zenoh_launch_plans = Vec::new();
+    let mut children = Vec::new();
     for graph in &manifest.graphs {
         let zenoh_plan = if should_auto_configure_zenoh() {
             let refs: Vec<&LaunchProcess> = graph.processes.iter().collect();
@@ -1346,7 +1442,6 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
     }
 
     supervise_children(&supervisor_state, &mut children, run_ticks, &shutdown)?;
-    drop(zenoh_launch_plans);
 
     let mut failures = Vec::new();
     for child in children {
@@ -1384,26 +1479,9 @@ fn supervise_children(
             terminate_active_children(supervisor_state, children, "shutdown");
             return Ok(());
         }
-        let (spawned_names, ready_names) = child_dependency_snapshot(children);
         let mut failed_to_propagate = Vec::new();
         for child in children.iter_mut() {
-            if child.finished {
-                continue;
-            }
-            if let Some(next_restart_unix_ms) = child.next_restart_unix_ms {
-                if unix_time_ms() >= next_restart_unix_ms {
-                    if child_dependencies_satisfied(child, &spawned_names, &ready_names) {
-                        restart_child(supervisor_state, child, run_ticks, shutdown)?;
-                    } else {
-                        child.state = "waiting_dependencies".to_string();
-                        child.next_restart_unix_ms = Some(
-                            unix_time_ms().saturating_add(HEALTH_POLL_INTERVAL.as_millis() as u64),
-                        );
-                        record_child_health(supervisor_state, child, false);
-                    }
-                } else {
-                    record_child_health(supervisor_state, child, false);
-                }
+            if child.finished || child.next_restart_unix_ms.is_some() {
                 continue;
             }
             if let Some(status) = child.child.try_wait().map_err(|error| {
@@ -1437,9 +1515,49 @@ fn supervise_children(
         for failed_process in failed_to_propagate {
             propagate_process_failure(supervisor_state, children, &failed_process);
         }
+        if run_ticks_satisfied(children, run_ticks) {
+            terminate_active_children(supervisor_state, children, "completed");
+            return Ok(());
+        }
+        let (spawned_names, ready_names) = child_dependency_snapshot(children);
+        for child in children.iter_mut() {
+            if child.finished {
+                continue;
+            }
+            if let Some(next_restart_unix_ms) = child.next_restart_unix_ms {
+                if unix_time_ms() >= next_restart_unix_ms {
+                    if child_dependencies_satisfied(child, &spawned_names, &ready_names) {
+                        restart_child(supervisor_state, child, run_ticks, shutdown)?;
+                    } else {
+                        child.state = "waiting_dependencies".to_string();
+                        child.next_restart_unix_ms = Some(
+                            unix_time_ms().saturating_add(HEALTH_POLL_INTERVAL.as_millis() as u64),
+                        );
+                        record_child_health(supervisor_state, child, false);
+                    }
+                } else {
+                    record_child_health(supervisor_state, child, false);
+                }
+                continue;
+            }
+        }
         std::thread::sleep(HEALTH_POLL_INTERVAL);
     }
     Ok(())
+}
+
+fn run_ticks_satisfied(children: &[SupervisedChild], run_ticks: Option<usize>) -> bool {
+    let Some(run_ticks) = run_ticks else {
+        return false;
+    };
+    children
+        .iter()
+        .filter(|child| !child.finished)
+        .all(|child| {
+            child
+                .last_tick_count
+                .is_some_and(|tick_count| tick_count >= run_ticks as u64)
+        })
 }
 
 fn restart_child(
@@ -1451,6 +1569,8 @@ fn restart_child(
     let restart_process = LaunchProcess {
         name: child.name.clone(),
         backend: child.backend.clone(),
+        target: None,
+        runtimes: Vec::new(),
         runtime_kind: child.runtime_kind.clone(),
         external: child.external.clone(),
         depends_on: child.dependencies.clone(),
@@ -1460,6 +1580,7 @@ fn restart_child(
         readiness: child.readiness,
         startup_delay_ms: child.startup_delay_ms,
         instances: Vec::new(),
+        tasks: Vec::new(),
         resource_placement: child.resource_placement.clone(),
     };
     let restarted = if child.runtime_kind == "external" {
@@ -1640,7 +1761,7 @@ fn propagate_process_failure(
 
 fn refresh_child_health(supervisor_state: &IntrospectionState, child: &mut SupervisedChild) {
     let now = unix_time_ms();
-    match crate::request_status(&child.socket) {
+    match crate::introspection::request_status_with_timeout(&child.socket, HEALTH_POLL_INTERVAL) {
         Ok(crate::IntrospectionResponse::Status { status, .. }) => {
             child.last_seen_unix_ms = Some(now);
             if child.last_tick_count != Some(status.tick_count) {
@@ -1768,6 +1889,8 @@ mod tests {
         LaunchProcess {
             name: name.into(),
             backend: "inproc".into(),
+            target: None,
+            runtimes: vec![],
             runtime_kind: "rust".into(),
             external: None,
             depends_on,
@@ -1777,6 +1900,7 @@ mod tests {
             readiness: ReadinessGate::ProcessStarted,
             startup_delay_ms: 0,
             instances: vec![],
+            tasks: vec![],
             resource_placement: ResourcePlacement::default(),
         }
     }
@@ -1979,6 +2103,117 @@ mod tests {
         assert!(child_dependencies_satisfied(&supervised, &spawned, &ready));
 
         supervised.terminate("test_cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_delay_fails_if_process_exits_after_readiness() {
+        let child = Command::new("true").spawn().unwrap();
+        let supervisor_state = IntrospectionState::new();
+        let mut supervised = supervised_child_for_test("startup_delay_exit", child);
+        supervised.startup_delay_ms = 50;
+
+        let result = wait_for_startup_delay(
+            &supervisor_state,
+            &mut supervised,
+            &ShutdownToken::new_for_test(),
+        );
+
+        assert!(result.is_err());
+        assert!(supervised.finished);
+        assert_eq!(supervised.state, "readiness_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_waits_when_dependency_exits_in_same_monitor_iteration() {
+        let driver = Command::new("true").spawn().unwrap();
+        let worker = Command::new("true").spawn().unwrap();
+        let mut children = vec![
+            supervised_child_for_test("driver", driver),
+            supervised_child_for_test("worker", worker),
+        ];
+        children[1].app_exe = PathBuf::from("true");
+        children[1].readiness = ReadinessGate::RuntimeReady;
+        children[1].dependencies = vec!["driver".to_string()];
+        children[1].next_restart_unix_ms = Some(unix_time_ms());
+        std::thread::sleep(Duration::from_millis(20));
+        let supervisor_state = IntrospectionState::new();
+        let shutdown = ShutdownToken::new_for_test();
+        let shutdown_clone = shutdown.clone();
+        let shutdown_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            shutdown_clone.request();
+        });
+
+        let result = supervise_children(&supervisor_state, &mut children, None, &shutdown);
+
+        shutdown_thread
+            .join()
+            .expect("shutdown thread should finish");
+        assert!(
+            result.is_ok(),
+            "worker must not restart against an exited dependency: {result:?}"
+        );
+        assert_eq!(children[1].restart_count, 0);
+        assert_eq!(children[1].state, "shutdown");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_child_health_returns_when_socket_stalls() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let mut supervised = supervised_child_for_test("stalled_socket", child);
+        let socket = crate::runtime_socket_path_for_pid(supervised.child.id());
+        if let Some(parent) = socket.parent() {
+            std::fs::create_dir_all(parent).expect("socket parent should be created");
+        }
+        let _ = std::fs::remove_file(&socket);
+        let listener =
+            std::os::unix::net::UnixListener::bind(&socket).expect("test listener should bind");
+        let handle = std::thread::spawn(move || {
+            let (_stream, _addr) = listener.accept().expect("test listener should accept");
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        supervised.socket = socket.clone();
+        let supervisor_state = IntrospectionState::new();
+
+        let started = Instant::now();
+        refresh_child_health(&supervisor_state, &mut supervised);
+
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "refresh_child_health should not block the supervisor loop indefinitely"
+        );
+        assert!(!supervised.finished);
+        supervised.terminate("test_cleanup");
+        handle
+            .join()
+            .expect("stalled listener thread should finish");
+        let _ = std::fs::remove_file(socket);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_terminates_active_children_when_run_ticks_reached() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let mut supervised = supervised_child_for_test("bounded_run", child);
+        supervised.last_tick_count = Some(3);
+        let supervisor_state = IntrospectionState::new();
+
+        let result = supervise_children(
+            &supervisor_state,
+            std::slice::from_mut(&mut supervised),
+            Some(3),
+            &ShutdownToken::new_for_test(),
+        );
+
+        assert!(
+            result.is_ok(),
+            "supervisor run limit should stop active children: {result:?}"
+        );
+        assert!(supervised.finished);
+        assert_eq!(supervised.state, "completed");
     }
 
     #[test]
@@ -2436,17 +2671,50 @@ mod tests {
     #[test]
     fn manifest_deserialization_with_defaults() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [{
+                    "name": "client.plan",
+                    "client": "client.plan",
+                    "client_instance": "client",
+                    "client_port": "plan",
+                    "server": "server.plan",
+                    "server_instance": "server",
+                    "server_port": "plan",
+                    "request": "PlanRequest",
+                    "response": "PlanResponse",
+                    "backend": "inproc",
+                    "timeout_ms": 5000,
+                    "queue_depth": 32,
+                    "overflow": "busy",
+                    "lane": null,
+                    "max_in_flight": 64
+                }],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "sensor",
                     "backend": "zenoh",
-                    "runtime_kind": "rust"
+                    "target": null,
+                    "runtimes": ["rust"],
+                    "runtime_kind": "rust",
+                    "tasks": []
                 }]
             }]
         }"#;
-        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let manifest = parse_launch_manifest(json).unwrap();
         let process = &manifest.graphs[0].processes[0];
         assert_eq!(process.name, "sensor");
+        assert!(process.target.is_none());
+        assert_eq!(process.runtimes, vec!["rust"]);
+        assert!(process.tasks.is_empty());
         assert!(process.depends_on.is_empty());
         assert_eq!(process.restart.policy, RestartPolicyKind::OnFailure);
         assert_eq!(process.restart.max_restarts, 3);
@@ -2455,12 +2723,82 @@ mod tests {
         assert!(process.env.is_empty());
         assert_eq!(process.startup_delay_ms, 0);
         assert_eq!(process.resource_placement, ResourcePlacement::default());
+        let service = &manifest.graphs[0].services[0];
+        assert_eq!(service.lane, None);
+        assert_eq!(service.max_in_flight, 64);
+    }
+
+    #[test]
+    fn manifest_deserialization_rejects_unknown_fields() {
+        let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
+            "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": [{
+                    "name": "sensor",
+                    "backend": "zenoh",
+                    "runtime_kind": "rust",
+                    "depends_onn": ["driver"]
+                }]
+            }]
+        }"#;
+
+        let error = parse_launch_manifest(json).expect_err("unknown manifest fields must fail");
+
+        assert!(error.contains("unknown field"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn manifest_deserialization_rejects_unsupported_ir_version() {
+        let json = r#"{
+            "package": "demo",
+            "ir_version": "9.9",
+            "profiles": ["default"],
+            "targets": ["default"],
+            "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": []
+            }]
+        }"#;
+
+        let error = parse_launch_manifest(json).expect_err("future manifest version must fail");
+
+        assert!(
+            error.contains("unsupported FlowRT launch manifest IR version `9.9`"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn manifest_deserialization_with_process_env() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "control",
                     "backend": "inproc",
@@ -2482,7 +2820,18 @@ mod tests {
     #[test]
     fn manifest_deserialization_with_external_process_metadata() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "camera_proc",
                     "backend": "zenoh",
@@ -2513,7 +2862,18 @@ mod tests {
     #[test]
     fn external_runtime_socket_health_upgrades_default_readiness() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "camera_proc",
                     "backend": "zenoh",
@@ -2535,7 +2895,18 @@ mod tests {
     #[test]
     fn manifest_deserialization_with_custom_policy() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "control",
                     "backend": "iox2",
@@ -2563,7 +2934,18 @@ mod tests {
     #[test]
     fn manifest_deserialization_with_readiness_gate() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "control",
                     "backend": "inproc",
@@ -2582,7 +2964,18 @@ mod tests {
     #[test]
     fn manifest_deserialization_service_ready_gate() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "server",
                     "backend": "inproc",
@@ -2599,7 +2992,18 @@ mod tests {
     #[test]
     fn manifest_deserialization_with_resource_placement() {
         let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
             "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
                 "processes": [{
                     "name": "control",
                     "backend": "iox2",
@@ -2627,16 +3031,48 @@ mod tests {
     #[test]
     fn expected_services_for_process_uses_server_instances() {
         let graph = LaunchGraph {
+            name: "main".to_string(),
+            scheduler: serde_json::json!({}),
+            channels: vec![],
             services: vec![
                 LaunchService {
                     name: "client.plan".to_string(),
+                    client: "client.plan".to_string(),
+                    client_instance: "client".to_string(),
+                    client_port: "plan".to_string(),
+                    server: "server.plan".to_string(),
                     server_instance: "server".to_string(),
+                    server_port: "plan".to_string(),
+                    request: "PlanRequest".to_string(),
+                    response: "PlanResponse".to_string(),
+                    backend: "inproc".to_string(),
+                    timeout_ms: 100,
+                    queue_depth: 1,
+                    overflow: "error".to_string(),
+                    lane: None,
+                    max_in_flight: 64,
                 },
                 LaunchService {
                     name: "client.inspect".to_string(),
+                    client: "client.inspect".to_string(),
+                    client_instance: "client".to_string(),
+                    client_port: "inspect".to_string(),
+                    server: "inspector.inspect".to_string(),
                     server_instance: "inspector".to_string(),
+                    server_port: "inspect".to_string(),
+                    request: "InspectRequest".to_string(),
+                    response: "InspectResponse".to_string(),
+                    backend: "inproc".to_string(),
+                    timeout_ms: 100,
+                    queue_depth: 1,
+                    overflow: "error".to_string(),
+                    lane: None,
+                    max_in_flight: 64,
                 },
             ],
+            ros2_bridges: vec![],
+            instances: vec![],
+            tasks: vec![],
             processes: vec![],
         };
         let mut process = test_process("server_proc", vec![]);

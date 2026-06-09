@@ -1,10 +1,12 @@
 #include <cassert>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <flowrt/runtime.hpp>
+#include <memory>
 #include <optional>
 #include <string>
 #include <sys/socket.h>
@@ -76,6 +78,16 @@ void assert_contains(const std::string &value, const std::string &expected) {
 }  // namespace
 
 int main() {
+    {
+        auto active = std::make_shared<std::atomic_size_t>(0U);
+        auto first = flowrt::detail::try_acquire_introspection_client_permit(active, 1U);
+        assert(first.has_value());
+        assert(active->load(std::memory_order_acquire) == 1U);
+        assert(!flowrt::detail::try_acquire_introspection_client_permit(active, 1U).has_value());
+        first.reset();
+        assert(active->load(std::memory_order_acquire) == 0U);
+    }
+
     const char *original_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
     const std::optional<std::string> saved_runtime_dir =
         original_runtime_dir == nullptr ? std::nullopt
@@ -381,6 +393,15 @@ int main() {
         .max = std::nullopt,
         .choices = {"\"normal\"", "\"safe\""},
     });
+    state.register_param(flowrt::IntrospectionParamSchema{
+        .name = "controller.limit",
+        .ty = "u64",
+        .update = "on_tick",
+        .current = "9007199254740992",
+        .min = std::nullopt,
+        .max = std::optional<std::string>{"9007199254740992"},
+        .choices = {},
+    });
 
     const auto socket_path = temp_socket_path("worker.sock");
     {
@@ -566,6 +587,13 @@ int main() {
         assert_contains(range_param_set_response, R"("response":"error")");
         assert_contains(range_param_set_response,
                         R"("message":"FlowRT parameter `controller.kp` is above maximum")");
+
+        const auto wide_range_param_set_response = request_line(
+            socket_path,
+            R"({"command":"param_set","name":"controller.limit","value":9007199254740993})");
+        assert_contains(wide_range_param_set_response, R"("response":"error")");
+        assert_contains(wide_range_param_set_response,
+                        R"("message":"FlowRT parameter `controller.limit` is above maximum")");
 
         send_line_and_close(socket_path, R"({"command":"status"})");
         const auto status_after_early_close = request_line(socket_path, R"({"command":"status"})");

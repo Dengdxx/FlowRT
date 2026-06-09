@@ -1,12 +1,15 @@
 #pragma once
 
+#include <algorithm>
 #include <any>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <flowrt/executor.hpp>
 #include <flowrt/service.hpp>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,6 +19,71 @@
 #include <vector>
 
 namespace flowrt {
+
+namespace detail {
+
+inline std::vector<std::uint64_t> &active_inproc_service_lanes() {
+    thread_local std::vector<std::uint64_t> lanes;
+    return lanes;
+}
+
+inline bool active_inproc_service_lane_contains(std::uint64_t lane) {
+    const auto &lanes = active_inproc_service_lanes();
+    return std::find(lanes.begin(), lanes.end(), lane) != lanes.end();
+}
+
+}  // namespace detail
+
+/**
+ * @brief 当前线程活跃 lane 的 RAII 标记。
+ *
+ * generated scheduler 在执行 task 或 hidden service task 时创建该 guard。inproc service
+ * client 据此拒绝同 lane 同步调用，避免确定性死锁。
+ */
+class LaneGuard {
+   public:
+    explicit LaneGuard(LaneId lane) : lane_(lane.value), active_(lane.value != 0U) {
+        if (active_) {
+            detail::active_inproc_service_lanes().push_back(lane_);
+        }
+    }
+
+    LaneGuard(const LaneGuard &) = delete;
+    LaneGuard &operator=(const LaneGuard &) = delete;
+
+    LaneGuard(LaneGuard &&other) noexcept : lane_(other.lane_), active_(other.active_) {
+        other.active_ = false;
+    }
+
+    LaneGuard &operator=(LaneGuard &&other) noexcept {
+        if (this != &other) {
+            release();
+            lane_ = other.lane_;
+            active_ = other.active_;
+            other.active_ = false;
+        }
+        return *this;
+    }
+
+    ~LaneGuard() { release(); }
+
+   private:
+    void release() noexcept {
+        if (!active_) {
+            return;
+        }
+        auto &lanes = detail::active_inproc_service_lanes();
+        if (const auto it = std::find(lanes.rbegin(), lanes.rend(), lane_); it != lanes.rend()) {
+            lanes.erase(std::next(it).base());
+        }
+        active_ = false;
+    }
+
+    std::uint64_t lane_;
+    bool active_;
+};
+
+inline LaneGuard enter_lane(LaneId lane) { return LaneGuard{lane}; }
 
 /**
  * @brief inproc service 配置。
@@ -488,7 +556,9 @@ class InprocServiceClient {
     }
 
     InprocServiceHandle<Resp> start_call(Req request, std::uint64_t timeout_ms) {
-        if (caller_lane_ != 0 && caller_lane_ == server_lane_) {
+        if (server_lane_ != 0 &&
+            ((caller_lane_ != 0 && caller_lane_ == server_lane_) ||
+             detail::active_inproc_service_lane_contains(server_lane_))) {
             auto handle = make_error_handle(ServiceError::WouldDeadlock);
             {
                 std::lock_guard lock(state_->mutex);

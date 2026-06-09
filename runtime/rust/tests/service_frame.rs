@@ -158,24 +158,46 @@ fn service_frame_rejects_wrong_magic() {
 }
 
 #[test]
-fn service_frame_rejects_wrong_version() {
+fn service_frame_rejects_older_version() {
     let mut frame = vec![0u8; 80];
     frame[0..4].copy_from_slice(&SERVICE_FRAME_MAGIC.to_le_bytes());
-    frame[4..6].copy_from_slice(&99u16.to_le_bytes());
+    frame[4..6].copy_from_slice(&0u16.to_le_bytes());
     let err = decode_service_frame(&frame).unwrap_err();
     assert!(err.to_string().contains("version"));
 }
 
 #[test]
-fn service_frame_rejects_unknown_error_code() {
+fn service_frame_accepts_future_compatible_version() {
+    let request_id = RequestId::new(1, 1, 1);
+    let deadline = Deadline::new(100, 0).unwrap();
+    let header = ServiceFrameHeader::request(request_id, deadline, 0, 0);
+    let mut frame = encode_service_frame(&header, b"", b"").unwrap();
+    frame[4..6].copy_from_slice(&(SERVICE_FRAME_VERSION + 1).to_le_bytes());
+
+    let (decoded, payload, error_msg) = decode_service_frame(&frame).unwrap();
+
+    assert_eq!(decoded.version, SERVICE_FRAME_VERSION + 1);
+    assert_eq!(decoded.service_id, request_id.service_id);
+    assert_eq!(decoded.session_id, request_id.session_id);
+    assert_eq!(decoded.sequence, request_id.sequence);
+    assert!(payload.is_empty());
+    assert!(error_msg.is_empty());
+}
+
+#[test]
+fn service_frame_preserves_unknown_error_code_for_forward_compatibility() {
     let request_id = RequestId::new(1, 1, 1);
     let deadline = Deadline::new(100, 0).unwrap();
     let header = ServiceFrameHeader::request(request_id, deadline, 0, 0);
     let mut frame = encode_service_frame(&header, b"", b"").unwrap();
     frame[6..8].copy_from_slice(&99u16.to_le_bytes());
 
-    let err = decode_service_frame(&frame).unwrap_err();
-    assert!(err.to_string().contains("error code"));
+    let (decoded, payload, error_msg) = decode_service_frame(&frame).unwrap();
+
+    assert_eq!(decoded.error_code, 99);
+    assert!(ServiceError::from_abi(decoded.error_code).is_none());
+    assert!(payload.is_empty());
+    assert!(error_msg.is_empty());
 }
 
 #[test]

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <flowrt/abi.h>
 #include <flowrt/service.hpp>
+#include <flowrt/zenoh.hpp>
 #include <limits>
 #include <string_view>
 #include <vector>
@@ -69,6 +70,14 @@ int main() {
     assert(flowrt::fnv1a64("") == 0xcbf29ce484222325ULL);
     assert(flowrt::fnv1a64("a") != flowrt::fnv1a64("b"));
     assert(flowrt::fnv1a64("service_a") != flowrt::fnv1a64("service_b"));
+    assert(flowrt::zenoh::service_key_expr("flowrt/test service") ==
+           "flowrt/service/flowrt_x2F_test_x20_service/request");
+    auto zenoh_service_config = flowrt::zenoh::ZenohServiceConfig::defaults();
+    assert(zenoh_service_config.max_in_flight() == 64U);
+    zenoh_service_config.set_max_in_flight(2U);
+    assert(zenoh_service_config.max_in_flight() == 2U);
+    zenoh_service_config.set_max_in_flight(0U);
+    assert(zenoh_service_config.max_in_flight() == 1U);
 
     // ── Deadline 语义 ───────────────────────────────────────────────────────
 
@@ -155,7 +164,7 @@ int main() {
         assert(caught);
     }
 
-    // ── 非法 version 报错 ──────────────────────────────────────────────────
+    // ── 旧版 version 报错，未来兼容 version 保留 ────────────────────────────
 
     {
         std::array<std::uint8_t, 80> bad_version{};
@@ -163,7 +172,7 @@ int main() {
         bad_version[1] = 0x56U;
         bad_version[2] = 0x52U;
         bad_version[3] = 0x53U;
-        bad_version[4] = 0x63U;
+        bad_version[4] = 0x00U;
         bad_version[5] = 0x00U;
         bool caught = false;
         try {
@@ -174,6 +183,15 @@ int main() {
             assert(msg.find("version") != std::string_view::npos);
         }
         assert(caught);
+
+        auto d = flowrt::Deadline::make(1000, 500).value();
+        auto header = flowrt::ServiceFrameHeader::make_request(flowrt::RequestId{1, 1, 1}, d, 0, 0);
+        std::array<std::uint8_t, 80> future_version{};
+        header.encode(future_version);
+        future_version[4] = 0x02U;
+        future_version[5] = 0x00U;
+        const auto decoded = flowrt::ServiceFrameHeader::decode(future_version);
+        assert(decoded.version == flowrt::SERVICE_FRAME_VERSION + 1U);
     }
 
     // ── 未知 error code 保留 raw code ─────────────────────────────────────

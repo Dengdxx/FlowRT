@@ -33,6 +33,19 @@ const FLOWRT_ZENOH_LISTEN: &str = "FLOWRT_ZENOH_LISTEN";
 const FLOWRT_ZENOH_MODE: &str = "FLOWRT_ZENOH_MODE";
 const FLOWRT_ZENOH_NO_MULTICAST: &str = "FLOWRT_ZENOH_NO_MULTICAST";
 
+fn service_key_expr(service_name: &str) -> String {
+    let mut encoded = String::with_capacity(service_name.len());
+    for byte in service_name.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' | b'-' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("_x{byte:02X}_")),
+        }
+    }
+    format!("flowrt/service/{encoded}/request")
+}
+
 #[derive(Debug, Clone)]
 struct ZenohReceived<T>
 where
@@ -746,7 +759,7 @@ impl<Req: FrameCodec + Clone, Resp: FrameCodec + Clone> ZenohServiceClient<Req, 
     /// 使用已有 session 打开 zenoh service client。
     pub fn open(service_name: &str, session: Session) -> Self {
         let service_id = fnv1a64(service_name.as_bytes());
-        let key_expr = format!("flowrt/service/{}/request", service_name);
+        let key_expr = service_key_expr(service_name);
 
         Self {
             service_name: service_name.to_string(),
@@ -1024,13 +1037,14 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
         F: Fn(Req) -> ServiceResult<Resp> + Send + Sync + 'static,
     {
         let service_id = fnv1a64(service_name.as_bytes());
-        let key_expr = format!("flowrt/service/{}/request", service_name);
+        let key_expr = service_key_expr(service_name);
         let max_in_flight = config.max_in_flight();
 
         let handler = Arc::new(handler);
         let handler_clone = Arc::clone(&handler);
         let service_id_clone = service_id;
         let key_expr_clone = key_expr.clone();
+        let key_expr_for_callback = key_expr.clone();
         let health = Arc::new(Mutex::new(BackendHealthTracker::new(
             ReconnectPolicy::default(),
         )));
@@ -1192,20 +1206,43 @@ impl<Req: FrameCodec + Clone + Send + 'static, Resp: FrameCodec + Clone + Send +
                 let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
                 let handler_for_worker = Arc::clone(&handler_clone);
                 let health_for_worker = Arc::clone(&health_clone);
-                std::thread::spawn(move || {
-                    let _in_flight_guard = in_flight_guard;
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        handler_for_worker(request)
-                    }))
-                    .unwrap_or_else(|_| {
-                        ServiceResult::err_with_message(
-                            ServiceError::HandlerError,
-                            "service handler panicked",
-                        )
+                let worker = std::thread::Builder::new()
+                    .name(format!("flowrt-zenoh-service-{key_expr_for_callback}"))
+                    .spawn(move || {
+                        let _in_flight_guard = in_flight_guard;
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            handler_for_worker(request)
+                        }))
+                        .unwrap_or_else(|_| {
+                            ServiceResult::err_with_message(
+                                ServiceError::HandlerError,
+                                "service handler panicked",
+                            )
+                        });
+                        record_service_result(&health_for_worker, &result);
+                        let _ = result_tx.send(result);
                     });
-                    record_service_result(&health_for_worker, &result);
-                    let _ = result_tx.send(result);
-                });
+                if let Err(err) = worker {
+                    let message = format!("failed to spawn zenoh service handler: {err}");
+                    lock_recover(&health_clone).mark_degraded(message.clone());
+                    let header = ServiceFrameHeader::response(
+                        RequestId {
+                            session_id: req_header.session_id,
+                            sequence: req_header.sequence,
+                            service_id: service_id_clone,
+                        },
+                        deadline,
+                        req_header.correlation_id,
+                        req_header.schema_hash,
+                        ServiceError::Backend,
+                    );
+                    let frame =
+                        encode_service_frame(&header, &[], message.as_bytes()).unwrap_or_default();
+                    let _ = query
+                        .reply(reply_ke, zenoh::bytes::ZBytes::from(frame))
+                        .wait();
+                    return;
+                }
 
                 let result = match result_rx
                     .recv_timeout(std::time::Duration::from_millis(remaining_ms))

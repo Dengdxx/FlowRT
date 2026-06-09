@@ -89,34 +89,59 @@ enum Iox2PublishOutcome {
 }
 
 impl Iox2WakeHandle {
-    fn start(service_name: String, waiter: crate::ScheduleWaiter) -> Self {
+    fn start(service_name: String, waiter: crate::ScheduleWaiter) -> Result<Self, Iox2Error> {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let (ready_tx, ready_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            let wake = match open_iox2_wake_listener(&service_name) {
-                Ok(wake) => {
-                    let _ = ready_tx.send(Ok(()));
-                    wake
+        let worker_name = format!("flowrt-iox2-wake-{service_name}");
+        let worker = thread::Builder::new()
+            .name(worker_name)
+            .spawn(move || {
+                let wake = match open_iox2_wake_listener(&service_name) {
+                    Ok(wake) => {
+                        let _ = ready_tx.send(Ok(()));
+                        wake
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
+                while !worker_stop.load(Ordering::Acquire) {
+                    match wake.listener.timed_wait_one(Duration::from_millis(50)) {
+                        Ok(Some(_)) => waiter.notify_data(),
+                        Ok(None) => {}
+                        Err(_) => break,
+                    }
                 }
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error));
-                    return;
-                }
-            };
-            while !worker_stop.load(Ordering::Acquire) {
-                match wake.listener.timed_wait_one(Duration::from_millis(50)) {
-                    Ok(Some(_)) => waiter.notify_data(),
-                    Ok(None) => {}
-                    Err(_) => break,
-                }
-            }
-        });
-        let _ = ready_rx.recv_timeout(Duration::from_millis(500));
+            })
+            .map_err(|error| Iox2Error::new("failed to spawn iceoryx2 wake listener", error))?;
 
-        Self {
-            stop,
-            worker: Some(worker),
+        match ready_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(Ok(())) => Ok(Self {
+                stop,
+                worker: Some(worker),
+            }),
+            Ok(Err(error)) => {
+                stop.store(true, Ordering::Release);
+                let _ = worker.join();
+                Err(error)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                stop.store(true, Ordering::Release);
+                Err(Iox2Error::new(
+                    "timed out waiting for iceoryx2 wake listener",
+                    "timeout",
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                stop.store(true, Ordering::Release);
+                let _ = worker.join();
+                Err(Iox2Error::new(
+                    "iceoryx2 wake listener exited before ready",
+                    "channel disconnected",
+                ))
+            }
         }
     }
 }
@@ -333,7 +358,7 @@ where
     /// waitset adapter 驱动。
     pub fn set_schedule_waiter(&mut self, waiter: crate::ScheduleWaiter) {
         self.schedule_waiter = Some(waiter.clone());
-        self.start_wake_listener(waiter);
+        let _ = self.start_wake_listener(waiter);
     }
 
     fn finish_publish_outcome(&mut self, outcome: Iox2PublishOutcome) -> Result<(), Iox2Error> {
@@ -386,11 +411,21 @@ where
             .map_err(|error| Iox2Error::new("failed to notify iceoryx2 wake event", error))
     }
 
-    fn start_wake_listener(&mut self, waiter: crate::ScheduleWaiter) {
+    fn start_wake_listener(&mut self, waiter: crate::ScheduleWaiter) -> Result<(), Iox2Error> {
         if self.wake_handle.is_some() {
-            return;
+            return Ok(());
         }
-        self.wake_handle = Some(Iox2WakeHandle::start(self.service_name.clone(), waiter));
+        match Iox2WakeHandle::start(self.service_name.clone(), waiter) {
+            Ok(handle) => {
+                self.wake_handle = Some(handle);
+                Ok(())
+            }
+            Err(error) => {
+                self.health
+                    .mark_degraded(format!("iceoryx2 wake listener unavailable: {error}"));
+                Err(error)
+            }
+        }
     }
 
     /// 如果有可用样本，则接收一个值。
@@ -661,15 +696,18 @@ where
     *parts.node = None;
     match open_iox2_parts(request.service_name, request.config) {
         Ok(reopened) => {
+            let wake_handle = if let Some(waiter) = request.schedule_waiter {
+                Some(Iox2WakeHandle::start(
+                    request.service_name.to_string(),
+                    waiter.clone(),
+                )?)
+            } else {
+                None
+            };
             *parts.publisher = Some(reopened.publisher);
             *parts.subscriber = Some(reopened.subscriber);
             *parts.notifier = Some(reopened.notifier);
-            if let Some(waiter) = request.schedule_waiter {
-                *parts.wake_handle = Some(Iox2WakeHandle::start(
-                    request.service_name.to_string(),
-                    waiter.clone(),
-                ));
-            }
+            *parts.wake_handle = wake_handle;
             *parts.node = Some(reopened.node);
             health.mark_ready();
             Ok(())
@@ -727,6 +765,22 @@ mod tests {
         timestamp: u64,
         x: f32,
         y: f32,
+    }
+
+    #[test]
+    fn wake_listener_start_reports_open_failure() {
+        let error = match Iox2WakeHandle::start(String::new(), crate::ScheduleWaiter::new()) {
+            Ok(_) => panic!("invalid wake service name should be reported"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .message()
+                .contains("invalid iceoryx2 wake service name"),
+            "unexpected error: {}",
+            error.message()
+        );
     }
 
     #[test]

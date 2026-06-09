@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -32,6 +33,8 @@ namespace flowrt {
 
 /// 当前 runtime introspection JSON-line 协议版本。
 inline constexpr const char *INTROSPECTION_PROTOCOL_VERSION = "0.1";
+/// 单个 runtime introspection server 允许同时处理的客户端连接数。
+inline constexpr std::size_t MAX_INTROSPECTION_CLIENT_THREADS = 64U;
 
 /**
  * @brief CLI 连接 socket 后首先验证的进程身份。
@@ -2153,10 +2156,10 @@ class IntrospectionState {
         if (!json_value_matches_param_type(param.type, value)) {
             return "FlowRT parameter `" + name + "` expects `" + param.type + "` value";
         }
-        if (param.min && compare_json_number(value, *param.min).value_or(0) < 0) {
+        if (param.min && compare_json_number_by_type(param.type, value, *param.min).value_or(0) < 0) {
             return "FlowRT parameter `" + name + "` is below minimum";
         }
-        if (param.max && compare_json_number(value, *param.max).value_or(0) > 0) {
+        if (param.max && compare_json_number_by_type(param.type, value, *param.max).value_or(0) > 0) {
             return "FlowRT parameter `" + name + "` is above maximum";
         }
         if (!param.choices.empty() &&
@@ -2177,11 +2180,39 @@ class IntrospectionState {
             return parse_json_number(value).has_value();
         }
         if (type == "u8" || type == "u16" || type == "u32" || type == "u64") {
-            const auto number = parse_json_number(value);
-            return number && *number >= 0.0;
+            const auto number = parse_json_u64(value);
+            if (!number.has_value()) {
+                return false;
+            }
+            if (type == "u8") {
+                return *number <= std::numeric_limits<std::uint8_t>::max();
+            }
+            if (type == "u16") {
+                return *number <= std::numeric_limits<std::uint16_t>::max();
+            }
+            if (type == "u32") {
+                return *number <= std::numeric_limits<std::uint32_t>::max();
+            }
+            return true;
         }
         if (type == "i8" || type == "i16" || type == "i32" || type == "i64") {
-            return parse_json_number(value).has_value();
+            const auto number = parse_json_i64(value);
+            if (!number.has_value()) {
+                return false;
+            }
+            if (type == "i8") {
+                return *number >= std::numeric_limits<std::int8_t>::min() &&
+                       *number <= std::numeric_limits<std::int8_t>::max();
+            }
+            if (type == "i16") {
+                return *number >= std::numeric_limits<std::int16_t>::min() &&
+                       *number <= std::numeric_limits<std::int16_t>::max();
+            }
+            if (type == "i32") {
+                return *number >= std::numeric_limits<std::int32_t>::min() &&
+                       *number <= std::numeric_limits<std::int32_t>::max();
+            }
+            return true;
         }
         return false;
     }
@@ -2194,10 +2225,70 @@ class IntrospectionState {
         if (errno != 0 || end == owned.c_str() || *end != '\0') {
             return std::nullopt;
         }
+        if (parsed != parsed || parsed == std::numeric_limits<double>::infinity() ||
+            parsed == -std::numeric_limits<double>::infinity()) {
+            return std::nullopt;
+        }
         return parsed;
     }
 
-    static std::optional<int> compare_json_number(std::string_view left, std::string_view right) {
+    static std::optional<std::uint64_t> parse_json_u64(std::string_view value) {
+        if (value.empty() || value.front() == '-') {
+            return std::nullopt;
+        }
+        std::string owned{value};
+        char *end = nullptr;
+        errno = 0;
+        const auto parsed = std::strtoull(owned.c_str(), &end, 10);
+        if (errno != 0 || end == owned.c_str() || *end != '\0') {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(parsed);
+    }
+
+    static std::optional<std::int64_t> parse_json_i64(std::string_view value) {
+        std::string owned{value};
+        char *end = nullptr;
+        errno = 0;
+        const auto parsed = std::strtoll(owned.c_str(), &end, 10);
+        if (errno != 0 || end == owned.c_str() || *end != '\0') {
+            return std::nullopt;
+        }
+        return static_cast<std::int64_t>(parsed);
+    }
+
+    static std::optional<int> compare_json_number_by_type(std::string_view type,
+                                                          std::string_view left,
+                                                          std::string_view right) {
+        if (type == "u8" || type == "u16" || type == "u32" || type == "u64") {
+            const auto left_number = parse_json_u64(left);
+            const auto right_number = parse_json_u64(right);
+            if (!left_number || !right_number) {
+                return std::nullopt;
+            }
+            if (*left_number < *right_number) {
+                return -1;
+            }
+            if (*left_number > *right_number) {
+                return 1;
+            }
+            return 0;
+        }
+        if (type == "i8" || type == "i16" || type == "i32" || type == "i64") {
+            const auto left_number = parse_json_i64(left);
+            const auto right_number = parse_json_i64(right);
+            if (!left_number || !right_number) {
+                return std::nullopt;
+            }
+            if (*left_number < *right_number) {
+                return -1;
+            }
+            if (*left_number > *right_number) {
+                return 1;
+            }
+            return 0;
+        }
+
         const auto left_number = parse_json_number(left);
         const auto right_number = parse_json_number(right);
         if (!left_number || !right_number) {
@@ -2239,6 +2330,53 @@ inline std::filesystem::path runtime_socket_path_for_pid(std::uint32_t pid) {
 class IntrospectionServer;
 
 namespace detail {
+
+class IntrospectionClientPermit {
+   public:
+    explicit IntrospectionClientPermit(std::shared_ptr<std::atomic_size_t> active) noexcept
+        : active_(std::move(active)) {}
+    IntrospectionClientPermit(const IntrospectionClientPermit &) = delete;
+    auto operator=(const IntrospectionClientPermit &) -> IntrospectionClientPermit & = delete;
+
+    IntrospectionClientPermit(IntrospectionClientPermit &&other) noexcept
+        : active_(std::move(other.active_)) {}
+
+    auto operator=(IntrospectionClientPermit &&other) noexcept -> IntrospectionClientPermit & {
+        if (this != std::addressof(other)) {
+            release();
+            active_ = std::move(other.active_);
+        }
+        return *this;
+    }
+
+    ~IntrospectionClientPermit() { release(); }
+
+   private:
+    void release() noexcept {
+        if (active_) {
+            active_->fetch_sub(1U, std::memory_order_acq_rel);
+            active_.reset();
+        }
+    }
+
+    std::shared_ptr<std::atomic_size_t> active_;
+};
+
+inline std::optional<IntrospectionClientPermit> try_acquire_introspection_client_permit(
+    const std::shared_ptr<std::atomic_size_t> &active,
+    std::size_t limit = MAX_INTROSPECTION_CLIENT_THREADS) {
+    limit = std::max<std::size_t>(1U, limit);
+    auto current = active->load(std::memory_order_acquire);
+    while (true) {
+        if (current >= limit) {
+            return std::nullopt;
+        }
+        if (active->compare_exchange_weak(current, current + 1U, std::memory_order_acq_rel,
+                                          std::memory_order_acquire)) {
+            return IntrospectionClientPermit{active};
+        }
+    }
+}
 
 inline void handle_introspection_connection(int client_fd, const IntrospectionHandshake &handshake,
                                             const IntrospectionState &state) {
@@ -2485,17 +2623,31 @@ inline std::optional<IntrospectionServer> spawn_status_server_at(std::filesystem
     }
 
     auto stop = std::make_shared<std::atomic_bool>(false);
+    auto active_clients = std::make_shared<std::atomic_size_t>(0U);
     auto thread_stop = stop;
     std::thread handle;
     try {
         handle = std::thread([listener_fd, thread_stop, handshake = std::move(handshake),
-                              state = std::move(state)]() mutable {
+                              state = std::move(state), active_clients = std::move(active_clients)]()
+                                 mutable {
             while (!thread_stop->load(std::memory_order_relaxed)) {
                 const int client_fd = ::accept(listener_fd, nullptr, nullptr);
                 if (client_fd >= 0) {
                     detail::set_socket_timeout(client_fd);
+                    auto permit =
+                        detail::try_acquire_introspection_client_permit(active_clients);
+                    if (!permit.has_value()) {
+                        auto response = detail::error_response_json(
+                            handshake, "FlowRT introspection connection limit reached");
+                        response.push_back('\n');
+                        (void)detail::write_all(client_fd, response);
+                        ::close(client_fd);
+                        continue;
+                    }
                     try {
-                        std::thread([client_fd, handshake, state]() {
+                        std::thread([client_fd, handshake, state,
+                                     permit = std::move(*permit)]() mutable {
+                            (void)permit;
                             detail::handle_introspection_connection(client_fd, handshake, state);
                             ::close(client_fd);
                         }).detach();

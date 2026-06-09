@@ -304,8 +304,8 @@ struct ServiceFrameHeader {
             throw WireCodecError("service frame magic mismatch");
         }
         const auto version_val = read_wire_le<std::uint16_t>(input, 4);
-        if (version_val != SERVICE_FRAME_VERSION) {
-            throw WireCodecError("service frame version mismatch");
+        if (version_val < SERVICE_FRAME_VERSION) {
+            throw WireCodecError("service frame version is older than the minimum supported version");
         }
         ServiceFrameHeader h{};
         h.magic = magic_val;

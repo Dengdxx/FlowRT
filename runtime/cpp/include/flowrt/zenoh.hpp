@@ -1,10 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <exception>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
 #include <flowrt/executor.hpp>
@@ -18,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -31,6 +35,55 @@ namespace flowrt {
 namespace zenoh {
 
 inline constexpr std::uint64_t SERVICE_TRANSPORT_TIMEOUT_GRACE_MS = 1000U;
+
+inline std::string service_key_expr(std::string_view service_name) {
+    static constexpr char HEX[] = "0123456789ABCDEF";
+
+    std::string encoded;
+    encoded.reserve(service_name.size());
+    for (const unsigned char byte : service_name) {
+        const bool keep = (byte >= static_cast<unsigned char>('a') &&
+                           byte <= static_cast<unsigned char>('z')) ||
+                          (byte >= static_cast<unsigned char>('A') &&
+                           byte <= static_cast<unsigned char>('Z')) ||
+                          (byte >= static_cast<unsigned char>('0') &&
+                           byte <= static_cast<unsigned char>('9')) ||
+                          byte == static_cast<unsigned char>('_') ||
+                          byte == static_cast<unsigned char>('.') ||
+                          byte == static_cast<unsigned char>('-');
+        if (keep) {
+            encoded.push_back(static_cast<char>(byte));
+        } else {
+            encoded.push_back('_');
+            encoded.push_back('x');
+            encoded.push_back(HEX[(byte >> 4U) & 0x0FU]);
+            encoded.push_back(HEX[byte & 0x0FU]);
+            encoded.push_back('_');
+        }
+    }
+
+    return "flowrt/service/" + encoded + "/request";
+}
+
+/**
+ * @brief zenoh service runtime 配置。
+ *
+ * 当前配置只暴露 in-flight handler 上限。该上限限制同时运行的 handler 线程数量，
+ * 防止 queryable callback 在请求洪峰下无限制 detach 线程。
+ */
+class ZenohServiceConfig {
+   public:
+    static constexpr ZenohServiceConfig defaults() noexcept { return ZenohServiceConfig{}; }
+
+    constexpr std::size_t max_in_flight() const noexcept { return max_in_flight_; }
+
+    constexpr void set_max_in_flight(std::size_t value) noexcept {
+        max_in_flight_ = value == 0U ? 1U : value;
+    }
+
+   private:
+    std::size_t max_in_flight_ = 64;
+};
 
 /**
  * @brief 打开 zenoh publish-subscribe endpoint 时使用的 FlowRT channel 配置。
@@ -842,7 +895,7 @@ class ZenohServiceClient {
                        )
         : service_name_(service_name),
           service_id_(fnv1a64(service_name)),
-          key_expr_("flowrt/service/" + std::string(service_name) + "/request"),
+          key_expr_(service_key_expr(service_name)),
           session_id_(reinterpret_cast<std::uint64_t>(this))
 #ifdef FLOWRT_HAS_ZENOH_CXX
           ,
@@ -888,12 +941,32 @@ class ZenohServiceServer {
 #endif
                                    ,
                                    Handler handler) {
+        return open_with_config(service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                ,
+                                std::move(session)
+#endif
+                                    ,
+                                ZenohServiceConfig::defaults(), std::move(handler));
+    }
+
+    /**
+     * @brief 使用显式配置打开 zenoh service server。
+     */
+    static ZenohServiceServer open_with_config(std::string_view service_name
+#ifdef FLOWRT_HAS_ZENOH_CXX
+                                               ,
+                                               std::shared_ptr<::zenoh::Session> session
+#endif
+                                               ,
+                                               ZenohServiceConfig config, Handler handler) {
         return ZenohServiceServer(service_name
 #ifdef FLOWRT_HAS_ZENOH_CXX
                                   ,
                                   std::move(session)
 #endif
                                       ,
+                                  config,
                                   std::move(handler));
     }
 
@@ -920,19 +993,23 @@ class ZenohServiceServer {
                        std::shared_ptr<::zenoh::Session> session
 #endif
                        ,
+                       ZenohServiceConfig config,
                        Handler handler)
         : service_name_(service_name),
           service_id_(fnv1a64(service_name)),
-          key_expr_("flowrt/service/" + std::string(service_name) + "/request"),
+          key_expr_(service_key_expr(service_name)),
+          config_(config),
           handler_(std::move(handler)) {
 #ifdef FLOWRT_HAS_ZENOH_CXX
         auto handler_fn = handler_;
         auto service_id = service_id_;
         auto ke = key_expr_;
+        auto max_in_flight = config_.max_in_flight();
+        auto in_flight = in_flight_;
 
         queryable_.emplace(session->declare_queryable(
             ::zenoh::KeyExpr(ke),
-            [handler_fn, service_id, ke](::zenoh::Query &query) {
+            [handler_fn, service_id, ke, max_in_flight, in_flight](::zenoh::Query &query) {
                 const auto reply_ke = ::zenoh::KeyExpr(ke);
 
                 std::vector<std::uint8_t> payload;
@@ -1004,19 +1081,52 @@ class ZenohServiceServer {
                 const auto remaining_ms = deadline.absolute_deadline_ms > handler_wait_now_ms
                                               ? deadline.absolute_deadline_ms - handler_wait_now_ms
                                               : 0U;
+                auto reply_error = [&query, &reply_ke, &req_header, &deadline,
+                                    service_id](ServiceError error, std::string_view message) {
+                    const auto header = ServiceFrameHeader::make_response(
+                        RequestId{req_header.session_id, req_header.sequence, service_id},
+                        deadline, req_header.correlation_id, req_header.schema_hash, error);
+                    const auto frame = encode_service_frame(
+                        header, {},
+                        std::span<const std::uint8_t>{
+                            reinterpret_cast<const std::uint8_t *>(message.data()),
+                            message.size()});
+                    query.reply(reply_ke, ::zenoh::Bytes(std::vector<std::uint8_t>(frame)));
+                };
+
+                const auto previous_in_flight = in_flight->fetch_add(1, std::memory_order_acq_rel);
+                if (previous_in_flight >= max_in_flight) {
+                    in_flight->fetch_sub(1, std::memory_order_acq_rel);
+                    reply_error(ServiceError::Busy, "zenoh service handler limit reached");
+                    return;
+                }
+
                 auto result_promise = std::make_shared<std::promise<ServiceResult<Resp>>>();
                 auto result_future = result_promise->get_future();
-                std::thread([handler_fn, request, result_promise]() mutable {
-                    try {
-                        result_promise->set_value(handler_fn(request));
-                    } catch (const std::exception &e) {
-                        result_promise->set_value(ServiceResult<Resp>::err_with_message(
-                            ServiceError::HandlerError, e.what()));
-                    } catch (...) {
-                        result_promise->set_value(ServiceResult<Resp>::err_with_message(
-                            ServiceError::HandlerError, "service handler threw"));
-                    }
-                }).detach();
+                auto release_in_flight = std::shared_ptr<void>(
+                    nullptr,
+                    [in_flight](void *) { in_flight->fetch_sub(1, std::memory_order_acq_rel); });
+                try {
+                    std::thread([handler_fn, request, result_promise,
+                                 release_in_flight = std::move(release_in_flight)]() mutable {
+                        (void)release_in_flight;
+                        try {
+                            result_promise->set_value(handler_fn(request));
+                        } catch (const std::exception &e) {
+                            result_promise->set_value(ServiceResult<Resp>::err_with_message(
+                                ServiceError::HandlerError, e.what()));
+                        } catch (...) {
+                            result_promise->set_value(ServiceResult<Resp>::err_with_message(
+                                ServiceError::HandlerError, "service handler threw"));
+                        }
+                    }).detach();
+                } catch (const std::exception &e) {
+                    reply_error(ServiceError::Backend, e.what());
+                    return;
+                } catch (...) {
+                    reply_error(ServiceError::Backend, "failed to spawn zenoh service handler");
+                    return;
+                }
 
                 if (result_future.wait_for(std::chrono::milliseconds{remaining_ms}) !=
                     std::future_status::ready) {
@@ -1066,8 +1176,10 @@ class ZenohServiceServer {
     std::string service_name_;
     std::uint64_t service_id_;
     std::string key_expr_;
+    ZenohServiceConfig config_;
     Handler handler_;
 #ifdef FLOWRT_HAS_ZENOH_CXX
+    std::shared_ptr<std::atomic_size_t> in_flight_ = std::make_shared<std::atomic_size_t>(0);
     std::optional<::zenoh::Queryable<void>> queryable_;
 #endif
 };

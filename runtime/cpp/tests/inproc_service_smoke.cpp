@@ -325,6 +325,35 @@ int main() {
 
     registry.clear();
 
+    // ── 当前线程 lane guard 可检测 generated scheduler 内同 lane 调用 ─────────
+
+    {
+        flowrt::InprocServiceConfig config;
+        config.default_timeout_ms = 1000;
+
+        flowrt::InprocServiceServer<AddRequest, AddResponse> server(
+            "active_lane_bound",
+            [](const AddRequest &req) -> flowrt::ServiceResult<AddResponse> {
+                return flowrt::ServiceResult<AddResponse>::ok(AddResponse{req.a + req.b});
+            },
+            config);
+
+        flowrt::InprocServiceClient<AddRequest, AddResponse> client(
+            "active_lane_bound", server, /*caller_lane=*/0, /*server_lane=*/7);
+
+        auto guard = flowrt::enter_lane(flowrt::LaneId{7});
+        auto handle = client.start_call(AddRequest{1, 1});
+        assert(handle.poll());
+        auto result = handle.wait();
+        assert(result.is_err());
+        assert(result.error_code() == flowrt::ServiceError::WouldDeadlock);
+
+        auto stats = server.stats();
+        assert(stats.deadlocks == 1);
+    }
+
+    registry.clear();
+
     // ── 非阻塞 poll / ready ──────────────────────────────────────────────────
 
     {

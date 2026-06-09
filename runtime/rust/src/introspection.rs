@@ -10,7 +10,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,6 +26,7 @@ use crate::supervisor::resource_placement::ResourcePlacementStatus;
 
 /// 当前 introspection 协议版本。
 pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
+const MAX_INTROSPECTION_CLIENT_THREADS: usize = 64;
 
 /// runtime introspection 命令。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1202,30 +1203,70 @@ pub fn spawn_status_server_at(
     let server_path = path.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
-    let handle = thread::spawn(move || {
-        while !thread_stop.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _addr)) => {
-                    let handshake = handshake.clone();
-                    let state = state.clone();
-                    let _ = thread::Builder::new()
-                        .name("flowrt-introspection-client".to_string())
-                        .spawn(move || {
-                            let _ = handle_connection(stream, &handshake, &state);
-                        });
+    let active_clients = Arc::new(AtomicUsize::new(0));
+    let handle = thread::Builder::new()
+        .name("flowrt-introspection-server".to_string())
+        .spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        let Some(permit) = try_acquire_introspection_client_permit(
+                            &active_clients,
+                            MAX_INTROSPECTION_CLIENT_THREADS,
+                        ) else {
+                            let _ = write_error_response(
+                                stream,
+                                &handshake,
+                                "FlowRT introspection connection limit reached",
+                            );
+                            continue;
+                        };
+                        let handshake = handshake.clone();
+                        let state = state.clone();
+                        let _ = thread::Builder::new()
+                            .name("flowrt-introspection-client".to_string())
+                            .spawn(move || {
+                                let _permit = permit;
+                                let _ = handle_connection(stream, &handshake, &state);
+                            });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => break,
             }
-        }
-    });
+        })?;
     Ok(IntrospectionServer {
         path: server_path,
         handle: Some(handle),
         stop,
     })
+}
+
+struct IntrospectionClientPermit {
+    active_clients: Arc<AtomicUsize>,
+}
+
+impl Drop for IntrospectionClientPermit {
+    fn drop(&mut self) {
+        self.active_clients.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_introspection_client_permit(
+    active_clients: &Arc<AtomicUsize>,
+    max_clients: usize,
+) -> Option<IntrospectionClientPermit> {
+    let previous = active_clients.fetch_add(1, Ordering::AcqRel);
+    if previous < max_clients {
+        Some(IntrospectionClientPermit {
+            active_clients: Arc::clone(active_clients),
+        })
+    } else {
+        active_clients.fetch_sub(1, Ordering::AcqRel);
+        None
+    }
 }
 
 fn reclaim_stale_socket_path(path: &Path) -> std::io::Result<()> {
@@ -1429,6 +1470,23 @@ fn send_request_and_read_response(
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line)?;
     serde_json::from_str(&line).map_err(std::io::Error::other)
+}
+
+fn write_error_response(
+    mut stream: UnixStream,
+    handshake: &IntrospectionHandshake,
+    message: impl Into<String>,
+) -> std::io::Result<()> {
+    let response = IntrospectionResponse::Error {
+        handshake: handshake.clone(),
+        message: message.into(),
+    };
+    stream.write_all(
+        serde_json::to_string(&response)
+            .map_err(std::io::Error::other)?
+            .as_bytes(),
+    )?;
+    stream.write_all(b"\n")
 }
 
 fn handle_connection(
@@ -1718,12 +1776,12 @@ fn validate_param_json_value(
         ));
     }
     if let Some(min) = &param.min
-        && compare_json_values(value, min).is_some_and(|ordering| ordering.is_lt())
+        && compare_param_json_values(&param.ty, value, min).is_some_and(|ordering| ordering.is_lt())
     {
         return Err(format!("FlowRT parameter `{name}` is below minimum"));
     }
     if let Some(max) = &param.max
-        && compare_json_values(value, max).is_some_and(|ordering| ordering.is_gt())
+        && compare_param_json_values(&param.ty, value, max).is_some_and(|ordering| ordering.is_gt())
     {
         return Err(format!("FlowRT parameter `{name}` is above maximum"));
     }
@@ -1748,10 +1806,20 @@ fn json_value_matches_param_type(ty: &str, value: &serde_json::Value) -> bool {
     }
 }
 
-fn compare_json_values(
+fn compare_param_json_values(
+    ty: &str,
     left: &serde_json::Value,
     right: &serde_json::Value,
 ) -> Option<std::cmp::Ordering> {
+    match ty {
+        "u8" | "u16" | "u32" | "u64" => {
+            return Some(left.as_u64()?.cmp(&right.as_u64()?));
+        }
+        "i8" | "i16" | "i32" | "i64" => {
+            return Some(left.as_i64()?.cmp(&right.as_i64()?));
+        }
+        _ => {}
+    }
     match (left, right) {
         (serde_json::Value::Number(left), serde_json::Value::Number(right)) => {
             left.as_f64()?.partial_cmp(&right.as_f64()?)
@@ -2342,6 +2410,21 @@ mod tests {
     }
 
     #[test]
+    fn introspection_client_permit_limits_and_releases_active_connections() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let first = try_acquire_introspection_client_permit(&active, 1)
+            .expect("first client should acquire permit");
+
+        assert_eq!(active.load(Ordering::Acquire), 1);
+        assert!(try_acquire_introspection_client_permit(&active, 1).is_none());
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        drop(first);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert!(try_acquire_introspection_client_permit(&active, 1).is_some());
+    }
+
+    #[test]
     fn status_server_removes_stale_socket_file_before_binding() {
         let root = std::env::temp_dir().join(format!(
             "flowrt-introspection-stale-socket-test-{}",
@@ -2461,6 +2544,31 @@ mod tests {
 
         drop(server);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn param_runtime_validation_compares_large_integer_bounds_exactly() {
+        let param = ParamState {
+            ty: "u64".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(9007199254740992_u64),
+            pending: None,
+            min: None,
+            max: Some(serde_json::json!(9007199254740992_u64)),
+            choices: vec![],
+        };
+
+        let error = validate_param_json_value(
+            "controller.limit",
+            &param,
+            &serde_json::json!(9007199254740993_u64),
+        )
+        .expect_err("value above a large integer max must be rejected exactly");
+
+        assert_eq!(
+            error,
+            "FlowRT parameter `controller.limit` is above maximum"
+        );
     }
 
     #[test]
