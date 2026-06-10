@@ -1,10 +1,15 @@
 use std::collections::BTreeMap;
 
-use flowrt_rsdl::{RawDocument, RawModuleDocument, RawOperationPort, RawPort, RawServicePort};
+use flowrt_rsdl::{
+    RawComponent, RawDocument, RawModuleDocument, RawOperationPort, RawPort,
+    RawResourceRequirement, RawServicePort,
+};
 
 use crate::{
-    ComponentIr, ComponentKind, EntityId, FieldIr, IrError, LanguageKind, LifecycleSurface,
-    ModuleIr, OperationPortIr, PortIr, Result, ServicePortIr, TypeIr, parse_type_expr,
+    ComponentIr, ComponentKind, EntityId, FieldIr, IoBoundaryHealth, IoBoundaryIr,
+    IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError, LanguageKind, LifecycleSurface,
+    ModuleIr, OperationPortIr, PortIr, ResourceKind, ResourceRequirementIr, Result, ServicePortIr,
+    TypeIr, parse_type_expr,
 };
 
 use super::ids::entity_id;
@@ -126,6 +131,8 @@ pub(super) fn normalize_components(
                     current_module,
                 )?,
                 params: super::params::normalize_component_params(name, raw)?,
+                resources: normalize_resources(&raw.resources)?,
+                io_boundary: normalize_io_boundary(raw)?,
                 lifecycle: LifecycleSurface::reserved_v0_1(),
             })
         })
@@ -209,9 +216,113 @@ pub(super) fn parse_language(context: &str, value: &str) -> Result<LanguageKind>
 pub(super) fn parse_component_kind(context: &str, value: &str) -> Result<ComponentKind> {
     match value {
         "native" => Ok(ComponentKind::Native),
-        "adapter" => Ok(ComponentKind::Adapter),
+        "io_boundary" => Ok(ComponentKind::IoBoundary),
         "external" => Ok(ComponentKind::External),
         _ => Err(invalid_enum(context, "component kind", value)),
+    }
+}
+
+fn normalize_resources(raw: &[RawResourceRequirement]) -> Result<Vec<ResourceRequirementIr>> {
+    let mut resources = raw
+        .iter()
+        .map(|resource| {
+            Ok(ResourceRequirementIr {
+                name: resource.name.clone(),
+                kind: parse_resource_kind(
+                    &format!("component.resource.{}.kind", resource.name),
+                    &resource.kind,
+                )?,
+                required: resource.required,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    resources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(resources)
+}
+
+fn normalize_io_boundary(raw: &RawComponent) -> Result<Option<IoBoundaryIr>> {
+    if raw.kind.as_deref() != Some("io_boundary") {
+        if !raw.io_side_effect.is_empty()
+            || raw.io_readiness.is_some()
+            || raw.io_health.is_some()
+            || raw.io_shutdown.is_some()
+        {
+            return Err(IrError::InvalidValue {
+                context: "component.io_boundary".to_string(),
+                message: "I/O boundary policy fields require `kind = \"io_boundary\"`".to_string(),
+            });
+        }
+        return Ok(None);
+    }
+    let mut side_effects = raw
+        .io_side_effect
+        .iter()
+        .map(|effect| parse_io_side_effect("component.io_side_effect", effect))
+        .collect::<Result<Vec<_>>>()?;
+    side_effects.sort();
+    side_effects.dedup();
+    Ok(Some(IoBoundaryIr {
+        side_effects,
+        readiness: parse_io_readiness(
+            "component.io_readiness",
+            raw.io_readiness.as_deref().unwrap_or("resource_ready"),
+        )?,
+        health: parse_io_health(
+            "component.io_health",
+            raw.io_health.as_deref().unwrap_or("runtime_reported"),
+        )?,
+        shutdown: parse_io_shutdown(
+            "component.io_shutdown",
+            raw.io_shutdown.as_deref().unwrap_or("cooperative"),
+        )?,
+    }))
+}
+
+fn parse_resource_kind(context: &str, value: &str) -> Result<ResourceKind> {
+    match value {
+        "serial" => Ok(ResourceKind::Serial),
+        "shm" => Ok(ResourceKind::Shm),
+        "udp" => Ok(ResourceKind::Udp),
+        "file" => Ok(ResourceKind::File),
+        "device" => Ok(ResourceKind::Device),
+        "sdk" => Ok(ResourceKind::Sdk),
+        _ => Err(invalid_enum(context, "resource kind", value)),
+    }
+}
+
+fn parse_io_side_effect(context: &str, value: &str) -> Result<IoSideEffect> {
+    match value {
+        "read" => Ok(IoSideEffect::Read),
+        "write" => Ok(IoSideEffect::Write),
+        "network" => Ok(IoSideEffect::Network),
+        "filesystem" => Ok(IoSideEffect::Filesystem),
+        "device" => Ok(IoSideEffect::Device),
+        "compute" => Ok(IoSideEffect::Compute),
+        _ => Err(invalid_enum(context, "I/O side effect", value)),
+    }
+}
+
+fn parse_io_readiness(context: &str, value: &str) -> Result<IoBoundaryReadiness> {
+    match value {
+        "component_started" => Ok(IoBoundaryReadiness::ComponentStarted),
+        "resource_ready" => Ok(IoBoundaryReadiness::ResourceReady),
+        _ => Err(invalid_enum(context, "I/O readiness", value)),
+    }
+}
+
+fn parse_io_health(context: &str, value: &str) -> Result<IoBoundaryHealth> {
+    match value {
+        "runtime_reported" => Ok(IoBoundaryHealth::RuntimeReported),
+        "process_status" => Ok(IoBoundaryHealth::ProcessStatus),
+        _ => Err(invalid_enum(context, "I/O health", value)),
+    }
+}
+
+fn parse_io_shutdown(context: &str, value: &str) -> Result<IoBoundaryShutdown> {
+    match value {
+        "cooperative" => Ok(IoBoundaryShutdown::Cooperative),
+        "best_effort" => Ok(IoBoundaryShutdown::BestEffort),
+        _ => Err(invalid_enum(context, "I/O shutdown", value)),
     }
 }
 

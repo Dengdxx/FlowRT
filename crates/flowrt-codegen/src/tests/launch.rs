@@ -584,6 +584,86 @@ backends = ["zenoh"]
 }
 
 #[test]
+fn launch_manifest_and_selfdesc_expose_io_boundary_contract() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "io_boundary_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor]
+language = "cpp"
+kind = "io_boundary"
+output = ["sample:Sample"]
+io_side_effect = ["read"]
+io_readiness = "resource_ready"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+
+[component.sensor.resource.lidar_uart]
+kind = "serial"
+required = true
+
+[instance.sensor]
+component = "sensor"
+process = "sensor_proc"
+target = "edge"
+
+[instance.sensor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[profile.default]
+backend = "inproc"
+
+[target.edge]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let process = &launch["graphs"][0]["processes"][0];
+
+    assert_eq!(
+        process["io_boundaries"][0],
+        serde_json::json!({
+            "instance": "sensor",
+            "component": "sensor",
+            "side_effects": ["read"],
+            "readiness": "resource_ready",
+            "health": "runtime_reported",
+            "shutdown": "cooperative",
+            "resources": [{
+                "name": "lidar_uart",
+                "kind": "serial",
+                "required": true
+            }]
+        })
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    assert_eq!(
+        selfdesc["component_types"][0]["kind"],
+        serde_json::json!("io_boundary")
+    );
+    assert_eq!(
+        selfdesc["component_types"][0]["resources"][0],
+        serde_json::json!({
+            "name": "lidar_uart",
+            "kind": "serial",
+            "required": true
+        })
+    );
+}
+
+#[test]
 fn launch_manifest_uses_external_required_backend_without_routes() {
     let ir = contract_from_source(
         r#"

@@ -7,6 +7,7 @@ use crate::ast::*;
 use crate::{Result, RsdlError};
 
 use super::schema::validate_known_fields;
+use super::values::optional_bool;
 use super::values::{
     expect_string, expect_string_array, expect_table_value, optional_i32, optional_param_table,
     optional_port_array, optional_service_port_array, optional_string, optional_string_array,
@@ -116,6 +117,11 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
             "operation_client",
             "operation_server",
             "params",
+            "io_side_effect",
+            "io_readiness",
+            "io_health",
+            "io_shutdown",
+            "resource",
         ],
     )?;
 
@@ -129,7 +135,41 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
         operation_clients: optional_operation_port_table(table, &context, "operation_client")?,
         operation_servers: optional_operation_port_table(table, &context, "operation_server")?,
         params: optional_param_table(table, &context, "params")?,
+        io_side_effect: optional_string_array(table, &context, "io_side_effect")?,
+        io_readiness: optional_string(table, &context, "io_readiness")?,
+        io_health: optional_string(table, &context, "io_health")?,
+        io_shutdown: optional_string(table, &context, "io_shutdown")?,
+        resources: optional_resource_table(table, &context)?,
     })
+}
+
+fn optional_resource_table(table: &Table, context: &str) -> Result<Vec<RawResourceRequirement>> {
+    let Some(value) = table.get("resource") else {
+        return Ok(Vec::new());
+    };
+    let table = expect_table_value(context, "resource", value)?;
+    let mut resources = Vec::with_capacity(table.len());
+    for (name, value) in table {
+        let resource_table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: format!("{context}.resource"),
+                field: name.clone(),
+                expected: "table",
+            })?;
+        let resource_context = format!("{context}.resource.{name}");
+        validate_known_fields(resource_table, &resource_context, &["kind", "required"])?;
+        resources.push(RawResourceRequirement {
+            name: name.clone(),
+            kind: required_string(resource_table, &resource_context, "kind")?,
+            required: if resource_table.contains_key("required") {
+                optional_bool(resource_table, &resource_context, "required")?
+            } else {
+                true
+            },
+        });
+    }
+    Ok(resources)
 }
 
 fn optional_operation_port_table(

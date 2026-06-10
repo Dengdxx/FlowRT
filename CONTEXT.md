@@ -214,6 +214,12 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   源，支持 Linux `amd64` / `arm64` 优先的 target platform、external package 多平台
   选择、cross build orchestration、远端 FlowRT 版本校验和 release 安装包 smoke。
 
+当前 `v0.8.0` 已落地的静态边界：
+
+- RSDL / Contract IR 支持 `kind = "io_boundary"` component，并记录 resource
+  requirement、side effect、readiness、health 和 shutdown policy；launch manifest 与
+  self-description 输出对应摘要，runtime/codegen 用户 API 仍是后续主路径。
+
 `v0.7.0` 已落地 external package 主路径：
 
 - RSDL 支持 `language = "external"` / `kind = "external"` 的 component 和 graph 级

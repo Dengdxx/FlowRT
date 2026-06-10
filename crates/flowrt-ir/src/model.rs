@@ -121,7 +121,76 @@ pub struct ComponentIr {
     #[serde(default)]
     pub operation_servers: Vec<OperationPortIr>,
     pub params: Vec<ParamIr>,
+    #[serde(default)]
+    pub resources: Vec<ResourceRequirementIr>,
+    #[serde(default)]
+    pub io_boundary: Option<IoBoundaryIr>,
     pub lifecycle: LifecycleSurface,
+}
+
+/// 组件声明的资源需求。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceRequirementIr {
+    pub name: String,
+    pub kind: ResourceKind,
+    pub required: bool,
+}
+
+/// FlowRT 认识的 I/O boundary 资源类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Serial,
+    Shm,
+    Udp,
+    File,
+    Device,
+    Sdk,
+}
+
+/// 进程内 I/O boundary 的静态策略。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IoBoundaryIr {
+    pub side_effects: Vec<IoSideEffect>,
+    pub readiness: IoBoundaryReadiness,
+    pub health: IoBoundaryHealth,
+    pub shutdown: IoBoundaryShutdown,
+}
+
+/// I/O boundary 声明的副作用类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoSideEffect {
+    Read,
+    Write,
+    Network,
+    Filesystem,
+    Device,
+    Compute,
+}
+
+/// I/O boundary readiness gate。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoBoundaryReadiness {
+    ComponentStarted,
+    ResourceReady,
+}
+
+/// I/O boundary health 来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoBoundaryHealth {
+    RuntimeReported,
+    ProcessStatus,
+}
+
+/// I/O boundary 关闭策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoBoundaryShutdown {
+    Cooperative,
+    BestEffort,
 }
 
 /// 组件端口声明。
@@ -613,7 +682,7 @@ pub enum LanguageKind {
 #[serde(rename_all = "snake_case")]
 pub enum ComponentKind {
     Native,
-    Adapter,
+    IoBoundary,
     External,
 }
 

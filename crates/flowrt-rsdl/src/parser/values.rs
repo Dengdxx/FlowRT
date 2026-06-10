@@ -134,6 +134,17 @@ pub(super) fn optional_string(
         .transpose()
 }
 
+pub(super) fn optional_bool(table: &Table, context: &str, field: &'static str) -> Result<bool> {
+    let Some(value) = table.get(field) else {
+        return Ok(false);
+    };
+    value.as_bool().ok_or_else(|| RsdlError::InvalidFieldType {
+        context: context.to_string(),
+        field: field.to_string(),
+        expected: "boolean",
+    })
+}
+
 pub(super) fn expect_string(context: &str, field: &str, value: &Value) -> Result<String> {
     value
         .as_str()

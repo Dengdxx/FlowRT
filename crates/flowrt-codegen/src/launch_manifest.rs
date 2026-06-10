@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ComponentIr, ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr,
-    InstanceIr, ProcessIr, ServicePortIr, TaskIr,
+    ComponentIr, ComponentKind, ContractIr, ExternalHealthKind, ExternalProcessIr,
+    ExternalWorkingDir, GraphIr, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
+    IoBoundaryShutdown, IoSideEffect, ProcessIr, ResourceKind, ServicePortIr, TaskIr,
 };
 
 use crate::runtime_plan::bridge_runtime_plans;
@@ -308,6 +309,7 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
                     "rt_policy": orchestration.rt_policy,
                     "rt_priority": orchestration.rt_priority,
                 },
+                "io_boundaries": launch_io_boundaries(contract, &instances),
                 "instances": instances.iter().map(|instance| &instance.name).collect::<Vec<_>>(),
                 "tasks": graph.tasks.iter().filter(|task| instance_names.contains(task.instance.name.as_str())).map(launch_task).collect::<Vec<_>>(),
             })
@@ -347,6 +349,41 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
     launch_processes
 }
 
+fn launch_io_boundaries(
+    contract: &ContractIr,
+    instances: &[&InstanceIr],
+) -> Vec<serde_json::Value> {
+    instances
+        .iter()
+        .filter_map(|instance| {
+            let component = component_by_name(contract, &instance.component.name);
+            if component.kind != ComponentKind::IoBoundary {
+                return None;
+            }
+            let policy = component.io_boundary.as_ref()?;
+            Some(serde_json::json!({
+                "instance": instance.name,
+                "component": component.name,
+                "side_effects": policy
+                    .side_effects
+                    .iter()
+                    .map(|effect| io_side_effect_name(*effect))
+                    .collect::<Vec<_>>(),
+                "readiness": io_readiness_name(policy.readiness),
+                "health": io_health_name(policy.health),
+                "shutdown": io_shutdown_name(policy.shutdown),
+                "resources": component.resources.iter().map(|resource| {
+                    serde_json::json!({
+                        "name": resource.name,
+                        "kind": resource_kind_name(resource.kind),
+                        "required": resource.required,
+                    })
+                }).collect::<Vec<_>>(),
+            }))
+        })
+        .collect()
+}
+
 fn launch_external_process(external: &ExternalProcessIr) -> serde_json::Value {
     serde_json::json!({
         "package": &external.package,
@@ -373,6 +410,49 @@ fn external_health_name(kind: ExternalHealthKind) -> &'static str {
     match kind {
         ExternalHealthKind::ProcessStarted => "process_started",
         ExternalHealthKind::RuntimeSocket => "runtime_socket",
+    }
+}
+
+fn resource_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Serial => "serial",
+        ResourceKind::Shm => "shm",
+        ResourceKind::Udp => "udp",
+        ResourceKind::File => "file",
+        ResourceKind::Device => "device",
+        ResourceKind::Sdk => "sdk",
+    }
+}
+
+fn io_side_effect_name(kind: IoSideEffect) -> &'static str {
+    match kind {
+        IoSideEffect::Read => "read",
+        IoSideEffect::Write => "write",
+        IoSideEffect::Network => "network",
+        IoSideEffect::Filesystem => "filesystem",
+        IoSideEffect::Device => "device",
+        IoSideEffect::Compute => "compute",
+    }
+}
+
+fn io_readiness_name(kind: IoBoundaryReadiness) -> &'static str {
+    match kind {
+        IoBoundaryReadiness::ComponentStarted => "component_started",
+        IoBoundaryReadiness::ResourceReady => "resource_ready",
+    }
+}
+
+fn io_health_name(kind: IoBoundaryHealth) -> &'static str {
+    match kind {
+        IoBoundaryHealth::RuntimeReported => "runtime_reported",
+        IoBoundaryHealth::ProcessStatus => "process_status",
+    }
+}
+
+fn io_shutdown_name(kind: IoBoundaryShutdown) -> &'static str {
+    match kind {
+        IoBoundaryShutdown::Cooperative => "cooperative",
+        IoBoundaryShutdown::BestEffort => "best_effort",
     }
 }
 

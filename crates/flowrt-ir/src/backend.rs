@@ -704,6 +704,8 @@ mod tests {
             operation_clients: vec![],
             operation_servers: vec![],
             params: vec![],
+            resources: vec![],
+            io_boundary: None,
             lifecycle: crate::LifecycleSurface::reserved_v0_1(),
         }
     }

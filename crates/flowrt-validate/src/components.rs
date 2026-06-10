@@ -20,20 +20,7 @@ pub(crate) fn validate_components(
         .collect::<BTreeMap<_, _>>();
 
     for component in &ir.components {
-        if component.kind == ComponentKind::External && component.language != LanguageKind::External
-        {
-            errors.push(ValidationError::new(format!(
-                "component `{}` uses kind `external` but language is not `external`",
-                component.name
-            )));
-        }
-        if component.language == LanguageKind::External && component.kind != ComponentKind::External
-        {
-            errors.push(ValidationError::new(format!(
-                "component `{}` uses language `external` but kind is not `external`",
-                component.name
-            )));
-        }
+        validate_component_kind_and_resources(component, errors);
 
         let mut ports = BTreeSet::new();
         for port in component.inputs.iter().chain(component.outputs.iter()) {
@@ -140,6 +127,68 @@ pub(crate) fn validate_components(
                 )));
             }
             validate_param_schema(component, param, errors);
+        }
+    }
+}
+
+fn validate_component_kind_and_resources(
+    component: &ComponentIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    if component.kind == ComponentKind::External && component.language != LanguageKind::External {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses kind `external` but language is not `external`",
+            component.name
+        )));
+    }
+    if component.language == LanguageKind::External && component.kind != ComponentKind::External {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses language `external` but kind is not `external`",
+            component.name
+        )));
+    }
+    if component.kind == ComponentKind::IoBoundary && component.language == LanguageKind::External {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses kind `io_boundary` but language is `external`",
+            component.name
+        )));
+    }
+    if component.kind == ComponentKind::IoBoundary && component.io_boundary.is_none() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses kind `io_boundary` but is missing io_boundary policy",
+            component.name
+        )));
+    }
+    if component
+        .io_boundary
+        .as_ref()
+        .is_some_and(|policy| policy.side_effects.is_empty())
+    {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses kind `io_boundary` but declares no side effects",
+            component.name
+        )));
+    }
+    if component.kind != ComponentKind::IoBoundary && component.io_boundary.is_some() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` declares io_boundary policy but kind is not `io_boundary`",
+            component.name
+        )));
+    }
+    if component.kind != ComponentKind::IoBoundary && !component.resources.is_empty() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` declares resources but kind is not `io_boundary`",
+            component.name
+        )));
+    }
+
+    let mut resources = BTreeSet::new();
+    for resource in &component.resources {
+        if !resources.insert(resource.name.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "component `{}` has duplicate resource `{}`",
+                component.name, resource.name
+            )));
         }
     }
 }

@@ -35,6 +35,87 @@ output = ["sample"]
 }
 
 #[test]
+fn accepts_io_boundary_component_with_resource_contract() {
+    let source = r#"
+[package]
+name = "io_boundary_ok"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor]
+language = "cpp"
+kind = "io_boundary"
+output = ["sample:Sample"]
+io_side_effect = ["read"]
+io_readiness = "resource_ready"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+
+[component.sensor.resource.lidar_uart]
+kind = "serial"
+required = true
+
+[instance.sensor]
+component = "sensor"
+
+[instance.sensor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+    let component = ir
+        .components
+        .iter()
+        .find(|component| component.name == "sensor")
+        .unwrap();
+    assert_eq!(component.kind, flowrt_ir::ComponentKind::IoBoundary);
+    assert_eq!(component.resources[0].name, "lidar_uart");
+    assert_eq!(component.resources[0].kind, flowrt_ir::ResourceKind::Serial);
+}
+
+#[test]
+fn rejects_legacy_adapter_component_kind() {
+    let source = r#"
+[package]
+name = "bad_adapter"
+rsdl_version = "0.1"
+
+[component.legacy]
+language = "rust"
+kind = "adapter"
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source)).unwrap_err();
+
+    assert!(error.to_string().contains("component kind"));
+    assert!(error.to_string().contains("adapter"));
+}
+
+#[test]
+fn rejects_io_boundary_without_side_effects() {
+    let source = r#"
+[package]
+name = "bad_io_boundary"
+rsdl_version = "0.1"
+
+[component.sensor]
+language = "cpp"
+kind = "io_boundary"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).unwrap_err();
+
+    assert!(report.to_string().contains("declares no side effects"));
+}
+
+#[test]
 fn rejects_duplicate_component_params() {
     let mut ir = valid_reference_contract();
     let producer = ir

@@ -126,6 +126,19 @@ pub struct RawComponent {
     pub operation_clients: Vec<RawOperationPort>,
     pub operation_servers: Vec<RawOperationPort>,
     pub params: BTreeMap<String, RawValue>,
+    pub io_side_effect: Vec<String>,
+    pub io_readiness: Option<String>,
+    pub io_health: Option<String>,
+    pub io_shutdown: Option<String>,
+    pub resources: Vec<RawResourceRequirement>,
+}
+
+/// `[component.<name>.resource.<resource_name>]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawResourceRequirement {
+    pub name: String,
+    pub kind: String,
+    pub required: bool,
 }
 
 /// 组件端口声明。

@@ -271,12 +271,12 @@ validator 必须重新推导并拒绝不一致值，不能信任落盘 IR 中可
 
 ```text
 native component
-adapter component
+io_boundary component
 external process component
 ```
 
-`native` 表示用户直接实现 FlowRT 生成接口；`adapter` 表示用户把已有 C++/Rust 代码
-包装成 FlowRT 接口；`external process` 表示 FlowRT 启动或连接已有外部进程。
+`native` 表示用户直接实现 FlowRT 生成接口；`io_boundary` 表示进程内自研 I/O、
+副作用和资源访问边界；`external process` 表示 FlowRT 启动或连接已有外部进程。
 尚未定义完整生命周期、端口绑定和错误传播语义的接入类型必须由 validator 明确拒绝。
 
 Mixed contract 必须保持语言边界诚实：Rust codegen 不得为 C++ component 伪造 Rust

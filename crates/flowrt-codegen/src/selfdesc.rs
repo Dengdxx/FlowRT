@@ -3,21 +3,22 @@ use std::collections::BTreeMap;
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
     ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr,
+    IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect,
     OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
-    OverflowPolicy as IrOverflowPolicy, ServiceOverflowPolicy, StalePolicy as IrStalePolicy,
-    TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    OverflowPolicy as IrOverflowPolicy, ResourceKind, ServiceOverflowPolicy,
+    StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
     SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionDeployment,
     SelfDescriptionExternalProcess, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
-    SelfDescriptionGraph, SelfDescriptionInstance, SelfDescriptionMessageAbi,
-    SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
+    SelfDescriptionGraph, SelfDescriptionInstance, SelfDescriptionIoBoundary,
+    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
     SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
     SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
-    SelfDescriptionProfile, SelfDescriptionScheduler, SelfDescriptionSchedulerLane,
-    SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl,
-    SelfDescriptionTarget, SelfDescriptionTask,
+    SelfDescriptionProfile, SelfDescriptionResourceRequirement, SelfDescriptionScheduler,
+    SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint,
+    SelfDescriptionServicePortDecl, SelfDescriptionTarget, SelfDescriptionTask,
 };
 use sha2::{Digest, Sha256};
 
@@ -425,6 +426,28 @@ fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionCo
         name: component.name.clone(),
         language: language_name(component.language).to_string(),
         kind: component_kind_name(component.kind).to_string(),
+        resources: component
+            .resources
+            .iter()
+            .map(|resource| SelfDescriptionResourceRequirement {
+                name: resource.name.clone(),
+                kind: resource_kind_name(resource.kind).to_string(),
+                required: resource.required,
+            })
+            .collect(),
+        io_boundary: component
+            .io_boundary
+            .as_ref()
+            .map(|policy| SelfDescriptionIoBoundary {
+                side_effects: policy
+                    .side_effects
+                    .iter()
+                    .map(|effect| io_side_effect_name(*effect).to_string())
+                    .collect(),
+                readiness: io_readiness_name(policy.readiness).to_string(),
+                health: io_health_name(policy.health).to_string(),
+                shutdown: io_shutdown_name(policy.shutdown).to_string(),
+            }),
         inputs: component
             .inputs
             .iter()
@@ -498,8 +521,51 @@ fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionCo
 fn component_kind_name(kind: ComponentKind) -> &'static str {
     match kind {
         ComponentKind::Native => "native",
-        ComponentKind::Adapter => "adapter",
+        ComponentKind::IoBoundary => "io_boundary",
         ComponentKind::External => "external",
+    }
+}
+
+fn resource_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Serial => "serial",
+        ResourceKind::Shm => "shm",
+        ResourceKind::Udp => "udp",
+        ResourceKind::File => "file",
+        ResourceKind::Device => "device",
+        ResourceKind::Sdk => "sdk",
+    }
+}
+
+fn io_side_effect_name(kind: IoSideEffect) -> &'static str {
+    match kind {
+        IoSideEffect::Read => "read",
+        IoSideEffect::Write => "write",
+        IoSideEffect::Network => "network",
+        IoSideEffect::Filesystem => "filesystem",
+        IoSideEffect::Device => "device",
+        IoSideEffect::Compute => "compute",
+    }
+}
+
+fn io_readiness_name(kind: IoBoundaryReadiness) -> &'static str {
+    match kind {
+        IoBoundaryReadiness::ComponentStarted => "component_started",
+        IoBoundaryReadiness::ResourceReady => "resource_ready",
+    }
+}
+
+fn io_health_name(kind: IoBoundaryHealth) -> &'static str {
+    match kind {
+        IoBoundaryHealth::RuntimeReported => "runtime_reported",
+        IoBoundaryHealth::ProcessStatus => "process_status",
+    }
+}
+
+fn io_shutdown_name(kind: IoBoundaryShutdown) -> &'static str {
+    match kind {
+        IoBoundaryShutdown::Cooperative => "cooperative",
+        IoBoundaryShutdown::BestEffort => "best_effort",
     }
 }
 

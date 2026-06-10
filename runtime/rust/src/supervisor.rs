@@ -151,6 +151,34 @@ pub struct LaunchProcess {
     /// 进程资源提示（CPU affinity、nice、RT policy）。
     #[serde(default)]
     pub resource_placement: ResourcePlacement,
+    /// 进程内 I/O boundary 静态摘要；当前 supervisor 只接收并透传到后续健康路径。
+    #[serde(default)]
+    pub io_boundaries: Vec<LaunchIoBoundary>,
+}
+
+/// manifest 中进程内 I/O boundary 描述。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchIoBoundary {
+    pub instance: String,
+    pub component: String,
+    #[serde(default)]
+    pub side_effects: Vec<String>,
+    pub readiness: String,
+    pub health: String,
+    pub shutdown: String,
+    #[serde(default)]
+    pub resources: Vec<LaunchIoResource>,
+}
+
+/// manifest 中 I/O boundary 资源需求描述。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchIoResource {
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// manifest 中 external process package/executable 描述。
@@ -1126,6 +1154,7 @@ pub fn spawn_flowrt_process(
         instances: Vec::new(),
         tasks: Vec::new(),
         resource_placement: ResourcePlacement::default(),
+        io_boundaries: Vec::new(),
     };
     build_process_command(app_exe, &process, run_ticks, zenoh_env)
         .spawn()
@@ -1606,6 +1635,7 @@ fn restart_child(
         instances: Vec::new(),
         tasks: Vec::new(),
         resource_placement: child.resource_placement.clone(),
+        io_boundaries: Vec::new(),
     };
     let restarted = if child.runtime_kind == "external" {
         let external = child.external.as_ref().ok_or_else(|| {

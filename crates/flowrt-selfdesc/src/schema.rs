@@ -81,9 +81,9 @@ pub struct SelfDescriptionDeployment {
 
 /// 可复用组件类型声明摘要。
 ///
-/// 记录 component 的语言、kind 和声明端口（inputs、outputs、service_clients、
-/// service_servers、operation_clients、operation_servers、params），让 CLI 在不读
-/// RSDL 的情况下展示组件视图。
+/// 记录 component 的语言、kind、I/O boundary 资源和声明端口（inputs、outputs、
+/// service_clients、service_servers、operation_clients、operation_servers、params），
+/// 让 CLI 在不读 RSDL 的情况下展示组件视图。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfDescriptionComponentType {
     /// 组件类型名称。
@@ -92,9 +92,15 @@ pub struct SelfDescriptionComponentType {
     /// 组件所属 runtime 语言。
     #[serde(default)]
     pub language: String,
-    /// 组件 kind：native / adapter / external_process。
+    /// 组件 kind：native / io_boundary / external。
     #[serde(default)]
     pub kind: String,
+    /// I/O boundary 声明的资源需求。
+    #[serde(default)]
+    pub resources: Vec<SelfDescriptionResourceRequirement>,
+    /// I/O boundary 策略；native/external component 为空。
+    #[serde(default)]
+    pub io_boundary: Option<SelfDescriptionIoBoundary>,
     /// 输入端口声明。
     #[serde(default)]
     pub inputs: Vec<SelfDescriptionPortDecl>,
@@ -116,6 +122,30 @@ pub struct SelfDescriptionComponentType {
     /// 参数 schema 声明。
     #[serde(default)]
     pub params: Vec<SelfDescriptionParamDecl>,
+}
+
+/// I/O boundary 资源需求摘要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionResourceRequirement {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// I/O boundary 静态策略摘要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionIoBoundary {
+    #[serde(default)]
+    pub side_effects: Vec<String>,
+    #[serde(default)]
+    pub readiness: String,
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub shutdown: String,
 }
 
 /// 端口声明（输入/输出）。
