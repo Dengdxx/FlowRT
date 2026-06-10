@@ -545,9 +545,10 @@ jobs:
         run: |
           apt-get update
           apt-get install -y cmake ninja-build g++ dpkg-dev curl git pkg-config file binutils
-          if [[ "${{ matrix.deb_arch }}" == "amd64" ]]; then
-            apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          fi
+
+      - name: 安装 amd64 打包所需 arm64 交叉工具链
+        if: matrix.deb_arch == 'amd64'
+        run: apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
