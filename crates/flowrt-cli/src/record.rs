@@ -30,6 +30,7 @@ struct RecordCounters {
 
 struct RecordWriterChannels {
     channel_sample: RecordChannel,
+    descriptor_event: RecordChannel,
     param_event: RecordChannel,
     service_event: RecordChannel,
     operation_event: RecordChannel,
@@ -44,6 +45,10 @@ impl RecordWriterChannels {
             channel_sample: writer.register_channel(
                 "flowrt/record/channel_sample",
                 RecordEventKind::ChannelSample,
+            )?,
+            descriptor_event: writer.register_channel(
+                "flowrt/record/descriptor_event",
+                RecordEventKind::DescriptorEvent,
             )?,
             param_event: writer
                 .register_channel("flowrt/record/param_event", RecordEventKind::ParamEvent)?,
@@ -67,6 +72,7 @@ impl RecordWriterChannels {
     const fn for_event_kind(&self, kind: RecordEventKind) -> RecordChannel {
         match kind {
             RecordEventKind::ChannelSample => self.channel_sample,
+            RecordEventKind::DescriptorEvent => self.descriptor_event,
             RecordEventKind::ParamEvent => self.param_event,
             RecordEventKind::ServiceEvent => self.service_event,
             RecordEventKind::OperationEvent => self.operation_event,
