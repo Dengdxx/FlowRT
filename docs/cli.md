@@ -104,6 +104,15 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 
 Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt deps` / `flowrt build` 会使用该私有前缀和包内 vendor；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 
+`/opt/flowrt/<version>` 保留兼容的 `include/`、`lib/` 和 `lib/<multiarch>/` 查找路径，
+同时新增 `targets/<platform>/` SDK 布局。当前原生包会把本架构 C++ runtime header、
+backend SDK、CMake package 和 pkg-config 文件镜像到 `targets/linux-amd64` 或
+`targets/linux-arm64`，并在 `flowrt-target-sdk.toml` 中记录 `platform`、`multiarch`、
+`components` 和 `complete = true`。另一架构目录只放 marker 和空的 `include/`、`lib/`、
+`cmake/`、`pkgconfig/`，manifest 中 `complete = false`，不能当作可链接 SDK 使用。
+该布局是 v0.8.2 交叉编译支持的基础；实际 `flowrt build --target` 执行和双架构完整
+SDK 聚合不在当前 CLI 主路径内。
+
 默认情况下，`flowrt build` 和生成 CMake 不会回退到 FlowRT 源码树 `runtime/cpp`。在 FlowRT 仓库内开发时，设置环境变量 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1`，CLI 会同时把 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` 传给 CMake，启用源码树回退。正式用户路径不应依赖此选项。
 
 ## `external`

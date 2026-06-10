@@ -20,6 +20,13 @@ flowrt --version
 
 面向用户的入口是系统安装后的 `flowrt ...`。单包 `flowrt` 会同时安装 CLI、Rust runtime crate、C++ runtime header、CMake package、私有 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0` 和 `zenoh-cpp 1.9.0`。这些版本锁定依赖位于 `/opt/flowrt/<version>` 私有前缀，用户项目不需要克隆 FlowRT 仓库，也不需要手动安装 iox2 或 zenoh C++ SDK。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此目标机仍需要 Rust toolchain；C++ 用户组件仍需要 C++20 编译器、CMake 和 CTest。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
 
+安装包还会在 `/opt/flowrt/<version>/targets/<platform>` 下提供 target SDK 布局基础。
+当前原生打包架构对应的目录包含 `include/`、`lib/`、`cmake/`、`pkgconfig/` 和
+`flowrt-target-sdk.toml`；manifest 中 `complete = true` 表示该目录可作为当前架构的
+C++ SDK 查找事实源。另一架构目录会先安装空目录和 `complete = false` marker，说明该
+架构库尚未由当前原生包内嵌；完整 `amd64 host` 包内嵌 `arm64` SDK 需要后续 CI 聚合任务
+补齐。
+
 首次构建前先补全底层依赖缓存：
 
 ```bash

@@ -6,10 +6,13 @@
 ## 当前版本背景
 
 当前 workspace 版本为 `0.8.1`。`v0.8.2` 开发线聚焦安装版 FlowRT 的交叉编译
-主路径，先为 `linux-amd64` host 到 `linux-arm64` target 提供 `flowrt deps/build
---target <name>` 所需的 toolchain profile 配置层和 target SDK 布局基础；RSDL target
-仍只描述目标语义，交叉编译器、sysroot、CMake toolchain 和 pkg-config 路径由
-toolchain profile / FlowRT target SDK 提供，不写入 RSDL 或 Contract IR。
+主路径，先锁定 `linux-amd64` host 到 `linux-arm64` target：RSDL target 继续描述
+目标语义，toolchain profile 描述本机如何编译，安装包内的 target SDK 目录提供目标
+架构 CMake、pkg-config、include 和 lib 事实源。交叉编译器、sysroot、CMake toolchain
+和 pkg-config 路径由 toolchain profile / FlowRT target SDK 提供，不写入 RSDL 或
+Contract IR。标准路径不依赖从目标机拉取整棵目录；板级私有依赖需要通过显式
+sysroot 或 SDK overlay 接入。`v0.8.2` 不自动下载系统交叉编译工具链，也不把 C++
+backend SDK 查找负担推给普通用户；完整双架构 SDK 聚合由后续 CI/package 任务补齐。
 
 `v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
@@ -87,6 +90,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.7.1` | v0.7.0 现有能力 hardening 和发布前缺陷修复。 |
 | `v0.8.0` | 真实机器人应用接入边界、variable frame 工程化、多目标部署和发布硬化。 |
 | `v0.8.1` | 标准 FrameDescriptor、descriptor-only 大 payload 观测/录制和安装后 smoke。 |
+| `v0.8.2` | `linux-amd64` host 到 `linux-arm64` target 的交叉编译支持基础。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 

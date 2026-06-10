@@ -448,6 +448,11 @@ jobs:
           dpkg -i dist/flowrt_*_*.deb
           version="$(dpkg-deb -f dist/flowrt_*_*.deb Version)"
           multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+          case "${{ matrix.deb_arch }}" in
+            amd64) platform=linux-amd64; other_platform=linux-arm64 ;;
+            arm64) platform=linux-arm64; other_platform=linux-amd64 ;;
+            *) echo "unsupported deb_arch: ${{ matrix.deb_arch }}" >&2; exit 1 ;;
+          esac
           test -x /usr/bin/flowrt
           test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/Cargo.toml"
           test -f "/opt/flowrt/${version}/share/flowrt/runtime/rust/src/lib.rs"
@@ -458,6 +463,16 @@ jobs:
           test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
           test -f "/opt/flowrt/${version}/lib/${multiarch}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
           test -f "/opt/flowrt/${version}/lib/cmake/zenohcxx/zenohcxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/flowrt-target-sdk.toml"
+          test -f "/opt/flowrt/${version}/targets/${platform}/include/flowrt/runtime.hpp"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/zenohc/zenohcConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/cmake/zenohcxx/zenohcxxConfig.cmake"
+          test -f "/opt/flowrt/${version}/targets/${platform}/pkgconfig/zenohc.pc"
+          test -f "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          grep -q 'complete = true' "/opt/flowrt/${version}/targets/${platform}/flowrt-target-sdk.toml"
+          grep -q 'complete = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
           command -v flowrt
           flowrt --version
 
