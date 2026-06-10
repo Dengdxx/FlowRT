@@ -520,14 +520,22 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 ## CI 和 Release 状态
 
 当前 `.github/workflows/ci.yml` 将 Linux 验证拆为分层 job，覆盖生成物保护、Rust
-格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 focused smoke、
-打包、C++ zenoh runtime、demo smoke、ROS2 bridge smoke 和 release。Linux job 默认
+格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1
+focused smoke、v0.8.2 交叉编译 focused smoke、打包、C++ zenoh runtime、demo smoke、
+ROS2 bridge smoke 和 release。Linux job 默认
 运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个
 发行版，并安装对应的 `rmw_zenoh_cpp`。
 
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 focused smoke、Debian package、C++ zenoh
 runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。
+`v0.8.2 amd64 to arm64 Cross Compile Smoke` 固定在 amd64 host 上准备
+`aarch64-unknown-linux-gnu` Rust target、`aarch64-linux-gnu` C/C++ 交叉编译器和
+`pkg-config`，并运行 `flowrt-cli` 的 toolchain、build model、command 和 CMake target
+SDK focused tests。当前单架构 deb 只内嵌本架构 complete target SDK，另一架构
+target SDK 仍标记 `complete = false`，因此该 gate 不执行真实 C++ cross build；C++
+路径由 CMake target SDK 参数、fail-fast 单元测试和 package 阶段的 target SDK layout
+smoke 覆盖，不读取远端设备文件树。
 package job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。
 demo smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用
 `flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构
@@ -543,9 +551,12 @@ runtime/CLI/status、record format、runtime recorder tap 和 CLI MCAP 写入路
 聚焦 external process、bundle 和 deploy；`v0.8.0 Integration Smoke` 聚焦 I/O
 boundary、variable frame、FrameDescriptor、ROS2 typed bridge、diagnostics、bundle
 和 deploy；`v0.8.1 FrameDescriptor Smoke` 聚焦标准 descriptor demo、CLI 结构化
-echo/status、descriptor-only record 和 microbench。发布前应运行
+echo/status、descriptor-only record 和 microbench；`v0.8.2 amd64 to arm64 Cross
+Compile Smoke` 聚焦安装版交叉编译 toolchain profile、Rust target、C/C++ 交叉编译器
+和 CMake target SDK 语义。发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 focused gate 覆盖状态。
+release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.2 focused gate
+覆盖状态。
 `v0.8.1` 发布由推送 `v0.8.1` tag 触发 GitHub Release。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生

@@ -353,6 +353,54 @@ jobs:
         run: |
           FLOWRT_BENCH_ITERS=8 FLOWRT_BENCH_PAYLOAD_BYTES=1024 scripts/bench-frame-descriptor.sh
 
+  v082-cross-compile-smoke:
+    name: v0.8.2 amd64 to arm64 Cross Compile Smoke
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统交叉编译工具
+        run: |
+          apt-get update
+          apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            dpkg-dev
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 linux-arm64 Rust target 和本机工具链
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-unknown-linux-gnu
+          rustup target list --installed | grep -Fx aarch64-unknown-linux-gnu
+          command -v aarch64-linux-gnu-gcc
+          command -v aarch64-linux-gnu-g++
+          command -v pkg-config
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+          pkg-config --version
+
+      - name: v0.8.2 flowrt deps/build --target focused tests
+        run: |
+          cargo test -p flowrt-cli toolchain_tests -j1
+          cargo test -p flowrt-cli build_runtime_tests -j1
+          cargo test -p flowrt-cli command_tests -j1
+          cargo test -p flowrt-cli cmake_ -j1
+
+      - name: C++ cross build 边界说明
+        run: |
+          echo "真实 C++ cross build 暂不在此 gate 执行：当前单架构 deb 只内嵌本架构 complete target SDK，另一架构 target SDK 标记 complete = false；本 gate 验证 toolchain profile、CMake target SDK 参数和 fail-fast 语义，不读取远端设备文件树。"
+
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
     runs-on: ${{ matrix.runner }}
@@ -428,6 +476,7 @@ jobs:
       - v070-runtime-smoke
       - v080-runtime-smoke
       - v081-runtime-smoke
+      - v082-cross-compile-smoke
 
     steps:
       - name: 检出仓库
@@ -475,6 +524,7 @@ jobs:
           grep -q 'complete = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
           command -v flowrt
           flowrt --version
+          scripts/test-deb-target-sdk-layout.sh dist/flowrt_*_*.deb
 
       - name: flowrt deb 用户项目 smoke
         run: scripts/test-deb-installed-user-project.sh
@@ -679,6 +729,7 @@ jobs:
       - v070-runtime-smoke
       - v080-runtime-smoke
       - v081-runtime-smoke
+      - v082-cross-compile-smoke
       - cpp-zenoh-runtime
       - package
       - demo-smoke
