@@ -5,7 +5,7 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.1`。`v0.8.2` 开发线聚焦安装版 FlowRT 的交叉编译
+当前 workspace 版本为 `0.8.2`。`v0.8.2` 聚焦安装版 FlowRT 的交叉编译
 主路径，先锁定 `linux-amd64` host 到 `linux-arm64` target：RSDL target 继续描述
 目标语义，toolchain profile 描述本机如何编译，安装包内的 target SDK 目录提供目标
 架构 CMake、pkg-config、include 和 lib 事实源。交叉编译器、sysroot、CMake toolchain
@@ -286,6 +286,26 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   CI 增加 `v0.8.1 FrameDescriptor Smoke` amd64/arm64 focused gate，安装后 demo smoke
   增加 `scripts/test-v081-installed-smoke.sh`。
 
+当前 `v0.8.2` 已落地边界：
+
+- `flowrt deps` 和 `flowrt build` 支持 `--target linux-amd64|linux-arm64`。显式
+  `--target` 优先于 Contract IR target platform；仍无 platform 时保持 native 构建。
+- CLI 内部有 toolchain profile 配置层，维护 target platform 到 Rust target triple、
+  Debian multiarch、默认 C/C++ compiler、sysroot、CMake toolchain file 和 pkg-config
+  路径的映射；profile 配置不写入 RSDL 或 Contract IR。
+- Rust/Cargo build 和 deps prewarm 会使用对应 Rust target triple，并把 cache key、
+  ready marker、Cargo target dir 和本地二进制输出按 target 隔离。
+- C++/CMake cross build 会优先使用 `/opt/flowrt/<version>/targets/<platform>` 的
+  target SDK root、CMake wrapper、pkg-config、include 和 lib 事实源；SDK 缺失或
+  `complete = false` 时 fail-fast。
+- 单架构 deb 内嵌本架构 complete target SDK，并为另一架构写入 placeholder manifest
+  `complete = false`，避免错误地把 host SDK 当 target SDK 使用。
+- `flowrt bundle` 优先读取 `build-info.json` 中的 artifact closure；带 platform 的
+  项目二进制复制到 bundle 的 `bin/<platform>/`，`deploy` 会校验 target、platform、
+  路径层级和 sha256。
+- CI 增加 `v0.8.2 amd64 to arm64 Cross Compile Smoke`，package 阶段运行 target SDK
+  layout smoke，demo smoke 运行 `scripts/test-v082-installed-smoke.sh`。
+
 `v0.7.0` 已落地 external package 主路径：
 
 - RSDL 支持 `language = "external"` / `kind = "external"` 的 component 和 graph 级
@@ -563,7 +583,7 @@ Compile Smoke` 聚焦安装版交叉编译 toolchain profile、Rust target、C/C
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
 release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.2 focused gate
 覆盖状态。
-`v0.8.1` 发布由推送 `v0.8.1` tag 触发 GitHub Release。
+`v0.8.2` 发布由推送 `v0.8.2` tag 触发 GitHub Release。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。
