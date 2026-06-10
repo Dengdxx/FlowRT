@@ -171,6 +171,91 @@ multiarch_for_architecture() {
     dpkg-architecture -a"$1" -qDEB_HOST_MULTIARCH
 }
 
+rust_target_for_architecture() {
+    case "$1" in
+        amd64)
+            printf 'x86_64-unknown-linux-gnu\n'
+            ;;
+        arm64)
+            printf 'aarch64-unknown-linux-gnu\n'
+            ;;
+        *)
+            printf 'unsupported Debian architecture for Rust target: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+}
+
+c_compiler_for_architecture() {
+    case "$1" in
+        amd64)
+            printf 'gcc\n'
+            ;;
+        arm64)
+            printf 'aarch64-linux-gnu-gcc\n'
+            ;;
+        *)
+            printf 'unsupported Debian architecture for C compiler: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cpp_compiler_for_architecture() {
+    case "$1" in
+        amd64)
+            printf 'g++\n'
+            ;;
+        arm64)
+            printf 'aarch64-linux-gnu-g++\n'
+            ;;
+        *)
+            printf 'unsupported Debian architecture for C++ compiler: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmake_processor_for_architecture() {
+    case "$1" in
+        amd64)
+            printf 'x86_64\n'
+            ;;
+        arm64)
+            printf 'aarch64\n'
+            ;;
+        *)
+            printf 'unsupported Debian architecture for CMake processor: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+}
+
+require_cross_toolchain() {
+    local target_architecture="$1"
+    local rust_target="$(rust_target_for_architecture "$target_architecture")"
+    local c_compiler="$(c_compiler_for_architecture "$target_architecture")"
+    local cpp_compiler="$(cpp_compiler_for_architecture "$target_architecture")"
+
+    command -v "$c_compiler" >/dev/null || {
+        printf 'missing C cross compiler for %s: %s\n' "$target_architecture" "$c_compiler" >&2
+        printf 'install gcc-aarch64-linux-gnu before building the amd64 package with linux-arm64 SDK\n' >&2
+        exit 1
+    }
+    command -v "$cpp_compiler" >/dev/null || {
+        printf 'missing C++ cross compiler for %s: %s\n' "$target_architecture" "$cpp_compiler" >&2
+        printf 'install g++-aarch64-linux-gnu before building the amd64 package with linux-arm64 SDK\n' >&2
+        exit 1
+    }
+    if command -v rustup >/dev/null; then
+        if ! rustup target list --installed | grep -Fxq "$rust_target"; then
+            printf 'missing Rust target for %s: %s\n' "$target_architecture" "$rust_target" >&2
+            printf 'run: rustup target add %s\n' "$rust_target" >&2
+            exit 1
+        fi
+    fi
+}
+
 host_architecture="$(dpkg --print-architecture)"
 if [[ "$architecture" != "$host_architecture" ]]; then
     printf '错误: 当前 package-deb.sh 只支持原生架构打包。\n' >&2
@@ -357,7 +442,7 @@ EOF
 install_multiarch_cmake_wrappers() {
     local sdk_root="$1"
     local sdk_multiarch="$2"
-    local source_cmake_root="$private_root/lib/${sdk_multiarch}/cmake"
+    local source_cmake_root="$sdk_root/lib/${sdk_multiarch}/cmake"
     local package_dir
     for package_dir in "$source_cmake_root"/*; do
         [[ -d "$package_dir" ]] || continue
@@ -378,7 +463,7 @@ install_multiarch_cmake_wrappers() {
 
 install_root_cmake_wrappers() {
     local sdk_root="$1"
-    local source_cmake_root="$private_root/lib/cmake"
+    local source_cmake_root="$sdk_root/lib/cmake"
     local package_dir
     for package_dir in "$source_cmake_root"/*; do
         [[ -d "$package_dir" ]] || continue
@@ -431,22 +516,9 @@ components = [${components}]
 EOF
 }
 
-install_complete_target_sdk() {
-    local sdk_platform="$1"
-    local sdk_architecture="$2"
-    local sdk_multiarch="$3"
-    local sdk_root="$private_root/targets/$sdk_platform"
-    install -d "$sdk_root/include" "$sdk_root/lib" "$sdk_root/cmake" "$sdk_root/pkgconfig"
-
-    copy_required_tree "$private_root/include" "$sdk_root/include" "target SDK include"
-    copy_lib_root_files "$private_root/lib" "$sdk_root/lib"
-    copy_required_tree "$private_root/lib/${sdk_multiarch}" "$sdk_root/lib/${sdk_multiarch}" \
-        "target SDK multiarch lib"
-    copy_required_tree "$private_root/lib/cmake" "$sdk_root/lib/cmake" "target SDK root CMake"
-    copy_optional_tree "$private_root/lib/pkgconfig" "$sdk_root/pkgconfig"
-    install_multiarch_cmake_wrappers "$sdk_root" "$sdk_multiarch"
-    install_root_cmake_wrappers "$sdk_root"
-    rewrite_target_pkgconfig_files "$sdk_root" "$sdk_platform"
+require_complete_target_sdk_files() {
+    local sdk_root="$1"
+    local sdk_multiarch="$2"
 
     require_packaged_file "$sdk_root/include/flowrt/runtime.hpp" "FlowRT C++ runtime header"
     require_packaged_file "$sdk_root/include/zenoh.h" "zenoh-c header"
@@ -467,9 +539,140 @@ install_complete_target_sdk() {
         "zenoh-cpp CMake config"
     require_packaged_file "$sdk_root/pkgconfig/zenohc.pc" "zenoh-c pkg-config file"
     require_packaged_file "$sdk_root/pkgconfig/zenohcxx.pc" "zenoh-cpp pkg-config file"
+}
+
+install_zenoh_sdk_for_architecture() {
+    local sdk_architecture="$1"
+    local sdk_root="$2"
+    local zenoh_root="$package_work/zenoh-root-${sdk_architecture}"
+
+    rm -rf "$zenoh_root"
+    mkdir -p "$zenoh_root"
+    for deb_name in "libzenohc_1.9.0_${sdk_architecture}.deb" \
+        "libzenohc-dev_1.9.0_${sdk_architecture}.deb" \
+        libzenohcpp-dev_1.9.0_all.deb; do
+        require_deb_lock "$deb_name"
+        dpkg-deb -x "$(download_cached "${lock_deb_url[$deb_name]}")" "$zenoh_root"
+    done
+    if [[ -d "$zenoh_root/usr/include" ]]; then
+        install -d "$sdk_root/include"
+        cp -a "$zenoh_root/usr/include/." "$sdk_root/include/"
+    fi
+    if [[ -d "$zenoh_root/usr/lib" ]]; then
+        install -d "$sdk_root/lib"
+        cp -a "$zenoh_root/usr/lib/." "$sdk_root/lib/"
+    fi
+}
+
+cmake_target_args_for_architecture() {
+    local target_architecture="$1"
+    local target_c_compiler="$(c_compiler_for_architecture "$target_architecture")"
+    local target_cpp_compiler="$(cpp_compiler_for_architecture "$target_architecture")"
+    local target_processor="$(cmake_processor_for_architecture "$target_architecture")"
+
+    if [[ "$target_architecture" == "$host_architecture" ]]; then
+        return 0
+    fi
+
+    printf '%s\n' \
+        "-DCMAKE_SYSTEM_NAME=Linux" \
+        "-DCMAKE_SYSTEM_PROCESSOR=${target_processor}" \
+        "-DCMAKE_C_COMPILER=${target_c_compiler}" \
+        "-DCMAKE_CXX_COMPILER=${target_cpp_compiler}"
+}
+
+build_iceoryx2_for_architecture() {
+    local target_architecture="$1"
+    local target_multiarch="$2"
+    local install_prefix="$3"
+    local build_dir="$4"
+    local cmake_args=()
+
+    mapfile -t cmake_args < <(cmake_target_args_for_architecture "$target_architecture")
+    if [[ "$target_architecture" != "$host_architecture" ]]; then
+        require_cross_toolchain "$target_architecture"
+        cmake_args+=("-DRUST_TARGET_TRIPLET=$(rust_target_for_architecture "$target_architecture")")
+    fi
+
+    cmake -S "$vendor_src_dir/iceoryx2" -B "$build_dir" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$install_prefix" \
+        -DCMAKE_INSTALL_LIBDIR="lib/${target_multiarch}" \
+        -DBUILD_CXX=ON \
+        -DBUILD_EXAMPLES=OFF \
+        -DBUILD_TESTING=OFF \
+        "${cmake_args[@]}"
+    if [[ "$target_architecture" == "arm64" && "$target_architecture" != "$host_architecture" ]]; then
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$(c_compiler_for_architecture "$target_architecture")" \
+            cmake --build "$build_dir" -j1
+    else
+        cmake --build "$build_dir" -j1
+    fi
+    DESTDIR="$staging" cmake --install "$build_dir"
+}
+
+build_cpp_runtime_for_architecture() {
+    local target_architecture="$1"
+    local target_multiarch="$2"
+    local install_prefix="$3"
+    local build_dir="$4"
+    local cmake_args=()
+
+    mapfile -t cmake_args < <(cmake_target_args_for_architecture "$target_architecture")
+    cmake -S "$repo_root/runtime/cpp" -B "$build_dir" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$install_prefix" \
+        -DCMAKE_INSTALL_LIBDIR="lib/${target_multiarch}" \
+        "${cmake_args[@]}"
+    cmake --build "$build_dir" -j1
+    DESTDIR="$staging" cmake --install "$build_dir"
+}
+
+install_complete_target_sdk() {
+    local sdk_platform="$1"
+    local sdk_architecture="$2"
+    local sdk_multiarch="$3"
+    local sdk_root="$private_root/targets/$sdk_platform"
+    install -d "$sdk_root/include" "$sdk_root/lib" "$sdk_root/cmake" "$sdk_root/pkgconfig"
+
+    copy_required_tree "$private_root/include" "$sdk_root/include" "target SDK include"
+    copy_lib_root_files "$private_root/lib" "$sdk_root/lib"
+    copy_required_tree "$private_root/lib/${sdk_multiarch}" "$sdk_root/lib/${sdk_multiarch}" \
+        "target SDK multiarch lib"
+    copy_required_tree "$private_root/lib/cmake" "$sdk_root/lib/cmake" "target SDK root CMake"
+    copy_optional_tree "$private_root/lib/pkgconfig" "$sdk_root/pkgconfig"
+    install_multiarch_cmake_wrappers "$sdk_root" "$sdk_multiarch"
+    install_root_cmake_wrappers "$sdk_root"
+    rewrite_target_pkgconfig_files "$sdk_root" "$sdk_platform"
+    require_complete_target_sdk_files "$sdk_root" "$sdk_multiarch"
 
     write_target_sdk_manifest "$sdk_root" "$sdk_platform" "$sdk_architecture" \
         "$sdk_multiarch" true true "native-package-host-mirror" \
+        '"flowrt-cpp-runtime", "iceoryx2-cxx", "zenoh-c", "zenoh-cpp"'
+}
+
+install_cross_complete_target_sdk() {
+    local sdk_platform="$1"
+    local sdk_architecture="$2"
+    local sdk_multiarch="$3"
+    local sdk_root="$private_root/targets/$sdk_platform"
+    local sdk_prefix="${private_prefix}/targets/${sdk_platform}"
+
+    install -d "$sdk_root/include" "$sdk_root/lib" "$sdk_root/cmake" "$sdk_root/pkgconfig"
+    install_zenoh_sdk_for_architecture "$sdk_architecture" "$sdk_root"
+    build_iceoryx2_for_architecture "$sdk_architecture" "$sdk_multiarch" "$sdk_prefix" \
+        "$package_work/iceoryx2-${sdk_architecture}"
+    build_cpp_runtime_for_architecture "$sdk_architecture" "$sdk_multiarch" "$sdk_prefix" \
+        "$package_work/cpp-runtime-${sdk_architecture}"
+
+    copy_optional_tree "$sdk_root/lib/pkgconfig" "$sdk_root/pkgconfig"
+    install_multiarch_cmake_wrappers "$sdk_root" "$sdk_multiarch"
+    install_root_cmake_wrappers "$sdk_root"
+    rewrite_target_pkgconfig_files "$sdk_root" "$sdk_platform"
+    require_complete_target_sdk_files "$sdk_root" "$sdk_multiarch"
+
+    write_target_sdk_manifest "$sdk_root" "$sdk_platform" "$sdk_architecture" \
+        "$sdk_multiarch" true false "cross-target-sdk" \
         '"flowrt-cpp-runtime", "iceoryx2-cxx", "zenoh-c", "zenoh-cpp"'
 }
 
@@ -494,8 +697,17 @@ install_target_sdks() {
         if [[ "$candidate_arch" == "$native_architecture" ]]; then
             continue
         fi
-        install_placeholder_target_sdk "$(flowrt_platform_for_architecture "$candidate_arch")" \
-            "$candidate_arch" "$(multiarch_for_architecture "$candidate_arch")"
+        local candidate_platform
+        local candidate_multiarch
+        candidate_platform="$(flowrt_platform_for_architecture "$candidate_arch")"
+        candidate_multiarch="$(multiarch_for_architecture "$candidate_arch")"
+        if [[ "$native_architecture" == "amd64" && "$candidate_arch" == "arm64" ]]; then
+            install_cross_complete_target_sdk "$candidate_platform" "$candidate_arch" \
+                "$candidate_multiarch"
+        else
+            install_placeholder_target_sdk "$candidate_platform" "$candidate_arch" \
+                "$candidate_multiarch"
+        fi
     done
 }
 
@@ -510,39 +722,11 @@ cp "$vendor_src_dir/iceoryx2/LICENSE-MIT" "$third_party_doc/iceoryx2.LICENSE"
 cp "$vendor_src_dir/zenoh-c/LICENSE" "$third_party_doc/zenoh-c.LICENSE"
 cp "$vendor_src_dir/zenoh-cpp/LICENSE" "$third_party_doc/zenoh-cpp.LICENSE"
 
-iox2_build="$package_work/iceoryx2"
-cmake -S "$vendor_src_dir/iceoryx2" -B "$iox2_build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$private_prefix" \
-    -DCMAKE_INSTALL_LIBDIR="lib/${multiarch}" \
-    -DBUILD_CXX=ON \
-    -DBUILD_EXAMPLES=OFF \
-    -DBUILD_TESTING=OFF
-cmake --build "$iox2_build"
-DESTDIR="$staging" cmake --install "$iox2_build"
-
-zenoh_root="$package_work/zenoh-root"
-mkdir -p "$zenoh_root"
-for deb_name in "libzenohc_1.9.0_${architecture}.deb" "libzenohc-dev_1.9.0_${architecture}.deb" libzenohcpp-dev_1.9.0_all.deb; do
-    require_deb_lock "$deb_name"
-    dpkg-deb -x "$(download_cached "${lock_deb_url[$deb_name]}")" "$zenoh_root"
-done
-if [[ -d "$zenoh_root/usr/include" ]]; then
-    install -d "$private_root/include"
-    cp -a "$zenoh_root/usr/include/." "$private_root/include/"
-fi
-if [[ -d "$zenoh_root/usr/lib" ]]; then
-    install -d "$private_root/lib"
-    cp -a "$zenoh_root/usr/lib/." "$private_root/lib/"
-fi
-
-cmake_build="$package_work/cpp-runtime"
-cmake -S "$repo_root/runtime/cpp" -B "$cmake_build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$private_prefix" \
-    -DCMAKE_INSTALL_LIBDIR="lib/${multiarch}"
-cmake --build "$cmake_build"
-DESTDIR="$staging" cmake --install "$cmake_build"
+build_iceoryx2_for_architecture "$architecture" "$multiarch" "$private_prefix" \
+    "$package_work/iceoryx2-${architecture}"
+install_zenoh_sdk_for_architecture "$architecture" "$private_root"
+build_cpp_runtime_for_architecture "$architecture" "$multiarch" "$private_prefix" \
+    "$package_work/cpp-runtime-${architecture}"
 
 install_target_sdks "$platform" "$architecture" "$multiarch"
 

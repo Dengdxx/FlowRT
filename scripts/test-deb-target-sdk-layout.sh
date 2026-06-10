@@ -20,11 +20,15 @@ version="$(dpkg-deb -f "$package" Version)"
 case "$architecture" in
     amd64)
         platform="linux-amd64"
+        other_architecture="arm64"
         other_platform="linux-arm64"
+        other_complete="true"
         ;;
     arm64)
         platform="linux-arm64"
+        other_architecture="amd64"
         other_platform="linux-amd64"
+        other_complete="false"
         ;;
     *)
         printf 'unsupported package architecture: %s\n' "$architecture" >&2
@@ -33,6 +37,7 @@ case "$architecture" in
 esac
 
 multiarch="$(dpkg-architecture -a"$architecture" -qDEB_HOST_MULTIARCH)"
+other_multiarch="$(dpkg-architecture -a"$other_architecture" -qDEB_HOST_MULTIARCH)"
 prefix="./opt/flowrt/${version}"
 target_prefix="${prefix}/targets/${platform}"
 other_target_prefix="${prefix}/targets/${other_platform}"
@@ -57,6 +62,24 @@ required_paths=(
     "${target_prefix}/pkgconfig/zenohcxx.pc"
     "${other_target_prefix}/flowrt-target-sdk.toml"
 )
+
+if [[ "$other_complete" == "true" ]]; then
+    required_paths+=(
+        "${other_target_prefix}/include/flowrt/runtime.hpp"
+        "${other_target_prefix}/include/zenoh.h"
+        "${other_target_prefix}/include/zenoh.hxx"
+        "${other_target_prefix}/lib/libzenohc.so"
+        "${other_target_prefix}/lib/${other_multiarch}/libiceoryx2_cxx.a"
+        "${other_target_prefix}/lib/${other_multiarch}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+        "${other_target_prefix}/lib/${other_multiarch}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+        "${other_target_prefix}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+        "${other_target_prefix}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+        "${other_target_prefix}/cmake/zenohc/zenohcConfig.cmake"
+        "${other_target_prefix}/cmake/zenohcxx/zenohcxxConfig.cmake"
+        "${other_target_prefix}/pkgconfig/zenohc.pc"
+        "${other_target_prefix}/pkgconfig/zenohcxx.pc"
+    )
+fi
 
 for path in "${required_paths[@]}"; do
     if ! grep -Fq "$path" "$contents"; then
@@ -86,7 +109,23 @@ other_target_manifest="$work_dir/other-flowrt-target-sdk.toml"
 dpkg-deb --fsys-tarfile "$package" | tar -xO "${other_target_prefix}/flowrt-target-sdk.toml" \
     > "$other_target_manifest"
 grep -q 'platform = "'"$other_platform"'"' "$other_target_manifest"
-grep -q 'complete = false' "$other_target_manifest"
-grep -q 'reason = "not-built-in-this-native-package"' "$other_target_manifest"
+if [[ "$other_complete" == "true" ]]; then
+    grep -q 'multiarch = "'"$other_multiarch"'"' "$other_target_manifest"
+    grep -q 'complete = true' "$other_target_manifest"
+    grep -q 'host_mirror = false' "$other_target_manifest"
+    grep -q 'reason = "cross-target-sdk"' "$other_target_manifest"
+    grep -q '"flowrt-cpp-runtime"' "$other_target_manifest"
+    grep -q '"iceoryx2-cxx"' "$other_target_manifest"
+    grep -q '"zenoh-c"' "$other_target_manifest"
+    grep -q '"zenoh-cpp"' "$other_target_manifest"
+
+    other_pkgconfig="$work_dir/other-zenohc.pc"
+    dpkg-deb --fsys-tarfile "$package" | tar -xO "${other_target_prefix}/pkgconfig/zenohc.pc" \
+        > "$other_pkgconfig"
+    grep -q "prefix=/opt/flowrt/${version}/targets/${other_platform}" "$other_pkgconfig"
+else
+    grep -q 'complete = false' "$other_target_manifest"
+    grep -q 'reason = "not-built-in-this-native-package"' "$other_target_manifest"
+fi
 
 printf 'deb target SDK layout smoke passed: %s\n' "$package"
