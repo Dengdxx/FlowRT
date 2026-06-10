@@ -12,14 +12,22 @@ pub(crate) fn emit_ros2_bridge_adapter(contract: &ContractIr) -> String {
         .first()
         .expect("normalized contract must contain at least one graph");
     let bridges = bridge_runtime_plans(contract, graph);
+    let has_pose_bridge = bridges
+        .iter()
+        .any(|bridge| bridge.ros2_type == "geometry_msgs/msg/Pose");
     let mut output = managed_header();
     output.push_str(
         r#"#include "flowrt_app/messages.hpp"
 
 #include <flowrt/runtime.hpp>
 
-#include <geometry_msgs/msg/pose.hpp>
-#include <rclcpp/rclcpp.hpp>
+"#,
+    );
+    if has_pose_bridge {
+        output.push_str("#include <geometry_msgs/msg/pose.hpp>\n");
+    }
+    output.push_str(
+        r#"#include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <zenoh.hxx>
 

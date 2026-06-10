@@ -48,6 +48,7 @@ backends = ["zenoh"]
 
     assert!(adapter.contains("#include <rclcpp/rclcpp.hpp>"));
     assert!(adapter.contains("#include <std_msgs/msg/string.hpp>"));
+    assert!(!adapter.contains("#include <geometry_msgs/msg/pose.hpp>"));
     assert!(adapter.contains("#include <zenoh.hxx>"));
     assert!(adapter.contains("setenv(\"RMW_IMPLEMENTATION\", \"rmw_zenoh_cpp\", 0);"));
     assert!(adapter.contains("BridgeZenohLatest<TextFrame>"));
