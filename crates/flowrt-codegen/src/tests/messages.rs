@@ -247,6 +247,39 @@ backends = ["iox2", "zenoh"]
 }
 
 #[test]
+fn frame_descriptor_demo_example_codegen_smoke() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crate should live under repo root");
+    let rsdl = repo_root.join("examples/frame_descriptor_demo/rsdl/robot.rsdl");
+    let ir = contract_from_file(&rsdl);
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(rust_messages.contains("impl From<flowrt::FrameDescriptorFields> for FrameHandle"));
+    assert!(
+        rust_messages.contains("pub fn frame_descriptor_fields(&self) -> flowrt::FrameDescriptorFields")
+    );
+    assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
+    assert_eq!(launch["graphs"][0]["channels"][0]["backend"], "iox2");
+    assert_eq!(
+        selfdesc["component_types"][0]["resources"][0]["descriptor"]["port"],
+        "frame"
+    );
+    assert_eq!(
+        selfdesc["component_types"][0]["resources"][0]["descriptor"]["record_payload"],
+        false
+    );
+}
+
+#[test]
 fn cpp_frame_descriptor_message_emits_helper_methods() {
     let ir = contract_from_source(
         r#"
