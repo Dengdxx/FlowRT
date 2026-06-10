@@ -1403,7 +1403,7 @@ fn select_external_executable_metadata<'a>(
     manifest
         .executable
         .iter()
-        .find(|executable| executable.path == PathBuf::from(&external.executable))
+        .find(|executable| executable.path.as_path() == Path::new(&external.executable))
         .or_else(|| {
             manifest
                 .executable
