@@ -664,6 +664,95 @@ backends = ["inproc"]
 }
 
 #[test]
+fn rust_and_cpp_shells_wire_io_boundary_contexts() {
+    let rust_ir = contract_from_source(
+        r#"
+[package]
+name = "rust_io_boundary_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor]
+language = "rust"
+kind = "io_boundary"
+output = ["sample:Sample"]
+io_side_effect = ["read"]
+io_readiness = "component_started"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+
+[component.sensor.resource.lidar_uart]
+kind = "serial"
+required = true
+
+[instance.sensor]
+component = "sensor"
+
+[instance.sensor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#,
+    );
+    let rust_bundle = emit_artifacts(&rust_ir).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(
+        rust_shell
+            .contains("introspection_state.register_io_boundary(\"sensor\", \"sensor\", vec![")
+    );
+    assert!(rust_shell.contains("name: \"lidar_uart\".to_string()"));
+    assert!(rust_shell.contains("kind: \"serial\".to_string()"));
+    assert!(rust_shell.contains("let mut sensor_boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext::new(\"sensor\", \"sensor\", introspection_state.clone()));"));
+    assert!(rust_shell.contains("boundary.mark_ready();"));
+
+    let cpp_ir = contract_from_source(
+        r#"
+[package]
+name = "cpp_io_boundary_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor]
+language = "cpp"
+kind = "io_boundary"
+output = ["sample:Sample"]
+io_side_effect = ["read"]
+io_readiness = "component_started"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+
+[component.sensor.resource.lidar_uart]
+kind = "serial"
+required = true
+
+[instance.sensor]
+component = "sensor"
+
+[instance.sensor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#,
+    );
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains("introspection_state.register_io_boundary(\"sensor\", \"sensor\", std::vector<flowrt::BoundaryResourceStatus>{"));
+    assert!(
+        cpp_shell
+            .contains("flowrt::BoundaryResourceStatus{.name = \"lidar_uart\", .kind = \"serial\"}")
+    );
+    assert!(cpp_shell.contains("auto sensor_boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext{\"sensor\", \"sensor\""));
+    assert!(
+        cpp_shell.contains("introspection_state.record_io_boundary_health(std::move(status));")
+    );
+    assert!(cpp_shell.contains("boundary->mark_ready();"));
+}
+
+#[test]
 fn launch_manifest_uses_external_required_backend_without_routes() {
     let ir = contract_from_source(
         r#"

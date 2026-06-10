@@ -1,4 +1,6 @@
-use flowrt_ir::{ContractIr, GraphIr, InstanceIr};
+use flowrt_ir::{
+    ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness, ResourceKind,
+};
 
 use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, bind_backend};
 
@@ -274,6 +276,10 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             emission.order,
         ),
     );
+    output.push_str(&emit_rust_io_boundary_registration(
+        emission.contract,
+        emission.order,
+    ));
     output.push_str(&service_emit::emit_rust_service_introspection_registration(
         emission.contract,
         emission.graph,
@@ -298,11 +304,17 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             name = instance.name
         ));
     }
+    output.push_str(&emit_rust_io_boundary_contexts(
+        emission.contract,
+        emission.order,
+    ));
     for instance in emission.order {
+        let component = crate::component_by_name(emission.contract, &instance.component.name);
+        let context_name = lifecycle_context_name(component, instance);
         let call = component_call_expr(
             instance,
             emission.service_server_instances,
-            "on_init(&mut lifecycle_context)",
+            &format!("on_init(&mut {context_name})"),
         );
         output.push_str(&format!(
             "        if status == flowrt::Status::Ok {{\n            status = {call};\n            {name}_initialized = status == flowrt::Status::Ok;\n        }}\n",
@@ -310,15 +322,28 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         ));
     }
     for instance in emission.order {
+        let component = crate::component_by_name(emission.contract, &instance.component.name);
+        let context_name = lifecycle_context_name(component, instance);
         let call = component_call_expr(
             instance,
             emission.service_server_instances,
-            "on_start(&mut lifecycle_context)",
+            &format!("on_start(&mut {context_name})"),
         );
         output.push_str(&format!(
             "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = {call};\n            {name}_started = status == flowrt::Status::Ok;\n        }}\n",
             name = instance.name
         ));
+        if component
+            .io_boundary
+            .as_ref()
+            .is_some_and(|policy| policy.readiness == IoBoundaryReadiness::ComponentStarted)
+        {
+            output.push_str(&format!(
+                "        if {name}_started {{\n            if let Some(boundary) = {context_name}.boundary() {{\n                boundary.mark_ready();\n            }}\n        }}\n",
+                name = instance.name,
+                context_name = context_name,
+            ));
+        }
     }
     output.push_str(&format!(
         "        if status == flowrt::Status::Ok {{\n            status = self.{startup_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }}\n",
@@ -344,10 +369,12 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         shutdown_function_name = emission.steps.shutdown
     ));
     for instance in emission.order.iter().rev() {
+        let component = crate::component_by_name(emission.contract, &instance.component.name);
+        let context_name = lifecycle_context_name(component, instance);
         let call = component_call_expr(
             instance,
             emission.service_server_instances,
-            "on_stop(&mut lifecycle_context)",
+            &format!("on_stop(&mut {context_name})"),
         );
         output.push_str(&format!(
             "        if {name}_started {{\n            let stop_status = {call};\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
@@ -355,10 +382,12 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         ));
     }
     for instance in emission.order.iter().rev() {
+        let component = crate::component_by_name(emission.contract, &instance.component.name);
+        let context_name = lifecycle_context_name(component, instance);
         let call = component_call_expr(
             instance,
             emission.service_server_instances,
-            "on_shutdown(&mut lifecycle_context)",
+            &format!("on_shutdown(&mut {context_name})"),
         );
         output.push_str(&format!(
             "        if {name}_initialized {{\n            let shutdown_status = {call};\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
@@ -367,6 +396,69 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     }
     output.push_str("        status\n    }\n");
     output
+}
+
+fn emit_rust_io_boundary_registration(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = crate::component_by_name(contract, &instance.component.name);
+        if component.kind != ComponentKind::IoBoundary {
+            continue;
+        }
+        output.push_str(&format!(
+            "        introspection_state.register_io_boundary({}, {}, vec![\n",
+            crate::rust_string_literal(&instance.name),
+            crate::rust_string_literal(&component.name)
+        ));
+        for resource in &component.resources {
+            output.push_str(&format!(
+                "            flowrt::IntrospectionIoBoundaryResourceStatus {{\n                name: {}.to_string(),\n                kind: {}.to_string(),\n                ready: false,\n                message: None,\n                last_error: None,\n                updated_unix_ms: None,\n            }},\n",
+                crate::rust_string_literal(&resource.name),
+                crate::rust_string_literal(resource_kind_name(resource.kind))
+            ));
+        }
+        output.push_str("        ]);\n");
+    }
+    output
+}
+
+fn emit_rust_io_boundary_contexts(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = crate::component_by_name(contract, &instance.component.name);
+        if component.kind != ComponentKind::IoBoundary {
+            continue;
+        }
+        output.push_str(&format!(
+            "        let mut {context_name} = flowrt::Context::for_boundary(flowrt::BoundaryContext::new({instance_name}, {component_name}, introspection_state.clone()));\n",
+            context_name = lifecycle_context_name(component, instance),
+            instance_name = crate::rust_string_literal(&instance.name),
+            component_name = crate::rust_string_literal(&component.name)
+        ));
+    }
+    output
+}
+
+fn lifecycle_context_name(component: &flowrt_ir::ComponentIr, instance: &InstanceIr) -> String {
+    if component.kind == ComponentKind::IoBoundary {
+        format!(
+            "{}_boundary_context",
+            crate::snake_identifier(&instance.name)
+        )
+    } else {
+        "lifecycle_context".to_string()
+    }
+}
+
+fn resource_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Serial => "serial",
+        ResourceKind::Shm => "shm",
+        ResourceKind::Udp => "udp",
+        ResourceKind::File => "file",
+        ResourceKind::Device => "device",
+        ResourceKind::Sdk => "sdk",
+    }
 }
 
 /// 生成组件方法调用表达式。对于 service server 实例使用 `Mutex` 保护可变访问。

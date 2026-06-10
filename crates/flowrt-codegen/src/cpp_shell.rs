@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ContractIr, GraphIr, InstanceIr, LanguageKind,
-    OperationConcurrencyPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy,
-    ParamIr, ParamType, ParamUpdatePolicy, ParamValue, PortIr, StalePolicy as IrStalePolicy,
+    ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness,
+    LanguageKind, OperationConcurrencyPolicy, OperationPreemptPolicy,
+    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, PortIr,
+    ResourceKind, StalePolicy as IrStalePolicy,
 };
 
 use crate::messages::cpp_type;
@@ -1107,6 +1108,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.contract,
         run.order,
     ));
+    output.push_str(&emit_cpp_io_boundary_registration(run.contract, run.order));
     output.push_str(&format!(
         "    auto introspection_server = flowrt::spawn_status_server(\n        flowrt::IntrospectionIdentity{{\n            .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n            .package = {},\n            .process = {},\n            .runtime = \"cpp\",\n        }},\n        introspection_state);\n    (void)introspection_server;\n",
         cpp_string_literal(run.package_name),
@@ -1118,17 +1120,35 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
             name = instance.name
         ));
     }
+    output.push_str(&emit_cpp_io_boundary_contexts(run.contract, run.order));
     for instance in run.order {
+        let component = component_by_name(run.contract, &instance.component.name);
+        let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if (status == flowrt::Status::Ok && {name}_) {{\n        status = {name}_->on_init(lifecycle_context);\n        {name}_initialized = status == flowrt::Status::Ok;\n    }}\n",
-            name = instance.name
+            "    if (status == flowrt::Status::Ok && {name}_) {{\n        status = {name}_->on_init({context});\n        {name}_initialized = status == flowrt::Status::Ok;\n    }}\n",
+            name = instance.name,
+            context = context_name,
         ));
     }
     for instance in run.order {
+        let component = component_by_name(run.contract, &instance.component.name);
+        let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if (status == flowrt::Status::Ok && {name}_initialized && {name}_) {{\n        status = {name}_->on_start(lifecycle_context);\n        {name}_started = status == flowrt::Status::Ok;\n    }}\n",
-            name = instance.name
+            "    if (status == flowrt::Status::Ok && {name}_initialized && {name}_) {{\n        status = {name}_->on_start({context});\n        {name}_started = status == flowrt::Status::Ok;\n    }}\n",
+            name = instance.name,
+            context = context_name,
         ));
+        if component
+            .io_boundary
+            .as_ref()
+            .is_some_and(|policy| policy.readiness == IoBoundaryReadiness::ComponentStarted)
+        {
+            output.push_str(&format!(
+                "    if ({name}_started) {{\n        if (auto* boundary = {context}.boundary(); boundary != nullptr) {{\n            boundary->mark_ready();\n        }}\n    }}\n",
+                name = instance.name,
+                context = context_name,
+            ));
+        }
     }
     output.push_str(&format!(
         "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);\n    }}\n",
@@ -1140,19 +1160,95 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.shutdown_function_name
     ));
     for instance in run.order.iter().rev() {
+        let component = component_by_name(run.contract, &instance.component.name);
+        let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if ({name}_started && {name}_) {{\n        const auto stop_status = {name}_->on_stop(lifecycle_context);\n        if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
-            name = instance.name
+            "    if ({name}_started && {name}_) {{\n        const auto stop_status = {name}_->on_stop({context});\n        if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
+            name = instance.name,
+            context = context_name,
         ));
     }
     for instance in run.order.iter().rev() {
+        let component = component_by_name(run.contract, &instance.component.name);
+        let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if ({name}_initialized && {name}_) {{\n        const auto shutdown_status = {name}_->on_shutdown(lifecycle_context);\n        if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
-            name = instance.name
+            "    if ({name}_initialized && {name}_) {{\n        const auto shutdown_status = {name}_->on_shutdown({context});\n        if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
+            name = instance.name,
+            context = context_name,
         ));
     }
     output.push_str("    return status;\n}\n\n");
     output
+}
+
+fn emit_cpp_io_boundary_registration(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        if component.kind != ComponentKind::IoBoundary {
+            continue;
+        }
+        output.push_str(&format!(
+            "    introspection_state.register_io_boundary({}, {}, {});\n",
+            cpp_string_literal(&instance.name),
+            cpp_string_literal(&component.name),
+            cpp_boundary_resources_literal(component)
+        ));
+    }
+    output
+}
+
+fn emit_cpp_io_boundary_contexts(contract: &ContractIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        if component.kind != ComponentKind::IoBoundary {
+            continue;
+        }
+        output.push_str(&format!(
+            "    auto {context} = flowrt::Context::for_boundary(flowrt::BoundaryContext{{{}, {}, {}, [&introspection_state](flowrt::BoundaryStatus status) {{\n        introspection_state.record_io_boundary_health(std::move(status));\n    }}}});\n",
+            cpp_string_literal(&instance.name),
+            cpp_string_literal(&component.name),
+            cpp_boundary_resources_literal(component),
+            context = cpp_lifecycle_context_name(component, instance),
+        ));
+    }
+    output
+}
+
+fn cpp_boundary_resources_literal(component: &ComponentIr) -> String {
+    let mut output = String::from("std::vector<flowrt::BoundaryResourceStatus>{");
+    for resource in &component.resources {
+        output.push_str(&format!(
+            "flowrt::BoundaryResourceStatus{{.name = {}, .kind = {}}},",
+            cpp_string_literal(&resource.name),
+            cpp_string_literal(resource_kind_name(resource.kind))
+        ));
+    }
+    output.push('}');
+    output
+}
+
+fn cpp_lifecycle_context_name(component: &ComponentIr, instance: &InstanceIr) -> String {
+    if component.kind == ComponentKind::IoBoundary {
+        format!(
+            "{}_boundary_context",
+            crate::snake_identifier(&instance.name)
+        )
+    } else {
+        "lifecycle_context".to_string()
+    }
+}
+
+fn resource_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Serial => "serial",
+        ResourceKind::Shm => "shm",
+        ResourceKind::Udp => "udp",
+        ResourceKind::File => "file",
+        ResourceKind::Device => "device",
+        ResourceKind::Sdk => "sdk",
+    }
 }
 
 fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {

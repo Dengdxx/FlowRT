@@ -137,6 +137,9 @@ pub struct IntrospectionStatus {
     pub channels: Vec<IntrospectionChannelStatus>,
     #[serde(default)]
     pub processes: Vec<IntrospectionProcessStatus>,
+    /// v0.8+ I/O boundary 运行态健康状态。
+    #[serde(default)]
+    pub io_boundaries: Vec<IntrospectionIoBoundaryStatus>,
     /// v0.4+ service 运行态健康状态。
     #[serde(default)]
     pub services: Vec<IntrospectionServiceStatus>,
@@ -173,6 +176,55 @@ pub struct IntrospectionChannelSnapshot {
     pub published_count: u64,
     pub payload: Option<Vec<u8>>,
     pub published_at_ms: Option<u64>,
+}
+
+/// I/O boundary 声明资源的运行态状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionIoBoundaryResourceStatus {
+    /// resource 名称，来自 Contract IR。
+    pub name: String,
+    /// resource 类型，使用 Contract IR 中的 canonical 名称。
+    pub kind: String,
+    /// 当前 resource 是否可用。
+    #[serde(default)]
+    pub ready: bool,
+    /// 最近一次上报的普通状态说明。
+    #[serde(default)]
+    pub message: Option<String>,
+    /// 最近一次上报的错误说明。
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// 最近一次状态更新时间（Unix 毫秒）。
+    #[serde(default)]
+    pub updated_unix_ms: Option<u64>,
+}
+
+/// 单个 I/O boundary component 的运行态健康状态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionIoBoundaryStatus {
+    /// instance 名称。
+    pub name: String,
+    /// component 类型名称。
+    pub component: String,
+    /// runtime readiness 视角是否可用。
+    #[serde(default)]
+    pub ready: bool,
+    /// 用户上报的健康状态。
+    #[serde(default = "default_true")]
+    pub healthy: bool,
+    /// 最近一次 boundary 级错误说明。
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// resource 级状态。
+    #[serde(default)]
+    pub resources: Vec<IntrospectionIoBoundaryResourceStatus>,
+    /// 最近一次状态更新时间（Unix 毫秒）。
+    #[serde(default)]
+    pub updated_unix_ms: Option<u64>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// supervisor 维护的子进程健康状态。
@@ -581,6 +633,7 @@ struct IntrospectionStateInner {
     channels: BTreeMap<String, ChannelState>,
     params: BTreeMap<String, ParamState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
+    io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
     services: BTreeMap<String, IntrospectionServiceStatus>,
     operations: BTreeMap<String, IntrospectionOperationStatus>,
     tasks: BTreeMap<String, IntrospectionTaskHealth>,
@@ -836,6 +889,7 @@ impl IntrospectionState {
                 })
                 .collect(),
             processes: inner.processes.values().cloned().collect(),
+            io_boundaries: inner.io_boundaries.values().cloned().collect(),
             services: inner.services.values().cloned().collect(),
             operations: inner.operations.values().cloned().collect(),
             tasks: inner.tasks.values().cloned().collect(),
@@ -848,6 +902,95 @@ impl IntrospectionState {
     pub fn record_process_health(&self, status: IntrospectionProcessStatus) {
         let mut inner = self.lock_inner();
         inner.processes.insert(status.name.clone(), status);
+    }
+
+    /// 预注册一个 I/O boundary，使其在尚未上报 health 前也出现在 status 中。
+    pub fn register_io_boundary(
+        &self,
+        name: impl Into<String>,
+        component: impl Into<String>,
+        resources: Vec<IntrospectionIoBoundaryResourceStatus>,
+    ) {
+        let name = name.into();
+        let component = component.into();
+        let mut inner = self.lock_inner();
+        inner
+            .io_boundaries
+            .entry(name.clone())
+            .or_insert_with(|| IntrospectionIoBoundaryStatus {
+                name,
+                component,
+                ready: false,
+                healthy: true,
+                last_error: None,
+                resources,
+                updated_unix_ms: None,
+            });
+    }
+
+    /// 标记 I/O boundary readiness。
+    pub fn mark_io_boundary_ready(&self, name: &str, ready: bool) {
+        let mut inner = self.lock_inner();
+        let boundary = io_boundary_entry(&mut inner, name);
+        boundary.ready = ready;
+        boundary.updated_unix_ms = Some(unix_time_ms());
+    }
+
+    /// 记录 I/O boundary 恢复健康。
+    pub fn record_io_boundary_healthy(&self, name: &str) {
+        let mut inner = self.lock_inner();
+        let boundary = io_boundary_entry(&mut inner, name);
+        boundary.healthy = true;
+        boundary.last_error = None;
+        boundary.updated_unix_ms = Some(unix_time_ms());
+    }
+
+    /// 记录 I/O boundary 错误。
+    pub fn record_io_boundary_error(&self, name: &str, error: impl Into<String>) {
+        let mut inner = self.lock_inner();
+        let boundary = io_boundary_entry(&mut inner, name);
+        boundary.healthy = false;
+        boundary.last_error = Some(error.into());
+        boundary.updated_unix_ms = Some(unix_time_ms());
+    }
+
+    /// 记录 I/O boundary resource readiness。
+    pub fn record_io_boundary_resource_ready(
+        &self,
+        boundary_name: &str,
+        resource_name: &str,
+        ready: bool,
+        message: Option<String>,
+    ) {
+        let mut inner = self.lock_inner();
+        let boundary = io_boundary_entry(&mut inner, boundary_name);
+        let now = unix_time_ms();
+        let resource = io_boundary_resource_entry(boundary, resource_name);
+        resource.ready = ready;
+        resource.message = message;
+        if ready {
+            resource.last_error = None;
+        }
+        resource.updated_unix_ms = Some(now);
+        boundary.updated_unix_ms = Some(now);
+    }
+
+    /// 记录 I/O boundary resource 错误。
+    pub fn record_io_boundary_resource_error(
+        &self,
+        boundary_name: &str,
+        resource_name: &str,
+        error: impl Into<String>,
+    ) {
+        let mut inner = self.lock_inner();
+        let boundary = io_boundary_entry(&mut inner, boundary_name);
+        let now = unix_time_ms();
+        let resource = io_boundary_resource_entry(boundary, resource_name);
+        resource.ready = false;
+        resource.last_error = Some(error.into());
+        resource.updated_unix_ms = Some(now);
+        boundary.healthy = false;
+        boundary.updated_unix_ms = Some(now);
     }
 
     /// 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
@@ -2035,6 +2178,51 @@ fn bytes_of<T: Copy>(value: &T) -> Vec<u8> {
     bytes
 }
 
+fn io_boundary_entry<'a>(
+    inner: &'a mut IntrospectionStateInner,
+    name: &str,
+) -> &'a mut IntrospectionIoBoundaryStatus {
+    inner
+        .io_boundaries
+        .entry(name.to_string())
+        .or_insert_with(|| IntrospectionIoBoundaryStatus {
+            name: name.to_string(),
+            component: String::new(),
+            ready: false,
+            healthy: true,
+            last_error: None,
+            resources: Vec::new(),
+            updated_unix_ms: None,
+        })
+}
+
+fn io_boundary_resource_entry<'a>(
+    boundary: &'a mut IntrospectionIoBoundaryStatus,
+    resource_name: &str,
+) -> &'a mut IntrospectionIoBoundaryResourceStatus {
+    if let Some(index) = boundary
+        .resources
+        .iter()
+        .position(|resource| resource.name == resource_name)
+    {
+        return &mut boundary.resources[index];
+    }
+    boundary
+        .resources
+        .push(IntrospectionIoBoundaryResourceStatus {
+            name: resource_name.to_string(),
+            kind: String::new(),
+            ready: false,
+            message: None,
+            last_error: None,
+            updated_unix_ms: None,
+        });
+    boundary
+        .resources
+        .last_mut()
+        .expect("resource was just pushed")
+}
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2976,6 +3164,37 @@ mod tests {
     }
 
     #[test]
+    fn io_boundary_health_recording_and_status_snapshot() {
+        let state = IntrospectionState::new();
+        state.register_io_boundary(
+            "camera",
+            "CameraDriver",
+            vec![IntrospectionIoBoundaryResourceStatus {
+                name: "camera_shm".to_string(),
+                kind: "shm".to_string(),
+                ..Default::default()
+            }],
+        );
+
+        state.mark_io_boundary_ready("camera", true);
+        state.record_io_boundary_resource_ready("camera", "camera_shm", true, None);
+        state.record_io_boundary_error("camera", "frame timeout");
+
+        let status = state.status();
+        assert_eq!(status.io_boundaries.len(), 1);
+        let boundary = &status.io_boundaries[0];
+        assert_eq!(boundary.name, "camera");
+        assert_eq!(boundary.component, "CameraDriver");
+        assert!(boundary.ready);
+        assert!(!boundary.healthy);
+        assert_eq!(boundary.last_error.as_deref(), Some("frame timeout"));
+        assert_eq!(boundary.resources.len(), 1);
+        assert_eq!(boundary.resources[0].name, "camera_shm");
+        assert_eq!(boundary.resources[0].kind, "shm");
+        assert!(boundary.resources[0].ready);
+    }
+
+    #[test]
     fn lane_health_recording_and_status_snapshot() {
         let state = IntrospectionState::new();
 
@@ -3330,6 +3549,22 @@ mod tests {
             tick_count: 42,
             channels: vec![],
             processes: vec![],
+            io_boundaries: vec![IntrospectionIoBoundaryStatus {
+                name: "camera".to_string(),
+                component: "CameraDriver".to_string(),
+                ready: true,
+                healthy: true,
+                last_error: None,
+                resources: vec![IntrospectionIoBoundaryResourceStatus {
+                    name: "camera_shm".to_string(),
+                    kind: "shm".to_string(),
+                    ready: true,
+                    message: None,
+                    last_error: None,
+                    updated_unix_ms: Some(997),
+                }],
+                updated_unix_ms: Some(998),
+            }],
             services: vec![],
             operations: vec![IntrospectionOperationStatus {
                 name: "controller.plan".to_string(),
@@ -3372,6 +3607,8 @@ mod tests {
         let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.operations.len(), 1);
         assert_eq!(parsed.operations[0].name, "controller.plan");
+        assert_eq!(parsed.io_boundaries.len(), 1);
+        assert_eq!(parsed.io_boundaries[0].name, "camera");
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0].name, "t1");
         assert_eq!(parsed.tasks[0].deadline_missed, 5);

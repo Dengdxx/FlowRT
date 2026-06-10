@@ -168,6 +168,33 @@ int main() {
     probe->record_publish_event();
     assert(probe_state.channel_snapshot("source.imu_to_sink.imu")->published_count == 2U);
 
+    flowrt::IntrospectionState boundary_state;
+    boundary_state.register_io_boundary(
+        "camera", "CameraDriver",
+        std::vector<flowrt::BoundaryResourceStatus>{
+            flowrt::BoundaryResourceStatus{.name = "camera_shm", .kind = "shm"}});
+    flowrt::BoundaryContext boundary_context{
+        "camera",
+        "CameraDriver",
+        std::vector<flowrt::BoundaryResourceStatus>{
+            flowrt::BoundaryResourceStatus{.name = "camera_shm", .kind = "shm"}},
+        [&boundary_state](flowrt::BoundaryStatus status) {
+            boundary_state.record_io_boundary_health(std::move(status));
+        }};
+    boundary_context.mark_ready();
+    boundary_context.report_resource_error("camera_shm", "lease timeout");
+    const auto boundary_status = boundary_state.status();
+    assert(boundary_status.io_boundaries.size() == 1U);
+    assert(boundary_status.io_boundaries.front().name == "camera");
+    assert(boundary_status.io_boundaries.front().ready);
+    assert(!boundary_status.io_boundaries.front().healthy);
+    assert(boundary_status.io_boundaries.front().resources.size() == 1U);
+    assert(boundary_status.io_boundaries.front().resources.front().last_error ==
+           std::optional<std::string>{"lease timeout"});
+    const auto boundary_json = flowrt::detail::status_json(boundary_status);
+    assert_contains(boundary_json, R"("io_boundaries":[{"name":"camera")");
+    assert_contains(boundary_json, R"("last_error":"lease timeout")");
+
     flowrt::IntrospectionState recorder_state;
     recorder_state.register_channel("source.imu_to_sink.imu", "Imu");
     assert(!recorder_state.status().recorder.enabled);

@@ -86,6 +86,23 @@ int main() {
 
     flowrt::Context context;
     (void)context;
+    assert(!context.is_io_boundary());
+    bool boundary_reported = false;
+    auto boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext{
+        "camera",
+        "CameraDriver",
+        std::vector<flowrt::BoundaryResourceStatus>{
+            flowrt::BoundaryResourceStatus{.name = "camera_shm", .kind = "shm"}},
+        [&boundary_reported](flowrt::BoundaryStatus status) {
+            boundary_reported = true;
+            assert(status.name == "camera");
+            assert(status.component == "CameraDriver");
+            assert(status.ready);
+        }});
+    assert(boundary_context.is_io_boundary());
+    assert(boundary_context.boundary() != nullptr);
+    boundary_context.boundary()->mark_ready();
+    assert(boundary_reported);
 
     const flowrt_string_view_t label_view{
         .data = "imu",

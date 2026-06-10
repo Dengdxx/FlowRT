@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <flowrt/core.hpp>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -372,6 +373,7 @@ struct IntrospectionLaneHealth {
 struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
     std::vector<IntrospectionChannelStatus> channels;
+    std::vector<BoundaryStatus> io_boundaries;
     std::vector<IntrospectionServiceStatus> services;
     std::vector<IntrospectionOperationStatus> operations;
     std::vector<IntrospectionTaskHealth> tasks;
@@ -527,6 +529,49 @@ inline std::string service_status_json(const IntrospectionServiceStatus &service
     return output;
 }
 
+inline std::string boundary_resource_status_json(const BoundaryResourceStatus &resource) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(resource.name));
+    output.append(",\"kind\":");
+    output.append(json_string(resource.kind));
+    output.append(",\"ready\":");
+    output.append(resource.ready ? "true" : "false");
+    output.append(",\"message\":");
+    output.append(resource.message ? json_string(*resource.message) : "null");
+    output.append(",\"last_error\":");
+    output.append(resource.last_error ? json_string(*resource.last_error) : "null");
+    output.append(",\"updated_unix_ms\":");
+    output.append(resource.updated_unix_ms ? std::to_string(*resource.updated_unix_ms) : "null");
+    output.push_back('}');
+    return output;
+}
+
+inline std::string boundary_status_json(const BoundaryStatus &boundary) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(boundary.name));
+    output.append(",\"component\":");
+    output.append(json_string(boundary.component));
+    output.append(",\"ready\":");
+    output.append(boundary.ready ? "true" : "false");
+    output.append(",\"healthy\":");
+    output.append(boundary.healthy ? "true" : "false");
+    output.append(",\"last_error\":");
+    output.append(boundary.last_error ? json_string(*boundary.last_error) : "null");
+    output.append(",\"resources\":[");
+    for (std::size_t index = 0; index < boundary.resources.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(boundary_resource_status_json(boundary.resources[index]));
+    }
+    output.append("],\"updated_unix_ms\":");
+    output.append(boundary.updated_unix_ms ? std::to_string(*boundary.updated_unix_ms) : "null");
+    output.push_back('}');
+    return output;
+}
+
 inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) {
     return value ? std::to_string(*value) : "null";
 }
@@ -649,7 +694,14 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(channel_status_json(status.channels[index]));
     }
-    output.append("],\"processes\":[],\"services\":[");
+    output.append("],\"processes\":[],\"io_boundaries\":[");
+    for (std::size_t index = 0; index < status.io_boundaries.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(boundary_status_json(status.io_boundaries[index]));
+    }
+    output.append("],\"services\":[");
     for (std::size_t index = 0; index < status.services.size(); ++index) {
         if (index != 0) {
             output.push_back(',');
@@ -1670,6 +1722,30 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 预注册一个 I/O boundary，使其在尚未上报 health 前也出现在 status 中。
+     */
+    void register_io_boundary(std::string name, std::string component,
+                              std::vector<BoundaryResourceStatus> resources) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        BoundaryStatus status{
+            .name = std::move(name),
+            .component = std::move(component),
+            .resources = std::move(resources),
+        };
+        const auto key = status.name;
+        inner_->io_boundaries.try_emplace(key, std::move(status));
+    }
+
+    /**
+     * @brief 记录 I/O boundary 运行态健康状态。
+     */
+    void record_io_boundary_health(BoundaryStatus status) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto key = status.name;
+        inner_->io_boundaries.insert_or_assign(key, std::move(status));
+    }
+
+    /**
      * @brief 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
      */
     void register_service(std::string name) const {
@@ -1836,6 +1912,10 @@ class IntrospectionState {
                 .active_observers = channel.probe.active_count(),
                 .dropped_samples = channel.probe.dropped_samples(),
             });
+        }
+        snapshot.io_boundaries.reserve(inner_->io_boundaries.size());
+        for (const auto &[name, boundary] : inner_->io_boundaries) {
+            snapshot.io_boundaries.push_back(boundary);
         }
         snapshot.services.reserve(inner_->services.size());
         for (const auto &[name, service] : inner_->services) {
@@ -2034,6 +2114,7 @@ class IntrospectionState {
         std::optional<std::string> self_description_json;
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
+        std::map<std::string, BoundaryStatus> io_boundaries;
         std::map<std::string, IntrospectionServiceStatus> services;
         std::map<std::string, IntrospectionOperationStatus> operations;
         std::map<std::string, IntrospectionTaskHealth> tasks;
