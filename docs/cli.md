@@ -107,9 +107,21 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl --target linux-arm64
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
 - 声明 `[[bridge.ros2]]` 时，`build` 会额外构建 FlowRT 管理的 C++ ROS2 adapter target；即使没有 C++ 用户 component，也会运行生成 CMake。
 
-构建出的用户项目二进制统一位于 `flowrt/build/bin/<release|debug>/`，包括 Rust app、generated supervisor、C++ app 和 ROS2 bridge adapter。`flowrt/build/build-info.json` 记录本次构建的 FlowRT 版本、profile、build mode、依赖 target 目录和相对 executable 路径。
+构建出的用户项目二进制包括 Rust app、generated supervisor、C++ app 和 ROS2 bridge
+adapter。native 构建或未使用 Cargo cross target triple 时继续写入兼容路径
+`flowrt/build/bin/<release|debug>/`；实际 cross target 构建会写入
+`flowrt/build/bin/<platform>/<release|debug>/`，例如
+`flowrt/build/bin/linux-arm64/release/`，避免不同 target 的同名二进制互相覆盖。
+`flowrt/build/build-info.json` 记录本次构建的 FlowRT 版本、profile、build mode、
+target 名称、platform、target identity、Rust target triple、host triple、依赖 target
+目录和相对 executable 路径。
 
-`--target <platform>` 显式选择构建目标 platform，优先级高于 Contract IR target platform；省略时，`build` 使用选定 Contract IR target 的 platform，仍无 platform 时保持 native 旧行为。Rust app、generated supervisor 和 deps cache 会使用同一个 Rust target triple，并按 Cargo 的 cross target 输出路径定位二进制。
+`--target <platform>` 显式选择构建目标 platform，优先级高于 Contract IR target
+platform；省略时，`build` 使用选定 Contract IR target 的 platform，仍无 platform
+时保持 native 旧行为。Rust app、generated supervisor 和 deps cache 会使用同一个
+Rust target triple，并按 Cargo 的 cross target 输出路径定位二进制。`run`、`launch`
+和 `bundle` 不硬编码旧 bin 目录，而是读取 `build-info.json` 中的 executable
+相对路径。
 
 Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt deps` / `flowrt build` 会使用该私有前缀和包内 vendor；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 

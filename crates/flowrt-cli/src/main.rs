@@ -2933,9 +2933,8 @@ fn build_workspace(
     ensure_backend_runtime_supported(contract, "build")?;
     let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
     let mut build_info = build_info_for_contract(contract, build_mode)?;
-    if let Some(target_profile) = target_profile {
-        build_info.platform = Some(target_profile.profile.platform.clone());
-    }
+    apply_build_target_metadata(&mut build_info, target_profile)?;
+    let bin_target_identity = bin_target_identity(target_profile);
     let cargo_cache = if build_steps(contract, include_launcher)
         .iter()
         .any(|step| matches!(step, BuildStep::CargoApp | BuildStep::CargoSupervisor))
@@ -2965,7 +2964,12 @@ fn build_workspace(
                     target_dir,
                     cargo_target_triple,
                 )?;
-                let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
+                let local = copy_executable_to_local_bin(
+                    out_dir,
+                    build_mode,
+                    bin_target_identity.as_deref(),
+                    &built,
+                )?;
                 build_info.executables.rust_app = Some(relative_to_out_dir(out_dir, &local)?);
                 record_build_artifact(&mut build_info, "rust_app", out_dir, &local)?;
             }
@@ -2985,7 +2989,12 @@ fn build_workspace(
                     target_dir,
                     cargo_target_triple,
                 )?;
-                let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
+                let local = copy_executable_to_local_bin(
+                    out_dir,
+                    build_mode,
+                    bin_target_identity.as_deref(),
+                    &built,
+                )?;
                 build_info.executables.supervisor = Some(relative_to_out_dir(out_dir, &local)?);
                 record_build_artifact(&mut build_info, "supervisor", out_dir, &local)?;
             }
@@ -2993,12 +3002,22 @@ fn build_workspace(
                 let built =
                     run_cmake_configure_and_build(contract, out_dir, build_mode, target_profile)?;
                 if let Some(cpp_app) = built.cpp_app {
-                    let local = copy_executable_to_local_bin(out_dir, build_mode, &cpp_app)?;
+                    let local = copy_executable_to_local_bin(
+                        out_dir,
+                        build_mode,
+                        bin_target_identity.as_deref(),
+                        &cpp_app,
+                    )?;
                     build_info.executables.cpp_app = Some(relative_to_out_dir(out_dir, &local)?);
                     record_build_artifact(&mut build_info, "cpp_app", out_dir, &local)?;
                 }
                 if let Some(ros2_bridge) = built.ros2_bridge {
-                    let local = copy_executable_to_local_bin(out_dir, build_mode, &ros2_bridge)?;
+                    let local = copy_executable_to_local_bin(
+                        out_dir,
+                        build_mode,
+                        bin_target_identity.as_deref(),
+                        &ros2_bridge,
+                    )?;
                     build_info.executables.ros2_bridge =
                         Some(relative_to_out_dir(out_dir, &local)?);
                     record_build_artifact(&mut build_info, "ros2_bridge", out_dir, &local)?;
@@ -3091,6 +3110,20 @@ fn build_info_for_contract(
     info.target = Some(bundle_target_name(contract));
     info.platform = bundle_target_platform(contract);
     Ok(info)
+}
+
+fn apply_build_target_metadata(
+    build_info: &mut build_model::BuildInfo,
+    target_profile: Option<&BuildToolchainProfile>,
+) -> Result<()> {
+    let (_, host_target_triple) = rustc_toolchain_identity()?;
+    build_info.host_target_triple = Some(host_target_triple);
+    build_info.target_identity = Some(build_target_identity(target_profile));
+    if let Some(target_profile) = target_profile {
+        build_info.platform = Some(target_profile.profile.platform.clone());
+        build_info.rust_target_triple = Some(target_profile.profile.rust_target.clone());
+    }
+    Ok(())
 }
 
 fn record_build_artifact(
@@ -3723,17 +3756,30 @@ fn ros2_bridge_executable_name(contract: &ContractIr) -> String {
     )
 }
 
+fn build_target_identity(target_profile: Option<&BuildToolchainProfile>) -> String {
+    bin_target_identity(target_profile).unwrap_or_else(|| "native".to_string())
+}
+
+fn bin_target_identity(target_profile: Option<&BuildToolchainProfile>) -> Option<String> {
+    target_profile
+        .filter(|profile| profile.cargo_target_triple.is_some())
+        .map(|profile| profile.profile.platform.clone())
+}
+
 fn copy_executable_to_local_bin(
     out_dir: &Path,
     build_mode: BuildMode,
+    target_identity: Option<&str>,
     built: &Path,
 ) -> Result<PathBuf> {
     let file_name = built
         .file_name()
         .context("built executable path has no file name")?;
-    let destination = out_dir
-        .join("build")
-        .join("bin")
+    let mut destination = out_dir.join("build").join("bin");
+    if let Some(target_identity) = target_identity {
+        destination = destination.join(target_identity);
+    }
+    let destination = destination
         .join(build_mode.cargo_profile_dir())
         .join(file_name);
     if let Some(parent) = destination.parent() {

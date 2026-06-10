@@ -253,6 +253,12 @@ pub struct BuildInfo {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust_target_triple: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_target_triple: Option<String>,
     pub rsdl_profile: Option<String>,
     pub build_mode: BuildMode,
     pub deps_target_dir: Option<PathBuf>,
@@ -290,6 +296,9 @@ impl BuildInfo {
             flowrt_version: flowrt_version.into(),
             target: None,
             platform: None,
+            target_identity: None,
+            rust_target_triple: None,
+            host_target_triple: None,
             rsdl_profile,
             build_mode,
             deps_target_dir,
@@ -524,7 +533,14 @@ mod tests {
             BuildMode::Release,
             Some(PathBuf::from("/cache/flowrt/target")),
         );
-        info.executables.rust_app = Some(PathBuf::from("build/bin/release/robot-flowrt-app"));
+        info.target = Some("pi".to_string());
+        info.platform = Some("linux-arm64".to_string());
+        info.rust_target_triple = Some("aarch64-unknown-linux-gnu".to_string());
+        info.host_target_triple = Some("x86_64-unknown-linux-gnu".to_string());
+        info.target_identity = Some("linux-arm64".to_string());
+        info.executables.rust_app = Some(PathBuf::from(
+            "build/bin/linux-arm64/release/robot-flowrt-app",
+        ));
         let json = serde_json::to_string(&info).unwrap();
         let decoded: BuildInfo = serde_json::from_str(&json).unwrap();
 

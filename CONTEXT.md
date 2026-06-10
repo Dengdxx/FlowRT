@@ -447,9 +447,13 @@ backend 为 `inproc`。
 - `inproc` 是单进程 backend；launch 和单独 process run 必须拒绝 inproc dataflow
   跨 RSDL process group。
 - `build` 默认 release。Rust app、generated supervisor、C++ app 和 ROS2 bridge
-  adapter 都复制到 `flowrt/build/bin/<mode>/`；`flowrt/build/build-info.json` 记录
-  build mode、deps target 目录和 executable 相对路径。缺少匹配 deps ready marker 时，
-  `build` 会 fail-fast，提示先运行 `flowrt deps`。
+  adapter 在 native 或无 cross target triple 时继续复制到兼容路径
+  `flowrt/build/bin/<mode>/`；实际 cross target 构建复制到
+  `flowrt/build/bin/<platform>/<mode>/`，避免 host/target 同名二进制互相覆盖。
+  `flowrt/build/build-info.json` 记录 build mode、target name、platform、
+  target identity、Rust target triple、host triple、deps target 目录和 executable
+  相对路径。缺少匹配 deps ready marker 时，`build` 会 fail-fast，提示先运行
+  `flowrt deps`。
 - Rust app、generated supervisor 和 deps prewarm 使用同一个 Rust target triple。
   target triple 会进入 cache key 和 ready marker；Cargo cross target 输出位于
   `CARGO_TARGET_DIR/<triple>/<profile>/`，CLI 会按该路径定位二进制。

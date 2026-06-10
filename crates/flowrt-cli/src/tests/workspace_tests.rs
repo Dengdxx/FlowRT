@@ -1031,6 +1031,30 @@ fn build_info_rejects_requested_mode_mismatch() {
 }
 
 #[test]
+fn build_info_records_cross_target_identity_metadata() {
+    let profile = BuildToolchainProfile {
+        profile: linux_arm64_toolchain_profile(),
+        cargo_target_triple: Some("aarch64-unknown-linux-gnu".to_string()),
+    };
+    let mut info =
+        build_model::BuildInfo::new(env!("CARGO_PKG_VERSION"), None, BuildMode::Release, None);
+
+    apply_build_target_metadata(&mut info, Some(&profile)).unwrap();
+
+    let (_, host_target) = rustc_toolchain_identity().unwrap();
+    assert_eq!(info.platform.as_deref(), Some("linux-arm64"));
+    assert_eq!(info.target_identity.as_deref(), Some("linux-arm64"));
+    assert_eq!(
+        info.rust_target_triple.as_deref(),
+        Some("aarch64-unknown-linux-gnu")
+    );
+    assert_eq!(
+        info.host_target_triple.as_deref(),
+        Some(host_target.as_str())
+    );
+}
+
+#[test]
 fn deps_runtime_features_project_profile_before_validation() {
     let source = r#"
 [package]
@@ -1473,7 +1497,7 @@ fn built_executables_are_copied_to_local_release_bin() {
     let built = cmake_dir.join(format!("robot_cpp_app{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&built, "binary").unwrap();
 
-    let local = copy_executable_to_local_bin(&out_dir, BuildMode::Release, &built)
+    let local = copy_executable_to_local_bin(&out_dir, BuildMode::Release, None, &built)
         .expect("built executable should be copied to local bin");
 
     assert_eq!(
@@ -1490,6 +1514,44 @@ fn built_executables_are_copied_to_local_release_bin() {
             .join("bin")
             .join("release")
             .join(format!("robot_cpp_app{}", std::env::consts::EXE_SUFFIX))
+    );
+    assert_eq!(std::fs::read_to_string(local).unwrap(), "binary");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cross_built_executables_are_copied_to_target_platform_bin() {
+    let root = temp_test_dir("target-platform-bin");
+    let out_dir = root.join("flowrt");
+    let cargo_dir = root
+        .join("cargo-target")
+        .join("aarch64-unknown-linux-gnu")
+        .join("release");
+    std::fs::create_dir_all(&cargo_dir).unwrap();
+    let built = cargo_dir.join(format!("robot-flowrt-app{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&built, "binary").unwrap();
+
+    let local =
+        copy_executable_to_local_bin(&out_dir, BuildMode::Release, Some("linux-arm64"), &built)
+            .expect("cross built executable should be copied to target bin");
+
+    assert_eq!(
+        local,
+        out_dir
+            .join("build")
+            .join("bin")
+            .join("linux-arm64")
+            .join("release")
+            .join(format!("robot-flowrt-app{}", std::env::consts::EXE_SUFFIX))
+    );
+    assert_eq!(
+        relative_to_out_dir(&out_dir, &local).unwrap(),
+        PathBuf::from("build")
+            .join("bin")
+            .join("linux-arm64")
+            .join("release")
+            .join(format!("robot-flowrt-app{}", std::env::consts::EXE_SUFFIX))
     );
     assert_eq!(std::fs::read_to_string(local).unwrap(), "binary");
 
