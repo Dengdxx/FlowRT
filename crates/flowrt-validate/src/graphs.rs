@@ -4,8 +4,8 @@ use std::path::{Component, Path};
 use flowrt_ir::{
     BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind,
     OperationConcurrencyPolicy, OperationPortIr, OperationPortRef, OperationPreemptPolicy, PortIr,
-    PortRef, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr,
-    TaskReadiness, TriggerKind, TypeExpr,
+    PortRef, PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr,
+    ServicePortRef, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
 };
 
 use crate::ValidationError;
@@ -628,6 +628,18 @@ fn validate_tasks(
         .binds
         .iter()
         .map(|bind| (bind.to.instance.id.clone(), bind.to.port.as_str()))
+        .chain(
+            graph
+                .ros2_bridges
+                .iter()
+                .filter(|bridge| bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt)
+                .map(|bridge| {
+                    (
+                        bridge.flowrt.instance.id.clone(),
+                        bridge.flowrt.port.as_str(),
+                    )
+                }),
+        )
         .collect::<BTreeSet<_>>();
 
     for task in &graph.tasks {
@@ -889,30 +901,21 @@ fn validate_ros2_bridges(
                 bridge.name, bridge.backend.0
             )));
         }
-        if bridge.direction != Ros2BridgeDirection::FlowrtToRos2 {
-            errors.push(ValidationError::new(format!(
-                "ROS2 bridge `{}` has unsupported direction",
-                bridge.name
-            )));
-        }
-        if bridge.ros2_type != "std_msgs/msg/String" {
-            errors.push(ValidationError::new(format!(
-                "ROS2 bridge `{}` uses unsupported ROS2 type `{}`; only `std_msgs/msg/String` is supported",
-                bridge.name, bridge.ros2_type
-            )));
-        }
-
-        let source_port =
-            match resolve_port(components, instances, &bridge.flowrt, PortDirection::Output) {
+        let endpoint_direction = match bridge.direction {
+            Ros2BridgeDirection::FlowrtToRos2 => PortDirection::Output,
+            Ros2BridgeDirection::Ros2ToFlowrt => PortDirection::Input,
+        };
+        let flowrt_port =
+            match resolve_port(components, instances, &bridge.flowrt, endpoint_direction) {
                 Ok(port) => port,
                 Err(message) => {
                     errors.push(ValidationError::new(message));
                     continue;
                 }
             };
-        let TypeExpr::Named { name: type_name } = &source_port.ty else {
+        let TypeExpr::Named { name: type_name } = &flowrt_port.ty else {
             errors.push(ValidationError::new(format!(
-                "ROS2 bridge `{}` source `{}.{}` must use a named message type",
+                "ROS2 bridge `{}` FlowRT endpoint `{}.{}` must use a named message type",
                 bridge.name, bridge.flowrt.instance.name, bridge.flowrt.port
             )));
             continue;
@@ -920,24 +923,19 @@ fn validate_ros2_bridges(
         let Some(message_type) = types.get(type_name.as_str()) else {
             continue;
         };
-        let Some(field) = message_type
-            .fields
-            .iter()
-            .find(|field| field.name == bridge.field)
-        else {
-            errors.push(ValidationError::new(format!(
-                "ROS2 bridge `{}` maps field `{}`, but type `{}` has no such field",
-                bridge.name, bridge.field, message_type.name
-            )));
-            continue;
-        };
-        if !matches!(field.ty, TypeExpr::VarString { .. }) {
-            errors.push(ValidationError::new(format!(
-                "ROS2 bridge `{}` maps field `{}` of type `{}`, but `std_msgs/msg/String.data` requires `string`",
-                bridge.name,
-                bridge.field,
-                field.ty.canonical_syntax()
-            )));
+        match bridge.ros2_type.as_str() {
+            "std_msgs/msg/String" => {
+                validate_ros2_string_bridge(bridge, message_type, errors);
+            }
+            "geometry_msgs/msg/Pose" => {
+                validate_ros2_pose_bridge(bridge, message_type, &types, errors);
+            }
+            _ => {
+                errors.push(ValidationError::new(format!(
+                    "ROS2 bridge `{}` uses unsupported ROS2 type `{}`",
+                    bridge.name, bridge.ros2_type
+                )));
+            }
         }
 
         let Some(instance) = instances.get(bridge.flowrt.instance.name.as_str()) else {
@@ -959,6 +957,130 @@ fn validate_ros2_bridges(
                 bridge.name, target.name
             )));
         }
+    }
+}
+
+fn validate_ros2_string_bridge(
+    bridge: &flowrt_ir::Ros2BridgeIr,
+    message_type: &flowrt_ir::TypeIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(field) = message_type
+        .fields
+        .iter()
+        .find(|field| field.name == bridge.field)
+    else {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` maps field `{}`, but type `{}` has no such field",
+            bridge.name, bridge.field, message_type.name
+        )));
+        return;
+    };
+    if !matches!(field.ty, TypeExpr::VarString { .. }) {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` maps field `{}` of type `{}`, but `std_msgs/msg/String.data` requires `string`",
+            bridge.name,
+            bridge.field,
+            field.ty.canonical_syntax()
+        )));
+    }
+}
+
+fn validate_ros2_pose_bridge(
+    bridge: &flowrt_ir::Ros2BridgeIr,
+    message_type: &flowrt_ir::TypeIr,
+    types: &BTreeMap<&str, &flowrt_ir::TypeIr>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut missing = Vec::new();
+    if let Some(position) = require_named_field(message_type, "position", types, &mut missing) {
+        for field in ["x", "y", "z"] {
+            require_primitive_field(position, field, PrimitiveType::F64, &mut missing);
+        }
+    }
+    if let Some(orientation) = require_named_field(message_type, "orientation", types, &mut missing)
+    {
+        for field in ["x", "y", "z", "w"] {
+            require_primitive_field(orientation, field, PrimitiveType::F64, &mut missing);
+        }
+    }
+    if !missing.is_empty() {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` maps type `{}` to geometry_msgs/msg/Pose, but required fields are missing or mismatched: {}",
+            bridge.name,
+            message_type.name,
+            missing.join(", ")
+        )));
+    }
+}
+
+fn require_named_field<'a>(
+    ty: &'a flowrt_ir::TypeIr,
+    field: &str,
+    types: &BTreeMap<&str, &'a flowrt_ir::TypeIr>,
+    missing: &mut Vec<String>,
+) -> Option<&'a flowrt_ir::TypeIr> {
+    let Some(field_ir) = ty.fields.iter().find(|candidate| candidate.name == field) else {
+        missing.push(format!("{}.{}", ty.name, field));
+        return None;
+    };
+    let TypeExpr::Named { name } = &field_ir.ty else {
+        missing.push(format!(
+            "{}.{} expected named type, found {}",
+            ty.name,
+            field,
+            field_ir.ty.canonical_syntax()
+        ));
+        return None;
+    };
+    match types.get(name.as_str()).copied() {
+        Some(named) => Some(named),
+        None => {
+            missing.push(format!(
+                "{}.{} references unknown type {}",
+                ty.name, field, name
+            ));
+            None
+        }
+    }
+}
+
+fn require_primitive_field(
+    ty: &flowrt_ir::TypeIr,
+    field: &str,
+    expected: PrimitiveType,
+    missing: &mut Vec<String>,
+) {
+    let Some(field_ir) = ty.fields.iter().find(|candidate| candidate.name == field) else {
+        missing.push(format!("{}.{}", ty.name, field));
+        return;
+    };
+    if !matches!(field_ir.ty, TypeExpr::Primitive { name } if name == expected) {
+        missing.push(format!(
+            "{}.{} expected {}, found {}",
+            ty.name,
+            field,
+            primitive_type_name(expected),
+            field_ir.ty.canonical_syntax()
+        ));
+    }
+}
+
+fn primitive_type_name(ty: PrimitiveType) -> &'static str {
+    match ty {
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::U8 => "u8",
+        PrimitiveType::U16 => "u16",
+        PrimitiveType::U32 => "u32",
+        PrimitiveType::U64 => "u64",
+        PrimitiveType::U128 => "u128",
+        PrimitiveType::I8 => "i8",
+        PrimitiveType::I16 => "i16",
+        PrimitiveType::I32 => "i32",
+        PrimitiveType::I64 => "i64",
+        PrimitiveType::I128 => "i128",
+        PrimitiveType::F32 => "f32",
+        PrimitiveType::F64 => "f64",
     }
 }
 

@@ -11,8 +11,8 @@ use flowrt_ir::{ComponentIr, ContractIr, LanguageKind};
 
 use crate::runtime_plan::{
     bind_runtime_plans, bridge_runtime_plans, contract_has_runtime_params_for_language,
-    incoming_bind_index_map, outgoing_bind_indices_map, outgoing_bridge_indices_map,
-    process_runtime_plans,
+    incoming_bind_index_map, incoming_bridge_index_map, outgoing_bind_indices_map,
+    outgoing_bridge_indices_map, process_runtime_plans,
 };
 use crate::{component_by_name, component_rust_name, managed_header};
 
@@ -120,6 +120,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
+    let incoming_bridge_index = incoming_bridge_index_map(&bridge_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
     let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
     let selected_backend = selected_backend_name(contract);
@@ -222,6 +223,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         binds: &bind_plans,
         bridges: &bridge_plans,
         incoming_bind_index: &incoming_bind_index,
+        incoming_bridge_index: &incoming_bridge_index,
         outgoing_bind_indices: &outgoing_bind_indices,
         outgoing_bridge_indices: &outgoing_bridge_indices,
         service_server_instances: &service_server_instances,
@@ -232,7 +234,13 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     // service hidden task step functions
     output.push_str(&emit_rust_service_step_functions(contract, graph));
     output.push_str(&emit_rust_operation_step_functions(contract, graph));
-    output.push_str(&emit_rust_app_run(contract, graph, &order, &bind_plans));
+    output.push_str(&emit_rust_app_run(
+        contract,
+        graph,
+        &order,
+        &bind_plans,
+        &bridge_plans,
+    ));
     output.push_str(&lifecycle_emit::emit_rust_app_run_process_dispatch(
         &process_plans,
     ));
@@ -240,6 +248,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         contract,
         graph,
         &bind_plans,
+        &bridge_plans,
         &process_plans,
         &mut output,
     );

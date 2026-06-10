@@ -4,17 +4,18 @@ use flowrt_ir::{
     ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness,
     LanguageKind, OperationConcurrencyPolicy, OperationPreemptPolicy,
     OverflowPolicy as IrOverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, PortIr,
-    ResourceKind, StalePolicy as IrStalePolicy,
+    ResourceKind, Ros2BridgeDirection, StalePolicy as IrStalePolicy,
 };
 
 use crate::messages::cpp_type;
 use crate::runtime_plan::{
     BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
     active_binds_for_instances, bind_backend, bind_runtime_plans, bridge_runtime_plans,
-    incoming_bind_index_map, indent_generated_block, indent_generated_block_levels,
-    nested_step_indent, on_message_trigger_guard, outgoing_bind_indices_map,
-    outgoing_bridge_indices_map, process_runtime_plans, runtime_channel_message_type,
-    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name, step_indent,
+    incoming_bind_index_map, incoming_bridge_index_map, indent_generated_block,
+    indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
+    outgoing_bind_indices_map, outgoing_bridge_indices_map, process_runtime_plans,
+    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
+    runtime_param_name, step_indent,
 };
 use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
@@ -147,6 +148,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
+    let incoming_bridge_index = incoming_bridge_index_map(&bridge_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
     let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
     let selected_backend = selected_backend_name(contract);
@@ -175,6 +177,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         binds: &bind_plans,
         bridges: &bridge_plans,
         incoming_bind_index: &incoming_bind_index,
+        incoming_bridge_index: &incoming_bridge_index,
         outgoing_bind_indices: &outgoing_bind_indices,
         outgoing_bridge_indices: &outgoing_bridge_indices,
     };
@@ -275,6 +278,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         shutdown_function_name: "step_shutdown",
         order: &order,
         binds: &bind_plans,
+        bridges: &bridge_plans,
         graph,
         process: None,
         package_name: &contract.package.name,
@@ -294,6 +298,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             shutdown_function_name: &shutdown_function_name,
             order: &process.instances,
             binds: &bind_plans,
+            bridges: &bridge_plans,
             graph,
             process: Some(process),
             package_name: &contract.package.name,
@@ -801,6 +806,7 @@ struct CppStepEmission<'a> {
     binds: &'a [BindRuntimePlan],
     bridges: &'a [BridgeRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
+    incoming_bridge_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
 }
@@ -887,6 +893,20 @@ fn emit_cpp_app_step(
                         ));
                         output.push_str(&indent_generated_block(
                             &cpp_runtime_stale_error_guard(&input_local, bind),
+                            true,
+                        ));
+                    } else if let Some(bridge_index) = emission
+                        .incoming_bridge_index
+                        .get(&(instance.name.clone(), input.name.clone()))
+                    {
+                        let bridge = &emission.bridges[*bridge_index];
+                        output.push_str(&indent_generated_block(
+                            &cpp_bridge_runtime_channel_read(
+                                input,
+                                bridge,
+                                &input_local,
+                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            ),
                             true,
                         ));
                     } else {
@@ -1079,6 +1099,7 @@ struct CppRunEmission<'a> {
     shutdown_function_name: &'a str,
     order: &'a [&'a InstanceIr],
     binds: &'a [BindRuntimePlan],
+    bridges: &'a [BridgeRuntimePlan],
     graph: &'a GraphIr,
     process: Option<&'a ProcessRuntimePlan<'a>>,
     package_name: &'a str,
@@ -1311,7 +1332,11 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = 0}});\n"
         ));
     }
-    output.push_str(&emit_cpp_on_message_revision_state(&tasks, run.binds));
+    output.push_str(&emit_cpp_on_message_revision_state(
+        &tasks,
+        run.binds,
+        run.bridges,
+    ));
     output.push_str(&format!(
         "    const auto scheduler_base_period_ms = std::uint64_t{{{}}};\n",
         cpp_scheduler_base_period_ms(&tasks)
@@ -1341,7 +1366,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "        introspection_state.record_tick();\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
     ));
     output.push_str(&indent_generated_block_levels(
-        &emit_cpp_on_message_wake_checks(&tasks, run.binds),
+        &emit_cpp_on_message_wake_checks(&tasks, run.binds, run.bridges),
         1,
     ));
     // service wake checks
@@ -1581,6 +1606,15 @@ fn cpp_task_seen_revision_name(bind: &BindRuntimePlan, task: &flowrt_ir::TaskIr)
     )
 }
 
+fn cpp_bridge_seen_revision_name(bridge: &BridgeRuntimePlan, task: &flowrt_ir::TaskIr) -> String {
+    format!(
+        "{}_seen_revision_for_{}_{}",
+        bridge.field_name,
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
 fn cpp_input_binds_for_task<'a>(
     task: &flowrt_ir::TaskIr,
     binds: &'a [BindRuntimePlan],
@@ -1595,9 +1629,26 @@ fn cpp_input_binds_for_task<'a>(
         .collect()
 }
 
+fn cpp_input_bridges_for_task<'a>(
+    task: &flowrt_ir::TaskIr,
+    bridges: &'a [BridgeRuntimePlan],
+) -> Vec<&'a BridgeRuntimePlan> {
+    task.inputs
+        .iter()
+        .filter_map(|input| {
+            bridges.iter().find(|bridge| {
+                bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+                    && bridge.source_instance == task.instance.name
+                    && bridge.source_port == *input
+            })
+        })
+        .collect()
+}
+
 fn emit_cpp_on_message_revision_state(
     tasks: &[&flowrt_ir::TaskIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for task in tasks
@@ -1611,6 +1662,12 @@ fn emit_cpp_on_message_revision_state(
                 seen = cpp_task_seen_revision_name(bind, task)
             ));
         }
+        for bridge in cpp_input_bridges_for_task(task, bridges) {
+            output.push_str(&format!(
+                "    std::uint64_t {seen} = 0;\n",
+                seen = cpp_bridge_seen_revision_name(bridge, task)
+            ));
+        }
     }
     output
 }
@@ -1618,6 +1675,7 @@ fn emit_cpp_on_message_revision_state(
 fn emit_cpp_on_message_wake_checks(
     tasks: &[&flowrt_ir::TaskIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for (index, task) in tasks.iter().enumerate() {
@@ -1625,7 +1683,8 @@ fn emit_cpp_on_message_wake_checks(
             continue;
         }
         let input_binds = cpp_input_binds_for_task(task, binds);
-        if input_binds.is_empty() {
+        let input_bridges = cpp_input_bridges_for_task(task, bridges);
+        if input_binds.is_empty() && input_bridges.is_empty() {
             continue;
         }
         for bind in &input_binds {
@@ -1636,7 +1695,13 @@ fn emit_cpp_on_message_wake_checks(
                 ));
             }
         }
-        let checks = input_binds
+        for bridge in &input_bridges {
+            output.push_str(&format!(
+                "        (void){field}_.receive_latest_at(tick_time_ms);\n",
+                field = bridge.field_name
+            ));
+        }
+        let mut checks = input_binds
             .iter()
             .map(|bind| {
                 let revision_changed = format!(
@@ -1654,6 +1719,13 @@ fn emit_cpp_on_message_wake_checks(
                 }
             })
             .collect::<Vec<_>>();
+        checks.extend(input_bridges.iter().map(|bridge| {
+            format!(
+                "{field}_.revision() != {seen}",
+                field = bridge.field_name,
+                seen = cpp_bridge_seen_revision_name(bridge, task)
+            )
+        }));
         let joiner = match task.readiness {
             flowrt_ir::TaskReadiness::AnyReady => " || ",
             flowrt_ir::TaskReadiness::AllReady => " && ",
@@ -1664,6 +1736,13 @@ fn emit_cpp_on_message_wake_checks(
                 "            {seen} = {field}_.revision();\n",
                 seen = cpp_task_seen_revision_name(bind, task),
                 field = bind.field_name
+            ));
+        }
+        for bridge in &input_bridges {
+            output.push_str(&format!(
+                "            {seen} = {field}_.revision();\n",
+                seen = cpp_bridge_seen_revision_name(bridge, task),
+                field = bridge.field_name
             ));
         }
         output.push_str(&format!(
@@ -1928,6 +2007,27 @@ fn cpp_bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
     format!(
         "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
         field = bridge.field_name
+    )
+}
+
+fn cpp_bridge_runtime_channel_read(
+    input: &PortIr,
+    bridge: &BridgeRuntimePlan,
+    local_name: &str,
+    use_cached_transport: bool,
+) -> String {
+    if use_cached_transport {
+        return format!(
+            "    const auto {local} = {field}_.cached_latest_at(tick_time_ms);\n",
+            local = local_name,
+            field = bridge.field_name
+        );
+    }
+    format!(
+        "    auto {local}_result = {field}_.receive_latest_at(tick_time_ms);\n    if (std::holds_alternative<flowrt::ChannelError>({local}_result)) {{\n        return flowrt::Status::Error;\n    }}\n    const auto {local} = std::get<flowrt::Latest<{ty}>>({local}_result);\n",
+        local = local_name,
+        field = bridge.field_name,
+        ty = cpp_type(&input.ty)
     )
 }
 

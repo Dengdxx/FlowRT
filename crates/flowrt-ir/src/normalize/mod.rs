@@ -179,9 +179,10 @@ mod tests {
         CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OperationBackendSource,
         OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
         OverflowPolicy, ParamType, ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
-        ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind, RouteTopology,
-        RtPolicy, ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness,
-        TypeExpr, channel_route_capabilities, deployment_capability_decision,
+        ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind,
+        Ros2BridgeDirection, RouteTopology, RtPolicy, ServiceBackendSource, ServiceOverflowPolicy,
+        StalePolicy, TaskReadiness, TypeExpr, channel_route_capabilities,
+        deployment_capability_decision,
     };
 
     #[test]
@@ -237,6 +238,86 @@ backends = ["inproc"]
             ir.targets[0].platform,
             Some(crate::TargetPlatform::LinuxAmd64)
         );
+    }
+
+    #[test]
+    fn normalizes_ros2_bridge_bidirectional_typed_slice() {
+        let source = r#"
+[package]
+name = "ros2_bridge_demo"
+rsdl_version = "0.1"
+
+[type.TextFrame]
+data = "string"
+
+[type.Pose]
+position = "Point3"
+orientation = "Quaternion"
+
+[type.Point3]
+x = "f64"
+y = "f64"
+z = "f64"
+
+[type.Quaternion]
+x = "f64"
+y = "f64"
+z = "f64"
+w = "f64"
+
+[component.source]
+language = "rust"
+output = ["text:TextFrame", "pose:Pose"]
+
+[component.sink]
+language = "rust"
+input = ["pose:Pose"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[[bridge.ros2]]
+flowrt = "source.text"
+ros2_topic = "/flowrt/text"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+
+[[bridge.ros2]]
+flowrt = "source.pose"
+ros2_topic = "/flowrt/pose"
+ros2_type = "geometry_msgs/msg/Pose"
+direction = "flowrt_to_ros2"
+
+[[bridge.ros2]]
+flowrt = "sink.pose"
+ros2_topic = "/ros2/pose"
+ros2_type = "geometry_msgs/msg/Pose"
+direction = "ros2_to_flowrt"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let bridges = &ir.graphs[0].ros2_bridges;
+
+        assert_eq!(bridges.len(), 3);
+        assert_eq!(bridges[0].direction, Ros2BridgeDirection::FlowrtToRos2);
+        assert_eq!(bridges[1].direction, Ros2BridgeDirection::FlowrtToRos2);
+        assert_eq!(bridges[2].direction, Ros2BridgeDirection::Ros2ToFlowrt);
+        assert_eq!(bridges[2].flowrt.instance.name, "sink");
+        assert_eq!(bridges[2].flowrt.port, "pose");
+        assert_eq!(bridges[2].backend.0, "zenoh");
     }
 
     #[test]

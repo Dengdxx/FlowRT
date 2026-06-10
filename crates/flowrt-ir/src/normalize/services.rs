@@ -323,6 +323,7 @@ fn parse_port_ref(
 fn parse_ros2_bridge_direction(context: &str, value: &str) -> Result<Ros2BridgeDirection> {
     match value {
         "flowrt_to_ros2" => Ok(Ros2BridgeDirection::FlowrtToRos2),
+        "ros2_to_flowrt" => Ok(Ros2BridgeDirection::Ros2ToFlowrt),
         _ => Err(IrError::InvalidEnum {
             context: context.to_string(),
             kind: "ROS2 bridge direction",

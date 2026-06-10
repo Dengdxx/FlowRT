@@ -1070,6 +1070,66 @@ backend = "zenoh"
     }
 
     #[test]
+    fn parses_ros2_bridge_bidirectional_typed_tables() {
+        let document = parse_str(
+            r#"
+[package]
+name = "ros2_bridge_demo"
+rsdl_version = "0.1"
+
+[type.Pose]
+position = "Point3"
+orientation = "Quaternion"
+
+[type.Point3]
+x = "f64"
+y = "f64"
+z = "f64"
+
+[type.Quaternion]
+x = "f64"
+y = "f64"
+z = "f64"
+w = "f64"
+
+[component.source]
+language = "rust"
+output = ["pose:Pose"]
+
+[component.sink]
+language = "rust"
+input = ["pose:Pose"]
+
+[instance.source]
+component = "source"
+
+[instance.sink]
+component = "sink"
+
+[[bridge.ros2]]
+flowrt = "source.pose"
+ros2_topic = "/flowrt/pose"
+ros2_type = "geometry_msgs/msg/Pose"
+direction = "flowrt_to_ros2"
+
+[[bridge.ros2]]
+flowrt = "sink.pose"
+ros2_topic = "/ros2/pose"
+ros2_type = "geometry_msgs/msg/Pose"
+direction = "ros2_to_flowrt"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(document.ros2_bridges.len(), 2);
+        assert_eq!(document.ros2_bridges[0].direction, "flowrt_to_ros2");
+        assert_eq!(document.ros2_bridges[0].field, None);
+        assert_eq!(document.ros2_bridges[1].direction, "ros2_to_flowrt");
+        assert_eq!(document.ros2_bridges[1].field, None);
+        assert_eq!(document.ros2_bridges[1].ros2_type, "geometry_msgs/msg/Pose");
+    }
+
+    #[test]
     fn load_file_expands_workspace_modules_and_compositions() {
         let root = unique_temp_dir();
         std::fs::create_dir_all(root.join("modules")).unwrap();

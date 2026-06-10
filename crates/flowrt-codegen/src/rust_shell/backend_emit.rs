@@ -162,6 +162,25 @@ pub(super) fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String
     )
 }
 
+pub(super) fn bridge_runtime_channel_read(
+    input: &flowrt_ir::PortIr,
+    bridge: &BridgeRuntimePlan,
+    use_cached_transport: bool,
+) -> String {
+    if use_cached_transport {
+        return format!(
+            "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n",
+            input = input.name,
+            field = bridge.field_name
+        );
+    }
+    format!(
+        "        let {input} = match self.{field}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
+        input = input.name,
+        field = bridge.field_name
+    )
+}
+
 pub(crate) fn iox2_service_name(
     contract: &ContractIr,
     graph: &GraphIr,

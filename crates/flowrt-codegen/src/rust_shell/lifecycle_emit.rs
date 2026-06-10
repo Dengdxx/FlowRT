@@ -147,6 +147,7 @@ pub(super) fn emit_rust_app_run(
     graph: &GraphIr,
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
@@ -165,6 +166,7 @@ pub(super) fn emit_rust_app_run(
         },
         order,
         binds,
+        bridges,
         graph,
         process: None,
         process_name: "main",
@@ -193,6 +195,7 @@ pub(super) fn emit_process_run_functions(
     contract: &ContractIr,
     graph: &GraphIr,
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
     processes: &[ProcessRuntimePlan<'_>],
     output: &mut String,
 ) {
@@ -217,6 +220,7 @@ pub(super) fn emit_process_run_functions(
             },
             order: &process.instances,
             binds,
+            bridges,
             graph,
             process: Some(process),
             process_name: &process.name,
@@ -239,6 +243,7 @@ struct RustRunFunctionEmission<'a> {
     steps: RustRunStepFunctions<'a>,
     order: &'a [&'a InstanceIr],
     binds: &'a [BindRuntimePlan],
+    bridges: &'a [BridgeRuntimePlan],
     graph: &'a GraphIr,
     process: Option<&'a ProcessRuntimePlan<'a>>,
     process_name: &'a str,
@@ -361,6 +366,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         emission.graph,
         emission.order,
         emission.binds,
+        emission.bridges,
         emission.process,
         emission.steps.scheduler,
     ));

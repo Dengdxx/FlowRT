@@ -555,6 +555,7 @@ pub struct Ros2BridgeIr {
 #[serde(rename_all = "snake_case")]
 pub enum Ros2BridgeDirection {
     FlowrtToRos2,
+    Ros2ToFlowrt,
 }
 
 /// instance 的执行单元。

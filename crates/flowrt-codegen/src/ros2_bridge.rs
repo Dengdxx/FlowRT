@@ -1,4 +1,4 @@
-use flowrt_ir::{ContractIr, GraphIr, TypeExpr};
+use flowrt_ir::{ContractIr, GraphIr, Ros2BridgeDirection, TypeExpr};
 
 use crate::messages::cpp_type;
 use crate::runtime_plan::{BridgeRuntimePlan, bridge_runtime_plans};
@@ -18,6 +18,7 @@ pub(crate) fn emit_ros2_bridge_adapter(contract: &ContractIr) -> String {
 
 #include <flowrt/runtime.hpp>
 
+#include <geometry_msgs/msg/pose.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <zenoh.hxx>
@@ -135,6 +136,12 @@ bool env_flag_enabled(const char* value) noexcept {
     return flag == "1" || flag == "true" || flag == "TRUE" || flag == "yes" || flag == "on";
 }
 
+std::uint64_t now_ms() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
 ::zenoh::Config bridge_zenoh_config_from_environment() {
     auto config = ::zenoh::Config::create_default();
     if (const auto* mode = std::getenv("FLOWRT_ZENOH_MODE")) {
@@ -195,6 +202,22 @@ class BridgeZenohLatest {
     std::string key_expr_;
     std::optional<::zenoh::Session> session_;
     std::optional<Subscriber> subscriber_;
+};
+
+template <flowrt::CanonicalTransportMessage T>
+class BridgeZenohPublisher {
+   public:
+    explicit BridgeZenohPublisher(std::string_view key_expr)
+        : endpoint_(flowrt::zenoh::ZenohPubSub<T>::open_with_config(
+              std::string{key_expr}, flowrt::zenoh::ZenohChannelConfig::latest())) {}
+
+    bool publish(const T& value, std::uint64_t published_at_ms) {
+        return !std::holds_alternative<flowrt::ChannelError>(
+            endpoint_.publish_at(T{value}, published_at_ms));
+    }
+
+   private:
+    flowrt::zenoh::ZenohPubSub<T> endpoint_;
 };
 
 "#,
@@ -262,12 +285,13 @@ fn emit_bridge_context(
     let message_type = cpp_type(&bridge.source_type);
     let context = bridge_context_name(bridge);
     let key_expr = ros2_bridge_key_expr(contract, graph, bridge);
-    let field = &bridge.field;
     let ros2_topic = &bridge.ros2_topic;
-    let field_type = bridge_field_type(contract, bridge);
-
-    format!(
-        r#"using flowrt_app::{message_type};
+    match (bridge.direction, bridge.ros2_type.as_str()) {
+        (Ros2BridgeDirection::FlowrtToRos2, "std_msgs/msg/String") => {
+            let field = &bridge.field;
+            let field_type = bridge_field_type(contract, bridge);
+            format!(
+                r#"using flowrt_app::{message_type};
 
 struct {context} {{
     BridgeZenohLatest<{message_type}> endpoint;
@@ -295,9 +319,109 @@ struct {context} {{
 static_assert(std::is_same_v<{field_type}, std::string>, "ROS2 std_msgs/String bridge field must be string");
 
 "#,
-        key_expr = cpp_string_literal(&key_expr),
-        ros2_topic = cpp_string_literal(ros2_topic),
-    )
+                key_expr = cpp_string_literal(&key_expr),
+                ros2_topic = cpp_string_literal(ros2_topic),
+            )
+        }
+        (Ros2BridgeDirection::FlowrtToRos2, "geometry_msgs/msg/Pose") => {
+            format!(
+                r#"using flowrt_app::{message_type};
+
+struct {context} {{
+    BridgeZenohLatest<{message_type}> endpoint;
+    rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr publisher;
+
+    static {context} make(const std::shared_ptr<rclcpp::Node>& node) {{
+        return {context}{{
+            BridgeZenohLatest<{message_type}>({key_expr}),
+            node->create_publisher<geometry_msgs::msg::Pose>({ros2_topic}, 10),
+        }};
+    }}
+
+    void poll() {{
+        auto latest = endpoint.receive_latest();
+        if (!latest.has_value()) {{
+            return;
+        }}
+        const auto& value = *latest;
+        geometry_msgs::msg::Pose message;
+{to_ros2}
+        publisher->publish(message);
+    }}
+}};
+
+"#,
+                key_expr = cpp_string_literal(&key_expr),
+                ros2_topic = cpp_string_literal(ros2_topic),
+                to_ros2 = pose_to_ros2_assignments("message", "value"),
+            )
+        }
+        (Ros2BridgeDirection::Ros2ToFlowrt, "std_msgs/msg/String") => {
+            let field = &bridge.field;
+            let field_type = bridge_field_type(contract, bridge);
+            format!(
+                r#"using flowrt_app::{message_type};
+
+struct {context} {{
+    std::shared_ptr<BridgeZenohPublisher<{message_type}>> endpoint;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscriber;
+
+    static {context} make(const std::shared_ptr<rclcpp::Node>& node) {{
+        auto endpoint = std::make_shared<BridgeZenohPublisher<{message_type}>>({key_expr});
+        auto subscriber = node->create_subscription<std_msgs::msg::String>(
+            {ros2_topic}, 10,
+            [endpoint](const std_msgs::msg::String& message) {{
+                {message_type} value{{}};
+                value.{field} = message.data;
+                (void)endpoint->publish(value, now_ms());
+            }});
+        return {context}{{endpoint, subscriber}};
+    }}
+
+    void poll() {{}}
+}};
+
+static_assert(std::is_same_v<{field_type}, std::string>, "ROS2 std_msgs/String bridge field must be string");
+
+"#,
+                key_expr = cpp_string_literal(&key_expr),
+                ros2_topic = cpp_string_literal(ros2_topic),
+            )
+        }
+        (Ros2BridgeDirection::Ros2ToFlowrt, "geometry_msgs/msg/Pose") => {
+            format!(
+                r#"using flowrt_app::{message_type};
+
+struct {context} {{
+    std::shared_ptr<BridgeZenohPublisher<{message_type}>> endpoint;
+    rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr subscriber;
+
+    static {context} make(const std::shared_ptr<rclcpp::Node>& node) {{
+        auto endpoint = std::make_shared<BridgeZenohPublisher<{message_type}>>({key_expr});
+        auto subscriber = node->create_subscription<geometry_msgs::msg::Pose>(
+            {ros2_topic}, 10,
+            [endpoint](const geometry_msgs::msg::Pose& message) {{
+                {message_type} value{{}};
+{from_ros2}
+                (void)endpoint->publish(value, now_ms());
+            }});
+        return {context}{{endpoint, subscriber}};
+    }}
+
+    void poll() {{}}
+}};
+
+"#,
+                key_expr = cpp_string_literal(&key_expr),
+                ros2_topic = cpp_string_literal(ros2_topic),
+                from_ros2 = pose_from_ros2_assignments("value", "message"),
+            )
+        }
+        _ => format!(
+            "static_assert(false, \"unsupported FlowRT ROS2 bridge type or direction: {}\");\n",
+            bridge.ros2_type
+        ),
+    }
 }
 
 fn bridge_context_name(bridge: &BridgeRuntimePlan) -> String {
@@ -315,6 +439,32 @@ fn bridge_field_type(contract: &ContractIr, bridge: &BridgeRuntimePlan) -> Strin
         .find(|field| field.name == bridge.field)
         .expect("validated ROS2 bridge must reference known message field");
     cpp_type(&field.ty)
+}
+
+fn pose_to_ros2_assignments(message: &str, value: &str) -> String {
+    [
+        format!("        {message}.position.x = {value}.position.x;"),
+        format!("        {message}.position.y = {value}.position.y;"),
+        format!("        {message}.position.z = {value}.position.z;"),
+        format!("        {message}.orientation.x = {value}.orientation.x;"),
+        format!("        {message}.orientation.y = {value}.orientation.y;"),
+        format!("        {message}.orientation.z = {value}.orientation.z;"),
+        format!("        {message}.orientation.w = {value}.orientation.w;"),
+    ]
+    .join("\n")
+}
+
+fn pose_from_ros2_assignments(value: &str, message: &str) -> String {
+    [
+        format!("                {value}.position.x = {message}.position.x;"),
+        format!("                {value}.position.y = {message}.position.y;"),
+        format!("                {value}.position.z = {message}.position.z;"),
+        format!("                {value}.orientation.x = {message}.orientation.x;"),
+        format!("                {value}.orientation.y = {message}.orientation.y;"),
+        format!("                {value}.orientation.z = {message}.orientation.z;"),
+        format!("                {value}.orientation.w = {message}.orientation.w;"),
+    ]
+    .join("\n")
 }
 
 pub(crate) fn ros2_bridge_stem(contract: &ContractIr) -> String {

@@ -214,12 +214,20 @@ fn launch_ros2_bridges(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json
                 "flowrt": format!("{}.{}", bridge.source_instance, bridge.source_port),
                 "ros2_topic": bridge.ros2_topic,
                 "ros2_type": bridge.ros2_type,
+                "direction": ros2_bridge_direction_name(bridge.direction),
                 "field": bridge.field,
                 "backend": "zenoh",
                 "key_expr": ros2_bridge_key_expr(contract, graph, bridge),
             })
         })
         .collect()
+}
+
+fn ros2_bridge_direction_name(direction: flowrt_ir::Ros2BridgeDirection) -> &'static str {
+    match direction {
+        flowrt_ir::Ros2BridgeDirection::FlowrtToRos2 => "flowrt_to_ros2",
+        flowrt_ir::Ros2BridgeDirection::Ros2ToFlowrt => "ros2_to_flowrt",
+    }
 }
 
 fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {

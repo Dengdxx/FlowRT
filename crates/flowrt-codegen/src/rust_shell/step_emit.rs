@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ChannelKind, ContractIr, GraphIr, InstanceIr, PortIr, StalePolicy as IrStalePolicy, TaskIr,
+    ChannelKind, ContractIr, GraphIr, InstanceIr, PortIr, Ros2BridgeDirection,
+    StalePolicy as IrStalePolicy, TaskIr,
 };
 
 use crate::messages::rust_type;
@@ -19,6 +20,7 @@ pub(super) struct RustStepEmission<'a> {
     pub binds: &'a [BindRuntimePlan],
     pub bridges: &'a [BridgeRuntimePlan],
     pub incoming_bind_index: &'a BTreeMap<(String, String), usize>,
+    pub incoming_bridge_index: &'a BTreeMap<(String, String), usize>,
     pub outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     pub outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     /// 需要 Arc<Mutex<...>> 存储的 service / Operation server 实例名集合。
@@ -79,29 +81,48 @@ pub(super) fn emit_rust_app_step(
 
             for input in &component.inputs {
                 if task_inputs.contains(input.name.as_str()) {
-                    let bind_index = emission
+                    if let Some(bind_index) = emission
                         .incoming_bind_index
                         .get(&(instance.name.clone(), input.name.clone()))
-                        .expect("validated graph must provide a bind for each task input");
-                    let bind = &emission.binds[*bind_index];
-                    let task_health = task_health_name(task);
-                    output.push_str(&indent_generated_block(
-                        &super::backend_emit::runtime_channel_read(
-                            input,
-                            bind,
-                            task.trigger == flowrt_ir::TriggerKind::OnMessage,
-                        ),
-                        true,
-                    ));
-                    // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
-                    output.push_str(&indent_generated_block(
-                        &runtime_stale_health_record(input, &task_health),
-                        true,
-                    ));
-                    output.push_str(&indent_generated_block(
-                        &runtime_stale_error_guard(input, bind),
-                        true,
-                    ));
+                    {
+                        let bind = &emission.binds[*bind_index];
+                        let task_health = task_health_name(task);
+                        output.push_str(&indent_generated_block(
+                            &super::backend_emit::runtime_channel_read(
+                                input,
+                                bind,
+                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            ),
+                            true,
+                        ));
+                        // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
+                        output.push_str(&indent_generated_block(
+                            &runtime_stale_health_record(input, &task_health),
+                            true,
+                        ));
+                        output.push_str(&indent_generated_block(
+                            &runtime_stale_error_guard(input, bind),
+                            true,
+                        ));
+                    } else if let Some(bridge_index) = emission
+                        .incoming_bridge_index
+                        .get(&(instance.name.clone(), input.name.clone()))
+                    {
+                        let bridge = &emission.bridges[*bridge_index];
+                        output.push_str(&indent_generated_block(
+                            &super::backend_emit::bridge_runtime_channel_read(
+                                input,
+                                bridge,
+                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            ),
+                            true,
+                        ));
+                    } else {
+                        output.push_str(&format!(
+                            "            let {input} = flowrt::Latest::new(None, false);\n",
+                            input = input.name
+                        ));
+                    }
                 } else {
                     output.push_str(&format!(
                         "            let {input} = flowrt::Latest::new(None, false);\n",
@@ -285,6 +306,7 @@ pub(super) fn runtime_step_uses_tick_time(
 pub(super) fn emit_rust_on_message_revision_state(
     tasks: &[&TaskIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for task in tasks
@@ -298,6 +320,12 @@ pub(super) fn emit_rust_on_message_revision_state(
                 seen = task_seen_revision_name(bind, task)
             ));
         }
+        for bridge in input_bridges_for_task(task, bridges) {
+            output.push_str(&format!(
+                "        let mut {seen}: u64 = 0;\n",
+                seen = bridge_seen_revision_name(bridge, task)
+            ));
+        }
     }
     output
 }
@@ -305,6 +333,7 @@ pub(super) fn emit_rust_on_message_revision_state(
 pub(super) fn emit_rust_on_message_wake_checks(
     tasks: &[&TaskIr],
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for (index, task) in tasks.iter().enumerate() {
@@ -312,7 +341,8 @@ pub(super) fn emit_rust_on_message_wake_checks(
             continue;
         }
         let input_binds = input_binds_for_task(task, binds);
-        if input_binds.is_empty() {
+        let input_bridges = input_bridges_for_task(task, bridges);
+        if input_binds.is_empty() && input_bridges.is_empty() {
             continue;
         }
         for bind in &input_binds {
@@ -323,7 +353,13 @@ pub(super) fn emit_rust_on_message_wake_checks(
                 ));
             }
         }
-        let checks = input_binds
+        for bridge in &input_bridges {
+            output.push_str(&format!(
+                "            let _ = self.{field}.receive_latest_at(tick_time_ms);\n",
+                field = bridge.field_name
+            ));
+        }
+        let mut checks = input_binds
             .iter()
             .map(|bind| {
                 let revision_changed = format!(
@@ -341,6 +377,13 @@ pub(super) fn emit_rust_on_message_wake_checks(
                 }
             })
             .collect::<Vec<_>>();
+        checks.extend(input_bridges.iter().map(|bridge| {
+            format!(
+                "self.{field}.revision() != {seen}",
+                field = bridge.field_name,
+                seen = bridge_seen_revision_name(bridge, task)
+            )
+        }));
         let joiner = match task.readiness {
             flowrt_ir::TaskReadiness::AnyReady => " || ",
             flowrt_ir::TaskReadiness::AllReady => " && ",
@@ -351,6 +394,13 @@ pub(super) fn emit_rust_on_message_wake_checks(
                 "                {seen} = self.{field}.revision();\n",
                 seen = task_seen_revision_name(bind, task),
                 field = bind.field_name
+            ));
+        }
+        for bridge in &input_bridges {
+            output.push_str(&format!(
+                "                {seen} = self.{field}.revision();\n",
+                seen = bridge_seen_revision_name(bridge, task),
+                field = bridge.field_name
             ));
         }
         output.push_str(&format!(
@@ -419,6 +469,15 @@ pub(super) fn task_seen_revision_name(bind: &BindRuntimePlan, task: &TaskIr) -> 
     )
 }
 
+pub(super) fn bridge_seen_revision_name(bridge: &BridgeRuntimePlan, task: &TaskIr) -> String {
+    format!(
+        "{}_seen_revision_for_{}_{}",
+        bridge.field_name,
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
 pub(super) fn input_binds_for_task<'a>(
     task: &TaskIr,
     binds: &'a [BindRuntimePlan],
@@ -428,6 +487,22 @@ pub(super) fn input_binds_for_task<'a>(
         .filter_map(|input| {
             binds.iter().find(|bind| {
                 bind.target_instance == task.instance.name && bind.target_port == *input
+            })
+        })
+        .collect()
+}
+
+pub(super) fn input_bridges_for_task<'a>(
+    task: &TaskIr,
+    bridges: &'a [BridgeRuntimePlan],
+) -> Vec<&'a BridgeRuntimePlan> {
+    task.inputs
+        .iter()
+        .filter_map(|input| {
+            bridges.iter().find(|bridge| {
+                bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+                    && bridge.source_instance == task.instance.name
+                    && bridge.source_port == *input
             })
         })
         .collect()

@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OperationConcurrencyPolicy,
     OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ParamIr,
-    Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness,
-    TriggerKind, TypeExpr,
+    Ros2BridgeDirection, Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -139,6 +139,7 @@ pub(crate) struct BridgeRuntimePlan {
     pub(crate) source_port: String,
     pub(crate) ros2_topic: String,
     pub(crate) ros2_type: String,
+    pub(crate) direction: Ros2BridgeDirection,
     pub(crate) field: String,
 }
 
@@ -226,18 +227,26 @@ fn bridge_runtime_plan(
     index: usize,
     bridge: &Ros2BridgeIr,
 ) -> BridgeRuntimePlan {
-    let source_instance = instance_by_name(graph, &bridge.flowrt.instance.name);
-    let source_component = component_by_name(contract, &source_instance.component.name);
-    let source_port = port_by_name(&source_component.outputs, &bridge.flowrt.port);
+    let flowrt_instance = instance_by_name(graph, &bridge.flowrt.instance.name);
+    let flowrt_component = component_by_name(contract, &flowrt_instance.component.name);
+    let flowrt_port = match bridge.direction {
+        Ros2BridgeDirection::FlowrtToRos2 => {
+            port_by_name(&flowrt_component.outputs, &bridge.flowrt.port)
+        }
+        Ros2BridgeDirection::Ros2ToFlowrt => {
+            port_by_name(&flowrt_component.inputs, &bridge.flowrt.port)
+        }
+    };
     BridgeRuntimePlan {
         index,
         name: bridge.name.clone(),
         field_name: bridge.name.clone(),
-        source_type: source_port.ty.clone(),
-        source_instance: source_instance.name.clone(),
+        source_type: flowrt_port.ty.clone(),
+        source_instance: flowrt_instance.name.clone(),
         source_port: bridge.flowrt.port.clone(),
         ros2_topic: bridge.ros2_topic.clone(),
         ros2_type: bridge.ros2_type.clone(),
+        direction: bridge.direction,
         field: bridge.field.clone(),
     }
 }
@@ -272,12 +281,30 @@ pub(crate) fn outgoing_bridge_indices_map(
     plans: &[BridgeRuntimePlan],
 ) -> BTreeMap<(String, String), Vec<usize>> {
     let mut map = BTreeMap::new();
-    for plan in plans {
+    for plan in plans
+        .iter()
+        .filter(|plan| plan.direction == Ros2BridgeDirection::FlowrtToRos2)
+    {
         map.entry((plan.source_instance.clone(), plan.source_port.clone()))
             .or_insert_with(Vec::new)
             .push(plan.index);
     }
     map
+}
+
+pub(crate) fn incoming_bridge_index_map(
+    plans: &[BridgeRuntimePlan],
+) -> BTreeMap<(String, String), usize> {
+    plans
+        .iter()
+        .filter(|plan| plan.direction == Ros2BridgeDirection::Ros2ToFlowrt)
+        .map(|plan| {
+            (
+                (plan.source_instance.clone(), plan.source_port.clone()),
+                plan.index,
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn active_binds_for_instances<'a>(

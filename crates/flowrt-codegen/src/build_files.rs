@@ -92,11 +92,15 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
         }
         if has_ros2_bridge {
             let bridge_target = ros2_bridge_stem(contract);
-            output.push_str(cmake_ros2_bridge_dependency_block());
+            let has_pose_bridge = contract_has_ros2_bridge_type(contract, "geometry_msgs/msg/Pose");
+            output.push_str(&cmake_ros2_bridge_dependency_block(has_pose_bridge));
             output.push_str(&format!(
                 "\nadd_executable({bridge_target} ../cpp/src/ros2_bridge.cpp)\n"
             ));
-            output.push_str(&cmake_ros2_bridge_target_block(&bridge_target));
+            output.push_str(&cmake_ros2_bridge_target_block(
+                &bridge_target,
+                has_pose_bridge,
+            ));
         }
     }
 
@@ -219,14 +223,30 @@ endif()
 "#
 }
 
-fn cmake_ros2_bridge_dependency_block() -> &'static str {
-    r#"
+fn contract_has_ros2_bridge_type(contract: &ContractIr, ros2_type: &str) -> bool {
+    contract.graphs.iter().any(|graph| {
+        graph
+            .ros2_bridges
+            .iter()
+            .any(|bridge| bridge.ros2_type == ros2_type)
+    })
+}
+
+fn cmake_ros2_bridge_dependency_block(has_pose_bridge: bool) -> String {
+    let mut output = String::from(
+        r#"
 if(DEFINED ENV{AMENT_PREFIX_PATH})
   cmake_path(CONVERT "$ENV{AMENT_PREFIX_PATH}" TO_CMAKE_PATH_LIST FLOWRT_AMENT_PREFIX_PATH)
   list(PREPEND CMAKE_PREFIX_PATH ${FLOWRT_AMENT_PREFIX_PATH})
 endif()
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
+"#,
+    );
+    if has_pose_bridge {
+        output.push_str("find_package(geometry_msgs REQUIRED)\n");
+    }
+    output.push_str(
+        r#"find_package(std_msgs REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rmw_zenoh_cpp REQUIRED)
 find_package(zenoh_cpp_vendor REQUIRED)
@@ -236,10 +256,17 @@ set(FLOWRT_ROS2_ZENOH_LIB "${FLOWRT_ROS2_ZENOH_VENDOR_PREFIX}/lib/libzenohc.so")
 if(NOT EXISTS "${FLOWRT_ROS2_ZENOH_INCLUDE}/zenoh.hxx" OR NOT EXISTS "${FLOWRT_ROS2_ZENOH_LIB}")
   message(FATAL_ERROR "rmw_zenoh_cpp must provide zenoh_cpp_vendor headers and libzenohc.so under ${FLOWRT_ROS2_ZENOH_VENDOR_PREFIX}. Install the ROS2 zenoh RMW package for the selected ROS2 distribution.")
 endif()
-"#
+"#,
+    );
+    output
 }
 
-fn cmake_ros2_bridge_target_block(bridge_target: &str) -> String {
+fn cmake_ros2_bridge_target_block(bridge_target: &str, has_pose_bridge: bool) -> String {
+    let geometry_msgs_target = if has_pose_bridge {
+        " geometry_msgs::geometry_msgs__rosidl_typesupport_cpp"
+    } else {
+        ""
+    };
     format!(
         r#"target_compile_features({bridge_target} PRIVATE cxx_std_20)
 target_include_directories({bridge_target} PRIVATE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)
@@ -252,7 +279,7 @@ else()
 endif()
 target_include_directories({bridge_target} BEFORE PRIVATE ${{FLOWRT_ROS2_ZENOH_INCLUDE}})
 target_compile_definitions({bridge_target} PRIVATE ZENOHCXX_ZENOHC)
-target_link_libraries({bridge_target} PRIVATE rclcpp::rclcpp std_msgs::std_msgs__rosidl_typesupport_cpp rosidl_typesupport_cpp::rosidl_typesupport_cpp ${{FLOWRT_ROS2_ZENOH_LIB}})
+target_link_libraries({bridge_target} PRIVATE rclcpp::rclcpp{geometry_msgs_target} std_msgs::std_msgs__rosidl_typesupport_cpp rosidl_typesupport_cpp::rosidl_typesupport_cpp ${{FLOWRT_ROS2_ZENOH_LIB}})
 set_property(TARGET {bridge_target} APPEND PROPERTY BUILD_RPATH "${{FLOWRT_ROS2_ZENOH_VENDOR_PREFIX}}/lib")
 "#
     )
