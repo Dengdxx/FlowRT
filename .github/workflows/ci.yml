@@ -274,6 +274,53 @@ jobs:
           cargo test -p flowrt-cli bundle -j1
           cargo test -p flowrt-cli deploy -j1
 
+  v080-runtime-smoke:
+    name: v0.8.0 Integration Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.8.0 RSDL/IR/validator 测试
+        run: |
+          cargo test -p flowrt-rsdl io_boundary -j1
+          cargo test -p flowrt-rsdl ros2 -j1
+          cargo test -p flowrt-ir frame_descriptor -j1
+          cargo test -p flowrt-ir ros2 -j1
+          cargo test -p flowrt-validate io_boundary -j1
+          cargo test -p flowrt-validate ros2 -j1
+
+      - name: v0.8.0 codegen 测试
+        run: |
+          cargo test -p flowrt-codegen message -j1
+          cargo test -p flowrt-codegen launch -j1
+          cargo test -p flowrt-codegen frame_descriptor -j1
+          cargo test -p flowrt-codegen ros2_bridge -j1
+          cargo test -p flowrt-codegen introspection -j1
+
+      - name: v0.8.0 runtime/CLI/record 测试
+        run: |
+          cargo test -p flowrt frame_descriptor -j1
+          cargo test -p flowrt introspection -j1
+          cargo test -p flowrt-record descriptor -j1
+          cargo test -p flowrt-cli bundle -j1
+          cargo test -p flowrt-cli deploy -j1
+          cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
+
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
     runs-on: ${{ matrix.runner }}
@@ -347,6 +394,7 @@ jobs:
       - v050-runtime-smoke
       - v060-runtime-smoke
       - v070-runtime-smoke
+      - v080-runtime-smoke
 
     steps:
       - name: 检出仓库
@@ -458,6 +506,7 @@ jobs:
           FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/rsdl/robot.rsdl
           scripts/test-v060-installed-smoke.sh
           scripts/test-v070-installed-smoke.sh
+          scripts/test-v080-installed-smoke.sh
 
   ros2-jazzy-bridge:
     name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
@@ -579,6 +628,7 @@ jobs:
       - v050-runtime-smoke
       - v060-runtime-smoke
       - v070-runtime-smoke
+      - v080-runtime-smoke
       - cpp-zenoh-runtime
       - package
       - demo-smoke

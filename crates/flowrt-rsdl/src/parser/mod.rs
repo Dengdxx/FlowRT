@@ -317,6 +317,72 @@ backends = ["zenoh"]
     }
 
     #[test]
+    fn parses_io_boundary_resource_descriptor_tables() {
+        let document = parse_str(
+            r#"
+[package]
+name = "io_boundary_demo"
+rsdl_version = "0.1"
+
+[type.FrameHandle]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+format = "u32"
+encoding = "u32"
+
+[component.camera]
+language = "rust"
+kind = "io_boundary"
+io_side_effect = ["device", "read"]
+io_readiness = "resource_ready"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+output = ["frame:FrameHandle"]
+
+[component.camera.resource.frames]
+kind = "shm"
+required = true
+
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+format = "rgb8"
+encoding = "row_major"
+metadata = { width = "640", height = "480" }
+record_payload = true
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 33
+output = ["frame"]
+"#,
+        )
+        .unwrap();
+
+        let camera = &document.components["camera"];
+        assert_eq!(camera.kind.as_deref(), Some("io_boundary"));
+        assert_eq!(camera.io_side_effect, vec!["device", "read"]);
+        assert_eq!(camera.io_readiness.as_deref(), Some("resource_ready"));
+        assert_eq!(camera.io_health.as_deref(), Some("runtime_reported"));
+        assert_eq!(camera.io_shutdown.as_deref(), Some("cooperative"));
+        assert_eq!(camera.resources.len(), 1);
+        let resource = &camera.resources[0];
+        assert_eq!(resource.name, "frames");
+        assert_eq!(resource.kind, "shm");
+        assert!(resource.required);
+        let descriptor = resource.descriptor.as_ref().unwrap();
+        assert_eq!(descriptor.kind, "frame");
+        assert_eq!(descriptor.format, "rgb8");
+        assert_eq!(descriptor.encoding.as_deref(), Some("row_major"));
+        assert_eq!(descriptor.metadata["width"], "640");
+        assert!(descriptor.record_payload);
+    }
+
+    #[test]
     fn parses_scheduler_v2_task_fields() {
         let source = r#"
 [package]
