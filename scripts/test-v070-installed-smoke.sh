@@ -34,7 +34,7 @@ test -x "$project/flowrt/build/bin/release/external-driver-demo-flowrt-superviso
 "$flowrt" launch --run-steps 2 "$project/rsdl/robot.rsdl"
 "$flowrt" bundle "$project/rsdl/robot.rsdl" --output "$project/dist/bundle"
 test -f "$project/dist/bundle/bundle.toml"
-test -x "$project/dist/bundle/bin/external-driver-demo-flowrt-supervisor"
+test -x "$project/dist/bundle/bin/$flowrt_platform/external-driver-demo-flowrt-supervisor"
 test -x "$project/dist/bundle/external/fake_sensor_driver/bin/driver"
 "$flowrt" deploy "$project/dist/bundle" --host dry-run@example.invalid --target edge --remote-dir /tmp/flowrt-v070 --dry-run
 
