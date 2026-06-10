@@ -21,6 +21,17 @@ command -v "$flowrt" >/dev/null || {
 }
 "$flowrt" --version
 
+require_grep() {
+    local pattern="$1"
+    local file="$2"
+    local label="$3"
+    if ! grep -q "$pattern" "$file"; then
+        printf 'missing expected %s in %s\n' "$label" "$file" >&2
+        sed -n '1,260p' "$file" >&2
+        exit 1
+    fi
+}
+
 case "$(uname -m)" in
     x86_64) flowrt_platform="linux-amd64" ;;
     aarch64 | arm64) flowrt_platform="linux-arm64" ;;
@@ -43,8 +54,10 @@ cp -a "$repo_root/examples/mixed_zenoh_demo" "$mixed_zenoh"
 rm -rf "$mixed_zenoh/flowrt"
 "$flowrt" check "$mixed_zenoh/rsdl/robot.rsdl"
 "$flowrt" build --launcher "$mixed_zenoh/rsdl/robot.rsdl"
-grep -q '"type_name": "CrossHostFrame"' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json"
-grep -q '"abi_kind": "variable_frame"' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json"
+require_grep '"message_frames": \[' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json" "message frame list"
+require_grep '"type_name": "CrossHostFrame"' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json" "CrossHostFrame frame"
+require_grep '"encoding": "canonical_frame_v1"' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json" "canonical frame encoding"
+require_grep '"variable": true' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json" "variable frame marker"
 FLOWRT_TICK_SLEEP_MS=5 "$flowrt" launch --run-steps 20 "$mixed_zenoh/rsdl/robot.rsdl"
 
 io_demo="$work_dir/io_boundary_demo"
@@ -157,9 +170,9 @@ EOF
 "$flowrt" build --launcher "$io_demo/rsdl/robot.rsdl"
 test -x "$io_demo/flowrt/build/bin/release/io-boundary-demo-flowrt-app"
 test -x "$io_demo/flowrt/build/bin/release/io-boundary-demo-flowrt-supervisor"
-grep -q '"kind": "io_boundary"' "$io_demo/flowrt/selfdesc/selfdesc.json"
-grep -q '"descriptor"' "$io_demo/flowrt/selfdesc/selfdesc.json"
-grep -q '"record_payload": false' "$io_demo/flowrt/selfdesc/selfdesc.json"
+require_grep '"kind": "io_boundary"' "$io_demo/flowrt/selfdesc/selfdesc.json" "io_boundary component"
+require_grep '"descriptor"' "$io_demo/flowrt/selfdesc/selfdesc.json" "resource descriptor"
+require_grep '"record_payload": false' "$io_demo/flowrt/selfdesc/selfdesc.json" "descriptor-only recording policy"
 
 FLOWRT_TICK_SLEEP_MS=10 "$flowrt" run "$io_demo/rsdl/robot.rsdl" --process main &
 runtime_pid="$!"
