@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 mod build_model;
 mod introspection;
 mod record;
+mod toolchain;
 
 use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use introspection::{

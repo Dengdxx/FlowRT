@@ -5,7 +5,13 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.1`。`v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
+当前 workspace 版本为 `0.8.1`。`v0.8.2` 开发线聚焦安装版 FlowRT 的交叉编译
+主路径，先为 `linux-amd64` host 到 `linux-arm64` target 提供 `flowrt deps/build
+--target <name>` 所需的 toolchain profile 配置层和 target SDK 布局基础；RSDL target
+仍只描述目标语义，交叉编译器、sysroot、CMake toolchain 和 pkg-config 路径由
+toolchain profile / FlowRT target SDK 提供，不写入 RSDL 或 Contract IR。
+
+`v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
 descriptor-only 观测/录制、`frame_descriptor_demo` 示例、microbench 和 v0.8.1
 focused release gate。

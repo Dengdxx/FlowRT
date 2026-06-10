@@ -30,4 +30,5 @@ mod command_tests;
 mod echo_params_tests;
 mod record_tests;
 mod selfdesc_status_hz_tests;
+mod toolchain_tests;
 mod workspace_tests;
