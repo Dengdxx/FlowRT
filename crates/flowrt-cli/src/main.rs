@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -2990,7 +2990,8 @@ fn build_workspace(
                 record_build_artifact(&mut build_info, "supervisor", out_dir, &local)?;
             }
             BuildStep::CmakeApp => {
-                let built = run_cmake_configure_and_build(contract, out_dir, build_mode)?;
+                let built =
+                    run_cmake_configure_and_build(contract, out_dir, build_mode, target_profile)?;
                 if let Some(cpp_app) = built.cpp_app {
                     let local = copy_executable_to_local_bin(out_dir, build_mode, &cpp_app)?;
                     build_info.executables.cpp_app = Some(relative_to_out_dir(out_dir, &local)?);
@@ -3343,24 +3344,58 @@ struct CmakeBuildOutputs {
     ros2_bridge: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CppTargetSdk {
+    root: PathBuf,
+    cmake_dir: Option<PathBuf>,
+    pkgconfig_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CppTargetSdkManifest {
+    platform: String,
+    complete: bool,
+    cmake_dir: Option<PathBuf>,
+    pkgconfig_dir: Option<PathBuf>,
+    include_dir: Option<PathBuf>,
+    lib_dir: Option<PathBuf>,
+}
+
 fn run_cmake_configure_and_build(
     contract: &ContractIr,
     out_dir: &Path,
     build_mode: BuildMode,
+    target_profile: Option<&BuildToolchainProfile>,
 ) -> Result<CmakeBuildOutputs> {
+    let toolchain_profile = target_profile
+        .filter(|profile| profile.cargo_target_triple.is_some())
+        .map(|profile| &profile.profile);
     let source_dir = out_dir.join("build");
     let build_dir = source_dir
         .join("cmake")
         .join(build_mode.cargo_profile_dir());
     let runtime_dir = cpp_runtime_dir_for_generated_build()?;
-    let cmake_prefix_paths =
-        cmake_prefix_paths_for_runtime(runtime_dir.as_deref(), &cmake_prefix_path_from_env());
+    let existing_prefix_paths = cmake_prefix_path_from_env();
+    let target_sdk = toolchain_profile
+        .map(|profile| resolve_cpp_target_sdk_root(runtime_dir.as_deref(), &profile.platform))
+        .transpose()?;
+    let cmake_runtime_dir = target_sdk
+        .as_ref()
+        .map(|sdk| sdk.root.as_path())
+        .or(runtime_dir.as_deref());
+    let cmake_prefix_paths = if let Some(sdk) = &target_sdk {
+        cmake_prefix_paths_for_target_sdk(sdk, &existing_prefix_paths)
+    } else {
+        cmake_prefix_paths_for_runtime(runtime_dir.as_deref(), &existing_prefix_paths)
+    };
     run_cmake_configure(
         &source_dir,
         &build_dir,
-        runtime_dir.as_deref(),
+        cmake_runtime_dir,
         &cmake_prefix_paths,
         build_mode,
+        toolchain_profile,
+        target_sdk.as_ref(),
     )?;
     run_cmake_build(&build_dir)?;
     let cpp_app = build_dir.join(cpp_app_executable_name(contract));
@@ -3385,6 +3420,8 @@ fn run_cmake_configure(
     runtime_dir: Option<&Path>,
     cmake_prefix_paths: &[PathBuf],
     build_mode: BuildMode,
+    toolchain_profile: Option<&ToolchainProfile>,
+    target_sdk: Option<&CppTargetSdk>,
 ) -> Result<()> {
     let args = cmake_configure_args(
         source_dir,
@@ -3392,9 +3429,15 @@ fn run_cmake_configure(
         runtime_dir,
         cmake_prefix_paths,
         build_mode,
+        toolchain_profile,
     );
-    let status = ProcessCommand::new("cmake")
-        .args(args)
+    let configure_env = cmake_configure_env(toolchain_profile, target_sdk);
+    let mut command = ProcessCommand::new("cmake");
+    command.args(args);
+    for (key, value) in configure_env {
+        command.env(key, value);
+    }
+    let status = command
         .status()
         .context("failed to spawn cmake configure")?;
     if !status.success() {
@@ -3409,6 +3452,7 @@ fn cmake_configure_args(
     runtime_dir: Option<&Path>,
     cmake_prefix_paths: &[PathBuf],
     build_mode: BuildMode,
+    toolchain_profile: Option<&ToolchainProfile>,
 ) -> Vec<String> {
     let mut args = vec![
         "-S".to_string(),
@@ -3432,7 +3476,46 @@ fn cmake_configure_args(
     if repo_runtime_fallback_allowed() {
         args.push("-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON".to_string());
     }
+    if let Some(profile) = toolchain_profile {
+        if let Some(cmake_toolchain) = &profile.cmake_toolchain {
+            args.push(format!(
+                "-DCMAKE_TOOLCHAIN_FILE={}",
+                cmake_toolchain.to_string_lossy()
+            ));
+        } else {
+            args.push(format!("-DCMAKE_C_COMPILER={}", profile.c_compiler));
+            args.push(format!("-DCMAKE_CXX_COMPILER={}", profile.cpp_compiler));
+            if let Some(sysroot) = &profile.sysroot {
+                args.push(format!("-DCMAKE_SYSROOT={}", sysroot.to_string_lossy()));
+            }
+        }
+    }
     args
+}
+
+fn cmake_configure_env(
+    toolchain_profile: Option<&ToolchainProfile>,
+    target_sdk: Option<&CppTargetSdk>,
+) -> BTreeMap<&'static str, OsString> {
+    let mut values = BTreeMap::new();
+    let mut pkg_config_paths = Vec::new();
+    if let Some(profile) = toolchain_profile
+        && let Some(pkg_config_libdir) = &profile.pkg_config_libdir
+    {
+        push_unique_path(&mut pkg_config_paths, pkg_config_libdir);
+    }
+    if let Some(sdk) = target_sdk
+        && let Some(pkgconfig_dir) = &sdk.pkgconfig_dir
+        && pkgconfig_dir.is_dir()
+    {
+        push_unique_path(&mut pkg_config_paths, pkgconfig_dir);
+    }
+    if !pkg_config_paths.is_empty() {
+        let joined = env::join_paths(&pkg_config_paths)
+            .expect("PKG_CONFIG_LIBDIR paths should be joinable on this host");
+        values.insert("PKG_CONFIG_LIBDIR", joined);
+    }
+    values
 }
 
 fn cmake_prefix_path_from_env() -> Vec<PathBuf> {
@@ -3457,6 +3540,112 @@ fn cmake_prefix_paths_for_runtime(
         }
     }
     prefixes
+}
+
+fn cmake_prefix_paths_for_target_sdk(sdk: &CppTargetSdk, existing: &[PathBuf]) -> Vec<PathBuf> {
+    let mut prefixes = Vec::new();
+    push_unique_path(&mut prefixes, &sdk.root);
+    if let Some(cmake_dir) = &sdk.cmake_dir {
+        push_unique_path(&mut prefixes, cmake_dir);
+    }
+    for prefix in existing {
+        push_unique_path(&mut prefixes, prefix);
+    }
+    prefixes
+}
+
+fn resolve_cpp_target_sdk_root(runtime_dir: Option<&Path>, platform: &str) -> Result<CppTargetSdk> {
+    let runtime_dir = runtime_dir.with_context(|| {
+        format!(
+            "FlowRT target SDK for {platform} is missing; install a package that embeds this target SDK or configure FLOWRT_CPP_RUNTIME_DIR / toolchain profile to a complete SDK"
+        )
+    })?;
+    let candidates = cpp_target_sdk_root_candidates(runtime_dir, platform);
+    for candidate in &candidates {
+        let manifest = candidate.join("flowrt-target-sdk.toml");
+        if manifest.exists() {
+            return read_cpp_target_sdk_manifest(candidate, platform);
+        }
+    }
+    let searched = candidates
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "FlowRT target SDK for {platform} is missing at {searched}; install a package that embeds this target SDK or configure FLOWRT_CPP_RUNTIME_DIR / toolchain profile to a complete SDK"
+    );
+}
+
+fn cpp_target_sdk_root_candidates(runtime_dir: &Path, platform: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if runtime_dir.file_name() == Some(OsStr::new(platform))
+        || runtime_dir.join("flowrt-target-sdk.toml").exists()
+    {
+        push_unique_path(&mut candidates, runtime_dir);
+    }
+    push_unique_path(&mut candidates, &runtime_dir.join("targets").join(platform));
+    if let Some(private_prefix) = flowrt_private_prefix_from_runtime_dir(runtime_dir) {
+        push_unique_path(
+            &mut candidates,
+            &private_prefix.join("targets").join(platform),
+        );
+    }
+    if let Some(private_prefix) = flowrt_private_prefix_from_cpp_runtime_dir(runtime_dir) {
+        push_unique_path(
+            &mut candidates,
+            &private_prefix.join("targets").join(platform),
+        );
+    }
+    candidates
+}
+
+fn read_cpp_target_sdk_manifest(root: &Path, platform: &str) -> Result<CppTargetSdk> {
+    let manifest_path = root.join("flowrt-target-sdk.toml");
+    let source = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read `{}`", manifest_path.display()))?;
+    let manifest: CppTargetSdkManifest = toml::from_str(&source)
+        .with_context(|| format!("failed to parse `{}`", manifest_path.display()))?;
+    if manifest.platform != platform {
+        anyhow::bail!(
+            "FlowRT target SDK manifest platform `{}` does not match requested `{platform}` at {}",
+            manifest.platform,
+            manifest_path.display()
+        );
+    }
+    if !manifest.complete {
+        anyhow::bail!(
+            "FlowRT target SDK for {platform} is incomplete at {}; install a package that embeds this target SDK or configure FLOWRT_CPP_RUNTIME_DIR / toolchain profile to a complete SDK",
+            root.display()
+        );
+    }
+    let _include_dir = manifest
+        .include_dir
+        .as_ref()
+        .map(|path| target_sdk_manifest_path(root, path));
+    let _lib_dir = manifest
+        .lib_dir
+        .as_ref()
+        .map(|path| target_sdk_manifest_path(root, path));
+    Ok(CppTargetSdk {
+        root: root.to_path_buf(),
+        cmake_dir: manifest
+            .cmake_dir
+            .as_ref()
+            .map(|path| target_sdk_manifest_path(root, path)),
+        pkgconfig_dir: manifest
+            .pkgconfig_dir
+            .as_ref()
+            .map(|path| target_sdk_manifest_path(root, path)),
+    })
+}
+
+fn target_sdk_manifest_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
 }
 
 fn flowrt_private_prefix_from_cpp_runtime_dir(runtime_dir: &Path) -> Option<PathBuf> {

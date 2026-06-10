@@ -41,7 +41,7 @@ flowrt deps examples/import_demo/rsdl/robot.rsdl
 
 `flowrt deps` 只编译 FlowRT 底层依赖；`flowrt build` 只编译用户项目和生成 shell。默认构建模式是 release，用户二进制位于项目自己的 `flowrt/build/bin/release/`。
 
-交叉编译 Rust app 或 generated supervisor 时，用 target platform 选择 toolchain profile：
+交叉编译时，用 target platform 选择 toolchain profile：
 
 ```bash
 flowrt deps examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
@@ -52,8 +52,8 @@ flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target l
 platform；省略时如果选定 Contract IR target 已声明 platform，CLI 会自动使用该 platform，
 否则保持 native 构建。Rust/Cargo 路径会传递对应 `--target <rust-target-triple>`，缺少
 Rust target 时需要先执行 `rustup target add <triple>` 或配置本机 Rust toolchain。
-FlowRT 不自动下载系统交叉编译器，C++/CMake 的 target SDK toolchain 参数由后续交叉编译
-任务补齐。
+含 C++/CMake 产物时，CLI 会使用对应 target SDK、toolchain file 或 C/C++ compiler
+配置。FlowRT 不自动下载系统交叉编译器或板级 SDK。
 
 ## 检查 RSDL
 
@@ -152,7 +152,7 @@ flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 ```
 
-`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` 或 `zenoh` profile 时，Rust 生成物会启用 runtime crate 的对应 feature；含 C++ backend 组件时，生成 CMake 会优先使用 FlowRT 安装包内 `/opt/flowrt/<version>` 的私有 SDK，缺失时才要求显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
+`build --profile <name>` 会先投影 Contract IR，只保留选定 profile 的 deployment 视图，并让未显式写在 `bind.dataflow` 上的 channel policy 使用该 profile 的默认值，再校验和生成对应产物。`run --profile <name>` 只校验已生成产物的 profile 是否匹配，不会临时重生成。选择 `iox2` 或 `zenoh` profile 时，Rust 生成物会启用 runtime crate 的对应 feature；含 C++ backend 组件时，生成 CMake 会优先使用 FlowRT 安装包内 `/opt/flowrt/<version>` 的私有 SDK，缺失时才要求显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。C++ 项目可以用 `flowrt build --target linux-arm64 ...` 选择交叉编译 toolchain profile；此时 CMake 会要求 `/opt/flowrt/<version>/targets/linux-arm64` 或显式配置位置下存在 `complete = true` 的 target SDK，并把其 CMake/pkg-config 路径作为目标架构事实源。
 
 ## Supervisor readiness 和资源提示
 

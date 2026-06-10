@@ -89,6 +89,7 @@ cache key 包含 FlowRT 版本、Rust toolchain identity、target triple、vendo
 ```bash
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
+flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl --target linux-arm64
 ```
 
 `build` 先执行 `prepare`，再构建生成应用。默认 build mode 是 `release`。
@@ -99,6 +100,8 @@ flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target l
 - Rust-only 或含 Rust component 的 contract 当前会触发 Cargo app 构建。
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
+- `--target <platform>` 选择交叉编译 toolchain platform。Rust/Cargo 路径会使用对应
+  Rust target triple；C++/CMake 路径会消费对应 `ToolchainProfile` 和 target SDK。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会查找 `iceoryx2-cxx 0.9.1` 的 `iceoryx2-cxx::static-lib-cxx` 目标。
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
@@ -106,7 +109,7 @@ flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target l
 
 构建出的用户项目二进制统一位于 `flowrt/build/bin/<release|debug>/`，包括 Rust app、generated supervisor、C++ app 和 ROS2 bridge adapter。`flowrt/build/build-info.json` 记录本次构建的 FlowRT 版本、profile、build mode、依赖 target 目录和相对 executable 路径。
 
-`--target <platform>` 显式选择构建目标 platform，优先级高于 Contract IR target platform；省略时，`build` 使用选定 Contract IR target 的 platform，仍无 platform 时保持 native 旧行为。Rust app、generated supervisor 和 deps cache 会使用同一个 Rust target triple，并按 Cargo 的 cross target 输出路径定位二进制。当前接通的是 Rust/Cargo 主路径；C++/CMake 的 target SDK toolchain 参数由后续 CMake 接入任务完成。
+`--target <platform>` 显式选择构建目标 platform，优先级高于 Contract IR target platform；省略时，`build` 使用选定 Contract IR target 的 platform，仍无 platform 时保持 native 旧行为。Rust app、generated supervisor 和 deps cache 会使用同一个 Rust target triple，并按 Cargo 的 cross target 输出路径定位二进制。
 
 Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt deps` / `flowrt build` 会使用该私有前缀和包内 vendor；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 
@@ -116,9 +119,18 @@ backend SDK、CMake package 和 pkg-config 文件镜像到 `targets/linux-amd64`
 `targets/linux-arm64`，并在 `flowrt-target-sdk.toml` 中记录 `platform`、`multiarch`、
 `components` 和 `complete = true`。另一架构目录只放 marker 和空的 `include/`、`lib/`、
 `cmake/`、`pkgconfig/`，manifest 中 `complete = false`，不能当作可链接 SDK 使用。
-该布局是 v0.8.2 交叉编译支持的基础；当前 CLI 已把 Rust/Cargo 构建接到
-`flowrt deps/build --target <platform>`，双架构完整 SDK 聚合和 CMake toolchain 参数由
-后续任务补齐。
+
+执行 `flowrt build --target <platform>` 且构建 C++/CMake 产物时，CLI 会先解析
+toolchain profile，再从安装私有前缀或 `FLOWRT_CPP_RUNTIME_DIR` 指向的位置查找
+`targets/<platform>/flowrt-target-sdk.toml`。只有 `complete = true` 的 target SDK
+会进入 CMake；manifest 缺失或 `complete = false` 会 fail-fast，并提示安装内嵌该
+target SDK 的 FlowRT 包或显式配置完整 SDK。CMake 的 `CMAKE_PREFIX_PATH` 会优先包含
+target SDK root 及其 `cmake/` 目录，避免只使用 host 私有前缀。profile 声明
+`cmake_toolchain` 时会传 `-DCMAKE_TOOLCHAIN_FILE=...`；否则会传
+`-DCMAKE_C_COMPILER=...`、`-DCMAKE_CXX_COMPILER=...`，有 `sysroot` 时同时传
+`-DCMAKE_SYSROOT=...`。profile 或 target SDK 提供 `pkgconfig/` 时，configure 环境会
+设置 `PKG_CONFIG_LIBDIR`，避免 cross build 误用 host pkg-config 搜索路径。完整双架构
+SDK 聚合由后续 CI/package 任务补齐。
 
 默认情况下，`flowrt build` 和生成 CMake 不会回退到 FlowRT 源码树 `runtime/cpp`。在 FlowRT 仓库内开发时，设置环境变量 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1`，CLI 会同时把 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` 传给 CMake，启用源码树回退。正式用户路径不应依赖此选项。
 

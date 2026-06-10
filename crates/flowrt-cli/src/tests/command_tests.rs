@@ -558,6 +558,23 @@ fn cli_build_defaults_to_release_mode_and_accepts_debug() {
 }
 
 #[test]
+fn cli_parses_build_target_platform() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "build",
+        "examples/cpp_counter_demo/rsdl/robot.rsdl",
+        "--target",
+        "linux-arm64",
+    ])
+    .unwrap();
+
+    let Command::Build { target, .. } = cli.command else {
+        panic!("build command should parse into Command::Build")
+    };
+    assert_eq!(target.as_deref(), Some("linux-arm64"));
+}
+
+#[test]
 fn cli_parses_deps_command_with_backend_and_build_mode() {
     let cli = Cli::try_parse_from([
         "flowrt",

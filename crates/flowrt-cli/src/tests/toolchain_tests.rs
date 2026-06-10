@@ -85,6 +85,37 @@ backends = ["inproc"]
 }
 
 #[test]
+fn toolchain_build_profile_keeps_inferred_native_target_as_native() {
+    let (_, host_target) = rustc_toolchain_identity().unwrap();
+    let Some(platform) = host_toolchain_platform_for_test(&host_target) else {
+        return;
+    };
+    let root = temp_test_dir("toolchain-build-native-target-platform");
+    let contract = contract_from_source(&format!(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[target.local]
+platform = "{platform}"
+runtime = ["rust"]
+backends = ["inproc"]
+"#
+    ));
+
+    let profile = resolve_build_toolchain_profile(&contract, None, &root).unwrap();
+    let profile = profile.expect("contract target platform should resolve a profile");
+
+    assert_eq!(profile.profile.platform, platform);
+    assert_eq!(profile.profile.rust_target, host_target);
+    assert!(profile.cargo_target_triple.is_none());
+}
+
+#[test]
 fn toolchain_build_profile_uses_native_when_platform_is_absent() {
     let root = temp_test_dir("toolchain-build-native");
     let contract = contract_from_source(
@@ -102,6 +133,14 @@ language = "rust"
 
     assert!(profile.is_none());
     assert!(cargo_target_args(None).is_empty());
+}
+
+fn host_toolchain_platform_for_test(host_target: &str) -> Option<&'static str> {
+    match host_target {
+        "x86_64-unknown-linux-gnu" => Some("linux-amd64"),
+        "aarch64-unknown-linux-gnu" => Some("linux-arm64"),
+        _ => None,
+    }
 }
 
 #[test]

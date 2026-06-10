@@ -1519,7 +1519,7 @@ fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
 
-    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release, None);
 
     assert_eq!(
         args,
@@ -1549,6 +1549,7 @@ fn cmake_configure_args_can_pass_explicit_runtime_dir() {
         Some(runtime_dir),
         &[runtime_dir.to_path_buf()],
         BuildMode::Debug,
+        None,
     );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/opt/flowrt/runtime/cpp".to_string()));
@@ -1634,10 +1635,187 @@ fn cmake_configure_args_can_split_runtime_headers_from_dependency_prefix() {
         Some(runtime_dir),
         &[sdk_prefix.to_path_buf()],
         BuildMode::Release,
+        None,
     );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/repo/runtime/cpp".to_string()));
     assert!(args.contains(&"-DCMAKE_PREFIX_PATH=/opt/flowrt/0.1.0".to_string()));
+}
+
+fn write_target_sdk_manifest(root: &Path, platform: &str, complete: bool) {
+    std::fs::create_dir_all(root.join("include/flowrt")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::create_dir_all(root.join("cmake")).unwrap();
+    std::fs::create_dir_all(root.join("pkgconfig")).unwrap();
+    std::fs::write(root.join("include/flowrt/runtime.hpp"), "").unwrap();
+    std::fs::write(
+        root.join("flowrt-target-sdk.toml"),
+        format!(
+            r#"
+schema_version = 1
+platform = "{platform}"
+complete = {complete}
+include_dir = "include"
+lib_dir = "lib"
+cmake_dir = "cmake"
+pkgconfig_dir = "pkgconfig"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn linux_arm64_toolchain_profile() -> crate::toolchain::ToolchainProfile {
+    crate::toolchain::ToolchainProfile {
+        platform: "linux-arm64".to_string(),
+        rust_target: "aarch64-unknown-linux-gnu".to_string(),
+        deb_multiarch: "aarch64-linux-gnu".to_string(),
+        c_compiler: "aarch64-linux-gnu-gcc".to_string(),
+        cpp_compiler: "aarch64-linux-gnu-g++".to_string(),
+        sysroot: Some(PathBuf::from("/opt/sysroots/linux-arm64")),
+        cmake_toolchain: None,
+        pkg_config_libdir: Some(PathBuf::from("/opt/toolchains/linux-arm64/pkgconfig")),
+    }
+}
+
+#[test]
+fn cmake_target_sdk_root_requires_complete_manifest() {
+    let root = temp_test_dir("target-sdk-incomplete");
+    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let sdk_root = private_prefix.join("targets/linux-arm64");
+    write_target_sdk_manifest(&sdk_root, "linux-arm64", false);
+
+    let error = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("FlowRT target SDK for linux-arm64 is incomplete"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cmake_target_sdk_root_reports_missing_manifest() {
+    let root = temp_test_dir("target-sdk-missing");
+    let private_prefix = root.join("opt/flowrt/0.8.2");
+    std::fs::create_dir_all(private_prefix.join("targets/linux-arm64")).unwrap();
+
+    let error = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("FlowRT target SDK for linux-arm64 is missing"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cmake_configure_args_use_target_sdk_and_compilers_without_toolchain_file() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+    let root = temp_test_dir("cmake-target-sdk-compilers");
+    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let sdk_root = private_prefix.join("targets/linux-arm64");
+    write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
+    let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
+    let profile = linux_arm64_toolchain_profile();
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let prefixes = cmake_prefix_paths_for_target_sdk(&sdk, &[PathBuf::from("/opt/ros/jazzy")]);
+
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        Some(&sdk.root),
+        &prefixes,
+        BuildMode::Release,
+        Some(&profile),
+    );
+
+    let prefix_arg = args
+        .iter()
+        .find(|arg| arg.starts_with("-DCMAKE_PREFIX_PATH="))
+        .expect("target CMake prefix path should be set");
+    assert!(
+        prefix_arg.starts_with(&format!("-DCMAKE_PREFIX_PATH={}", sdk.root.display())),
+        "target SDK root should have prefix priority: {prefix_arg}"
+    );
+    assert!(args.contains(&format!("-DFLOWRT_CPP_RUNTIME_DIR={}", sdk.root.display())));
+    assert!(args.contains(&"-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc".to_string()));
+    assert!(args.contains(&"-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++".to_string()));
+    assert!(args.contains(&"-DCMAKE_SYSROOT=/opt/sysroots/linux-arm64".to_string()));
+    assert!(
+        args.iter()
+            .all(|arg| !arg.starts_with("-DCMAKE_TOOLCHAIN_FILE="))
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cmake_configure_args_use_profile_toolchain_file_when_present() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let mut profile = linux_arm64_toolchain_profile();
+    profile.cmake_toolchain = Some(PathBuf::from("/opt/toolchains/linux-arm64.cmake"));
+
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        None,
+        &[],
+        BuildMode::Release,
+        Some(&profile),
+    );
+
+    assert!(args.contains(&"-DCMAKE_TOOLCHAIN_FILE=/opt/toolchains/linux-arm64.cmake".to_string()));
+    assert!(
+        args.iter()
+            .all(|arg| !arg.starts_with("-DCMAKE_C_COMPILER="))
+    );
+    assert!(
+        args.iter()
+            .all(|arg| !arg.starts_with("-DCMAKE_CXX_COMPILER="))
+    );
+}
+
+#[test]
+fn cmake_configure_env_sets_pkg_config_libdir_for_target_sdk() {
+    let root = temp_test_dir("cmake-target-sdk-pkgconfig");
+    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let sdk_root = private_prefix.join("targets/linux-arm64");
+    write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
+    let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
+    let profile = linux_arm64_toolchain_profile();
+
+    let env = cmake_configure_env(Some(&profile), Some(&sdk));
+    let pkg_config_libdir = env
+        .get("PKG_CONFIG_LIBDIR")
+        .expect("PKG_CONFIG_LIBDIR should be set")
+        .to_string_lossy();
+
+    assert!(
+        pkg_config_libdir.contains("/opt/toolchains/linux-arm64/pkgconfig"),
+        "profile pkg-config path should be preserved: {pkg_config_libdir}"
+    );
+    assert!(
+        pkg_config_libdir.contains(&sdk.root.join("pkgconfig").to_string_lossy().to_string()),
+        "target SDK pkg-config path should be included: {pkg_config_libdir}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1694,7 +1872,7 @@ fn cmake_configure_args_include_repo_fallback_flag_when_env_is_set() {
 
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release, None);
 
     assert!(
         args.contains(&"-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON".to_string()),
@@ -1711,7 +1889,7 @@ fn cmake_configure_args_do_not_include_repo_fallback_flag_by_default() {
 
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release);
+    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release, None);
 
     assert!(
         !args

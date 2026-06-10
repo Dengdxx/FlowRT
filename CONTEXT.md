@@ -13,9 +13,13 @@
 Contract IR。标准路径不依赖从目标机拉取整棵目录；板级私有依赖需要通过显式
 sysroot 或 SDK overlay 接入。`v0.8.2` 不自动下载系统交叉编译工具链，也不把 C++
 backend SDK 查找负担推给普通用户；完整双架构 SDK 聚合由后续 CI/package 任务补齐。
-当前 CLI 已接通 `flowrt deps/build --target <platform>` 的 Rust/Cargo 主路径：显式
+当前 CLI 已接通 `flowrt deps/build --target <platform>` 的交叉编译主路径：显式
 `--target` 优先，否则从选定 Contract IR target platform 推导，仍无 platform 时保持
-native 构建；C++/CMake target SDK toolchain 参数仍由后续接入任务完成。
+native 构建。Rust/Cargo 会使用对应 Rust target triple，并把 cache key、ready marker
+和输出路径按 triple 隔离；C++/CMake 有完整 target SDK 时会优先使用
+`targets/<platform>` 的 prefix、toolchain profile 中的 compiler/sysroot 或 CMake
+toolchain file，并设置 cross build 的 `PKG_CONFIG_LIBDIR`；target SDK 缺失或
+`complete = false` 会清晰报错。
 
 `v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
