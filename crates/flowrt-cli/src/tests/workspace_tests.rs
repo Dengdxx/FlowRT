@@ -1332,6 +1332,26 @@ fn repo_runtime_dir_is_detected_for_dependency_prewarm() {
 }
 
 #[test]
+fn deps_workspace_manifest_declares_own_workspace_root() {
+    let root = temp_test_dir("deps-workspace-isolated");
+    let deps_workspace = root.join(".flowrt-cache/deps-workspaces/flowrt-test");
+    let repo_runtime =
+        repo_runtime_dir("runtime/rust", "Cargo.toml").expect("repo runtime should exist");
+    let features = RuntimeFeatureSet::all();
+
+    write_deps_workspace(&deps_workspace, &repo_runtime, &features)
+        .expect("deps workspace should be written");
+
+    let manifest = std::fs::read_to_string(deps_workspace.join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("\n[workspace]\n"),
+        "deps workspace manifest must stop Cargo from inheriting a parent workspace:\n{manifest}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn cargo_manifest_package_name_reads_generated_package() {
     let root = temp_test_dir("cargo-manifest-package-name");
     let manifest = root.join("Cargo.toml");

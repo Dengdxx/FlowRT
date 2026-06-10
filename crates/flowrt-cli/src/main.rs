@@ -3133,7 +3133,7 @@ fn write_deps_workspace(
         )
     };
     let manifest = format!(
-        "[package]\nname = \"flowrt-deps-prewarm\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nflowrt = {{ path = {}{} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n",
+        "[package]\nname = \"flowrt-deps-prewarm\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nflowrt = {{ path = {}{} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n",
         toml_basic_string(rust_runtime_dir),
         feature_suffix
     );
@@ -3916,16 +3916,16 @@ fn run_cmake_configure_and_build(
             &existing_prefix_paths,
         )
     };
-    run_cmake_configure(
-        &source_dir,
-        &build_dir,
-        cmake_runtime_dir,
-        &cmake_prefix_paths,
+    run_cmake_configure(&CmakeConfigureSpec {
+        source_dir: &source_dir,
+        build_dir: &build_dir,
+        runtime_dir: cmake_runtime_dir,
+        cmake_prefix_paths: &cmake_prefix_paths,
         build_mode,
         toolchain_profile,
         cmake_cross_compiling,
-        target_sdk.as_ref(),
-    )?;
+        target_sdk: target_sdk.as_ref(),
+    })?;
     run_cmake_build(&build_dir)?;
     let cpp_app = build_dir.join(cpp_app_executable_name(contract));
     let ros2_bridge = build_dir.join(ros2_bridge_executable_name(contract));
@@ -3943,26 +3943,28 @@ fn existing_executable(path: PathBuf) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn run_cmake_configure(
-    source_dir: &Path,
-    build_dir: &Path,
-    runtime_dir: Option<&Path>,
-    cmake_prefix_paths: &[PathBuf],
+struct CmakeConfigureSpec<'a> {
+    source_dir: &'a Path,
+    build_dir: &'a Path,
+    runtime_dir: Option<&'a Path>,
+    cmake_prefix_paths: &'a [PathBuf],
     build_mode: BuildMode,
-    toolchain_profile: Option<&ToolchainProfile>,
+    toolchain_profile: Option<&'a ToolchainProfile>,
     cmake_cross_compiling: bool,
-    target_sdk: Option<&CppTargetSdk>,
-) -> Result<()> {
+    target_sdk: Option<&'a CppTargetSdk>,
+}
+
+fn run_cmake_configure(spec: &CmakeConfigureSpec<'_>) -> Result<()> {
     let args = cmake_configure_args(
-        source_dir,
-        build_dir,
-        runtime_dir,
-        cmake_prefix_paths,
-        build_mode,
-        toolchain_profile,
-        cmake_cross_compiling,
+        spec.source_dir,
+        spec.build_dir,
+        spec.runtime_dir,
+        spec.cmake_prefix_paths,
+        spec.build_mode,
+        spec.toolchain_profile,
+        spec.cmake_cross_compiling,
     );
-    let configure_env = cmake_configure_env(toolchain_profile, target_sdk);
+    let configure_env = cmake_configure_env(spec.toolchain_profile, spec.target_sdk);
     let mut command = ProcessCommand::new("cmake");
     command.args(args);
     for (key, value) in configure_env {
