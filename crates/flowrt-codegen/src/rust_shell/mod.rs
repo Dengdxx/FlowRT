@@ -134,7 +134,12 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         crate::rust_string_literal(&contract.package.name)
     ));
     let has_active_rust_channels =
-        !crate::runtime_plan::active_binds_for_instances(&bind_plans, &order).is_empty();
+        !crate::runtime_plan::active_binds_for_instances(&bind_plans, &order).is_empty()
+            || bridge_plans.iter().any(|bridge| {
+                order
+                    .iter()
+                    .any(|instance| instance.name == bridge.source_instance)
+            });
     output.push_str(&emit_rust_introspection_helpers(
         has_active_rust_channels,
         contract_has_runtime_params_for_language(contract, LanguageKind::Rust),

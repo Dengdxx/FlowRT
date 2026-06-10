@@ -202,5 +202,26 @@ backends = ["zenoh"]
     assert!(rust_shell.contains("let _ = self.ros2_bridge_2.receive_latest_at(tick_time_ms);"));
     assert!(rust_shell.contains("let pose = self.ros2_bridge_2.cached_latest_at(tick_time_ms);"));
     assert!(rust_shell.contains("self.ros2_bridge_2.revision()"));
+    assert!(rust_shell.contains("name: \"ros2_bridge_1\".to_string(),"));
+    assert!(rust_shell.contains("from: \"source.pose\".to_string(),"));
+    assert!(rust_shell.contains("to: \"ros2:/flowrt/pose\".to_string(),"));
+    assert!(rust_shell.contains("name: \"ros2_bridge_2\".to_string(),"));
+    assert!(rust_shell.contains("from: \"ros2:/ros2/pose\".to_string(),"));
+    assert!(rust_shell.contains("to: \"sink.pose\".to_string(),"));
+    assert!(rust_shell.contains("selected_reason: \"ros2_bridge\".to_string(),"));
+    assert!(rust_shell.contains("task: \"sink.main\".to_string(),"));
+    assert!(rust_shell.contains("input: \"pose\".to_string(),"));
+    assert!(rust_shell.contains("channel: \"ros2_bridge_2\".to_string(),"));
+    assert!(rust_shell.contains(
+        "introspection_state.record_route_publish(\"ros2_bridge_1\", Some(tick_time_ms));"
+    ));
+    assert!(
+        rust_shell.contains(
+            "introspection_state.record_route_error(\"ros2_bridge_1\", error.to_string());"
+        )
+    );
+    assert!(rust_shell.contains(
+        "record_introspection_input_read(&introspection_state, \"sink.main.pose\", \"sink.main\", \"pose\", \"ros2_bridge_2\", \"Pose\", &pose, self.ros2_bridge_2.revision(), tick_time_ms);"
+    ));
     assert!(!rust_shell.contains("task input `sink.pose` has no incoming bind"));
 }

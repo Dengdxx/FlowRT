@@ -1982,6 +1982,7 @@ pub(crate) fn format_hz_summary_from_status_pair(
         .map(|route| (route.name.as_str(), route))
         .collect::<BTreeMap<_, _>>();
     let mut lines = Vec::new();
+    let mut emitted_routes = std::collections::BTreeSet::new();
     for second_channel in &second_status.channels {
         let Some(first_channel) = first_channels.get(second_channel.name.as_str()) else {
             continue;
@@ -2025,6 +2026,7 @@ pub(crate) fn format_hz_summary_from_status_pair(
                 " dropped_delta={} backpressure_delta={} overflow_delta={}",
                 dropped_delta, backpressure_delta, overflow_delta
             ));
+            emitted_routes.insert(second_channel.name.as_str());
         } else {
             let dropped_delta = second_channel
                 .dropped_samples
@@ -2034,6 +2036,49 @@ pub(crate) fn format_hz_summary_from_status_pair(
             }
         }
         lines.push(line);
+    }
+    for second_route in &second_status.routes {
+        if emitted_routes.contains(second_route.name.as_str()) {
+            continue;
+        }
+        let (published_delta, dropped_delta, backpressure_delta, overflow_delta) = first_routes
+            .get(second_route.name.as_str())
+            .map(|first_route| {
+                (
+                    second_route
+                        .published_count
+                        .saturating_sub(first_route.published_count),
+                    second_route
+                        .dropped_samples
+                        .saturating_sub(first_route.dropped_samples),
+                    second_route
+                        .backpressure_count
+                        .saturating_sub(first_route.backpressure_count),
+                    second_route
+                        .overflow_count
+                        .saturating_sub(first_route.overflow_count),
+                )
+            })
+            .unwrap_or((
+                second_route.published_count,
+                second_route.dropped_samples,
+                second_route.backpressure_count,
+                second_route.overflow_count,
+            ));
+        let hz = published_delta as f64 / elapsed_secs;
+        lines.push(format!(
+            "pid={} package={} process={} channel={} type={} delta={} hz={:.2} dropped_delta={} backpressure_delta={} overflow_delta={}",
+            handshake.pid,
+            handshake.package,
+            handshake.process,
+            second_route.name,
+            second_route.message_type,
+            published_delta,
+            hz,
+            dropped_delta,
+            backpressure_delta,
+            overflow_delta
+        ));
     }
 
     if lines.is_empty() {

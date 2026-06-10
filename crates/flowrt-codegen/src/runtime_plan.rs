@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, ChannelKind, ContractIr, GraphIr, InstanceIr, OperationConcurrencyPolicy,
-    OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ParamIr,
-    Ros2BridgeDirection, Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr,
-    TaskReadiness, TriggerKind, TypeExpr,
+    BackendName, ChannelBackendSource, ChannelKind, ContractIr, GraphIr, InstanceIr,
+    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
+    OverflowPolicy as IrOverflowPolicy, ParamIr, Ros2BridgeDirection, Ros2BridgeIr,
+    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness, TriggerKind,
+    TypeExpr,
 };
 
 use crate::{
@@ -110,6 +111,7 @@ pub(crate) struct BindRuntimePlan {
     pub(crate) probe_field_name: String,
     pub(crate) channel: ChannelKind,
     pub(crate) backend: BackendName,
+    pub(crate) backend_source: ChannelBackendSource,
     pub(crate) overflow: IrOverflowPolicy,
     pub(crate) stale: IrStalePolicy,
     pub(crate) max_age_ms: Option<u64>,
@@ -194,6 +196,7 @@ pub(crate) fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<
                 probe_field_name: format!("introspection_probe_bind_{index}"),
                 channel: bind.channel,
                 backend: bind.backend.clone(),
+                backend_source: bind.backend_source,
                 overflow: bind.overflow,
                 stale: bind.stale,
                 max_age_ms: bind.max_age_ms,

@@ -597,6 +597,73 @@ fn live_hz_summary_includes_route_drop_and_overflow_delta() {
 }
 
 #[test]
+fn live_hz_summary_includes_route_only_publish_delta() {
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 77,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let route_name = "ros2_bridge_1".to_string();
+    let first = flowrt::IntrospectionResponse::Status {
+        handshake: handshake.clone(),
+        status: flowrt::IntrospectionStatus {
+            tick_count: 10,
+            routes: vec![flowrt::IntrospectionRouteStatus {
+                name: route_name.clone(),
+                from: "source.pose".to_string(),
+                to: "ros2:/flowrt/pose".to_string(),
+                message_type: "Pose".to_string(),
+                backend: "zenoh".to_string(),
+                selected_reason: "ros2_bridge".to_string(),
+                published_count: 10,
+                dropped_samples: 1,
+                backpressure_count: 0,
+                overflow_count: 0,
+                last_publish_ms: Some(100),
+                last_error: None,
+            }],
+            ..Default::default()
+        },
+    };
+    let second = flowrt::IntrospectionResponse::Status {
+        handshake,
+        status: flowrt::IntrospectionStatus {
+            tick_count: 20,
+            routes: vec![flowrt::IntrospectionRouteStatus {
+                name: route_name,
+                from: "source.pose".to_string(),
+                to: "ros2:/flowrt/pose".to_string(),
+                message_type: "Pose".to_string(),
+                backend: "zenoh".to_string(),
+                selected_reason: "ros2_bridge".to_string(),
+                published_count: 16,
+                dropped_samples: 2,
+                backpressure_count: 1,
+                overflow_count: 0,
+                last_publish_ms: Some(200),
+                last_error: None,
+            }],
+            ..Default::default()
+        },
+    };
+
+    let output = format_hz_summary_from_status_pair(&first, &second, Duration::from_millis(500))
+        .expect("hz summary should include route-only diagnostics");
+
+    assert!(output.contains("channel=ros2_bridge_1"));
+    assert!(output.contains("type=Pose"));
+    assert!(output.contains("delta=6"));
+    assert!(output.contains("hz=12.00"));
+    assert!(output.contains("dropped_delta=1"));
+    assert!(output.contains("backpressure_delta=1"));
+    assert!(output.contains("overflow_delta=0"));
+}
+
+#[test]
 fn live_hz_summary_reads_status_without_enabling_probe() {
     let root = temp_test_dir("live-hz");
     let socket = root.join("main.sock");

@@ -1043,6 +1043,65 @@ impl IntrospectionState {
         inner.inputs.insert(key, status);
     }
 
+    /// 记录一次 generated shell input 读取结果。
+    ///
+    /// route/input 已预注册时只原地更新字段，避免高频 tick 路径反复分配诊断字符串。
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_input_read(
+        &self,
+        key: &str,
+        task: &str,
+        input: &str,
+        channel: &str,
+        message_type: &str,
+        present: bool,
+        stale: bool,
+        last_revision: Option<u64>,
+        last_read_ms: Option<u64>,
+    ) {
+        let mut inner = self.lock_inner();
+        let now = unix_time_ms();
+        let (dropped_samples, backpressure_count, overflow_count) = inner
+            .routes
+            .get(channel)
+            .map(|route| {
+                (
+                    route.dropped_samples,
+                    route.backpressure_count,
+                    route.overflow_count,
+                )
+            })
+            .unwrap_or_default();
+        let Some(status) = inner.inputs.get_mut(key) else {
+            inner.inputs.insert(
+                key.to_string(),
+                IntrospectionInputStatus {
+                    task: task.to_string(),
+                    input: input.to_string(),
+                    channel: channel.to_string(),
+                    message_type: message_type.to_string(),
+                    present,
+                    stale,
+                    last_revision,
+                    last_read_ms,
+                    updated_unix_ms: Some(now),
+                    dropped_samples,
+                    backpressure_count,
+                    overflow_count,
+                },
+            );
+            return;
+        };
+        status.present = present;
+        status.stale = stale;
+        status.last_revision = last_revision;
+        status.last_read_ms = last_read_ms;
+        status.updated_unix_ms = Some(now);
+        status.dropped_samples = dropped_samples;
+        status.backpressure_count = backpressure_count;
+        status.overflow_count = overflow_count;
+    }
+
     /// 记录 route 成功发布或进入传输路径。
     pub fn record_route_publish(&self, name: impl AsRef<str>, published_at_ms: Option<u64>) {
         let mut inner = self.lock_inner();
@@ -3770,6 +3829,50 @@ mod tests {
                 .iter()
                 .any(|event| event.event_kind == flowrt_record::RecordEventKind::SchedulerEvent)
         );
+    }
+
+    #[test]
+    fn input_read_records_presence_and_route_counters() {
+        let state = IntrospectionState::new();
+        state.register_route(IntrospectionRouteStatus {
+            name: "source.packet_to_sink.packet".to_string(),
+            from: "source.packet".to_string(),
+            to: "sink.packet".to_string(),
+            message_type: "Packet".to_string(),
+            backend: "zenoh".to_string(),
+            selected_reason: "explicit".to_string(),
+            dropped_samples: 1,
+            backpressure_count: 2,
+            overflow_count: 3,
+            ..Default::default()
+        });
+
+        state.record_input_read(
+            "sink.main.packet",
+            "sink.main",
+            "packet",
+            "source.packet_to_sink.packet",
+            "Packet",
+            true,
+            false,
+            Some(7),
+            Some(42),
+        );
+
+        let status = state.status();
+        assert_eq!(status.inputs.len(), 1);
+        let input = &status.inputs[0];
+        assert_eq!(input.task, "sink.main");
+        assert_eq!(input.input, "packet");
+        assert_eq!(input.channel, "source.packet_to_sink.packet");
+        assert_eq!(input.message_type, "Packet");
+        assert!(input.present);
+        assert!(!input.stale);
+        assert_eq!(input.last_revision, Some(7));
+        assert_eq!(input.last_read_ms, Some(42));
+        assert_eq!(input.dropped_samples, 1);
+        assert_eq!(input.backpressure_count, 2);
+        assert_eq!(input.overflow_count, 3);
     }
 
     #[test]

@@ -124,31 +124,36 @@ pub(super) fn runtime_channel_write_with_health(
 
 fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<&str>) -> String {
     let introspection_record = runtime_introspection_publish_record(bind);
+    let route_name = crate::rust_string_literal(&runtime_channel_name(bind));
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
-            "            if self.{field}.publish_at(value.clone(), tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n            scheduler_events.notify_data();\n{introspection_record}",
-            field = bind.field_name
+            "            if let Err(error) = self.{field}.publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
+            field = bind.field_name,
+            route_name = route_name,
         );
     }
 
     match bind.channel {
         ChannelKind::Latest => {
             format!(
-                "            self.{field}.publish_at(value.clone(), tick_time_ms);\n            scheduler_events.notify_data();\n{introspection_record}",
-                field = bind.field_name
+                "            self.{field}.publish_at(value.clone(), tick_time_ms);\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
+                field = bind.field_name,
+                route_name = route_name,
             )
         }
         ChannelKind::Fifo => {
             if let Some(task_health) = task_health_name {
                 format!(
-                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    health_map.entry({task_health:?}.to_string()).or_default().backpressure += 1;\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    health_map.entry({task_health:?}.to_string()).or_default().overflow += 1;\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
+                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    introspection_state.record_route_drop({route_name});\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{\n                    introspection_state.record_route_drop({route_name});\n                }}\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    introspection_state.record_route_backpressure({route_name});\n                    health_map.entry({task_health:?}.to_string()).or_default().backpressure += 1;\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    introspection_state.record_route_overflow({route_name});\n                    health_map.entry({task_health:?}.to_string()).or_default().overflow += 1;\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
                     field = bind.field_name,
                     task_health = task_health,
+                    route_name = route_name,
                 )
             } else {
                 format!(
-                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) | Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{}},\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => return flowrt::Status::Retry,\n                Err(flowrt::ChannelError::Overflow) => return flowrt::Status::Error,\n            }}\n",
+                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    introspection_state.record_route_drop({route_name});\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{\n                    introspection_state.record_route_drop({route_name});\n                }}\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    introspection_state.record_route_backpressure({route_name});\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    introspection_state.record_route_overflow({route_name});\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
                     field = bind.field_name,
+                    route_name = route_name,
                 )
             }
         }
@@ -156,9 +161,11 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
 }
 
 pub(super) fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
+    let route_name = crate::rust_string_literal(&bridge.name);
     format!(
-        "            if self.{field}.publish_at(value.clone(), tick_time_ms).is_err() {{\n                return flowrt::Status::Error;\n            }}\n",
-        field = bridge.field_name
+        "            if let Err(error) = self.{field}.publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n",
+        field = bridge.field_name,
+        route_name = route_name,
     )
 }
 

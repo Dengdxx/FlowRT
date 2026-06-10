@@ -95,6 +95,27 @@ backends = ["iox2"]
     );
     let sensor_probe = extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
         .expect("sensors process should register sensor channel");
+    assert!(
+        sensors_run
+            .contains("introspection_state.register_route(flowrt::IntrospectionRouteStatus {")
+    );
+    assert!(sensors_run.contains(&format!(
+        "name: {}.to_string(),",
+        rust_string_literal(sensor_channel)
+    )));
+    assert!(sensors_run.contains("backend: \"iox2\".to_string(),"));
+    assert!(sensors_run.contains("selected_reason: \"profile_default\".to_string(),"));
+    assert!(
+        !sensors_run
+            .contains("introspection_state.record_input_status(flowrt::IntrospectionInputStatus {")
+    );
+    let control_run = generated_function_block(rust_shell, "fn run_process_control");
+    assert!(
+        control_run
+            .contains("introspection_state.record_input_status(flowrt::IntrospectionInputStatus {")
+    );
+    assert!(control_run.contains("task: \"sensor_sink.main\".to_string(),"));
+    assert!(control_run.contains("input: \"sample\".to_string(),"));
     let aux_register_marker = format!(
         "register_introspection_channel(&introspection_state, {}, \"Sample\", Some(4));",
         rust_string_literal(aux_channel)
@@ -114,6 +135,14 @@ backends = ["iox2"]
     assert!(rust_shell.contains(
         "state.try_record_channel_sample_bytes(name, message_type, payload, Some(published_at_ms));"
     ));
+    assert!(rust_shell.contains(&format!(
+        "record_introspection_input_read(&introspection_state, \"sensor_sink.main.sample\", \"sensor_sink.main\", \"sample\", {}, \"Sample\", &sample, self.bind_1.revision(), tick_time_ms);",
+        rust_string_literal(sensor_channel)
+    )));
+    assert!(rust_shell.contains(&format!(
+        "introspection_state.record_route_publish({}, Some(tick_time_ms));",
+        rust_string_literal(sensor_channel)
+    )));
     let sensor_record_at = rust_shell.find(&sensor_record).unwrap();
     let sensor_before_record = &rust_shell[..sensor_record_at];
     assert!(sensor_before_record.contains(".publish_at(value.clone(), tick_time_ms)"));

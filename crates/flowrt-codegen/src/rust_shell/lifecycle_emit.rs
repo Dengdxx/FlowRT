@@ -271,8 +271,16 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     output.push_str(
         &super::introspection_emit::emit_rust_introspection_channel_registration(
             emission.contract,
+            emission.graph,
             emission.order,
             emission.binds,
+        ),
+    );
+    output.push_str(
+        &super::introspection_emit::emit_rust_introspection_bridge_registration(
+            emission.graph,
+            emission.order,
+            emission.bridges,
         ),
     );
     output.push_str(

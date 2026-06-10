@@ -95,6 +95,12 @@ pub(super) fn emit_rust_app_step(
                             ),
                             true,
                         ));
+                        output.push_str(&indent_generated_block(
+                            &super::introspection_emit::rust_input_read_record_for_bind(
+                                task, input, bind,
+                            ),
+                            true,
+                        ));
                         // stale 健康计数在 error guard 之前记录，确保 Error policy 也能计数。
                         output.push_str(&indent_generated_block(
                             &runtime_stale_health_record(input, &task_health),
@@ -114,6 +120,12 @@ pub(super) fn emit_rust_app_step(
                                 input,
                                 bridge,
                                 task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            ),
+                            true,
+                        ));
+                        output.push_str(&indent_generated_block(
+                            &super::introspection_emit::rust_input_read_record_for_bridge(
+                                task, input, bridge,
                             ),
                             true,
                         ));
