@@ -265,7 +265,8 @@ fn frame_descriptor_demo_example_codegen_smoke() {
 
     assert!(rust_messages.contains("impl From<flowrt::FrameDescriptorFields> for FrameHandle"));
     assert!(
-        rust_messages.contains("pub fn frame_descriptor_fields(&self) -> flowrt::FrameDescriptorFields")
+        rust_messages
+            .contains("pub fn frame_descriptor_fields(&self) -> flowrt::FrameDescriptorFields")
     );
     assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
     assert_eq!(launch["graphs"][0]["channels"][0]["backend"], "iox2");
