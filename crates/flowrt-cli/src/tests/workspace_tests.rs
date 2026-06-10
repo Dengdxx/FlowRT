@@ -1105,11 +1105,11 @@ fn build_can_reuse_all_backend_dependency_cache_for_feature_subset() {
     let _env = EnvOverride::set("FLOWRT_CACHE_DIR", Some(cache.as_os_str()));
 
     let all_features = RuntimeFeatureSet::all();
-    let all_layout = deps_cache_layout(BuildMode::Release, all_features.clone()).unwrap();
+    let all_layout = deps_cache_layout(BuildMode::Release, all_features.clone(), None).unwrap();
     write_deps_ready_marker(&all_layout, BuildMode::Release, &all_features).unwrap();
 
     let inproc = RuntimeFeatureSet::inproc_only();
-    let selected = select_ready_deps_cache_layout(BuildMode::Release, &inproc).unwrap();
+    let selected = select_ready_deps_cache_layout(BuildMode::Release, &inproc, None).unwrap();
 
     assert_eq!(selected.target_dir, all_layout.target_dir);
     let _ = std::fs::remove_dir_all(&root);
@@ -1205,6 +1205,7 @@ name = "flowrt_app"
         current_dir: root.clone(),
         args: Vec::new(),
         target_dir: target_dir.clone(),
+        target_triple: None,
         bin_name: "robot-flowrt-supervisor".to_string(),
         build_mode: BuildMode::Release,
     };
@@ -1354,6 +1355,7 @@ fn cargo_build_invocation_uses_manifest_dir_and_offline_config() {
         "robot-flowrt-app",
         BuildMode::Release,
         &target_dir,
+        None,
     )
     .expect("cargo invocation should be derived from manifest");
 
@@ -1403,6 +1405,7 @@ fn cargo_build_invocation_resolves_relative_manifest_before_changing_dir() {
         "robot-flowrt-app",
         BuildMode::Debug,
         &target_dir,
+        None,
     )
     .expect("relative manifest should be resolved before cargo changes directory");
 
@@ -1452,6 +1455,7 @@ edition = "2024"
         "robot-flowrt-app",
         BuildMode::Release,
         &root.join("target-cache"),
+        None,
     )
     .expect("relative manifest should be canonicalized");
 

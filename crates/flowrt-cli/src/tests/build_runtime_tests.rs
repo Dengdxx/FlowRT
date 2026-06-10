@@ -21,6 +21,42 @@ language = "rust"
 }
 
 #[test]
+fn build_model_cargo_invocation_uses_target_triple_path() {
+    let root = temp_test_dir("cargo-invocation-target-triple");
+    let package_dir = root.join("generated");
+    std::fs::create_dir_all(package_dir.join("src")).unwrap();
+    let manifest = package_dir.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        "[package]\nname = \"robot\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[[bin]]\nname = \"robot-flowrt-app\"\npath = \"src/main.rs\"\n",
+    )
+    .unwrap();
+
+    let invocation = cargo_build_invocation(
+        &manifest,
+        "robot-flowrt-app",
+        BuildMode::Release,
+        &root.join("target"),
+        Some("aarch64-unknown-linux-gnu"),
+    )
+    .unwrap();
+
+    assert!(
+        invocation
+            .args
+            .windows(2)
+            .any(|args| args == ["--target", "aarch64-unknown-linux-gnu"])
+    );
+    assert_eq!(
+        invocation.executable_path(),
+        root.join("target")
+            .join("aarch64-unknown-linux-gnu")
+            .join("release")
+            .join(format!("robot-flowrt-app{}", std::env::consts::EXE_SUFFIX))
+    );
+}
+
+#[test]
 fn build_plan_selects_cmake_for_cpp_contract() {
     let contract = contract_from_source(
         r#"

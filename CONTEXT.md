@@ -13,6 +13,9 @@
 Contract IR。标准路径不依赖从目标机拉取整棵目录；板级私有依赖需要通过显式
 sysroot 或 SDK overlay 接入。`v0.8.2` 不自动下载系统交叉编译工具链，也不把 C++
 backend SDK 查找负担推给普通用户；完整双架构 SDK 聚合由后续 CI/package 任务补齐。
+当前 CLI 已接通 `flowrt deps/build --target <platform>` 的 Rust/Cargo 主路径：显式
+`--target` 优先，否则从选定 Contract IR target platform 推导，仍无 platform 时保持
+native 构建；C++/CMake target SDK toolchain 参数仍由后续接入任务完成。
 
 `v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
@@ -392,7 +395,9 @@ flowrt check path/to/robot.rsdl
 flowrt prepare path/to/robot.rsdl
 flowrt deps [path/to/robot.rsdl]
 flowrt deps --backend all
+flowrt deps [path/to/robot.rsdl] --target linux-arm64
 flowrt build path/to/robot.rsdl
+flowrt build path/to/robot.rsdl --target linux-arm64
 flowrt run path/to/robot.rsdl
 flowrt run path/to/robot.rsdl --process main
 flowrt run path/to/robot.rsdl --run-steps 5 --process main
@@ -418,6 +423,9 @@ backend 为 `inproc`。
 
 - `deps` 只写全局 FlowRT cache，不生成用户项目产物。cache root 默认
   `~/.cache/flowrt`，可用 `FLOWRT_CACHE_DIR` 覆盖。
+- `deps` / `build` 的 `--target <platform>` 当前支持 `linux-amd64` 和 `linux-arm64`，
+  Rust/Cargo 路径会使用 toolchain profile 中的 Rust target triple；显式 target
+  优先，省略时从 Contract IR target platform 推导，仍无 platform 时保持 native。
 - `prepare` 和 `build` 会写 `flowrt/` 输出目录，必须持有 OS advisory lock。
 - `.flowrt.lock` 文件可残留，PID 只用于诊断，真实占用状态由锁判断。
 - `check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`hz`、`echo`、
@@ -438,6 +446,9 @@ backend 为 `inproc`。
   adapter 都复制到 `flowrt/build/bin/<mode>/`；`flowrt/build/build-info.json` 记录
   build mode、deps target 目录和 executable 相对路径。缺少匹配 deps ready marker 时，
   `build` 会 fail-fast，提示先运行 `flowrt deps`。
+- Rust app、generated supervisor 和 deps prewarm 使用同一个 Rust target triple。
+  target triple 会进入 cache key 和 ready marker；Cargo cross target 输出位于
+  `CARGO_TARGET_DIR/<triple>/<profile>/`，CLI 会按该路径定位二进制。
 
 ## Runtime 和观测状态
 

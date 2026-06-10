@@ -29,6 +29,82 @@ fn toolchain_defaults_cover_linux_arm64() {
 }
 
 #[test]
+fn toolchain_build_profile_prefers_explicit_target() {
+    let root = temp_test_dir("toolchain-build-explicit-target");
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[target.dev]
+platform = "linux-amd64"
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let profile = resolve_build_toolchain_profile(&contract, Some("linux-arm64"), &root).unwrap();
+    let profile = profile.expect("explicit target should resolve a toolchain profile");
+
+    assert_eq!(profile.profile.platform, "linux-arm64");
+    assert_eq!(profile.profile.rust_target, "aarch64-unknown-linux-gnu");
+    assert_eq!(
+        cargo_target_args(profile.cargo_target_triple.as_deref()),
+        vec!["--target", "aarch64-unknown-linux-gnu"]
+    );
+}
+
+#[test]
+fn toolchain_build_profile_infers_contract_target_platform() {
+    let root = temp_test_dir("toolchain-build-contract-target");
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[target.pi]
+platform = "linux-arm64"
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let profile = resolve_build_toolchain_profile(&contract, None, &root).unwrap();
+    let profile = profile.expect("contract target platform should resolve a profile");
+
+    assert_eq!(profile.profile.platform, "linux-arm64");
+    assert_eq!(profile.profile.rust_target, "aarch64-unknown-linux-gnu");
+}
+
+#[test]
+fn toolchain_build_profile_uses_native_when_platform_is_absent() {
+    let root = temp_test_dir("toolchain-build-native");
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+"#,
+    );
+
+    let profile = resolve_build_toolchain_profile(&contract, None, &root).unwrap();
+
+    assert!(profile.is_none());
+    assert!(cargo_target_args(None).is_empty());
+}
+
+#[test]
 fn toolchain_workspace_config_overrides_defaults() {
     let root = temp_test_dir("toolchain-workspace-config");
     let workspace = root.join(".flowrt/toolchains.toml");

@@ -222,6 +222,7 @@ impl DepsCacheKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheLayout {
     pub root: PathBuf,
+    pub target_triple: String,
     pub target_dir: PathBuf,
     pub deps_workspace_dir: PathBuf,
     pub lock_file: PathBuf,
@@ -232,6 +233,7 @@ impl CacheLayout {
     pub fn new(root: PathBuf, key: &DepsCacheKey) -> Self {
         let fragment = key.path_fragment();
         Self {
+            target_triple: key.target_triple.clone(),
             target_dir: root.join("cargo-target").join(&fragment),
             deps_workspace_dir: root.join("deps-workspaces").join(&fragment),
             lock_file: root
@@ -469,6 +471,7 @@ mod tests {
         );
         let layout = CacheLayout::new(PathBuf::from("/cache/flowrt"), &key);
 
+        assert_eq!(layout.target_triple, "x86_64-unknown-linux-gnu");
         assert!(layout.target_dir.starts_with("/cache/flowrt/cargo-target"));
         assert!(
             layout

@@ -9,6 +9,48 @@ fn cli_exposes_installed_binary_metadata() {
 }
 
 #[test]
+fn command_build_parses_target_platform() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "build",
+        "rsdl/robot.rsdl",
+        "--target",
+        "linux-arm64",
+    ])
+    .unwrap();
+
+    let Command::Build { target, .. } = cli.command else {
+        panic!("build command should parse into Command::Build")
+    };
+
+    assert_eq!(target.as_deref(), Some("linux-arm64"));
+}
+
+#[test]
+fn command_deps_parses_target_platform() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "deps",
+        "rsdl/robot.rsdl",
+        "--target",
+        "linux-arm64",
+        "--backend",
+        "zenoh",
+    ])
+    .unwrap();
+
+    let Command::Deps {
+        target, backend, ..
+    } = cli.command
+    else {
+        panic!("deps command should parse into Command::Deps")
+    };
+
+    assert_eq!(target.as_deref(), Some("linux-arm64"));
+    assert_eq!(backend, Some(DepsBackend::Zenoh));
+}
+
+#[test]
 fn cli_parses_hz_command_with_socket_and_window() {
     let cli = Cli::try_parse_from([
         "flowrt",
@@ -537,6 +579,7 @@ fn cli_parses_deps_command_with_backend_and_build_mode() {
         profile,
         build_mode,
         check,
+        ..
     } = cli.command
     else {
         panic!("deps command should parse into Command::Deps")

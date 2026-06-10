@@ -32,6 +32,7 @@ use introspection::{
     self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
+use toolchain::{ToolchainProfile, ToolchainProfileOverrides, resolve_toolchain_profile};
 
 #[cfg(test)]
 use flowrt_selfdesc::SelfDescription;
@@ -91,6 +92,10 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
 
+        /// 目标 platform；省略时优先使用 Contract IR target platform，再回退 native 构建。
+        #[arg(long)]
+        target: Option<String>,
+
         /// 构建模式；默认 release，debug 仅用于本地调试。
         #[arg(long, default_value_t, value_enum)]
         build_mode: BuildMode,
@@ -108,6 +113,10 @@ enum Command {
         /// 选择用于推导 backend feature 的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
+
+        /// 目标 platform；省略时有 RSDL 则使用 Contract IR target platform，无 platform 则回退 native。
+        #[arg(long)]
+        target: Option<String>,
 
         /// 依赖预热模式；默认 release。
         #[arg(long, default_value_t, value_enum)]
@@ -489,12 +498,25 @@ fn main() -> Result<()> {
             out_dir,
             launcher,
             profile,
+            target,
             build_mode,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
-            build_workspace(&prepared.selected_contract, &out_dir, launcher, build_mode)?;
+            let workspace_root = application_root_from_rsdl(&rsdl)?;
+            let target_profile = resolve_build_toolchain_profile(
+                &prepared.selected_contract,
+                target.as_deref(),
+                &workspace_root,
+            )?;
+            build_workspace(
+                &prepared.selected_contract,
+                &out_dir,
+                launcher,
+                build_mode,
+                target_profile.as_ref(),
+            )?;
             println!(
                 "built {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -505,19 +527,25 @@ fn main() -> Result<()> {
             rsdl,
             backend,
             profile,
+            target,
             build_mode,
             check,
         } => {
             let features = deps_runtime_features(rsdl.as_deref(), profile.as_deref(), backend)?;
-            let layout = deps_cache_layout(build_mode, features.clone())?;
+            let target_profile = resolve_deps_toolchain_profile(
+                rsdl.as_deref(),
+                profile.as_deref(),
+                target.as_deref(),
+            )?;
+            let layout = deps_cache_layout(build_mode, features.clone(), target_profile.as_ref())?;
             if check {
-                ensure_deps_ready(&layout, build_mode, &features)?;
+                ensure_deps_ready(&layout, build_mode, &features, target_profile.as_ref())?;
                 println!(
                     "FlowRT dependency cache is ready: {}",
                     layout.target_dir.display()
                 );
             } else {
-                prepare_deps_cache(&layout, build_mode, &features)?;
+                prepare_deps_cache(&layout, build_mode, &features, target_profile.as_ref())?;
                 println!(
                     "prepared FlowRT dependency cache: {}",
                     layout.target_dir.display()
@@ -2314,6 +2342,95 @@ fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> R
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuildToolchainProfile {
+    profile: ToolchainProfile,
+    cargo_target_triple: Option<String>,
+}
+
+fn resolve_build_toolchain_profile(
+    contract: &ContractIr,
+    explicit_target: Option<&str>,
+    workspace_root: &Path,
+) -> Result<Option<BuildToolchainProfile>> {
+    let platform = explicit_target
+        .map(str::to_string)
+        .or_else(|| contract_target_platform(contract));
+    resolve_optional_toolchain_profile(
+        platform.as_deref(),
+        explicit_target.is_some(),
+        workspace_root,
+    )
+}
+
+fn resolve_deps_toolchain_profile(
+    rsdl: Option<&Path>,
+    profile: Option<&str>,
+    explicit_target: Option<&str>,
+) -> Result<Option<BuildToolchainProfile>> {
+    let workspace_root = match rsdl {
+        Some(rsdl) => application_root_from_rsdl(rsdl)?,
+        None => env::current_dir().context("failed to resolve current working directory")?,
+    };
+    if let Some(explicit_target) = explicit_target {
+        return resolve_optional_toolchain_profile(Some(explicit_target), true, &workspace_root);
+    }
+    let Some(rsdl) = rsdl else {
+        return Ok(None);
+    };
+    let contract = normalize_contract_from_rsdl(rsdl)?;
+    let projected = project_contract_to_profile(&contract, profile)
+        .with_context(|| format!("failed to select profile for `{}`", rsdl.display()))?;
+    validate_contract(&projected).context("contract validation failed")?;
+    resolve_optional_toolchain_profile(
+        contract_target_platform(&projected).as_deref(),
+        false,
+        &workspace_root,
+    )
+}
+
+fn resolve_optional_toolchain_profile(
+    platform: Option<&str>,
+    explicit_target: bool,
+    workspace_root: &Path,
+) -> Result<Option<BuildToolchainProfile>> {
+    let Some(platform) = platform else {
+        return Ok(None);
+    };
+    let platform = canonical_toolchain_platform(platform)?;
+    let profile = resolve_toolchain_profile(
+        &platform,
+        workspace_root,
+        &ToolchainProfileOverrides::default(),
+    )?;
+    let (_, host_target) = rustc_toolchain_identity()?;
+    let cargo_target_triple = if explicit_target || profile.rust_target != host_target {
+        Some(profile.rust_target.clone())
+    } else {
+        None
+    };
+    Ok(Some(BuildToolchainProfile {
+        profile,
+        cargo_target_triple,
+    }))
+}
+
+fn canonical_toolchain_platform(platform: &str) -> Result<String> {
+    TargetPlatform::parse_alias(platform)
+        .map(|platform| platform.as_str().to_string())
+        .with_context(|| format!("unsupported toolchain platform `{platform}`"))
+}
+
+fn contract_target_platform(contract: &ContractIr) -> Option<String> {
+    bundle_target_platform(contract)
+}
+
+fn cargo_target_args(target_triple: Option<&str>) -> Vec<String> {
+    target_triple
+        .map(|target| vec!["--target".to_string(), target.to_string()])
+        .unwrap_or_default()
+}
+
 fn deps_runtime_features(
     rsdl: Option<&Path>,
     profile: Option<&str>,
@@ -2337,10 +2454,17 @@ fn deps_runtime_features(
     RuntimeFeatureSet::from_contract(&projected)
 }
 
-fn deps_cache_layout(build_mode: BuildMode, features: RuntimeFeatureSet) -> Result<CacheLayout> {
+fn deps_cache_layout(
+    build_mode: BuildMode,
+    features: RuntimeFeatureSet,
+    target_profile: Option<&BuildToolchainProfile>,
+) -> Result<CacheLayout> {
     let root = default_cache_root()
         .context("failed to resolve FlowRT cache directory; set FLOWRT_CACHE_DIR or HOME")?;
-    let (rustc_identity, target_triple) = rustc_toolchain_identity()?;
+    let (rustc_identity, host_target_triple) = rustc_toolchain_identity()?;
+    let target_triple = target_profile
+        .map(|profile| profile.profile.rust_target.clone())
+        .unwrap_or(host_target_triple);
     let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
     let vendor_hash = flowrt_vendor_hash(rust_runtime_dir.as_deref())?;
     let key = DepsCacheKey::new(
@@ -2358,6 +2482,7 @@ fn prepare_deps_cache(
     layout: &CacheLayout,
     build_mode: BuildMode,
     features: &RuntimeFeatureSet,
+    target_profile: Option<&BuildToolchainProfile>,
 ) -> Result<()> {
     let _lock = CacheLock::acquire(&layout.lock_file)?;
     if deps_ready(layout, build_mode, features)? {
@@ -2367,10 +2492,20 @@ fn prepare_deps_cache(
         "FlowRT Rust runtime directory not found; install FlowRT package, set FLOWRT_RUST_RUNTIME_DIR, or set FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1 in repository development mode",
     )?;
     if is_repo_rust_runtime_dir(&rust_runtime_dir)? {
-        run_repo_runtime_cargo_build(&layout.target_dir, build_mode, features)?;
+        run_repo_runtime_cargo_build(
+            &layout.target_dir,
+            build_mode,
+            features,
+            target_profile.and_then(|profile| profile.cargo_target_triple.as_deref()),
+        )?;
     } else {
         write_deps_workspace(&layout.deps_workspace_dir, &rust_runtime_dir, features)?;
-        run_deps_cargo_build(&layout.deps_workspace_dir, &layout.target_dir, build_mode)?;
+        run_deps_cargo_build(
+            &layout.deps_workspace_dir,
+            &layout.target_dir,
+            build_mode,
+            target_profile.and_then(|profile| profile.cargo_target_triple.as_deref()),
+        )?;
     }
     write_deps_ready_marker(layout, build_mode, features)
 }
@@ -2379,38 +2514,54 @@ fn ensure_deps_ready(
     layout: &CacheLayout,
     build_mode: BuildMode,
     features: &RuntimeFeatureSet,
+    target_profile: Option<&BuildToolchainProfile>,
 ) -> Result<()> {
     if deps_ready(layout, build_mode, features)? {
         return Ok(());
     }
+    let target_hint = target_profile
+        .map(|profile| {
+            format!(
+                " for platform `{}` / Rust target `{}`",
+                profile.profile.platform, profile.profile.rust_target
+            )
+        })
+        .unwrap_or_else(|| format!(" for native Rust target `{}`", layout.target_triple));
     anyhow::bail!(
-        "FlowRT dependency cache is missing for build_mode `{}` and backend features {:?}; run `flowrt deps --backend {} --build-mode {}` or `flowrt deps <rsdl> --build-mode {}` first",
+        "FlowRT dependency cache is missing{target_hint} for build_mode `{}` and backend features {:?}; run `flowrt deps --backend {} --build-mode {}{}` or `flowrt deps <rsdl> --build-mode {}{}` first",
         build_mode,
         features.canonical_names(),
         features.deps_backend_hint(),
         build_mode,
-        build_mode
+        target_profile
+            .map(|profile| format!(" --target {}", profile.profile.platform))
+            .unwrap_or_default(),
+        build_mode,
+        target_profile
+            .map(|profile| format!(" --target {}", profile.profile.platform))
+            .unwrap_or_default()
     )
 }
 
 fn select_ready_deps_cache_layout(
     build_mode: BuildMode,
     features: &RuntimeFeatureSet,
+    target_profile: Option<&BuildToolchainProfile>,
 ) -> Result<CacheLayout> {
-    let exact = deps_cache_layout(build_mode, features.clone())?;
+    let exact = deps_cache_layout(build_mode, features.clone(), target_profile)?;
     if deps_ready(&exact, build_mode, features)? {
         return Ok(exact);
     }
 
     let all_features = RuntimeFeatureSet::all();
     if features != &all_features && features.is_subset_of(&all_features) {
-        let all = deps_cache_layout(build_mode, all_features.clone())?;
+        let all = deps_cache_layout(build_mode, all_features.clone(), target_profile)?;
         if deps_ready(&all, build_mode, &all_features)? {
             return Ok(all);
         }
     }
 
-    ensure_deps_ready(&exact, build_mode, features)?;
+    ensure_deps_ready(&exact, build_mode, features, target_profile)?;
     unreachable!("ensure_deps_ready must return an error when cache is absent")
 }
 
@@ -2430,6 +2581,7 @@ fn deps_ready(
         && marker.flowrt_version == env!("CARGO_PKG_VERSION")
         && marker.build_mode == build_mode
         && marker.features == feature_names_owned(features)
+        && marker.target_triple.as_deref() == Some(layout.target_triple.as_str())
         && marker.target_dir == layout.target_dir)
 }
 
@@ -2439,6 +2591,8 @@ struct DepsReadyMarker {
     flowrt_version: String,
     build_mode: BuildMode,
     features: Vec<String>,
+    #[serde(default)]
+    target_triple: Option<String>,
     target_dir: PathBuf,
 }
 
@@ -2452,6 +2606,7 @@ fn write_deps_ready_marker(
         flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
         build_mode,
         features: feature_names_owned(features),
+        target_triple: Some(layout.target_triple.clone()),
         target_dir: layout.target_dir.clone(),
     };
     if let Some(parent) = layout.ready_file.parent() {
@@ -2539,7 +2694,9 @@ fn run_deps_cargo_build(
     workspace_dir: &Path,
     target_dir: &Path,
     build_mode: BuildMode,
+    target_triple: Option<&str>,
 ) -> Result<()> {
+    ensure_rust_target_available(target_triple)?;
     fs::create_dir_all(target_dir)
         .with_context(|| format!("failed to create `{}`", target_dir.display()))?;
     let mut command = ProcessCommand::new("cargo");
@@ -2549,6 +2706,9 @@ fn run_deps_cargo_build(
         .arg("--lib")
         .env("CARGO_TARGET_DIR", target_dir);
     for arg in build_mode.cargo_args() {
+        command.arg(arg);
+    }
+    for arg in cargo_target_args(target_triple) {
         command.arg(arg);
     }
     if workspace_dir.join(".cargo").join("config.toml").exists() {
@@ -2561,7 +2721,7 @@ fn run_deps_cargo_build(
         )
     })?;
     if !status.success() {
-        anyhow::bail!("FlowRT dependency prewarm failed with status {status}");
+        bail_cargo_status("FlowRT dependency prewarm", status, target_triple)?;
     }
     Ok(())
 }
@@ -2570,7 +2730,9 @@ fn run_repo_runtime_cargo_build(
     target_dir: &Path,
     build_mode: BuildMode,
     features: &RuntimeFeatureSet,
+    target_triple: Option<&str>,
 ) -> Result<()> {
+    ensure_rust_target_available(target_triple)?;
     let repo_root = repo_root_dir()?;
     fs::create_dir_all(target_dir)
         .with_context(|| format!("failed to create `{}`", target_dir.display()))?;
@@ -2586,6 +2748,9 @@ fn run_repo_runtime_cargo_build(
     for arg in build_mode.cargo_args() {
         command.arg(arg);
     }
+    for arg in cargo_target_args(target_triple) {
+        command.arg(arg);
+    }
     let feature_args = features.cargo_feature_args();
     if !feature_args.is_empty() {
         command.arg("--features").arg(feature_args.join(","));
@@ -2597,9 +2762,52 @@ fn run_repo_runtime_cargo_build(
         )
     })?;
     if !status.success() {
-        anyhow::bail!("FlowRT repository dependency prewarm failed with status {status}");
+        bail_cargo_status(
+            "FlowRT repository dependency prewarm",
+            status,
+            target_triple,
+        )?;
     }
     Ok(())
+}
+
+fn ensure_rust_target_available(target_triple: Option<&str>) -> Result<()> {
+    let Some(target_triple) = target_triple else {
+        return Ok(());
+    };
+    let output = match ProcessCommand::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).context("failed to run `rustup target list --installed`");
+        }
+    };
+    if !output.status.success() {
+        return Ok(());
+    }
+    let installed = String::from_utf8_lossy(&output.stdout);
+    if installed.lines().any(|line| line.trim() == target_triple) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Rust target `{target_triple}` is not installed; run `rustup target add {target_triple}` or configure the Rust toolchain before running FlowRT cross build"
+    );
+}
+
+fn bail_cargo_status(
+    context: &str,
+    status: std::process::ExitStatus,
+    target_triple: Option<&str>,
+) -> Result<()> {
+    if let Some(target_triple) = target_triple {
+        anyhow::bail!(
+            "{context} failed with status {status} for Rust target `{target_triple}`; run `rustup target add {target_triple}` if the target std library is missing, then retry"
+        );
+    }
+    anyhow::bail!("{context} failed with status {status}");
 }
 
 fn is_repo_rust_runtime_dir(path: &Path) -> Result<bool> {
@@ -2666,8 +2874,7 @@ fn rustc_toolchain_identity() -> Result<(String, String)> {
         .find_map(|line| line.strip_prefix("host: "))
         .unwrap_or(std::env::consts::ARCH)
         .to_string();
-    let target = env::var("CARGO_BUILD_TARGET").unwrap_or(host);
-    Ok((identity, target))
+    Ok((identity, host))
 }
 
 fn flowrt_vendor_hash(rust_runtime_dir: Option<&Path>) -> Result<String> {
@@ -2721,21 +2928,27 @@ fn build_workspace(
     out_dir: &Path,
     include_launcher: bool,
     build_mode: BuildMode,
+    target_profile: Option<&BuildToolchainProfile>,
 ) -> Result<()> {
     ensure_backend_runtime_supported(contract, "build")?;
     let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
     let mut build_info = build_info_for_contract(contract, build_mode)?;
+    if let Some(target_profile) = target_profile {
+        build_info.platform = Some(target_profile.profile.platform.clone());
+    }
     let cargo_cache = if build_steps(contract, include_launcher)
         .iter()
         .any(|step| matches!(step, BuildStep::CargoApp | BuildStep::CargoSupervisor))
     {
         let features = RuntimeFeatureSet::from_contract(contract)?;
-        let layout = select_ready_deps_cache_layout(build_mode, &features)?;
+        let layout = select_ready_deps_cache_layout(build_mode, &features, target_profile)?;
         build_info.deps_target_dir = Some(layout.target_dir.clone());
         Some(layout)
     } else {
         None
     };
+    let cargo_target_triple =
+        target_profile.and_then(|profile| profile.cargo_target_triple.as_deref());
     for step in build_steps(contract, include_launcher) {
         match step {
             BuildStep::CargoApp => {
@@ -2750,6 +2963,7 @@ fn build_workspace(
                     &app_bin_name(contract),
                     build_mode,
                     target_dir,
+                    cargo_target_triple,
                 )?;
                 let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
                 build_info.executables.rust_app = Some(relative_to_out_dir(out_dir, &local)?);
@@ -2769,6 +2983,7 @@ fn build_workspace(
                     &supervisor_bin_name(contract),
                     build_mode,
                     target_dir,
+                    cargo_target_triple,
                 )?;
                 let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
                 build_info.executables.supervisor = Some(relative_to_out_dir(out_dir, &local)?);
@@ -3380,9 +3595,12 @@ fn run_cargo_build_bin(
     bin_name: &str,
     build_mode: BuildMode,
     target_dir: &Path,
+    target_triple: Option<&str>,
 ) -> Result<PathBuf> {
-    let invocation = cargo_build_invocation(manifest, bin_name, build_mode, target_dir)?;
+    let invocation =
+        cargo_build_invocation(manifest, bin_name, build_mode, target_dir, target_triple)?;
     remove_stale_generated_binary_outputs(&invocation)?;
+    ensure_rust_target_available(invocation.target_triple.as_deref())?;
     clean_generated_cargo_package(&invocation)?;
     let mut command = ProcessCommand::new("cargo");
     command
@@ -3391,15 +3609,17 @@ fn run_cargo_build_bin(
         .args(&invocation.args);
     let status = command.status().context("failed to spawn cargo")?;
     if !status.success() {
-        anyhow::bail!("cargo invocation failed with status {status}");
+        bail_cargo_status(
+            "cargo invocation",
+            status,
+            invocation.target_triple.as_deref(),
+        )?;
     }
     Ok(invocation.executable_path())
 }
 
 fn remove_stale_generated_binary_outputs(invocation: &CargoBuildInvocation) -> Result<()> {
-    let profile_dir = invocation
-        .target_dir
-        .join(invocation.build_mode.cargo_profile_dir());
+    let profile_dir = invocation.profile_dir();
     remove_file_if_exists(&profile_dir.join(format!(
         "{}{}",
         invocation.bin_name,
@@ -3451,6 +3671,9 @@ fn clean_generated_cargo_package(invocation: &CargoBuildInvocation) -> Result<()
         .arg("-p")
         .arg(&package_name)
         .env("CARGO_TARGET_DIR", &invocation.target_dir);
+    for arg in cargo_target_args(invocation.target_triple.as_deref()) {
+        command.arg(arg);
+    }
     let status = command.status().with_context(|| {
         format!(
             "failed to spawn cargo clean for generated package `{}`",
@@ -3500,14 +3723,23 @@ struct CargoBuildInvocation {
     current_dir: PathBuf,
     args: Vec<String>,
     target_dir: PathBuf,
+    target_triple: Option<String>,
     bin_name: String,
     build_mode: BuildMode,
 }
 
 impl CargoBuildInvocation {
+    fn profile_dir(&self) -> PathBuf {
+        let target_dir = if let Some(target_triple) = &self.target_triple {
+            self.target_dir.join(target_triple)
+        } else {
+            self.target_dir.clone()
+        };
+        target_dir.join(self.build_mode.cargo_profile_dir())
+    }
+
     fn executable_path(&self) -> PathBuf {
-        self.target_dir
-            .join(self.build_mode.cargo_profile_dir())
+        self.profile_dir()
             .join(format!("{}{}", self.bin_name, std::env::consts::EXE_SUFFIX))
     }
 }
@@ -3517,6 +3749,7 @@ fn cargo_build_invocation(
     bin_name: &str,
     build_mode: BuildMode,
     target_dir: &Path,
+    target_triple: Option<&str>,
 ) -> Result<CargoBuildInvocation> {
     let manifest = fs::canonicalize(manifest)
         .with_context(|| format!("failed to resolve `{}`", manifest.display()))?;
@@ -3532,6 +3765,7 @@ fn cargo_build_invocation(
         bin_name.to_string(),
     ];
     args.extend(build_mode.cargo_args().iter().map(|arg| (*arg).to_string()));
+    args.extend(cargo_target_args(target_triple));
     if manifest_dir.join(".cargo").join("config.toml").exists() {
         args.push("--offline".to_string());
     }
@@ -3540,6 +3774,7 @@ fn cargo_build_invocation(
         current_dir: manifest_dir,
         args,
         target_dir: target_dir.to_path_buf(),
+        target_triple: target_triple.map(str::to_string),
         bin_name: bin_name.to_string(),
         build_mode,
     })

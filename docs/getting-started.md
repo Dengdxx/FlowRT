@@ -41,6 +41,20 @@ flowrt deps examples/import_demo/rsdl/robot.rsdl
 
 `flowrt deps` 只编译 FlowRT 底层依赖；`flowrt build` 只编译用户项目和生成 shell。默认构建模式是 release，用户二进制位于项目自己的 `flowrt/build/bin/release/`。
 
+交叉编译 Rust app 或 generated supervisor 时，用 target platform 选择 toolchain profile：
+
+```bash
+flowrt deps examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
+flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
+```
+
+`--target` 当前支持 `linux-amd64` 和 `linux-arm64`。显式参数优先于 RSDL/Contract IR target
+platform；省略时如果选定 Contract IR target 已声明 platform，CLI 会自动使用该 platform，
+否则保持 native 构建。Rust/Cargo 路径会传递对应 `--target <rust-target-triple>`，缺少
+Rust target 时需要先执行 `rustup target add <triple>` 或配置本机 Rust toolchain。
+FlowRT 不自动下载系统交叉编译器，C++/CMake 的 target SDK toolchain 参数由后续交叉编译
+任务补齐。
+
 ## 检查 RSDL
 
 先检查模块化 RSDL 示例：

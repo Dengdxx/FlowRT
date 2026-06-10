@@ -7,10 +7,10 @@
 ```bash
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
-flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--build-mode <release|debug>] [--check]
+flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
 flowrt external check <path/to/external-package>
 flowrt external list --path <path/to/search-root>
-flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--launcher] [--build-mode <release|debug>]
+flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>]
 flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>]
@@ -66,6 +66,7 @@ flowrt prepare examples/import_demo/rsdl/robot.rsdl
 flowrt deps examples/import_demo/rsdl/robot.rsdl
 flowrt deps --backend all
 flowrt deps examples/profile_switch_demo/rsdl/robot.rsdl --profile iox2
+flowrt deps examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 flowrt deps --backend zenoh --build-mode release --check
 ```
 
@@ -77,7 +78,9 @@ flowrt deps --backend zenoh --build-mode release --check
 - `XDG_CACHE_HOME/flowrt`
 - `~/.cache/flowrt`
 
-cache key 包含 FlowRT 版本、Rust toolchain identity、target triple、vendor hash、build mode 和 backend feature 组合。`--backend all` 预热的 cache 可以被 `inproc`、`iox2` 或 `zenoh` 子集复用；安装后推荐在项目内运行 `flowrt deps <rsdl>`，CI 或离线镜像准备阶段可以用 `flowrt deps --backend all` 一次性补全。
+cache key 包含 FlowRT 版本、Rust toolchain identity、target triple、vendor hash、build mode 和 backend feature 组合。`--target <platform>` 会按 toolchain profile 解析 Rust target triple，并把 Cargo prewarm 输出隔离到对应 cache key 和 ready marker 下；省略 `--target` 且 RSDL 已声明 target platform 时使用 Contract IR 的 platform，仍无 platform 时保持 native 构建。`--backend all` 预热的 cache 可以被 `inproc`、`iox2` 或 `zenoh` 子集复用；安装后推荐在项目内运行 `flowrt deps <rsdl>`，CI 或离线镜像准备阶段可以用 `flowrt deps --backend all` 一次性补全。
+
+当前支持的 platform 为 `linux-amd64` 和 `linux-arm64`。当 Cargo 需要交叉 target 时，CLI 会传递 `--target <rust-target-triple>`；如果 rustup 未安装该 target 或 Cargo 构建失败，错误会指出 Rust target triple，并提示先执行 `rustup target add <triple>` 或配置对应 Rust toolchain。FlowRT 不会自动下载系统交叉编译器或 target SDK。
 
 `--build-mode` 默认是 `release`。`debug` 只用于本地调试，不能和 release 产物混用。
 
@@ -85,6 +88,7 @@ cache key 包含 FlowRT 版本、Rust toolchain identity、target triple、vendo
 
 ```bash
 flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 ```
 
 `build` 先执行 `prepare`，再构建生成应用。默认 build mode 是 `release`。
@@ -102,6 +106,8 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl
 
 构建出的用户项目二进制统一位于 `flowrt/build/bin/<release|debug>/`，包括 Rust app、generated supervisor、C++ app 和 ROS2 bridge adapter。`flowrt/build/build-info.json` 记录本次构建的 FlowRT 版本、profile、build mode、依赖 target 目录和相对 executable 路径。
 
+`--target <platform>` 显式选择构建目标 platform，优先级高于 Contract IR target platform；省略时，`build` 使用选定 Contract IR target 的 platform，仍无 platform 时保持 native 旧行为。Rust app、generated supervisor 和 deps cache 会使用同一个 Rust target triple，并按 Cargo 的 cross target 输出路径定位二进制。当前接通的是 Rust/Cargo 主路径；C++/CMake 的 target SDK toolchain 参数由后续 CMake 接入任务完成。
+
 Debian 包会把 FlowRT 锁定版本的 Rust crate vendor、`iceoryx2-cxx`、`zenoh-c` 和 `zenoh-cpp` 安装到 `/opt/flowrt/<version>`。安装后的 `flowrt deps` / `flowrt build` 会使用该私有前缀和包内 vendor；生成项目构建不需要联网拉取 backend 依赖。源码树内直接调试生成 CMake 时，可以用 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH` 指向同一私有前缀。
 
 `/opt/flowrt/<version>` 保留兼容的 `include/`、`lib/` 和 `lib/<multiarch>/` 查找路径，
@@ -110,8 +116,9 @@ backend SDK、CMake package 和 pkg-config 文件镜像到 `targets/linux-amd64`
 `targets/linux-arm64`，并在 `flowrt-target-sdk.toml` 中记录 `platform`、`multiarch`、
 `components` 和 `complete = true`。另一架构目录只放 marker 和空的 `include/`、`lib/`、
 `cmake/`、`pkgconfig/`，manifest 中 `complete = false`，不能当作可链接 SDK 使用。
-该布局是 v0.8.2 交叉编译支持的基础；实际 `flowrt build --target` 执行和双架构完整
-SDK 聚合不在当前 CLI 主路径内。
+该布局是 v0.8.2 交叉编译支持的基础；当前 CLI 已把 Rust/Cargo 构建接到
+`flowrt deps/build --target <platform>`，双架构完整 SDK 聚合和 CMake toolchain 参数由
+后续任务补齐。
 
 默认情况下，`flowrt build` 和生成 CMake 不会回退到 FlowRT 源码树 `runtime/cpp`。在 FlowRT 仓库内开发时，设置环境变量 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1`，CLI 会同时把 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` 传给 CMake，启用源码树回退。正式用户路径不应依赖此选项。
 
