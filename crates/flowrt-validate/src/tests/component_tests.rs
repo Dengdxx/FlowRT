@@ -122,6 +122,24 @@ fn rejects_frame_descriptor_output_with_non_standard_fixed_shape() {
 }
 
 #[test]
+fn rejects_frame_descriptor_output_with_variable_field_before_backend_fallback() {
+    let source = frame_descriptor_contract_source("BadFrameDescriptor")
+        .replace("flags = \"u32\"", "flags = \"bytes\"");
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+    let report = validate_contract(&ir)
+        .expect_err("descriptor output with variable data must fail validation");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "component `camera` resource `frames` descriptor port `frame` message `BadFrameDescriptor`",
+        ) && error
+            .message
+            .contains("field `flags` must be `u32`, found `bytes`")
+    }));
+}
+
+#[test]
 fn rejects_legacy_adapter_component_kind() {
     let source = r#"
 [package]

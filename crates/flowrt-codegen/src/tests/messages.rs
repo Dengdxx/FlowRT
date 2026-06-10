@@ -137,6 +137,106 @@ backends = ["iox2", "zenoh"]
 }
 
 #[test]
+fn iox2_profile_keeps_frame_descriptor_routes_on_iox2() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "descriptor_route_demo"
+rsdl_version = "0.1"
+
+[type.FrameHandle]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+timestamp_unix_ns = "u64"
+width = "u32"
+height = "u32"
+stride_bytes = "u32"
+format_id = "u32"
+encoding_id = "u32"
+flags = "u32"
+
+[component.camera]
+language = "rust"
+kind = "io_boundary"
+io_side_effect = ["device", "read"]
+output = ["frame:FrameHandle"]
+
+[component.camera.resource.frames]
+kind = "shm"
+
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+port = "frame"
+format = "rgb8"
+encoding = "row_major"
+metadata = { width = "640", height = "480" }
+
+[component.processor]
+language = "rust"
+input = ["frame:FrameHandle"]
+
+[instance.camera]
+component = "camera"
+target = "linux"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 33
+output = ["frame"]
+
+[instance.processor]
+component = "processor"
+target = "linux"
+
+[instance.processor.task]
+trigger = "on_message"
+input = ["frame"]
+
+[[bind.dataflow]]
+from = "camera.frame"
+to = "processor.frame"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
+    assert!(!rust_shell.contains("flowrt::zenoh::ZenohPubSub<FrameHandle>"));
+
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let channel = &launch["graphs"][0]["channels"][0];
+    assert_eq!(channel["backend"], "iox2");
+    assert!(
+        channel["service"]
+            .as_str()
+            .unwrap()
+            .contains("camera_frame_to_processor_frame")
+    );
+    assert_eq!(channel["key_expr"], serde_json::Value::Null);
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let selfdesc_channel = &selfdesc["graphs"][0]["channels"][0];
+    assert_eq!(selfdesc_channel["backend"], "iox2");
+    assert_eq!(selfdesc_channel["key_expr"], serde_json::Value::Null);
+
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+    assert!(cargo_manifest.contains("features = [\"iox2\"]"));
+    assert!(!cargo_manifest.contains("features = [\"iox2\", \"zenoh\"]"));
+}
+
+#[test]
 fn variable_frame_supports_sequence_of_fixed_structs_in_rust_and_cpp() {
     let ir = contract_from_source(
         r#"
