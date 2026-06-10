@@ -98,6 +98,10 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl --target linux-arm64
 规则：
 
 - `build` 只编译用户项目和生成 shell，不负责隐式预热 FlowRT 底层依赖。首次构建、切换 backend、切换 FlowRT 版本或清理 cache 后，应先运行匹配的 `flowrt deps`。
+- Rust/Cargo 构建会复用 `flowrt deps` 准备好的共享 target cache。该 cache 中的依赖、
+  用户代码增量产物和 Cargo fingerprint 对后续构建有复用价值，默认不会被自动清理。
+- 最终运行二进制会复制到项目自己的 `flowrt/build/bin/...`；用户项目工作区不维护一份
+  独立的大型 Rust target 目录。
 - Rust-only 或含 Rust component 的 contract 当前会触发 Cargo app 构建。
 - C++ only contract 走 CMake app 路径，不依赖 Cargo app。
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。

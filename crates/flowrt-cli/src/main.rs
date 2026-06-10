@@ -3892,9 +3892,8 @@ fn run_cmake_configure_and_build(
         .map(|profile| profile.is_cross)
         .unwrap_or(false);
     let source_dir = out_dir.join("build");
-    let build_dir = source_dir
-        .join("cmake")
-        .join(build_mode.cargo_profile_dir());
+    let target_identity = bin_target_identity(target_profile);
+    let build_dir = cmake_build_dir(out_dir, build_mode, target_identity.as_deref());
     let runtime_dir = cpp_runtime_dir_for_generated_build()?;
     let existing_prefix_paths = cmake_prefix_path_from_env();
     let toolchain_prefix_paths = toolchain_profile
@@ -3937,6 +3936,18 @@ fn run_cmake_configure_and_build(
             .then_some(ros2_bridge)
             .and_then(existing_executable),
     })
+}
+
+fn cmake_build_dir(
+    out_dir: &Path,
+    build_mode: BuildMode,
+    target_identity: Option<&str>,
+) -> PathBuf {
+    let mut build_dir = out_dir.join("build").join("cmake");
+    if let Some(target_identity) = target_identity {
+        build_dir = build_dir.join(target_identity);
+    }
+    build_dir.join(build_mode.cargo_profile_dir())
 }
 
 fn existing_executable(path: PathBuf) -> Option<PathBuf> {
@@ -4396,9 +4407,7 @@ fn run_cargo_build_bin(
 ) -> Result<PathBuf> {
     let invocation =
         cargo_build_invocation(manifest, bin_name, build_mode, target_dir, target_triple)?;
-    remove_stale_generated_binary_outputs(&invocation)?;
     ensure_rust_target_available(invocation.target_triple.as_deref())?;
-    clean_generated_cargo_package(&invocation)?;
     let mut command = ProcessCommand::new("cargo");
     command
         .current_dir(&invocation.current_dir)
@@ -4415,108 +4424,7 @@ fn run_cargo_build_bin(
     Ok(invocation.executable_path())
 }
 
-fn remove_stale_generated_binary_outputs(invocation: &CargoBuildInvocation) -> Result<()> {
-    let profile_dir = invocation.profile_dir();
-    remove_file_if_exists(&profile_dir.join(format!(
-        "{}{}",
-        invocation.bin_name,
-        std::env::consts::EXE_SUFFIX
-    )))?;
-    remove_file_if_exists(&profile_dir.join(format!("{}.d", invocation.bin_name)))?;
-
-    let deps_dir = profile_dir.join("deps");
-    if deps_dir.is_dir() {
-        let mut dep_prefixes = vec![invocation.bin_name.replace('-', "_")];
-        if let Some(lib_name) = cargo_manifest_lib_name(&invocation.manifest_path)? {
-            dep_prefixes.push(lib_name.clone());
-            dep_prefixes.push(format!("lib{lib_name}"));
-        }
-        for entry in fs::read_dir(&deps_dir)
-            .with_context(|| format!("failed to read `{}`", deps_dir.display()))?
-        {
-            let entry = entry
-                .with_context(|| format!("failed to read entry in `{}`", deps_dir.display()))?;
-            let file_name = entry.file_name();
-            let file_name = file_name.to_string_lossy();
-            if dep_prefixes
-                .iter()
-                .any(|prefix| file_name.starts_with(prefix))
-            {
-                remove_file_if_exists(&entry.path())?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("failed to remove `{}`", path.display())),
-    }
-}
-
-fn clean_generated_cargo_package(invocation: &CargoBuildInvocation) -> Result<()> {
-    let package_name = cargo_manifest_package_name(&invocation.manifest_path)?;
-    let mut command = ProcessCommand::new("cargo");
-    command
-        .current_dir(&invocation.current_dir)
-        .arg("clean")
-        .arg("--manifest-path")
-        .arg(&invocation.manifest_path)
-        .arg("-p")
-        .arg(&package_name)
-        .env("CARGO_TARGET_DIR", &invocation.target_dir);
-    for arg in cargo_target_args(invocation.target_triple.as_deref()) {
-        command.arg(arg);
-    }
-    let status = command.status().with_context(|| {
-        format!(
-            "failed to spawn cargo clean for generated package `{}`",
-            package_name
-        )
-    })?;
-    if !status.success() {
-        anyhow::bail!(
-            "cargo clean for generated package `{package_name}` failed with status {status}"
-        );
-    }
-    Ok(())
-}
-
-fn cargo_manifest_package_name(manifest: &Path) -> Result<String> {
-    let content = fs::read_to_string(manifest)
-        .with_context(|| format!("failed to read `{}`", manifest.display()))?;
-    let value: toml::Value = toml::from_str(&content)
-        .with_context(|| format!("failed to parse `{}`", manifest.display()))?;
-    value
-        .get("package")
-        .and_then(|package| package.get("name"))
-        .and_then(toml::Value::as_str)
-        .map(str::to_string)
-        .with_context(|| {
-            format!(
-                "Cargo manifest `{}` is missing package.name",
-                manifest.display()
-            )
-        })
-}
-
-fn cargo_manifest_lib_name(manifest: &Path) -> Result<Option<String>> {
-    let content = fs::read_to_string(manifest)
-        .with_context(|| format!("failed to read `{}`", manifest.display()))?;
-    let value: toml::Value = toml::from_str(&content)
-        .with_context(|| format!("failed to parse `{}`", manifest.display()))?;
-    Ok(value
-        .get("lib")
-        .and_then(|lib| lib.get("name"))
-        .and_then(toml::Value::as_str)
-        .map(str::to_string))
-}
-
 struct CargoBuildInvocation {
-    manifest_path: PathBuf,
     current_dir: PathBuf,
     args: Vec<String>,
     target_dir: PathBuf,
@@ -4567,7 +4475,6 @@ fn cargo_build_invocation(
         args.push("--offline".to_string());
     }
     Ok(CargoBuildInvocation {
-        manifest_path: manifest,
         current_dir: manifest_dir,
         args,
         target_dir: target_dir.to_path_buf(),

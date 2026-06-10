@@ -17,11 +17,14 @@ pkg-config 路径、SDK overlay 和 runtime dependency policy 都属于 toolchai
 当前 CLI 已接通 `flowrt deps/build --target <platform>` 的交叉编译主路径：显式
 `--target` 优先，否则从选定 Contract IR target platform 推导，仍无 platform 时保持
 native 构建。Rust/Cargo 会使用对应 Rust target triple，并把 cache key、ready marker
-和输出路径按 triple 隔离；C++/CMake 有完整 target SDK 时会优先使用
+和输出路径按 triple 隔离；`flowrt build` 默认保留共享 target cache 中可复用的 Cargo
+fingerprint、用户代码增量产物和底层依赖产物，最终运行二进制复制到项目自己的
+`flowrt/build/bin/...`。C++/CMake 有完整 target SDK 时会优先使用
 `targets/<platform>` 的 prefix、toolchain profile 中的 compiler/sysroot 或 CMake
-toolchain file，并设置 cross build 的 `PKG_CONFIG_LIBDIR`；target SDK 缺失或
-`complete = false` 会清晰报错。FlowRT 当前只承诺 `linux-amd64 -> linux-arm64` 交叉
-编译，不承诺 `linux-arm64 -> linux-amd64`。
+toolchain file，并设置 cross build 的 `PKG_CONFIG_LIBDIR`；generated CMake 临时
+build dir 按 target platform 分层以避免 native/cross 互相污染，同时保留增量构建
+能力。target SDK 缺失或 `complete = false` 会清晰报错。FlowRT 当前只承诺
+`linux-amd64 -> linux-arm64` 交叉编译，不承诺 `linux-arm64 -> linux-amd64`。
 CI/release 侧使用两层缓存降低重复构建成本：Rust/Cargo job 使用按架构隔离的
 GitHub Actions cache；安装后 package/demo/ROS2 smoke 使用外部传入的
 `FLOWRT_CACHE_DIR` 缓存 FlowRT 底层依赖预热结果。deb 成品、release notes 和
