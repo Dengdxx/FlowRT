@@ -214,17 +214,26 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   源，支持 Linux `amd64` / `arm64` 优先的 target platform、external package 多平台
   选择、cross build orchestration、远端 FlowRT 版本校验和 release 安装包 smoke。
 
-当前 `v0.8.0` 已落地的静态边界：
+当前 `v0.8.0` 已落地边界：
 
 - RSDL / Contract IR 支持 `kind = "io_boundary"` component，并记录 resource
   requirement、side effect、readiness、health 和 shutdown policy；launch manifest 与
-  self-description 输出对应摘要，runtime/codegen 用户 API 仍是后续主路径。
+  self-description 输出对应摘要。Rust/C++ runtime 已提供 `BoundaryContext` 和
+  introspection `io_boundaries` 状态；generated shell 会为 I/O boundary 生命周期钩子传入
+  boundary context，并在 `component_started` readiness 下自动标记 ready。
 - target platform 输入统一归一化为 `linux-amd64` / `linux-arm64`；`linux-x86_64` 和
   `linux-aarch64` 只作为旧输入别名接受，落盘 IR、自描述和 bundle manifest 均输出
   canonical 字符串。
 - `flowrt bundle` 输出 schema v2，保留旧 deploy 字段，并新增 artifact 列表记录
   target、platform、相对路径和 sha256；external package executable 在 bundle 阶段按
   target platform 校验支持矩阵。
+- `flowrt deploy` 对 schema v2 bundle 以 artifact 列表为部署事实源，按请求 target
+  选择产物，并校验 platform、相对路径、文件存在性和 sha256；schema v1 bundle 继续按
+  顶层 target 字段兼容。
+- variable frame 的 Rust/C++ generated message API 覆盖 `bytes`、`string`、
+  `sequence<primitive>` 和 `sequence<fixed struct>`；runtime frame codec 的 canonical
+  tail order 已在 Rust/C++ smoke 中覆盖。`iox2` 仍只承载 fixed-size plain data，变长
+  route 自动选择支持 variable frame 的 backend。
 
 `v0.7.0` 已落地 external package 主路径：
 
