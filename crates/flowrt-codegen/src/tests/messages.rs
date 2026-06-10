@@ -137,6 +137,97 @@ backends = ["iox2", "zenoh"]
 }
 
 #[test]
+fn variable_frame_supports_sequence_of_fixed_structs_in_rust_and_cpp() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "path_frame_demo"
+rsdl_version = "0.1"
+
+[type.Point]
+x = "f32"
+y = "f32"
+
+[type.PathFrame]
+label = "string"
+points = "sequence<Point>"
+
+[component.source]
+language = "rust"
+output = ["path:PathFrame"]
+
+[component.sink]
+language = "cpp"
+input = ["path:PathFrame"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["path"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["path"]
+
+[[bind.dataflow]]
+from = "source.path"
+to = "sink.path"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(rust_messages.contains("pub points: Vec<Point>"));
+    assert!(
+        rust_messages
+            .contains("let mut points_tail = Vec::<u8>::with_capacity(self.points.len() * 8);")
+    );
+    assert!(
+        rust_messages
+            .contains("element.encode_wire(&mut points_tail[cursor..cursor + Point::WIRE_SIZE])?;")
+    );
+    assert!(
+        rust_messages.contains("points.push(<Point as flowrt::WireCodec>::decode_wire(chunk)?);")
+    );
+
+    assert!(cpp_messages.contains("std::vector<Point> points"));
+    assert!(cpp_messages.contains("points_tail.resize(points.size() * 8);"));
+    assert!(cpp_messages.contains("element.encode_wire(std::span<std::uint8_t>{points_tail.data(), points_tail.size()}.subspan(cursor, Point::wire_size()));"));
+    assert!(
+        cpp_messages.contains(
+            "value.points.push_back(Point::decode_wire(points_block.subspan(index, 8)));"
+        )
+    );
+
+    assert_eq!(selfdesc["message_abi"][0]["type_name"], "Point");
+    assert_eq!(selfdesc["message_frames"][0]["type_name"], "PathFrame");
+    assert_eq!(
+        selfdesc["message_frames"][0]["encoding"],
+        "canonical_frame_v1"
+    );
+    assert_eq!(selfdesc["message_frames"][0]["header_size_bytes"], 16);
+}
+
+#[test]
 fn message_abi_tests_embed_cross_language_byte_fixtures() {
     let ir = contract_from_source(
         r#"

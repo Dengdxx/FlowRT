@@ -432,7 +432,10 @@ pub(crate) fn emit_rust_message_abi_tests(
     }
     output.push('\n');
 
-    for ty in ordered_types(contract) {
+    for ty in ordered_types(contract)
+        .into_iter()
+        .filter(|ty| expectations_by_name.contains_key(ty.qualified_name.as_str()))
+    {
         output.push_str(&format!(
             "fn {}() -> flowrt_app::messages::{} {{\n",
             sample_function_name(&ty.qualified_name),
@@ -545,7 +548,10 @@ pub(crate) fn emit_cpp_message_abi_tests(
     }
     output.push('\n');
 
-    for ty in ordered_types(contract) {
+    for ty in ordered_types(contract)
+        .into_iter()
+        .filter(|ty| expectations_by_name.contains_key(ty.qualified_name.as_str()))
+    {
         output.push_str(&format!(
             "flowrt_app::{} {}() {{\n",
             ty.generated_name,

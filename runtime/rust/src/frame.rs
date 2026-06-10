@@ -211,4 +211,37 @@ mod tests {
         let mut bad = FrameDecoder::new(&tail);
         assert!(bad.read_block(VarSpan::new(1, 1)).is_err());
     }
+
+    #[test]
+    fn variable_frame_span_roundtrip_uses_canonical_tail_order() {
+        let mut tail = Vec::new();
+        let payload = append_tail_block(&mut tail, &[0xAA, 0xBB]).unwrap();
+        let label = append_tail_block(&mut tail, b"ok").unwrap();
+        let empty = append_tail_block(&mut tail, &[]).unwrap();
+
+        let mut header = [0u8; VAR_SPAN_WIRE_SIZE * 3];
+        payload.encode(&mut header[0..VAR_SPAN_WIRE_SIZE]).unwrap();
+        label
+            .encode(&mut header[VAR_SPAN_WIRE_SIZE..VAR_SPAN_WIRE_SIZE * 2])
+            .unwrap();
+        empty.encode(&mut header[VAR_SPAN_WIRE_SIZE * 2..]).unwrap();
+
+        assert_eq!(
+            header,
+            [
+                0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+        assert_eq!(tail, [0xAA, 0xBB, b'o', b'k']);
+
+        let payload_span = VarSpan::decode(&header[0..VAR_SPAN_WIRE_SIZE]).unwrap();
+        let label_span =
+            VarSpan::decode(&header[VAR_SPAN_WIRE_SIZE..VAR_SPAN_WIRE_SIZE * 2]).unwrap();
+        let empty_span = VarSpan::decode(&header[VAR_SPAN_WIRE_SIZE * 2..]).unwrap();
+        let mut decoder = FrameDecoder::new(&tail);
+        assert_eq!(decoder.read_block(payload_span).unwrap(), [0xAA, 0xBB]);
+        assert_eq!(decoder.read_block(label_span).unwrap(), b"ok");
+        assert!(decoder.read_block(empty_span).unwrap().is_empty());
+        decoder.finish().unwrap();
+    }
 }

@@ -158,6 +158,38 @@ int main() {
     assert(content_error.expected() == 0U);
     assert(content_error.actual() == 0U);
 
+    std::vector<std::uint8_t> variable_tail;
+    const auto payload_span =
+        flowrt::append_tail_block(variable_tail, std::span<const std::uint8_t>{bytes});
+    const std::array<std::uint8_t, 2> label_bytes{static_cast<std::uint8_t>('o'),
+                                                  static_cast<std::uint8_t>('k')};
+    const auto label_span =
+        flowrt::append_tail_block(variable_tail, std::span<const std::uint8_t>{label_bytes});
+    const auto empty_span =
+        flowrt::append_tail_block(variable_tail, std::span<const std::uint8_t>{});
+    std::array<std::uint8_t, flowrt::VAR_SPAN_WIRE_SIZE * 3U> variable_header{};
+    flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(0, 8),
+                           payload_span);
+    flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(8, 8), label_span);
+    flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(16, 8), empty_span);
+    assert((variable_header == std::array<std::uint8_t, 24>{
+                                   0U, 0U, 0U, 0U, 3U, 0U, 0U, 0U, 3U, 0U, 0U, 0U,
+                                   2U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}));
+    assert((variable_tail == std::vector<std::uint8_t>{1U, 2U, 3U, 'o', 'k'}));
+    flowrt::FrameDecoder frame_decoder{std::span<const std::uint8_t>{variable_tail}};
+    const auto payload_block = frame_decoder.read_block(flowrt::read_var_span(
+        std::span<const std::uint8_t>{variable_header}.subspan(0, 8)));
+    assert(payload_block.size() == 3U);
+    assert(payload_block[0] == 1U);
+    const auto label_block = frame_decoder.read_block(flowrt::read_var_span(
+        std::span<const std::uint8_t>{variable_header}.subspan(8, 8)));
+    assert(label_block.size() == 2U);
+    assert(label_block[0] == static_cast<std::uint8_t>('o'));
+    const auto empty_block = frame_decoder.read_block(flowrt::read_var_span(
+        std::span<const std::uint8_t>{variable_header}.subspan(16, 8)));
+    assert(empty_block.empty());
+    frame_decoder.finish();
+
     flowrt::InprocBackend inproc_backend;
     assert(inproc_backend.kind() == flowrt::BackendKind::Inproc);
     assert(inproc_backend.capabilities().contains("channel:latest"));
