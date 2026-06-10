@@ -18,7 +18,7 @@
 #   9. v0.8.1 focused CI gate 是否覆盖标准 FrameDescriptor 示例、echo、record、
 #      安装后 smoke 和 microbench
 #   10. v0.8.2 focused CI gate 是否覆盖 amd64 host 到 arm64 target 的交叉编译主路径、
-#       target SDK layout smoke 和 package/release 依赖
+#       target SDK layout smoke、安装后 smoke 和 package/release 依赖
 #
 # 任何检查失败都会给出清晰错误信息并以非零状态退出。
 
@@ -493,6 +493,8 @@ else
         "真实 C++ cross build 暂不在此 gate 执行" "$ci_file"
     require_ci_text "target SDK layout smoke 入 CI" \
         "scripts/test-deb-target-sdk-layout.sh" "$ci_file"
+    require_ci_text "demo smoke 运行 v0.8.2 安装后 smoke" \
+        "scripts/test-v082-installed-smoke.sh" "$ci_file"
     require_ci_text_count_at_least "package/release 依赖 v0.8.2 focused gate" \
         "- v082-cross-compile-smoke" "$ci_file" 2
 fi
@@ -502,6 +504,13 @@ if [[ -x "$target_sdk_layout_smoke" ]]; then
     pass "target SDK layout smoke 脚本存在且可执行"
 else
     fail "target SDK layout smoke 脚本不存在或不可执行: $target_sdk_layout_smoke"
+fi
+
+installed_v082_smoke="$repo_root/scripts/test-v082-installed-smoke.sh"
+if [[ -x "$installed_v082_smoke" ]]; then
+    pass "v0.8.2 安装后 smoke 脚本存在且可执行"
+else
+    fail "v0.8.2 安装后 smoke 脚本不存在或不可执行: $installed_v082_smoke"
 fi
 
 # ── 11. README 安装示例版本 ──────────────────────────────────

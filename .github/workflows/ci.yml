@@ -606,6 +606,7 @@ jobs:
           scripts/test-v070-installed-smoke.sh
           scripts/test-v080-installed-smoke.sh
           scripts/test-v081-installed-smoke.sh
+          scripts/test-v082-installed-smoke.sh
 
   ros2-jazzy-bridge:
     name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
