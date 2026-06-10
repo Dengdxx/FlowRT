@@ -189,7 +189,14 @@ fn optional_resource_descriptor(
     validate_known_fields(
         descriptor_table,
         &descriptor_context,
-        &["kind", "port", "format", "encoding", "metadata", "record_payload"],
+        &[
+            "kind",
+            "port",
+            "format",
+            "encoding",
+            "metadata",
+            "record_payload",
+        ],
     )?;
     Ok(Some(RawResourceDescriptor {
         kind: required_string(descriptor_table, &descriptor_context, "kind")?,
