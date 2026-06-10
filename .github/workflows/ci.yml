@@ -720,6 +720,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 准备 amd64 demo cross 工具链
+        if: matrix.deb_arch == 'amd64'
+        run: |
+          apt-get update
+          apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu file
+          rustup target add aarch64-unknown-linux-gnu
+
       - name: 缓存 Rust 构建产物
         uses: Swatinem/rust-cache@v2
         with:
