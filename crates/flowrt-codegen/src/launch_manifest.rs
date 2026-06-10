@@ -400,6 +400,7 @@ fn launch_resource_requirement(resource: &ResourceRequirementIr) -> serde_json::
     if let Some(descriptor) = &resource.descriptor {
         value["descriptor"] = serde_json::json!({
             "kind": resource_descriptor_kind_name(descriptor.kind),
+            "port": descriptor.port,
             "format": descriptor.format,
             "encoding": descriptor.encoding,
             "metadata": descriptor.metadata,

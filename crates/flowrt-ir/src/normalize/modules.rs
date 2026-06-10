@@ -251,8 +251,19 @@ fn normalize_resource_descriptor(
     let Some(raw) = raw else {
         return Ok(None);
     };
+    let port = raw
+        .port
+        .as_deref()
+        .map(str::trim)
+        .filter(|port| !port.is_empty())
+        .ok_or_else(|| IrError::InvalidValue {
+            context: format!("{context}.port"),
+            message: "frame descriptor schema must bind to an output port".to_string(),
+        })?
+        .to_string();
     Ok(Some(ResourceDescriptorSchemaIr {
         kind: parse_resource_descriptor_kind(&format!("{context}.kind"), &raw.kind)?,
+        port,
         format: raw.format.clone(),
         encoding: raw.encoding.clone(),
         metadata: raw.metadata.clone(),

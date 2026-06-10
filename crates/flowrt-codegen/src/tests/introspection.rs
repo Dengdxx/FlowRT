@@ -226,6 +226,7 @@ kind = "shm"
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"
+port = "frame"
 format = "rgb8"
 encoding = "row_major"
 metadata = { width = "640", height = "480" }
@@ -245,6 +246,7 @@ output = ["frame"]
     let descriptor = &selfdesc["component_types"][0]["resources"][0]["descriptor"];
 
     assert_eq!(descriptor["kind"], "frame");
+    assert_eq!(descriptor["port"], "frame");
     assert_eq!(descriptor["format"], "rgb8");
     assert_eq!(descriptor["encoding"], "row_major");
     assert_eq!(descriptor["metadata"]["width"], "640");

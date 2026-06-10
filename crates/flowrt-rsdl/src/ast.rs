@@ -146,6 +146,7 @@ pub struct RawResourceRequirement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawResourceDescriptor {
     pub kind: String,
+    pub port: Option<String>,
     pub format: String,
     pub encoding: Option<String>,
     pub metadata: BTreeMap<String, String>,

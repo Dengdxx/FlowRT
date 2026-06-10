@@ -142,6 +142,7 @@ pub struct ResourceRequirementIr {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceDescriptorSchemaIr {
     pub kind: ResourceDescriptorKind,
+    pub port: String,
     pub format: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,

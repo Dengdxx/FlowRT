@@ -144,6 +144,8 @@ pub struct SelfDescriptionResourceDescriptor {
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
+    pub port: String,
+    #[serde(default)]
     pub format: String,
     #[serde(default)]
     pub encoding: String,

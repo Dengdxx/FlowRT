@@ -439,6 +439,7 @@ fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionCo
                 descriptor: resource.descriptor.as_ref().map(|descriptor| {
                     SelfDescriptionResourceDescriptor {
                         kind: resource_descriptor_kind_name(descriptor.kind).to_string(),
+                        port: descriptor.port.clone(),
                         format: descriptor.format.clone(),
                         encoding: descriptor.encoding.clone().unwrap_or_default(),
                         metadata: descriptor.metadata.clone(),

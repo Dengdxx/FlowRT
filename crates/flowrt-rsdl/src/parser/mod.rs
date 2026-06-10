@@ -347,6 +347,7 @@ required = true
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"
+port = "frame"
 format = "rgb8"
 encoding = "row_major"
 metadata = { width = "640", height = "480" }
@@ -376,6 +377,7 @@ output = ["frame"]
         assert!(resource.required);
         let descriptor = resource.descriptor.as_ref().unwrap();
         assert_eq!(descriptor.kind, "frame");
+        assert_eq!(descriptor.port.as_deref(), Some("frame"));
         assert_eq!(descriptor.format, "rgb8");
         assert_eq!(descriptor.encoding.as_deref(), Some("row_major"));
         assert_eq!(descriptor.metadata["width"], "640");
