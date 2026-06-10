@@ -79,7 +79,7 @@ fi
 
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 export CARGO_NET_OFFLINE=true
-export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
+export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 
 user_root="$work_dir/user-project"
 cp -a "$repo_root/examples/ros2_bridge_demo" "$user_root"

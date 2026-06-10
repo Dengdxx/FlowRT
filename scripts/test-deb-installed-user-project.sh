@@ -60,7 +60,7 @@ rewrite_demo_platforms "$user_root/mixed_zenoh_demo"
 
 export CARGO_HOME="$work_dir/cargo-home"
 export CARGO_NET_OFFLINE=true
-export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
+export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 
 "$flowrt" deps --backend all --build-mode release --target "$flowrt_platform"
 "$flowrt" build --launcher --target "$flowrt_platform" "$user_root/import_demo/rsdl/robot.rsdl"

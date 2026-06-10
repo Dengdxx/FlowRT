@@ -20,6 +20,10 @@ native 构建。Rust/Cargo 会使用对应 Rust target triple，并把 cache key
 `targets/<platform>` 的 prefix、toolchain profile 中的 compiler/sysroot 或 CMake
 toolchain file，并设置 cross build 的 `PKG_CONFIG_LIBDIR`；target SDK 缺失或
 `complete = false` 会清晰报错。
+CI/release 侧使用两层缓存降低重复构建成本：Rust/Cargo job 使用按架构隔离的
+GitHub Actions cache；安装后 package/demo/ROS2 smoke 使用外部传入的
+`FLOWRT_CACHE_DIR` 缓存 FlowRT 底层依赖预热结果。deb 成品、release notes 和
+artifact manifest 不缓存，仍每次从源码重建。
 
 `v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、

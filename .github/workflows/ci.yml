@@ -69,6 +69,13 @@ jobs:
         with:
           components: rustfmt
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: Rust 格式检查
         run: cargo fmt --check
 
@@ -92,6 +99,13 @@ jobs:
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
 
       - name: Rust 测试
         run: cargo test --workspace -j1
@@ -118,6 +132,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
 
       - name: Rust Clippy
         run: cargo clippy --workspace --all-targets --all-features -j1 -- -D warnings
@@ -181,6 +202,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: Supervisor readiness 和资源提示测试
         run: |
           cargo test -p flowrt-cli build_runtime_tests -j1
@@ -220,6 +248,13 @@ jobs:
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
 
       - name: Operation RSDL/IR/validator/codegen 测试
         run: |
@@ -261,6 +296,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: external RSDL/IR/validator/codegen 测试
         run: |
           cargo test -p flowrt-rsdl external_process -j1
@@ -294,6 +336,13 @@ jobs:
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
 
       - name: v0.8.0 RSDL/IR/validator 测试
         run: |
@@ -342,6 +391,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: v0.8.1 FrameDescriptor codegen/CLI/record 测试
         run: |
           cargo test -p flowrt-codegen frame_descriptor_demo_example_codegen_smoke -j1
@@ -376,6 +432,13 @@ jobs:
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-amd64-cross
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
 
       - name: 准备 linux-arm64 Rust target 和本机工具链
         shell: bash
@@ -490,6 +553,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: 构建并安装 flowrt deb
         shell: bash
         run: |
@@ -526,8 +596,16 @@ jobs:
           flowrt --version
           scripts/test-deb-target-sdk-layout.sh dist/flowrt_*_*.deb
 
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-package-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/package-deb.sh', 'scripts/test-deb-installed-user-project.sh') }}
+
       - name: flowrt deb 用户项目 smoke
-        run: scripts/test-deb-installed-user-project.sh
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/package-${{ matrix.deb_arch }}}"
+          scripts/test-deb-installed-user-project.sh
 
       - name: 上传 flowrt Linux artifact
         uses: actions/upload-artifact@v7
@@ -573,6 +651,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: 安装 flowrt deb
         shell: bash
         run: |
@@ -584,9 +669,17 @@ jobs:
           } >> "$GITHUB_ENV"
           flowrt --version
 
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-demo-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v060-installed-smoke.sh', 'scripts/test-v070-installed-smoke.sh', 'scripts/test-v080-installed-smoke.sh', 'scripts/test-v081-installed-smoke.sh', 'scripts/test-v082-installed-smoke.sh') }}
+          restore-keys: |
+            flowrt-deps-demo-${{ matrix.deb_arch }}-
+
       - name: FlowRT demo smoke
         run: |
-          export FLOWRT_CACHE_DIR="${RUNNER_TEMP}/flowrt-cache"
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/demo-${{ matrix.deb_arch }}}"
           flowrt deps --backend all --build-mode release
           flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
           flowrt run --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
@@ -648,6 +741,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: 安装 flowrt deb
         shell: bash
         run: |
@@ -659,8 +759,18 @@ jobs:
           } >> "$GITHUB_ENV"
           flowrt --version
 
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-ros2-jazzy-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'scripts/test-ros2-bridge-installed.sh') }}
+          restore-keys: |
+            flowrt-deps-ros2-jazzy-${{ matrix.deb_arch }}-
+
       - name: ROS2 Jazzy bridge smoke
-        run: scripts/test-ros2-bridge-installed.sh --distro jazzy
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/ros2-jazzy-${{ matrix.deb_arch }}}"
+          scripts/test-ros2-bridge-installed.sh --distro jazzy
 
   ros2-lyrical-bridge:
     name: ROS2 Lyrical Bridge (${{ matrix.deb_arch }})
@@ -702,6 +812,13 @@ jobs:
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.deb_arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
       - name: 安装 flowrt deb
         shell: bash
         run: |
@@ -713,8 +830,18 @@ jobs:
           } >> "$GITHUB_ENV"
           flowrt --version
 
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-ros2-lyrical-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'scripts/test-ros2-bridge-installed.sh') }}
+          restore-keys: |
+            flowrt-deps-ros2-lyrical-${{ matrix.deb_arch }}-
+
       - name: ROS2 Lyrical bridge smoke
-        run: scripts/test-ros2-bridge-installed.sh --distro lyrical
+        run: |
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/ros2-lyrical-${{ matrix.deb_arch }}}"
+          scripts/test-ros2-bridge-installed.sh --distro lyrical
 
   release:
     name: GitHub Release

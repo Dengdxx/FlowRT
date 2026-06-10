@@ -45,7 +45,7 @@ runtime_dir="$work_dir/runtime"
 mkdir -p "$runtime_dir"
 chmod 700 "$runtime_dir"
 export XDG_RUNTIME_DIR="$runtime_dir"
-export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
+export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 
 "$flowrt" deps --backend all --build-mode release
 

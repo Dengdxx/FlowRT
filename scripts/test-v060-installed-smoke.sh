@@ -22,7 +22,7 @@ runtime_dir="$work_dir/runtime"
 mkdir -p "$runtime_dir"
 chmod 700 "$runtime_dir"
 export XDG_RUNTIME_DIR="$runtime_dir"
-export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
+export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 
 operation_demo="$work_dir/operation_demo"
 counter_demo="$work_dir/cpp_counter_demo"
