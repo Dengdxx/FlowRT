@@ -37,17 +37,38 @@ cp -a "$repo_root/examples/mixed_zenoh_demo" "$user_root/mixed_zenoh_demo"
 rm -rf "$user_root/import_demo/flowrt" "$user_root/cpp_counter_demo/flowrt" \
     "$user_root/mixed_iox2_demo/flowrt" "$user_root/mixed_zenoh_demo/flowrt"
 
+case "$(dpkg --print-architecture)" in
+    amd64) flowrt_platform="linux-amd64" ;;
+    arm64) flowrt_platform="linux-arm64" ;;
+    *)
+        printf 'unsupported smoke test architecture: %s\n' "$(dpkg --print-architecture)" >&2
+        exit 1
+        ;;
+esac
+
+rewrite_demo_platforms() {
+    local demo="$1"
+    find "$demo/rsdl" -type f -name '*.rsdl' -print0 |
+        xargs -0 sed -i -E \
+            "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
+}
+
+rewrite_demo_platforms "$user_root/import_demo"
+rewrite_demo_platforms "$user_root/cpp_counter_demo"
+rewrite_demo_platforms "$user_root/mixed_iox2_demo"
+rewrite_demo_platforms "$user_root/mixed_zenoh_demo"
+
 export CARGO_HOME="$work_dir/cargo-home"
 export CARGO_NET_OFFLINE=true
 export FLOWRT_CACHE_DIR="$work_dir/flowrt-cache"
 
-"$flowrt" deps --backend all --build-mode release
-"$flowrt" build --launcher "$user_root/import_demo/rsdl/robot.rsdl"
+"$flowrt" deps --backend all --build-mode release --target "$flowrt_platform"
+"$flowrt" build --launcher --target "$flowrt_platform" "$user_root/import_demo/rsdl/robot.rsdl"
 test -x "$user_root/import_demo/flowrt/build/bin/release/import-demo-flowrt-app"
 test -x "$user_root/import_demo/flowrt/build/bin/release/import-demo-flowrt-supervisor"
 test -f "$user_root/import_demo/flowrt/build/build-info.json"
 
-"$flowrt" build --launcher "$user_root/cpp_counter_demo/rsdl/robot.rsdl"
+"$flowrt" build --launcher --target "$flowrt_platform" "$user_root/cpp_counter_demo/rsdl/robot.rsdl"
 test -x "$user_root/cpp_counter_demo/flowrt/build/bin/release/cpp_counter_demo_cpp_app"
 test -x "$user_root/cpp_counter_demo/flowrt/build/bin/release/cpp-counter-demo-flowrt-supervisor"
 test -f "$user_root/cpp_counter_demo/flowrt/build/build-info.json"
