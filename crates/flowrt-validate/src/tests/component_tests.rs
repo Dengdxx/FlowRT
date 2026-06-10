@@ -80,6 +80,48 @@ output = ["sample"]
 }
 
 #[test]
+fn accepts_io_boundary_frame_descriptor_bound_to_fixed_output_port() {
+    let source = frame_descriptor_contract_source("FrameDescriptor");
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_frame_descriptor_bound_to_missing_output_port() {
+    let source = frame_descriptor_contract_source("FrameDescriptor")
+        .replace("port = \"frame\"", "port = \"missing_frame\"");
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+    let report = validate_contract(&ir).expect_err("descriptor port must exist on outputs");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "component `camera` resource `frames` descriptor port `missing_frame` must reference an output port",
+        )
+    }));
+}
+
+#[test]
+fn rejects_frame_descriptor_output_with_non_standard_fixed_shape() {
+    let source = frame_descriptor_contract_source("BadFrameDescriptor")
+        .replace("size_bytes = \"u64\"", "size_bytes = \"string\"");
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+    let report =
+        validate_contract(&ir).expect_err("descriptor output message must use standard shape");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "component `camera` resource `frames` descriptor port `frame` message `BadFrameDescriptor`",
+        ) && error
+            .message
+            .contains("field `size_bytes` must be `u64`")
+    }));
+}
+
+#[test]
 fn rejects_legacy_adapter_component_kind() {
     let source = r#"
 [package]
@@ -486,4 +528,64 @@ fn rejects_nested_non_finite_param_values_in_contract_ir() {
             .message
             .contains("component `producer` param `table` default contains non-finite float")
     }));
+}
+
+fn frame_descriptor_contract_source(output_type: &str) -> String {
+    format!(
+        r#"
+[package]
+name = "frame_descriptor_contract"
+rsdl_version = "0.1"
+
+[type.FrameDescriptor]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+timestamp_unix_ns = "u64"
+width = "u32"
+height = "u32"
+stride_bytes = "u32"
+format_id = "u32"
+encoding_id = "u32"
+flags = "u32"
+
+[type.BadFrameDescriptor]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+timestamp_unix_ns = "u64"
+width = "u32"
+height = "u32"
+stride_bytes = "u32"
+format_id = "u32"
+encoding_id = "u32"
+flags = "u32"
+
+[component.camera]
+language = "rust"
+kind = "io_boundary"
+io_side_effect = ["device", "read"]
+output = ["frame:{output_type}"]
+
+[component.camera.resource.frames]
+kind = "shm"
+
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+port = "frame"
+format = "rgb8"
+encoding = "row_major"
+metadata = {{ width = "640", height = "480" }}
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 33
+output = ["frame"]
+"#,
+    )
 }

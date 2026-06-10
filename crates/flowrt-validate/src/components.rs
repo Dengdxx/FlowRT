@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     ComponentIr, ComponentKind, ContractIr, LanguageKind, ParamIr, ParamType, ParamUpdatePolicy,
-    ParamValue, TypeExpr,
+    ParamValue, PrimitiveType, ResourceDescriptorKind, ResourceDescriptorSchemaIr,
+    ResourceRequirementIr, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -20,7 +21,7 @@ pub(crate) fn validate_components(
         .collect::<BTreeMap<_, _>>();
 
     for component in &ir.components {
-        validate_component_kind_and_resources(component, errors);
+        validate_component_kind_and_resources(component, &types_by_name, errors);
 
         let mut ports = BTreeSet::new();
         for port in component.inputs.iter().chain(component.outputs.iter()) {
@@ -133,6 +134,7 @@ pub(crate) fn validate_components(
 
 fn validate_component_kind_and_resources(
     component: &ComponentIr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
     errors: &mut Vec<ValidationError>,
 ) {
     if component.kind == ComponentKind::External && component.language != LanguageKind::External {
@@ -200,6 +202,135 @@ fn validate_component_kind_and_resources(
                 component.name, resource.name
             )));
         }
+        if let Some(descriptor) = &resource.descriptor {
+            validate_resource_descriptor_schema(
+                component,
+                resource,
+                descriptor,
+                types_by_name,
+                errors,
+            );
+        }
+    }
+}
+
+fn validate_resource_descriptor_schema(
+    component: &ComponentIr,
+    resource: &ResourceRequirementIr,
+    descriptor: &ResourceDescriptorSchemaIr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(port) = component
+        .outputs
+        .iter()
+        .find(|candidate| candidate.name == descriptor.port)
+    else {
+        errors.push(ValidationError::new(format!(
+            "component `{}` resource `{}` descriptor port `{}` must reference an output port",
+            component.name, resource.name, descriptor.port
+        )));
+        return;
+    };
+
+    let TypeExpr::Named { name } = &port.ty else {
+        errors.push(ValidationError::new(format!(
+            "component `{}` resource `{}` descriptor port `{}` must use a named message type",
+            component.name, resource.name, descriptor.port
+        )));
+        return;
+    };
+
+    let Some(message) = types_by_name.get(name.as_str()).copied() else {
+        return;
+    };
+
+    match descriptor.kind {
+        ResourceDescriptorKind::Frame => {
+            validate_frame_descriptor_message(component, resource, descriptor, message, errors);
+        }
+    }
+}
+
+fn validate_frame_descriptor_message(
+    component: &ComponentIr,
+    resource: &ResourceRequirementIr,
+    descriptor: &ResourceDescriptorSchemaIr,
+    message: &TypeIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let expected = frame_descriptor_fields();
+    let fields = message
+        .fields
+        .iter()
+        .map(|field| (field.name.as_str(), &field.ty))
+        .collect::<BTreeMap<_, _>>();
+    let mut problems = Vec::new();
+
+    for (field, primitive) in expected {
+        match fields.get(field).copied() {
+            Some(TypeExpr::Primitive { name }) if *name == *primitive => {}
+            Some(actual) => problems.push(format!(
+                "field `{field}` must be `{}`, found `{}`",
+                primitive_name(*primitive),
+                actual.canonical_syntax()
+            )),
+            None => problems.push(format!(
+                "field `{field}` must be `{}`",
+                primitive_name(*primitive)
+            )),
+        }
+    }
+
+    for field in fields.keys() {
+        if !expected.iter().any(|(expected, _)| expected == field) {
+            problems.push(format!("unexpected field `{field}`"));
+        }
+    }
+
+    if !problems.is_empty() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` resource `{}` descriptor port `{}` message `{}` must use standard frame descriptor shape: {}",
+            component.name,
+            resource.name,
+            descriptor.port,
+            message.name,
+            problems.join(", ")
+        )));
+    }
+}
+
+fn frame_descriptor_fields() -> &'static [(&'static str, PrimitiveType)] {
+    &[
+        ("resource_id_hash", PrimitiveType::U64),
+        ("slot", PrimitiveType::U32),
+        ("generation", PrimitiveType::U64),
+        ("size_bytes", PrimitiveType::U64),
+        ("timestamp_unix_ns", PrimitiveType::U64),
+        ("width", PrimitiveType::U32),
+        ("height", PrimitiveType::U32),
+        ("stride_bytes", PrimitiveType::U32),
+        ("format_id", PrimitiveType::U32),
+        ("encoding_id", PrimitiveType::U32),
+        ("flags", PrimitiveType::U32),
+    ]
+}
+
+fn primitive_name(primitive: PrimitiveType) -> &'static str {
+    match primitive {
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::U8 => "u8",
+        PrimitiveType::U16 => "u16",
+        PrimitiveType::U32 => "u32",
+        PrimitiveType::U64 => "u64",
+        PrimitiveType::U128 => "u128",
+        PrimitiveType::I8 => "i8",
+        PrimitiveType::I16 => "i16",
+        PrimitiveType::I32 => "i32",
+        PrimitiveType::I64 => "i64",
+        PrimitiveType::I128 => "i128",
+        PrimitiveType::F32 => "f32",
+        PrimitiveType::F64 => "f64",
     }
 }
 
