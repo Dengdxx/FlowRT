@@ -136,6 +136,12 @@ pub struct IntrospectionHandshake {
 pub struct IntrospectionStatus {
     pub tick_count: u64,
     pub channels: Vec<IntrospectionChannelStatus>,
+    /// v0.8+ active input latest/presence/stale 运行态状态。
+    #[serde(default)]
+    pub inputs: Vec<IntrospectionInputStatus>,
+    /// v0.8+ route/backend/drop/overflow 运行态状态。
+    #[serde(default)]
+    pub routes: Vec<IntrospectionRouteStatus>,
     #[serde(default)]
     pub processes: Vec<IntrospectionProcessStatus>,
     /// v0.8+ I/O boundary 运行态健康状态。
@@ -169,6 +175,88 @@ pub struct IntrospectionChannelStatus {
     pub active_observers: u64,
     #[serde(default)]
     pub dropped_samples: u64,
+}
+
+/// 单个 active input 的 latest 读取状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionInputStatus {
+    /// task 名称。
+    #[serde(default)]
+    pub task: String,
+    /// task input port 名称。
+    #[serde(default)]
+    pub input: String,
+    /// 对应 runtime channel 名称。
+    #[serde(default)]
+    pub channel: String,
+    /// message 类型名称。
+    #[serde(default)]
+    pub message_type: String,
+    /// 当前 latest view 是否有样本。
+    #[serde(default)]
+    pub present: bool,
+    /// 当前 latest view 是否已 stale。
+    #[serde(default)]
+    pub stale: bool,
+    /// 最近读取到的 channel revision。
+    #[serde(default)]
+    pub last_revision: Option<u64>,
+    /// 最近一次读取时间（runtime monotonic 毫秒或 scheduler 毫秒）。
+    #[serde(default)]
+    pub last_read_ms: Option<u64>,
+    /// 最近一次状态更新时间（Unix 毫秒）。
+    #[serde(default)]
+    pub updated_unix_ms: Option<u64>,
+    /// 该 input 对应 route 的累计 drop 计数快照。
+    #[serde(default)]
+    pub dropped_samples: u64,
+    /// 该 input 对应 route 的累计 backpressure 计数快照。
+    #[serde(default)]
+    pub backpressure_count: u64,
+    /// 该 input 对应 route 的累计 overflow 计数快照。
+    #[serde(default)]
+    pub overflow_count: u64,
+}
+
+/// 单条 dataflow route 的 backend 与传输健康状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionRouteStatus {
+    /// runtime route 名称，通常等于 channel 名。
+    #[serde(default)]
+    pub name: String,
+    /// source endpoint，格式 `<instance>.<port>`。
+    #[serde(default)]
+    pub from: String,
+    /// target endpoint，格式 `<instance>.<port>`。
+    #[serde(default)]
+    pub to: String,
+    /// message 类型名称。
+    #[serde(default)]
+    pub message_type: String,
+    /// 当前选择的 backend。
+    #[serde(default)]
+    pub backend: String,
+    /// backend 选择原因，来自 resolver / self-description。
+    #[serde(default)]
+    pub selected_reason: String,
+    /// 累计成功发布或进入 route 的样本数。
+    #[serde(default)]
+    pub published_count: u64,
+    /// 累计 drop 计数。
+    #[serde(default)]
+    pub dropped_samples: u64,
+    /// 累计 backpressure 计数。
+    #[serde(default)]
+    pub backpressure_count: u64,
+    /// 累计 overflow 计数。
+    #[serde(default)]
+    pub overflow_count: u64,
+    /// 最近一次发布或进入 route 的时间。
+    #[serde(default)]
+    pub last_publish_ms: Option<u64>,
+    /// 最近一次 route/backend 错误。
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 /// 单个 channel 的 latest raw ABI snapshot。
@@ -632,6 +720,8 @@ struct IntrospectionStateInner {
     tick_count: u64,
     self_description_json: Option<String>,
     channels: BTreeMap<String, ChannelState>,
+    inputs: BTreeMap<String, IntrospectionInputStatus>,
+    routes: BTreeMap<String, IntrospectionRouteStatus>,
     params: BTreeMap<String, ParamState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
     io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
@@ -779,6 +869,22 @@ impl IntrospectionState {
             .record_frame_descriptor_event(name, descriptor, status, payload_recording)
     }
 
+    /// 按需记录 canonical frame channel sample。关闭时不复制 payload。
+    pub fn try_record_channel_sample_frame_bytes(
+        &self,
+        name: &str,
+        message_type: impl AsRef<str>,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+    ) -> RecorderTapOutcome {
+        self.recorder.record_channel_sample_frame_bytes(
+            name,
+            message_type.as_ref(),
+            payload,
+            published_at_ms,
+        )
+    }
+
     /// 记录 channel 发布的 latest raw ABI payload。
     pub fn record_channel_publish<T: Copy>(
         &self,
@@ -906,6 +1012,8 @@ impl IntrospectionState {
                     dropped_samples: channel.probe.dropped_samples(),
                 })
                 .collect(),
+            inputs: inner.inputs.values().cloned().collect(),
+            routes: inner.routes.values().cloned().collect(),
             processes: inner.processes.values().cloned().collect(),
             io_boundaries: inner.io_boundaries.values().cloned().collect(),
             services: inner.services.values().cloned().collect(),
@@ -920,6 +1028,55 @@ impl IntrospectionState {
     pub fn record_process_health(&self, status: IntrospectionProcessStatus) {
         let mut inner = self.lock_inner();
         inner.processes.insert(status.name.clone(), status);
+    }
+
+    /// 预注册一条 route，使 backend 选择原因和传输计数能进入 live status。
+    pub fn register_route(&self, status: IntrospectionRouteStatus) {
+        let mut inner = self.lock_inner();
+        inner.routes.insert(status.name.clone(), status);
+    }
+
+    /// 记录 active input latest/presence/stale 状态。
+    pub fn record_input_status(&self, status: IntrospectionInputStatus) {
+        let key = input_status_key(&status);
+        let mut inner = self.lock_inner();
+        inner.inputs.insert(key, status);
+    }
+
+    /// 记录 route 成功发布或进入传输路径。
+    pub fn record_route_publish(&self, name: impl AsRef<str>, published_at_ms: Option<u64>) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        route.published_count = route.published_count.saturating_add(1);
+        route.last_publish_ms = published_at_ms;
+    }
+
+    /// 记录 route drop。
+    pub fn record_route_drop(&self, name: impl AsRef<str>) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        route.dropped_samples = route.dropped_samples.saturating_add(1);
+    }
+
+    /// 记录 route backpressure。
+    pub fn record_route_backpressure(&self, name: impl AsRef<str>) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        route.backpressure_count = route.backpressure_count.saturating_add(1);
+    }
+
+    /// 记录 route overflow。
+    pub fn record_route_overflow(&self, name: impl AsRef<str>) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        route.overflow_count = route.overflow_count.saturating_add(1);
+    }
+
+    /// 记录 route/backend 最近错误。
+    pub fn record_route_error(&self, name: impl AsRef<str>, error: impl Into<String>) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        route.last_error = Some(error.into());
     }
 
     /// 预注册一个 I/O boundary，使其在尚未上报 health 前也出现在 status 中。
@@ -2214,6 +2371,29 @@ fn io_boundary_entry<'a>(
         })
 }
 
+fn route_entry<'a>(
+    inner: &'a mut IntrospectionStateInner,
+    name: &str,
+) -> &'a mut IntrospectionRouteStatus {
+    inner
+        .routes
+        .entry(name.to_string())
+        .or_insert_with(|| IntrospectionRouteStatus {
+            name: name.to_string(),
+            ..Default::default()
+        })
+}
+
+fn input_status_key(status: &IntrospectionInputStatus) -> String {
+    if status.task.is_empty() {
+        status.input.clone()
+    } else if status.input.is_empty() {
+        status.task.clone()
+    } else {
+        format!("{}.{}", status.task, status.input)
+    }
+}
+
 fn io_boundary_resource_entry<'a>(
     boundary: &'a mut IntrospectionIoBoundaryStatus,
     resource_name: &str,
@@ -3250,6 +3430,8 @@ mod tests {
         let status: IntrospectionStatus =
             serde_json::from_str(r#"{"tick_count":1,"channels":[],"processes":[],"services":[]}"#)
                 .unwrap();
+        assert!(status.inputs.is_empty());
+        assert!(status.routes.is_empty());
         assert!(status.operations.is_empty());
         assert!(status.tasks.is_empty());
         assert!(status.lanes.is_empty());
@@ -3312,6 +3494,35 @@ mod tests {
         assert_eq!(
             status.recorder.active_filters,
             vec!["channel:source.imu_to_sink.imu"]
+        );
+    }
+
+    #[test]
+    fn recorder_marks_channel_frame_payload_encoding() {
+        let state = IntrospectionState::new();
+        state.start_recorder(IntrospectionRecorderStart {
+            output: None,
+            filters: vec!["channel".to_string()],
+            queue_depth: Some(4),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 42,
+            selfdesc_hash: "abc123".to_string(),
+        });
+
+        let outcome = state.try_record_channel_sample_frame_bytes(
+            "source.packet_to_sink.packet",
+            "Packet",
+            &[1, 2, 3, 4],
+            Some(10),
+        );
+
+        assert!(outcome.recorded);
+        let events = state.drain_recorder_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].payload_encoding,
+            flowrt_record::PayloadEncoding::CanonicalFrame
         );
     }
 
@@ -3567,6 +3778,34 @@ mod tests {
             tick_count: 42,
             channels: vec![],
             processes: vec![],
+            inputs: vec![IntrospectionInputStatus {
+                task: "sink.main".to_string(),
+                input: "packet".to_string(),
+                channel: "source.packet_to_sink.packet".to_string(),
+                message_type: "Packet".to_string(),
+                present: true,
+                stale: false,
+                last_revision: Some(7),
+                last_read_ms: Some(996),
+                updated_unix_ms: Some(997),
+                dropped_samples: 1,
+                backpressure_count: 2,
+                overflow_count: 3,
+            }],
+            routes: vec![IntrospectionRouteStatus {
+                name: "source.packet_to_sink.packet".to_string(),
+                from: "source.packet".to_string(),
+                to: "sink.packet".to_string(),
+                message_type: "Packet".to_string(),
+                backend: "zenoh".to_string(),
+                selected_reason: "variable_frame_auto_fallback".to_string(),
+                published_count: 11,
+                dropped_samples: 1,
+                backpressure_count: 2,
+                overflow_count: 3,
+                last_publish_ms: Some(995),
+                last_error: Some("queue overflow".to_string()),
+            }],
             io_boundaries: vec![IntrospectionIoBoundaryStatus {
                 name: "camera".to_string(),
                 component: "CameraDriver".to_string(),
@@ -3623,6 +3862,15 @@ mod tests {
 
         let json = serde_json::to_string(&status).unwrap();
         let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.inputs.len(), 1);
+        assert_eq!(parsed.inputs[0].task, "sink.main");
+        assert!(parsed.inputs[0].present);
+        assert_eq!(parsed.routes.len(), 1);
+        assert_eq!(parsed.routes[0].backend, "zenoh");
+        assert_eq!(
+            parsed.routes[0].selected_reason,
+            "variable_frame_auto_fallback"
+        );
         assert_eq!(parsed.operations.len(), 1);
         assert_eq!(parsed.operations[0].name, "controller.plan");
         assert_eq!(parsed.io_boundaries.len(), 1);

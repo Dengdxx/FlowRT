@@ -165,6 +165,73 @@ fn live_status_summary_reads_runtime_socket_handshake() {
 }
 
 #[test]
+fn live_status_summary_displays_channel_input_and_route_diagnostics() {
+    let root = temp_test_dir("live-status-runtime-diagnostics");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 78,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_route(flowrt::IntrospectionRouteStatus {
+        name: "source.packet_to_sink.packet".to_string(),
+        from: "source.packet".to_string(),
+        to: "sink.packet".to_string(),
+        message_type: "Packet".to_string(),
+        backend: "zenoh".to_string(),
+        selected_reason: "variable_frame_auto_fallback".to_string(),
+        published_count: 4,
+        dropped_samples: 1,
+        backpressure_count: 2,
+        overflow_count: 3,
+        last_publish_ms: Some(120),
+        last_error: Some("queue overflow".to_string()),
+    });
+    state.record_input_status(flowrt::IntrospectionInputStatus {
+        task: "sink.main".to_string(),
+        input: "packet".to_string(),
+        channel: "source.packet_to_sink.packet".to_string(),
+        message_type: "Packet".to_string(),
+        present: false,
+        stale: true,
+        last_revision: Some(9),
+        last_read_ms: Some(125),
+        updated_unix_ms: Some(2000),
+        dropped_samples: 0,
+        backpressure_count: 0,
+        overflow_count: 0,
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("channel=source.packet_to_sink.packet"));
+    assert!(output.contains("type=Packet"));
+    assert!(output.contains("route=source.packet_to_sink.packet"));
+    assert!(output.contains("backend=zenoh"));
+    assert!(output.contains("selected_reason=variable_frame_auto_fallback"));
+    assert!(output.contains("dropped_samples=1"));
+    assert!(output.contains("backpressure=2"));
+    assert!(output.contains("overflow=3"));
+    assert!(output.contains("last_publish_ms=120"));
+    assert!(output.contains("last_error=queue overflow"));
+    assert!(output.contains("input=sink.main.packet"));
+    assert!(output.contains("present=false"));
+    assert!(output.contains("stale=true"));
+    assert!(output.contains("last_revision=9"));
+    assert!(output.contains("last_read_ms=125"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_status_summary_displays_supervisor_process_health() {
     let root = temp_test_dir("live-status-supervisor-health");
     let socket = root.join("supervisor.sock");
@@ -213,6 +280,52 @@ fn live_status_summary_displays_supervisor_process_health() {
     assert!(output.contains("resource_placement="));
     assert!(output.contains("\"cpu_affinity\":[0,1]"));
     assert!(output.contains("\"nice\":5"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_displays_io_boundary_health() {
+    let root = temp_test_dir("live-status-boundary-diagnostics");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 72,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_io_boundary(
+        "camera",
+        "CameraDriver",
+        vec![flowrt::IntrospectionIoBoundaryResourceStatus {
+            name: "sensor".to_string(),
+            kind: "device".to_string(),
+            ready: false,
+            message: Some("waiting for /dev/video0".to_string()),
+            last_error: Some("open failed".to_string()),
+            updated_unix_ms: Some(3000),
+        }],
+    );
+    state.mark_io_boundary_ready("camera", false);
+    state.record_io_boundary_error("camera", "frame timeout");
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("io_boundary=camera"));
+    assert!(output.contains("component=CameraDriver"));
+    assert!(output.contains("ready=false"));
+    assert!(output.contains("healthy=false"));
+    assert!(output.contains("last_error=frame timeout"));
+    assert!(output.contains("io_boundary_resource=camera.sensor"));
+    assert!(output.contains("kind=device"));
+    assert!(output.contains("message=waiting for /dev/video0"));
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
@@ -351,6 +464,8 @@ fn live_hz_summary_formats_channel_delta_rate() {
                 dropped_samples: 0,
             }],
             processes: Vec::new(),
+            inputs: Vec::new(),
+            routes: Vec::new(),
             io_boundaries: Vec::new(),
             services: Vec::new(),
             operations: Vec::new(),
@@ -380,6 +495,8 @@ fn live_hz_summary_formats_channel_delta_rate() {
                 dropped_samples: 0,
             }],
             processes: Vec::new(),
+            inputs: Vec::new(),
+            routes: Vec::new(),
             io_boundaries: Vec::new(),
             services: Vec::new(),
             operations: Vec::new(),
@@ -396,6 +513,87 @@ fn live_hz_summary_formats_channel_delta_rate() {
     assert!(output.contains("type=Imu"));
     assert!(output.contains("delta=50"));
     assert!(output.contains("hz=100.00"));
+}
+
+#[test]
+fn live_hz_summary_includes_route_drop_and_overflow_delta() {
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 77,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let route_name = "source.packet_to_sink.packet".to_string();
+    let first = flowrt::IntrospectionResponse::Status {
+        handshake: handshake.clone(),
+        status: flowrt::IntrospectionStatus {
+            tick_count: 10,
+            channels: vec![flowrt::IntrospectionChannelStatus {
+                name: route_name.clone(),
+                message_type: "Packet".to_string(),
+                published_count: 10,
+                last_payload_len: None,
+                active_observers: 0,
+                dropped_samples: 0,
+            }],
+            routes: vec![flowrt::IntrospectionRouteStatus {
+                name: route_name.clone(),
+                from: "source.packet".to_string(),
+                to: "sink.packet".to_string(),
+                message_type: "Packet".to_string(),
+                backend: "zenoh".to_string(),
+                selected_reason: "variable_frame_auto_fallback".to_string(),
+                published_count: 10,
+                dropped_samples: 2,
+                backpressure_count: 4,
+                overflow_count: 6,
+                last_publish_ms: Some(100),
+                last_error: None,
+            }],
+            ..Default::default()
+        },
+    };
+    let second = flowrt::IntrospectionResponse::Status {
+        handshake,
+        status: flowrt::IntrospectionStatus {
+            tick_count: 20,
+            channels: vec![flowrt::IntrospectionChannelStatus {
+                name: route_name.clone(),
+                message_type: "Packet".to_string(),
+                published_count: 30,
+                last_payload_len: None,
+                active_observers: 0,
+                dropped_samples: 0,
+            }],
+            routes: vec![flowrt::IntrospectionRouteStatus {
+                name: route_name,
+                from: "source.packet".to_string(),
+                to: "sink.packet".to_string(),
+                message_type: "Packet".to_string(),
+                backend: "zenoh".to_string(),
+                selected_reason: "variable_frame_auto_fallback".to_string(),
+                published_count: 30,
+                dropped_samples: 5,
+                backpressure_count: 6,
+                overflow_count: 11,
+                last_publish_ms: Some(200),
+                last_error: None,
+            }],
+            ..Default::default()
+        },
+    };
+
+    let output = format_hz_summary_from_status_pair(&first, &second, Duration::from_millis(1000))
+        .expect("hz summary should include route diagnostics");
+
+    assert!(output.contains("channel=source.packet_to_sink.packet"));
+    assert!(output.contains("delta=20"));
+    assert!(output.contains("dropped_delta=3"));
+    assert!(output.contains("backpressure_delta=2"));
+    assert!(output.contains("overflow_delta=5"));
 }
 
 #[test]

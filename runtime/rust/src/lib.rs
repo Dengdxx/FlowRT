@@ -54,11 +54,12 @@ pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_ta
 pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{
     INTROSPECTION_PROTOCOL_VERSION, IntrospectionChannelProbe, IntrospectionChannelStatus,
-    IntrospectionHandshake, IntrospectionIdentity, IntrospectionIoBoundaryResourceStatus,
-    IntrospectionIoBoundaryStatus, IntrospectionLaneHealth, IntrospectionObserverGuard,
-    IntrospectionOperationStatus, IntrospectionParamSchema, IntrospectionParamStatus,
-    IntrospectionProbeRecord, IntrospectionProcessStatus, IntrospectionRecorderStart,
-    IntrospectionRecorderStatus, IntrospectionRequest, IntrospectionResponse, IntrospectionServer,
+    IntrospectionHandshake, IntrospectionIdentity, IntrospectionInputStatus,
+    IntrospectionIoBoundaryResourceStatus, IntrospectionIoBoundaryStatus, IntrospectionLaneHealth,
+    IntrospectionObserverGuard, IntrospectionOperationStatus, IntrospectionParamSchema,
+    IntrospectionParamStatus, IntrospectionProbeRecord, IntrospectionProcessStatus,
+    IntrospectionRecorderStart, IntrospectionRecorderStatus, IntrospectionRequest,
+    IntrospectionResponse, IntrospectionRouteStatus, IntrospectionServer,
     IntrospectionServiceStatus, IntrospectionState, IntrospectionStatus, IntrospectionTaskHealth,
     discover_runtime_sockets, observe_channel_stream, observe_channel_stream_with_timeout,
     request_channel_snapshot, request_channel_snapshot_with_timeout, request_operation_cancel,

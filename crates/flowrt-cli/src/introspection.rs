@@ -1480,7 +1480,7 @@ pub(crate) fn live_status_summary_for_sockets(
                     .map(|channel| channel.dropped_samples)
                     .sum::<u64>();
                 lines.push(format!(
-                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} observers={} dropped_samples={} socket={}",
+                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} inputs={} routes={} observers={} dropped_samples={} socket={}",
                     handshake.pid,
                     handshake.package,
                     handshake.process,
@@ -1488,10 +1488,60 @@ pub(crate) fn live_status_summary_for_sockets(
                     handshake.self_description_hash,
                     status.tick_count,
                     status.channels.len(),
+                    status.inputs.len(),
+                    status.routes.len(),
                     active_observers,
                     dropped_samples,
                     socket.display()
                 ));
+                for channel in &status.channels {
+                    lines.push(format!(
+                        "channel={} type={} published_count={} last_payload_len={} observers={} dropped_samples={} socket={}",
+                        channel.name,
+                        channel.message_type,
+                        channel.published_count,
+                        option_usize(channel.last_payload_len),
+                        channel.active_observers,
+                        channel.dropped_samples,
+                        socket.display()
+                    ));
+                }
+                for route in &status.routes {
+                    lines.push(format!(
+                        "route={} from={} to={} type={} backend={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} socket={}",
+                        route.name,
+                        route.from,
+                        route.to,
+                        route.message_type,
+                        route.backend,
+                        empty_as_none(&route.selected_reason),
+                        route.published_count,
+                        route.dropped_samples,
+                        route.backpressure_count,
+                        route.overflow_count,
+                        option_u64(route.last_publish_ms),
+                        option_str(route.last_error.as_deref()),
+                        socket.display()
+                    ));
+                }
+                for input in &status.inputs {
+                    lines.push(format!(
+                        "input={} task={} channel={} type={} present={} stale={} last_revision={} last_read_ms={} updated_unix_ms={} dropped_samples={} backpressure={} overflow={} socket={}",
+                        input_display_name(input),
+                        input.task,
+                        input.channel,
+                        input.message_type,
+                        input.present,
+                        input.stale,
+                        option_u64(input.last_revision),
+                        option_u64(input.last_read_ms),
+                        option_u64(input.updated_unix_ms),
+                        input.dropped_samples,
+                        input.backpressure_count,
+                        input.overflow_count,
+                        socket.display()
+                    ));
+                }
                 for process in status.processes {
                     let readiness_info = process
                         .readiness_wait
@@ -1558,6 +1608,31 @@ pub(crate) fn live_status_summary_for_sockets(
                 }
                 for operation in status.operations {
                     lines.push(format_operation_status(&operation, Some(&socket)));
+                }
+                for boundary in &status.io_boundaries {
+                    lines.push(format!(
+                        "io_boundary={} component={} ready={} healthy={} last_error={} updated_unix_ms={} socket={}",
+                        boundary.name,
+                        boundary.component,
+                        boundary.ready,
+                        boundary.healthy,
+                        option_str(boundary.last_error.as_deref()),
+                        option_u64(boundary.updated_unix_ms),
+                        socket.display()
+                    ));
+                    for resource in &boundary.resources {
+                        lines.push(format!(
+                            "io_boundary_resource={}.{} kind={} ready={} message={} last_error={} updated_unix_ms={} socket={}",
+                            boundary.name,
+                            resource.name,
+                            resource.kind,
+                            resource.ready,
+                            option_str(resource.message.as_deref()),
+                            option_str(resource.last_error.as_deref()),
+                            option_u64(resource.updated_unix_ms),
+                            socket.display()
+                        ));
+                    }
                 }
                 for task in &status.tasks {
                     let last_run = task
@@ -1730,10 +1805,41 @@ fn option_u64(value: Option<u64>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
+fn option_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
 fn option_i32(value: Option<i32>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
+}
+
+fn option_str(value: Option<&str>) -> String {
+    value
+        .filter(|value| !value.is_empty())
+        .unwrap_or("none")
+        .to_string()
+}
+
+fn empty_as_none(value: &str) -> String {
+    if value.is_empty() {
+        "none".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn input_display_name(input: &flowrt::IntrospectionInputStatus) -> String {
+    if input.task.is_empty() {
+        input.input.clone()
+    } else if input.input.is_empty() {
+        input.task.clone()
+    } else {
+        format!("{}.{}", input.task, input.input)
+    }
 }
 
 pub(crate) fn live_hz_summary(
@@ -1865,6 +1971,16 @@ pub(crate) fn format_hz_summary_from_status_pair(
         .iter()
         .map(|channel| (channel.name.as_str(), channel))
         .collect::<BTreeMap<_, _>>();
+    let first_routes = first_status
+        .routes
+        .iter()
+        .map(|route| (route.name.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
+    let second_routes = second_status
+        .routes
+        .iter()
+        .map(|route| (route.name.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
     let mut lines = Vec::new();
     for second_channel in &second_status.channels {
         let Some(first_channel) = first_channels.get(second_channel.name.as_str()) else {
@@ -1874,7 +1990,7 @@ pub(crate) fn format_hz_summary_from_status_pair(
             .published_count
             .saturating_sub(first_channel.published_count);
         let hz = delta as f64 / elapsed_secs;
-        lines.push(format!(
+        let mut line = format!(
             "pid={} package={} process={} channel={} type={} delta={} hz={:.2}",
             handshake.pid,
             handshake.package,
@@ -1883,7 +1999,41 @@ pub(crate) fn format_hz_summary_from_status_pair(
             second_channel.message_type,
             delta,
             hz
-        ));
+        );
+        if let Some(second_route) = second_routes.get(second_channel.name.as_str()) {
+            let (dropped_delta, backpressure_delta, overflow_delta) = first_routes
+                .get(second_channel.name.as_str())
+                .map(|first_route| {
+                    (
+                        second_route
+                            .dropped_samples
+                            .saturating_sub(first_route.dropped_samples),
+                        second_route
+                            .backpressure_count
+                            .saturating_sub(first_route.backpressure_count),
+                        second_route
+                            .overflow_count
+                            .saturating_sub(first_route.overflow_count),
+                    )
+                })
+                .unwrap_or((
+                    second_route.dropped_samples,
+                    second_route.backpressure_count,
+                    second_route.overflow_count,
+                ));
+            line.push_str(&format!(
+                " dropped_delta={} backpressure_delta={} overflow_delta={}",
+                dropped_delta, backpressure_delta, overflow_delta
+            ));
+        } else {
+            let dropped_delta = second_channel
+                .dropped_samples
+                .saturating_sub(first_channel.dropped_samples);
+            if dropped_delta != 0 {
+                line.push_str(&format!(" dropped_delta={dropped_delta}"));
+            }
+        }
+        lines.push(line);
     }
 
     if lines.is_empty() {

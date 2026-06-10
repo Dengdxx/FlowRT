@@ -83,7 +83,7 @@ fn record_introspection_publish_frame<T: flowrt::FrameCodec>(
     }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let Ok(payload) = value.to_frame_vec() {
-            state.try_record_channel_sample_bytes(
+            state.try_record_channel_sample_frame_bytes(
                 name,
                 message_type,
                 &payload,

@@ -176,6 +176,39 @@ impl RecorderTap {
         payload: &[u8],
         published_at_ms: Option<u64>,
     ) -> RecorderTapOutcome {
+        self.record_channel_sample_with_encoding(
+            name,
+            type_name,
+            PayloadEncoding::RawAbi,
+            payload,
+            published_at_ms,
+        )
+    }
+
+    pub fn record_channel_sample_frame_bytes(
+        &self,
+        name: &str,
+        type_name: &str,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+    ) -> RecorderTapOutcome {
+        self.record_channel_sample_with_encoding(
+            name,
+            type_name,
+            PayloadEncoding::CanonicalFrame,
+            payload,
+            published_at_ms,
+        )
+    }
+
+    fn record_channel_sample_with_encoding(
+        &self,
+        name: &str,
+        type_name: &str,
+        payload_encoding: PayloadEncoding,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+    ) -> RecorderTapOutcome {
         if !self.enabled() {
             return RecorderTapOutcome::default();
         }
@@ -191,7 +224,7 @@ impl RecorderTap {
             name,
             RecordEventKind::ChannelSample,
             entity,
-            PayloadEncoding::RawAbi,
+            payload_encoding,
             type_name,
             payload,
             published_at_ms.map(|value| value.saturating_mul(1_000_000)),
