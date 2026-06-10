@@ -60,8 +60,13 @@ resource_id_hash = "u64"
 slot = "u32"
 generation = "u64"
 size_bytes = "u64"
-format = "u32"
-encoding = "u32"
+timestamp_unix_ns = "u64"
+width = "u32"
+height = "u32"
+stride_bytes = "u32"
+format_id = "u32"
+encoding_id = "u32"
+flags = "u32"
 
 [component.camera]
 language = "rust"
@@ -78,9 +83,10 @@ required = true
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"
+port = "frame"
 format = "rgb8"
 encoding = "row_major"
-metadata = { width = "640", height = "480" }
+metadata = { width = "640", height = "480", stride_bytes = "1920" }
 
 [instance.camera]
 component = "camera"
@@ -106,6 +112,7 @@ EOF
 cat > "$io_demo/src/rust/mod.rs" <<'EOF'
 use crate::components::Camera;
 use crate::messages::FrameHandle;
+use flowrt::FrameDescriptorFields;
 
 #[derive(Debug, Default)]
 struct CameraBoundary {
@@ -124,14 +131,19 @@ impl Camera for CameraBoundary {
 
     fn on_tick(&mut self, frame: &mut flowrt::Output<FrameHandle>) -> flowrt::Status {
         self.generation += 1;
-        frame.write(FrameHandle {
+        frame.write(FrameHandle::from_frame_descriptor_fields(FrameDescriptorFields {
             resource_id_hash: 0xF080,
             slot: 7,
             generation: self.generation,
             size_bytes: 640 * 480 * 3,
-            format: 1,
-            encoding: 1,
-        });
+            timestamp_unix_ns: self.generation * 20_000_000,
+            width: 640,
+            height: 480,
+            stride_bytes: 1_920,
+            format_id: 1,
+            encoding_id: 1,
+            flags: 0,
+        }));
         flowrt::Status::ok()
     }
 }
