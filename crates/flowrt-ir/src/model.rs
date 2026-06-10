@@ -134,6 +134,28 @@ pub struct ResourceRequirementIr {
     pub name: String,
     pub kind: ResourceKind,
     pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<ResourceDescriptorSchemaIr>,
+}
+
+/// 资源对普通 channel 暴露的 descriptor schema。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceDescriptorSchemaIr {
+    pub kind: ResourceDescriptorKind,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub record_payload: bool,
+}
+
+/// FlowRT 当前认识的 side-channel descriptor 类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceDescriptorKind {
+    Frame,
 }
 
 /// FlowRT 认识的 I/O boundary 资源类型。

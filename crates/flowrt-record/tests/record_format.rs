@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use flowrt_record::{
-    FlowrtMcapWriter, PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind,
-    RecordEnvelope, RecordError, RecordEventKind,
+    DescriptorRecordPayload, DescriptorRecordStatus, FlowrtMcapWriter, PayloadEncoding,
+    RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope, RecordError,
+    RecordEventKind,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -56,6 +58,7 @@ fn record_event_kind_covers_all_v0_6_record_scopes() {
         RecordEventKind::ALL,
         [
             RecordEventKind::ChannelSample,
+            RecordEventKind::DescriptorEvent,
             RecordEventKind::ParamEvent,
             RecordEventKind::ServiceEvent,
             RecordEventKind::OperationEvent,
@@ -64,6 +67,57 @@ fn record_event_kind_covers_all_v0_6_record_scopes() {
             RecordEventKind::RuntimeEvent,
         ]
     );
+}
+
+#[test]
+fn descriptor_record_payload_serializes_descriptor_without_payload_bytes() -> TestResult {
+    let descriptor = DescriptorRecordPayload {
+        resource_id: "camera_frames".to_string(),
+        slot: "slot-7".to_string(),
+        generation: 42,
+        size_bytes: 921_600,
+        format: "rgb8".to_string(),
+        encoding: "row_major".to_string(),
+        metadata: BTreeMap::from([
+            ("height".to_string(), "480".to_string()),
+            ("width".to_string(), "640".to_string()),
+        ]),
+        status: DescriptorRecordStatus::Acquired,
+        payload_recording: false,
+    };
+    let payload = serde_json::to_vec(&descriptor)?;
+    let envelope = RecordEnvelope {
+        event_kind: RecordEventKind::DescriptorEvent,
+        entity: RecordEntity {
+            kind: RecordEntityKind::Resource,
+            name: "camera_frames".to_string(),
+            instance: Some("camera".to_string()),
+            task: Some("capture".to_string()),
+            type_name: Some("FrameDescriptor".to_string()),
+        },
+        payload_encoding: PayloadEncoding::Json,
+        payload_schema: "flowrt.descriptor.frame.v1".to_string(),
+        payload,
+        ..sample_envelope(RecordEventKind::DescriptorEvent)
+    };
+
+    let value = serde_json::to_value(&envelope)?;
+    assert_eq!(value["event_kind"], "descriptor_event");
+    assert_eq!(value["entity"]["kind"], "resource");
+    assert_eq!(value["payload_encoding"], "json");
+
+    let decoded: DescriptorRecordPayload = serde_json::from_slice(&envelope.payload)?;
+    assert_eq!(decoded.resource_id, "camera_frames");
+    assert_eq!(decoded.slot, "slot-7");
+    assert_eq!(decoded.generation, 42);
+    assert_eq!(decoded.size_bytes, 921_600);
+    assert_eq!(decoded.format, "rgb8");
+    assert_eq!(decoded.encoding, "row_major");
+    assert_eq!(decoded.metadata.get("width"), Some(&"640".to_string()));
+    assert_eq!(decoded.status, DescriptorRecordStatus::Acquired);
+    assert!(!decoded.payload_recording);
+
+    Ok(())
 }
 
 #[test]

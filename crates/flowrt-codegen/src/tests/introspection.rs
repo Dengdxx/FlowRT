@@ -171,6 +171,58 @@ channel = "latest"
 }
 
 #[test]
+fn frame_descriptor_resource_schema_enters_self_description_without_payload_opt_in_by_default() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "descriptor_demo"
+rsdl_version = "0.1"
+
+[type.FrameHandle]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+format = "u32"
+encoding = "u32"
+
+[component.camera]
+language = "rust"
+kind = "io_boundary"
+io_side_effect = ["device", "read"]
+output = ["frame:FrameHandle"]
+
+[component.camera.resource.frames]
+kind = "shm"
+
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+format = "rgb8"
+encoding = "row_major"
+metadata = { width = "640", height = "480" }
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 33
+output = ["frame"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let descriptor = &selfdesc["component_types"][0]["resources"][0]["descriptor"];
+
+    assert_eq!(descriptor["kind"], "frame");
+    assert_eq!(descriptor["format"], "rgb8");
+    assert_eq!(descriptor["encoding"], "row_major");
+    assert_eq!(descriptor["metadata"]["width"], "640");
+    assert_eq!(descriptor["record_payload"], false);
+}
+
+#[test]
 fn rust_shell_omits_channel_helpers_when_process_has_no_channels() {
     let ir = contract_from_source(
         r#"

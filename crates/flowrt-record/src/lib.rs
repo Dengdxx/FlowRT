@@ -15,6 +15,8 @@ pub const RECORD_SCHEMA_NAME: &str = "flowrt.record.v1";
 pub const RECORD_SCHEMA_ENCODING: &str = "jsonschema";
 /// MCAP message encoding。v1 envelope 以 JSON message payload 写入。
 pub const RECORD_MESSAGE_ENCODING: &str = "json";
+/// FrameDescriptor record payload 的稳定 JSON schema 名称。
+pub const DESCRIPTOR_RECORD_SCHEMA_NAME: &str = "flowrt.descriptor.frame.v1";
 /// MCAP 文件头尾 magic bytes。
 pub const MCAP_MAGIC: &[u8] = b"\x89MCAP0\r\n";
 
@@ -85,6 +87,7 @@ pub enum RecordError {
 #[serde(rename_all = "snake_case")]
 pub enum RecordEventKind {
     ChannelSample,
+    DescriptorEvent,
     ParamEvent,
     ServiceEvent,
     OperationEvent,
@@ -95,8 +98,9 @@ pub enum RecordEventKind {
 
 impl RecordEventKind {
     /// 当前 schema 版本支持的全部事件分类，顺序保持 canonical。
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ChannelSample,
+        Self::DescriptorEvent,
         Self::ParamEvent,
         Self::ServiceEvent,
         Self::OperationEvent,
@@ -109,6 +113,7 @@ impl RecordEventKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ChannelSample => "channel_sample",
+            Self::DescriptorEvent => "descriptor_event",
             Self::ParamEvent => "param_event",
             Self::ServiceEvent => "service_event",
             Self::OperationEvent => "operation_event",
@@ -124,6 +129,7 @@ impl RecordEventKind {
 #[serde(rename_all = "snake_case")]
 pub enum RecordEntityKind {
     Channel,
+    Resource,
     Param,
     Service,
     Operation,
@@ -132,6 +138,37 @@ pub enum RecordEntityKind {
     Clock,
     Runtime,
     Process,
+}
+
+/// descriptor record 事件中的 lease/status 语义。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DescriptorRecordStatus {
+    Attached,
+    Acquired,
+    Released,
+    Expired,
+    GenerationMismatch,
+    Error,
+}
+
+/// `descriptor_event` 的 JSON payload。
+///
+/// 该 payload 只记录 descriptor 和 side-channel 事件状态，不携带或默认复制真实 frame
+/// bytes。`payload_recording` 只有在上层显式 opt-in 后才应为 true。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DescriptorRecordPayload {
+    pub resource_id: String,
+    pub slot: String,
+    pub generation: u64,
+    pub size_bytes: u64,
+    pub format: String,
+    pub encoding: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    pub status: DescriptorRecordStatus,
+    #[serde(default)]
+    pub payload_recording: bool,
 }
 
 /// record payload 的编码语义。

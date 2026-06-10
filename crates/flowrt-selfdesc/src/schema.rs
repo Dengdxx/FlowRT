@@ -133,6 +133,24 @@ pub struct SelfDescriptionResourceRequirement {
     pub kind: String,
     #[serde(default)]
     pub required: bool,
+    /// resource 对普通 channel 暴露的 descriptor schema；旧 selfdesc 可缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<SelfDescriptionResourceDescriptor>,
+}
+
+/// side-channel resource 的 descriptor schema 摘要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionResourceDescriptor {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub encoding: String,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub record_payload: bool,
 }
 
 /// I/O boundary 静态策略摘要。

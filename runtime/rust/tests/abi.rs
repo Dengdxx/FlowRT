@@ -1,16 +1,20 @@
 use std::mem::{align_of, offset_of, size_of};
 
 use flowrt::{
-    BackendHealthSnapshot, BackendHealthState, ReconnectPolicy, Status,
+    BackendHealthSnapshot, BackendHealthState, FrameDescriptor, FrameLeaseStatus, FrameMetadata,
+    ReconnectPolicy, ResourceDescriptor, Status,
     abi::{
         FLOWRT_ABI_VERSION_MAJOR, FLOWRT_ABI_VERSION_MINOR, FLOWRT_BACKEND_HEALTH_DEGRADED,
         FLOWRT_BACKEND_HEALTH_FAILED, FLOWRT_BACKEND_HEALTH_READY,
         FLOWRT_BACKEND_HEALTH_RECONNECTING, FLOWRT_BACKEND_HEALTH_UNSUPPORTED,
-        FLOWRT_BACKEND_INPROC, FLOWRT_BACKEND_IOX2, FLOWRT_BACKEND_ZENOH, FLOWRT_STATUS_ERROR,
-        FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY, FlowrtBackendHealthSnapshot, FlowrtBytesView,
-        FlowrtI128, FlowrtReconnectPolicy, FlowrtStringView, FlowrtU128,
-        backend_health_snapshot_to_abi, backend_health_state_to_abi, reconnect_policy_to_abi,
-        status_to_abi,
+        FLOWRT_BACKEND_INPROC, FLOWRT_BACKEND_IOX2, FLOWRT_BACKEND_ZENOH,
+        FLOWRT_FRAME_LEASE_ACQUIRED, FLOWRT_FRAME_LEASE_ATTACHED, FLOWRT_FRAME_LEASE_ERROR,
+        FLOWRT_FRAME_LEASE_EXPIRED, FLOWRT_FRAME_LEASE_GENERATION_MISMATCH,
+        FLOWRT_FRAME_LEASE_RELEASED, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
+        FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtFrameDescriptor, FlowrtI128,
+        FlowrtReconnectPolicy, FlowrtResourceDescriptor, FlowrtStringView, FlowrtU128,
+        backend_health_snapshot_to_abi, backend_health_state_to_abi, frame_descriptor_to_abi,
+        frame_lease_status_to_abi, reconnect_policy_to_abi, status_to_abi,
     },
 };
 
@@ -132,4 +136,49 @@ fn abi_backend_health_snapshot_uses_borrowed_nullable_fields() {
     assert!(ready.last_error.data.is_null());
     assert_eq!(ready.has_next_retry_unix_ms, 0);
     assert_eq!(ready.recoverable, 0);
+}
+
+#[test]
+fn abi_frame_descriptor_and_lease_status_are_plain_borrowed_views() {
+    assert_eq!(FLOWRT_FRAME_LEASE_ATTACHED, 0);
+    assert_eq!(FLOWRT_FRAME_LEASE_ACQUIRED, 1);
+    assert_eq!(FLOWRT_FRAME_LEASE_RELEASED, 2);
+    assert_eq!(FLOWRT_FRAME_LEASE_EXPIRED, 3);
+    assert_eq!(FLOWRT_FRAME_LEASE_GENERATION_MISMATCH, 4);
+    assert_eq!(FLOWRT_FRAME_LEASE_ERROR, 5);
+    assert_eq!(
+        frame_lease_status_to_abi(FrameLeaseStatus::GenerationMismatch),
+        FLOWRT_FRAME_LEASE_GENERATION_MISMATCH
+    );
+
+    assert_eq!(offset_of!(FlowrtResourceDescriptor, resource_id), 0);
+    assert_eq!(
+        offset_of!(FlowrtResourceDescriptor, slot),
+        size_of::<FlowrtStringView>()
+    );
+    assert_eq!(
+        offset_of!(FlowrtResourceDescriptor, generation),
+        size_of::<FlowrtStringView>() * 2
+    );
+    assert_eq!(offset_of!(FlowrtFrameDescriptor, resource), 0);
+    assert_eq!(
+        offset_of!(FlowrtFrameDescriptor, size_bytes),
+        size_of::<FlowrtResourceDescriptor>()
+    );
+
+    let descriptor = FrameDescriptor::new(
+        ResourceDescriptor::new("camera_frames", "slot-7", 42),
+        921_600,
+        "rgb8",
+        "row_major",
+        FrameMetadata::new(),
+    )
+    .unwrap();
+    let abi = frame_descriptor_to_abi(&descriptor, r#"{"width":"640"}"#);
+
+    assert_eq!(abi.resource.generation, 42);
+    assert_eq!(abi.size_bytes, 921_600);
+    assert_eq!(abi.format.len, 4);
+    assert_eq!(abi.encoding.len, "row_major".len());
+    assert_eq!(abi.metadata_json.len, r#"{"width":"640"}"#.len());
 }

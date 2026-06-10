@@ -1566,6 +1566,37 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 判断指定 descriptor resource 是否会被当前 recorder 采集。
+     */
+    bool recorder_enabled_for_descriptor(std::string_view resource_id) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return recorder_filter_matches(inner_->recorder.filters, "descriptor", resource_id);
+    }
+
+    /**
+     * @brief 记录 frame descriptor / side-channel lease 事件，不复制真实 payload。
+     */
+    IntrospectionProbeRecord record_frame_descriptor_event(std::string_view name,
+                                                           const FrameDescriptor &descriptor,
+                                                           FrameLeaseStatus status,
+                                                           bool payload_recording) const {
+        (void)name;
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        const auto payload = frame_descriptor_payload_json(descriptor, status, payload_recording);
+        const auto payload_bytes = string_bytes(payload);
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return record_event_locked("descriptor", descriptor.resource().resource_id,
+                                   "descriptor_event", "resource",
+                                   descriptor.resource().resource_id, "FrameDescriptor", "json",
+                                   "flowrt.descriptor.frame.v1", payload_bytes, std::nullopt);
+    }
+
+    /**
      * @brief 按需记录 channel 样本到 recorder。
      */
     IntrospectionProbeRecord try_record_channel_sample_bytes(
@@ -2178,6 +2209,67 @@ class IntrospectionState {
         return std::any_of(filters.begin(), filters.end(), [&](const std::string &filter) {
             return filter == "all" || filter == kind || filter == exact;
         });
+    }
+
+    static std::string frame_lease_status_name(FrameLeaseStatus status) {
+        switch (status) {
+            case FrameLeaseStatus::Attached:
+                return "attached";
+            case FrameLeaseStatus::Acquired:
+                return "acquired";
+            case FrameLeaseStatus::Released:
+                return "released";
+            case FrameLeaseStatus::Expired:
+                return "expired";
+            case FrameLeaseStatus::GenerationMismatch:
+                return "generation_mismatch";
+            case FrameLeaseStatus::Error:
+                return "error";
+        }
+        return "error";
+    }
+
+    static std::string frame_metadata_json(const FrameMetadata &metadata) {
+        std::string output;
+        output.push_back('{');
+        bool first = true;
+        for (const auto &[key, value] : metadata) {
+            if (!first) {
+                output.push_back(',');
+            }
+            first = false;
+            output.append(detail::json_string(key));
+            output.push_back(':');
+            output.append(detail::json_string(value));
+        }
+        output.push_back('}');
+        return output;
+    }
+
+    static std::string frame_descriptor_payload_json(const FrameDescriptor &descriptor,
+                                                     FrameLeaseStatus status,
+                                                     bool payload_recording) {
+        std::string output;
+        output.append("{\"resource_id\":");
+        output.append(detail::json_string(descriptor.resource().resource_id));
+        output.append(",\"slot\":");
+        output.append(detail::json_string(descriptor.resource().slot));
+        output.append(",\"generation\":");
+        output.append(std::to_string(descriptor.resource().generation));
+        output.append(",\"size_bytes\":");
+        output.append(std::to_string(descriptor.size_bytes()));
+        output.append(",\"format\":");
+        output.append(detail::json_string(descriptor.format()));
+        output.append(",\"encoding\":");
+        output.append(detail::json_string(descriptor.encoding()));
+        output.append(",\"metadata\":");
+        output.append(frame_metadata_json(descriptor.metadata()));
+        output.append(",\"status\":");
+        output.append(detail::json_string(frame_lease_status_name(status)));
+        output.append(",\"payload_recording\":");
+        output.append(payload_recording ? "true" : "false");
+        output.push_back('}');
+        return output;
     }
 
     IntrospectionProbeRecord record_event_locked(

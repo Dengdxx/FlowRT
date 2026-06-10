@@ -16,9 +16,10 @@ use flowrt_selfdesc::{
     SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
     SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
     SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
-    SelfDescriptionProfile, SelfDescriptionResourceRequirement, SelfDescriptionScheduler,
-    SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask, SelfDescriptionServiceEndpoint,
-    SelfDescriptionServicePortDecl, SelfDescriptionTarget, SelfDescriptionTask,
+    SelfDescriptionProfile, SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
+    SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
+    SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
+    SelfDescriptionTask,
 };
 use sha2::{Digest, Sha256};
 
@@ -435,6 +436,15 @@ fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionCo
                 name: resource.name.clone(),
                 kind: resource_kind_name(resource.kind).to_string(),
                 required: resource.required,
+                descriptor: resource.descriptor.as_ref().map(|descriptor| {
+                    SelfDescriptionResourceDescriptor {
+                        kind: resource_descriptor_kind_name(descriptor.kind).to_string(),
+                        format: descriptor.format.clone(),
+                        encoding: descriptor.encoding.clone().unwrap_or_default(),
+                        metadata: descriptor.metadata.clone(),
+                        record_payload: descriptor.record_payload,
+                    }
+                }),
             })
             .collect(),
         io_boundary: component
@@ -536,6 +546,12 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::File => "file",
         ResourceKind::Device => "device",
         ResourceKind::Sdk => "sdk",
+    }
+}
+
+fn resource_descriptor_kind_name(kind: flowrt_ir::ResourceDescriptorKind) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceDescriptorKind::Frame => "frame",
     }
 }
 

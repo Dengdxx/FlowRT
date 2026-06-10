@@ -6,6 +6,7 @@
 pub mod abi;
 pub mod backend;
 pub mod channel;
+pub mod descriptor;
 pub mod executor;
 pub mod frame;
 pub mod inproc;
@@ -39,6 +40,10 @@ pub use backend::{
 pub use channel::{
     BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,
     OverflowPolicy, StaleConfig, StalePolicy,
+};
+pub use descriptor::{
+    FrameDescriptor, FrameDescriptorError, FrameLease, FrameLeaseError, FrameLeaseStatus,
+    FrameMetadata, ResourceDescriptor,
 };
 pub use executor::{
     DeterministicExecutor, FutureExecutor, FutureHandle, LaneId, LaneKind, PeriodicSpec,

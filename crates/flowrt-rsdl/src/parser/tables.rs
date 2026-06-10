@@ -158,7 +158,11 @@ fn optional_resource_table(table: &Table, context: &str) -> Result<Vec<RawResour
                 expected: "table",
             })?;
         let resource_context = format!("{context}.resource.{name}");
-        validate_known_fields(resource_table, &resource_context, &["kind", "required"])?;
+        validate_known_fields(
+            resource_table,
+            &resource_context,
+            &["kind", "required", "descriptor"],
+        )?;
         resources.push(RawResourceRequirement {
             name: name.clone(),
             kind: required_string(resource_table, &resource_context, "kind")?,
@@ -167,9 +171,37 @@ fn optional_resource_table(table: &Table, context: &str) -> Result<Vec<RawResour
             } else {
                 true
             },
+            descriptor: optional_resource_descriptor(resource_table, &resource_context)?,
         });
     }
     Ok(resources)
+}
+
+fn optional_resource_descriptor(
+    table: &Table,
+    context: &str,
+) -> Result<Option<RawResourceDescriptor>> {
+    let Some(value) = table.get("descriptor") else {
+        return Ok(None);
+    };
+    let descriptor_table = expect_table_value(context, "descriptor", value)?;
+    let descriptor_context = format!("{context}.descriptor");
+    validate_known_fields(
+        descriptor_table,
+        &descriptor_context,
+        &["kind", "format", "encoding", "metadata", "record_payload"],
+    )?;
+    Ok(Some(RawResourceDescriptor {
+        kind: required_string(descriptor_table, &descriptor_context, "kind")?,
+        format: required_string(descriptor_table, &descriptor_context, "format")?,
+        encoding: optional_string(descriptor_table, &descriptor_context, "encoding")?,
+        metadata: optional_string_table(descriptor_table, &descriptor_context, "metadata")?,
+        record_payload: if descriptor_table.contains_key("record_payload") {
+            optional_bool(descriptor_table, &descriptor_context, "record_payload")?
+        } else {
+            false
+        },
+    }))
 }
 
 fn optional_operation_port_table(

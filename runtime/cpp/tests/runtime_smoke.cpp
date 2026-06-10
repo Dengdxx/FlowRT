@@ -64,6 +64,12 @@ int main() {
     static_assert(FLOWRT_BACKEND_HEALTH_RECONNECTING == 2U);
     static_assert(FLOWRT_BACKEND_HEALTH_FAILED == 3U);
     static_assert(FLOWRT_BACKEND_HEALTH_UNSUPPORTED == 4U);
+    static_assert(FLOWRT_FRAME_LEASE_ATTACHED == 0U);
+    static_assert(FLOWRT_FRAME_LEASE_ACQUIRED == 1U);
+    static_assert(FLOWRT_FRAME_LEASE_RELEASED == 2U);
+    static_assert(FLOWRT_FRAME_LEASE_EXPIRED == 3U);
+    static_assert(FLOWRT_FRAME_LEASE_GENERATION_MISMATCH == 4U);
+    static_assert(FLOWRT_FRAME_LEASE_ERROR == 5U);
     static_assert(offsetof(flowrt_string_view_t, data) == 0U);
     static_assert(offsetof(flowrt_string_view_t, len) == sizeof(void *));
     static_assert(sizeof(flowrt_string_view_t) == sizeof(void *) * 2U);
@@ -81,6 +87,11 @@ int main() {
     static_assert(offsetof(flowrt_u128_t, hi) == 8U);
     static_assert(offsetof(flowrt_i128_t, lo) == 0U);
     static_assert(offsetof(flowrt_i128_t, hi) == 8U);
+    static_assert(offsetof(flowrt_resource_descriptor_t, resource_id) == 0U);
+    static_assert(offsetof(flowrt_resource_descriptor_t, slot) == sizeof(flowrt_string_view_t));
+    static_assert(offsetof(flowrt_frame_descriptor_t, resource) == 0U);
+    static_assert(offsetof(flowrt_frame_descriptor_t, size_bytes) ==
+                  sizeof(flowrt_resource_descriptor_t));
     static_assert(std::is_same_v<flowrt::UInt128, flowrt_u128_t>);
     static_assert(std::is_same_v<flowrt::Int128, flowrt_i128_t>);
 

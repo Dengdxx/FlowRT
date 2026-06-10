@@ -6,7 +6,10 @@
 use std::ffi::c_char;
 
 use crate::service::{ServiceError, ServiceFrameHeader};
-use crate::{BackendHealthSnapshot, BackendHealthState, BackendKind, ReconnectPolicy, Status};
+use crate::{
+    BackendHealthSnapshot, BackendHealthState, BackendKind, FrameDescriptor, FrameLeaseStatus,
+    ReconnectPolicy, Status,
+};
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_ABI_VERSION_MINOR: u32 = 1;
@@ -116,6 +119,32 @@ pub struct FlowrtBackendHealthSnapshot {
     pub reserved: [u8; 6],
 }
 
+pub type FlowrtFrameLeaseStatus = u32;
+pub const FLOWRT_FRAME_LEASE_ATTACHED: FlowrtFrameLeaseStatus = 0;
+pub const FLOWRT_FRAME_LEASE_ACQUIRED: FlowrtFrameLeaseStatus = 1;
+pub const FLOWRT_FRAME_LEASE_RELEASED: FlowrtFrameLeaseStatus = 2;
+pub const FLOWRT_FRAME_LEASE_EXPIRED: FlowrtFrameLeaseStatus = 3;
+pub const FLOWRT_FRAME_LEASE_GENERATION_MISMATCH: FlowrtFrameLeaseStatus = 4;
+pub const FLOWRT_FRAME_LEASE_ERROR: FlowrtFrameLeaseStatus = 5;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtResourceDescriptor {
+    pub resource_id: FlowrtStringView,
+    pub slot: FlowrtStringView,
+    pub generation: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtFrameDescriptor {
+    pub resource: FlowrtResourceDescriptor,
+    pub size_bytes: u64,
+    pub format: FlowrtStringView,
+    pub encoding: FlowrtStringView,
+    pub metadata_json: FlowrtStringView,
+}
+
 pub const fn status_to_abi(status: Status) -> FlowrtStatus {
     match status {
         Status::Ok => FLOWRT_STATUS_OK,
@@ -182,6 +211,34 @@ pub fn backend_health_snapshot_to_abi(
         has_next_retry_unix_ms,
         recoverable: u8::from(snapshot.recoverable),
         reserved: [0; 6],
+    }
+}
+
+pub const fn frame_lease_status_to_abi(status: FrameLeaseStatus) -> FlowrtFrameLeaseStatus {
+    match status {
+        FrameLeaseStatus::Attached => FLOWRT_FRAME_LEASE_ATTACHED,
+        FrameLeaseStatus::Acquired => FLOWRT_FRAME_LEASE_ACQUIRED,
+        FrameLeaseStatus::Released => FLOWRT_FRAME_LEASE_RELEASED,
+        FrameLeaseStatus::Expired => FLOWRT_FRAME_LEASE_EXPIRED,
+        FrameLeaseStatus::GenerationMismatch => FLOWRT_FRAME_LEASE_GENERATION_MISMATCH,
+        FrameLeaseStatus::Error => FLOWRT_FRAME_LEASE_ERROR,
+    }
+}
+
+pub fn frame_descriptor_to_abi<'a>(
+    descriptor: &'a FrameDescriptor,
+    metadata_json: &'a str,
+) -> FlowrtFrameDescriptor {
+    FlowrtFrameDescriptor {
+        resource: FlowrtResourceDescriptor {
+            resource_id: FlowrtStringView::from_utf8(descriptor.resource().resource_id()),
+            slot: FlowrtStringView::from_utf8(descriptor.resource().slot()),
+            generation: descriptor.resource().generation(),
+        },
+        size_bytes: descriptor.size_bytes(),
+        format: FlowrtStringView::from_utf8(descriptor.format()),
+        encoding: FlowrtStringView::from_utf8(descriptor.encoding()),
+        metadata_json: FlowrtStringView::from_utf8(metadata_json),
     }
 }
 

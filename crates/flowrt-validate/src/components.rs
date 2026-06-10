@@ -190,6 +190,16 @@ fn validate_component_kind_and_resources(
                 component.name, resource.name
             )));
         }
+        if resource
+            .descriptor
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.format.trim().is_empty())
+        {
+            errors.push(ValidationError::new(format!(
+                "component `{}` resource `{}` descriptor format must not be empty",
+                component.name, resource.name
+            )));
+        }
     }
 }
 

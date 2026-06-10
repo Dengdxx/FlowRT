@@ -73,6 +73,28 @@ typedef struct flowrt_backend_health_snapshot_t {
     uint8_t reserved[6];
 } flowrt_backend_health_snapshot_t;
 
+typedef uint32_t flowrt_frame_lease_status_t;
+#define FLOWRT_FRAME_LEASE_ATTACHED ((flowrt_frame_lease_status_t)0U)
+#define FLOWRT_FRAME_LEASE_ACQUIRED ((flowrt_frame_lease_status_t)1U)
+#define FLOWRT_FRAME_LEASE_RELEASED ((flowrt_frame_lease_status_t)2U)
+#define FLOWRT_FRAME_LEASE_EXPIRED ((flowrt_frame_lease_status_t)3U)
+#define FLOWRT_FRAME_LEASE_GENERATION_MISMATCH ((flowrt_frame_lease_status_t)4U)
+#define FLOWRT_FRAME_LEASE_ERROR ((flowrt_frame_lease_status_t)5U)
+
+typedef struct flowrt_resource_descriptor_t {
+    flowrt_string_view_t resource_id;
+    flowrt_string_view_t slot;
+    uint64_t generation;
+} flowrt_resource_descriptor_t;
+
+typedef struct flowrt_frame_descriptor_t {
+    flowrt_resource_descriptor_t resource;
+    uint64_t size_bytes;
+    flowrt_string_view_t format;
+    flowrt_string_view_t encoding;
+    flowrt_string_view_t metadata_json;
+} flowrt_frame_descriptor_t;
+
 /* ── Service ABI ──────────────────────────────────────────────────────────── */
 
 typedef uint16_t flowrt_service_error_t;

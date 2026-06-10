@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     ComponentIr, ComponentKind, ContractIr, ExternalHealthKind, ExternalProcessIr,
     ExternalWorkingDir, GraphIr, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
-    IoBoundaryShutdown, IoSideEffect, ProcessIr, ResourceKind, ServicePortIr, TaskIr,
+    IoBoundaryShutdown, IoSideEffect, ProcessIr, ResourceKind, ResourceRequirementIr,
+    ServicePortIr, TaskIr,
 };
 
 use crate::runtime_plan::bridge_runtime_plans;
@@ -372,16 +373,32 @@ fn launch_io_boundaries(
                 "readiness": io_readiness_name(policy.readiness),
                 "health": io_health_name(policy.health),
                 "shutdown": io_shutdown_name(policy.shutdown),
-                "resources": component.resources.iter().map(|resource| {
-                    serde_json::json!({
-                        "name": resource.name,
-                        "kind": resource_kind_name(resource.kind),
-                        "required": resource.required,
-                    })
-                }).collect::<Vec<_>>(),
+                "resources": component
+                    .resources
+                    .iter()
+                    .map(launch_resource_requirement)
+                    .collect::<Vec<_>>(),
             }))
         })
         .collect()
+}
+
+fn launch_resource_requirement(resource: &ResourceRequirementIr) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "name": resource.name,
+        "kind": resource_kind_name(resource.kind),
+        "required": resource.required,
+    });
+    if let Some(descriptor) = &resource.descriptor {
+        value["descriptor"] = serde_json::json!({
+            "kind": resource_descriptor_kind_name(descriptor.kind),
+            "format": descriptor.format,
+            "encoding": descriptor.encoding,
+            "metadata": descriptor.metadata,
+            "record_payload": descriptor.record_payload,
+        });
+    }
+    value
 }
 
 fn launch_external_process(external: &ExternalProcessIr) -> serde_json::Value {
@@ -421,6 +438,12 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::File => "file",
         ResourceKind::Device => "device",
         ResourceKind::Sdk => "sdk",
+    }
+}
+
+fn resource_descriptor_kind_name(kind: flowrt_ir::ResourceDescriptorKind) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceDescriptorKind::Frame => "frame",
     }
 }
 

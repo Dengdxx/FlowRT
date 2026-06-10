@@ -11,10 +11,13 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowrt_record::{
+    DESCRIPTOR_RECORD_SCHEMA_NAME, DescriptorRecordPayload, DescriptorRecordStatus,
     PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope,
     RecordEventKind,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::{FrameDescriptor, FrameLeaseStatus};
 
 /// recorder 启动时绑定的 runtime 元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +158,17 @@ impl RecorderTap {
         filter_matches(&config.filters, "operation", name)
     }
 
+    pub fn enabled_for_descriptor(&self, resource_id: &str) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let inner = self.lock_inner();
+        let Some(config) = inner.config.as_ref() else {
+            return false;
+        };
+        filter_matches(&config.filters, "descriptor", resource_id)
+    }
+
     pub fn record_channel_sample_bytes(
         &self,
         name: &str,
@@ -181,6 +195,67 @@ impl RecorderTap {
             type_name,
             payload,
             published_at_ms.map(|value| value.saturating_mul(1_000_000)),
+        )
+    }
+
+    pub fn record_frame_descriptor_event(
+        &self,
+        name: &str,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        payload_recording: bool,
+    ) -> RecorderTapOutcome {
+        let resource_id = descriptor.resource().resource_id();
+        if !self.enabled_for_descriptor(resource_id) {
+            return RecorderTapOutcome::default();
+        }
+        let payload = DescriptorRecordPayload {
+            resource_id: resource_id.to_string(),
+            slot: descriptor.resource().slot().to_string(),
+            generation: descriptor.resource().generation(),
+            size_bytes: descriptor.size_bytes(),
+            format: descriptor.format().to_string(),
+            encoding: descriptor.encoding().to_string(),
+            metadata: descriptor.metadata().clone(),
+            status: descriptor_status(status),
+            payload_recording,
+        };
+        let Ok(payload) = serde_json::to_vec(&payload) else {
+            return RecorderTapOutcome {
+                recorded: false,
+                dropped: true,
+            };
+        };
+        let entity = RecordEntity {
+            kind: RecordEntityKind::Resource,
+            name: resource_id.to_string(),
+            instance: instance_from_endpoint(name),
+            task: None,
+            type_name: Some("FrameDescriptor".to_string()),
+        };
+        self.record_bytes(
+            "descriptor",
+            resource_id,
+            RecordEventKind::DescriptorEvent,
+            entity,
+            PayloadEncoding::Json,
+            DESCRIPTOR_RECORD_SCHEMA_NAME,
+            &payload,
+            None,
+        )
+    }
+
+    pub fn record_frame_descriptor_status(
+        &self,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        payload_recording: bool,
+    ) -> RecorderTapOutcome {
+        self.record_frame_descriptor_event(
+            descriptor.resource().resource_id(),
+            descriptor,
+            status,
+            payload_recording,
         )
     }
 
@@ -459,6 +534,17 @@ fn filter_matches(filters: &[String], kind: &str, name: &str) -> bool {
 fn instance_from_endpoint(name: &str) -> Option<String> {
     name.split_once('.')
         .map(|(instance, _)| instance.to_string())
+}
+
+fn descriptor_status(status: FrameLeaseStatus) -> DescriptorRecordStatus {
+    match status {
+        FrameLeaseStatus::Attached => DescriptorRecordStatus::Attached,
+        FrameLeaseStatus::Acquired => DescriptorRecordStatus::Acquired,
+        FrameLeaseStatus::Released => DescriptorRecordStatus::Released,
+        FrameLeaseStatus::Expired => DescriptorRecordStatus::Expired,
+        FrameLeaseStatus::GenerationMismatch => DescriptorRecordStatus::GenerationMismatch,
+        FrameLeaseStatus::Error => DescriptorRecordStatus::Error,
+    }
 }
 
 fn wall_unix_ns() -> u64 {

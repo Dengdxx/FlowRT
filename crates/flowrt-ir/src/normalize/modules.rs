@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 
 use flowrt_rsdl::{
-    RawComponent, RawDocument, RawModuleDocument, RawOperationPort, RawPort,
+    RawComponent, RawDocument, RawModuleDocument, RawOperationPort, RawPort, RawResourceDescriptor,
     RawResourceRequirement, RawServicePort,
 };
 
 use crate::{
     ComponentIr, ComponentKind, EntityId, FieldIr, IoBoundaryHealth, IoBoundaryIr,
     IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError, LanguageKind, LifecycleSurface,
-    ModuleIr, OperationPortIr, PortIr, ResourceKind, ResourceRequirementIr, Result, ServicePortIr,
-    TypeIr, parse_type_expr,
+    ModuleIr, OperationPortIr, PortIr, ResourceDescriptorKind, ResourceDescriptorSchemaIr,
+    ResourceKind, ResourceRequirementIr, Result, ServicePortIr, TypeIr, parse_type_expr,
 };
 
 use super::ids::entity_id;
@@ -233,11 +233,31 @@ fn normalize_resources(raw: &[RawResourceRequirement]) -> Result<Vec<ResourceReq
                     &resource.kind,
                 )?,
                 required: resource.required,
+                descriptor: normalize_resource_descriptor(
+                    &format!("component.resource.{}.descriptor", resource.name),
+                    resource.descriptor.as_ref(),
+                )?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     resources.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(resources)
+}
+
+fn normalize_resource_descriptor(
+    context: &str,
+    raw: Option<&RawResourceDescriptor>,
+) -> Result<Option<ResourceDescriptorSchemaIr>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    Ok(Some(ResourceDescriptorSchemaIr {
+        kind: parse_resource_descriptor_kind(&format!("{context}.kind"), &raw.kind)?,
+        format: raw.format.clone(),
+        encoding: raw.encoding.clone(),
+        metadata: raw.metadata.clone(),
+        record_payload: raw.record_payload,
+    }))
 }
 
 fn normalize_io_boundary(raw: &RawComponent) -> Result<Option<IoBoundaryIr>> {
@@ -287,6 +307,13 @@ fn parse_resource_kind(context: &str, value: &str) -> Result<ResourceKind> {
         "device" => Ok(ResourceKind::Device),
         "sdk" => Ok(ResourceKind::Sdk),
         _ => Err(invalid_enum(context, "resource kind", value)),
+    }
+}
+
+fn parse_resource_descriptor_kind(context: &str, value: &str) -> Result<ResourceDescriptorKind> {
+    match value {
+        "frame" => Ok(ResourceDescriptorKind::Frame),
+        _ => Err(invalid_enum(context, "resource descriptor kind", value)),
     }
 }
 

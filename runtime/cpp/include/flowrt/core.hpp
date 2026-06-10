@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,6 +33,144 @@ enum class Status : std::uint8_t {
  * @return `Status::Ok`。
  */
 constexpr Status ok() noexcept { return Status::Ok; }
+
+/**
+ * @brief frame descriptor 中的开放 metadata 键值。
+ */
+using FrameMetadata = std::map<std::string, std::string>;
+
+/**
+ * @brief side-channel 资源中的一个可寻址 payload slot。
+ */
+struct ResourceDescriptor {
+    std::string resource_id;
+    std::string slot;
+    std::uint64_t generation = 0;
+};
+
+/**
+ * @brief 普通 FlowRT channel 传递的 frame descriptor。
+ *
+ * descriptor 只携带 resource/slot/generation、大小、格式、编码和 metadata；真实 payload
+ * 生命周期由 I/O boundary 或 external package 管理。
+ */
+class FrameDescriptor {
+   public:
+    static FrameDescriptor make(ResourceDescriptor resource, std::uint64_t size_bytes,
+                                std::string format, std::string encoding,
+                                FrameMetadata metadata) {
+        return FrameDescriptor{std::move(resource), size_bytes, std::move(format),
+                               std::move(encoding), std::move(metadata)};
+    }
+
+    [[nodiscard]] const ResourceDescriptor &resource() const noexcept { return resource_; }
+
+    [[nodiscard]] std::uint64_t size_bytes() const noexcept { return size_bytes_; }
+
+    [[nodiscard]] const std::string &format() const noexcept { return format_; }
+
+    [[nodiscard]] const std::string &encoding() const noexcept { return encoding_; }
+
+    [[nodiscard]] const FrameMetadata &metadata() const noexcept { return metadata_; }
+
+   private:
+    FrameDescriptor(ResourceDescriptor resource, std::uint64_t size_bytes, std::string format,
+                    std::string encoding, FrameMetadata metadata)
+        : resource_(std::move(resource)),
+          size_bytes_(size_bytes),
+          format_(std::move(format)),
+          encoding_(std::move(encoding)),
+          metadata_(std::move(metadata)) {}
+
+    ResourceDescriptor resource_;
+    std::uint64_t size_bytes_ = 0;
+    std::string format_;
+    std::string encoding_;
+    FrameMetadata metadata_;
+};
+
+/**
+ * @brief side-channel lease 当前状态。
+ */
+enum class FrameLeaseStatus : std::uint8_t {
+    Attached = 0,
+    Acquired = 1,
+    Released = 2,
+    Expired = 3,
+    GenerationMismatch = 4,
+    Error = 5,
+};
+
+/**
+ * @brief side-channel lease 操作错误。
+ */
+enum class FrameLeaseError : std::uint8_t {
+    None = 0,
+    Released = 1,
+    Expired = 2,
+    GenerationMismatch = 3,
+    Error = 4,
+};
+
+/**
+ * @brief 无硬件 side-channel lease primitive。
+ *
+ * 该类型只表达 attach/acquire/release 的状态转换，不打开真实 SHM 或设备。
+ */
+class FrameLease {
+   public:
+    FrameLease(FrameDescriptor descriptor, std::uint64_t current_generation)
+        : descriptor_(std::move(descriptor)), current_generation_(current_generation) {}
+
+    [[nodiscard]] const FrameDescriptor &descriptor() const noexcept { return descriptor_; }
+
+    [[nodiscard]] FrameLeaseStatus status() const noexcept { return status_; }
+
+    [[nodiscard]] const std::string &last_error() const noexcept { return last_error_; }
+
+    FrameLeaseError acquire(std::uint64_t expected_generation) {
+        if (status_ == FrameLeaseStatus::Released) {
+            return FrameLeaseError::Released;
+        }
+        if (status_ == FrameLeaseStatus::Expired) {
+            return FrameLeaseError::Expired;
+        }
+        if (status_ == FrameLeaseStatus::Error) {
+            return FrameLeaseError::Error;
+        }
+        if (expected_generation != current_generation_ ||
+            descriptor_.resource().generation != current_generation_) {
+            status_ = FrameLeaseStatus::GenerationMismatch;
+            return FrameLeaseError::GenerationMismatch;
+        }
+        status_ = FrameLeaseStatus::Acquired;
+        return FrameLeaseError::None;
+    }
+
+    FrameLeaseError release() {
+        if (status_ == FrameLeaseStatus::Expired) {
+            return FrameLeaseError::Expired;
+        }
+        if (status_ == FrameLeaseStatus::Error) {
+            return FrameLeaseError::Error;
+        }
+        status_ = FrameLeaseStatus::Released;
+        return FrameLeaseError::None;
+    }
+
+    void expire() noexcept { status_ = FrameLeaseStatus::Expired; }
+
+    void fail(std::string error) {
+        last_error_ = std::move(error);
+        status_ = FrameLeaseStatus::Error;
+    }
+
+   private:
+    FrameDescriptor descriptor_;
+    std::uint64_t current_generation_ = 0;
+    FrameLeaseStatus status_ = FrameLeaseStatus::Attached;
+    std::string last_error_;
+};
 
 /**
  * @brief I/O boundary 声明资源的运行态状态。

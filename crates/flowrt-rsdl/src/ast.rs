@@ -139,6 +139,17 @@ pub struct RawResourceRequirement {
     pub name: String,
     pub kind: String,
     pub required: bool,
+    pub descriptor: Option<RawResourceDescriptor>,
+}
+
+/// `[component.<name>.resource.<resource_name>.descriptor]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawResourceDescriptor {
+    pub kind: String,
+    pub format: String,
+    pub encoding: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+    pub record_payload: bool,
 }
 
 /// 组件端口声明。

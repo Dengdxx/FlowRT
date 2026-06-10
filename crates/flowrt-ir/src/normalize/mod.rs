@@ -304,6 +304,67 @@ backends = ["zenoh"]
     }
 
     #[test]
+    fn normalizes_frame_descriptor_resource_schema_with_payload_recording_opt_in() {
+        let source = r#"
+[package]
+name = "descriptor_demo"
+rsdl_version = "0.1"
+
+[type.FrameHandle]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+format = "u32"
+encoding = "u32"
+
+[component.camera]
+language = "rust"
+kind = "io_boundary"
+io_side_effect = ["device", "read"]
+output = ["frame:FrameHandle"]
+
+[component.camera.resource.frames]
+kind = "shm"
+
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+format = "rgb8"
+encoding = "row_major"
+metadata = { width = "640", height = "480" }
+record_payload = true
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 33
+output = ["frame"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let resource = &ir.components[0].resources[0];
+        let descriptor = resource
+            .descriptor
+            .as_ref()
+            .expect("resource should carry descriptor schema");
+
+        assert_eq!(resource.name, "frames");
+        assert_eq!(descriptor.kind, crate::ResourceDescriptorKind::Frame);
+        assert_eq!(descriptor.format, "rgb8");
+        assert_eq!(descriptor.encoding.as_deref(), Some("row_major"));
+        assert_eq!(
+            descriptor.metadata,
+            BTreeMap::from([
+                ("height".to_string(), "480".to_string()),
+                ("width".to_string(), "640".to_string())
+            ])
+        );
+        assert!(descriptor.record_payload);
+    }
+
+    #[test]
     fn rejects_unknown_target_platform() {
         let source = r#"
 [package]

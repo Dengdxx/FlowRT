@@ -23,6 +23,7 @@ use crate::recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,
 };
 use crate::supervisor::resource_placement::ResourcePlacementStatus;
+use crate::{FrameDescriptor, FrameLeaseStatus};
 
 /// 当前 introspection 协议版本。
 pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
@@ -745,6 +746,11 @@ impl IntrospectionState {
         self.recorder.enabled_for_channel(name)
     }
 
+    /// 判断指定 descriptor resource 是否会被 recorder 采集。
+    pub fn recorder_enabled_for_descriptor(&self, resource_id: &str) -> bool {
+        self.recorder.enabled_for_descriptor(resource_id)
+    }
+
     /// 按需记录 channel sample。关闭时不复制 payload。
     pub fn try_record_channel_sample_bytes(
         &self,
@@ -759,6 +765,18 @@ impl IntrospectionState {
             payload,
             published_at_ms,
         )
+    }
+
+    /// 记录 frame descriptor / side-channel lease 事件，不复制真实 payload。
+    pub fn record_frame_descriptor_event(
+        &self,
+        name: &str,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        payload_recording: bool,
+    ) -> RecorderTapOutcome {
+        self.recorder
+            .record_frame_descriptor_event(name, descriptor, status, payload_recording)
     }
 
     /// 记录 channel 发布的 latest raw ABI payload。

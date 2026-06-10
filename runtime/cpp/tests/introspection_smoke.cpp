@@ -249,6 +249,47 @@ int main() {
     assert(recorder_state.status().recorder.queued_events == 0U);
     assert(!recorder_state.stop_recorder().enabled);
 
+    flowrt::IntrospectionState descriptor_recorder_state;
+    descriptor_recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
+        .output = std::nullopt,
+        .filters = {"descriptor"},
+        .queue_depth = 4,
+        .package = "robot_demo",
+        .process = "camera_proc",
+        .runtime_pid = 42,
+        .self_description_hash = "abc123",
+    });
+    flowrt::FrameMetadata frame_metadata;
+    frame_metadata.insert_or_assign("height", "480");
+    frame_metadata.insert_or_assign("width", "640");
+    const auto frame_descriptor = flowrt::FrameDescriptor::make(
+        flowrt::ResourceDescriptor{.resource_id = "camera_frames",
+                                   .slot = "slot-7",
+                                   .generation = 42U},
+        921600U, "rgb8", "row_major", frame_metadata);
+    const auto descriptor_record = descriptor_recorder_state.record_frame_descriptor_event(
+        "camera.frame", frame_descriptor, flowrt::FrameLeaseStatus::Acquired, false);
+    assert(descriptor_record.recorded);
+    assert(!descriptor_record.dropped);
+    const auto descriptor_events = descriptor_recorder_state.drain_recorder_events();
+    assert(descriptor_events.size() == 1U);
+    assert(descriptor_events.front().event_kind == "descriptor_event");
+    assert(descriptor_events.front().entity_kind == "resource");
+    assert(descriptor_events.front().entity_name == "camera_frames");
+    assert(descriptor_events.front().entity_type_name ==
+           std::optional<std::string>{"FrameDescriptor"});
+    assert(descriptor_events.front().payload_encoding == "json");
+    assert(descriptor_events.front().payload_schema == "flowrt.descriptor.frame.v1");
+    const auto descriptor_payload =
+        std::string(descriptor_events.front().payload.begin(), descriptor_events.front().payload.end());
+    assert_contains(descriptor_payload, R"("resource_id":"camera_frames")");
+    assert_contains(descriptor_payload, R"("slot":"slot-7")");
+    assert_contains(descriptor_payload, R"("generation":42)");
+    assert_contains(descriptor_payload, R"("size_bytes":921600)");
+    assert_contains(descriptor_payload, R"("format":"rgb8")");
+    assert_contains(descriptor_payload, R"("status":"acquired")");
+    assert_contains(descriptor_payload, R"("payload_recording":false)");
+
     flowrt::IntrospectionState service_recorder_state;
     service_recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
         .output = std::nullopt,
