@@ -454,6 +454,12 @@ backend 为 `inproc`。
   target identity、Rust target triple、host triple、deps target 目录和 executable
   相对路径。缺少匹配 deps ready marker 时，`build` 会 fail-fast，提示先运行
   `flowrt deps`。
+- `bundle` 会优先使用 `build-info.json` 的 artifact closure，并把带 platform 的本项目
+  二进制复制到 `bin/<platform>/<filename>`；manifest schema v2 的 artifact path、
+  platform 和 sha256 与实际 bundle 文件保持一致。`deploy` 继续只以 artifact 列表为
+  事实源，校验请求 target、platform 别名、路径安全、文件存在性和 sha256，发现目标
+  产物缺失、platform 不匹配或 hash 不匹配时提示重新执行对应 platform 的
+  `flowrt build --target <platform> --launcher`。
 - Rust app、generated supervisor 和 deps prewarm 使用同一个 Rust target triple。
   target triple 会进入 cache key 和 ready marker；Cargo cross target 输出位于
   `CARGO_TARGET_DIR/<triple>/<profile>/`，CLI 会按该路径定位二进制。

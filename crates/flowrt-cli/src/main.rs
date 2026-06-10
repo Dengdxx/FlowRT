@@ -1126,6 +1126,16 @@ struct DeployArtifactSelection {
     platforms: Vec<String>,
 }
 
+#[derive(Debug)]
+struct BundleExecutablePlan {
+    kind: String,
+    source: PathBuf,
+    target: String,
+    platform: Option<String>,
+    dest: PathBuf,
+    source_sha256: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FlowrtReleaseVersion {
     major: u64,
@@ -1154,8 +1164,8 @@ fn bundle_workspace(
         );
     }
     ensure_bundle_output_dir(output)?;
-    let target_name = bundle_target_name(contract);
-    let target_platform = bundle_target_platform(contract);
+    let target_name = bundle_target_name_for_build(&build_info, contract);
+    let target_platform = bundle_target_platform_for_build(&build_info, contract)?;
 
     copy_required_file(
         &prepared_contract_path(out_dir),
@@ -1177,43 +1187,38 @@ fn bundle_workspace(
     let mut executables = Vec::new();
     let mut artifacts = Vec::new();
     let mut strip_stats = BundleStripStats::default();
-    for (kind, relative) in [
-        ("supervisor", build_info.executables.supervisor.as_ref()),
-        ("rust_app", build_info.executables.rust_app.as_ref()),
-        ("cpp_app", build_info.executables.cpp_app.as_ref()),
-        ("ros2_bridge", build_info.executables.ros2_bridge.as_ref()),
-    ] {
-        if let Some(relative) = relative {
-            ensure_safe_relative_path(relative)?;
-            let source = out_dir.join(relative);
-            if !source.exists() {
+    for plan in bundle_executable_plans(
+        &build_info,
+        out_dir,
+        &target_name,
+        target_platform.as_deref(),
+    )? {
+        let dest_abs = output.join(&plan.dest);
+        copy_required_file(&plan.source, &dest_abs)?;
+        if let Some(expected_hash) = &plan.source_sha256 {
+            let actual_hash = file_sha256(&plan.source)?;
+            if actual_hash != *expected_hash {
                 anyhow::bail!(
-                    "build-info records {kind} executable `{}`, but it does not exist; run `flowrt build --launcher` first",
-                    source.display()
+                    "build-info artifact `{}` sha256 mismatch before bundle: metadata has {}, actual is {}; run `{}` first",
+                    plan.source.display(),
+                    expected_hash,
+                    actual_hash,
+                    build_launcher_hint(plan.platform.as_deref())
                 );
             }
-            let file_name = source.file_name().with_context(|| {
-                format!(
-                    "failed to determine executable file name for `{}`",
-                    source.display()
-                )
-            })?;
-            let dest = PathBuf::from("bin").join(file_name);
-            let dest_abs = output.join(&dest);
-            copy_required_file(&source, &dest_abs)?;
-            strip_stats.record(strip_bundle_executable(&dest_abs)?);
-            artifacts.push(BundleArtifact {
-                kind: kind.to_string(),
-                target: target_name.clone(),
-                platform: target_platform.clone(),
-                path: dest.clone(),
-                sha256: file_sha256(&dest_abs)?,
-            });
-            executables.push(BundleExecutable {
-                kind: kind.to_string(),
-                path: dest,
-            });
         }
+        strip_stats.record(strip_bundle_executable(&dest_abs)?);
+        artifacts.push(BundleArtifact {
+            kind: plan.kind.clone(),
+            target: plan.target.clone(),
+            platform: plan.platform.clone(),
+            path: plan.dest.clone(),
+            sha256: file_sha256(&dest_abs)?,
+        });
+        executables.push(BundleExecutable {
+            kind: plan.kind,
+            path: plan.dest,
+        });
     }
 
     let project_root = project_root_for_rsdl(rsdl);
@@ -1291,6 +1296,156 @@ fn bundle_workspace(
         strip_stats.stripped,
         strip_stats.warnings
     ))
+}
+
+fn bundle_executable_plans(
+    build_info: &build_model::BuildInfo,
+    out_dir: &Path,
+    default_target: &str,
+    default_platform: Option<&str>,
+) -> Result<Vec<BundleExecutablePlan>> {
+    let entries = [
+        ("supervisor", build_info.executables.supervisor.as_ref()),
+        ("rust_app", build_info.executables.rust_app.as_ref()),
+        ("cpp_app", build_info.executables.cpp_app.as_ref()),
+        ("ros2_bridge", build_info.executables.ros2_bridge.as_ref()),
+    ];
+    let mut plans = Vec::new();
+    let has_artifact_facts = !build_info.artifacts.is_empty();
+    for (kind, relative) in entries {
+        let Some(relative) = relative else {
+            continue;
+        };
+        ensure_safe_relative_path(relative)?;
+        let source = out_dir.join(relative);
+        if !source.exists() {
+            anyhow::bail!(
+                "build-info records {kind} executable `{}`, but it does not exist; run `{}` first",
+                source.display(),
+                build_launcher_hint(default_platform)
+            );
+        }
+        let artifact = if has_artifact_facts {
+            Some(bundle_build_artifact_for_executable(
+                build_info, kind, relative,
+            )?)
+        } else {
+            None
+        };
+        let (target, platform, source_sha256) = if let Some(artifact) = artifact {
+            ensure_safe_relative_path(&artifact.path)?;
+            if artifact.path != *relative {
+                anyhow::bail!(
+                    "build-info executable `{}` points to `{}`, but artifact metadata points to `{}`; run `{}` first",
+                    kind,
+                    relative.display(),
+                    artifact.path.display(),
+                    build_launcher_hint(artifact.platform.as_deref().or(default_platform))
+                );
+            }
+            validate_build_artifact_target(kind, artifact, default_target, default_platform)?;
+            (
+                artifact.target.clone(),
+                canonical_optional_platform(artifact.platform.as_deref())?,
+                Some(artifact.sha256.clone()),
+            )
+        } else {
+            (
+                default_target.to_string(),
+                canonical_optional_platform(default_platform)?,
+                None,
+            )
+        };
+        let dest = bundle_binary_dest(&source, platform.as_deref())?;
+        plans.push(BundleExecutablePlan {
+            kind: kind.to_string(),
+            source,
+            target,
+            platform,
+            dest,
+            source_sha256,
+        });
+    }
+    Ok(plans)
+}
+
+fn bundle_build_artifact_for_executable<'a>(
+    build_info: &'a build_model::BuildInfo,
+    kind: &str,
+    relative: &Path,
+) -> Result<&'a build_model::BuildArtifactInfo> {
+    let matches = build_info
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == kind)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [artifact] => Ok(*artifact),
+        [] => anyhow::bail!(
+            "build-info records {kind} executable `{}`, but artifact metadata is missing; run `{}` first",
+            relative.display(),
+            build_launcher_hint(build_info.platform.as_deref())
+        ),
+        _ => anyhow::bail!(
+            "build-info records multiple {kind} artifacts; run `{}` first",
+            build_launcher_hint(build_info.platform.as_deref())
+        ),
+    }
+}
+
+fn validate_build_artifact_target(
+    kind: &str,
+    artifact: &build_model::BuildArtifactInfo,
+    expected_target: &str,
+    expected_platform: Option<&str>,
+) -> Result<()> {
+    if artifact.target != expected_target {
+        anyhow::bail!(
+            "build-info {kind} artifact target `{}` does not match Contract IR target `{expected_target}`; run `{}` first",
+            artifact.target,
+            build_launcher_hint(artifact.platform.as_deref().or(expected_platform))
+        );
+    }
+    let expected_platform = canonical_optional_platform(expected_platform)?;
+    let artifact_platform = canonical_optional_platform(artifact.platform.as_deref())?;
+    if artifact_platform != expected_platform {
+        anyhow::bail!(
+            "build-info {kind} artifact platform {:?} does not match Contract IR platform {:?}; run `{}` first",
+            artifact_platform,
+            expected_platform,
+            build_launcher_hint(
+                expected_platform
+                    .as_deref()
+                    .or(artifact.platform.as_deref())
+            )
+        );
+    }
+    Ok(())
+}
+
+fn bundle_binary_dest(source: &Path, platform: Option<&str>) -> Result<PathBuf> {
+    let file_name = source.file_name().with_context(|| {
+        format!(
+            "failed to determine executable file name for `{}`",
+            source.display()
+        )
+    })?;
+    let mut dest = PathBuf::from("bin");
+    if let Some(platform) = platform {
+        dest.push(platform);
+    }
+    dest.push(file_name);
+    Ok(dest)
+}
+
+fn canonical_optional_platform(platform: Option<&str>) -> Result<Option<String>> {
+    platform
+        .map(|platform| {
+            TargetPlatform::parse_alias(platform)
+                .map(|value| value.as_str().to_string())
+                .with_context(|| format!("unsupported target platform `{platform}`"))
+        })
+        .transpose()
 }
 
 #[derive(Default)]
@@ -1562,6 +1717,27 @@ fn bundle_target_platform(contract: &ContractIr) -> Option<String> {
         })
 }
 
+fn bundle_target_name_for_build(
+    build_info: &build_model::BuildInfo,
+    contract: &ContractIr,
+) -> String {
+    build_info
+        .target
+        .clone()
+        .unwrap_or_else(|| bundle_target_name(contract))
+}
+
+fn bundle_target_platform_for_build(
+    build_info: &build_model::BuildInfo,
+    contract: &ContractIr,
+) -> Result<Option<String>> {
+    if build_info.platform.is_some() {
+        return canonical_optional_platform(build_info.platform.as_deref());
+    }
+    let contract_platform = bundle_target_platform(contract);
+    canonical_optional_platform(contract_platform.as_deref())
+}
+
 fn current_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1682,7 +1858,7 @@ fn select_deploy_artifacts(
         .iter()
         .filter(|artifact| artifact.target == target)
     {
-        validate_bundle_artifact(bundle, artifact)?;
+        validate_bundle_artifact(bundle, manifest, artifact)?;
         count += 1;
         if let Some(platform) = &artifact.platform {
             let canonical = TargetPlatform::parse_alias(platform)
@@ -1706,7 +1882,11 @@ fn select_deploy_artifacts(
     Ok(DeployArtifactSelection { count, platforms })
 }
 
-fn validate_bundle_artifact(bundle: &Path, artifact: &BundleArtifact) -> Result<()> {
+fn validate_bundle_artifact(
+    bundle: &Path,
+    manifest: &BundleManifest,
+    artifact: &BundleArtifact,
+) -> Result<()> {
     ensure_safe_relative_path(&artifact.path)?;
     let platform = artifact.platform.as_deref().with_context(|| {
         format!(
@@ -1714,15 +1894,44 @@ fn validate_bundle_artifact(bundle: &Path, artifact: &BundleArtifact) -> Result<
             artifact.path.display()
         )
     })?;
-    TargetPlatform::parse_alias(platform).with_context(|| {
+    let canonical_platform = TargetPlatform::parse_alias(platform).with_context(|| {
         format!(
             "bundle artifact `{}` declares unsupported platform `{platform}`",
             artifact.path.display()
         )
     })?;
+    let canonical_platform = canonical_platform.as_str().to_string();
+    if manifest.target == artifact.target {
+        if let Some(manifest_platform) = &manifest.platform {
+            let manifest_platform = TargetPlatform::parse_alias(manifest_platform)
+                .map(|value| value.as_str().to_string())
+                .with_context(|| {
+                    format!(
+                        "bundle target `{}` declares unsupported platform `{manifest_platform}`",
+                        manifest.target
+                    )
+                })?;
+            if manifest_platform != canonical_platform {
+                anyhow::bail!(
+                    "bundle artifact `{}` platform mismatch: target `{}` expects `{}`, artifact declares `{}`; run `{}` before bundling again",
+                    artifact.path.display(),
+                    artifact.target,
+                    manifest_platform,
+                    canonical_platform,
+                    build_launcher_hint(Some(&manifest_platform))
+                );
+            }
+        }
+    }
+    validate_bundle_artifact_path_platform(artifact, &canonical_platform)?;
     let path = bundle.join(&artifact.path);
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("bundle artifact `{}` does not exist", path.display()))?;
+    let metadata = fs::symlink_metadata(&path).with_context(|| {
+        format!(
+            "bundle artifact `{}` does not exist; run `{}` before bundling again",
+            path.display(),
+            build_launcher_hint(Some(&canonical_platform))
+        )
+    })?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         anyhow::bail!(
             "bundle artifact `{}` must be a regular file",
@@ -1732,13 +1941,47 @@ fn validate_bundle_artifact(bundle: &Path, artifact: &BundleArtifact) -> Result<
     let actual_hash = file_sha256(&path)?;
     if actual_hash != artifact.sha256 {
         anyhow::bail!(
-            "bundle artifact `{}` sha256 mismatch: manifest has {}, actual is {}",
+            "bundle artifact `{}` sha256 mismatch: manifest has {}, actual is {}; run `{}` before bundling again",
             artifact.path.display(),
             artifact.sha256,
-            actual_hash
+            actual_hash,
+            build_launcher_hint(Some(&canonical_platform))
         );
     }
     Ok(())
+}
+
+fn validate_bundle_artifact_path_platform(
+    artifact: &BundleArtifact,
+    canonical_platform: &str,
+) -> Result<()> {
+    let mut components = artifact.path.components();
+    if !matches!(components.next(), Some(Component::Normal(value)) if value == "bin") {
+        return Ok(());
+    }
+    let Some(Component::Normal(platform_component)) = components.next() else {
+        return Ok(());
+    };
+    let platform_component = platform_component.to_string_lossy();
+    let Some(path_platform) = TargetPlatform::parse_alias(&platform_component) else {
+        return Ok(());
+    };
+    let path_platform = path_platform.as_str();
+    if path_platform != canonical_platform {
+        anyhow::bail!(
+            "bundle artifact `{}` platform mismatch: path uses `{path_platform}`, artifact declares `{canonical_platform}`; run `{}` before bundling again",
+            artifact.path.display(),
+            build_launcher_hint(Some(path_platform))
+        );
+    }
+    Ok(())
+}
+
+fn build_launcher_hint(platform: Option<&str>) -> String {
+    match platform {
+        Some(platform) => format!("flowrt build --target {platform} --launcher"),
+        None => "flowrt build --launcher".to_string(),
+    }
 }
 
 fn validate_remote_flowrt_version_check(

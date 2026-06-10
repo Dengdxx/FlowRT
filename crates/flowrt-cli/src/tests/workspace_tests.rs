@@ -339,7 +339,7 @@ backends = ["zenoh"]
     std::fs::create_dir_all(out_dir.join("contract")).unwrap();
     std::fs::create_dir_all(out_dir.join("selfdesc")).unwrap();
     std::fs::create_dir_all(out_dir.join("launch")).unwrap();
-    std::fs::create_dir_all(out_dir.join("build/bin/release")).unwrap();
+    std::fs::create_dir_all(out_dir.join("build/bin/linux-arm64/release")).unwrap();
     std::fs::write(
         prepared_contract_path(&out_dir),
         contract.to_canonical_json().unwrap(),
@@ -347,17 +347,30 @@ backends = ["zenoh"]
     .unwrap();
     std::fs::write(out_dir.join("selfdesc/selfdesc.json"), "{}\n").unwrap();
     std::fs::write(out_dir.join("launch/launch.json"), "{}\n").unwrap();
-    let supervisor = out_dir.join("build/bin/release/external-demo-flowrt-supervisor");
+    let supervisor = out_dir.join("build/bin/linux-arm64/release/external-demo-flowrt-supervisor");
     std::fs::write(&supervisor, "#!/bin/sh\n").unwrap();
+    let supervisor_hash = file_sha256(&supervisor).unwrap();
     let mut info = build_model::BuildInfo::new(
         env!("CARGO_PKG_VERSION"),
         Some("default".into()),
         BuildMode::Release,
         None,
     );
+    info.target = Some("pi".into());
+    info.platform = Some("linux-arm64".into());
+    info.target_identity = Some("linux-arm64:aarch64-unknown-linux-gnu".into());
+    info.rust_target_triple = Some("aarch64-unknown-linux-gnu".into());
+    info.host_target_triple = Some("x86_64-unknown-linux-gnu".into());
     info.executables.supervisor = Some(PathBuf::from(
-        "build/bin/release/external-demo-flowrt-supervisor",
+        "build/bin/linux-arm64/release/external-demo-flowrt-supervisor",
     ));
+    info.artifacts.push(build_model::BuildArtifactInfo {
+        kind: "supervisor".into(),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        path: PathBuf::from("build/bin/linux-arm64/release/external-demo-flowrt-supervisor"),
+        sha256: supervisor_hash,
+    });
     info.write(&out_dir).unwrap();
 
     let output = bundle_workspace(&rsdl, &contract, &out_dir, &bundle, None).unwrap();
@@ -366,7 +379,11 @@ backends = ["zenoh"]
     assert!(output.contains("stripped_executables=0"));
     assert!(output.contains("strip_warnings=0"));
     assert!(bundle.join("bundle.toml").is_file());
-    assert!(bundle.join("bin/external-demo-flowrt-supervisor").is_file());
+    assert!(
+        bundle
+            .join("bin/linux-arm64/external-demo-flowrt-supervisor")
+            .is_file()
+    );
     assert!(bundle.join("flowrt/contract/contract.ir.json").is_file());
     assert!(
         bundle
@@ -382,12 +399,27 @@ backends = ["zenoh"]
         toml::from_str(&std::fs::read_to_string(bundle.join("bundle.toml")).unwrap()).unwrap();
     assert_eq!(manifest.target, "pi");
     assert_eq!(manifest.platform.as_deref(), Some("linux-arm64"));
-    assert_eq!(manifest.entry, "bin/external-demo-flowrt-supervisor");
+    assert_eq!(
+        manifest.entry,
+        "bin/linux-arm64/external-demo-flowrt-supervisor"
+    );
     assert_eq!(manifest.schema_version, 2);
     assert_eq!(manifest.artifacts.len(), 2);
-    assert!(manifest.artifacts.iter().any(|artifact| {
-        artifact.kind == "supervisor" && artifact.platform.as_deref() == Some("linux-arm64")
-    }));
+    let supervisor_artifact = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "supervisor")
+        .unwrap();
+    assert_eq!(supervisor_artifact.target, "pi");
+    assert_eq!(supervisor_artifact.platform.as_deref(), Some("linux-arm64"));
+    assert_eq!(
+        supervisor_artifact.path,
+        PathBuf::from("bin/linux-arm64/external-demo-flowrt-supervisor")
+    );
+    assert_eq!(
+        supervisor_artifact.sha256,
+        file_sha256(&bundle.join(&supervisor_artifact.path)).unwrap()
+    );
     assert!(manifest.artifacts.iter().any(|artifact| {
         artifact.kind == "external_process" && artifact.platform.as_deref() == Some("linux-arm64")
     }));
@@ -404,6 +436,32 @@ backends = ["zenoh"]
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bundle_target_platform_prefers_build_info_over_contract_target() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "cross_bundle_demo"
+rsdl_version = "0.1"
+
+[target.pi]
+platform = "linux-amd64"
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let mut info =
+        build_model::BuildInfo::new(env!("CARGO_PKG_VERSION"), None, BuildMode::Release, None);
+    info.target = Some("pi".into());
+    info.platform = Some("linux-arm64".into());
+
+    assert_eq!(bundle_target_name_for_build(&info, &contract), "pi");
+    assert_eq!(
+        bundle_target_platform_for_build(&info, &contract).unwrap(),
+        Some("linux-arm64".into())
+    );
 }
 
 #[test]
@@ -483,11 +541,12 @@ fn deploy_bundle_dry_run_reports_plan() {
 fn deploy_bundle_v2_dry_run_selects_target_artifacts() {
     let root = temp_test_dir("deploy-v2-artifacts");
     let bundle = root.join("bundle");
-    std::fs::create_dir_all(bundle.join("bin")).unwrap();
-    std::fs::write(bundle.join("bin/desktop-supervisor"), b"desktop").unwrap();
-    std::fs::write(bundle.join("bin/pi-supervisor"), b"pi").unwrap();
-    let desktop_hash = file_sha256(&bundle.join("bin/desktop-supervisor")).unwrap();
-    let pi_hash = file_sha256(&bundle.join("bin/pi-supervisor")).unwrap();
+    std::fs::create_dir_all(bundle.join("bin/linux-amd64")).unwrap();
+    std::fs::create_dir_all(bundle.join("bin/linux-arm64")).unwrap();
+    std::fs::write(bundle.join("bin/linux-amd64/flowrt-supervisor"), b"desktop").unwrap();
+    std::fs::write(bundle.join("bin/linux-arm64/flowrt-supervisor"), b"pi").unwrap();
+    let desktop_hash = file_sha256(&bundle.join("bin/linux-amd64/flowrt-supervisor")).unwrap();
+    let pi_hash = file_sha256(&bundle.join("bin/linux-arm64/flowrt-supervisor")).unwrap();
     let manifest = BundleManifest {
         schema_version: 2,
         flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -497,7 +556,7 @@ fn deploy_bundle_v2_dry_run_selects_target_artifacts() {
         platform: None,
         build_mode: BuildMode::Release,
         created_unix_ms: 0,
-        entry: "bin/pi-supervisor".into(),
+        entry: "bin/linux-arm64/flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
         artifacts: vec![
@@ -505,14 +564,14 @@ fn deploy_bundle_v2_dry_run_selects_target_artifacts() {
                 kind: "supervisor".into(),
                 target: "desktop".into(),
                 platform: Some("linux-amd64".into()),
-                path: "bin/desktop-supervisor".into(),
+                path: "bin/linux-amd64/flowrt-supervisor".into(),
                 sha256: desktop_hash,
             },
             BundleArtifact {
                 kind: "supervisor".into(),
                 target: "pi".into(),
                 platform: Some("linux-arm64".into()),
-                path: "bin/pi-supervisor".into(),
+                path: "bin/linux-arm64/flowrt-supervisor".into(),
                 sha256: pi_hash,
             },
         ],
@@ -615,6 +674,103 @@ fn deploy_bundle_v2_rejects_missing_artifact_platform() {
 
     assert!(
         error.to_string().contains("missing platform metadata"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_v2_rejects_artifact_platform_mismatch_with_rebuild_hint() {
+    let root = temp_test_dir("deploy-v2-platform-mismatch");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("bin/linux-arm64")).unwrap();
+    std::fs::write(bundle.join("bin/linux-arm64/pi-supervisor"), b"pi").unwrap();
+    let pi_hash = file_sha256(&bundle.join("bin/linux-arm64/pi-supervisor")).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "bad_bundle".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/linux-arm64/pi-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        artifacts: vec![BundleArtifact {
+            kind: "supervisor".into(),
+            target: "pi".into(),
+            platform: Some("linux-amd64".into()),
+            path: "bin/linux-arm64/pi-supervisor".into(),
+            sha256: pi_hash,
+        }],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap_err();
+    let message = error.to_string();
+
+    assert!(
+        message.contains("platform mismatch"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        message.contains("flowrt build --target linux-arm64 --launcher"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_v2_rejects_hash_mismatch_with_rebuild_hint() {
+    let root = temp_test_dir("deploy-v2-hash-mismatch");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("bin/linux-arm64")).unwrap();
+    std::fs::write(bundle.join("bin/linux-arm64/pi-supervisor"), b"pi").unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "bad_bundle".into(),
+        profile: Some("default".into()),
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/linux-arm64/pi-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        artifacts: vec![BundleArtifact {
+            kind: "supervisor".into(),
+            target: "pi".into(),
+            platform: Some("linux-arm64".into()),
+            path: "bin/linux-arm64/pi-supervisor".into(),
+            sha256: "0".repeat(64),
+        }],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap_err();
+    let message = error.to_string();
+
+    assert!(
+        message.contains("sha256 mismatch"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        message.contains("flowrt build --target linux-arm64 --launcher"),
         "unexpected error: {error}"
     );
 

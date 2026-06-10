@@ -263,7 +263,7 @@ flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/extern
 bundle 输出是目录，包含：
 
 - `bundle.toml`：FlowRT 版本、package、profile、target、platform、build mode、入口 binary、external package 摘要和 `artifacts` 列表；artifact 记录 kind、target、platform、相对路径和 sha256，是后续多目标 deploy 的事实源。
-- `bin/`：本项目已构建二进制。复制到 bundle 后会对 ELF 可执行文件 best-effort 运行 `strip --strip-unneeded`；非 ELF 文件跳过，strip 不可用或失败时在命令摘要中累计 `strip_warnings`，不修改用户工作区原始产物。
+- `bin/`：本项目已构建二进制。native 或无 platform 的 bundle 继续使用 `bin/<filename>`；带 target platform 的 bundle 使用 `bin/<platform>/<filename>`，避免不同 target 同名二进制覆盖。复制到 bundle 后会对 ELF 可执行文件 best-effort 运行 `strip --strip-unneeded`；非 ELF 文件跳过，strip 不可用或失败时在命令摘要中累计 `strip_warnings`，不修改用户工作区原始产物。
 - `flowrt/contract/contract.ir.json`、`flowrt/launch/launch.json`、`flowrt/selfdesc/selfdesc.json` 和 `flowrt/build/build-info.json`。
 - `external/<package>`：随项目携带的 external package 副本。
 
@@ -276,7 +276,7 @@ flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /op
 flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo --dry-run
 ```
 
-`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性和 sha256；schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
+`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性和 sha256；如果 artifact platform、`bin/<platform>/` 路径层级或 hash 不一致，会提示重新执行对应的 `flowrt build --target <platform> --launcher` 后再 bundle。schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
 
 ## `[[process]]` 编排字段
 
