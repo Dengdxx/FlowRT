@@ -1191,6 +1191,7 @@ fn build_info_records_cross_target_identity_metadata() {
     let profile = BuildToolchainProfile {
         profile: linux_arm64_toolchain_profile(),
         cargo_target_triple: Some("aarch64-unknown-linux-gnu".to_string()),
+        is_cross: true,
     };
     let mut info =
         build_model::BuildInfo::new(env!("CARGO_PKG_VERSION"), None, BuildMode::Release, None);
@@ -1737,7 +1738,15 @@ fn cmake_configure_args_do_not_inject_runtime_dir_by_default() {
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
 
-    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release, None);
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        None,
+        &[],
+        BuildMode::Release,
+        None,
+        false,
+    );
 
     assert_eq!(
         args,
@@ -1768,6 +1777,7 @@ fn cmake_configure_args_can_pass_explicit_runtime_dir() {
         &[runtime_dir.to_path_buf()],
         BuildMode::Debug,
         None,
+        false,
     );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/opt/flowrt/runtime/cpp".to_string()));
@@ -1854,6 +1864,7 @@ fn cmake_configure_args_can_split_runtime_headers_from_dependency_prefix() {
         &[sdk_prefix.to_path_buf()],
         BuildMode::Release,
         None,
+        false,
     );
 
     assert!(args.contains(&"-DFLOWRT_CPP_RUNTIME_DIR=/repo/runtime/cpp".to_string()));
@@ -1893,13 +1904,17 @@ fn linux_arm64_toolchain_profile() -> crate::toolchain::ToolchainProfile {
         sysroot: Some(PathBuf::from("/opt/sysroots/linux-arm64")),
         cmake_toolchain: None,
         pkg_config_libdir: Some(PathBuf::from("/opt/toolchains/linux-arm64/pkgconfig")),
+        pkg_config_libdirs: Vec::new(),
+        cmake_prefix_paths: Vec::new(),
+        sdk_overlays: Vec::new(),
+        runtime_dependency_policy: crate::toolchain::RuntimeDependencyPolicy::Bundle,
     }
 }
 
 #[test]
 fn cmake_target_sdk_root_requires_complete_manifest() {
     let root = temp_test_dir("target-sdk-incomplete");
-    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let private_prefix = root.join("opt/flowrt/0.8.3");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", false);
 
@@ -1918,7 +1933,7 @@ fn cmake_target_sdk_root_requires_complete_manifest() {
 #[test]
 fn cmake_target_sdk_root_reports_missing_manifest() {
     let root = temp_test_dir("target-sdk-missing");
-    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let private_prefix = root.join("opt/flowrt/0.8.3");
     std::fs::create_dir_all(private_prefix.join("targets/linux-arm64")).unwrap();
 
     let error = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap_err();
@@ -1940,14 +1955,14 @@ fn cmake_configure_args_use_target_sdk_and_compilers_without_toolchain_file() {
         .expect("repo runtime fallback env lock should not be poisoned");
     let _env = EnvOverride::repo_runtime_fallback(None);
     let root = temp_test_dir("cmake-target-sdk-compilers");
-    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let private_prefix = root.join("opt/flowrt/0.8.3");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
     let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
     let profile = linux_arm64_toolchain_profile();
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let prefixes = cmake_prefix_paths_for_target_sdk(&sdk, &[PathBuf::from("/opt/ros/jazzy")]);
+    let prefixes = cmake_prefix_paths_for_target_sdk(&sdk, &[], &[PathBuf::from("/opt/ros/jazzy")]);
 
     let args = cmake_configure_args(
         source_dir,
@@ -1956,6 +1971,7 @@ fn cmake_configure_args_use_target_sdk_and_compilers_without_toolchain_file() {
         &prefixes,
         BuildMode::Release,
         Some(&profile),
+        true,
     );
 
     let prefix_arg = args
@@ -1969,6 +1985,8 @@ fn cmake_configure_args_use_target_sdk_and_compilers_without_toolchain_file() {
     assert!(args.contains(&format!("-DFLOWRT_CPP_RUNTIME_DIR={}", sdk.root.display())));
     assert!(args.contains(&"-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc".to_string()));
     assert!(args.contains(&"-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++".to_string()));
+    assert!(args.contains(&"-DCMAKE_SYSTEM_NAME=Linux".to_string()));
+    assert!(args.contains(&"-DCMAKE_SYSTEM_PROCESSOR=aarch64".to_string()));
     assert!(args.contains(&"-DCMAKE_SYSROOT=/opt/sysroots/linux-arm64".to_string()));
     assert!(
         args.iter()
@@ -1996,6 +2014,7 @@ fn cmake_configure_args_use_profile_toolchain_file_when_present() {
         &[],
         BuildMode::Release,
         Some(&profile),
+        true,
     );
 
     assert!(args.contains(&"-DCMAKE_TOOLCHAIN_FILE=/opt/toolchains/linux-arm64.cmake".to_string()));
@@ -2007,12 +2026,20 @@ fn cmake_configure_args_use_profile_toolchain_file_when_present() {
         args.iter()
             .all(|arg| !arg.starts_with("-DCMAKE_CXX_COMPILER="))
     );
+    assert!(
+        args.iter()
+            .all(|arg| !arg.starts_with("-DCMAKE_SYSTEM_NAME="))
+    );
+    assert!(
+        args.iter()
+            .all(|arg| !arg.starts_with("-DCMAKE_SYSTEM_PROCESSOR="))
+    );
 }
 
 #[test]
 fn cmake_configure_env_sets_pkg_config_libdir_for_target_sdk() {
     let root = temp_test_dir("cmake-target-sdk-pkgconfig");
-    let private_prefix = root.join("opt/flowrt/0.8.2");
+    let private_prefix = root.join("opt/flowrt/0.8.3");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
     let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
@@ -2041,7 +2068,7 @@ fn cmake_prefix_paths_merge_existing_env_and_runtime_prefix() {
     let runtime_dir = Path::new("/opt/flowrt/0.1.0");
     let existing = vec![PathBuf::from("/opt/ros/jazzy")];
 
-    let prefixes = cmake_prefix_paths_for_runtime(Some(runtime_dir), &existing);
+    let prefixes = cmake_prefix_paths_for_runtime(Some(runtime_dir), &[], &existing);
 
     assert_eq!(
         prefixes,
@@ -2050,6 +2077,37 @@ fn cmake_prefix_paths_merge_existing_env_and_runtime_prefix() {
             PathBuf::from("/opt/flowrt/0.1.0")
         ]
     );
+}
+
+#[test]
+fn cmake_configure_uses_toolchain_sdk_overlays() {
+    let root = temp_test_dir("cmake-toolchain-sdk-overlays");
+    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let sdk_root = private_prefix.join("targets/linux-arm64");
+    write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
+    let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
+    let mut profile = linux_arm64_toolchain_profile();
+    profile.cmake_prefix_paths = vec![PathBuf::from("/opt/vendor/cmake-prefix")];
+    profile.sdk_overlays = vec![PathBuf::from("/opt/vendor/rknn")];
+    profile.pkg_config_libdirs = vec![PathBuf::from("/opt/vendor/pkgconfig")];
+
+    let toolchain_prefixes = toolchain_profile_cmake_prefix_paths(&profile);
+    let prefixes = cmake_prefix_paths_for_target_sdk(&sdk, &toolchain_prefixes, &[]);
+    assert!(prefixes.contains(&PathBuf::from("/opt/vendor/cmake-prefix")));
+    assert!(prefixes.contains(&PathBuf::from("/opt/vendor/rknn")));
+    assert!(prefixes.contains(&PathBuf::from("/opt/vendor/rknn/cmake")));
+
+    let env = cmake_configure_env(Some(&profile), Some(&sdk));
+    let pkg_config_libdir = env
+        .get("PKG_CONFIG_LIBDIR")
+        .expect("PKG_CONFIG_LIBDIR should be set")
+        .to_string_lossy();
+    assert!(pkg_config_libdir.contains("/opt/vendor/pkgconfig"));
+    assert!(pkg_config_libdir.contains("/opt/vendor/rknn/pkgconfig"));
+    assert!(pkg_config_libdir.contains("/opt/vendor/rknn/lib/pkgconfig"));
+    assert!(pkg_config_libdir.contains("/opt/vendor/rknn/lib/aarch64-linux-gnu/pkgconfig"));
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -2090,7 +2148,15 @@ fn cmake_configure_args_include_repo_fallback_flag_when_env_is_set() {
 
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release, None);
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        None,
+        &[],
+        BuildMode::Release,
+        None,
+        false,
+    );
 
     assert!(
         args.contains(&"-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON".to_string()),
@@ -2107,7 +2173,15 @@ fn cmake_configure_args_do_not_include_repo_fallback_flag_by_default() {
 
     let source_dir = Path::new("/tmp/flowrt/build");
     let build_dir = Path::new("/tmp/flowrt/build/cmake");
-    let args = cmake_configure_args(source_dir, build_dir, None, &[], BuildMode::Release, None);
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        None,
+        &[],
+        BuildMode::Release,
+        None,
+        false,
+    );
 
     assert!(
         !args

@@ -122,12 +122,16 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "    target_compile_definitions({test_target} PRIVATE FLOWRT_ABI_FIXTURE_DIR=\"${{FLOWRT_ABI_CPP_FIXTURE_DIR}}\")\n"
         ));
+        output.push_str("    if(NOT CMAKE_CROSSCOMPILING)\n");
         output.push_str(&format!(
-            "    add_custom_command(TARGET {test_target} POST_BUILD\n        COMMAND $<TARGET_FILE:{test_target}>\n        COMMENT \"Generate C++ Message ABI cross-language fixtures\")\n"
+            "        add_custom_command(TARGET {test_target} POST_BUILD\n            COMMAND $<TARGET_FILE:{test_target}>\n            COMMENT \"Generate C++ Message ABI cross-language fixtures\")\n"
         ));
         output.push_str(&format!(
-            "    add_test(NAME message_abi COMMAND {test_target})\n"
+            "        add_test(NAME message_abi COMMAND {test_target})\n"
         ));
+        output.push_str(
+            "    else()\n        message(STATUS \"Skipping C++ Message ABI fixture execution while cross compiling\")\n    endif()\n",
+        );
         output.push_str("endif()\n");
     }
 

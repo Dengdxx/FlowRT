@@ -472,7 +472,10 @@ input = ["packet:Packet"]
     assert!(cmake.contains(
         "target_compile_definitions(abi_demo_message_abi PRIVATE FLOWRT_ABI_FIXTURE_DIR="
     ));
+    assert!(cmake.contains("if(NOT CMAKE_CROSSCOMPILING)"));
     assert!(cmake.contains("add_custom_command(TARGET abi_demo_message_abi POST_BUILD"));
+    assert!(cmake.contains("add_test(NAME message_abi COMMAND abi_demo_message_abi)"));
+    assert!(cmake.contains("Skipping C++ Message ABI fixture execution while cross compiling"));
 }
 
 #[test]

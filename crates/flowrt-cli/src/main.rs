@@ -32,7 +32,9 @@ use introspection::{
     self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
-use toolchain::{ToolchainProfile, ToolchainProfileOverrides, resolve_toolchain_profile};
+use toolchain::{
+    RuntimeDependencyPolicy, ToolchainProfile, ToolchainProfileOverrides, resolve_toolchain_profile,
+};
 
 #[cfg(test)]
 use flowrt_selfdesc::SelfDescription;
@@ -125,6 +127,13 @@ enum Command {
         /// 只检查依赖缓存是否已存在，不触发编译。
         #[arg(long)]
         check: bool,
+    },
+
+    /// 预检 FlowRT 本机或交叉编译环境。
+    Doctor {
+        /// 目标 platform；例如 linux-arm64。省略时检查 native 基础环境。
+        #[arg(long)]
+        target: Option<String>,
     },
 
     /// 检查和列出 FlowRT external package。
@@ -551,6 +560,9 @@ fn main() -> Result<()> {
                     layout.target_dir.display()
                 );
             }
+        }
+        Command::Doctor { target } => {
+            run_doctor(target.as_deref())?;
         }
         Command::External { command } => match command {
             ExternalCommand::Check { package_dir } => {
@@ -2585,10 +2597,238 @@ fn ensure_backend_runtime_supported(_contract: &ContractIr, _command: &str) -> R
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorLevel {
+    Ok,
+    Warn,
+    Error,
+}
+
+impl DoctorLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            DoctorLevel::Ok => "ok",
+            DoctorLevel::Warn => "warn",
+            DoctorLevel::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DoctorCheck {
+    label: &'static str,
+    level: DoctorLevel,
+    detail: String,
+}
+
+impl DoctorCheck {
+    fn ok(label: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            label,
+            level: DoctorLevel::Ok,
+            detail: detail.into(),
+        }
+    }
+
+    fn warn(label: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            label,
+            level: DoctorLevel::Warn,
+            detail: detail.into(),
+        }
+    }
+
+    fn error(label: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            label,
+            level: DoctorLevel::Error,
+            detail: detail.into(),
+        }
+    }
+}
+
+fn run_doctor(target: Option<&str>) -> Result<()> {
+    let workspace_root =
+        env::current_dir().context("failed to resolve current working directory")?;
+    let target_profile =
+        resolve_optional_toolchain_profile(target, target.is_some(), &workspace_root)?;
+    let mut checks = Vec::new();
+
+    checks.push(command_check("cargo", "cargo"));
+    checks.push(command_check("cmake", "cmake"));
+    checks.push(command_check("pkg-config", "pkg-config"));
+
+    println!("FlowRT doctor");
+    if let Some(target_profile) = &target_profile {
+        let profile = &target_profile.profile;
+        println!("target platform: {}", profile.platform);
+        println!("rust target: {}", profile.rust_target);
+        println!("deb multiarch: {}", profile.deb_multiarch);
+        println!(
+            "runtime dependency policy: {}",
+            runtime_dependency_policy_name(profile.runtime_dependency_policy)
+        );
+
+        checks.push(rust_target_check(
+            target_profile.cargo_target_triple.as_deref(),
+        ));
+        checks.push(command_check("C compiler", &profile.c_compiler));
+        checks.push(command_check("C++ compiler", &profile.cpp_compiler));
+        if let Some(sysroot) = &profile.sysroot {
+            checks.push(path_check("sysroot", sysroot, true));
+        }
+        if let Some(cmake_toolchain) = &profile.cmake_toolchain {
+            checks.push(file_check("cmake toolchain", cmake_toolchain, true));
+        }
+        checks.push(target_sdk_check(&profile.platform));
+        for path in profile
+            .pkg_config_libdir
+            .iter()
+            .chain(profile.pkg_config_libdirs.iter())
+        {
+            checks.push(path_check("pkg-config path", path, false));
+        }
+        for path in &profile.cmake_prefix_paths {
+            checks.push(path_check("cmake prefix", path, false));
+        }
+        for overlay in &profile.sdk_overlays {
+            checks.push(path_check("sdk overlay", overlay, true));
+        }
+    } else {
+        let (_, host_target) = rustc_toolchain_identity()?;
+        println!("target platform: native");
+        println!("rust target: {host_target}");
+        checks.push(DoctorCheck::ok(
+            "rust target",
+            format!("native host target {host_target}"),
+        ));
+    }
+
+    let mut errors = 0usize;
+    for check in &checks {
+        println!(
+            "{}: {} - {}",
+            check.label,
+            check.level.as_str(),
+            check.detail
+        );
+        if check.level == DoctorLevel::Error {
+            errors += 1;
+        }
+    }
+    if errors > 0 {
+        anyhow::bail!("FlowRT doctor found {errors} error(s)");
+    }
+    Ok(())
+}
+
+fn runtime_dependency_policy_name(policy: RuntimeDependencyPolicy) -> &'static str {
+    match policy {
+        RuntimeDependencyPolicy::System => "system",
+        RuntimeDependencyPolicy::Bundle => "bundle",
+        RuntimeDependencyPolicy::External => "external",
+    }
+}
+
+fn command_check(label: &'static str, command: &str) -> DoctorCheck {
+    if command_available(command) {
+        DoctorCheck::ok(label, command.to_string())
+    } else {
+        DoctorCheck::error(
+            label,
+            format!("`{command}` not found in PATH; install or configure the toolchain profile"),
+        )
+    }
+}
+
+fn rust_target_check(target_triple: Option<&str>) -> DoctorCheck {
+    let Some(target_triple) = target_triple else {
+        return DoctorCheck::ok("rust target", "native target");
+    };
+    let output = match ProcessCommand::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return DoctorCheck::warn(
+                "rust target",
+                format!("rustup not found; cannot confirm `{target_triple}` is installed"),
+            );
+        }
+        Err(error) => {
+            return DoctorCheck::error("rust target", format!("failed to run rustup: {error}"));
+        }
+    };
+    if !output.status.success() {
+        return DoctorCheck::warn(
+            "rust target",
+            format!("rustup target list failed with status {}", output.status),
+        );
+    }
+    let installed = String::from_utf8_lossy(&output.stdout);
+    if installed.lines().any(|line| line.trim() == target_triple) {
+        DoctorCheck::ok("rust target", target_triple.to_string())
+    } else {
+        DoctorCheck::error(
+            "rust target",
+            format!("`{target_triple}` is missing; run `rustup target add {target_triple}`"),
+        )
+    }
+}
+
+fn target_sdk_check(platform: &str) -> DoctorCheck {
+    let runtime_dir = match cpp_runtime_dir_for_generated_build() {
+        Ok(runtime_dir) => runtime_dir,
+        Err(error) => {
+            return DoctorCheck::error(
+                "target SDK",
+                format!("failed to resolve FlowRT C++ runtime directory: {error}"),
+            );
+        }
+    };
+    match resolve_cpp_target_sdk_root(runtime_dir.as_deref(), platform) {
+        Ok(sdk) => DoctorCheck::ok("target SDK", sdk.root.display().to_string()),
+        Err(error) => DoctorCheck::error("target SDK", error.to_string()),
+    }
+}
+
+fn path_check(label: &'static str, path: &Path, required: bool) -> DoctorCheck {
+    if path.is_dir() {
+        DoctorCheck::ok(label, path.display().to_string())
+    } else if required {
+        DoctorCheck::error(label, format!("missing directory `{}`", path.display()))
+    } else {
+        DoctorCheck::warn(label, format!("missing directory `{}`", path.display()))
+    }
+}
+
+fn file_check(label: &'static str, path: &Path, required: bool) -> DoctorCheck {
+    if path.is_file() {
+        DoctorCheck::ok(label, path.display().to_string())
+    } else if required {
+        DoctorCheck::error(label, format!("missing file `{}`", path.display()))
+    } else {
+        DoctorCheck::warn(label, format!("missing file `{}`", path.display()))
+    }
+}
+
+fn command_available(command: &str) -> bool {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&paths).any(|dir| dir.join(command).is_file())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BuildToolchainProfile {
     profile: ToolchainProfile,
     cargo_target_triple: Option<String>,
+    is_cross: bool,
 }
 
 fn resolve_build_toolchain_profile(
@@ -2647,7 +2887,8 @@ fn resolve_optional_toolchain_profile(
         &ToolchainProfileOverrides::default(),
     )?;
     let (_, host_target) = rustc_toolchain_identity()?;
-    let cargo_target_triple = if explicit_target || profile.rust_target != host_target {
+    let is_cross = profile.rust_target != host_target;
+    let cargo_target_triple = if explicit_target || is_cross {
         Some(profile.rust_target.clone())
     } else {
         None
@@ -2655,6 +2896,7 @@ fn resolve_optional_toolchain_profile(
     Ok(Some(BuildToolchainProfile {
         profile,
         cargo_target_triple,
+        is_cross,
     }))
 }
 
@@ -3646,12 +3888,18 @@ fn run_cmake_configure_and_build(
     let toolchain_profile = target_profile
         .filter(|profile| profile.cargo_target_triple.is_some())
         .map(|profile| &profile.profile);
+    let cmake_cross_compiling = target_profile
+        .map(|profile| profile.is_cross)
+        .unwrap_or(false);
     let source_dir = out_dir.join("build");
     let build_dir = source_dir
         .join("cmake")
         .join(build_mode.cargo_profile_dir());
     let runtime_dir = cpp_runtime_dir_for_generated_build()?;
     let existing_prefix_paths = cmake_prefix_path_from_env();
+    let toolchain_prefix_paths = toolchain_profile
+        .map(toolchain_profile_cmake_prefix_paths)
+        .unwrap_or_default();
     let target_sdk = toolchain_profile
         .map(|profile| resolve_cpp_target_sdk_root(runtime_dir.as_deref(), &profile.platform))
         .transpose()?;
@@ -3660,9 +3908,13 @@ fn run_cmake_configure_and_build(
         .map(|sdk| sdk.root.as_path())
         .or(runtime_dir.as_deref());
     let cmake_prefix_paths = if let Some(sdk) = &target_sdk {
-        cmake_prefix_paths_for_target_sdk(sdk, &existing_prefix_paths)
+        cmake_prefix_paths_for_target_sdk(sdk, &toolchain_prefix_paths, &existing_prefix_paths)
     } else {
-        cmake_prefix_paths_for_runtime(runtime_dir.as_deref(), &existing_prefix_paths)
+        cmake_prefix_paths_for_runtime(
+            runtime_dir.as_deref(),
+            &toolchain_prefix_paths,
+            &existing_prefix_paths,
+        )
     };
     run_cmake_configure(
         &source_dir,
@@ -3671,6 +3923,7 @@ fn run_cmake_configure_and_build(
         &cmake_prefix_paths,
         build_mode,
         toolchain_profile,
+        cmake_cross_compiling,
         target_sdk.as_ref(),
     )?;
     run_cmake_build(&build_dir)?;
@@ -3697,6 +3950,7 @@ fn run_cmake_configure(
     cmake_prefix_paths: &[PathBuf],
     build_mode: BuildMode,
     toolchain_profile: Option<&ToolchainProfile>,
+    cmake_cross_compiling: bool,
     target_sdk: Option<&CppTargetSdk>,
 ) -> Result<()> {
     let args = cmake_configure_args(
@@ -3706,6 +3960,7 @@ fn run_cmake_configure(
         cmake_prefix_paths,
         build_mode,
         toolchain_profile,
+        cmake_cross_compiling,
     );
     let configure_env = cmake_configure_env(toolchain_profile, target_sdk);
     let mut command = ProcessCommand::new("cmake");
@@ -3729,6 +3984,7 @@ fn cmake_configure_args(
     cmake_prefix_paths: &[PathBuf],
     build_mode: BuildMode,
     toolchain_profile: Option<&ToolchainProfile>,
+    cmake_cross_compiling: bool,
 ) -> Vec<String> {
     let mut args = vec![
         "-S".to_string(),
@@ -3761,6 +4017,12 @@ fn cmake_configure_args(
         } else {
             args.push(format!("-DCMAKE_C_COMPILER={}", profile.c_compiler));
             args.push(format!("-DCMAKE_CXX_COMPILER={}", profile.cpp_compiler));
+            if cmake_cross_compiling {
+                args.push("-DCMAKE_SYSTEM_NAME=Linux".to_string());
+                if let Some(processor) = cmake_system_processor_for_platform(&profile.platform) {
+                    args.push(format!("-DCMAKE_SYSTEM_PROCESSOR={processor}"));
+                }
+            }
             if let Some(sysroot) = &profile.sysroot {
                 args.push(format!("-DCMAKE_SYSROOT={}", sysroot.to_string_lossy()));
             }
@@ -3769,16 +4031,30 @@ fn cmake_configure_args(
     args
 }
 
+fn cmake_system_processor_for_platform(platform: &str) -> Option<&'static str> {
+    match platform {
+        "linux-amd64" => Some("x86_64"),
+        "linux-arm64" => Some("aarch64"),
+        _ => None,
+    }
+}
+
 fn cmake_configure_env(
     toolchain_profile: Option<&ToolchainProfile>,
     target_sdk: Option<&CppTargetSdk>,
 ) -> BTreeMap<&'static str, OsString> {
     let mut values = BTreeMap::new();
     let mut pkg_config_paths = Vec::new();
-    if let Some(profile) = toolchain_profile
-        && let Some(pkg_config_libdir) = &profile.pkg_config_libdir
-    {
-        push_unique_path(&mut pkg_config_paths, pkg_config_libdir);
+    if let Some(profile) = toolchain_profile {
+        if let Some(pkg_config_libdir) = &profile.pkg_config_libdir {
+            push_unique_path(&mut pkg_config_paths, pkg_config_libdir);
+        }
+        for pkg_config_libdir in &profile.pkg_config_libdirs {
+            push_unique_path(&mut pkg_config_paths, pkg_config_libdir);
+        }
+        for overlay_pkgconfig in toolchain_profile_overlay_pkgconfig_paths(profile) {
+            push_unique_path(&mut pkg_config_paths, &overlay_pkgconfig);
+        }
     }
     if let Some(sdk) = target_sdk
         && let Some(pkgconfig_dir) = &sdk.pkgconfig_dir
@@ -3803,9 +4079,13 @@ fn cmake_prefix_path_from_env() -> Vec<PathBuf> {
 
 fn cmake_prefix_paths_for_runtime(
     runtime_dir: Option<&Path>,
+    toolchain_prefixes: &[PathBuf],
     existing: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut prefixes = Vec::new();
+    for prefix in toolchain_prefixes {
+        push_unique_path(&mut prefixes, prefix);
+    }
     for prefix in existing {
         push_unique_path(&mut prefixes, prefix);
     }
@@ -3818,16 +4098,53 @@ fn cmake_prefix_paths_for_runtime(
     prefixes
 }
 
-fn cmake_prefix_paths_for_target_sdk(sdk: &CppTargetSdk, existing: &[PathBuf]) -> Vec<PathBuf> {
+fn cmake_prefix_paths_for_target_sdk(
+    sdk: &CppTargetSdk,
+    toolchain_prefixes: &[PathBuf],
+    existing: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut prefixes = Vec::new();
     push_unique_path(&mut prefixes, &sdk.root);
     if let Some(cmake_dir) = &sdk.cmake_dir {
         push_unique_path(&mut prefixes, cmake_dir);
     }
+    for prefix in toolchain_prefixes {
+        push_unique_path(&mut prefixes, prefix);
+    }
     for prefix in existing {
         push_unique_path(&mut prefixes, prefix);
     }
     prefixes
+}
+
+fn toolchain_profile_cmake_prefix_paths(profile: &ToolchainProfile) -> Vec<PathBuf> {
+    let mut prefixes = Vec::new();
+    for prefix in &profile.cmake_prefix_paths {
+        push_unique_path(&mut prefixes, prefix);
+    }
+    for overlay in &profile.sdk_overlays {
+        push_unique_path(&mut prefixes, overlay);
+        let cmake_dir = overlay.join("cmake");
+        push_unique_path(&mut prefixes, &cmake_dir);
+    }
+    prefixes
+}
+
+fn toolchain_profile_overlay_pkgconfig_paths(profile: &ToolchainProfile) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for overlay in &profile.sdk_overlays {
+        for candidate in [
+            overlay.join("pkgconfig"),
+            overlay.join("lib/pkgconfig"),
+            overlay
+                .join("lib")
+                .join(&profile.deb_multiarch)
+                .join("pkgconfig"),
+        ] {
+            push_unique_path(&mut paths, &candidate);
+        }
+    }
+    paths
 }
 
 fn resolve_cpp_target_sdk_root(runtime_dir: Option<&Path>, platform: &str) -> Result<CppTargetSdk> {

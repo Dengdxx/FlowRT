@@ -1,7 +1,8 @@
 use super::*;
 
 use crate::toolchain::{
-    ToolchainConfigSources, ToolchainProfileOverrides, resolve_toolchain_profile_with_sources,
+    RuntimeDependencyPolicy, ToolchainConfigSources, ToolchainProfileOverrides,
+    resolve_toolchain_profile_with_sources,
 };
 
 fn write_toolchains(path: &Path, source: &str) {
@@ -26,6 +27,13 @@ fn toolchain_defaults_cover_linux_arm64() {
     assert!(profile.sysroot.is_none());
     assert!(profile.cmake_toolchain.is_none());
     assert!(profile.pkg_config_libdir.is_none());
+    assert!(profile.pkg_config_libdirs.is_empty());
+    assert!(profile.cmake_prefix_paths.is_empty());
+    assert!(profile.sdk_overlays.is_empty());
+    assert_eq!(
+        profile.runtime_dependency_policy,
+        RuntimeDependencyPolicy::Bundle
+    );
 }
 
 #[test]
@@ -153,7 +161,11 @@ fn toolchain_workspace_config_overrides_defaults() {
 [toolchain.linux-arm64]
 c_compiler = "custom-aarch64-gcc"
 sysroot = "/opt/flowrt/sysroots/linux-arm64"
-pkg_config_libdir = "/opt/flowrt/0.8.2/targets/linux-arm64/lib/pkgconfig"
+pkg_config_libdir = "/opt/flowrt/0.8.3/targets/linux-arm64/lib/pkgconfig"
+pkg_config_libdirs = ["/opt/vendor/lib/pkgconfig"]
+cmake_prefix_paths = ["/opt/vendor/cmake"]
+sdk_overlays = ["/opt/vendor/rknn"]
+runtime_dependency_policy = "external"
 "#,
     );
 
@@ -176,8 +188,24 @@ pkg_config_libdir = "/opt/flowrt/0.8.2/targets/linux-arm64/lib/pkgconfig"
     assert_eq!(
         profile.pkg_config_libdir,
         Some(PathBuf::from(
-            "/opt/flowrt/0.8.2/targets/linux-arm64/lib/pkgconfig"
+            "/opt/flowrt/0.8.3/targets/linux-arm64/lib/pkgconfig"
         ))
+    );
+    assert_eq!(
+        profile.pkg_config_libdirs,
+        vec![PathBuf::from("/opt/vendor/lib/pkgconfig")]
+    );
+    assert_eq!(
+        profile.cmake_prefix_paths,
+        vec![PathBuf::from("/opt/vendor/cmake")]
+    );
+    assert_eq!(
+        profile.sdk_overlays,
+        vec![PathBuf::from("/opt/vendor/rknn")]
+    );
+    assert_eq!(
+        profile.runtime_dependency_policy,
+        RuntimeDependencyPolicy::External
     );
 }
 
@@ -222,6 +250,7 @@ sysroot = "/workspace/sysroot"
     };
     let overrides = ToolchainProfileOverrides {
         c_compiler: Some("cli-gcc".to_string()),
+        sdk_overlays: vec![PathBuf::from("/cli/sdk")],
         ..Default::default()
     };
     let profile =
@@ -231,6 +260,86 @@ sysroot = "/workspace/sysroot"
     assert_eq!(profile.cpp_compiler, "user-g++");
     assert_eq!(profile.sysroot, Some(PathBuf::from("/workspace/sysroot")));
     assert_eq!(profile.rust_target, "aarch64-unknown-linux-gnu");
+    assert_eq!(profile.sdk_overlays, vec![PathBuf::from("/cli/sdk")]);
+}
+
+#[test]
+fn toolchain_path_lists_append_without_duplicates() {
+    let root = temp_test_dir("toolchain-list-append");
+    let system = root.join("system/toolchains.toml");
+    let workspace = root.join(".flowrt/toolchains.toml");
+
+    write_toolchains(
+        &system,
+        r#"
+[toolchain.linux-arm64]
+pkg_config_libdirs = ["/sdk/common/pkgconfig"]
+cmake_prefix_paths = ["/sdk/common"]
+sdk_overlays = ["/sdk/common"]
+"#,
+    );
+    write_toolchains(
+        &workspace,
+        r#"
+[toolchain.linux-arm64]
+pkg_config_libdirs = ["/sdk/common/pkgconfig", "/sdk/project/pkgconfig"]
+cmake_prefix_paths = ["/sdk/common", "/sdk/project"]
+sdk_overlays = ["/sdk/common", "/sdk/project"]
+"#,
+    );
+
+    let sources = ToolchainConfigSources {
+        system: Some(system),
+        user: None,
+        workspace: Some(workspace),
+    };
+    let profile =
+        resolve_toolchain_profile_with_sources("linux-arm64", &sources, &Default::default())
+            .unwrap();
+
+    assert_eq!(
+        profile.pkg_config_libdirs,
+        vec![
+            PathBuf::from("/sdk/common/pkgconfig"),
+            PathBuf::from("/sdk/project/pkgconfig")
+        ]
+    );
+    assert_eq!(
+        profile.cmake_prefix_paths,
+        vec![PathBuf::from("/sdk/common"), PathBuf::from("/sdk/project")]
+    );
+    assert_eq!(
+        profile.sdk_overlays,
+        vec![PathBuf::from("/sdk/common"), PathBuf::from("/sdk/project")]
+    );
+}
+
+#[test]
+fn toolchain_rejects_unknown_runtime_dependency_policy() {
+    let root = temp_test_dir("toolchain-bad-policy");
+    let workspace = root.join(".flowrt/toolchains.toml");
+    write_toolchains(
+        &workspace,
+        r#"
+[toolchain.linux-arm64]
+runtime_dependency_policy = "vendored"
+"#,
+    );
+
+    let sources = ToolchainConfigSources {
+        system: None,
+        user: None,
+        workspace: Some(workspace),
+    };
+    let error =
+        resolve_toolchain_profile_with_sources("linux-arm64", &sources, &Default::default())
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed to parse toolchain config")
+    );
 }
 
 #[test]

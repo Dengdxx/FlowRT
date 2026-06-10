@@ -16,6 +16,19 @@ pub(crate) struct ToolchainProfile {
     pub(crate) sysroot: Option<PathBuf>,
     pub(crate) cmake_toolchain: Option<PathBuf>,
     pub(crate) pkg_config_libdir: Option<PathBuf>,
+    pub(crate) pkg_config_libdirs: Vec<PathBuf>,
+    pub(crate) cmake_prefix_paths: Vec<PathBuf>,
+    pub(crate) sdk_overlays: Vec<PathBuf>,
+    pub(crate) runtime_dependency_policy: RuntimeDependencyPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RuntimeDependencyPolicy {
+    System,
+    #[default]
+    Bundle,
+    External,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -27,6 +40,13 @@ pub(crate) struct ToolchainProfileOverrides {
     pub(crate) sysroot: Option<PathBuf>,
     pub(crate) cmake_toolchain: Option<PathBuf>,
     pub(crate) pkg_config_libdir: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) pkg_config_libdirs: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) cmake_prefix_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) sdk_overlays: Vec<PathBuf>,
+    pub(crate) runtime_dependency_policy: Option<RuntimeDependencyPolicy>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -130,6 +150,10 @@ fn default_profile(platform: &str) -> Result<ToolchainProfile> {
         sysroot: None,
         cmake_toolchain: None,
         pkg_config_libdir: None,
+        pkg_config_libdirs: Vec::new(),
+        cmake_prefix_paths: Vec::new(),
+        sdk_overlays: Vec::new(),
+        runtime_dependency_policy: RuntimeDependencyPolicy::Bundle,
     })
 }
 
@@ -195,6 +219,18 @@ fn apply_overrides(
     if let Some(value) = &overrides.pkg_config_libdir {
         profile.pkg_config_libdir = Some(value.clone());
     }
+    append_unique_paths(
+        &mut profile.pkg_config_libdirs,
+        &overrides.pkg_config_libdirs,
+    );
+    append_unique_paths(
+        &mut profile.cmake_prefix_paths,
+        &overrides.cmake_prefix_paths,
+    );
+    append_unique_paths(&mut profile.sdk_overlays, &overrides.sdk_overlays);
+    if let Some(value) = overrides.runtime_dependency_policy {
+        profile.runtime_dependency_policy = value;
+    }
     Ok(())
 }
 
@@ -205,6 +241,9 @@ fn validate_overrides(overrides: &ToolchainProfileOverrides, source: &str) -> Re
     ensure_optional_non_empty_path(&overrides.sysroot, "sysroot", source)?;
     ensure_optional_non_empty_path(&overrides.cmake_toolchain, "cmake_toolchain", source)?;
     ensure_optional_non_empty_path(&overrides.pkg_config_libdir, "pkg_config_libdir", source)?;
+    ensure_non_empty_paths(&overrides.pkg_config_libdirs, "pkg_config_libdirs", source)?;
+    ensure_non_empty_paths(&overrides.cmake_prefix_paths, "cmake_prefix_paths", source)?;
+    ensure_non_empty_paths(&overrides.sdk_overlays, "sdk_overlays", source)?;
     Ok(())
 }
 
@@ -217,6 +256,9 @@ fn validate_profile(profile: &ToolchainProfile, source: &str) -> Result<()> {
     ensure_optional_non_empty_path(&profile.sysroot, "sysroot", source)?;
     ensure_optional_non_empty_path(&profile.cmake_toolchain, "cmake_toolchain", source)?;
     ensure_optional_non_empty_path(&profile.pkg_config_libdir, "pkg_config_libdir", source)?;
+    ensure_non_empty_paths(&profile.pkg_config_libdirs, "pkg_config_libdirs", source)?;
+    ensure_non_empty_paths(&profile.cmake_prefix_paths, "cmake_prefix_paths", source)?;
+    ensure_non_empty_paths(&profile.sdk_overlays, "sdk_overlays", source)?;
     Ok(())
 }
 
@@ -249,4 +291,21 @@ fn ensure_optional_non_empty_path(
         bail!("toolchain {source} field `{field}` must not be empty");
     }
     Ok(())
+}
+
+fn ensure_non_empty_paths(values: &[PathBuf], field: &str, source: &str) -> Result<()> {
+    for value in values {
+        if value.as_os_str().is_empty() {
+            bail!("toolchain {source} field `{field}` must not contain empty paths");
+        }
+    }
+    Ok(())
+}
+
+fn append_unique_paths(target: &mut Vec<PathBuf>, values: &[PathBuf]) {
+    for value in values {
+        if !target.iter().any(|existing| existing == value) {
+            target.push(value.clone());
+        }
+    }
 }

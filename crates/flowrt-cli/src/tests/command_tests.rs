@@ -51,6 +51,17 @@ fn command_deps_parses_target_platform() {
 }
 
 #[test]
+fn command_doctor_parses_target_platform() {
+    let cli = Cli::try_parse_from(["flowrt", "doctor", "--target", "linux-arm64"]).unwrap();
+
+    let Command::Doctor { target } = cli.command else {
+        panic!("doctor command should parse into Command::Doctor")
+    };
+
+    assert_eq!(target.as_deref(), Some("linux-arm64"));
+}
+
+#[test]
 fn cli_parses_hz_command_with_socket_and_window() {
     let cli = Cli::try_parse_from([
         "flowrt",
