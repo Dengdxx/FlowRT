@@ -1956,6 +1956,7 @@ mod tests {
             instances: vec![],
             tasks: vec![],
             resource_placement: ResourcePlacement::default(),
+            io_boundaries: vec![],
         }
     }
 
