@@ -135,6 +135,98 @@ fn echo_formats_fixed_abi_fields_from_self_description_layout() {
 }
 
 #[test]
+fn echo_formats_standard_frame_descriptor_payload_structurally() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "camera.frame",
+      "to": "processor.frame",
+      "message_type": "FrameHandle"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "FrameHandle",
+    "size_bytes": 64,
+    "align_bytes": 8,
+    "fields": [
+      {"name":"resource_id_hash","type":"u64","offset_bytes":0,"size_bytes":8,"align_bytes":8},
+      {"name":"slot","type":"u32","offset_bytes":8,"size_bytes":4,"align_bytes":4},
+      {"name":"generation","type":"u64","offset_bytes":16,"size_bytes":8,"align_bytes":8},
+      {"name":"size_bytes","type":"u64","offset_bytes":24,"size_bytes":8,"align_bytes":8},
+      {"name":"timestamp_unix_ns","type":"u64","offset_bytes":32,"size_bytes":8,"align_bytes":8},
+      {"name":"width","type":"u32","offset_bytes":40,"size_bytes":4,"align_bytes":4},
+      {"name":"height","type":"u32","offset_bytes":44,"size_bytes":4,"align_bytes":4},
+      {"name":"stride_bytes","type":"u32","offset_bytes":48,"size_bytes":4,"align_bytes":4},
+      {"name":"format_id","type":"u32","offset_bytes":52,"size_bytes":4,"align_bytes":4},
+      {"name":"encoding_id","type":"u32","offset_bytes":56,"size_bytes":4,"align_bytes":4},
+      {"name":"flags","type":"u32","offset_bytes":60,"size_bytes":4,"align_bytes":4}
+    ]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-frame-descriptor");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 90,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let mut payload = vec![0u8; 64];
+    payload[0..8].copy_from_slice(&0xCAFEu64.to_le_bytes());
+    payload[8..12].copy_from_slice(&7u32.to_le_bytes());
+    payload[16..24].copy_from_slice(&42u64.to_le_bytes());
+    payload[24..32].copy_from_slice(&921_600u64.to_le_bytes());
+    payload[32..40].copy_from_slice(&1_700_000_000u64.to_le_bytes());
+    payload[40..44].copy_from_slice(&640u32.to_le_bytes());
+    payload[44..48].copy_from_slice(&480u32.to_le_bytes());
+    payload[48..52].copy_from_slice(&1_920u32.to_le_bytes());
+    payload[52..56].copy_from_slice(&3u32.to_le_bytes());
+    payload[56..60].copy_from_slice(&9u32.to_le_bytes());
+    payload[60..64].copy_from_slice(&1u32.to_le_bytes());
+
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes(
+        "camera.frame_to_processor.frame",
+        "FrameHandle",
+        payload,
+        Some(123),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channel_from_image(&selfdesc, "camera.frame", Some(&socket)).unwrap();
+
+    assert!(output.contains("descriptor=frame"));
+    assert!(output.contains("frame_descriptor={resource_id_hash=51966 slot=7 generation=42"));
+    assert!(output.contains("size_bytes=921600"));
+    assert!(output.contains("width=640 height=480 stride_bytes=1920"));
+    assert!(output.contains("format_id=3 encoding_id=9 flags=1"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_formats_variable_frame_fields_from_self_description_layout() {
     let source = r#"
 {

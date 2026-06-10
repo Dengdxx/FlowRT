@@ -72,6 +72,7 @@ fn record_writes_mcap_from_fake_runtime() {
     producer.join().expect("producer thread should finish");
     assert!(summary.contains("event_count=1"));
     assert!(summary.contains("dropped_count=0"));
+    assert!(summary.contains("descriptor_payload=descriptor_only"));
     let bytes = std::fs::read(&output).expect("MCAP output should exist");
     assert!(bytes.starts_with(flowrt_record::MCAP_MAGIC));
     assert!(!state.status().recorder.enabled);

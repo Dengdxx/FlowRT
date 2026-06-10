@@ -10,7 +10,7 @@ use flowrt_selfdesc::{
     SelfDescription, SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionFieldAbi,
     SelfDescriptionFrameField, SelfDescriptionInstance, SelfDescriptionMessageAbi,
     SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint, SelfDescriptionParam,
-    load_self_description as load_selfdesc,
+    SelfDescriptionResourceDescriptor, load_self_description as load_selfdesc,
     load_self_description_with_hash as load_selfdesc_with_hash,
 };
 
@@ -357,6 +357,7 @@ pub(crate) enum EchoPayloadShape {
     FixedAbi {
         size_bytes: usize,
         fields: Vec<SelfDescriptionFieldAbi>,
+        descriptor: bool,
     },
     CanonicalFrame {
         header_size_bytes: usize,
@@ -798,6 +799,7 @@ fn echo_payload_shape(
         return Ok(EchoPayloadShape::FixedAbi {
             size_bytes: message.size_bytes,
             fields: message.fields.clone(),
+            descriptor: is_standard_frame_descriptor_layout(message),
         });
     }
     let mut frame_matches = frames
@@ -838,6 +840,106 @@ fn message_abi_layout<'a>(
             "FlowRT self-description contains multiple Message ABI layouts for `{message_type}`"
         ),
     }
+}
+
+const FRAME_DESCRIPTOR_FIELDS: &[(&str, &str, usize, usize)] = &[
+    ("resource_id_hash", "u64", 0, 8),
+    ("slot", "u32", 8, 4),
+    ("generation", "u64", 16, 8),
+    ("size_bytes", "u64", 24, 8),
+    ("timestamp_unix_ns", "u64", 32, 8),
+    ("width", "u32", 40, 4),
+    ("height", "u32", 44, 4),
+    ("stride_bytes", "u32", 48, 4),
+    ("format_id", "u32", 52, 4),
+    ("encoding_id", "u32", 56, 4),
+    ("flags", "u32", 60, 4),
+];
+
+fn is_standard_frame_descriptor_layout(message: &SelfDescriptionMessageAbi) -> bool {
+    message.size_bytes == 64
+        && message.fields.len() == FRAME_DESCRIPTOR_FIELDS.len()
+        && FRAME_DESCRIPTOR_FIELDS
+            .iter()
+            .zip(message.fields.iter())
+            .all(|((name, ty, offset, size), field)| {
+                field.name == *name
+                    && field.ty == *ty
+                    && field.offset_bytes == *offset
+                    && field.size_bytes == *size
+            })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FrameDescriptorEcho {
+    resource_id_hash: u64,
+    slot: u32,
+    generation: u64,
+    size_bytes: u64,
+    timestamp_unix_ns: u64,
+    width: u32,
+    height: u32,
+    stride_bytes: u32,
+    format_id: u32,
+    encoding_id: u32,
+    flags: u32,
+}
+
+impl FrameDescriptorEcho {
+    fn decode(payload: &[u8]) -> Result<Self> {
+        if payload.len() != 64 {
+            anyhow::bail!(
+                "standard frame descriptor payload must be 64 bytes, found {}",
+                payload.len()
+            );
+        }
+        Ok(Self {
+            resource_id_hash: read_u64_le(payload, 0)?,
+            slot: read_u32_le(payload, 8)?,
+            generation: read_u64_le(payload, 16)?,
+            size_bytes: read_u64_le(payload, 24)?,
+            timestamp_unix_ns: read_u64_le(payload, 32)?,
+            width: read_u32_le(payload, 40)?,
+            height: read_u32_le(payload, 44)?,
+            stride_bytes: read_u32_le(payload, 48)?,
+            format_id: read_u32_le(payload, 52)?,
+            encoding_id: read_u32_le(payload, 56)?,
+            flags: read_u32_le(payload, 60)?,
+        })
+    }
+
+    fn format(self) -> String {
+        format!(
+            "resource_id_hash={} slot={} generation={} size_bytes={} timestamp_unix_ns={} width={} height={} stride_bytes={} format_id={} encoding_id={} flags={}",
+            self.resource_id_hash,
+            self.slot,
+            self.generation,
+            self.size_bytes,
+            self.timestamp_unix_ns,
+            self.width,
+            self.height,
+            self.stride_bytes,
+            self.format_id,
+            self.encoding_id,
+            self.flags
+        )
+    }
+}
+
+fn read_u32_le(payload: &[u8], offset: usize) -> Result<u32> {
+    let end = offset + 4;
+    let bytes: [u8; 4] = payload[offset..end]
+        .try_into()
+        .context("failed to read u32 frame descriptor field")?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_u64_le(payload: &[u8], offset: usize) -> Result<u64> {
+    let end = offset + 8;
+    let bytes: [u8; 8] = payload[offset..end]
+        .try_into()
+        .context("failed to read u64 frame descriptor field")?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 pub(crate) fn select_matching_runtime_socket(
@@ -902,7 +1004,11 @@ fn format_echo_snapshot(
         ));
     }
     match &channel.payload_shape {
-        EchoPayloadShape::FixedAbi { size_bytes, fields } => {
+        EchoPayloadShape::FixedAbi {
+            size_bytes,
+            fields,
+            descriptor,
+        } => {
             if payload.len() != *size_bytes {
                 anyhow::bail!(
                     "channel `{}` payload length {} does not match Message ABI size {} for `{}`",
@@ -911,6 +1017,20 @@ fn format_echo_snapshot(
                     size_bytes,
                     channel.message_type
                 );
+            }
+            if *descriptor {
+                let descriptor = FrameDescriptorEcho::decode(payload)?;
+                return Ok(format!(
+                    "channel={} type={} {} published_count={} published_at_ms={} payload_len={} frame_descriptor={{{}}} raw={}",
+                    channel.name,
+                    channel.message_type,
+                    echo_payload_shape_label(&channel.payload_shape),
+                    snapshot.published_count,
+                    published_at_ms,
+                    payload.len(),
+                    descriptor.format(),
+                    hex_bytes(payload)
+                ));
             }
             let fields = flowrt_selfdesc::format_fixed_abi_fields(fields, payload)?;
             if !fields.is_empty() {
@@ -974,7 +1094,17 @@ fn format_echo_snapshot(
 
 fn echo_payload_shape_label(shape: &EchoPayloadShape) -> String {
     match shape {
-        EchoPayloadShape::FixedAbi { size_bytes, .. } => format!("abi_size={size_bytes}"),
+        EchoPayloadShape::FixedAbi {
+            size_bytes,
+            descriptor,
+            ..
+        } => {
+            if *descriptor {
+                format!("abi_size={size_bytes} descriptor=frame")
+            } else {
+                format!("abi_size={size_bytes}")
+            }
+        }
         EchoPayloadShape::CanonicalFrame {
             max_size_bytes,
             variable,
@@ -1464,9 +1594,9 @@ pub(crate) fn live_status_summary_for_sockets(
     for socket in sockets {
         match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
-                // 尝试从同一 socket 获取 self-description，用于关联 service → instance。
-                let service_endpoints =
-                    load_service_endpoint_map(&socket, &handshake.self_description_hash);
+                // 尝试从同一 socket 获取 self-description，用于把 live status 和静态合同关联。
+                let enrichment =
+                    load_self_description_enrichment(&socket, &handshake.self_description_hash);
                 let recorder = status.recorder.clone();
 
                 let active_observers = status
@@ -1570,7 +1700,8 @@ pub(crate) fn live_status_summary_for_sockets(
                     ));
                 }
                 for service in status.services {
-                    let (client_inst, server_inst) = service_endpoints
+                    let (client_inst, server_inst) = enrichment
+                        .service_endpoints
                         .get(service.name.as_str())
                         .map(|ep| (ep.client_instance.as_str(), ep.server_instance.as_str()))
                         .unwrap_or(("", ""));
@@ -1621,8 +1752,13 @@ pub(crate) fn live_status_summary_for_sockets(
                         socket.display()
                     ));
                     for resource in &boundary.resources {
+                        let descriptor_info = enrichment
+                            .resource_descriptors
+                            .get(&resource_descriptor_key(&boundary.name, &resource.name))
+                            .map(format_descriptor_schema)
+                            .unwrap_or_default();
                         lines.push(format!(
-                            "io_boundary_resource={}.{} kind={} ready={} message={} last_error={} updated_unix_ms={} socket={}",
+                            "io_boundary_resource={}.{} kind={} ready={} message={} last_error={} updated_unix_ms={}{} socket={}",
                             boundary.name,
                             resource.name,
                             resource.kind,
@@ -1630,6 +1766,7 @@ pub(crate) fn live_status_summary_for_sockets(
                             option_str(resource.message.as_deref()),
                             option_str(resource.last_error.as_deref()),
                             option_u64(resource.updated_unix_ms),
+                            descriptor_info,
                             socket.display()
                         ));
                     }
@@ -1753,34 +1890,38 @@ struct ServiceEndpointAssoc {
     server_instance: String,
 }
 
-/// 从 runtime socket 请求 self-description，构建 service name → instance 关联映射。
+/// live status 输出的静态合同增强信息。
+#[derive(Default)]
+struct StatusEnrichment {
+    service_endpoints: BTreeMap<String, ServiceEndpointAssoc>,
+    resource_descriptors: BTreeMap<String, SelfDescriptionResourceDescriptor>,
+}
+
+/// 从 runtime socket 请求 self-description，构建 service/resource 关联映射。
 ///
 /// 如果 self-description 请求失败（如 socket 不支持），返回空 map，不报错。
-fn load_service_endpoint_map(
-    socket: &Path,
-    expected_hash: &str,
-) -> BTreeMap<String, ServiceEndpointAssoc> {
+fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> StatusEnrichment {
     let Ok(response) =
         flowrt::request_self_description_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
     else {
-        return BTreeMap::new();
+        return StatusEnrichment::default();
     };
     let flowrt::IntrospectionResponse::SelfDescription { handshake, json } = response else {
-        return BTreeMap::new();
+        return StatusEnrichment::default();
     };
     if handshake.self_description_hash != expected_hash
         || self_description_hash(json.as_bytes()) != expected_hash
     {
-        return BTreeMap::new();
+        return StatusEnrichment::default();
     }
     let Ok(sd) = serde_json::from_str::<SelfDescription>(&json) else {
-        return BTreeMap::new();
+        return StatusEnrichment::default();
     };
-    let mut map = BTreeMap::new();
+    let mut enrichment = StatusEnrichment::default();
     for graph in &sd.graphs {
         for ep in &graph.services {
             if !ep.client_instance.is_empty() && !ep.server_instance.is_empty() {
-                map.insert(
+                enrichment.service_endpoints.insert(
                     ep.name.clone(),
                     ServiceEndpointAssoc {
                         client_instance: ep.client_instance.clone(),
@@ -1789,8 +1930,58 @@ fn load_service_endpoint_map(
                 );
             }
         }
+        let component_by_instance = graph
+            .instances
+            .iter()
+            .map(|instance| (instance.name.as_str(), instance.component.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let component_types = sd
+            .component_types
+            .iter()
+            .map(|component| (component.name.as_str(), component))
+            .collect::<BTreeMap<_, _>>();
+        for (instance, component_name) in component_by_instance {
+            let Some(component) = component_types.get(component_name) else {
+                continue;
+            };
+            for resource in &component.resources {
+                let Some(descriptor) = &resource.descriptor else {
+                    continue;
+                };
+                enrichment.resource_descriptors.insert(
+                    resource_descriptor_key(instance, &resource.name),
+                    descriptor.clone(),
+                );
+            }
+        }
     }
-    map
+    enrichment
+}
+
+fn resource_descriptor_key(boundary: &str, resource: &str) -> String {
+    format!("{boundary}.{resource}")
+}
+
+fn format_descriptor_schema(descriptor: &SelfDescriptionResourceDescriptor) -> String {
+    let metadata = if descriptor.metadata.is_empty() {
+        "none".to_string()
+    } else {
+        descriptor
+            .metadata
+            .iter()
+            .map(|(key, value)| format!("{key}:{value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        " descriptor_kind={} descriptor_port={} descriptor_format={} descriptor_encoding={} descriptor_record_payload={} descriptor_metadata=[{}]",
+        empty_as_none(&descriptor.kind),
+        empty_as_none(&descriptor.port),
+        empty_as_none(&descriptor.format),
+        empty_as_none(&descriptor.encoding),
+        descriptor.record_payload,
+        metadata
+    )
 }
 
 fn option_u32(value: Option<u32>) -> String {

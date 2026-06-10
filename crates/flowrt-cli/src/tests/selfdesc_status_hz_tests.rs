@@ -332,6 +332,85 @@ fn live_status_summary_displays_io_boundary_health() {
 }
 
 #[test]
+fn live_status_summary_enriches_io_boundary_resource_descriptor_schema() {
+    let root = temp_test_dir("live-status-boundary-descriptor");
+    let socket = root.join("main.sock");
+    let selfdesc_json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "robot_demo" },
+  "component_types": [{
+    "name": "CameraDriver",
+    "language": "rust",
+    "kind": "io_boundary",
+    "resources": [{
+      "name": "frames",
+      "kind": "shm",
+      "required": true,
+      "descriptor": {
+        "kind": "frame",
+        "port": "frame",
+        "format": "rgb8",
+        "encoding": "row_major",
+        "metadata": { "width": "640", "height": "480" },
+        "record_payload": false
+      }
+    }]
+  }],
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "camera",
+      "component": "CameraDriver",
+      "process": "camera_proc",
+      "runtime": "rust"
+    }],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}"#;
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 73,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(selfdesc_json.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "camera_proc".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.set_self_description_json(selfdesc_json);
+    state.register_io_boundary(
+        "camera",
+        "CameraDriver",
+        vec![flowrt::IntrospectionIoBoundaryResourceStatus {
+            name: "frames".to_string(),
+            kind: "shm".to_string(),
+            ready: true,
+            message: None,
+            last_error: None,
+            updated_unix_ms: Some(3000),
+        }],
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("io_boundary_resource=camera.frames"));
+    assert!(output.contains("descriptor_kind=frame"));
+    assert!(output.contains("descriptor_port=frame"));
+    assert!(output.contains("descriptor_format=rgb8"));
+    assert!(output.contains("descriptor_encoding=row_major"));
+    assert!(output.contains("descriptor_record_payload=false"));
+    assert!(output.contains("descriptor_metadata=[height:480,width:640]"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_status_summary_displays_recorder_health() {
     let root = temp_test_dir("live-status-recorder-health");
     let socket = root.join("main.sock");

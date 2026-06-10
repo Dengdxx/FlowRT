@@ -172,7 +172,7 @@ pub(crate) fn record_runtime_for_sockets(
     output_file.commit(options.force)?;
 
     Ok(format!(
-        "recorded output={} socket={} event_count={} dropped_count={} bytes_written={} active_filters=[{}]",
+        "recorded output={} socket={} event_count={} dropped_count={} bytes_written={} active_filters=[{}] descriptor_payload=descriptor_only",
         options.output.display(),
         socket.display(),
         counters.event_count,
