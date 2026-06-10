@@ -49,6 +49,15 @@ command -v flowrt >/dev/null || {
 }
 flowrt --version
 
+case "$(uname -m)" in
+    x86_64) flowrt_platform="linux-amd64" ;;
+    aarch64 | arm64) flowrt_platform="linux-arm64" ;;
+    *)
+        printf 'unsupported smoke test architecture: %s\n' "$(uname -m)" >&2
+        exit 1
+        ;;
+esac
+
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/flowrt-ros2-bridge-test.XXXXXX")"
 ros2_router_pid=""
 flowrt_launch_pid=""
@@ -84,6 +93,9 @@ export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 user_root="$work_dir/user-project"
 cp -a "$repo_root/examples/ros2_bridge_demo" "$user_root"
 rm -rf "$user_root/flowrt"
+find "$user_root/rsdl" -type f -name '*.rsdl' -print0 |
+    xargs -0 sed -i -E \
+        "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
 
 flowrt deps "$user_root/rsdl/robot.rsdl" --backend zenoh --build-mode release
 flowrt build --launcher "$user_root/rsdl/robot.rsdl"

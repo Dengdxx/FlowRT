@@ -11,8 +11,20 @@ command -v "$flowrt" >/dev/null || {
     exit 1
 }
 
+case "$(uname -m)" in
+    x86_64) flowrt_platform="linux-amd64" ;;
+    aarch64 | arm64) flowrt_platform="linux-arm64" ;;
+    *)
+        printf 'unsupported smoke test architecture: %s\n' "$(uname -m)" >&2
+        exit 1
+        ;;
+esac
+
 cp -R "$repo_root/examples/external_driver_demo" "$work_dir/"
 project="$work_dir/external_driver_demo"
+find "$project/rsdl" -type f -name '*.rsdl' -print0 |
+    xargs -0 sed -i -E \
+        "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
 
 "$flowrt" external check "$project/external/fake_sensor_driver"
 "$flowrt" check "$project/rsdl/robot.rsdl"

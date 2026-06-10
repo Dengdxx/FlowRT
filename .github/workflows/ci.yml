@@ -747,8 +747,20 @@ jobs:
             flowrt-deps-demo-${{ matrix.deb_arch }}-
 
       - name: FlowRT demo smoke
+        shell: bash
         run: |
           export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/demo-${{ matrix.deb_arch }}}"
+          case "$(dpkg --print-architecture)" in
+            amd64) flowrt_platform="linux-amd64" ;;
+            arm64) flowrt_platform="linux-arm64" ;;
+            *)
+              echo "unsupported demo smoke architecture: $(dpkg --print-architecture)" >&2
+              exit 1
+              ;;
+          esac
+          find examples -path '*/rsdl/*' -type f -name '*.rsdl' -print0 |
+            xargs -0 sed -i -E \
+              "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
           flowrt deps --backend all --build-mode release
           flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
           flowrt run --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control

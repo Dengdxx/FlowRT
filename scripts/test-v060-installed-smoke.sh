@@ -18,6 +18,22 @@ trap cleanup EXIT
 command -v "$flowrt" >/dev/null
 "$flowrt" --version
 
+case "$(uname -m)" in
+    x86_64) flowrt_platform="linux-amd64" ;;
+    aarch64 | arm64) flowrt_platform="linux-arm64" ;;
+    *)
+        printf 'unsupported smoke test architecture: %s\n' "$(uname -m)" >&2
+        exit 1
+        ;;
+esac
+
+rewrite_demo_platforms() {
+    local demo="$1"
+    find "$demo/rsdl" -type f -name '*.rsdl' -print0 |
+        xargs -0 sed -i -E \
+            "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
+}
+
 runtime_dir="$work_dir/runtime"
 mkdir -p "$runtime_dir"
 chmod 700 "$runtime_dir"
@@ -29,6 +45,8 @@ counter_demo="$work_dir/cpp_counter_demo"
 cp -a "$repo_root/examples/operation_demo" "$operation_demo"
 cp -a "$repo_root/examples/cpp_counter_demo" "$counter_demo"
 rm -rf "$operation_demo/flowrt" "$counter_demo/flowrt"
+rewrite_demo_platforms "$operation_demo"
+rewrite_demo_platforms "$counter_demo"
 
 "$flowrt" deps --backend all --build-mode release
 "$flowrt" check "$operation_demo/rsdl/robot.rsdl"

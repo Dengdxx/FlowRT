@@ -52,6 +52,9 @@ export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 mixed_zenoh="$work_dir/mixed_zenoh_demo"
 cp -a "$repo_root/examples/mixed_zenoh_demo" "$mixed_zenoh"
 rm -rf "$mixed_zenoh/flowrt"
+find "$mixed_zenoh/rsdl" -type f -name '*.rsdl' -print0 |
+    xargs -0 sed -i -E \
+        "s/platform = \"linux-(amd64|arm64)\"/platform = \"$flowrt_platform\"/g"
 "$flowrt" check "$mixed_zenoh/rsdl/robot.rsdl"
 "$flowrt" build --launcher "$mixed_zenoh/rsdl/robot.rsdl"
 require_grep '"message_frames": \[' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json" "message frame list"
