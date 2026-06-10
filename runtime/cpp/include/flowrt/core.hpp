@@ -40,6 +40,44 @@ constexpr Status ok() noexcept { return Status::Ok; }
 using FrameMetadata = std::map<std::string, std::string>;
 
 /**
+ * @brief RSDL frame descriptor message 的标准 fixed ABI 字段集合。
+ *
+ * 该结构和 validator 要求的 message 字段一一对应，可作为 generated message 与
+ * recorder/lease helper 之间的稳定中间形状。真实 payload 仍由 side-channel 管理。
+ */
+struct FrameDescriptorFields {
+    std::uint64_t resource_id_hash = 0;
+    std::uint32_t slot = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t size_bytes = 0;
+    std::uint64_t timestamp_unix_ns = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t stride_bytes = 0;
+    std::uint32_t format_id = 0;
+    std::uint32_t encoding_id = 0;
+    std::uint32_t flags = 0;
+
+    [[nodiscard]] std::string resource_id_string() const {
+        return std::to_string(resource_id_hash);
+    }
+
+    [[nodiscard]] std::string slot_string() const { return std::to_string(slot); }
+
+    [[nodiscard]] FrameMetadata metadata() const {
+        return FrameMetadata{
+            {"timestamp_unix_ns", std::to_string(timestamp_unix_ns)},
+            {"width", std::to_string(width)},
+            {"height", std::to_string(height)},
+            {"stride_bytes", std::to_string(stride_bytes)},
+            {"format_id", std::to_string(format_id)},
+            {"encoding_id", std::to_string(encoding_id)},
+            {"flags", std::to_string(flags)},
+        };
+    }
+};
+
+/**
  * @brief side-channel 资源中的一个可寻址 payload slot。
  */
 struct ResourceDescriptor {
@@ -72,6 +110,15 @@ class FrameDescriptor {
     [[nodiscard]] const std::string &encoding() const noexcept { return encoding_; }
 
     [[nodiscard]] const FrameMetadata &metadata() const noexcept { return metadata_; }
+
+    [[nodiscard]] static FrameDescriptor from_fields(const FrameDescriptorFields &fields) {
+        return FrameDescriptor::make(
+            ResourceDescriptor{.resource_id = fields.resource_id_string(),
+                               .slot = fields.slot_string(),
+                               .generation = fields.generation},
+            fields.size_bytes, std::to_string(fields.format_id), std::to_string(fields.encoding_id),
+            fields.metadata());
+    }
 
    private:
     FrameDescriptor(ResourceDescriptor resource, std::uint64_t size_bytes, std::string format,
@@ -197,6 +244,14 @@ struct BoundaryStatus {
     std::optional<std::uint64_t> updated_unix_ms;
 };
 
+/**
+ * @brief I/O boundary 记录 descriptor 事件的结果。
+ */
+struct BoundaryRecordOutcome {
+    bool recorded = false;
+    bool dropped = false;
+};
+
 namespace detail {
 
 inline std::uint64_t boundary_unix_time_ms() {
@@ -216,17 +271,21 @@ inline std::uint64_t boundary_unix_time_ms() {
 class BoundaryContext {
    public:
     using Reporter = std::function<void(BoundaryStatus)>;
+    using DescriptorReporter = std::function<BoundaryRecordOutcome(
+        std::string_view, const FrameDescriptor &, FrameLeaseStatus, bool)>;
 
     BoundaryContext() = default;
 
     BoundaryContext(std::string instance, std::string component,
-                    std::vector<BoundaryResourceStatus> resources, Reporter reporter)
+                    std::vector<BoundaryResourceStatus> resources, Reporter reporter,
+                    DescriptorReporter descriptor_reporter = {})
         : status_(BoundaryStatus{
               .name = std::move(instance),
               .component = std::move(component),
               .resources = std::move(resources),
           }),
-          reporter_(std::move(reporter)) {}
+          reporter_(std::move(reporter)),
+          descriptor_reporter_(std::move(descriptor_reporter)) {}
 
     [[nodiscard]] const std::string &instance() const noexcept { return status_.name; }
 
@@ -280,6 +339,37 @@ class BoundaryContext {
         touch_and_report();
     }
 
+    BoundaryRecordOutcome record_frame_descriptor_event(std::string_view name,
+                                                        const FrameDescriptor &descriptor,
+                                                        FrameLeaseStatus status,
+                                                        bool payload_recording) const {
+        if (!descriptor_reporter_) {
+            return BoundaryRecordOutcome{};
+        }
+        return descriptor_reporter_(name, descriptor, status, payload_recording);
+    }
+
+    BoundaryRecordOutcome record_frame_descriptor_fields_event(
+        std::string_view name, const FrameDescriptorFields &descriptor, FrameLeaseStatus status,
+        bool payload_recording) const {
+        return record_frame_descriptor_event(name, FrameDescriptor::from_fields(descriptor), status,
+                                             payload_recording);
+    }
+
+    BoundaryRecordOutcome record_frame_descriptor_acquired(std::string_view name,
+                                                           const FrameDescriptor &descriptor,
+                                                           bool payload_recording) const {
+        return record_frame_descriptor_event(name, descriptor, FrameLeaseStatus::Acquired,
+                                             payload_recording);
+    }
+
+    BoundaryRecordOutcome record_frame_descriptor_released(std::string_view name,
+                                                           const FrameDescriptor &descriptor,
+                                                           bool payload_recording) const {
+        return record_frame_descriptor_event(name, descriptor, FrameLeaseStatus::Released,
+                                             payload_recording);
+    }
+
    private:
     BoundaryResourceStatus &resource_entry(std::string_view resource) {
         for (auto &entry : status_.resources) {
@@ -300,6 +390,7 @@ class BoundaryContext {
 
     BoundaryStatus status_;
     Reporter reporter_;
+    DescriptorReporter descriptor_reporter_;
 };
 
 /**

@@ -4,6 +4,65 @@ use std::fmt;
 /// frame descriptor 里的开放 metadata 键值。
 pub type FrameMetadata = BTreeMap<String, String>;
 
+/// RSDL frame descriptor message 的标准 fixed ABI 字段集合。
+///
+/// 该结构和 validator 要求的 message 字段一一对应，可作为 generated message 与
+/// recorder/lease helper 之间的稳定中间形状。真实 payload 仍由 side-channel 管理。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameDescriptorFields {
+    pub resource_id_hash: u64,
+    pub slot: u32,
+    pub generation: u64,
+    pub size_bytes: u64,
+    pub timestamp_unix_ns: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride_bytes: u32,
+    pub format_id: u32,
+    pub encoding_id: u32,
+    pub flags: u32,
+}
+
+impl FrameDescriptorFields {
+    pub fn resource_id_string(self) -> String {
+        self.resource_id_hash.to_string()
+    }
+
+    pub fn slot_string(self) -> String {
+        self.slot.to_string()
+    }
+
+    pub fn metadata(self) -> FrameMetadata {
+        FrameMetadata::from([
+            (
+                "timestamp_unix_ns".to_string(),
+                self.timestamp_unix_ns.to_string(),
+            ),
+            ("width".to_string(), self.width.to_string()),
+            ("height".to_string(), self.height.to_string()),
+            ("stride_bytes".to_string(), self.stride_bytes.to_string()),
+            ("format_id".to_string(), self.format_id.to_string()),
+            ("encoding_id".to_string(), self.encoding_id.to_string()),
+            ("flags".to_string(), self.flags.to_string()),
+        ])
+    }
+
+    pub fn to_descriptor(self) -> Result<FrameDescriptor, FrameDescriptorError> {
+        FrameDescriptor::new(
+            ResourceDescriptor::new(
+                self.resource_id_string(),
+                self.slot_string(),
+                self.generation,
+            ),
+            self.size_bytes,
+            self.format_id.to_string(),
+            self.encoding_id.to_string(),
+            self.metadata(),
+        )
+    }
+}
+
 /// side-channel 资源中的一个可寻址 payload slot。
 ///
 /// descriptor 只说明 payload 位于哪个资源、哪个 slot、哪个 generation；它不代表

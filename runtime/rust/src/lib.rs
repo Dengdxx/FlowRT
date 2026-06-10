@@ -42,8 +42,8 @@ pub use channel::{
     OverflowPolicy, StaleConfig, StalePolicy,
 };
 pub use descriptor::{
-    FrameDescriptor, FrameDescriptorError, FrameLease, FrameLeaseError, FrameLeaseStatus,
-    FrameMetadata, ResourceDescriptor,
+    FrameDescriptor, FrameDescriptorError, FrameDescriptorFields, FrameLease, FrameLeaseError,
+    FrameLeaseStatus, FrameMetadata, ResourceDescriptor,
 };
 pub use executor::{
     DeterministicExecutor, FutureExecutor, FutureHandle, LaneId, LaneKind, PeriodicSpec,
@@ -192,6 +192,64 @@ impl BoundaryContext {
             resource.as_ref(),
             error.into(),
         );
+    }
+
+    /// 记录 frame descriptor / side-channel lease 事件，不复制真实 payload。
+    pub fn record_frame_descriptor_event(
+        &self,
+        name: impl AsRef<str>,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        payload_recording: bool,
+    ) -> RecorderTapOutcome {
+        self.state.record_frame_descriptor_event(
+            name.as_ref(),
+            descriptor,
+            status,
+            payload_recording,
+        )
+    }
+
+    /// 记录标准 fixed ABI frame descriptor 字段，不复制真实 payload。
+    pub fn record_frame_descriptor_fields_event(
+        &self,
+        name: impl AsRef<str>,
+        descriptor: FrameDescriptorFields,
+        status: FrameLeaseStatus,
+        payload_recording: bool,
+    ) -> Result<RecorderTapOutcome, FrameDescriptorError> {
+        let descriptor = descriptor.to_descriptor()?;
+        Ok(self.record_frame_descriptor_event(name, &descriptor, status, payload_recording))
+    }
+
+    /// 便捷记录 side-channel acquire 成功事件。
+    pub fn record_frame_descriptor_acquired(
+        &self,
+        name: impl AsRef<str>,
+        descriptor: &FrameDescriptor,
+        payload_recording: bool,
+    ) -> RecorderTapOutcome {
+        self.record_frame_descriptor_event(
+            name,
+            descriptor,
+            FrameLeaseStatus::Acquired,
+            payload_recording,
+        )
+    }
+
+    /// 便捷记录 side-channel release 事件。
+    pub fn record_frame_descriptor_released(
+        &self,
+        name: impl AsRef<str>,
+        descriptor: &FrameDescriptor,
+        payload_recording: bool,
+    ) -> RecorderTapOutcome {
+        self.record_frame_descriptor_event(
+            name,
+            descriptor,
+            FrameLeaseStatus::Released,
+            payload_recording,
+        )
     }
 }
 
