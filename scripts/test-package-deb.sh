@@ -62,6 +62,8 @@ required_paths=(
     './usr/bin/flowrt'
     "${prefix}/bin/flowrt"
     "${prefix}/share/flowrt/runtime/rust/Cargo.toml"
+    "${prefix}/share/flowrt/runtime/rust/examples/zenoh_service_client.rs"
+    "${prefix}/share/flowrt/runtime/rust/examples/zenoh_service_server.rs"
     "${prefix}/share/flowrt/runtime/rust/src/lib.rs"
     "${prefix}/share/flowrt/crates/flowrt-record/Cargo.toml"
     "${prefix}/share/flowrt/crates/flowrt-record/src/lib.rs"
@@ -115,6 +117,16 @@ mkdir -p "$record_check/src"
 dpkg-deb --fsys-tarfile "$package" | tar -xO "${prefix}/share/flowrt/crates/flowrt-record/src/lib.rs" \
     > "$record_check/src/lib.rs"
 cargo metadata --format-version 1 --manifest-path "$record_check/Cargo.toml" --no-deps >/dev/null
+
+runtime_check="$work_dir/runtime-check"
+mkdir -p "$runtime_check"
+dpkg-deb --fsys-tarfile "$package" | tar -xf - -C "$runtime_check" \
+    "${prefix}/share/flowrt/runtime/rust" \
+    "${prefix}/share/flowrt/crates/flowrt-record"
+cargo metadata \
+    --format-version 1 \
+    --manifest-path "$runtime_check/${prefix#./}/share/flowrt/runtime/rust/Cargo.toml" \
+    --no-deps >/dev/null
 
 copyright="$work_dir/copyright"
 dpkg-deb --fsys-tarfile "$package" | tar -xO ./usr/share/doc/flowrt/copyright > "$copyright"

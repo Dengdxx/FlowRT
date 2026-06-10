@@ -23,6 +23,16 @@ fn write_json_line(
     stream.write_all(b"\n").unwrap();
 }
 
+fn read_request_line(stream: &std::os::unix::net::UnixStream) {
+    let mut request = String::new();
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    std::io::BufRead::read_line(&mut reader, &mut request).unwrap();
+    assert!(
+        !request.is_empty(),
+        "introspection client must send a request before the fake server responds"
+    );
+}
+
 #[test]
 fn self_description_sidecar_drives_list_and_nodes_output() {
     let source = r#"
@@ -486,7 +496,7 @@ fn live_status_summary_keeps_status_when_selfdesc_enrichment_stalls() {
     std::fs::create_dir_all(&root).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
+    let server = std::thread::spawn(move || {
         let handshake = flowrt::IntrospectionHandshake {
             protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
             pid: 81,
@@ -497,6 +507,7 @@ fn live_status_summary_keeps_status_when_selfdesc_enrichment_stalls() {
             runtime: "rust".to_string(),
         };
         if let Ok((mut stream, _addr)) = listener.accept() {
+            read_request_line(&stream);
             write_json_line(
                 &mut stream,
                 &flowrt::IntrospectionResponse::Status {
@@ -517,6 +528,7 @@ fn live_status_summary_keeps_status_when_selfdesc_enrichment_stalls() {
     assert!(output.contains("package=robot_demo"));
     assert!(!output.contains("stale socket="));
     let _ = release_tx.send(());
+    server.join().unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }
 
