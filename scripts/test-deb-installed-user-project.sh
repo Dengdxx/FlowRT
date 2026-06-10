@@ -64,13 +64,13 @@ export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 
 "$flowrt" deps --backend all --build-mode release --target "$flowrt_platform"
 "$flowrt" build --launcher --target "$flowrt_platform" "$user_root/import_demo/rsdl/robot.rsdl"
-test -x "$user_root/import_demo/flowrt/build/bin/release/import-demo-flowrt-app"
-test -x "$user_root/import_demo/flowrt/build/bin/release/import-demo-flowrt-supervisor"
+test -x "$user_root/import_demo/flowrt/build/bin/$flowrt_platform/release/import-demo-flowrt-app"
+test -x "$user_root/import_demo/flowrt/build/bin/$flowrt_platform/release/import-demo-flowrt-supervisor"
 test -f "$user_root/import_demo/flowrt/build/build-info.json"
 
 "$flowrt" build --launcher --target "$flowrt_platform" "$user_root/cpp_counter_demo/rsdl/robot.rsdl"
-test -x "$user_root/cpp_counter_demo/flowrt/build/bin/release/cpp_counter_demo_cpp_app"
-test -x "$user_root/cpp_counter_demo/flowrt/build/bin/release/cpp-counter-demo-flowrt-supervisor"
+test -x "$user_root/cpp_counter_demo/flowrt/build/bin/$flowrt_platform/release/cpp_counter_demo_cpp_app"
+test -x "$user_root/cpp_counter_demo/flowrt/build/bin/$flowrt_platform/release/cpp-counter-demo-flowrt-supervisor"
 test -f "$user_root/cpp_counter_demo/flowrt/build/build-info.json"
 
 "$flowrt" prepare "$user_root/mixed_iox2_demo/rsdl/robot.rsdl"
