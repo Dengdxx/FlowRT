@@ -209,6 +209,16 @@ backends = ["iox2", "zenoh"]
     );
 
     let bundle = emit_artifacts(&ir).unwrap();
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    assert!(rust_messages.contains("impl From<flowrt::FrameDescriptorFields> for FrameHandle"));
+    assert!(rust_messages.contains(
+        "pub fn from_frame_descriptor_fields(fields: flowrt::FrameDescriptorFields) -> Self"
+    ));
+    assert!(
+        rust_messages
+            .contains("pub fn frame_descriptor_fields(&self) -> flowrt::FrameDescriptorFields")
+    );
+
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
     assert!(!rust_shell.contains("flowrt::zenoh::ZenohPubSub<FrameHandle>"));
@@ -234,6 +244,64 @@ backends = ["iox2", "zenoh"]
     let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
     assert!(cargo_manifest.contains("features = [\"iox2\"]"));
     assert!(!cargo_manifest.contains("features = [\"iox2\", \"zenoh\"]"));
+}
+
+#[test]
+fn cpp_frame_descriptor_message_emits_helper_methods() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "cpp_descriptor_helper_demo"
+rsdl_version = "0.1"
+
+[type.FrameHandle]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+timestamp_unix_ns = "u64"
+width = "u32"
+height = "u32"
+stride_bytes = "u32"
+format_id = "u32"
+encoding_id = "u32"
+flags = "u32"
+
+[component.camera]
+language = "cpp"
+kind = "io_boundary"
+io_side_effect = ["device", "read"]
+output = ["frame:FrameHandle"]
+
+[component.camera.resource.frames]
+kind = "shm"
+
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+port = "frame"
+format = "rgb8"
+encoding = "row_major"
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 33
+output = ["frame"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+    assert!(cpp_messages.contains(
+        "static FrameHandle from_frame_descriptor_fields(const flowrt::FrameDescriptorFields& fields)"
+    ));
+    assert!(cpp_messages.contains(
+        "[[nodiscard]] flowrt::FrameDescriptorFields frame_descriptor_fields() const noexcept"
+    ));
+    assert!(cpp_messages.contains(".resource_id_hash = resource_id_hash"));
+    assert!(cpp_messages.contains(".flags = flags"));
 }
 
 #[test]

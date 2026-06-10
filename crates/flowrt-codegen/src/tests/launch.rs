@@ -749,6 +749,12 @@ output = ["sample"]
     assert!(
         cpp_shell.contains("introspection_state.record_io_boundary_health(std::move(status));")
     );
+    assert!(cpp_shell.contains(
+        "introspection_state.record_frame_descriptor_event(name, descriptor, status, payload_recording);"
+    ));
+    assert!(cpp_shell.contains(
+        "return flowrt::BoundaryRecordOutcome{.recorded = record.recorded, .dropped = record.dropped};"
+    ));
     assert!(cpp_shell.contains("boundary->mark_ready();"));
 }
 

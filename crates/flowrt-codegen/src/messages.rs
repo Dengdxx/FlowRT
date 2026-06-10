@@ -76,6 +76,7 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
     let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
     let needs_wire_codec =
         contract_uses_backend(contract, "zenoh") || contract_has_variable_messages(contract);
+    let frame_descriptor_messages = frame_descriptor_message_names(contract);
     for ty in ordered_types(contract) {
         let variable_message = type_contains_variable_data(
             contract,
@@ -96,6 +97,9 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
                 cpp_type(&field.ty),
                 field.name
             ));
+        }
+        if frame_descriptor_messages.contains(&ty.qualified_name) {
+            output.push_str(&cpp_frame_descriptor_fields_methods(ty));
         }
         if variable_message {
             output.push_str(&cpp_frame_codec_methods(contract, ty));
@@ -120,6 +124,7 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
     } else {
         ""
     };
+    let frame_descriptor_messages = frame_descriptor_message_names(contract);
     for ty in ordered_types(contract) {
         let variable_message = type_contains_variable_data(
             contract,
@@ -155,6 +160,9 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
         }
         output.push_str("}\n\n");
         output.push_str(&rust_default_impl(ty, variable_message));
+        if frame_descriptor_messages.contains(&ty.qualified_name) {
+            output.push_str(&rust_frame_descriptor_fields_impl(ty));
+        }
         if variable_message {
             output.push_str(&rust_frame_codec_impl(contract, ty));
         } else if needs_wire_codec {
@@ -162,6 +170,42 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
         }
     }
     output
+}
+
+fn frame_descriptor_message_names(contract: &ContractIr) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for component in &contract.components {
+        for resource in &component.resources {
+            let Some(descriptor) = &resource.descriptor else {
+                continue;
+            };
+            let Some(port) = component
+                .outputs
+                .iter()
+                .find(|port| port.name == descriptor.port)
+            else {
+                continue;
+            };
+            if let TypeExpr::Named { name } = &port.ty {
+                names.insert(name.clone());
+            }
+        }
+    }
+    names
+}
+
+fn rust_frame_descriptor_fields_impl(ty: &TypeIr) -> String {
+    format!(
+        "impl From<flowrt::FrameDescriptorFields> for {name} {{\n    fn from(fields: flowrt::FrameDescriptorFields) -> Self {{\n        Self {{\n            resource_id_hash: fields.resource_id_hash,\n            slot: fields.slot,\n            generation: fields.generation,\n            size_bytes: fields.size_bytes,\n            timestamp_unix_ns: fields.timestamp_unix_ns,\n            width: fields.width,\n            height: fields.height,\n            stride_bytes: fields.stride_bytes,\n            format_id: fields.format_id,\n            encoding_id: fields.encoding_id,\n            flags: fields.flags,\n        }}\n    }}\n}}\n\nimpl {name} {{\n    pub fn from_frame_descriptor_fields(fields: flowrt::FrameDescriptorFields) -> Self {{\n        fields.into()\n    }}\n\n    pub fn frame_descriptor_fields(&self) -> flowrt::FrameDescriptorFields {{\n        flowrt::FrameDescriptorFields {{\n            resource_id_hash: self.resource_id_hash,\n            slot: self.slot,\n            generation: self.generation,\n            size_bytes: self.size_bytes,\n            timestamp_unix_ns: self.timestamp_unix_ns,\n            width: self.width,\n            height: self.height,\n            stride_bytes: self.stride_bytes,\n            format_id: self.format_id,\n            encoding_id: self.encoding_id,\n            flags: self.flags,\n        }}\n    }}\n}}\n\n",
+        name = ty.generated_name
+    )
+}
+
+fn cpp_frame_descriptor_fields_methods(ty: &TypeIr) -> String {
+    format!(
+        "    static {name} from_frame_descriptor_fields(const flowrt::FrameDescriptorFields& fields) {{\n        {name} result{{}};\n        result.resource_id_hash = fields.resource_id_hash;\n        result.slot = fields.slot;\n        result.generation = fields.generation;\n        result.size_bytes = fields.size_bytes;\n        result.timestamp_unix_ns = fields.timestamp_unix_ns;\n        result.width = fields.width;\n        result.height = fields.height;\n        result.stride_bytes = fields.stride_bytes;\n        result.format_id = fields.format_id;\n        result.encoding_id = fields.encoding_id;\n        result.flags = fields.flags;\n        return result;\n    }}\n\n    [[nodiscard]] flowrt::FrameDescriptorFields frame_descriptor_fields() const noexcept {{\n        return flowrt::FrameDescriptorFields{{\n            .resource_id_hash = resource_id_hash,\n            .slot = slot,\n            .generation = generation,\n            .size_bytes = size_bytes,\n            .timestamp_unix_ns = timestamp_unix_ns,\n            .width = width,\n            .height = height,\n            .stride_bytes = stride_bytes,\n            .format_id = format_id,\n            .encoding_id = encoding_id,\n            .flags = flags,\n        }};\n    }}\n",
+        name = ty.generated_name
+    )
 }
 
 fn rust_default_impl(ty: &TypeIr, variable_message: bool) -> String {
