@@ -5,11 +5,15 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.7.1`。`v0.7.1` 是 `v0.7.0` 之后的 hardening 版本，
-聚焦现有能力的生产边界修复：deploy/bundle 参数边界、supervisor 子进程生命周期与
-关闭路径、runtime introspection 控制面、Service / Operation / backend 错误分类、
-Contract IR 派生元数据防篡改、C++/Rust runtime parity、安装包离线依赖标记和
-`--run-steps` / `record` / `hz` 等调试主路径。
+当前 workspace 版本为 `0.8.0`。`v0.8.0` 是真实机器人应用接入边界版本，聚焦
+I/O boundary component、variable frame 工程化、FrameDescriptor / side-channel
+descriptor、ROS2 zenoh 共存桥接扩展、多目标部署闭环和 v0.8.0 focused release gate。
+
+`v0.7.1` 已发布，是 `v0.7.0` 之后的 hardening 版本，聚焦现有能力的生产边界修复：
+deploy/bundle 参数边界、supervisor 子进程生命周期与关闭路径、runtime introspection
+控制面、Service / Operation / backend 错误分类、Contract IR 派生元数据防篡改、
+C++/Rust runtime parity、安装包离线依赖标记和 `--run-steps` / `record` / `hz` 等
+调试主路径。
 
 `v0.7.0` 已发布，核心主题是 external process / driver package typed 接入边界、
 ARM64/跨机器部署 baseline 和离线 bundle 交付闭环。FlowRT 主项目不做硬件 backend；
@@ -234,6 +238,9 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   `sequence<primitive>` 和 `sequence<fixed struct>`；runtime frame codec 的 canonical
   tail order 已在 Rust/C++ smoke 中覆盖。`iox2` 仍只承载 fixed-size plain data，变长
   route 自动选择支持 variable frame 的 backend。
+- CI 增加 `v0.8.0 Integration Smoke` amd64/arm64 focused gate，并在安装后 demo smoke
+  中运行 `scripts/test-v080-installed-smoke.sh`，覆盖 variable frame、I/O boundary
+  status、FrameDescriptor self-description、bundle schema v2 和 deploy dry-run。
 
 `v0.7.0` 已落地 external package 主路径：
 
@@ -457,29 +464,32 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 ## CI 和 Release 状态
 
 当前 `.github/workflows/ci.yml` 将 Linux 验证拆为分层 job，覆盖生成物保护、Rust
-格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 runtime focused smoke、打包、
-C++ zenoh runtime、demo smoke、ROS2 bridge smoke 和 release。Linux job 默认运行在
-官方 ROS2 Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个发行版，
-并安装对应的 `rmw_zenoh_cpp`。
+格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 focused smoke、
+打包、C++ zenoh runtime、demo smoke、ROS2 bridge smoke 和 release。Linux job 默认
+运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个
+发行版，并安装对应的 `rmw_zenoh_cpp`。
 
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
-v0.5.0 / v0.6.0 runtime focused smoke、Debian package、C++ zenoh runtime、demo
-smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。package
-job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。demo
-smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用 `flowrt ...`
-跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构 deb artifact，从 `CHANGELOG.md` 对应版本段
-抽取 release notes，并创建 GitHub Release 上传 `flowrt_*_amd64.deb`、
-`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的
-workspace version。
+v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 focused smoke、Debian package、C++ zenoh runtime、
+demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。
+package job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。
+demo smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用
+`flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构
+deb artifact，从 `CHANGELOG.md` 对应版本段抽取 release notes，并创建 GitHub Release
+上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。tag 版本必须
+匹配根 `Cargo.toml` 的 workspace version。
 
 `v0.5.0 Runtime Smoke` focused gate 使用 `-j1` 聚焦 supervisor readiness/resource、
 远程参数控制面、status/hz 健康展示、scheduler health 和 runtime introspection 相关
 测试；`v0.6.0 Runtime Smoke` focused gate 聚焦 Operation RSDL/IR/validator/codegen/
 runtime/CLI/status、record format、runtime recorder tap 和 CLI MCAP 写入路径，使
-这些新增能力的 CI 失败原因比全量 Rust test 更可定位。发布前应运行
+这些新增能力的 CI 失败原因比全量 Rust test 更可定位。`v0.7.0 External/Deploy Smoke`
+聚焦 external process、bundle 和 deploy；`v0.8.0 Integration Smoke` 聚焦 I/O
+boundary、variable frame、FrameDescriptor、ROS2 typed bridge、diagnostics、bundle
+和 deploy。发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 / v0.6.0 focused gate 覆盖状态。`v0.6.1` 发布由推送
-`v0.6.1` tag 触发 GitHub Release。
+release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 focused gate 覆盖状态。
+`v0.8.0` 发布由推送 `v0.8.0` tag 触发 GitHub Release。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。

@@ -184,9 +184,11 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
 amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused smoke、
-amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、amd64/arm64 demo smoke、
-amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，
-并上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
+amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integration
+focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、amd64/arm64
+demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge
+smoke 全部通过，再创建 GitHub Release，并上传 `flowrt_*_amd64.deb`、
+`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
 
 `v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
 supervisor readiness/resource、远程参数控制面、status/hz 健康展示、scheduler
@@ -198,10 +200,20 @@ RSDL/IR/validator/codegen/runtime/CLI/status 路径，以及 record format、run
 CLI 写 MCAP 路径。安装包后的 demo smoke 会继续运行 `scripts/test-v060-installed-smoke.sh`，
 验证用户从系统安装的 `flowrt` 入口使用 Operation 和 record。
 
+`v0.7.0 External/Deploy Smoke` 覆盖 external component RSDL/IR/validator/codegen、
+runtime external supervisor、bundle 和 deploy CLI 主路径。安装包后的 demo smoke 会运行
+`scripts/test-v070-installed-smoke.sh`，验证安装版 `flowrt` 能检查 external package、
+构建 launcher、打 bundle 并执行 deploy dry-run。
+
+`v0.8.0 Integration Smoke` 覆盖 I/O boundary、FrameDescriptor、ROS2 typed bridge、
+variable frame codegen、diagnostics、bundle 和 deploy 主路径。安装包后的 demo smoke 会运行
+`scripts/test-v080-installed-smoke.sh`，验证安装版 `flowrt` 能构建 variable frame demo、
+运行 I/O boundary runtime、观察 live status，并用 bundle schema v2 执行 deploy dry-run。
+
 发布前检查：
 
 ```bash
-version=0.5.0
+version=0.8.0
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -217,8 +229,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
+git tag -a v0.8.0 -m "v0.8.0"
+git push origin v0.8.0
 ```
 
 ## 提交规则

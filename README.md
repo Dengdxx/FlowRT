@@ -30,7 +30,7 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-version=v0.7.1  # 替换为要安装的 release tag
+version=v0.8.0  # 替换为要安装的 release tag
 arch="$(dpkg --print-architecture)"  # amd64 或 arm64，以 release 页面实际资产为准
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/flowrt_${version#v}_${arch}.deb"
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/SHA256SUMS"
@@ -71,6 +71,7 @@ flowrt --version
 | target | 部署目标能力，例如 runtime 语言和可用 backend。 |
 | backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
 | bridge | FlowRT 管理的外部系统适配进程；用户组件仍只读写 FlowRT message。 |
+| io_boundary component | 进程内自研 I/O 和副作用边界，例如串口、SHM、UDP 或推理 SDK 接入；FlowRT 管生命周期、资源状态和观测。 |
 | external component | 由外部 package/executable 提供的 typed 组件，FlowRT 管生命周期、通信绑定和观测，不生成其内部算法代码。 |
 | runtime shell | FlowRT 生成的胶水代码，负责调度、通信、生命周期和观测。 |
 
