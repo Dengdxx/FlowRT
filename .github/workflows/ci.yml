@@ -409,8 +409,8 @@ jobs:
         run: |
           FLOWRT_BENCH_ITERS=8 FLOWRT_BENCH_PAYLOAD_BYTES=1024 scripts/bench-frame-descriptor.sh
 
-  v082-cross-compile-smoke:
-    name: v0.8.2 amd64 to arm64 Cross Compile Smoke
+  v083-toolchain-smoke:
+    name: v0.8.3 Cross Toolchain Smoke
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base-noble
@@ -453,16 +453,12 @@ jobs:
           aarch64-linux-gnu-g++ --version
           pkg-config --version
 
-      - name: v0.8.2 flowrt deps/build --target focused tests
+      - name: v0.8.3 flowrt deps/build --target focused tests
         run: |
           cargo test -p flowrt-cli toolchain_tests -j1
           cargo test -p flowrt-cli build_runtime_tests -j1
           cargo test -p flowrt-cli command_tests -j1
           cargo test -p flowrt-cli cmake_ -j1
-
-      - name: C++ cross build 边界说明
-        run: |
-          echo "真实 C++ cross build 暂不在此 gate 执行：当前单架构 deb 只内嵌本架构 complete target SDK，另一架构 target SDK 标记 complete = false；本 gate 验证 toolchain profile、CMake target SDK 参数和 fail-fast 语义，不读取远端设备文件树。"
 
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
@@ -539,7 +535,7 @@ jobs:
       - v070-runtime-smoke
       - v080-runtime-smoke
       - v081-runtime-smoke
-      - v082-cross-compile-smoke
+      - v083-toolchain-smoke
 
     steps:
       - name: 检出仓库
@@ -548,10 +544,17 @@ jobs:
       - name: 安装系统构建工具
         run: |
           apt-get update
-          apt-get install -y cmake ninja-build g++ dpkg-dev curl git
+          apt-get install -y cmake ninja-build g++ dpkg-dev curl git pkg-config file binutils
+          if [[ "${{ matrix.deb_arch }}" == "amd64" ]]; then
+            apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          fi
 
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 package target Rust std
+        if: matrix.deb_arch == 'amd64'
+        run: rustup target add aarch64-unknown-linux-gnu
 
       - name: 缓存 Rust 构建产物
         uses: Swatinem/rust-cache@v2
@@ -591,7 +594,19 @@ jobs:
           test -f "/opt/flowrt/${version}/targets/${platform}/pkgconfig/zenohc.pc"
           test -f "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
           grep -q 'complete = true' "/opt/flowrt/${version}/targets/${platform}/flowrt-target-sdk.toml"
-          grep -q 'complete = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          if [[ "${{ matrix.deb_arch }}" == "amd64" ]]; then
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/include/flowrt/runtime.hpp"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/lib/aarch64-linux-gnu/libiceoryx2_cxx.a"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/cmake/flowrt_runtime/flowrt_runtimeConfig.cmake"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/cmake/iceoryx2-cxx/iceoryx2-cxxConfig.cmake"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/cmake/zenohc/zenohcConfig.cmake"
+            test -f "/opt/flowrt/${version}/targets/${other_platform}/pkgconfig/zenohc.pc"
+            grep -q 'complete = true' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+            grep -q 'host_mirror = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+            grep -q 'reason = "cross-target-sdk"' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          else
+            grep -q 'complete = false' "/opt/flowrt/${version}/targets/${other_platform}/flowrt-target-sdk.toml"
+          fi
           command -v flowrt
           flowrt --version
           scripts/test-deb-target-sdk-layout.sh dist/flowrt_*_*.deb
@@ -613,6 +628,59 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/flowrt_*_*.deb
           if-no-files-found: error
+
+  v083-cross-compile-smoke:
+    name: v0.8.3 Installed amd64 to arm64 Smoke
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base-noble
+    needs:
+      - package
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 amd64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-amd64-deb
+          path: dist
+
+      - name: 安装系统交叉编译工具
+        run: |
+          apt-get update
+          apt-get install -y \
+            cmake \
+            ninja-build \
+            g++ \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            dpkg-dev \
+            file \
+            binutils
+          command -v readelf
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 准备 linux-arm64 Rust target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: 缓存 FlowRT deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache
+          key: flowrt-deps-v083-cross-amd64-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'scripts/test-v083-installed-smoke.sh') }}
+          restore-keys: |
+            flowrt-deps-v083-cross-amd64-
+
+      - name: 安装 flowrt deb 并执行真实交叉构建 smoke
+        run: |
+          dpkg -i dist/flowrt_*_amd64.deb
+          export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/v083-cross-amd64}"
+          scripts/test-v083-installed-smoke.sh
 
   demo-smoke:
     name: Demo Smoke (${{ matrix.deb_arch }})
@@ -673,7 +741,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flowrt-cache
-          key: flowrt-deps-demo-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v060-installed-smoke.sh', 'scripts/test-v070-installed-smoke.sh', 'scripts/test-v080-installed-smoke.sh', 'scripts/test-v081-installed-smoke.sh', 'scripts/test-v082-installed-smoke.sh') }}
+          key: flowrt-deps-demo-${{ matrix.deb_arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v060-installed-smoke.sh', 'scripts/test-v070-installed-smoke.sh', 'scripts/test-v080-installed-smoke.sh', 'scripts/test-v081-installed-smoke.sh', 'scripts/test-v083-installed-smoke.sh') }}
           restore-keys: |
             flowrt-deps-demo-${{ matrix.deb_arch }}-
 
@@ -699,7 +767,7 @@ jobs:
           scripts/test-v070-installed-smoke.sh
           scripts/test-v080-installed-smoke.sh
           scripts/test-v081-installed-smoke.sh
-          scripts/test-v082-installed-smoke.sh
+          scripts/test-v083-installed-smoke.sh
 
   ros2-jazzy-bridge:
     name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
@@ -857,9 +925,10 @@ jobs:
       - v070-runtime-smoke
       - v080-runtime-smoke
       - v081-runtime-smoke
-      - v082-cross-compile-smoke
+      - v083-toolchain-smoke
       - cpp-zenoh-runtime
       - package
+      - v083-cross-compile-smoke
       - demo-smoke
       - ros2-jazzy-bridge
       - ros2-lyrical-bridge

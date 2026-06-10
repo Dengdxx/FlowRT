@@ -17,8 +17,8 @@
 #      ROS2 typed bridge、diagnostics 和安装后 smoke
 #   9. v0.8.1 focused CI gate 是否覆盖标准 FrameDescriptor 示例、echo、record、
 #      安装后 smoke 和 microbench
-#   10. v0.8.2 focused CI gate 是否覆盖 amd64 host 到 arm64 target 的交叉编译主路径、
-#       target SDK layout smoke、安装后 smoke 和 package/release 依赖
+#   10. v0.8.3 focused CI gate 是否覆盖 amd64 host 到 arm64 target 的完整交叉编译、
+#       完整 target SDK layout smoke、安装后真实 cross smoke 和 package/release 依赖
 #
 # 任何检查失败都会给出清晰错误信息并以非零状态退出。
 
@@ -460,43 +460,49 @@ else
     fail "FrameDescriptor microbench 脚本不存在或不可执行: $bench_script"
 fi
 
-# ── 10. v0.8.2 focused CI gate 覆盖 ──────────────────────────
+# ── 10. v0.8.3 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[10/12] v0.8.2 交叉编译 focused CI gate 覆盖\n'
+printf '\n[10/12] v0.8.3 交叉编译 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
-    fail "CI 配置不存在，无法检查 v0.8.2 focused gate"
+    fail "CI 配置不存在，无法检查 v0.8.3 focused gate"
 else
-    require_ci_text "CI 包含 v0.8.2 cross compile smoke job" \
-        "v082-cross-compile-smoke:" "$ci_file"
-    require_ci_text "v0.8.2 gate 固定 amd64 host runner" \
+    require_ci_text "CI 包含 v0.8.3 toolchain smoke job" \
+        "v083-toolchain-smoke:" "$ci_file"
+    require_ci_text "CI 包含 v0.8.3 installed cross smoke job" \
+        "v083-cross-compile-smoke:" "$ci_file"
+    require_ci_text "v0.8.3 gate 固定 amd64 host runner" \
         "runs-on: ubuntu-latest" "$ci_file"
-    require_ci_text "v0.8.2 gate 覆盖 linux-arm64 target" \
+    require_ci_text "v0.8.3 gate 覆盖 linux-arm64 target" \
         "linux-arm64" "$ci_file"
-    require_ci_text "v0.8.2 gate 安装 Rust arm64 target" \
+    require_ci_text "v0.8.3 gate 安装 Rust arm64 target" \
         "rustup target add aarch64-unknown-linux-gnu" "$ci_file"
-    require_ci_text "v0.8.2 gate 安装 C/C++ 交叉编译器" \
+    require_ci_text "v0.8.3 gate 安装 C/C++ 交叉编译器" \
         "gcc-aarch64-linux-gnu" "$ci_file"
-    require_ci_text "v0.8.2 gate 安装 aarch64 g++" \
+    require_ci_text "v0.8.3 gate 安装 aarch64 g++" \
         "g++-aarch64-linux-gnu" "$ci_file"
-    require_ci_text "v0.8.2 gate 安装 pkg-config" \
+    require_ci_text "v0.8.3 gate 安装 pkg-config" \
         "pkg-config" "$ci_file"
-    require_ci_text "v0.8.2 gate 运行 toolchain focused tests" \
+    require_ci_text "v0.8.3 gate 运行 toolchain focused tests" \
         "cargo test -p flowrt-cli toolchain_tests -j1" "$ci_file"
-    require_ci_text "v0.8.2 gate 运行 build model focused tests" \
+    require_ci_text "v0.8.3 gate 运行 build model focused tests" \
         "cargo test -p flowrt-cli build_runtime_tests -j1" "$ci_file"
-    require_ci_text "v0.8.2 gate 运行 command focused tests" \
+    require_ci_text "v0.8.3 gate 运行 command focused tests" \
         "cargo test -p flowrt-cli command_tests -j1" "$ci_file"
-    require_ci_text "v0.8.2 gate 运行 CMake target SDK focused tests" \
+    require_ci_text "v0.8.3 gate 运行 CMake target SDK focused tests" \
         "cargo test -p flowrt-cli cmake_ -j1" "$ci_file"
-    require_ci_text "v0.8.2 gate 说明暂不做真实 C++ cross build 的原因" \
-        "真实 C++ cross build 暂不在此 gate 执行" "$ci_file"
+    require_ci_text "v0.8.3 gate 运行安装版真实 cross smoke" \
+        "scripts/test-v083-installed-smoke.sh" "$ci_file"
+    require_ci_text "v0.8.3 gate 验证 arm64 ELF" \
+        "readelf" "$ci_file"
     require_ci_text "target SDK layout smoke 入 CI" \
         "scripts/test-deb-target-sdk-layout.sh" "$ci_file"
-    require_ci_text "demo smoke 运行 v0.8.2 安装后 smoke" \
-        "scripts/test-v082-installed-smoke.sh" "$ci_file"
-    require_ci_text_count_at_least "package/release 依赖 v0.8.2 focused gate" \
-        "- v082-cross-compile-smoke" "$ci_file" 2
+    require_ci_text "demo smoke 运行 v0.8.3 安装后 smoke" \
+        "scripts/test-v083-installed-smoke.sh" "$ci_file"
+    require_ci_text_count_at_least "package/release 依赖 v0.8.3 toolchain gate" \
+        "- v083-toolchain-smoke" "$ci_file" 2
+    require_ci_text "release 依赖 v0.8.3 installed cross gate" \
+        "- v083-cross-compile-smoke" "$ci_file"
 fi
 
 target_sdk_layout_smoke="$repo_root/scripts/test-deb-target-sdk-layout.sh"
@@ -506,11 +512,11 @@ else
     fail "target SDK layout smoke 脚本不存在或不可执行: $target_sdk_layout_smoke"
 fi
 
-installed_v082_smoke="$repo_root/scripts/test-v082-installed-smoke.sh"
-if [[ -x "$installed_v082_smoke" ]]; then
-    pass "v0.8.2 安装后 smoke 脚本存在且可执行"
+installed_v083_smoke="$repo_root/scripts/test-v083-installed-smoke.sh"
+if [[ -x "$installed_v083_smoke" ]]; then
+    pass "v0.8.3 安装后 smoke 脚本存在且可执行"
 else
-    fail "v0.8.2 安装后 smoke 脚本不存在或不可执行: $installed_v082_smoke"
+    fail "v0.8.3 安装后 smoke 脚本不存在或不可执行: $installed_v083_smoke"
 fi
 
 # ── 11. README 安装示例版本 ──────────────────────────────────
