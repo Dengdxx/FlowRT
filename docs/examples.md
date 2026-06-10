@@ -20,6 +20,7 @@
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
+| `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor-only 观测 |
 
 ## `import_demo`
 
@@ -276,6 +277,50 @@ FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 200 examples/mixed_zenoh_demo/r
 含 C++ zenoh 组件的生成 CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标，并链接该目标。通过 Debian 包安装 FlowRT 时，`zenoh-c` / `zenoh-cpp` 已在 `/opt/flowrt/<version>` 私有前缀内，`flowrt build` 会自动传入对应路径；直接调试生成 CMake 时，可以显式设置 `FLOWRT_CPP_RUNTIME_DIR` 或 `CMAKE_PREFIX_PATH`。
 
 本机 `flowrt launch` 在没有显式 `FLOWRT_ZENOH_MODE` / `FLOWRT_ZENOH_LISTEN` / `FLOWRT_ZENOH_CONNECT` 时，会为同一个 supervisor 启动的 zenoh process 自动分配本地 TCP mesh。跨机器运行时，需要让两个进程分别拿到对应的 zenoh session 配置，例如通过 `FLOWRT_ZENOH_CONNECT` 和 `FLOWRT_ZENOH_LISTEN` 注入端点；如果要在本机观察足够多的样本，`FLOWRT_TICK_SLEEP_MS` 可以把同步 tick 拉长。
+
+## FrameDescriptor 示例
+
+入口文件：
+
+```text
+examples/frame_descriptor_demo/rsdl/robot.rsdl
+```
+
+该示例验证本机大 payload 的推荐表达：FlowRT channel 只传固定 64 字节
+`FrameHandle` descriptor，真实图像 payload 由 `camera` I/O boundary 的 side-channel
+资源管理，不作为普通 `bytes` message 进入 dataflow。
+
+RSDL 中的 descriptor 绑定到输出端口：
+
+```toml
+[component.camera.resource.frames.descriptor]
+kind = "frame"
+port = "frame"
+format = "rgb8"
+encoding = "row_major"
+metadata = { width = "640", height = "480", stride_bytes = "1920" }
+record_payload = false
+```
+
+推荐命令：
+
+```bash
+flowrt check examples/frame_descriptor_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=10 flowrt run examples/frame_descriptor_demo/rsdl/robot.rsdl --process main
+```
+
+另开终端观察：
+
+```bash
+flowrt status --live-only
+flowrt echo camera.frame --image examples/frame_descriptor_demo/flowrt/selfdesc/selfdesc.json
+```
+
+`flowrt echo` 会把 payload 识别为标准 FrameDescriptor 并按字段展示；
+`flowrt record` 默认记录 descriptor/event，摘要中输出
+`descriptor_payload=descriptor_only`。真实 payload 录制需要显式建模，不由该示例隐式
+复制图像数据。
 
 ## ROS2 bridge 示例
 

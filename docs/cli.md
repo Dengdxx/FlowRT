@@ -501,6 +501,12 @@ channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_
 
 fixed-size Message ABI 会按 self-description 中的 field offset 和类型格式化整数、浮点、布尔和固定数组。variable frame 会按固定 header + tail layout 格式化 `bytes`、`string` 和 `sequence<T>`；runtime socket 仍只暴露 raw/canonical bytes，字段 schema 来自 self-description。
 
+标准 FrameDescriptor 是 fixed-size ABI 的特殊展示路径。消息 layout 如果是 64 字节、
+字段为 `resource_id_hash`、`slot`、`generation`、`size_bytes`、
+`timestamp_unix_ns`、`width`、`height`、`stride_bytes`、`format_id`、
+`encoding_id` 和 `flags`，`echo` 会输出 `descriptor=frame` 与
+`frame_descriptor={...}`，便于观察图像/大 payload 的 descriptor，而不复制真实 payload。
+
 如果 runtime 还没有该 channel 的 payload，例如当前进程尚未发布该 channel 的样本，输出会包含 `payload_len=0 no payload`。
 
 默认情况下，`echo` 只读取一次 latest snapshot。传入 `--follow` 后，CLI 会按 `--interval-ms <ms>` 指定的间隔持续轮询同一 runtime socket；第一条 snapshot 一定输出，后续只在 `published_count`、`published_at_ms` 或 raw payload 变化时输出，避免没有新发布时重复刷屏。默认轮询间隔是 250 ms。
@@ -688,6 +694,10 @@ recorded output=run.mcap socket=/run/user/1000/flowrt/12345.sock event_count=42 
 ```
 
 `event_count` 是写入 MCAP 的 envelope 数量；`dropped_count` 是 runtime recorder 队列丢弃计数；`bytes_written` 是 runtime 已接受的事件 payload 字节数。默认未录制时，生成的 Rust/C++ runtime shell 只在热路径做轻量开关判断，不持续复制 payload。
+
+FrameDescriptor 事件默认按 descriptor-only 录制；CLI 摘要会输出
+`descriptor_payload=descriptor_only`。这表示 MCAP 中记录的是 descriptor 和事件元数据，
+不是 side-channel 中的真实图像 payload。
 
 ## `--profile`
 

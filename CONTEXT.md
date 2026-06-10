@@ -5,9 +5,14 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.0`。`v0.8.0` 是真实机器人应用接入边界版本，聚焦
-I/O boundary component、variable frame 工程化、FrameDescriptor / side-channel
-descriptor、ROS2 zenoh 共存桥接扩展、多目标部署闭环和 v0.8.0 focused release gate。
+当前 workspace 版本为 `0.8.1`。`v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
+小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
+descriptor-only 观测/录制、`frame_descriptor_demo` 示例、microbench 和 v0.8.1
+focused release gate。
+
+`v0.8.0` 已发布，是真实机器人应用接入边界版本，聚焦 I/O boundary component、
+variable frame 工程化、FrameDescriptor / side-channel descriptor、ROS2 zenoh 共存
+桥接扩展、多目标部署闭环和 v0.8.0 focused release gate。
 
 `v0.7.1` 已发布，是 `v0.7.0` 之后的 hardening 版本，聚焦现有能力的生产边界修复：
 deploy/bundle 参数边界、supervisor 子进程生命周期与关闭路径、runtime introspection
@@ -75,6 +80,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.7.0` | external process / driver package 接入边界、ARM64/跨机器部署闭环。 |
 | `v0.7.1` | v0.7.0 现有能力 hardening 和发布前缺陷修复。 |
 | `v0.8.0` | 真实机器人应用接入边界、variable frame 工程化、多目标部署和发布硬化。 |
+| `v0.8.1` | 标准 FrameDescriptor、descriptor-only 大 payload 观测/录制和安装后 smoke。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -96,6 +102,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   工程化、FrameDescriptor + side-channel lease、ROS2 共存桥接和运行态诊断深化应
   形成一条可迁移、可部署、可观测的主路径。FlowRT 仍不做硬件 backend，也不做
   ROS2 drop-in 兼容层。
+- `v0.8.1` 收紧大 payload 的可工程化路径：本机高频图像/大帧只在 channel 上传递
+  标准 fixed descriptor，payload 生命周期仍归 I/O boundary 或 external package 的
+  side-channel 负责；echo、status、record 和 smoke 都围绕 descriptor-only 路径验证。
 - `v0.9.0` 扩展 C/Python API 和可选生态互操作，但仍以 FlowRT 自身语义为中心。
 - `v1.0.0` 冻结 ABI/schema 基线，并补齐兼容策略、故障注入和性能矩阵。
 
@@ -241,6 +250,24 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
 - CI 增加 `v0.8.0 Integration Smoke` amd64/arm64 focused gate，并在安装后 demo smoke
   中运行 `scripts/test-v080-installed-smoke.sh`，覆盖 variable frame、I/O boundary
   status、FrameDescriptor self-description、bundle schema v2 和 deploy dry-run。
+
+当前 `v0.8.1` 已落地边界：
+
+- 标准 FrameDescriptor message 是固定 64 字节 plain data，字段为
+  `resource_id_hash`、`slot`、`generation`、`size_bytes`、`timestamp_unix_ns`、
+  `width`、`height`、`stride_bytes`、`format_id`、`encoding_id` 和 `flags`。
+- `io_boundary` resource descriptor 通过 `port` 绑定输出端口；validator 会拒绝缺失
+  output port、非标准字段、变长字段或不满足 fixed-size plain data 的 descriptor。
+- `iox2` 可以承载标准 FrameDescriptor route，因为 channel 内只传固定 descriptor；
+  图像、mask 等真实 payload 不走普通 FlowRT message，也不通过 `bytes` 绕进 iox2。
+- Rust/C++ runtime 和 codegen 都提供 `FrameDescriptorFields` helper；生成 message 可
+  从 helper 构造，并可还原 fields 供用户逻辑或 boundary event 使用。
+- `flowrt echo` 会结构化展示标准 descriptor 字段；`flowrt status` 会展示 resource
+  descriptor schema；`flowrt record` 默认记录 descriptor/event，摘要中标注
+  `descriptor_payload=descriptor_only`。
+- 新增 `examples/frame_descriptor_demo` 和 `scripts/bench-frame-descriptor.sh`；
+  CI 增加 `v0.8.1 FrameDescriptor Smoke` amd64/arm64 focused gate，安装后 demo smoke
+  增加 `scripts/test-v081-installed-smoke.sh`。
 
 `v0.7.0` 已落地 external package 主路径：
 
@@ -470,8 +497,8 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 发行版，并安装对应的 `rmw_zenoh_cpp`。
 
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
-v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 focused smoke、Debian package、C++ zenoh runtime、
-demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。
+v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 focused smoke、Debian package、C++ zenoh
+runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。
 package job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。
 demo smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用
 `flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构
@@ -486,10 +513,11 @@ runtime/CLI/status、record format、runtime recorder tap 和 CLI MCAP 写入路
 这些新增能力的 CI 失败原因比全量 Rust test 更可定位。`v0.7.0 External/Deploy Smoke`
 聚焦 external process、bundle 和 deploy；`v0.8.0 Integration Smoke` 聚焦 I/O
 boundary、variable frame、FrameDescriptor、ROS2 typed bridge、diagnostics、bundle
-和 deploy。发布前应运行
+和 deploy；`v0.8.1 FrameDescriptor Smoke` 聚焦标准 descriptor demo、CLI 结构化
+echo/status、descriptor-only record 和 microbench。发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 focused gate 覆盖状态。
-`v0.8.0` 发布由推送 `v0.8.0` tag 触发 GitHub Release。
+release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 focused gate 覆盖状态。
+`v0.8.1` 发布由推送 `v0.8.1` tag 触发 GitHub Release。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。

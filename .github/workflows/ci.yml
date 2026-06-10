@@ -321,6 +321,38 @@ jobs:
           cargo test -p flowrt-cli deploy -j1
           cargo test -p flowrt-cli selfdesc_status_hz_tests -j1
 
+  v081-runtime-smoke:
+    name: v0.8.1 FrameDescriptor Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.8.1 FrameDescriptor codegen/CLI/record 测试
+        run: |
+          cargo test -p flowrt-codegen frame_descriptor_demo_example_codegen_smoke -j1
+          cargo test -p flowrt-cli echo_formats_standard_frame_descriptor_payload_structurally -j1
+          cargo test -p flowrt-cli live_status_summary_enriches_io_boundary_resource_descriptor_schema -j1
+          cargo test -p flowrt-cli record_writes_mcap_from_fake_runtime -j1
+
+      - name: v0.8.1 FrameDescriptor microbench
+        run: |
+          FLOWRT_BENCH_ITERS=8 FLOWRT_BENCH_PAYLOAD_BYTES=1024 scripts/bench-frame-descriptor.sh
+
   cpp-zenoh-runtime:
     name: C++ Zenoh Runtime (${{ matrix.deb_arch }})
     runs-on: ${{ matrix.runner }}
@@ -395,6 +427,7 @@ jobs:
       - v060-runtime-smoke
       - v070-runtime-smoke
       - v080-runtime-smoke
+      - v081-runtime-smoke
 
     steps:
       - name: 检出仓库
@@ -507,6 +540,7 @@ jobs:
           scripts/test-v060-installed-smoke.sh
           scripts/test-v070-installed-smoke.sh
           scripts/test-v080-installed-smoke.sh
+          scripts/test-v081-installed-smoke.sh
 
   ros2-jazzy-bridge:
     name: ROS2 Jazzy Bridge (${{ matrix.deb_arch }})
@@ -629,6 +663,7 @@ jobs:
       - v060-runtime-smoke
       - v070-runtime-smoke
       - v080-runtime-smoke
+      - v081-runtime-smoke
       - cpp-zenoh-runtime
       - package
       - demo-smoke

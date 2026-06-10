@@ -30,7 +30,7 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-version=v0.8.0  # 替换为要安装的 release tag
+version=v0.8.1  # 替换为要安装的 release tag
 arch="$(dpkg --print-architecture)"  # amd64 或 arm64，以 release 页面实际资产为准
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/flowrt_${version#v}_${arch}.deb"
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/SHA256SUMS"
@@ -384,6 +384,13 @@ v0.1 的 native ABI 基线是 fixed-size plain data：
 
 `inproc` 和 `zenoh` 可直接传递 canonical frame。`iox2` 只承载 fixed-size plain data；当 profile 默认选择 `iox2` 且某条 route 使用 variable frame 时，FlowRT 会把该 route 自动降级到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。
 
+图像、mask 和其他大 payload 不应作为普通 `bytes` channel 在本机高频路径上传输。
+推荐用标准 FrameDescriptor：channel 只传固定 64 字节 descriptor，字段包含
+`resource_id_hash`、`slot`、`generation`、`size_bytes`、时间戳、宽高、stride、
+format/encoding id 和 flags；真实 payload 的 attach/acquire/release 由 `io_boundary`
+或 external package 的 side-channel 管理。这样本机 route 可以继续发挥 `iox2` 固定
+slot 的低开销优势，`flowrt echo` / `status` / `record` 也默认只观测 descriptor。
+
 ## Channel Policy
 
 基础 channel policy：
@@ -612,6 +619,11 @@ flowrt echo channel_name --follow
 ```
 
 `flowrt echo` 的数据面 probe 按需启用。没有 observer 时，发布路径不会编码 payload、不会拷贝 payload、不会写 socket。
+标准 FrameDescriptor 会按结构化字段展示，例如：
+
+```text
+descriptor=frame frame_descriptor={resource_id_hash=... slot=... generation=... size_bytes=... width=... height=... stride_bytes=... format_id=... encoding_id=... flags=...}
+```
 
 录制 FlowRT 事件到 MCAP：
 
@@ -622,6 +634,9 @@ flowrt record --output op.mcap --operation controller.plan --force
 
 `flowrt record` 通过 live runtime socket 按需启用 recorder tap。没有录制者时，发布热路径
 不会持续复制 payload；命令结束时会输出 event、drop 和写入字节统计。
+标准 FrameDescriptor 默认按 descriptor-only 记录，摘要中会出现
+`descriptor_payload=descriptor_only`；真实图像 payload 录制需要后续显式建模，不能由
+channel sample 隐式复制。
 
 ### 调度健康
 
@@ -715,6 +730,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | FlowRT string 输出经 zenoh bridge 发布到 ROS2 topic。 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | Service request/response、typed API、inproc call、service policy 和健康观测。 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | Operation client/server typed API、自描述和 `flowrt op list`。 |
+| `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | I/O boundary 只发布固定 FrameDescriptor，真实 payload 由 side-channel 管理。 |
 
 完整说明见 [示例矩阵](docs/examples.md)。
 
