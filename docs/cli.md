@@ -236,7 +236,7 @@ flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /op
 flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo --dry-run
 ```
 
-`deploy` 是 v0.7 的 baseline：读取 `bundle.toml`，校验请求 target 与 bundle target 一致；非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在 FlowRT，再用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
+`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性和 sha256；schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
 
 ## `[[process]]` 编排字段
 

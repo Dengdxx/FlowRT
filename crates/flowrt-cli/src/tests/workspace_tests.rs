@@ -480,6 +480,148 @@ fn deploy_bundle_dry_run_reports_plan() {
 }
 
 #[test]
+fn deploy_bundle_v2_dry_run_selects_target_artifacts() {
+    let root = temp_test_dir("deploy-v2-artifacts");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("bin")).unwrap();
+    std::fs::write(bundle.join("bin/desktop-supervisor"), b"desktop").unwrap();
+    std::fs::write(bundle.join("bin/pi-supervisor"), b"pi").unwrap();
+    let desktop_hash = file_sha256(&bundle.join("bin/desktop-supervisor")).unwrap();
+    let pi_hash = file_sha256(&bundle.join("bin/pi-supervisor")).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "multi_target_demo".into(),
+        profile: Some("default".into()),
+        target: "bundle".into(),
+        platform: None,
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/pi-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        artifacts: vec![
+            BundleArtifact {
+                kind: "supervisor".into(),
+                target: "desktop".into(),
+                platform: Some("linux-amd64".into()),
+                path: "bin/desktop-supervisor".into(),
+                sha256: desktop_hash,
+            },
+            BundleArtifact {
+                kind: "supervisor".into(),
+                target: "pi".into(),
+                platform: Some("linux-arm64".into()),
+                path: "bin/pi-supervisor".into(),
+                sha256: pi_hash,
+            },
+        ],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap();
+
+    assert!(output.contains("target=pi"), "unexpected output: {output}");
+    assert!(
+        output.contains("artifacts=1 platforms=[linux-arm64]"),
+        "unexpected output: {output}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_v2_rejects_unsafe_artifact_path() {
+    let root = temp_test_dir("deploy-v2-unsafe-artifact");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "bad_bundle".into(),
+        profile: Some("default".into()),
+        target: "bundle".into(),
+        platform: None,
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        artifacts: vec![BundleArtifact {
+            kind: "supervisor".into(),
+            target: "pi".into(),
+            platform: Some("linux-arm64".into()),
+            path: "../escape".into(),
+            sha256: "00".into(),
+        }],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap_err();
+
+    assert!(
+        error.to_string().contains("unsafe artifact path"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_v2_rejects_missing_artifact_platform() {
+    let root = temp_test_dir("deploy-v2-missing-platform");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("bin")).unwrap();
+    std::fs::write(bundle.join("bin/pi-supervisor"), b"pi").unwrap();
+    let pi_hash = file_sha256(&bundle.join("bin/pi-supervisor")).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "bad_bundle".into(),
+        profile: Some("default".into()),
+        target: "bundle".into(),
+        platform: None,
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/pi-supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        artifacts: vec![BundleArtifact {
+            kind: "supervisor".into(),
+            target: "pi".into(),
+            platform: None,
+            path: "bin/pi-supervisor".into(),
+            sha256: pi_hash,
+        }],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error =
+        deploy_bundle(&bundle, "robot@192.0.2.10", "pi", "/tmp/flowrt-demo", true).unwrap_err();
+
+    assert!(
+        error.to_string().contains("missing platform metadata"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn deploy_bundle_rejects_target_mismatch() {
     let root = temp_test_dir("deploy-target-mismatch");
     let bundle = root.join("bundle");

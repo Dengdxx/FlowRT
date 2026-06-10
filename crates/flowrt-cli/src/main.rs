@@ -1091,6 +1091,12 @@ struct LoadedBundleManifest {
     version_warning: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct DeployArtifactSelection {
+    count: usize,
+    platforms: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FlowrtReleaseVersion {
     major: u64,
@@ -1545,12 +1551,7 @@ fn deploy_bundle(
     validate_deploy_remote_dir(remote_dir)?;
     let loaded = load_bundle_manifest(bundle)?;
     let manifest = loaded.manifest;
-    if manifest.target != target {
-        anyhow::bail!(
-            "bundle target `{}` does not match requested target `{target}`",
-            manifest.target
-        );
-    }
+    let selected_artifacts = select_deploy_artifacts(bundle, &manifest, target)?;
     let mut warnings = Vec::new();
     if let Some(version_warning) = loaded.version_warning {
         warnings.push(version_warning);
@@ -1558,12 +1559,13 @@ fn deploy_bundle(
     let warning = deploy_warning_suffix(&warnings);
     if dry_run {
         return Ok(format!(
-            "deploy plan bundle={} host={} target={} remote_dir={} entry={}{}",
+            "deploy plan bundle={} host={} target={} remote_dir={} entry={}{}{}",
             bundle.display(),
             host,
             target,
             remote_dir,
             manifest.entry,
+            deploy_artifact_suffix(&selected_artifacts),
             warning
         ));
     }
@@ -1611,6 +1613,103 @@ fn deploy_warning_suffix(warnings: &[String]) -> String {
     } else {
         format!(" warning={}", warnings.join("; "))
     }
+}
+
+fn deploy_artifact_suffix(selection: &DeployArtifactSelection) -> String {
+    if selection.count == 0 {
+        String::new()
+    } else {
+        format!(
+            " artifacts={} platforms=[{}]",
+            selection.count,
+            selection.platforms.join(",")
+        )
+    }
+}
+
+fn select_deploy_artifacts(
+    bundle: &Path,
+    manifest: &BundleManifest,
+    target: &str,
+) -> Result<DeployArtifactSelection> {
+    ensure_safe_relative_path(Path::new(&manifest.entry))?;
+    if manifest.schema_version < 2 || manifest.artifacts.is_empty() {
+        if manifest.target != target {
+            anyhow::bail!(
+                "bundle target `{}` does not match requested target `{target}`",
+                manifest.target
+            );
+        }
+        return Ok(DeployArtifactSelection {
+            count: 0,
+            platforms: Vec::new(),
+        });
+    }
+
+    let mut platforms = Vec::new();
+    let mut count = 0usize;
+    for artifact in manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.target == target)
+    {
+        validate_bundle_artifact(bundle, artifact)?;
+        count += 1;
+        if let Some(platform) = &artifact.platform {
+            let canonical = TargetPlatform::parse_alias(platform)
+                .with_context(|| {
+                    format!(
+                        "bundle artifact `{}` declares unsupported platform `{platform}`",
+                        artifact.path.display()
+                    )
+                })?
+                .as_str()
+                .to_string();
+            if !platforms.iter().any(|existing| existing == &canonical) {
+                platforms.push(canonical);
+            }
+        }
+    }
+    if count == 0 {
+        anyhow::bail!("bundle does not contain deployable artifacts for target `{target}`");
+    }
+    platforms.sort();
+    Ok(DeployArtifactSelection { count, platforms })
+}
+
+fn validate_bundle_artifact(bundle: &Path, artifact: &BundleArtifact) -> Result<()> {
+    ensure_safe_relative_path(&artifact.path)?;
+    let platform = artifact.platform.as_deref().with_context(|| {
+        format!(
+            "bundle artifact `{}` is missing platform metadata",
+            artifact.path.display()
+        )
+    })?;
+    TargetPlatform::parse_alias(platform).with_context(|| {
+        format!(
+            "bundle artifact `{}` declares unsupported platform `{platform}`",
+            artifact.path.display()
+        )
+    })?;
+    let path = bundle.join(&artifact.path);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("bundle artifact `{}` does not exist", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!(
+            "bundle artifact `{}` must be a regular file",
+            artifact.path.display()
+        );
+    }
+    let actual_hash = file_sha256(&path)?;
+    if actual_hash != artifact.sha256 {
+        anyhow::bail!(
+            "bundle artifact `{}` sha256 mismatch: manifest has {}, actual is {}",
+            artifact.path.display(),
+            artifact.sha256,
+            actual_hash
+        );
+    }
+    Ok(())
 }
 
 fn validate_remote_flowrt_version_check(
