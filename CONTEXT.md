@@ -219,6 +219,12 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
 - RSDL / Contract IR 支持 `kind = "io_boundary"` component，并记录 resource
   requirement、side effect、readiness、health 和 shutdown policy；launch manifest 与
   self-description 输出对应摘要，runtime/codegen 用户 API 仍是后续主路径。
+- target platform 输入统一归一化为 `linux-amd64` / `linux-arm64`；`linux-x86_64` 和
+  `linux-aarch64` 只作为旧输入别名接受，落盘 IR、自描述和 bundle manifest 均输出
+  canonical 字符串。
+- `flowrt bundle` 输出 schema v2，保留旧 deploy 字段，并新增 artifact 列表记录
+  target、platform、相对路径和 sha256；external package executable 在 bundle 阶段按
+  target platform 校验支持矩阵。
 
 `v0.7.0` 已落地 external package 主路径：
 

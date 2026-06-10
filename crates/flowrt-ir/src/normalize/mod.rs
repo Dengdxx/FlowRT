@@ -233,6 +233,10 @@ backends = ["inproc"]
         );
         assert_eq!(ir.graphs[0].tasks[0].period_ms, Some(5));
         assert_eq!(ir.profiles[0].scheduler.worker_threads, 3);
+        assert_eq!(
+            ir.targets[0].platform,
+            Some(crate::TargetPlatform::LinuxAmd64)
+        );
     }
 
     #[test]
@@ -297,6 +301,31 @@ backends = ["zenoh"]
             external.required_backends,
             vec![crate::BackendName("zenoh".to_string())]
         );
+    }
+
+    #[test]
+    fn rejects_unknown_target_platform() {
+        let source = r#"
+[package]
+name = "bad_platform"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+
+[target.edge]
+platform = "linux-riscv64"
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source)).unwrap_err();
+
+        assert!(error.to_string().contains("unsupported target platform"));
+        assert!(error.to_string().contains("linux-riscv64"));
     }
 
     #[test]

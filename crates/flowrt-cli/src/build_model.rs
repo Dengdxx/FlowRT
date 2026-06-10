@@ -247,10 +247,16 @@ impl CacheLayout {
 pub struct BuildInfo {
     pub schema_version: u32,
     pub flowrt_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     pub rsdl_profile: Option<String>,
     pub build_mode: BuildMode,
     pub deps_target_dir: Option<PathBuf>,
     pub executables: BuildExecutables,
+    #[serde(default)]
+    pub artifacts: Vec<BuildArtifactInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -259,6 +265,15 @@ pub struct BuildExecutables {
     pub supervisor: Option<PathBuf>,
     pub cpp_app: Option<PathBuf>,
     pub ros2_bridge: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildArtifactInfo {
+    pub kind: String,
+    pub target: String,
+    pub platform: Option<String>,
+    pub path: PathBuf,
+    pub sha256: String,
 }
 
 impl BuildInfo {
@@ -271,10 +286,13 @@ impl BuildInfo {
         Self {
             schema_version: BUILD_INFO_SCHEMA_VERSION,
             flowrt_version: flowrt_version.into(),
+            target: None,
+            platform: None,
             rsdl_profile,
             build_mode,
             deps_target_dir,
             executables: BuildExecutables::default(),
+            artifacts: Vec::new(),
         }
     }
 

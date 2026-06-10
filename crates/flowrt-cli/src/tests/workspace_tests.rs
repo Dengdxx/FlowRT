@@ -161,7 +161,7 @@ license = "MIT"
 [[executable]]
 name = "driver"
 path = "bin/driver"
-platforms = ["linux-x86_64"]
+platforms = ["linux-amd64", "linux-arm64"]
 backends = ["zenoh"]
 health = "process_started"
 "#,
@@ -243,6 +243,39 @@ health = "runtime_socket"
 }
 
 #[test]
+fn external_check_rejects_unknown_platform() {
+    let root = temp_test_dir("external-check-platform");
+    let package = root.join("bad_driver");
+    std::fs::create_dir_all(package.join("bin")).unwrap();
+    std::fs::write(package.join("bin/driver"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        package.join("flowrt-external.toml"),
+        r#"
+[package]
+name = "bad_driver"
+version = "0.1.0"
+flowrt_version = "0.7"
+license = "MIT"
+
+[[executable]]
+name = "driver"
+path = "bin/driver"
+platforms = ["linux-riscv64"]
+backends = ["zenoh"]
+health = "runtime_socket"
+"#,
+    )
+    .unwrap();
+
+    let error = external_check_package_dir(&package).unwrap_err();
+
+    assert!(error.to_string().contains("unsupported platform"));
+    assert!(error.to_string().contains("linux-riscv64"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn bundle_workspace_copies_built_artifacts_and_external_package() {
     let root = temp_test_dir("bundle-workspace");
     let rsdl_dir = root.join("rsdl");
@@ -264,7 +297,7 @@ license = "MIT"
 [[executable]]
 name = "driver"
 path = "bin/driver"
-platforms = ["linux-x86_64"]
+platforms = ["linux-amd64", "linux-arm64"]
 backends = ["zenoh"]
 health = "process_started"
 "#,
@@ -350,7 +383,25 @@ backends = ["zenoh"]
     assert_eq!(manifest.target, "pi");
     assert_eq!(manifest.platform.as_deref(), Some("linux-arm64"));
     assert_eq!(manifest.entry, "bin/external-demo-flowrt-supervisor");
+    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(manifest.artifacts.len(), 2);
+    assert!(manifest.artifacts.iter().any(|artifact| {
+        artifact.kind == "supervisor" && artifact.platform.as_deref() == Some("linux-arm64")
+    }));
+    assert!(manifest.artifacts.iter().any(|artifact| {
+        artifact.kind == "external_process" && artifact.platform.as_deref() == Some("linux-arm64")
+    }));
+    assert!(
+        manifest
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.sha256.len() == 64)
+    );
     assert_eq!(manifest.external_processes.len(), 1);
+    assert_eq!(
+        manifest.external_processes[0].supported_platforms,
+        vec!["linux-amd64".to_string(), "linux-arm64".to_string()]
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -410,6 +461,7 @@ fn deploy_bundle_dry_run_reports_plan() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -444,6 +496,7 @@ fn deploy_bundle_rejects_target_mismatch() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -486,6 +539,7 @@ fn deploy_bundle_allows_patch_version_mismatch_with_warning() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -526,6 +580,7 @@ fn deploy_bundle_rejects_minor_version_mismatch() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -561,6 +616,7 @@ fn deploy_bundle_rejects_option_like_host_even_in_dry_run() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -596,6 +652,7 @@ fn deploy_bundle_rejects_empty_host_even_in_dry_run() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -630,6 +687,7 @@ fn deploy_bundle_rejects_empty_remote_dir_even_in_dry_run() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),
@@ -664,6 +722,7 @@ fn deploy_bundle_rejects_unsafe_remote_dir_even_in_dry_run() {
         entry: "bin/external-demo-flowrt-supervisor".into(),
         executables: vec![],
         external_processes: vec![],
+        artifacts: vec![],
     };
     std::fs::write(
         bundle.join("bundle.toml"),

@@ -12,7 +12,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
 use flowrt_ir::{
-    ContractIr, LanguageKind, hash_source, normalize_loaded_document, project_contract_to_profile,
+    ContractIr, LanguageKind, TargetPlatform, hash_source, normalize_loaded_document,
+    project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
 use serde::{Deserialize, Serialize};
@@ -854,10 +855,11 @@ fn external_list_packages(path: &Path) -> Result<String> {
             .executable
             .iter()
             .map(|executable| {
+                let platforms = canonical_external_platforms(&executable.platforms).join(",");
                 format!(
                     "{} platforms=[{}] backends=[{}] health={}",
                     executable.name,
-                    executable.platforms.join(","),
+                    platforms,
                     executable.backends.join(","),
                     executable.health
                 )
@@ -933,10 +935,7 @@ fn validate_external_manifest(
             );
         }
         for platform in &executable.platforms {
-            if !matches!(
-                platform.as_str(),
-                "linux-x86_64" | "linux-amd64" | "linux-arm64" | "linux-aarch64"
-            ) {
+            if TargetPlatform::parse_alias(platform).is_none() {
                 anyhow::bail!(
                     "external package `{}` executable `{}` declares unsupported platform `{}`",
                     manifest.package.name,
@@ -975,6 +974,17 @@ fn validate_external_manifest(
         }
     }
     Ok(())
+}
+
+fn canonical_external_platforms(platforms: &[String]) -> Vec<String> {
+    let mut canonical = platforms
+        .iter()
+        .filter_map(|platform| TargetPlatform::parse_alias(platform).map(|value| value.as_str()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    canonical.sort();
+    canonical.dedup();
+    canonical
 }
 
 fn validate_manifest_executable_path(
@@ -1044,6 +1054,8 @@ struct BundleManifest {
     executables: Vec<BundleExecutable>,
     #[serde(default)]
     external_processes: Vec<BundleExternalProcess>,
+    #[serde(default)]
+    artifacts: Vec<BundleArtifact>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1058,6 +1070,19 @@ struct BundleExternalProcess {
     package: String,
     executable: String,
     path: PathBuf,
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    supported_platforms: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BundleArtifact {
+    kind: String,
+    target: String,
+    platform: Option<String>,
+    path: PathBuf,
+    sha256: String,
 }
 
 #[derive(Debug)]
@@ -1094,6 +1119,8 @@ fn bundle_workspace(
         );
     }
     ensure_bundle_output_dir(output)?;
+    let target_name = bundle_target_name(contract);
+    let target_platform = bundle_target_platform(contract);
 
     copy_required_file(
         &prepared_contract_path(out_dir),
@@ -1113,6 +1140,7 @@ fn bundle_workspace(
     )?;
 
     let mut executables = Vec::new();
+    let mut artifacts = Vec::new();
     let mut strip_stats = BundleStripStats::default();
     for (kind, relative) in [
         ("supervisor", build_info.executables.supervisor.as_ref()),
@@ -1136,8 +1164,16 @@ fn bundle_workspace(
                 )
             })?;
             let dest = PathBuf::from("bin").join(file_name);
-            copy_required_file(&source, &output.join(&dest))?;
-            strip_stats.record(strip_bundle_executable(&output.join(&dest))?);
+            let dest_abs = output.join(&dest);
+            copy_required_file(&source, &dest_abs)?;
+            strip_stats.record(strip_bundle_executable(&dest_abs)?);
+            artifacts.push(BundleArtifact {
+                kind: kind.to_string(),
+                target: target_name.clone(),
+                platform: target_platform.clone(),
+                path: dest.clone(),
+                sha256: file_sha256(&dest_abs)?,
+            });
             executables.push(BundleExecutable {
                 kind: kind.to_string(),
                 path: dest,
@@ -1150,13 +1186,40 @@ fn bundle_workspace(
     for graph in &contract.graphs {
         for external in &graph.external_processes {
             let package_root = resolve_external_package_root(&project_root, external)?;
+            let manifest = load_external_manifest(&package_root)?;
+            validate_external_manifest(&package_root, &manifest)?;
+            let executable_metadata = select_external_executable_metadata(&manifest, external)?;
+            let supported_platforms = canonical_external_platforms(&executable_metadata.platforms);
+            if let Some(platform) = &target_platform {
+                if !supported_platforms
+                    .iter()
+                    .any(|candidate| candidate == platform)
+                {
+                    anyhow::bail!(
+                        "external package `{}` executable `{}` does not support target platform `{}`",
+                        external.package,
+                        external.executable,
+                        platform
+                    );
+                }
+            }
             let dest = PathBuf::from("external").join(&external.package);
             copy_dir_recursive(&package_root, &output.join(&dest))?;
+            let artifact_path = dest.join(&external.executable);
+            artifacts.push(BundleArtifact {
+                kind: "external_process".to_string(),
+                target: target_name.clone(),
+                platform: target_platform.clone(),
+                path: artifact_path.clone(),
+                sha256: file_sha256(&output.join(&artifact_path))?,
+            });
             external_processes.push(BundleExternalProcess {
                 process: external.process.clone(),
                 package: external.package.clone(),
                 executable: external.executable.clone(),
                 path: dest,
+                platform: target_platform.clone(),
+                supported_platforms,
             });
         }
     }
@@ -1167,17 +1230,18 @@ fn bundle_workspace(
         .map(|executable| executable.path.clone())
         .context("internal error: bundle entry supervisor executable was not copied")?;
     let manifest = BundleManifest {
-        schema_version: 1,
+        schema_version: 2,
         flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
         package: contract.package.name.clone(),
         profile: build_info.rsdl_profile,
-        target: bundle_target_name(contract),
-        platform: bundle_target_platform(contract),
+        target: target_name,
+        platform: target_platform,
         build_mode: build_info.build_mode,
         created_unix_ms: current_unix_ms(),
         entry: entry.to_string_lossy().into_owned(),
         executables,
         external_processes,
+        artifacts,
     };
     let mut manifest_toml = toml::to_string_pretty(&manifest)?;
     manifest_toml.push('\n');
@@ -1326,6 +1390,28 @@ fn resolve_external_package_root(
     )
 }
 
+fn select_external_executable_metadata<'a>(
+    manifest: &'a ExternalPackageManifest,
+    external: &flowrt_ir::ExternalProcessIr,
+) -> Result<&'a ExternalExecutableMetadata> {
+    manifest
+        .executable
+        .iter()
+        .find(|executable| executable.path == PathBuf::from(&external.executable))
+        .or_else(|| {
+            manifest
+                .executable
+                .iter()
+                .find(|executable| executable.name == external.executable)
+        })
+        .with_context(|| {
+            format!(
+                "external package `{}` manifest does not describe executable `{}`",
+                external.package, external.executable
+            )
+        })
+}
+
 fn push_external_search_entry(roots: &mut Vec<PathBuf>, entry: PathBuf, package: &str) {
     push_unique_external_path(roots, entry.clone());
     push_unique_external_path(roots, entry.join(package));
@@ -1361,6 +1447,22 @@ fn copy_required_file(source: &Path, dest: &Path) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open `{}`", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)
+            .with_context(|| format!("failed to read `{}`", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_lower(&hasher.finalize()))
 }
 
 fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
@@ -1418,7 +1520,11 @@ fn bundle_target_platform(contract: &ContractIr) -> Option<String> {
         .targets
         .iter()
         .find(|target| target.name == target_name)
-        .and_then(|target| target.platform.clone())
+        .and_then(|target| {
+            target
+                .platform
+                .map(|platform| platform.as_str().to_string())
+        })
 }
 
 fn current_unix_ms() -> u64 {
@@ -1591,7 +1697,7 @@ fn load_bundle_manifest(bundle: &Path) -> Result<LoadedBundleManifest> {
         .with_context(|| format!("failed to read bundle manifest `{}`", path.display()))?;
     let manifest: BundleManifest = toml::from_str(&source)
         .with_context(|| format!("failed to parse bundle manifest `{}`", path.display()))?;
-    if manifest.schema_version != 1 {
+    if !matches!(manifest.schema_version, 1 | 2) {
         anyhow::bail!(
             "unsupported FlowRT bundle schema version {} in `{}`",
             manifest.schema_version,
@@ -2547,6 +2653,7 @@ fn build_workspace(
                 )?;
                 let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
                 build_info.executables.rust_app = Some(relative_to_out_dir(out_dir, &local)?);
+                record_build_artifact(&mut build_info, "rust_app", out_dir, &local)?;
             }
             BuildStep::CargoSupervisor => {
                 let manifest =
@@ -2565,17 +2672,20 @@ fn build_workspace(
                 )?;
                 let local = copy_executable_to_local_bin(out_dir, build_mode, &built)?;
                 build_info.executables.supervisor = Some(relative_to_out_dir(out_dir, &local)?);
+                record_build_artifact(&mut build_info, "supervisor", out_dir, &local)?;
             }
             BuildStep::CmakeApp => {
                 let built = run_cmake_configure_and_build(contract, out_dir, build_mode)?;
                 if let Some(cpp_app) = built.cpp_app {
                     let local = copy_executable_to_local_bin(out_dir, build_mode, &cpp_app)?;
                     build_info.executables.cpp_app = Some(relative_to_out_dir(out_dir, &local)?);
+                    record_build_artifact(&mut build_info, "cpp_app", out_dir, &local)?;
                 }
                 if let Some(ros2_bridge) = built.ros2_bridge {
                     let local = copy_executable_to_local_bin(out_dir, build_mode, &ros2_bridge)?;
                     build_info.executables.ros2_bridge =
                         Some(relative_to_out_dir(out_dir, &local)?);
+                    record_build_artifact(&mut build_info, "ros2_bridge", out_dir, &local)?;
                 }
             }
         }
@@ -2656,12 +2766,35 @@ fn build_info_for_contract(
     contract: &ContractIr,
     build_mode: BuildMode,
 ) -> Result<build_model::BuildInfo> {
-    Ok(build_model::BuildInfo::new(
+    let mut info = build_model::BuildInfo::new(
         env!("CARGO_PKG_VERSION"),
         selected_prepared_profile_name(contract).map(str::to_string),
         build_mode,
         None,
-    ))
+    );
+    info.target = Some(bundle_target_name(contract));
+    info.platform = bundle_target_platform(contract);
+    Ok(info)
+}
+
+fn record_build_artifact(
+    build_info: &mut build_model::BuildInfo,
+    kind: &str,
+    out_dir: &Path,
+    local: &Path,
+) -> Result<()> {
+    let relative = relative_to_out_dir(out_dir, local)?;
+    build_info.artifacts.push(build_model::BuildArtifactInfo {
+        kind: kind.to_string(),
+        target: build_info
+            .target
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+        platform: build_info.platform.clone(),
+        path: relative,
+        sha256: file_sha256(local)?,
+    });
+    Ok(())
 }
 
 fn load_build_info(

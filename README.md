@@ -163,7 +163,7 @@ default_stale_policy = "warn"
 max_age_ms = 50
 
 [target.linux]
-platform = "linux-x86_64"
+platform = "linux-amd64"
 runtime = ["cpp"]
 backends = ["inproc"]
 ```
@@ -267,7 +267,7 @@ license = "MIT"
 [[executable]]
 name = "driver"
 path = "bin/driver"
-platforms = ["linux-x86_64", "linux-arm64"]
+platforms = ["linux-amd64", "linux-arm64"]
 backends = ["zenoh"]
 health = "process_started"
 ```

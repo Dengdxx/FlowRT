@@ -50,11 +50,11 @@ default_overflow = "drop_oldest"
 default_stale_policy = "warn"
 
 [target.rust_host]
-platform = "linux-x86_64"
+platform = "linux-amd64"
 runtime = ["rust"]
 backends = ["zenoh"]
 
 [target.cpp_host]
-platform = "linux-aarch64"
+platform = "linux-arm64"
 runtime = ["cpp"]
 backends = ["zenoh"]

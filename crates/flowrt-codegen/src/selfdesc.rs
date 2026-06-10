@@ -120,7 +120,9 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
             .iter()
             .map(|target| SelfDescriptionTarget {
                 name: target.name.clone(),
-                platform: target.platform.clone(),
+                platform: target
+                    .platform
+                    .map(|platform| platform.as_str().to_string()),
                 runtimes: target
                     .runtime
                     .iter()

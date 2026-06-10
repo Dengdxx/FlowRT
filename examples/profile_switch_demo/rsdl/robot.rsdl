@@ -31,6 +31,6 @@ default_overflow = "drop_oldest"
 default_stale_policy = "warn"
 
 [target.linux]
-platform = "linux-x86_64"
+platform = "linux-amd64"
 runtime = ["rust"]
 backends = ["inproc", "iox2"]

@@ -1,6 +1,8 @@
 use flowrt_rsdl::RawDocument;
 
-use crate::{BackendName, LanguageKind, Result, TargetIr, target_capabilities};
+use crate::{
+    BackendName, IrError, LanguageKind, Result, TargetIr, TargetPlatform, target_capabilities,
+};
 
 use super::ids::entity_id;
 use super::modules::parse_language;
@@ -20,13 +22,29 @@ pub(super) fn normalize_targets(document: &RawDocument) -> Result<Vec<TargetIr>>
             Ok(TargetIr {
                 id: entity_id("target", name),
                 name: name.clone(),
-                platform: raw.platform.clone(),
+                platform: normalize_target_platform(name, raw.platform.as_deref())?,
                 runtime: normalize_target_runtime(name, raw)?,
                 capabilities: target_capabilities(&backends),
                 backends,
             })
         })
         .collect()
+}
+
+fn normalize_target_platform(
+    target_name: &str,
+    platform: Option<&str>,
+) -> Result<Option<TargetPlatform>> {
+    platform
+        .map(|platform| {
+            TargetPlatform::parse_alias(platform).ok_or_else(|| IrError::InvalidValue {
+                context: format!("target.{target_name}.platform"),
+                message: format!(
+                    "unsupported target platform `{platform}`; expected `linux-amd64` or `linux-arm64`"
+                ),
+            })
+        })
+        .transpose()
 }
 
 fn normalize_target_runtime(

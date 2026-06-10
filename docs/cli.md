@@ -125,12 +125,12 @@ license = "MIT"
 [[executable]]
 name = "driver"
 path = "bin/driver"
-platforms = ["linux-x86_64", "linux-arm64"]
+platforms = ["linux-amd64", "linux-arm64"]
 backends = ["zenoh"]
 health = "process_started"
 ```
 
-`check` 会校验 package metadata、executable 路径、platform、backend 和 health 字段；不会启动进程，也不会隐式编译 external package。`list --path <dir>` 会扫描目录下一层 package 并输出 executable/platform/backend 摘要。
+`check` 会校验 package metadata、executable 路径、platform、backend 和 health 字段；不会启动进程，也不会隐式编译 external package。platform 当前支持 `linux-amd64` / `linux-arm64`，`linux-x86_64` / `linux-aarch64` 只作为旧输入别名接受，`list --path <dir>` 输出 canonical 名称。
 
 RSDL 通过 `language = "external"` 和 graph 级 `[[external_process]]` 引用该 package：
 
@@ -222,12 +222,12 @@ flowrt bundle examples/external_driver_demo/rsdl/robot.rsdl --output dist/extern
 
 bundle 输出是目录，包含：
 
-- `bundle.toml`：FlowRT 版本、package、profile、target、platform、build mode、入口 binary 和 external package 摘要。
+- `bundle.toml`：FlowRT 版本、package、profile、target、platform、build mode、入口 binary、external package 摘要和 `artifacts` 列表；artifact 记录 kind、target、platform、相对路径和 sha256，是后续多目标 deploy 的事实源。
 - `bin/`：本项目已构建二进制。复制到 bundle 后会对 ELF 可执行文件 best-effort 运行 `strip --strip-unneeded`；非 ELF 文件跳过，strip 不可用或失败时在命令摘要中累计 `strip_warnings`，不修改用户工作区原始产物。
 - `flowrt/contract/contract.ir.json`、`flowrt/launch/launch.json`、`flowrt/selfdesc/selfdesc.json` 和 `flowrt/build/build-info.json`。
 - `external/<package>`：随项目携带的 external package 副本。
 
-输出目录必须不存在或为空，避免覆盖已有部署内容。bundle 不包含 FlowRT 源码仓库、不包含 Cargo target cache，也不内嵌系统 FlowRT runtime；目标机器应安装同版本 FlowRT deb。
+输出目录必须不存在或为空，避免覆盖已有部署内容。bundle 会按 target platform 校验 external executable 的支持矩阵。bundle 不包含 FlowRT 源码仓库、不包含 Cargo target cache，也不内嵌系统 FlowRT runtime；目标机器应安装同版本 FlowRT deb。
 
 ## `deploy`
 

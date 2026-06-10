@@ -133,6 +133,6 @@ default_stale_policy = "warn"
 max_age_ms = 20
 
 [target.linux]
-platform = "linux-x86_64"
+platform = "linux-amd64"
 runtime = ["cpp", "rust"]
 backends = ["inproc", "iox2"]

@@ -7,6 +7,6 @@ license = "MIT"
 [[executable]]
 name = "driver"
 path = "bin/driver"
-platforms = ["linux-x86_64", "linux-arm64"]
+platforms = ["linux-amd64", "linux-arm64"]
 backends = ["zenoh"]
 health = "process_started"

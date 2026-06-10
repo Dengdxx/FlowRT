@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -630,10 +630,63 @@ pub struct PolicyDefaults {
 pub struct TargetIr {
     pub id: EntityId,
     pub name: String,
-    pub platform: Option<String>,
+    pub platform: Option<TargetPlatform>,
     pub runtime: Vec<LanguageKind>,
     pub backends: Vec<BackendName>,
     pub capabilities: Vec<CapabilityAtom>,
+}
+
+/// FlowRT 当前支持的部署目标平台。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TargetPlatform {
+    LinuxAmd64,
+    LinuxArm64,
+}
+
+impl TargetPlatform {
+    pub fn parse_alias(value: &str) -> Option<Self> {
+        match value {
+            "linux-amd64" | "linux-x86_64" => Some(Self::LinuxAmd64),
+            "linux-arm64" | "linux-aarch64" => Some(Self::LinuxArm64),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LinuxAmd64 => "linux-amd64",
+            Self::LinuxArm64 => "linux-arm64",
+        }
+    }
+}
+
+impl fmt::Display for TargetPlatform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for TargetPlatform {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TargetPlatform {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse_alias(&value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unsupported target platform `{value}`; expected `linux-amd64` or `linux-arm64`"
+            ))
+        })
+    }
 }
 
 /// graph、profile、target 和 backend 组合后的部署结果。
