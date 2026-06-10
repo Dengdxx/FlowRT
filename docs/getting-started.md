@@ -21,11 +21,10 @@ flowrt --version
 面向用户的入口是系统安装后的 `flowrt ...`。单包 `flowrt` 会同时安装 CLI、Rust runtime crate、C++ runtime header、CMake package、私有 Rust crate vendor、`iceoryx2-cxx 0.9.1`、`zenoh-c 1.9.0` 和 `zenoh-cpp 1.9.0`。这些版本锁定依赖位于 `/opt/flowrt/<version>` 私有前缀，用户项目不需要克隆 FlowRT 仓库，也不需要手动安装 iox2 或 zenoh C++ SDK。Rust 用户组件当前仍通过 Cargo 构建生成 app，因此目标机仍需要 Rust toolchain；C++ 用户组件仍需要 C++20 编译器、CMake 和 CTest。仓库开发者可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但文档、示例和对外说明应默认使用系统 PATH 中的 `flowrt ...`。
 
 安装包还会在 `/opt/flowrt/<version>/targets/<platform>` 下提供 target SDK 布局基础。
-当前原生打包架构对应的目录包含 `include/`、`lib/`、`cmake/`、`pkgconfig/` 和
-`flowrt-target-sdk.toml`；manifest 中 `complete = true` 表示该目录可作为当前架构的
-C++ SDK 查找事实源。另一架构目录会先安装空目录和 `complete = false` marker，说明该
-架构库尚未由当前原生包内嵌；完整 `amd64 host` 包内嵌 `arm64` SDK 需要后续 CI 聚合任务
-补齐。
+amd64 安装包会同时提供 `linux-amd64` 本机 SDK 和 `linux-arm64` 交叉 target SDK；
+manifest 中 `complete = true` 表示该目录可作为对应架构的 C++ SDK 查找事实源。arm64
+安装包当前只承诺本机 `linux-arm64` SDK 完整，不承诺反向 `linux-arm64 -> linux-amd64`
+交叉编译。
 
 首次构建前先补全底层依赖缓存：
 
@@ -44,6 +43,7 @@ flowrt deps examples/import_demo/rsdl/robot.rsdl
 交叉编译时，用 target platform 选择 toolchain profile：
 
 ```bash
+flowrt doctor --target linux-arm64
 flowrt deps examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 ```
@@ -53,7 +53,9 @@ platform；省略时如果选定 Contract IR target 已声明 platform，CLI 会
 否则保持 native 构建。Rust/Cargo 路径会传递对应 `--target <rust-target-triple>`，缺少
 Rust target 时需要先执行 `rustup target add <triple>` 或配置本机 Rust toolchain。
 含 C++/CMake 产物时，CLI 会使用对应 target SDK、toolchain file 或 C/C++ compiler
-配置。FlowRT 不自动下载系统交叉编译器或板级 SDK。
+配置。amd64 安装包内嵌完整 `linux-arm64` FlowRT target SDK；板级私有 SDK 通过
+toolchain profile 的 `sdk_overlays`、`cmake_prefix_paths`、`pkg_config_libdirs` 或
+`sysroot` 接入，不写进 RSDL。FlowRT 不自动下载系统交叉编译器或板级 SDK。
 
 ## 检查 RSDL
 

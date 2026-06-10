@@ -5,21 +5,23 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.2`。`v0.8.2` 聚焦安装版 FlowRT 的交叉编译
-主路径，先锁定 `linux-amd64` host 到 `linux-arm64` target：RSDL target 继续描述
-目标语义，toolchain profile 描述本机如何编译，安装包内的 target SDK 目录提供目标
-架构 CMake、pkg-config、include 和 lib 事实源。交叉编译器、sysroot、CMake toolchain
-和 pkg-config 路径由 toolchain profile / FlowRT target SDK 提供，不写入 RSDL 或
-Contract IR。标准路径不依赖从目标机拉取整棵目录；板级私有依赖需要通过显式
-sysroot 或 SDK overlay 接入。`v0.8.2` 不自动下载系统交叉编译工具链，也不把 C++
-backend SDK 查找负担推给普通用户；完整双架构 SDK 聚合由后续 CI/package 任务补齐。
+当前 workspace 版本为 `0.8.3`。`v0.8.3` 聚焦安装版 FlowRT 的完整
+`linux-amd64` host 到 `linux-arm64` target 交叉编译主路径：amd64 deb 内嵌完整
+`linux-arm64` target SDK，包含 FlowRT C++ runtime、`iceoryx2-cxx`、`zenoh-c`、
+`zenoh-cpp`、CMake package 和 pkg-config 事实源。RSDL target 继续描述目标语义，
+toolchain profile 描述本机如何编译；交叉编译器、sysroot、CMake toolchain、
+pkg-config 路径、SDK overlay 和 runtime dependency policy 都属于 toolchain/profile
+配置，不写入 RSDL 或 Contract IR。标准路径不依赖从目标机拉取整棵目录；板级私有
+依赖通过显式 sysroot 或 SDK overlay 接入，由 `flowrt doctor --target <platform>`
+提前诊断。
 当前 CLI 已接通 `flowrt deps/build --target <platform>` 的交叉编译主路径：显式
 `--target` 优先，否则从选定 Contract IR target platform 推导，仍无 platform 时保持
 native 构建。Rust/Cargo 会使用对应 Rust target triple，并把 cache key、ready marker
 和输出路径按 triple 隔离；C++/CMake 有完整 target SDK 时会优先使用
 `targets/<platform>` 的 prefix、toolchain profile 中的 compiler/sysroot 或 CMake
 toolchain file，并设置 cross build 的 `PKG_CONFIG_LIBDIR`；target SDK 缺失或
-`complete = false` 会清晰报错。
+`complete = false` 会清晰报错。FlowRT 当前只承诺 `linux-amd64 -> linux-arm64` 交叉
+编译，不承诺 `linux-arm64 -> linux-amd64`。
 CI/release 侧使用两层缓存降低重复构建成本：Rust/Cargo job 使用按架构隔离的
 GitHub Actions cache；安装后 package/demo/ROS2 smoke 使用外部传入的
 `FLOWRT_CACHE_DIR` 缓存 FlowRT 底层依赖预热结果。deb 成品、release notes 和
@@ -102,6 +104,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.8.0` | 真实机器人应用接入边界、variable frame 工程化、多目标部署和发布硬化。 |
 | `v0.8.1` | 标准 FrameDescriptor、descriptor-only 大 payload 观测/录制和安装后 smoke。 |
 | `v0.8.2` | `linux-amd64` host 到 `linux-arm64` target 的交叉编译支持基础。 |
+| `v0.8.3` | 完整 `linux-amd64 -> linux-arm64` target SDK、SDK overlay、doctor 预检和真实交叉 smoke。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -290,25 +293,29 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   CI 增加 `v0.8.1 FrameDescriptor Smoke` amd64/arm64 focused gate，安装后 demo smoke
   增加 `scripts/test-v081-installed-smoke.sh`。
 
-当前 `v0.8.2` 已落地边界：
+当前 `v0.8.3` 已落地边界：
 
 - `flowrt deps` 和 `flowrt build` 支持 `--target linux-amd64|linux-arm64`。显式
   `--target` 优先于 Contract IR target platform；仍无 platform 时保持 native 构建。
 - CLI 内部有 toolchain profile 配置层，维护 target platform 到 Rust target triple、
-  Debian multiarch、默认 C/C++ compiler、sysroot、CMake toolchain file 和 pkg-config
-  路径的映射；profile 配置不写入 RSDL 或 Contract IR。
+  Debian multiarch、默认 C/C++ compiler、sysroot、CMake toolchain file、pkg-config
+  路径、SDK overlay 和 runtime dependency policy 的映射；profile 配置不写入 RSDL
+  或 Contract IR。
 - Rust/Cargo build 和 deps prewarm 会使用对应 Rust target triple，并把 cache key、
   ready marker、Cargo target dir 和本地二进制输出按 target 隔离。
 - C++/CMake cross build 会优先使用 `/opt/flowrt/<version>/targets/<platform>` 的
   target SDK root、CMake wrapper、pkg-config、include 和 lib 事实源；SDK 缺失或
   `complete = false` 时 fail-fast。
-- 单架构 deb 内嵌本架构 complete target SDK，并为另一架构写入 placeholder manifest
-  `complete = false`，避免错误地把 host SDK 当 target SDK 使用。
+- amd64 deb 内嵌 `linux-amd64` 和 `linux-arm64` 两个 complete target SDK；arm64 deb
+  当前只保证 `linux-arm64` complete，不承诺反向 `linux-arm64 -> linux-amd64`。
+- 新增 `flowrt doctor --target <platform>`，用于预检 Rust target、C/C++ 交叉编译器、
+  target SDK、sysroot、CMake toolchain、pkg-config 路径和 SDK overlay。
 - `flowrt bundle` 优先读取 `build-info.json` 中的 artifact closure；带 platform 的
   项目二进制复制到 bundle 的 `bin/<platform>/`，`deploy` 会校验 target、platform、
   路径层级和 sha256。
-- CI 增加 `v0.8.2 amd64 to arm64 Cross Compile Smoke`，package 阶段运行 target SDK
-  layout smoke，demo smoke 运行 `scripts/test-v082-installed-smoke.sh`。
+- CI 增加 `v0.8.3 Cross Toolchain Smoke` 和 `v0.8.3 Installed amd64 to arm64 Smoke`；
+  package 阶段运行 target SDK layout smoke，安装版 cross smoke 运行
+  `scripts/test-v083-installed-smoke.sh`，并用 ELF header 验证 C++ demo 输出为 AArch64。
 
 `v0.7.0` 已落地 external package 主路径：
 
@@ -424,6 +431,7 @@ flowrt prepare path/to/robot.rsdl
 flowrt deps [path/to/robot.rsdl]
 flowrt deps --backend all
 flowrt deps [path/to/robot.rsdl] --target linux-arm64
+flowrt doctor --target linux-arm64
 flowrt build path/to/robot.rsdl
 flowrt build path/to/robot.rsdl --target linux-arm64
 flowrt run path/to/robot.rsdl
@@ -454,6 +462,8 @@ backend 为 `inproc`。
 - `deps` / `build` 的 `--target <platform>` 当前支持 `linux-amd64` 和 `linux-arm64`，
   Rust/Cargo 路径会使用 toolchain profile 中的 Rust target triple；显式 target
   优先，省略时从 Contract IR target platform 推导，仍无 platform 时保持 native。
+- `doctor --target <platform>` 只做环境预检，不生成用户产物；缺失 Rust target、
+  交叉编译器、完整 target SDK 或显式 SDK overlay 时返回非零状态。
 - `prepare` 和 `build` 会写 `flowrt/` 输出目录，必须持有 OS advisory lock。
 - `.flowrt.lock` 文件可残留，PID 只用于诊断，真实占用状态由锁判断。
 - `check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`hz`、`echo`、
@@ -551,7 +561,7 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 
 当前 `.github/workflows/ci.yml` 将 Linux 验证拆为分层 job，覆盖生成物保护、Rust
 格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1
-focused smoke、v0.8.2 交叉编译 focused smoke、打包、C++ zenoh runtime、demo smoke、
+focused smoke、v0.8.3 交叉编译 focused smoke、打包、C++ zenoh runtime、demo smoke、
 ROS2 bridge smoke 和 release。Linux job 默认
 运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个
 发行版，并安装对应的 `rmw_zenoh_cpp`。
@@ -559,13 +569,12 @@ ROS2 bridge smoke 和 release。Linux job 默认
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 focused smoke、Debian package、C++ zenoh
 runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上执行。
-`v0.8.2 amd64 to arm64 Cross Compile Smoke` 固定在 amd64 host 上准备
+`v0.8.3 Cross Toolchain Smoke` 固定在 amd64 host 上准备
 `aarch64-unknown-linux-gnu` Rust target、`aarch64-linux-gnu` C/C++ 交叉编译器和
 `pkg-config`，并运行 `flowrt-cli` 的 toolchain、build model、command 和 CMake target
-SDK focused tests。当前单架构 deb 只内嵌本架构 complete target SDK，另一架构
-target SDK 仍标记 `complete = false`，因此该 gate 不执行真实 C++ cross build；C++
-路径由 CMake target SDK 参数、fail-fast 单元测试和 package 阶段的 target SDK layout
-smoke 覆盖，不读取远端设备文件树。
+SDK focused tests。`v0.8.3 Installed amd64 to arm64 Smoke` 下载 package job 产出的
+amd64 deb，安装后运行 `flowrt doctor --target linux-arm64` 和真实
+`flowrt build --target linux-arm64` C++ demo，并用 ELF header 验证输出为 AArch64。
 package job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。
 demo smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用
 `flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构
@@ -581,13 +590,13 @@ runtime/CLI/status、record format、runtime recorder tap 和 CLI MCAP 写入路
 聚焦 external process、bundle 和 deploy；`v0.8.0 Integration Smoke` 聚焦 I/O
 boundary、variable frame、FrameDescriptor、ROS2 typed bridge、diagnostics、bundle
 和 deploy；`v0.8.1 FrameDescriptor Smoke` 聚焦标准 descriptor demo、CLI 结构化
-echo/status、descriptor-only record 和 microbench；`v0.8.2 amd64 to arm64 Cross
-Compile Smoke` 聚焦安装版交叉编译 toolchain profile、Rust target、C/C++ 交叉编译器
-和 CMake target SDK 语义。发布前应运行
+echo/status、descriptor-only record 和 microbench；`v0.8.3 Cross Toolchain Smoke`
+聚焦安装版交叉编译 toolchain profile、Rust target、C/C++ 交叉编译器和 CMake target
+SDK 语义；`v0.8.3 Installed amd64 to arm64 Smoke` 覆盖安装版真实交叉构建。发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.2 focused gate
+release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 focused gate
 覆盖状态。
-`v0.8.2` 发布由推送 `v0.8.2` tag 触发 GitHub Release。
+`v0.8.3` 发布由推送 `v0.8.3` tag 触发 GitHub Release。
 
 workflow 暂不做 cache。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生
 runner 上构建、安装和通过同等 smoke。

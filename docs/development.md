@@ -185,8 +185,9 @@ FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
 amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused smoke、
 amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integration
-focused smoke、amd64/arm64 v0.8.1 FrameDescriptor focused smoke、v0.8.2 交叉编译
-focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、amd64/arm64 demo smoke、amd64/arm64
+focused smoke、amd64/arm64 v0.8.1 FrameDescriptor focused smoke、v0.8.3 交叉编译
+focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、v0.8.3 安装版
+amd64 到 arm64 cross smoke、amd64/arm64 demo smoke、amd64/arm64
 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建
 GitHub Release，并上传 `flowrt_*_amd64.deb`、
 `flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
@@ -216,16 +217,17 @@ I/O boundary descriptor schema status、descriptor-only record 和 microbench。
 demo smoke 会运行 `scripts/test-v081-installed-smoke.sh`，验证安装版 `flowrt` 能构建
 并运行 `frame_descriptor_demo`。
 
-`v0.8.2 amd64 to arm64 Cross Compile Smoke` 固定在 amd64 host 上验证
-`linux-arm64` toolchain profile、Rust target、C/C++ 交叉编译器和 CMake target SDK
-fail-fast 语义。安装包后的 demo smoke 会运行 `scripts/test-v082-installed-smoke.sh`，
-验证安装版 target SDK manifest、`deps --target --check` 提示和 incomplete SDK 的
-C++ cross build 错误边界。
+`v0.8.3 Cross Toolchain Smoke` 固定在 amd64 host 上验证 `linux-arm64` toolchain
+profile、Rust target、C/C++ 交叉编译器、SDK overlay 配置和 CMake target SDK 参数。
+`v0.8.3 Installed amd64 to arm64 Smoke` 在 package job 产出的 amd64 deb 上运行
+`scripts/test-v083-installed-smoke.sh`，验证安装包内嵌完整 `linux-arm64` target SDK、
+`flowrt doctor --target linux-arm64` 和真实 `flowrt build --target linux-arm64`
+C++ demo，并用 ELF header 确认输出为 AArch64。
 
 发布前检查：
 
 ```bash
-version=0.8.2
+version=0.8.3
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -241,8 +243,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.8.2 -m "v0.8.2"
-git push origin v0.8.2
+git tag -a v0.8.3 -m "v0.8.3"
+git push origin v0.8.3
 ```
 
 ## 提交规则
