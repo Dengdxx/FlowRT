@@ -70,7 +70,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.6.1` | `flowrt deps`、共享依赖 cache、默认 release 构建和 deb smoke 修复。 |
 | `v0.7.0` | external process / driver package 接入边界、ARM64/跨机器部署闭环。 |
 | `v0.7.1` | v0.7.0 现有能力 hardening 和发布前缺陷修复。 |
-| `v0.8.0` | 多目标部署、交叉编译、多架构安装包和发布硬化。 |
+| `v0.8.0` | 真实机器人应用接入边界、variable frame 工程化、多目标部署和发布硬化。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -87,8 +87,11 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 - `v0.7.0` 定义 external process / driver package 的 typed 接入边界，并补齐 ARM64、
   跨机器部署和离线交付闭环。到 `v0.7.0`，FlowRT 应具备复刻一套复杂车载机器人
   应用的系统能力，但不把硬件 backend 做进 FlowRT 主项目。
-- `v0.8.0` 深化多目标部署、交叉编译、多架构安装包和发布硬化，使已生成应用可脱离
-  源码仓库交付。
+- `v0.8.0` 把多目标部署、交叉编译、多架构安装包和发布硬化推进到真实机器人应用
+  接入边界：I/O boundary component、external package 多平台交付、variable frame
+  工程化、FrameDescriptor + side-channel lease、ROS2 共存桥接和运行态诊断深化应
+  形成一条可迁移、可部署、可观测的主路径。FlowRT 仍不做硬件 backend，也不做
+  ROS2 drop-in 兼容层。
 - `v0.9.0` 扩展 C/Python API 和可选生态互操作，但仍以 FlowRT 自身语义为中心。
 - `v1.0.0` 冻结 ABI/schema 基线，并补齐兼容策略、故障注入和性能矩阵。
 
@@ -178,6 +181,38 @@ MCAP 文件。
 
 FlowRT 主项目不做硬件 backend。Linux 和外部 driver package 管硬件；FlowRT 管结构、
 执行、通信、观测、external process 生命周期和 typed 接入边界。
+
+`v0.8.0` 的目标是把 `v0.7.x` 的 external process / bundle / deploy baseline 推进为
+真实机器人应用可用的接入边界版本。它不是继续堆 runtime demo，也不是把 FlowRT 做成
+ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
+
+- **I/O boundary component 正式化**：在 `native component` 与 `external process
+  component` 之间补齐进程内 I/O boundary component 语义，用于承载自研串口、SHM、
+  UDP、Linux 采样、推理 SDK 等副作用边界。RSDL/IR/manifest 必须能表达其生命周期、
+  side effect、resource requirement、health、readiness、restart、graceful shutdown
+  和 profile/env 注入；串口 byte frame、网络 wire 和设备私有协议不得暴露成 FlowRT
+  dataflow message。
+- **Variable frame 工程化**：把 `sequence<fixed struct>`、`string`、`bytes` 和嵌套
+  variable frame 做成 Rust/C++ codegen、message ABI conformance、backend resolver、
+  self-description、`echo`/`record`/`status` 观测工具的可靠主路径。`iox2` 继续只承载
+  fixed-size plain data；涉及无界变长数据的 route 自动选择支持 variable frame 的
+  backend，不为 `iox2` 重新引入临时 envelope。
+- **FrameDescriptor + side-channel lease**：图像、mask 和其他大 payload 不作为普通
+  channel payload 承载。FlowRT channel 传递 descriptor、resource id、slot、generation、
+  size、format 和 metadata；attach / acquire / release / lease keepalive 归 I/O boundary
+  或 external package 管理。录制系统默认记录 descriptor 和事件，是否记录 payload 必须
+  显式建模。
+- **ROS2 coexistence bridge 扩展**：迁移期桥接是显式 adapter/profile，不污染 RSDL 核心
+  语义。唯一桥梁仍固定为 `zenoh`；不增加 DDS fallback。优先补齐 `FlowRT -> ROS2` 与
+  `ROS2 -> FlowRT` 的 typed subset，包括固定 header 映射、常见 pose/scan/image
+  descriptor 和必要自定义消息；FlowRT 内部 ABI 不机械复制 ROS2 wire。
+- **诊断和调试深化**：`flowrt status` / `echo` / `hz` / `record` 必须更直接回答真实
+  调试问题：哪个 input 缺失、哪个 latest stale、哪个 route drop/overflow、backend
+  为什么被选中、哪个 boundary 不健康、哪个 resource acquire 失败、哪个 process 正在
+  restart 或等待 readiness。
+- **多目标部署闭环**：继续推进原 `v0.8.0` 的部署主线。bundle manifest 应成为部署事实
+  源，支持 Linux `amd64` / `arm64` 优先的 target platform、external package 多平台
+  选择、cross build orchestration、远端 FlowRT 版本校验和 release 安装包 smoke。
 
 `v0.7.0` 已落地 external package 主路径：
 
