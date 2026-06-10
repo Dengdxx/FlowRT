@@ -1416,9 +1416,25 @@ fn cpp_sample_expr(expr: &TypeExpr, seed: usize) -> String {
         TypeExpr::Array { element, len: _ } => {
             format!(
                 "[] {{ auto value = {}{{}}; value.fill({}); return value; }}()",
-                cpp_type(expr),
+                cpp_fixture_type(expr),
                 cpp_sample_expr(element, seed)
             )
+        }
+        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            panic!(
+                "validated Message ABI v0.1 contract must not contain {}",
+                expr.canonical_syntax()
+            )
+        }
+    }
+}
+
+fn cpp_fixture_type(expr: &TypeExpr) -> String {
+    match expr {
+        TypeExpr::Primitive { .. } => cpp_type(expr),
+        TypeExpr::Named { name } => format!("flowrt_app::{}", type_identifier(name)),
+        TypeExpr::Array { element, len } => {
+            format!("std::array<{}, {}>", cpp_fixture_type(element), len)
         }
         TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(

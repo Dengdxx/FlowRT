@@ -229,6 +229,34 @@ backends = ["zenoh"]
 }
 
 #[test]
+fn cpp_message_abi_fixture_qualifies_nested_fixed_struct_array_elements() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "path_demo"
+rsdl_version = "0.1"
+
+[type.PathPoint]
+x = "f32"
+y = "f32"
+
+[type.PathFrame]
+points = "[PathPoint; 2]"
+count = "u32"
+
+[component.consumer]
+language = "cpp"
+input = ["frame:PathFrame"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+
+    assert!(cpp_abi.contains("std::array<flowrt_app::PathPoint, 2>"));
+    assert!(!cpp_abi.contains("std::array<PathPoint, 2>"));
+}
+
+#[test]
 fn message_abi_tests_assert_default_initialization_zeroes_padding_bytes() {
     let ir = contract_from_source(
         r#"
