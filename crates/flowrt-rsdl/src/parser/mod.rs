@@ -15,9 +15,10 @@ mod workspace;
 use imports::{canonicalize_existing, expand_imports, logical_source_path, read_source};
 use schema::validate_top_level_sections;
 use tables::{
-    parse_binds, parse_component, parse_external_processes, parse_instance, parse_module,
-    parse_named_tables, parse_operation_binds, parse_package, parse_processes, parse_profile,
-    parse_ros2_bridges, parse_service_binds, parse_target, parse_type, parse_workspace,
+    parse_binds, parse_boundary_endpoints, parse_component, parse_external_processes,
+    parse_instance, parse_module, parse_named_tables, parse_operation_binds, parse_package,
+    parse_processes, parse_profile, parse_ros2_bridges, parse_service_binds, parse_target,
+    parse_type, parse_workspace,
 };
 use workspace::expand_workspace;
 
@@ -35,6 +36,8 @@ struct ParsedDocument {
     service_binds: Vec<RawServiceBind>,
     operation_binds: Vec<RawOperationBind>,
     ros2_bridges: Vec<RawRos2Bridge>,
+    boundary_inputs: Vec<RawBoundaryEndpoint>,
+    boundary_outputs: Vec<RawBoundaryEndpoint>,
     profiles: BTreeMap<String, RawProfile>,
     targets: BTreeMap<String, RawTarget>,
 }
@@ -146,6 +149,8 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         service_binds: parse_service_binds(root)?,
         operation_binds: parse_operation_binds(root)?,
         ros2_bridges: parse_ros2_bridges(root)?,
+        boundary_inputs: parse_boundary_endpoints(root, "input")?,
+        boundary_outputs: parse_boundary_endpoints(root, "output")?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
     })
@@ -164,6 +169,8 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         service_binds: parsed.service_binds,
         operation_binds: parsed.operation_binds,
         ros2_bridges: parsed.ros2_bridges,
+        boundary_inputs: parsed.boundary_inputs,
+        boundary_outputs: parsed.boundary_outputs,
         profiles: parsed.profiles,
         targets: parsed.targets,
     })
@@ -216,7 +223,126 @@ backends = ["inproc"]
         assert_eq!(document.types["Imu"].fields[0].name, "timestamp");
         assert_eq!(document.components["imu_sim"].output[0].name, "imu");
         assert_eq!(document.instances["imu_sim"].tasks[0].trigger, "periodic");
+        assert_eq!(document.profiles["default"].mode, RawGraphMode::Strict);
         assert_eq!(document.profiles["default"].worker_threads, Some(3));
+    }
+
+    #[test]
+    fn parses_island_mode_and_boundary_endpoints() {
+        let source = r#"
+[package]
+name = "island_demo"
+rsdl_version = "0.1"
+
+[type.Scan]
+range = "f32"
+
+[type.Command]
+speed = "f32"
+
+[component.planner]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Command"]
+
+[instance.planner]
+component = "planner"
+
+[instance.planner.task]
+trigger = "on_message"
+input = ["scan"]
+output = ["cmd"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "scan_in"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.output]]
+name = "cmd_out"
+port = "planner.cmd"
+type = "Command"
+"#;
+
+        let document = parse_str(source).expect("island boundary document should parse");
+        assert_eq!(document.profiles["dev"].mode, RawGraphMode::Island);
+        assert_eq!(document.boundary_inputs.len(), 1);
+        assert_eq!(document.boundary_inputs[0].name, "scan_in");
+        assert_eq!(document.boundary_inputs[0].port, "planner.scan");
+        assert_eq!(document.boundary_inputs[0].ty, "Scan");
+        assert_eq!(document.boundary_outputs.len(), 1);
+        assert_eq!(document.boundary_outputs[0].name, "cmd_out");
+        assert_eq!(document.boundary_outputs[0].port, "planner.cmd");
+        assert_eq!(document.boundary_outputs[0].ty, "Command");
+    }
+
+    #[test]
+    fn rejects_unknown_profile_mode() {
+        let source = r#"
+[package]
+name = "bad_mode"
+rsdl_version = "0.1"
+
+[profile.dev]
+mode = "legacy"
+"#;
+
+        let error = parse_str(source).expect_err("unknown mode should fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("profile.dev.mode")
+                && message.contains("profile mode must be `strict` or `island`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_boundary_endpoint_tables() {
+        let duplicate = r#"
+[package]
+name = "bad_boundary"
+rsdl_version = "0.1"
+
+[[boundary.input]]
+name = "scan"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.input]]
+name = "scan"
+port = "planner.other"
+type = "Scan"
+"#;
+
+        let error = parse_str(duplicate).expect_err("duplicate boundary name should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate `boundary.input` symbol `scan`"),
+            "unexpected error: {error}"
+        );
+
+        let missing_type = r#"
+[package]
+name = "bad_boundary"
+rsdl_version = "0.1"
+
+[[boundary.output]]
+name = "cmd"
+port = "planner.cmd"
+"#;
+
+        let error = parse_str(missing_type).expect_err("missing boundary type should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("missing required field `type` in `boundary.output[0]`"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -1232,6 +1358,64 @@ direction = "ros2_to_flowrt"
         assert_eq!(document.ros2_bridges[1].direction, "ros2_to_flowrt");
         assert_eq!(document.ros2_bridges[1].field, None);
         assert_eq!(document.ros2_bridges[1].ros2_type, "geometry_msgs/msg/Pose");
+    }
+
+    #[test]
+    fn load_file_expands_workspace_boundary_endpoints() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("composition")).unwrap();
+
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "workspace_boundary_demo"
+rsdl_version = "0.1"
+
+[workspace]
+compositions = ["composition/default.rsdl"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composition").join("default.rsdl"),
+            r#"
+[type.Scan]
+range = "f32"
+
+[type.Command]
+speed = "f32"
+
+[component.planner]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Command"]
+
+[instance.planner]
+component = "planner"
+
+[profile.dev]
+mode = "island"
+
+[[boundary.input]]
+name = "scan_in"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.output]]
+name = "cmd_out"
+port = "planner.cmd"
+type = "Command"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_file(root.join("robot.rsdl")).expect("workspace should load");
+        assert_eq!(loaded.document.boundary_inputs.len(), 1);
+        assert_eq!(loaded.document.boundary_inputs[0].name, "scan_in");
+        assert_eq!(loaded.document.boundary_outputs.len(), 1);
+        assert_eq!(loaded.document.profiles["dev"].mode, RawGraphMode::Island);
+        assert_eq!(loaded.compositions[0].boundary_inputs[0].name, "scan_in");
     }
 
     #[test]

@@ -690,12 +690,71 @@ pub(super) fn parse_ros2_bridges(root: &Table) -> Result<Vec<RawRos2Bridge>> {
     Ok(parsed)
 }
 
+pub(super) fn parse_boundary_endpoints(
+    root: &Table,
+    direction: &'static str,
+) -> Result<Vec<RawBoundaryEndpoint>> {
+    let Some(boundary_value) = root.get("boundary") else {
+        return Ok(Vec::new());
+    };
+    let boundary_table = boundary_value
+        .as_table()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "boundary".to_string(),
+            expected: "table",
+        })?;
+    validate_known_fields(boundary_table, "boundary", &["input", "output"])?;
+    let Some(endpoint_value) = boundary_table.get(direction) else {
+        return Ok(Vec::new());
+    };
+    let endpoints = endpoint_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "boundary".to_string(),
+            field: direction.to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(endpoints.len());
+    let mut names = std::collections::BTreeSet::new();
+    for (index, value) in endpoints.iter().enumerate() {
+        let context = format!("boundary.{direction}[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "boundary".to_string(),
+                field: direction.to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(table, &context, &["name", "port", "type"])?;
+        let endpoint = RawBoundaryEndpoint {
+            name: required_string(table, &context, "name")?,
+            port: required_string(table, &context, "port")?,
+            ty: required_string(table, &context, "type")?,
+        };
+        if !names.insert(endpoint.name.clone()) {
+            return Err(RsdlError::DuplicateSymbol {
+                kind: if direction == "input" {
+                    "boundary.input"
+                } else {
+                    "boundary.output"
+                },
+                name: endpoint.name,
+            });
+        }
+        parsed.push(endpoint);
+    }
+    Ok(parsed)
+}
+
 pub(super) fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
     let context = format!("profile.{name}");
     validate_known_fields(
         table,
         &context,
         &[
+            "mode",
             "backend",
             "worker_threads",
             "default_overflow",
@@ -705,12 +764,27 @@ pub(super) fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
     )?;
 
     Ok(RawProfile {
+        mode: parse_graph_mode(table, &context)?,
         backend: optional_string(table, &context, "backend")?,
         worker_threads: optional_u32(table, &context, "worker_threads")?,
         default_overflow: optional_string(table, &context, "default_overflow")?,
         default_stale_policy: optional_string(table, &context, "default_stale_policy")?,
         max_age_ms: optional_u64(table, &context, "max_age_ms")?,
     })
+}
+
+fn parse_graph_mode(table: &Table, context: &str) -> Result<RawGraphMode> {
+    let Some(mode) = optional_string(table, context, "mode")? else {
+        return Ok(RawGraphMode::Strict);
+    };
+    match mode.as_str() {
+        "strict" => Ok(RawGraphMode::Strict),
+        "island" => Ok(RawGraphMode::Island),
+        _ => Err(RsdlError::InvalidValue {
+            context: format!("{context}.mode"),
+            message: "profile mode must be `strict` or `island`".to_string(),
+        }),
+    }
 }
 
 pub(super) fn parse_target(name: &str, table: &Table) -> Result<RawTarget> {

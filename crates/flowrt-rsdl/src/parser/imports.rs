@@ -112,6 +112,18 @@ pub(super) fn merge_imported_document(
     document.service_binds.extend(imported.service_binds);
     document.operation_binds.extend(imported.operation_binds);
     document.ros2_bridges.extend(imported.ros2_bridges);
+    merge_named_vec(
+        "boundary.input",
+        &mut document.boundary_inputs,
+        imported.boundary_inputs,
+        |endpoint| &endpoint.name,
+    )?;
+    merge_named_vec(
+        "boundary.output",
+        &mut document.boundary_outputs,
+        imported.boundary_outputs,
+        |endpoint| &endpoint.name,
+    )?;
     merge_named_map("profile", &mut document.profiles, imported.profiles)?;
     merge_named_map("target", &mut document.targets, imported.targets)?;
     Ok(())
@@ -127,6 +139,26 @@ pub(super) fn merge_named_map<T>(
             return Err(RsdlError::DuplicateSymbol { kind, name });
         }
         target.insert(name, value);
+    }
+    Ok(())
+}
+
+pub(super) fn merge_named_vec<T>(
+    kind: &'static str,
+    target: &mut Vec<T>,
+    imported: Vec<T>,
+    name_of: impl Fn(&T) -> &str,
+) -> Result<()> {
+    let mut names = target
+        .iter()
+        .map(|item| name_of(item).to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for item in imported {
+        let name = name_of(&item).to_string();
+        if !names.insert(name.clone()) {
+            return Err(RsdlError::DuplicateSymbol { kind, name });
+        }
+        target.push(item);
     }
     Ok(())
 }

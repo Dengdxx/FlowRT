@@ -900,6 +900,30 @@ flowrt run --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl
 
 profile 投影还会重算来自 profile default 的 bind-level policy：未在 `bind.dataflow` 上显式声明的 `overflow`、`stale_policy` 和 `max_age_ms` 会采用选中 profile 的默认值；bind 上显式声明的 policy 保持不变。未显式声明 `backend` 或声明 `backend = "auto"` 的 bind 会跟随选中 profile backend；如果该 route 使用 variable frame 且 profile backend 为 `iox2`，会自动选择 `zenoh`。`backend` 是单条 route 的属性；同一 `from`/`to` route 只能声明一次，跨 import 的 RSDL 片段会先合并成一个 Contract IR，再由 validator 拒绝多重 incoming bind 或冲突连线。投影后的 `contract.ir.json` 会同时刷新 route 和 deployment 的 capability 元数据。
 
+profile 还可以声明 graph 完整性模式：
+
+```toml
+[profile.dev]
+mode = "island"
+backend = "inproc"
+```
+
+`mode` 只允许 `strict` 或 `island`，省略时等同 `strict`。`strict` 是生产默认模式，task 的 active input 必须由普通 dataflow bind 满足；`island` 是可拆卸脚手架模式，用于单功能单位开发或旧系统逐包迁移。island 模式下，外部输入和待对比输出通过 typed boundary endpoint 表达：
+
+```toml
+[[boundary.input]]
+name = "scan_in"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.output]]
+name = "cmd_out"
+port = "planner.cmd"
+type = "ControlCommand"
+```
+
+boundary endpoint 绑定真实 component port，不是传输后端、ROS2 topic 或 transport API。开发或迁移完成后，应删除 boundary endpoint，改用普通 `[[bind.dataflow]]`，并把 profile 切回 `strict`。
+
 ## RSDL task 写法
 
 单 task 可以继续使用 `[instance.<name>.task]`，归一化后的 task name 为 `main`。一个 instance 需要多个执行单元时，使用数组表 `[[instance.<name>.task]]`，并为每个 task 声明唯一的 `name`：

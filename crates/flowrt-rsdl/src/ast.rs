@@ -56,6 +56,8 @@ pub struct RawCompositionDocument {
     pub service_binds: Vec<RawServiceBind>,
     pub operation_binds: Vec<RawOperationBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
+    pub boundary_inputs: Vec<RawBoundaryEndpoint>,
+    pub boundary_outputs: Vec<RawBoundaryEndpoint>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
     pub source: PathBuf,
@@ -75,6 +77,8 @@ pub struct RawDocument {
     pub service_binds: Vec<RawServiceBind>,
     pub operation_binds: Vec<RawOperationBind>,
     pub ros2_bridges: Vec<RawRos2Bridge>,
+    pub boundary_inputs: Vec<RawBoundaryEndpoint>,
+    pub boundary_outputs: Vec<RawBoundaryEndpoint>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
 }
@@ -290,9 +294,26 @@ pub struct RawRos2Bridge {
     pub field: Option<String>,
 }
 
+/// graph/profile 使用的拓扑完整性模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RawGraphMode {
+    #[default]
+    Strict,
+    Island,
+}
+
+/// `[[boundary.input]]` 或 `[[boundary.output]]` 表项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawBoundaryEndpoint {
+    pub name: String,
+    pub port: String,
+    pub ty: String,
+}
+
 /// `[profile.<name>]` 表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawProfile {
+    pub mode: RawGraphMode,
     pub backend: Option<String>,
     pub worker_threads: Option<u32>,
     pub default_overflow: Option<String>,

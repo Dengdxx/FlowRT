@@ -6,7 +6,7 @@ use crate::{Result, RsdlError};
 use super::ParsedDocument;
 use super::imports::{
     canonicalize_existing, expand_import_pattern, load_import_document, logical_source_path,
-    merge_named_map,
+    merge_named_map, merge_named_vec,
 };
 
 pub(super) fn expand_workspace(
@@ -72,6 +72,8 @@ pub(super) fn expand_workspace(
                 service_binds: parsed.service_binds.clone(),
                 operation_binds: parsed.operation_binds.clone(),
                 ros2_bridges: parsed.ros2_bridges.clone(),
+                boundary_inputs: parsed.boundary_inputs.clone(),
+                boundary_outputs: parsed.boundary_outputs.clone(),
                 profiles: parsed.profiles.clone(),
                 targets: parsed.targets.clone(),
                 source: logical_source_path(&path, package_root),
@@ -100,6 +102,8 @@ fn validate_module_document(
         (!parsed.service_binds.is_empty(), "bind.service"),
         (!parsed.operation_binds.is_empty(), "bind.operation"),
         (!parsed.ros2_bridges.is_empty(), "bridge"),
+        (!parsed.boundary_inputs.is_empty(), "boundary"),
+        (!parsed.boundary_outputs.is_empty(), "boundary"),
         (!parsed.profiles.is_empty(), "profile"),
         (!parsed.targets.is_empty(), "target"),
         (parsed.workspace.is_some(), "workspace"),
@@ -132,6 +136,18 @@ fn merge_composition_document(
     document.service_binds.extend(composition.service_binds);
     document.operation_binds.extend(composition.operation_binds);
     document.ros2_bridges.extend(composition.ros2_bridges);
+    merge_named_vec(
+        "boundary.input",
+        &mut document.boundary_inputs,
+        composition.boundary_inputs,
+        |endpoint| &endpoint.name,
+    )?;
+    merge_named_vec(
+        "boundary.output",
+        &mut document.boundary_outputs,
+        composition.boundary_outputs,
+        |endpoint| &endpoint.name,
+    )?;
     merge_named_map("profile", &mut document.profiles, composition.profiles)?;
     merge_named_map("target", &mut document.targets, composition.targets)?;
     Ok(())

@@ -14,6 +14,7 @@ pub(super) fn validate_top_level_sections(root: &Table) -> Result<()> {
         "external_process",
         "bind",
         "bridge",
+        "boundary",
         "profile",
         "target",
     ];
