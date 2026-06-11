@@ -281,19 +281,21 @@ runtime_dependency_policy = "external"
 
 ```bash
 cd examples/libjpeg_cross_demo
-flowrt doctor --target linux-arm64
+flowrt doctor rsdl/robot.rsdl --target linux-arm64
 flowrt deps rsdl/robot.rsdl --target linux-arm64 --backend inproc
 flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl
 
 cd ../kleidiai_cross_demo
-flowrt doctor --target linux-arm64
+flowrt doctor rsdl/robot.rsdl --target linux-arm64
 flowrt deps rsdl/robot.rsdl --target linux-arm64 --backend inproc
 flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl
 ```
 
 `libjpeg_cross_demo` 覆盖平台无关公开 C/C++ 库；`kleidiai_cross_demo` 覆盖 Arm 专用公开
 SDK 和 NEON kernel。它们都不代表 FlowRT 内置硬件 backend，只验证用户项目如何通过
-toolchain overlay 接入外部 SDK。
+toolchain overlay 接入外部 SDK。推荐先运行带 RSDL 的 `flowrt doctor`，确认
+`component.build.pkg_config` 模块已经在 selected target 的 overlay / pkg-config 路径中
+可见，再继续 `deps` 和 `build`。
 
 ## iox2 mixed 示例
 

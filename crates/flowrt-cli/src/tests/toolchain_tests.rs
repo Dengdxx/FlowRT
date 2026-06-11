@@ -6,9 +6,67 @@ use crate::toolchain::{
     resolve_toolchain_profile_with_sources,
 };
 
+static PKG_CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvOverride {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvOverride {
+    fn set(key: &'static str, value: Option<&std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests guard process-wide environment mutation with a mutex.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvOverride {
+    fn drop(&mut self) {
+        // SAFETY: tests guard process-wide environment mutation with a mutex.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 fn write_toolchains(path: &Path, source: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, source).unwrap();
+}
+
+fn write_pkg_config_module(path: &Path, module: &str, prefix: &Path) {
+    let include_dir = prefix.join("include");
+    let lib_dir = prefix.join("lib");
+    std::fs::create_dir_all(path).unwrap();
+    std::fs::create_dir_all(&include_dir).unwrap();
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    std::fs::write(
+        path.join(format!("{module}.pc")),
+        format!(
+            "prefix={prefix}\n\
+exec_prefix=${{prefix}}\n\
+libdir=${{prefix}}/lib\n\
+includedir=${{prefix}}/include\n\
+\n\
+Name: {module}\n\
+Description: test package\n\
+Version: 1.0.0\n\
+Libs: -L${{libdir}} -l{module}\n\
+Cflags: -I${{includedir}}\n",
+            prefix = prefix.display()
+        ),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -641,4 +699,249 @@ fn cli_parses_toolchain_init_command_with_sdk_overlay() {
     assert_eq!(target, "linux-arm64");
     assert_eq!(sdk_overlay, vec![PathBuf::from("/opt/vendor/rknn")]);
     assert!(force);
+}
+
+#[test]
+fn doctor_contract_pkg_config_checks_report_found_module() {
+    if !command_available("pkg-config") {
+        return;
+    }
+
+    let _env_lock = PKG_CONFIG_ENV_LOCK.lock().unwrap();
+    let _pkg_config_path = EnvOverride::set("PKG_CONFIG_PATH", None);
+    let _pkg_config_sysroot_dir = EnvOverride::set("PKG_CONFIG_SYSROOT_DIR", None);
+
+    let root = temp_test_dir("doctor-pkg-config-found");
+    let overlay = root.join("overlay");
+    let pkgconfig_dir = overlay.join("lib/pkgconfig");
+    write_pkg_config_module(&pkgconfig_dir, "vendor_capture", &overlay);
+
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "cpp"
+
+[component.camera.build]
+pkg_config = ["vendor_capture"]
+
+[component.host_only]
+language = "cpp"
+
+[component.host_only.build]
+pkg_config = ["host_only"]
+
+[instance.camera]
+component = "camera"
+target = "arm64"
+process = "arm64_proc"
+
+[instance.host_only]
+component = "host_only"
+target = "host"
+process = "host_proc"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 100
+
+[target.arm64]
+platform = "linux-arm64"
+runtime = ["cpp"]
+backends = ["inproc"]
+
+[target.host]
+platform = "linux-amd64"
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+
+    let mut profile = resolve_toolchain_profile_with_sources(
+        "linux-arm64",
+        &ToolchainConfigSources::default(),
+        &ToolchainProfileOverrides::default(),
+    )
+    .unwrap();
+    profile.pkg_config_libdirs = vec![pkgconfig_dir.clone()];
+
+    let checks = doctor_contract_pkg_config_checks(
+        &contract,
+        &BuildToolchainProfile {
+            profile,
+            cargo_target_triple: Some("aarch64-unknown-linux-gnu".to_string()),
+            is_cross: true,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].level, DoctorLevel::Ok);
+    assert!(checks[0].detail.contains("component=camera"));
+    assert!(checks[0].detail.contains("module=vendor_capture"));
+    assert!(checks[0].detail.contains("status=found"));
+    assert!(
+        checks[0].detail.contains(
+            &pkgconfig_dir
+                .join("vendor_capture.pc")
+                .display()
+                .to_string()
+        )
+    );
+    assert!(
+        checks[0]
+            .detail
+            .contains(&overlay.join("include").display().to_string())
+    );
+    assert!(
+        checks[0]
+            .detail
+            .contains(&overlay.join("lib").display().to_string())
+    );
+    assert!(!checks[0].detail.contains("host_only"));
+}
+
+#[test]
+fn doctor_contract_pkg_config_checks_report_missing_module_with_overlay_hint() {
+    if !command_available("pkg-config") {
+        return;
+    }
+
+    let _env_lock = PKG_CONFIG_ENV_LOCK.lock().unwrap();
+    let _pkg_config_path = EnvOverride::set("PKG_CONFIG_PATH", None);
+    let _pkg_config_sysroot_dir = EnvOverride::set("PKG_CONFIG_SYSROOT_DIR", None);
+
+    let root = temp_test_dir("doctor-pkg-config-missing");
+    let overlay = root.join("vendor/rknn");
+    let pkgconfig_dir = root.join("vendor/pkgconfig");
+    std::fs::create_dir_all(&overlay).unwrap();
+    std::fs::create_dir_all(&pkgconfig_dir).unwrap();
+
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "cpp"
+
+[component.camera.build]
+pkg_config = ["vendor_capture"]
+
+[instance.camera]
+component = "camera"
+target = "arm64"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 100
+
+[target.arm64]
+platform = "linux-arm64"
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+
+    let mut profile = resolve_toolchain_profile_with_sources(
+        "linux-arm64",
+        &ToolchainConfigSources::default(),
+        &ToolchainProfileOverrides::default(),
+    )
+    .unwrap();
+    profile.pkg_config_libdirs = vec![pkgconfig_dir.clone()];
+    profile.sdk_overlays = vec![overlay.clone()];
+
+    let checks = doctor_contract_pkg_config_checks(
+        &contract,
+        &BuildToolchainProfile {
+            profile,
+            cargo_target_triple: Some("aarch64-unknown-linux-gnu".to_string()),
+            is_cross: true,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].level, DoctorLevel::Error);
+    assert!(checks[0].detail.contains("component=camera"));
+    assert!(checks[0].detail.contains("module=vendor_capture"));
+    assert!(checks[0].detail.contains("status=missing"));
+    assert!(
+        checks[0]
+            .detail
+            .contains(&pkgconfig_dir.display().to_string())
+    );
+    assert!(checks[0].detail.contains(&overlay.display().to_string()));
+    assert!(
+        checks[0]
+            .detail
+            .contains("flowrt toolchain init --target linux-arm64 --sdk-overlay")
+    );
+    assert!(checks[0].detail.contains("prepare the external SDK"));
+}
+
+#[test]
+fn doctor_contract_pkg_config_checks_report_ok_when_selected_target_has_no_cpp_pkg_config() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+target = "arm64"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 100
+
+[target.arm64]
+platform = "linux-arm64"
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let profile = resolve_toolchain_profile_with_sources(
+        "linux-arm64",
+        &ToolchainConfigSources::default(),
+        &ToolchainProfileOverrides::default(),
+    )
+    .unwrap();
+
+    let checks = doctor_contract_pkg_config_checks(
+        &contract,
+        &BuildToolchainProfile {
+            profile,
+            cargo_target_triple: Some("aarch64-unknown-linux-gnu".to_string()),
+            is_cross: true,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].level, DoctorLevel::Ok);
+    assert!(
+        checks[0]
+            .detail
+            .contains("no C++ component pkg_config dependencies")
+    );
 }

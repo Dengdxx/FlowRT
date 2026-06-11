@@ -54,10 +54,33 @@ fn command_deps_parses_target_platform() {
 fn command_doctor_parses_target_platform() {
     let cli = Cli::try_parse_from(["flowrt", "doctor", "--target", "linux-arm64"]).unwrap();
 
-    let Command::Doctor { target } = cli.command else {
+    let Command::Doctor { rsdl, target } = cli.command else {
         panic!("doctor command should parse into Command::Doctor")
     };
 
+    assert_eq!(rsdl, None);
+    assert_eq!(target.as_deref(), Some("linux-arm64"));
+}
+
+#[test]
+fn command_doctor_parses_rsdl_path_and_target_platform() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "doctor",
+        "examples/libjpeg_cross_demo/rsdl/robot.rsdl",
+        "--target",
+        "linux-arm64",
+    ])
+    .unwrap();
+
+    let Command::Doctor { rsdl, target } = cli.command else {
+        panic!("doctor command should parse into Command::Doctor")
+    };
+
+    assert_eq!(
+        rsdl,
+        Some(PathBuf::from("examples/libjpeg_cross_demo/rsdl/robot.rsdl"))
+    );
     assert_eq!(target.as_deref(), Some("linux-arm64"));
 }
 

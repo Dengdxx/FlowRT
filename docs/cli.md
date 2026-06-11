@@ -10,7 +10,7 @@ flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
 flowrt cache status
 flowrt cache clean [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--dry-run] [--flowrt-deps] [--project-build] [--incremental] [--stale-temp]
-flowrt doctor [--target <linux-amd64|linux-arm64>]
+flowrt doctor [path/to/robot.rsdl] [--target <linux-amd64|linux-arm64>]
 flowrt toolchain show --target <linux-amd64|linux-arm64>
 flowrt toolchain init --target <linux-arm64> [--sdk-overlay <path>] [--force]
 flowrt external check <path/to/external-package>
@@ -239,12 +239,29 @@ runtime_dependency_policy = "external"
 
 ```bash
 flowrt doctor --target linux-arm64
+flowrt doctor examples/libjpeg_cross_demo/rsdl/robot.rsdl --target linux-arm64
 ```
 
 `doctor` 预检本机或交叉编译环境。指定 `--target` 后，它会解析 toolchain profile，
 检查 Rust target、C/C++ 编译器、pkg-config、完整 target SDK、显式 sysroot、
 CMake toolchain file 和 SDK overlay。缺少 Rust target、交叉编译器、完整 target SDK
 或显式 overlay 时会以非零状态退出，并给出可执行修复提示。
+
+提供 RSDL 路径时，`doctor` 会走与 `check` / `prepare` 一致的主路径：读取 RSDL、
+归一化并校验 Contract IR、选中默认 profile，然后按 selected target 的 C++ component
+`build.pkg_config` 依赖逐项执行 `pkg-config` 查询。查询环境会显式设置 target profile
+语义下的 `PKG_CONFIG_LIBDIR`，不会借用 host 的默认搜索路径。输出会列出：
+
+- `component=<name>`：依赖所属的 C++ component。
+- `module=<pkg-config-name>`：声明在 `component.build.pkg_config` 中的模块名。
+- `status=found|missing`：当前 target profile 下是否可见。
+- `pc=<path>`：命中的 `.pc` 文件路径。
+- `include_dirs=` / `lib_dirs=`：从 pkg-config 解出的 include / library 目录摘要。
+
+当模块缺失时，`doctor` 会同时输出当前 `pkg_config_libdirs`、派生后的 overlay 搜索路径、
+当前 `sdk_overlays`，并提示先显式 prepare 外部 SDK；如果 SDK 已经落在 overlay 中，
+可执行 `flowrt toolchain init --target <platform> --sdk-overlay <path>` 生成 workspace
+配置。`doctor` 不会触发 `flowrt build` 隐式下载或拉取任何第三方 SDK。
 
 默认情况下，`flowrt build` 和生成 CMake 不会回退到 FlowRT 源码树 `runtime/cpp`。在 FlowRT 仓库内开发时，设置环境变量 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1`，CLI 会同时把 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` 传给 CMake，启用源码树回退。正式用户路径不应依赖此选项。
 
