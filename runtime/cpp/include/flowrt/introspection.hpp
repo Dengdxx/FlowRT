@@ -8,9 +8,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <flowrt/core.hpp>
 #include <fcntl.h>
 #include <filesystem>
+#include <flowrt/channels.hpp>
+#include <flowrt/core.hpp>
+#include <flowrt/wire.hpp>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -130,6 +133,16 @@ struct IntrospectionRecorderStart {
     std::string process;
     std::uint32_t runtime_pid = 0;
     std::string self_description_hash;
+};
+
+/**
+ * @brief island boundary input 注入结果。
+ */
+struct IntrospectionBoundaryPublishStatus {
+    std::string endpoint;
+    std::string message_type;
+    std::uint64_t revision = 0;
+    std::optional<std::uint64_t> published_at_ms;
 };
 
 namespace detail {
@@ -607,6 +620,20 @@ inline std::string recorder_status_json(const IntrospectionRecorderStatus &recor
     return output;
 }
 
+inline std::string boundary_publish_status_json(const IntrospectionBoundaryPublishStatus &status) {
+    std::string output;
+    output.append("{\"endpoint\":");
+    output.append(json_string(status.endpoint));
+    output.append(",\"message_type\":");
+    output.append(json_string(status.message_type));
+    output.append(",\"revision\":");
+    output.append(std::to_string(status.revision));
+    output.append(",\"published_at_ms\":");
+    output.append(status.published_at_ms ? std::to_string(*status.published_at_ms) : "null");
+    output.push_back('}');
+    return output;
+}
+
 inline std::string operation_status_json(const IntrospectionOperationStatus &operation) {
     std::string output;
     output.append("{\"name\":");
@@ -795,6 +822,17 @@ inline std::string param_value_response_json(const IntrospectionHandshake &hands
     output.append(handshake_json(handshake));
     output.append(",\"param\":");
     output.append(param_status_json(param));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string boundary_publish_response_json(
+    const IntrospectionHandshake &handshake, const IntrospectionBoundaryPublishStatus &boundary) {
+    std::string output;
+    output.append("{\"response\":\"boundary_publish\",\"handshake\":");
+    output.append(handshake_json(handshake));
+    output.append(",\"boundary\":");
+    output.append(boundary_publish_status_json(boundary));
     output.push_back('}');
     return output;
 }
@@ -1058,6 +1096,7 @@ enum class IntrospectionRequestKind : std::uint8_t {
     RecorderStart = 8,
     RecorderStop = 9,
     RecorderDrain = 10,
+    BoundaryPublish = 11,
 };
 
 struct ParsedIntrospectionRequest {
@@ -1066,6 +1105,9 @@ struct ParsedIntrospectionRequest {
     std::string param_name;
     std::string param_value;
     std::string operation_id;
+    std::string boundary_endpoint;
+    std::vector<std::uint8_t> boundary_payload;
+    std::optional<std::uint64_t> boundary_published_at_ms;
     std::optional<std::string> recorder_output;
     std::vector<std::string> recorder_filters;
     std::optional<std::size_t> recorder_queue_depth;
@@ -1244,6 +1286,60 @@ inline std::optional<std::vector<std::string>> find_json_string_array_value(std:
     return std::nullopt;
 }
 
+inline std::optional<std::vector<std::uint8_t>> find_json_u8_array_value(std::string_view input,
+                                                                         std::string_view key) {
+    std::string fragment;
+    if (!find_json_value_fragment(input, key, fragment)) {
+        return std::nullopt;
+    }
+    std::size_t index = 0;
+    while (index < fragment.size() && json_whitespace(fragment[index])) {
+        ++index;
+    }
+    if (index >= fragment.size() || fragment[index] != '[') {
+        return std::nullopt;
+    }
+    ++index;
+    std::vector<std::uint8_t> values;
+    while (index < fragment.size()) {
+        while (index < fragment.size() && json_whitespace(fragment[index])) {
+            ++index;
+        }
+        if (index < fragment.size() && fragment[index] == ']') {
+            ++index;
+            while (index < fragment.size() && json_whitespace(fragment[index])) {
+                ++index;
+            }
+            return index == fragment.size() ? std::optional<std::vector<std::uint8_t>>{values}
+                                            : std::nullopt;
+        }
+        if (index >= fragment.size() || fragment[index] < '0' || fragment[index] > '9') {
+            return std::nullopt;
+        }
+        std::uint64_t value = 0;
+        while (index < fragment.size() && fragment[index] >= '0' && fragment[index] <= '9') {
+            value = value * 10U + static_cast<std::uint64_t>(fragment[index] - '0');
+            if (value > 255U) {
+                return std::nullopt;
+            }
+            ++index;
+        }
+        values.push_back(static_cast<std::uint8_t>(value));
+        while (index < fragment.size() && json_whitespace(fragment[index])) {
+            ++index;
+        }
+        if (index < fragment.size() && fragment[index] == ',') {
+            ++index;
+            continue;
+        }
+        if (index < fragment.size() && fragment[index] == ']') {
+            continue;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
     std::string_view line) {
     std::string command;
@@ -1261,27 +1357,30 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
         if (!find_json_string_value(line, "channel", channel)) {
             return std::nullopt;
         }
-        return ParsedIntrospectionRequest{
-            IntrospectionRequestKind::ChannelSnapshot, std::move(channel), {}, {}};
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::ChannelSnapshot};
+        request.channel = std::move(channel);
+        return request;
     }
     if (command == "observe_channel") {
         std::string channel;
         if (!find_json_string_value(line, "channel", channel)) {
             return std::nullopt;
         }
-        return ParsedIntrospectionRequest{
-            IntrospectionRequestKind::ObserveChannel, std::move(channel), {}, {}};
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::ObserveChannel};
+        request.channel = std::move(channel);
+        return request;
     }
     if (command == "param_list") {
-        return ParsedIntrospectionRequest{IntrospectionRequestKind::ParamList, {}, {}, {}};
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::ParamList};
     }
     if (command == "param_get") {
         std::string name;
         if (!find_json_string_value(line, "name", name)) {
             return std::nullopt;
         }
-        return ParsedIntrospectionRequest{
-            IntrospectionRequestKind::ParamGet, {}, std::move(name), {}};
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::ParamGet};
+        request.param_name = std::move(name);
+        return request;
     }
     if (command == "param_set") {
         std::string name;
@@ -1290,23 +1389,40 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
             !find_json_value_fragment(line, "value", value)) {
             return std::nullopt;
         }
-        return ParsedIntrospectionRequest{
-            IntrospectionRequestKind::ParamSet, {}, std::move(name), std::move(value)};
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::ParamSet};
+        request.param_name = std::move(name);
+        request.param_value = std::move(value);
+        return request;
+    }
+    if (command == "boundary_publish") {
+        std::string endpoint;
+        const auto payload = find_json_u8_array_value(line, "payload");
+        if (!find_json_string_value(line, "endpoint", endpoint) || !payload.has_value()) {
+            return std::nullopt;
+        }
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::BoundaryPublish};
+        request.boundary_endpoint = std::move(endpoint);
+        request.boundary_payload = *payload;
+        if (const auto published_at_ms = find_json_unsigned_value(line, "published_at_ms")) {
+            request.boundary_published_at_ms = static_cast<std::uint64_t>(*published_at_ms);
+        }
+        return request;
     }
     if (command == "operation_cancel") {
         std::string operation_id;
         if (!find_json_string_value(line, "operation_id", operation_id)) {
             return std::nullopt;
         }
-        return ParsedIntrospectionRequest{
-            IntrospectionRequestKind::OperationCancel, {}, {}, {}, std::move(operation_id)};
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::OperationCancel};
+        request.operation_id = std::move(operation_id);
+        return request;
     }
     if (command == "recorder_start") {
         std::string output;
         const auto output_end = find_json_string_value(line, "output", output);
         auto filters =
             find_json_string_array_value(line, "filters").value_or(std::vector<std::string>{});
-        ParsedIntrospectionRequest request{IntrospectionRequestKind::RecorderStart, {}, {}, {}, {}};
+        ParsedIntrospectionRequest request{IntrospectionRequestKind::RecorderStart};
         if (output_end) {
             request.recorder_output = std::move(output);
         }
@@ -1315,10 +1431,10 @@ inline std::optional<ParsedIntrospectionRequest> parse_introspection_request(
         return request;
     }
     if (command == "recorder_stop") {
-        return ParsedIntrospectionRequest{IntrospectionRequestKind::RecorderStop, {}, {}, {}};
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::RecorderStop};
     }
     if (command == "recorder_drain") {
-        return ParsedIntrospectionRequest{IntrospectionRequestKind::RecorderDrain, {}, {}, {}};
+        return ParsedIntrospectionRequest{IntrospectionRequestKind::RecorderDrain};
     }
     return std::nullopt;
 }
@@ -1434,6 +1550,9 @@ struct IntrospectionIdentity {
  */
 class IntrospectionState {
    public:
+    using BoundaryInputHandler = std::function<std::variant<std::uint64_t, std::string>(
+        std::span<const std::uint8_t>, std::optional<std::uint64_t>)>;
+
     /**
      * @brief 构造空 live 状态。
      */
@@ -1474,6 +1593,67 @@ class IntrospectionState {
                                                                .max = std::move(schema.max),
                                                                .choices = std::move(schema.choices),
                                                            });
+    }
+
+    /**
+     * @brief 注册 island boundary input 的底层注入 handler。
+     */
+    void register_boundary_input_handler(std::string endpoint, std::string message_type,
+                                         BoundaryInputHandler handler) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->boundary_inputs.insert_or_assign(
+            std::move(endpoint), BoundaryInputState{.message_type = std::move(message_type),
+                                                    .handler = std::move(handler)});
+    }
+
+    /**
+     * @brief 注册 typed `BoundaryInput<T>`，供 `flowrt pub` 注入 canonical payload。
+     */
+    template <CanonicalTransportMessage T>
+    void register_boundary_input(std::string endpoint, std::string message_type,
+                                 BoundaryInput<T> &input) const {
+        const auto endpoint_for_error = endpoint;
+        register_boundary_input_handler(
+            std::move(endpoint), std::move(message_type),
+            [&input, endpoint_for_error](std::span<const std::uint8_t> payload,
+                                         std::optional<std::uint64_t> timestamp) mutable
+            -> std::variant<std::uint64_t, std::string> {
+                try {
+                    auto value = detail::decode_frame<T>(payload);
+                    return timestamp ? input.inject_at(std::move(value), *timestamp)
+                                     : input.inject(std::move(value));
+                } catch (const WireCodecError &error) {
+                    return "decode FlowRT boundary input `" + endpoint_for_error +
+                           "`: " + error.what();
+                }
+            });
+    }
+
+    /**
+     * @brief 向已注册的 island boundary input 注入 canonical Message ABI payload。
+     */
+    std::variant<IntrospectionBoundaryPublishStatus, std::string> publish_boundary_input(
+        std::string_view endpoint, std::span<const std::uint8_t> payload,
+        std::optional<std::uint64_t> published_at_ms) const {
+        BoundaryInputState boundary;
+        {
+            std::lock_guard<std::mutex> lock(inner_->mutex);
+            const auto found = inner_->boundary_inputs.find(std::string{endpoint});
+            if (found == inner_->boundary_inputs.end()) {
+                return "unknown FlowRT boundary input `" + std::string{endpoint} + "`";
+            }
+            boundary = found->second;
+        }
+        const auto revision = boundary.handler(payload, published_at_ms);
+        if (std::holds_alternative<std::string>(revision)) {
+            return std::get<std::string>(revision);
+        }
+        return IntrospectionBoundaryPublishStatus{
+            .endpoint = std::string{endpoint},
+            .message_type = boundary.message_type,
+            .revision = std::get<std::uint64_t>(revision),
+            .published_at_ms = published_at_ms,
+        };
     }
 
     /**
@@ -2124,6 +2304,11 @@ class IntrospectionState {
         std::vector<std::string> choices;
     };
 
+    struct BoundaryInputState {
+        std::string message_type;
+        BoundaryInputHandler handler;
+    };
+
     struct RecorderState {
         std::optional<std::string> output;
         std::vector<std::string> filters;
@@ -2145,6 +2330,7 @@ class IntrospectionState {
         std::optional<std::string> self_description_json;
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
+        std::map<std::string, BoundaryInputState> boundary_inputs;
         std::map<std::string, BoundaryStatus> io_boundaries;
         std::map<std::string, IntrospectionServiceStatus> services;
         std::map<std::string, IntrospectionOperationStatus> operations;
@@ -2655,6 +2841,20 @@ inline void handle_introspection_connection(
                 if (std::holds_alternative<IntrospectionParamStatus>(result)) {
                     response = param_value_response_json(
                         handshake, std::get<IntrospectionParamStatus>(result));
+                } else {
+                    response = error_response_json(handshake, std::get<std::string>(result));
+                }
+                break;
+            }
+            case IntrospectionRequestKind::BoundaryPublish: {
+                const auto result = state.publish_boundary_input(
+                    request->boundary_endpoint,
+                    std::span<const std::uint8_t>{request->boundary_payload.data(),
+                                                  request->boundary_payload.size()},
+                    request->boundary_published_at_ms);
+                if (std::holds_alternative<IntrospectionBoundaryPublishStatus>(result)) {
+                    response = boundary_publish_response_json(
+                        handshake, std::get<IntrospectionBoundaryPublishStatus>(result));
                 } else {
                     response = error_response_json(handshake, std::get<std::string>(result));
                 }

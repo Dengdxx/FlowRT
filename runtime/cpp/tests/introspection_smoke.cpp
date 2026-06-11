@@ -174,8 +174,7 @@ int main() {
         std::vector<flowrt::BoundaryResourceStatus>{
             flowrt::BoundaryResourceStatus{.name = "camera_shm", .kind = "shm"}});
     flowrt::BoundaryContext boundary_context{
-        "camera",
-        "CameraDriver",
+        "camera", "CameraDriver",
         std::vector<flowrt::BoundaryResourceStatus>{
             flowrt::BoundaryResourceStatus{.name = "camera_shm", .kind = "shm"}},
         [&boundary_state](flowrt::BoundaryStatus status) {
@@ -263,9 +262,8 @@ int main() {
     frame_metadata.insert_or_assign("height", "480");
     frame_metadata.insert_or_assign("width", "640");
     const auto frame_descriptor = flowrt::FrameDescriptor::make(
-        flowrt::ResourceDescriptor{.resource_id = "camera_frames",
-                                   .slot = "slot-7",
-                                   .generation = 42U},
+        flowrt::ResourceDescriptor{
+            .resource_id = "camera_frames", .slot = "slot-7", .generation = 42U},
         921600U, "rgb8", "row_major", frame_metadata);
     const auto descriptor_record = descriptor_recorder_state.record_frame_descriptor_event(
         "camera.frame", frame_descriptor, flowrt::FrameLeaseStatus::Acquired, false);
@@ -280,8 +278,8 @@ int main() {
            std::optional<std::string>{"FrameDescriptor"});
     assert(descriptor_events.front().payload_encoding == "json");
     assert(descriptor_events.front().payload_schema == "flowrt.descriptor.frame.v1");
-    const auto descriptor_payload =
-        std::string(descriptor_events.front().payload.begin(), descriptor_events.front().payload.end());
+    const auto descriptor_payload = std::string(descriptor_events.front().payload.begin(),
+                                                descriptor_events.front().payload.end());
     assert_contains(descriptor_payload, R"("resource_id":"camera_frames")");
     assert_contains(descriptor_payload, R"("slot":"slot-7")");
     assert_contains(descriptor_payload, R"("generation":42)");
@@ -597,6 +595,31 @@ int main() {
             request_line(socket_path, R"({"command":"self_description"})");
         assert_contains(selfdesc_response, R"("response":"self_description")");
         assert_contains(selfdesc_response, R"("json":"{\"package\":{\"name\":\"robot_demo\"}}")");
+
+        std::vector<std::uint8_t> boundary_payload;
+        state.register_boundary_input_handler(
+            "sample_in", "Sample",
+            [&boundary_payload](std::span<const std::uint8_t> payload,
+                                std::optional<std::uint64_t> timestamp)
+                -> std::variant<std::uint64_t, std::string> {
+                boundary_payload.assign(payload.begin(), payload.end());
+                assert(timestamp == std::optional<std::uint64_t>{123U});
+                return 7U;
+            });
+        const auto boundary_publish_response = request_line(
+            socket_path,
+            R"({"command":"boundary_publish","endpoint":"sample_in","payload":[1,2,3,4],"published_at_ms":123})");
+        assert_contains(boundary_publish_response, R"("response":"boundary_publish")");
+        assert_contains(boundary_publish_response, R"("endpoint":"sample_in")");
+        assert_contains(boundary_publish_response, R"("message_type":"Sample")");
+        assert_contains(boundary_publish_response, R"("revision":7)");
+        assert((boundary_payload == std::vector<std::uint8_t>{1U, 2U, 3U, 4U}));
+
+        const auto boundary_missing_response = request_line(
+            socket_path, R"({"command":"boundary_publish","endpoint":"missing","payload":[9]})");
+        assert_contains(boundary_missing_response, R"("response":"error")");
+        assert_contains(boundary_missing_response,
+                        R"("message":"unknown FlowRT boundary input `missing`")");
 
         {
             const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);

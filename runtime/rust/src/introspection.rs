@@ -23,7 +23,7 @@ use crate::recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,
 };
 use crate::supervisor::resource_placement::ResourcePlacementStatus;
-use crate::{FrameDescriptor, FrameLeaseStatus};
+use crate::{FrameCodec, FrameDescriptor, FrameLeaseStatus};
 
 /// 当前 introspection 协议版本。
 pub const INTROSPECTION_PROTOCOL_VERSION: &str = "0.1";
@@ -56,6 +56,12 @@ pub enum IntrospectionRequest {
     ParamSet {
         name: String,
         value: serde_json::Value,
+    },
+    /// 向 island boundary input 注入 canonical Message ABI payload。
+    BoundaryPublish {
+        endpoint: String,
+        payload: Vec<u8>,
+        published_at_ms: Option<u64>,
     },
     /// 请求取消当前 runtime 中已知的 Operation invocation。
     OperationCancel { operation_id: String },
@@ -99,6 +105,10 @@ pub enum IntrospectionResponse {
     ParamValue {
         handshake: IntrospectionHandshake,
         param: IntrospectionParamStatus,
+    },
+    BoundaryPublish {
+        handshake: IntrospectionHandshake,
+        boundary: IntrospectionBoundaryPublishStatus,
     },
     OperationValue {
         handshake: IntrospectionHandshake,
@@ -518,6 +528,37 @@ pub struct IntrospectionParamStatus {
     pub choices: Vec<serde_json::Value>,
 }
 
+/// boundary input 注入结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionBoundaryPublishStatus {
+    /// boundary endpoint 名称。
+    pub endpoint: String,
+    /// Contract IR 中的 message 类型名称。
+    pub message_type: String,
+    /// 注入后的 boundary input revision。
+    pub revision: u64,
+    /// 注入时使用的 runtime 毫秒时间戳。
+    pub published_at_ms: Option<u64>,
+}
+
+type BoundaryInputHandler =
+    Arc<dyn Fn(&[u8], Option<u64>) -> std::result::Result<u64, String> + Send + Sync + 'static>;
+
+#[derive(Clone)]
+struct BoundaryInputState {
+    message_type: String,
+    handler: BoundaryInputHandler,
+}
+
+impl std::fmt::Debug for BoundaryInputState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BoundaryInputState")
+            .field("message_type", &self.message_type)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ChannelState {
     message_type: String,
@@ -723,6 +764,7 @@ struct IntrospectionStateInner {
     inputs: BTreeMap<String, IntrospectionInputStatus>,
     routes: BTreeMap<String, IntrospectionRouteStatus>,
     params: BTreeMap<String, ParamState>,
+    boundary_inputs: BTreeMap<String, BoundaryInputState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
     io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
     services: BTreeMap<String, IntrospectionServiceStatus>,
@@ -778,6 +820,71 @@ impl IntrospectionState {
                 max: schema.max,
                 choices: schema.choices,
             });
+    }
+
+    /// 注册一个 island boundary input 的底层注入 handler。
+    ///
+    /// handler 接收 canonical Message ABI payload，由 generated shell 解码为真实消息类型后
+    /// 写入 `BoundaryInput<T>`。普通 channel 不经过这里，避免生产 dataflow 获得隐式写入口。
+    pub fn register_boundary_input_handler<F>(
+        &self,
+        endpoint: impl Into<String>,
+        message_type: impl Into<String>,
+        handler: F,
+    ) where
+        F: Fn(&[u8], Option<u64>) -> std::result::Result<u64, String> + Send + Sync + 'static,
+    {
+        let mut inner = self.lock_inner();
+        inner.boundary_inputs.insert(
+            endpoint.into(),
+            BoundaryInputState {
+                message_type: message_type.into(),
+                handler: Arc::new(handler),
+            },
+        );
+    }
+
+    /// 注册一个 typed `BoundaryInput<T>`，供 `flowrt pub` 等控制面注入 canonical payload。
+    pub fn register_boundary_input<T>(
+        &self,
+        endpoint: impl Into<String>,
+        message_type: impl Into<String>,
+        input: crate::BoundaryInput<T>,
+    ) where
+        T: FrameCodec + Send + Sync + 'static,
+    {
+        let endpoint = endpoint.into();
+        let endpoint_for_error = endpoint.clone();
+        self.register_boundary_input_handler(endpoint, message_type, move |payload, timestamp| {
+            let value = T::decode_frame(payload).map_err(|error| {
+                format!("decode FlowRT boundary input `{endpoint_for_error}`: {error}")
+            })?;
+            Ok(match timestamp {
+                Some(timestamp) => input.inject_at(value, timestamp),
+                None => input.inject(value),
+            })
+        });
+    }
+
+    /// 向已注册的 island boundary input 注入 canonical Message ABI payload。
+    pub fn publish_boundary_input(
+        &self,
+        endpoint: &str,
+        payload: Vec<u8>,
+        published_at_ms: Option<u64>,
+    ) -> std::result::Result<IntrospectionBoundaryPublishStatus, String> {
+        let boundary = {
+            let inner = self.lock_inner();
+            inner.boundary_inputs.get(endpoint).cloned()
+        }
+        .ok_or_else(|| format!("unknown FlowRT boundary input `{endpoint}`"))?;
+        let revision = (boundary.handler)(&payload, published_at_ms)?;
+        Ok(IntrospectionBoundaryPublishStatus {
+            endpoint: endpoint.to_string(),
+            message_type: boundary.message_type,
+            revision,
+            published_at_ms,
+        })
     }
 
     /// 注册编译期 self-description JSON，供在线 CLI 自动发现和格式化。
@@ -1895,6 +2002,42 @@ pub fn request_param_set_with_timeout(
     )
 }
 
+/// 向 introspection socket 请求注入 island boundary input。
+pub fn request_boundary_publish(
+    path: &Path,
+    endpoint: impl Into<String>,
+    payload: Vec<u8>,
+    published_at_ms: Option<u64>,
+) -> std::io::Result<IntrospectionResponse> {
+    request(
+        path,
+        &IntrospectionRequest::BoundaryPublish {
+            endpoint: endpoint.into(),
+            payload,
+            published_at_ms,
+        },
+    )
+}
+
+/// 向 introspection socket 请求注入 island boundary input，并限制 socket 等待时间。
+pub fn request_boundary_publish_with_timeout(
+    path: &Path,
+    endpoint: impl Into<String>,
+    payload: Vec<u8>,
+    published_at_ms: Option<u64>,
+    timeout: Duration,
+) -> std::io::Result<IntrospectionResponse> {
+    request_with_timeout(
+        path,
+        &IntrospectionRequest::BoundaryPublish {
+            endpoint: endpoint.into(),
+            payload,
+            published_at_ms,
+        },
+        timeout,
+    )
+}
+
 /// 向 introspection socket 请求取消 operation invocation。
 pub fn request_operation_cancel(
     path: &Path,
@@ -2226,6 +2369,29 @@ fn handle_connection(
                 Ok(param) => IntrospectionResponse::ParamValue {
                     handshake: handshake.clone(),
                     param,
+                },
+                Err(message) => IntrospectionResponse::Error {
+                    handshake: handshake.clone(),
+                    message,
+                },
+            };
+            let mut writer = stream;
+            writer.write_all(
+                serde_json::to_string(&response)
+                    .map_err(std::io::Error::other)?
+                    .as_bytes(),
+            )?;
+            writer.write_all(b"\n")?;
+        }
+        IntrospectionRequest::BoundaryPublish {
+            endpoint,
+            payload,
+            published_at_ms,
+        } => {
+            let response = match state.publish_boundary_input(&endpoint, payload, published_at_ms) {
+                Ok(boundary) => IntrospectionResponse::BoundaryPublish {
+                    handshake: handshake.clone(),
+                    boundary,
                 },
                 Err(message) => IntrospectionResponse::Error {
                     handshake: handshake.clone(),
@@ -3449,6 +3615,57 @@ mod tests {
         assert_eq!(boundary.resources[0].name, "camera_shm");
         assert_eq!(boundary.resources[0].kind, "shm");
         assert!(boundary.resources[0].ready);
+    }
+
+    #[test]
+    fn boundary_publish_request_invokes_registered_handler() {
+        let root = std::env::temp_dir().join(format!(
+            "flowrt-introspection-boundary-pub-test-{}",
+            std::process::id()
+        ));
+        let socket = root.join("worker.sock");
+        let handshake = IntrospectionHandshake {
+            protocol_version: INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 42,
+            started_at_unix_ms: 1000,
+            self_description_hash: "abc123".to_string(),
+            package: "island_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        };
+        let state = IntrospectionState::new();
+        let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let captured_for_handler = Arc::clone(&captured);
+        state.register_boundary_input_handler("sample_in", "Sample", move |payload, _| {
+            *captured_for_handler.lock().unwrap() = payload.to_vec();
+            Ok(7)
+        });
+
+        let server = spawn_status_server_at(socket.clone(), handshake, state.clone())
+            .expect("server should start");
+
+        let IntrospectionResponse::BoundaryPublish { boundary, .. } =
+            request_boundary_publish(server.path(), "sample_in", vec![1, 2, 3, 4], Some(123))
+                .expect("boundary publish request should succeed")
+        else {
+            panic!("boundary publish returned wrong response")
+        };
+        assert_eq!(boundary.endpoint, "sample_in");
+        assert_eq!(boundary.message_type, "Sample");
+        assert_eq!(boundary.revision, 7);
+        assert_eq!(boundary.published_at_ms, Some(123));
+        assert_eq!(*captured.lock().unwrap(), vec![1, 2, 3, 4]);
+
+        let IntrospectionResponse::Error { message, .. } =
+            request_boundary_publish(server.path(), "missing", vec![9], None)
+                .expect("unknown boundary publish should return structured error")
+        else {
+            panic!("unknown boundary publish returned wrong response")
+        };
+        assert_eq!(message, "unknown FlowRT boundary input `missing`");
+
+        drop(server);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
