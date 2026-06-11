@@ -38,6 +38,7 @@ fn build_model_cargo_invocation_uses_target_triple_path() {
         BuildMode::Release,
         &root.join("target"),
         Some("aarch64-unknown-linux-gnu"),
+        Some("aarch64-linux-gnu-gcc"),
     )
     .unwrap();
 
@@ -46,6 +47,13 @@ fn build_model_cargo_invocation_uses_target_triple_path() {
             .args
             .windows(2)
             .any(|args| args == ["--target", "aarch64-unknown-linux-gnu"])
+    );
+    assert_eq!(
+        invocation.env,
+        vec![(
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER".to_string(),
+            "aarch64-linux-gnu-gcc".to_string()
+        )]
     );
     assert_eq!(
         invocation.executable_path(),

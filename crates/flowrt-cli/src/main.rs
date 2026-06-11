@@ -2916,6 +2916,21 @@ fn cargo_target_args(target_triple: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn cargo_target_linker_env(
+    target_triple: Option<&str>,
+    linker: Option<&str>,
+) -> Option<(String, String)> {
+    let target_triple = target_triple?;
+    let linker = linker?;
+    Some((
+        format!(
+            "CARGO_TARGET_{}_LINKER",
+            target_triple.replace('-', "_").to_ascii_uppercase()
+        ),
+        linker.to_string(),
+    ))
+}
+
 fn deps_runtime_features(
     rsdl: Option<&Path>,
     profile: Option<&str>,
@@ -2982,6 +2997,12 @@ fn prepare_deps_cache(
             build_mode,
             features,
             target_profile.and_then(|profile| profile.cargo_target_triple.as_deref()),
+            target_profile.and_then(|profile| {
+                profile
+                    .cargo_target_triple
+                    .as_ref()
+                    .map(|_| profile.profile.c_compiler.as_str())
+            }),
         )?;
     } else {
         write_deps_workspace(&layout.deps_workspace_dir, &rust_runtime_dir, features)?;
@@ -2990,6 +3011,12 @@ fn prepare_deps_cache(
             &layout.target_dir,
             build_mode,
             target_profile.and_then(|profile| profile.cargo_target_triple.as_deref()),
+            target_profile.and_then(|profile| {
+                profile
+                    .cargo_target_triple
+                    .as_ref()
+                    .map(|_| profile.profile.c_compiler.as_str())
+            }),
         )?;
     }
     write_deps_ready_marker(layout, build_mode, features)
@@ -3180,6 +3207,7 @@ fn run_deps_cargo_build(
     target_dir: &Path,
     build_mode: BuildMode,
     target_triple: Option<&str>,
+    target_linker: Option<&str>,
 ) -> Result<()> {
     ensure_rust_target_available(target_triple)?;
     fs::create_dir_all(target_dir)
@@ -3195,6 +3223,9 @@ fn run_deps_cargo_build(
     }
     for arg in cargo_target_args(target_triple) {
         command.arg(arg);
+    }
+    if let Some((key, value)) = cargo_target_linker_env(target_triple, target_linker) {
+        command.env(key, value);
     }
     if workspace_dir.join(".cargo").join("config.toml").exists() {
         command.arg("--offline");
@@ -3216,6 +3247,7 @@ fn run_repo_runtime_cargo_build(
     build_mode: BuildMode,
     features: &RuntimeFeatureSet,
     target_triple: Option<&str>,
+    target_linker: Option<&str>,
 ) -> Result<()> {
     ensure_rust_target_available(target_triple)?;
     let repo_root = repo_root_dir()?;
@@ -3235,6 +3267,9 @@ fn run_repo_runtime_cargo_build(
     }
     for arg in cargo_target_args(target_triple) {
         command.arg(arg);
+    }
+    if let Some((key, value)) = cargo_target_linker_env(target_triple, target_linker) {
+        command.env(key, value);
     }
     let feature_args = features.cargo_feature_args();
     if !feature_args.is_empty() {
@@ -3433,6 +3468,12 @@ fn build_workspace(
     };
     let cargo_target_triple =
         target_profile.and_then(|profile| profile.cargo_target_triple.as_deref());
+    let cargo_target_linker = target_profile.and_then(|profile| {
+        profile
+            .cargo_target_triple
+            .as_ref()
+            .map(|_| profile.profile.c_compiler.as_str())
+    });
     for step in build_steps(contract, include_launcher) {
         match step {
             BuildStep::CargoApp => {
@@ -3448,6 +3489,7 @@ fn build_workspace(
                     build_mode,
                     target_dir,
                     cargo_target_triple,
+                    cargo_target_linker,
                 )?;
                 let local = copy_executable_to_local_bin(
                     out_dir,
@@ -3473,6 +3515,7 @@ fn build_workspace(
                     build_mode,
                     target_dir,
                     cargo_target_triple,
+                    cargo_target_linker,
                 )?;
                 let local = copy_executable_to_local_bin(
                     out_dir,
@@ -4404,14 +4447,22 @@ fn run_cargo_build_bin(
     build_mode: BuildMode,
     target_dir: &Path,
     target_triple: Option<&str>,
+    target_linker: Option<&str>,
 ) -> Result<PathBuf> {
-    let invocation =
-        cargo_build_invocation(manifest, bin_name, build_mode, target_dir, target_triple)?;
+    let invocation = cargo_build_invocation(
+        manifest,
+        bin_name,
+        build_mode,
+        target_dir,
+        target_triple,
+        target_linker,
+    )?;
     ensure_rust_target_available(invocation.target_triple.as_deref())?;
     let mut command = ProcessCommand::new("cargo");
     command
         .current_dir(&invocation.current_dir)
         .env("CARGO_TARGET_DIR", &invocation.target_dir)
+        .envs(invocation.env.iter().map(|(key, value)| (key, value)))
         .args(&invocation.args);
     let status = command.status().context("failed to spawn cargo")?;
     if !status.success() {
@@ -4429,6 +4480,7 @@ struct CargoBuildInvocation {
     args: Vec<String>,
     target_dir: PathBuf,
     target_triple: Option<String>,
+    env: Vec<(String, String)>,
     bin_name: String,
     build_mode: BuildMode,
 }
@@ -4455,6 +4507,7 @@ fn cargo_build_invocation(
     build_mode: BuildMode,
     target_dir: &Path,
     target_triple: Option<&str>,
+    target_linker: Option<&str>,
 ) -> Result<CargoBuildInvocation> {
     let manifest = fs::canonicalize(manifest)
         .with_context(|| format!("failed to resolve `{}`", manifest.display()))?;
@@ -4474,11 +4527,15 @@ fn cargo_build_invocation(
     if manifest_dir.join(".cargo").join("config.toml").exists() {
         args.push("--offline".to_string());
     }
+    let env = cargo_target_linker_env(target_triple, target_linker)
+        .into_iter()
+        .collect();
     Ok(CargoBuildInvocation {
         current_dir: manifest_dir,
         args,
         target_dir: target_dir.to_path_buf(),
         target_triple: target_triple.map(str::to_string),
+        env,
         bin_name: bin_name.to_string(),
         build_mode,
     })

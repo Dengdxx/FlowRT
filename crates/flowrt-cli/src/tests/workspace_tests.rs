@@ -1484,6 +1484,7 @@ fn cargo_build_invocation_uses_manifest_dir_and_offline_config() {
         BuildMode::Release,
         &target_dir,
         None,
+        None,
     )
     .expect("cargo invocation should be derived from manifest");
 
@@ -1532,6 +1533,7 @@ fn cargo_build_invocation_resolves_relative_manifest_before_changing_dir() {
         "robot-flowrt-app",
         BuildMode::Debug,
         &target_dir,
+        None,
         None,
     )
     .expect("relative manifest should be resolved before cargo changes directory");
