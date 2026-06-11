@@ -785,14 +785,15 @@ fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
             8,
         ));
     }
-    output.push_str("        Ok(())\n    }\n\n");
+    output
+        .push_str("        debug_assert_eq!(cursor, Self::WIRE_SIZE);\n        Ok(())\n    }\n\n");
     output.push_str(
         "    fn decode_wire(input: &[u8]) -> Result<Self, flowrt::WireCodecError> {\n        if input.len() != Self::WIRE_SIZE {\n            return Err(flowrt::WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));\n        }\n        let mut cursor = 0usize;\n",
     );
     for field in &ty.fields {
         output.push_str(&rust_wire_decode_expr(&field.ty, &field.name, "input", 8));
     }
-    output.push_str("        Ok(Self {\n");
+    output.push_str("        debug_assert_eq!(cursor, Self::WIRE_SIZE);\n        Ok(Self {\n");
     for field in &ty.fields {
         output.push_str(&format!("            {},\n", field.name));
     }

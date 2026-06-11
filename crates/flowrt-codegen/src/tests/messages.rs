@@ -641,6 +641,13 @@ backends = ["zenoh"]
     );
     assert!(rust_messages.contains("for element in &self.samples"));
     assert!(rust_messages.contains("i16::from_le_bytes([input[cursor], input[cursor + 1]])"));
+    assert_eq!(
+        rust_messages
+            .matches("debug_assert_eq!(cursor, Self::WIRE_SIZE);")
+            .count(),
+        4,
+        "fixed Rust WireCodec encode/decode must read the final cursor value for each message"
+    );
 
     let rust_abi = artifact_content(&bundle, "rust/tests/message_abi.rs");
     assert!(rust_abi.contains("fn packet_wire_codec_omits_native_padding()"));
