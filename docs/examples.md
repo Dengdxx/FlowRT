@@ -21,8 +21,8 @@
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor-only 观测 |
-| `examples/libjpeg_cross_demo` | C++ | `inproc` | `scripts/test-v085-cross-sdk-demos.sh` | 验证公开可移植 C/C++ 库通过 pkg-config overlay 接入 amd64 到 arm64 交叉构建 |
-| `examples/kleidiai_cross_demo` | C++ | `inproc` | `scripts/test-v085-cross-sdk-demos.sh` | 验证 Arm 专用公开 SDK 通过 pkg-config overlay 接入 FlowRT C++ component 并在 arm64 运行 |
+| `examples/libjpeg_cross_demo` | C++ | `inproc` | `scripts/test-v086-cross-sdk-demos.sh` | 验证公开可移植 C/C++ 库通过 pkg-config overlay 接入 amd64 到 arm64 交叉构建 |
+| `examples/kleidiai_cross_demo` | C++ | `inproc` | `scripts/test-v086-cross-sdk-demos.sh` | 验证 Arm 专用公开 SDK 通过 pkg-config overlay 接入 FlowRT C++ component 并在 arm64 运行 |
 
 ## `import_demo`
 
@@ -252,7 +252,7 @@ examples/cross_sdk_deps/CMakeLists.txt
 推荐 smoke：
 
 ```bash
-scripts/test-v085-cross-sdk-demos.sh
+scripts/test-v086-cross-sdk-demos.sh
 ```
 
 手动拆开执行时，先准备公开 arm64 SDK overlay：
@@ -265,27 +265,28 @@ cmake -S examples/cross_sdk_deps -B build/cross_sdk_deps -G Ninja \
 cmake --build build/cross_sdk_deps --target flowrt_public_arm64_sdk -j1
 ```
 
-然后在每个示例工作区写入 `.flowrt/toolchains.toml`：
+然后在每个示例工作区用 CLI 生成最小 toolchain profile。用户不需要手写完整
+`.flowrt/toolchains.toml`；`sdk_overlays` 会自动派生常见 CMake prefix 和
+pkg-config 搜索路径：
 
-```toml
-[toolchain.linux-arm64]
-sdk_overlays = ["/absolute/path/to/.flowrt/public-arm64-sdk"]
-pkg_config_libdirs = [
-  "/absolute/path/to/.flowrt/public-arm64-sdk/lib/aarch64-linux-gnu/pkgconfig",
-  "/absolute/path/to/.flowrt/public-arm64-sdk/lib/pkgconfig",
-]
-runtime_dependency_policy = "external"
+```bash
+flowrt toolchain init --target linux-arm64 --sdk-overlay "$sdk_root" --force
+flowrt toolchain show --target linux-arm64
 ```
 
-最后进入对应示例目录执行：
+最后进入对应示例目录执行带 RSDL 的 `doctor`、依赖预热和构建：
 
 ```bash
 cd examples/libjpeg_cross_demo
+flowrt toolchain init --target linux-arm64 --sdk-overlay "$sdk_root" --force
+flowrt toolchain show --target linux-arm64
 flowrt doctor rsdl/robot.rsdl --target linux-arm64
 flowrt deps rsdl/robot.rsdl --target linux-arm64 --backend inproc
 flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl
 
 cd ../kleidiai_cross_demo
+flowrt toolchain init --target linux-arm64 --sdk-overlay "$sdk_root" --force
+flowrt toolchain show --target linux-arm64
 flowrt doctor rsdl/robot.rsdl --target linux-arm64
 flowrt deps rsdl/robot.rsdl --target linux-arm64 --backend inproc
 flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl

@@ -45,7 +45,7 @@ flowrt deps examples/import_demo/rsdl/robot.rsdl
 ```bash
 flowrt toolchain init --target linux-arm64
 flowrt toolchain show --target linux-arm64
-flowrt doctor --target linux-arm64
+flowrt doctor examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 flowrt deps examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 ```
@@ -57,7 +57,10 @@ flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target l
 flowrt toolchain init --target linux-arm64 --sdk-overlay /opt/vendor/rknn
 ```
 
-生成后可以用 `flowrt toolchain show --target linux-arm64` 确认合并后的 profile 是否符合预期。
+生成后可以用 `flowrt toolchain show --target linux-arm64` 确认合并后的 profile 是否符合预期；
+推荐在进入 `deps/build` 前运行带 RSDL 的 `flowrt doctor <rsdl> --target <platform>`，
+让 CLI 按 Contract IR 检查 C++ component 声明的 `pkg_config` 依赖是否能被 selected target
+看到。
 
 `--target` 当前支持 `linux-amd64` 和 `linux-arm64`。显式参数优先于 RSDL/Contract IR target
 platform；省略时如果选定 Contract IR target 已声明 platform，CLI 会自动使用该 platform，

@@ -683,8 +683,8 @@ jobs:
           export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/v083-cross-amd64}"
           scripts/test-v083-installed-smoke.sh
 
-  v085-cross-sdk-smoke:
-    name: v0.8.5 Public Cross SDK Smoke
+  v086-cross-sdk-smoke:
+    name: v0.8.6 Cross UX SDK Smoke
     runs-on: ubuntu-latest
     container:
       image: ros:jazzy-ros-base-noble
@@ -725,26 +725,26 @@ jobs:
       - name: 缓存公开 arm64 SDK overlay
         uses: actions/cache@v4
         with:
-          path: .flowrt-public-sdk/v085-arm64
-          key: flowrt-public-arm64-sdk-v085-${{ hashFiles('examples/cross_sdk_deps/CMakeLists.txt') }}
+          path: .flowrt-public-sdk/v086-arm64
+          key: flowrt-public-arm64-sdk-v086-${{ hashFiles('examples/cross_sdk_deps/CMakeLists.txt') }}
           restore-keys: |
-            flowrt-public-arm64-sdk-v085-
+            flowrt-public-arm64-sdk-v086-
 
       - name: 缓存 FlowRT deps
         uses: actions/cache@v4
         with:
           path: .flowrt-cache
-          key: flowrt-deps-v085-cross-sdk-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'examples/cross_sdk_deps/CMakeLists.txt', 'scripts/test-v085-cross-sdk-demos.sh') }}
+          key: flowrt-deps-v086-cross-sdk-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'examples/cross_sdk_deps/CMakeLists.txt', 'scripts/test-v086-cross-sdk-demos.sh') }}
           restore-keys: |
-            flowrt-deps-v085-cross-sdk-
+            flowrt-deps-v086-cross-sdk-
 
       - name: 安装 flowrt deb 并执行公开 SDK 交叉 demo smoke
         run: |
           dpkg -i dist/flowrt_*_amd64.deb
           flowrt --version
-          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v085-cross-sdk"
-          export FLOWRT_PUBLIC_ARM64_SDK_OVERLAY="$GITHUB_WORKSPACE/.flowrt-public-sdk/v085-arm64"
-          FLOWRT_BUILD_JOBS=1 scripts/test-v085-cross-sdk-demos.sh
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v086-cross-sdk"
+          export FLOWRT_PUBLIC_ARM64_SDK_OVERLAY="$GITHUB_WORKSPACE/.flowrt-public-sdk/v086-arm64"
+          FLOWRT_BUILD_JOBS=1 scripts/test-v086-cross-sdk-demos.sh
 
   demo-smoke:
     name: Demo Smoke (${{ matrix.deb_arch }})
@@ -1012,7 +1012,7 @@ jobs:
       - cpp-zenoh-runtime
       - package
       - v083-cross-compile-smoke
-      - v085-cross-sdk-smoke
+      - v086-cross-sdk-smoke
       - demo-smoke
       - ros2-jazzy-bridge
       - ros2-lyrical-bridge
