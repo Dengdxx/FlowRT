@@ -5,16 +5,9 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.6`。`v0.8.6` 是 `v0.8.5` 之后的交叉编译 / SDK overlay
-体验硬化版本，不新增 RSDL 语义或 backend。CLI 新增 `flowrt toolchain show/init`，
-让用户用最小 workspace profile 接入 `linux-arm64` SDK overlay；`flowrt doctor
-[<rsdl>] --target <platform>` 可以按 Contract IR 检查 selected target 下 C++
-component `build.pkg_config` 依赖；`flowrt build --target <platform>` 会在 CMake 前
-fail-fast 检查 target SDK / pkg-config 可见性，并在成功后输出 target、toolchain、
-SDK overlay、pkg-config 模块和最终二进制 summary。
-
-`dev/v0.9.0` 已开始推进 Island Mode / Boundary Endpoint 主线。当前已接入 RSDL
-语法、Contract IR normalization 和 validator 拓扑规则：profile mode canonical 为
+当前 workspace 版本为 `0.9.0`。`v0.9.0` 是 Island Mode / Boundary Endpoint 版本，
+用于支持单功能单位开发、ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`。
+已接入 RSDL 语法、Contract IR normalization 和 validator 拓扑规则：profile mode canonical 为
 `strict` 或 `island`；graph 级 `BoundaryEndpointIr` 记录 stable id、name、direction、
 真实 `instance.port` 引用和解析后的 `TypeExpr`，并按方向和名称稳定排序；strict
 profile 拒绝 boundary endpoint，island profile 下 typed boundary input 可以满足 task
@@ -38,8 +31,7 @@ adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instan
 通过 `result_out` 供 `flowrt echo` / `flowrt record` 观察；CI 已加入 amd64/arm64 的
 `v0.9.0 Island Demo Smoke`，发布就绪脚本也会检查该 focused gate。最终集成 hardening
 已收掉 generated Rust fixed `WireCodec` 的 `cursor` unused warning：生成代码在
-encode/decode 末尾断言 cursor 等于 `WIRE_SIZE`，避免 release smoke 输出噪声。`v0.9.0`
-剩余工作是版本发布准备。
+encode/decode 末尾断言 cursor 等于 `WIRE_SIZE`，避免 release smoke 输出噪声。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、
