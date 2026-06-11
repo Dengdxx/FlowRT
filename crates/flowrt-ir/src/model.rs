@@ -321,7 +321,27 @@ pub struct GraphIr {
     pub services: Vec<ServiceEdgeIr>,
     #[serde(default)]
     pub operations: Vec<OperationEdgeIr>,
+    #[serde(default)]
+    pub boundary_endpoints: Vec<BoundaryEndpointIr>,
     pub ros2_bridges: Vec<Ros2BridgeIr>,
+}
+
+/// graph 级 typed boundary endpoint。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoundaryEndpointIr {
+    pub id: EntityId,
+    pub name: String,
+    pub direction: BoundaryDirection,
+    pub port: PortRef,
+    pub ty: crate::TypeExpr,
+}
+
+/// boundary endpoint 方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryDirection {
+    Input,
+    Output,
 }
 
 /// graph 级运行进程编排策略。
@@ -639,9 +659,19 @@ pub struct PortRef {
 pub struct ProfileIr {
     pub id: EntityId,
     pub name: String,
+    pub mode: GraphMode,
     pub backend: BackendName,
     pub scheduler: SchedulerDefaults,
     pub defaults: PolicyDefaults,
+}
+
+/// profile 选择的 graph 完整性模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphMode {
+    #[default]
+    Strict,
+    Island,
 }
 
 /// profile 级 scheduler 默认值。

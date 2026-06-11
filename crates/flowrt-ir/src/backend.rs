@@ -1028,6 +1028,7 @@ mod tests {
             ],
             services: vec![],
             operations: vec![],
+            boundary_endpoints: vec![],
             ros2_bridges: vec![],
         };
         let types = [test_type(

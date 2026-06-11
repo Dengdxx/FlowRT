@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
 
-use flowrt_rsdl::{RawDocument, RawExternalProcess, RawModuleDocument, RawProcess};
+use flowrt_rsdl::{
+    RawBoundaryEndpoint, RawDocument, RawExternalProcess, RawModuleDocument, RawProcess,
+};
 
 use crate::{
-    BackendName, ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr, ComponentIr, DeploymentIr,
-    EntityId, EntityRef, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr,
-    InstanceIr, IrError, OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation,
-    ProcessIr, ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr,
-    Result, RtPolicy, StalePolicy, TargetIr, TaskIr, TypeIr, channel_capabilities,
-    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
+    BackendName, BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr, ChannelKind,
+    ChannelPolicySourceIr, ComponentIr, DeploymentIr, EntityId, EntityRef, ExternalHealthKind,
+    ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr, IrError, OverflowPolicy,
+    PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessReadinessGate,
+    ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy,
+    TargetIr, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
+    deployment_capability_decision, graph_required_capabilities, parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -511,6 +514,72 @@ pub(super) fn normalize_binds(
             ))
     });
     Ok(binds)
+}
+
+pub(super) fn normalize_boundary_endpoints(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    resolver: &NameResolver,
+    graph_name: &str,
+) -> Result<Vec<BoundaryEndpointIr>> {
+    let mut endpoints =
+        Vec::with_capacity(document.boundary_inputs.len() + document.boundary_outputs.len());
+    endpoints.extend(
+        document
+            .boundary_inputs
+            .iter()
+            .map(|raw| {
+                normalize_boundary_endpoint(
+                    raw,
+                    BoundaryDirection::Input,
+                    instance_refs,
+                    resolver,
+                    graph_name,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?,
+    );
+    endpoints.extend(
+        document
+            .boundary_outputs
+            .iter()
+            .map(|raw| {
+                normalize_boundary_endpoint(
+                    raw,
+                    BoundaryDirection::Output,
+                    instance_refs,
+                    resolver,
+                    graph_name,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?,
+    );
+    endpoints
+        .sort_by(|left, right| (left.direction, &left.name).cmp(&(right.direction, &right.name)));
+    Ok(endpoints)
+}
+
+fn normalize_boundary_endpoint(
+    raw: &RawBoundaryEndpoint,
+    direction: BoundaryDirection,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    resolver: &NameResolver,
+    graph_name: &str,
+) -> Result<BoundaryEndpointIr> {
+    let direction_name = match direction {
+        BoundaryDirection::Input => "input",
+        BoundaryDirection::Output => "output",
+    };
+    Ok(BoundaryEndpointIr {
+        id: entity_id(
+            "boundary",
+            &format!("{graph_name}.{direction_name}.{}", raw.name),
+        ),
+        name: raw.name.clone(),
+        direction,
+        port: parse_port_ref(&raw.port, instance_refs)?,
+        ty: resolver.resolve_type_expr_in_module(parse_type_expr(&raw.ty)?, None)?,
+    })
 }
 
 pub(super) fn normalize_deployments(

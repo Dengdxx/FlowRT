@@ -137,6 +137,12 @@ fn normalize_document_with_modules(
         &components,
         &graph_name,
     )?;
+    let boundary_endpoints = graphs::normalize_boundary_endpoints(
+        document,
+        &instance_refs,
+        &name_resolver,
+        &graph_name,
+    )?;
     let ros2_bridges = services::normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
     let graph = crate::GraphIr {
         id: graph_id.clone(),
@@ -148,6 +154,7 @@ fn normalize_document_with_modules(
         binds,
         services: service_edges,
         operations: operation_edges,
+        boundary_endpoints,
         ros2_bridges,
     };
 
@@ -176,13 +183,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        CapabilityAtom, ChannelBackendSource, ChannelKind, IrError, OperationBackendSource,
-        OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
-        OverflowPolicy, ParamType, ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
-        ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind,
-        Ros2BridgeDirection, RouteTopology, RtPolicy, ServiceBackendSource, ServiceOverflowPolicy,
-        StalePolicy, TaskReadiness, TypeExpr, channel_route_capabilities,
-        deployment_capability_decision,
+        BoundaryDirection, CapabilityAtom, ChannelBackendSource, ChannelKind, GraphMode, IrError,
+        OperationBackendSource, OperationConcurrencyPolicy, OperationFeedbackPolicy,
+        OperationPreemptPolicy, OverflowPolicy, ParamType, ParamUpdatePolicy, ParamValue,
+        PolicyValueSource, PrimitiveType, ProcessFailurePropagation, ProcessReadinessGate,
+        ProcessRestartPolicyKind, Ros2BridgeDirection, RouteTopology, RtPolicy,
+        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness, TypeExpr,
+        channel_route_capabilities, deployment_capability_decision,
     };
 
     #[test]
@@ -1659,6 +1666,162 @@ channel = "latest"
 
         assert_eq!(ir.graphs[0].binds[0].channel, ChannelKind::Latest);
         assert_eq!(ir.graphs[0].binds[0].depth, Some(1));
+    }
+
+    #[test]
+    fn normalizes_island_profile_and_boundary_endpoints() {
+        let source = r#"
+[package]
+name = "island_demo"
+rsdl_version = "0.1"
+
+[type.Command]
+speed = "f32"
+
+[type.Scan]
+range = "f32"
+
+[component.planner]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Command"]
+
+[instance.planner]
+component = "planner"
+
+[instance.planner.task]
+trigger = "on_message"
+input = ["scan"]
+output = ["cmd"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.output]]
+name = "cmd_out"
+port = "planner.cmd"
+type = "Command"
+
+[[boundary.input]]
+name = "scan_in"
+port = "planner.scan"
+type = "Scan"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.profiles[0].mode, GraphMode::Island);
+        assert_eq!(ir.graphs[0].boundary_endpoints.len(), 2);
+
+        let input = &ir.graphs[0].boundary_endpoints[0];
+        assert!(input.id.0.starts_with("boundary_"));
+        assert_eq!(input.name, "scan_in");
+        assert_eq!(input.direction, BoundaryDirection::Input);
+        assert_eq!(input.port.instance.name, "planner");
+        assert_eq!(input.port.port, "scan");
+        assert_eq!(
+            input.ty,
+            TypeExpr::Named {
+                name: "Scan".to_string()
+            }
+        );
+
+        let output = &ir.graphs[0].boundary_endpoints[1];
+        assert_eq!(output.name, "cmd_out");
+        assert_eq!(output.direction, BoundaryDirection::Output);
+        assert_eq!(output.port.instance.name, "planner");
+        assert_eq!(output.port.port, "cmd");
+        assert_eq!(
+            output.ty,
+            TypeExpr::Named {
+                name: "Command".to_string()
+            }
+        );
+
+        let json = ir.to_canonical_json().unwrap();
+        assert!(json.contains("\"mode\": \"island\""));
+        assert!(json.contains("\"boundary_endpoints\""));
+        assert!(json.contains("\"direction\": \"input\""));
+    }
+
+    #[test]
+    fn canonicalizes_boundary_endpoint_order_independent_of_source_order() {
+        let source_a = r#"
+[package]
+name = "island_demo"
+rsdl_version = "0.1"
+
+[type.Command]
+speed = "f32"
+
+[type.Scan]
+range = "f32"
+
+[component.planner]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Command"]
+
+[instance.planner]
+component = "planner"
+
+[profile.dev]
+mode = "island"
+
+[[boundary.input]]
+name = "z_scan"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.input]]
+name = "a_scan"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.output]]
+name = "cmd"
+port = "planner.cmd"
+type = "Command"
+"#;
+        let source_b = source_a.replace(
+            r#"[[boundary.input]]
+name = "z_scan"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.input]]
+name = "a_scan"
+port = "planner.scan"
+type = "Scan""#,
+            r#"[[boundary.input]]
+name = "a_scan"
+port = "planner.scan"
+type = "Scan"
+
+[[boundary.input]]
+name = "z_scan"
+port = "planner.scan"
+type = "Scan""#,
+        );
+        let raw_a = parse_str(source_a).unwrap();
+        let raw_b = parse_str(&source_b).unwrap();
+
+        let mut ir_a = normalize_document(&raw_a, hash_source("same logical source")).unwrap();
+        let mut ir_b = normalize_document(&raw_b, hash_source("same logical source")).unwrap();
+
+        ir_a.source_hash = "stable".to_string();
+        ir_b.source_hash = "stable".to_string();
+        assert_eq!(
+            ir_a.to_canonical_json().unwrap(),
+            ir_b.to_canonical_json().unwrap()
+        );
+        assert_eq!(ir_a.graphs[0].boundary_endpoints[0].name, "a_scan");
+        assert_eq!(ir_a.graphs[0].boundary_endpoints[1].name, "z_scan");
+        assert_eq!(
+            ir_a.graphs[0].boundary_endpoints[2].direction,
+            BoundaryDirection::Output
+        );
     }
 
     #[test]

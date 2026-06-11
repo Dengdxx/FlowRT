@@ -1,8 +1,8 @@
-use flowrt_rsdl::{RawDocument, RawProfile};
+use flowrt_rsdl::{RawDocument, RawGraphMode, RawProfile};
 
 use crate::{
-    BackendName, ContractIr, IrError, OverflowPolicy, PolicyDefaults, PolicyValueSource, ProfileIr,
-    Result, RouteTopology, SchedulerDefaults, StalePolicy, channel_capabilities,
+    BackendName, ContractIr, GraphMode, IrError, OverflowPolicy, PolicyDefaults, PolicyValueSource,
+    ProfileIr, Result, RouteTopology, SchedulerDefaults, StalePolicy, channel_capabilities,
     channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
 };
 
@@ -16,6 +16,7 @@ pub(super) fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr
         return Ok(vec![ProfileIr {
             id: entity_id("profile", "default"),
             name: "default".to_string(),
+            mode: GraphMode::Strict,
             backend: BackendName("inproc".to_string()),
             scheduler: SchedulerDefaults { worker_threads: 1 },
             defaults: PolicyDefaults {
@@ -33,12 +34,20 @@ pub(super) fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr
             Ok(ProfileIr {
                 id: entity_id("profile", name),
                 name: name.clone(),
+                mode: normalize_graph_mode(raw.mode),
                 backend: BackendName(raw.backend.clone().unwrap_or_else(|| "inproc".to_string())),
                 scheduler: normalize_scheduler_defaults(raw, &format!("profile.{name}"))?,
                 defaults: normalize_policy_defaults(raw, &format!("profile.{name}"))?,
             })
         })
         .collect()
+}
+
+fn normalize_graph_mode(mode: RawGraphMode) -> GraphMode {
+    match mode {
+        RawGraphMode::Strict => GraphMode::Strict,
+        RawGraphMode::Island => GraphMode::Island,
+    }
 }
 
 fn normalize_scheduler_defaults(raw: &RawProfile, context: &str) -> Result<SchedulerDefaults> {
