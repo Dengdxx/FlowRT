@@ -1,7 +1,9 @@
 use super::*;
+use crate::build_model::RuntimeFeature;
 
 static REPO_RUNTIME_FALLBACK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static FLOWRT_CACHE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static XDG_RUNTIME_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn patch_mismatched_flowrt_version() -> String {
     let parts = env!("CARGO_PKG_VERSION")
@@ -1293,6 +1295,223 @@ fn build_can_reuse_all_backend_dependency_cache_for_feature_subset() {
     let selected = select_ready_deps_cache_layout(BuildMode::Release, &inproc, None).unwrap();
 
     assert_eq!(selected.target_dir, all_layout.target_dir);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cache_status_groups_entries_and_marks_non_cache_paths() {
+    let _cache_lock = FLOWRT_CACHE_DIR_ENV_LOCK
+        .lock()
+        .expect("cache env lock should not be poisoned");
+    let root = temp_test_dir("cache-status");
+    let cache = root.join("cache");
+    let _cache_env = EnvOverride::set("FLOWRT_CACHE_DIR", Some(cache.as_os_str()));
+    let project = root.join("demo");
+    let out_dir = project.join("flowrt");
+    std::fs::create_dir_all(project.join("rsdl")).unwrap();
+    std::fs::create_dir_all(project.join(".flowrt")).unwrap();
+    std::fs::create_dir_all(out_dir.join("build/bin/linux-arm64/release")).unwrap();
+    std::fs::create_dir_all(out_dir.join("build/cmake/linux-arm64/release")).unwrap();
+    std::fs::write(
+        out_dir.join("build/bin/linux-arm64/release/robot-flowrt-app"),
+        "binary",
+    )
+    .unwrap();
+    std::fs::write(
+        out_dir.join("build/cmake/linux-arm64/release/CMakeCache.txt"),
+        "cache",
+    )
+    .unwrap();
+    std::fs::write(project.join("capture.mcap"), "mcap").unwrap();
+    std::fs::write(
+        project.join(".flowrt/toolchains.toml"),
+        "[toolchain.linux-arm64]\nsdk_overlays = [\"/opt/vendor/rknn\"]\n",
+    )
+    .unwrap();
+
+    let features = RuntimeFeatureSet::from_features([RuntimeFeature::Zenoh]);
+    let layout = CacheLayout::new(
+        cache.clone(),
+        &DepsCacheKey::new(
+            env!("CARGO_PKG_VERSION"),
+            "rustc 1.90.0",
+            "aarch64-unknown-linux-gnu",
+            "vendor-hash",
+            BuildMode::Release,
+            features.clone(),
+        ),
+    );
+    std::fs::create_dir_all(
+        layout
+            .target_dir
+            .join("aarch64-unknown-linux-gnu")
+            .join("release")
+            .join("incremental"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(&layout.deps_workspace_dir).unwrap();
+    write_deps_ready_marker(&layout, BuildMode::Release, &features).unwrap();
+
+    let output = cache_status_summary_for_cwd(&project).unwrap();
+
+    assert!(output.contains("FlowRT cache root"));
+    assert!(output.contains("默认可清"));
+    assert!(output.contains("条件可清"));
+    assert!(output.contains("仅展示"));
+    assert!(output.contains("永不自动清"));
+    assert!(output.contains("deps ready marker"));
+    assert!(output.contains("aarch64-unknown-linux-gnu"));
+    assert!(output.contains("zenoh"));
+    assert!(output.contains("flowrt/build"));
+    assert!(output.contains("flowrt/build/bin"));
+    assert!(output.contains("flowrt/build/cmake"));
+    assert!(output.contains("sdk_overlay"));
+    assert!(output.contains("/opt/vendor/rknn"));
+    assert!(output.contains(".mcap"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cache_clean_dry_run_respects_target_and_build_mode_filters() {
+    let _lock = FLOWRT_CACHE_DIR_ENV_LOCK
+        .lock()
+        .expect("cache env lock should not be poisoned");
+    let root = temp_test_dir("cache-clean-filter");
+    let cache = root.join("cache");
+    let _env = EnvOverride::set("FLOWRT_CACHE_DIR", Some(cache.as_os_str()));
+    let project = root.join("demo");
+    std::fs::create_dir_all(project.join("rsdl")).unwrap();
+
+    let arm_features = RuntimeFeatureSet::from_features([RuntimeFeature::Zenoh]);
+    let arm_layout = CacheLayout::new(
+        cache.clone(),
+        &DepsCacheKey::new(
+            env!("CARGO_PKG_VERSION"),
+            "rustc 1.90.0",
+            "aarch64-unknown-linux-gnu",
+            "vendor-a",
+            BuildMode::Release,
+            arm_features.clone(),
+        ),
+    );
+    std::fs::create_dir_all(
+        arm_layout
+            .target_dir
+            .join("aarch64-unknown-linux-gnu")
+            .join("release")
+            .join("incremental"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(&arm_layout.deps_workspace_dir).unwrap();
+    write_deps_ready_marker(&arm_layout, BuildMode::Release, &arm_features).unwrap();
+
+    let host_features = RuntimeFeatureSet::from_features([RuntimeFeature::Iox2]);
+    let host_layout = CacheLayout::new(
+        cache.clone(),
+        &DepsCacheKey::new(
+            env!("CARGO_PKG_VERSION"),
+            "rustc 1.90.0",
+            "x86_64-unknown-linux-gnu",
+            "vendor-b",
+            BuildMode::Debug,
+            host_features.clone(),
+        ),
+    );
+    std::fs::create_dir_all(host_layout.target_dir.join("debug").join("incremental")).unwrap();
+    std::fs::create_dir_all(&host_layout.deps_workspace_dir).unwrap();
+    write_deps_ready_marker(&host_layout, BuildMode::Debug, &host_features).unwrap();
+
+    let output = cache_clean_for_cwd(
+        &project,
+        CacheCleanOptions {
+            target: Some("linux-arm64".to_string()),
+            build_mode: Some(BuildMode::Release),
+            dry_run: true,
+            flowrt_deps: true,
+            project_build: false,
+            incremental: true,
+            stale_temp: false,
+        },
+    )
+    .unwrap();
+
+    assert!(output.contains("dry-run"));
+    assert!(output.contains(arm_layout.target_dir.to_string_lossy().as_ref()));
+    assert!(output.contains(arm_layout.deps_workspace_dir.to_string_lossy().as_ref()));
+    assert!(output.contains(arm_layout.ready_file.to_string_lossy().as_ref()));
+    assert!(!output.contains(host_layout.target_dir.to_string_lossy().as_ref()));
+    assert!(arm_layout.target_dir.exists());
+    assert!(host_layout.target_dir.exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_clean_rejects_project_build_symlink_escape() {
+    let root = temp_test_dir("cache-clean-project-symlink");
+    let project = root.join("demo");
+    let outside = root.join("outside-build");
+    std::fs::create_dir_all(project.join("rsdl")).unwrap();
+    std::fs::create_dir_all(project.join("flowrt")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, project.join("flowrt/build")).unwrap();
+
+    let error = cache_clean_for_cwd(
+        &project,
+        CacheCleanOptions {
+            target: None,
+            build_mode: None,
+            dry_run: false,
+            flowrt_deps: false,
+            project_build: true,
+            incremental: false,
+            stale_temp: false,
+        },
+    )
+    .expect_err("symlinked project build dir should be rejected");
+
+    assert!(error.to_string().contains("symlink"));
+    assert!(outside.exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cache_clean_stale_temp_removes_only_dead_runtime_socket_candidates() {
+    let _lock = XDG_RUNTIME_DIR_ENV_LOCK
+        .lock()
+        .expect("runtime dir env lock should not be poisoned");
+    let root = temp_test_dir("cache-clean-stale-temp");
+    let runtime_dir = root.join("xdg-runtime");
+    let _env = EnvOverride::set("XDG_RUNTIME_DIR", Some(runtime_dir.as_os_str()));
+    let socket_dir = flowrt::runtime_socket_dir();
+    std::fs::create_dir_all(&socket_dir).unwrap();
+    let dead_socket = socket_dir.join("999999.sock");
+    let live_socket = socket_dir.join(format!("{}.sock", std::process::id()));
+    std::fs::write(&dead_socket, "dead").unwrap();
+    std::fs::write(&live_socket, "live").unwrap();
+
+    let output = cache_clean_for_cwd(
+        &root,
+        CacheCleanOptions {
+            target: None,
+            build_mode: None,
+            dry_run: false,
+            flowrt_deps: false,
+            project_build: false,
+            incremental: false,
+            stale_temp: true,
+        },
+    )
+    .unwrap();
+
+    assert!(output.contains(dead_socket.to_string_lossy().as_ref()));
+    assert!(!output.contains(live_socket.to_string_lossy().as_ref()));
+    assert!(!dead_socket.exists());
+    assert!(live_socket.exists());
+
     let _ = std::fs::remove_dir_all(&root);
 }
 

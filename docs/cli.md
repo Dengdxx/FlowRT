@@ -8,6 +8,8 @@
 flowrt check <path/to/robot.rsdl>
 flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
+flowrt cache status
+flowrt cache clean [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--dry-run] [--flowrt-deps] [--project-build] [--incremental] [--stale-temp]
 flowrt doctor [--target <linux-amd64|linux-arm64>]
 flowrt toolchain show --target <linux-amd64|linux-arm64>
 flowrt toolchain init --target <linux-arm64> [--sdk-overlay <path>] [--force]
@@ -86,6 +88,69 @@ cache key 包含 FlowRT 版本、Rust toolchain identity、target triple、vendo
 当前支持的 platform 为 `linux-amd64` 和 `linux-arm64`。当 Cargo 需要交叉 target 时，CLI 会传递 `--target <rust-target-triple>`；如果 rustup 未安装该 target 或 Cargo 构建失败，错误会指出 Rust target triple，并提示先执行 `rustup target add <triple>` 或配置对应 Rust toolchain。FlowRT 不会自动下载系统交叉编译器或板级私有 SDK。
 
 `--build-mode` 默认是 `release`。`debug` 只用于本地调试，不能和 release 产物混用。
+
+## `cache`
+
+```bash
+flowrt cache status
+flowrt cache clean --dry-run --flowrt-deps --target linux-arm64 --build-mode release
+flowrt cache clean --project-build
+flowrt cache clean --incremental --stale-temp
+```
+
+`cache status` 用于解释磁盘占用，`cache clean` 用于显式、安全地删除可重建目录。CLI 会把输出分成四类：
+
+- `默认可清`：FlowRT deps cache、`deps-workspaces/`、ready marker、显式选择的
+  incremental cache、已确认 stale 的临时 socket/zenoh 目录、项目 `flowrt/build/cmake`。
+- `条件可清`：当前项目 `flowrt/build`、`flowrt/build/bin/...`、当前 git worktree。
+- `仅展示`：FlowRT 仓库开发 `target/`、用户 `.mcap` 录制产物和日志目录。
+- `永不自动清`：`.flowrt/toolchains.toml`、live runtime socket、`sdk_overlays`
+  指向的外部目录。
+
+`cache status` 会展示：
+
+- FlowRT cache root；
+- `flowrt deps` 的 ready marker，按 target/build mode/backend feature 列出；
+- `cargo-target/`、`deps-workspaces/` 和 incremental 占用；
+- 当前项目 `flowrt/build/`、`flowrt/build/bin/...`、`flowrt/build/cmake/...`；
+- 当前目录位于 FlowRT 仓库时的开发 `target/`；
+- stale `/tmp` 候选和 live runtime socket 区分结果；
+- SDK overlay 占用提示。
+
+`cache clean` 只会清理显式选中的范围：
+
+- `--flowrt-deps`：清理 FlowRT cache root 下的 deps target、deps workspace、ready marker
+  和 lock 文件。带 `--target` / `--build-mode` 时只匹配对应 cache key。
+- `--project-build`：清理当前项目 `flowrt/build` 可重建目录。没有过滤条件时删除整个
+  `flowrt/build`；带 `--target` / `--build-mode` 时只删除匹配的 `bin/` 和 `cmake/`
+  子目录。
+- `--incremental`：只删 Cargo incremental 目录，保留其余 fingerprint 和 link input。
+- `--stale-temp`：只删已确认 stale 的 FlowRT runtime socket 或带 dead PID 的 zenoh
+  临时目录；不能证明 stale 的项只展示，不自动删。
+- `--dry-run`：先输出计划删除路径，不执行实际删除。实际删除时 CLI 会逐条打印删除路径。
+
+安全边界：
+
+- CLI 只会删除 FlowRT cache root、当前项目 `flowrt/build`，以及经 PID 校验确认 stale
+  的临时候选；遇到 symlink、空路径或父路径逃逸会直接拒绝。
+- SDK overlay 只展示占用，默认不删除；未来若支持清理，必须要求显式路径和显式确认。
+- 安装前缀 `/opt/flowrt/<version>`、已安装 CLI 路径（例如 `/usr/bin/flowrt`）、
+  用户源码、`.flowrt/toolchains.toml`、live runtime socket、`.mcap` 和日志都不属于
+  `cache clean` 自动删除范围。
+- `iox2` / `zenoh` 共享内存或运行期资源不靠路径模式批量清理；无法证明资源已经脱离
+  live 进程时，CLI 只会展示。
+
+关于占用和增量缓存：
+
+- 用户最终二进制通常只有 `1MB - 15MB`；GB 级空间大头通常是 `.rlib`、`.rmeta`、
+  build-script、proc-macro、多 target、多 feature 和 vendor hash 组合下的中间产物。
+- `flowrt deps` 的共享语义是复用编译产物作为 link input，不是让不同用户程序动态共享
+  同一个最终 FRT 依赖二进制；Rust 用户程序仍会把实际用到的 runtime/dependency code
+  链接进自己的最终 executable。
+- CI 若不需要本地增量构建收益，可以设置 `CARGO_INCREMENTAL=0` 减少无价值缓存；本地
+  开发默认保留 incremental 以换取重复编译速度。
+- 多 worktree 的本地开发可以显式共享 `CARGO_TARGET_DIR` 来复用仓库开发 `target/`
+  产物，但 FlowRT 不会强制写入仓库配置。
 
 ## `build`
 

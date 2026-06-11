@@ -62,6 +62,61 @@ fn command_doctor_parses_target_platform() {
 }
 
 #[test]
+fn command_cache_parses_status_subcommand() {
+    let cli = Cli::try_parse_from(["flowrt", "cache", "status"]).unwrap();
+
+    let Command::Cache { command } = cli.command else {
+        panic!("cache command should parse into Command::Cache")
+    };
+    let CacheCommand::Status = command else {
+        panic!("cache status should parse into CacheCommand::Status")
+    };
+}
+
+#[test]
+fn command_cache_parses_clean_filters_and_scopes() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "cache",
+        "clean",
+        "--target",
+        "linux-arm64",
+        "--build-mode",
+        "debug",
+        "--dry-run",
+        "--flowrt-deps",
+        "--project-build",
+        "--incremental",
+        "--stale-temp",
+    ])
+    .unwrap();
+
+    let Command::Cache { command } = cli.command else {
+        panic!("cache command should parse into Command::Cache")
+    };
+    let CacheCommand::Clean {
+        target,
+        build_mode,
+        dry_run,
+        flowrt_deps,
+        project_build,
+        incremental,
+        stale_temp,
+    } = command
+    else {
+        panic!("cache clean should parse into CacheCommand::Clean")
+    };
+
+    assert_eq!(target.as_deref(), Some("linux-arm64"));
+    assert_eq!(build_mode, Some(BuildMode::Debug));
+    assert!(dry_run);
+    assert!(flowrt_deps);
+    assert!(project_build);
+    assert!(incremental);
+    assert!(stale_temp);
+}
+
+#[test]
 fn cli_parses_hz_command_with_socket_and_window() {
     let cli = Cli::try_parse_from([
         "flowrt",

@@ -243,6 +243,62 @@ impl CacheLayout {
             root,
         }
     }
+
+    pub fn from_fragment(root: PathBuf, fragment: &Path) -> Option<Self> {
+        let meta = CacheFragmentMeta::parse(fragment)?;
+        Some(Self {
+            target_triple: meta.target_triple,
+            target_dir: root.join("cargo-target").join(fragment),
+            deps_workspace_dir: root.join("deps-workspaces").join(fragment),
+            lock_file: root
+                .join("locks")
+                .join(format!("{}.lock", fragment_to_file_name(fragment))),
+            ready_file: root.join("ready").join(fragment).join("ready.json"),
+            root,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheFragmentMeta {
+    pub fragment: PathBuf,
+    pub target_triple: String,
+    pub build_mode: BuildMode,
+    pub features: Vec<String>,
+}
+
+impl CacheFragmentMeta {
+    pub fn parse(fragment: &Path) -> Option<Self> {
+        let components = fragment
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        if components.len() != 6 {
+            return None;
+        }
+        let target_triple = components.get(2)?.strip_prefix("target-")?.to_string();
+        let build_mode = match components.get(4)?.strip_prefix("mode-")? {
+            "release" => BuildMode::Release,
+            "debug" => BuildMode::Debug,
+            _ => return None,
+        };
+        let feature_component = components.get(5)?.strip_prefix("features-")?;
+        let features = if feature_component == "inproc" {
+            vec!["inproc".to_string()]
+        } else {
+            feature_component
+                .split('-')
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        Some(Self {
+            fragment: fragment.to_path_buf(),
+            target_triple,
+            build_mode,
+            features,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +547,59 @@ mod tests {
         assert!(layout.lock_file.ends_with(
             "flowrt-0.6.1__rust-rustc-1.90.0__target-x86_64-unknown-linux-gnu__vendor-abc123__mode-debug__features-inproc.lock"
         ));
+    }
+
+    #[test]
+    fn cache_fragment_meta_parses_target_mode_and_features() {
+        let fragment = PathBuf::from("flowrt-0.8.5")
+            .join("rust-rustc-1.90.0")
+            .join("target-aarch64-unknown-linux-gnu")
+            .join("vendor-abcd")
+            .join("mode-release")
+            .join("features-iox2-zenoh");
+
+        let parsed = CacheFragmentMeta::parse(&fragment).expect("fragment should parse");
+
+        assert_eq!(parsed.fragment, fragment);
+        assert_eq!(parsed.target_triple, "aarch64-unknown-linux-gnu");
+        assert_eq!(parsed.build_mode, BuildMode::Release);
+        assert_eq!(parsed.features, vec!["iox2", "zenoh"]);
+    }
+
+    #[test]
+    fn cache_layout_can_be_reconstructed_from_fragment() {
+        let fragment = PathBuf::from("flowrt-0.8.5")
+            .join("rust-rustc-1.90.0")
+            .join("target-x86_64-unknown-linux-gnu")
+            .join("vendor-abcd")
+            .join("mode-debug")
+            .join("features-inproc");
+
+        let layout = CacheLayout::from_fragment(PathBuf::from("/cache/flowrt"), &fragment)
+            .expect("layout should be reconstructed");
+
+        assert_eq!(layout.target_triple, "x86_64-unknown-linux-gnu");
+        assert_eq!(
+            layout.target_dir,
+            PathBuf::from("/cache/flowrt/cargo-target").join(&fragment)
+        );
+        assert_eq!(
+            layout.deps_workspace_dir,
+            PathBuf::from("/cache/flowrt/deps-workspaces").join(&fragment)
+        );
+        assert_eq!(
+            layout.ready_file,
+            PathBuf::from("/cache/flowrt/ready")
+                .join(&fragment)
+                .join("ready.json")
+        );
+        assert!(
+            layout
+                .lock_file
+                .starts_with(PathBuf::from("/cache/flowrt/locks")),
+            "lock file should stay under cache root: {}",
+            layout.lock_file.display()
+        );
     }
 
     #[test]
