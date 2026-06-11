@@ -5,7 +5,7 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.4`。`v0.8.4` 聚焦板级私有依赖工程化：在继续保留
+当前 workspace 版本为 `0.8.5`。`v0.8.4` 聚焦板级私有依赖工程化：在继续保留
 `linux-amd64` host 到 `linux-arm64` target 交叉编译主路径的同时，把组件层可移植
 pkg-config 依赖、toolchain 级 C++ compile/link 选项和板级 SDK overlay 彻底分层。
 amd64 deb 继续内嵌完整 `linux-arm64` target SDK，包含 FlowRT C++ runtime、

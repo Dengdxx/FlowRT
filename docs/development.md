@@ -234,7 +234,7 @@ Git。
 发布前检查：
 
 ```bash
-version=0.8.4
+version=0.8.5
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -250,8 +250,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.8.4 -m "v0.8.4"
-git push origin v0.8.4
+git tag -a v0.8.5 -m "v0.8.5"
+git push origin v0.8.5
 ```
 
 ## 提交规则
