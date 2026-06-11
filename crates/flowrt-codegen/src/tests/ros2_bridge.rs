@@ -77,6 +77,12 @@ backends = ["zenoh"]
     assert!(
         cmake.contains("target_link_libraries(ros2_bridge_demo_ros2_bridge PRIVATE rclcpp::rclcpp")
     );
+    assert!(cmake.contains(
+        "target_link_options(ros2_bridge_demo_ros2_bridge PRIVATE \"-Wl,--disable-new-dtags\")"
+    ));
+    assert!(cmake.contains(
+        "set_property(TARGET ros2_bridge_demo_ros2_bridge PROPERTY BUILD_RPATH \"${FLOWRT_ROS2_ZENOH_VENDOR_PREFIX}/lib;${FLOWRT_ROS2_BRIDGE_BUILD_RPATH}\")"
+    ));
     assert!(!cmake.contains("geometry_msgs::geometry_msgs__rosidl_typesupport_cpp"));
     assert!(!cmake.contains(
         "target_link_libraries(ros2_bridge_demo_ros2_bridge PRIVATE ros2_bridge_demo_flowrt_app"

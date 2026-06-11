@@ -6,6 +6,7 @@
 pub mod resource_placement;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
@@ -1051,7 +1052,7 @@ pub fn build_process_command(
     let mut command = Command::new(app_exe);
     apply_process_env(&mut command, &process.env);
     if process.runtime_kind == "ros2_bridge" {
-        command.env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp");
+        configure_ros2_bridge_env(&mut command, &process.env);
     } else {
         command.arg("--process").arg(&process.name);
     }
@@ -1115,6 +1116,78 @@ fn apply_process_env(command: &mut Command, env: &BTreeMap<String, String>) {
     for (key, value) in env {
         command.env(key, value);
     }
+}
+
+fn configure_ros2_bridge_env(command: &mut Command, process_env: &BTreeMap<String, String>) {
+    command.env("RMW_IMPLEMENTATION", "rmw_zenoh_cpp");
+    if let Some(paths) = ros2_bridge_library_path(process_env) {
+        command.env("LD_LIBRARY_PATH", paths);
+    }
+}
+
+fn ros2_bridge_library_path(process_env: &BTreeMap<String, String>) -> Option<OsString> {
+    let prefixes = ros2_prefixes(process_env);
+    let existing = env_value(process_env, "LD_LIBRARY_PATH");
+    let existing_paths = existing
+        .as_ref()
+        .map(|raw| std::env::split_paths(raw).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut paths = Vec::new();
+
+    for prefix in &prefixes {
+        push_unique_path(&mut paths, prefix.join("opt/zenoh_cpp_vendor/lib"));
+    }
+    for path in &existing_paths {
+        if prefixes.iter().any(|prefix| path.starts_with(prefix)) {
+            push_unique_path(&mut paths, path.clone());
+        }
+    }
+    for prefix in &prefixes {
+        push_unique_path(&mut paths, prefix.join("lib"));
+    }
+    for path in existing_paths {
+        if prefixes.iter().any(|prefix| path.starts_with(prefix))
+            || is_flowrt_private_library_path(&path, process_env)
+        {
+            continue;
+        }
+        push_unique_path(&mut paths, path);
+    }
+
+    if paths.is_empty() {
+        return None;
+    }
+    std::env::join_paths(paths).ok()
+}
+
+fn ros2_prefixes(process_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
+    let mut prefixes = Vec::new();
+    for key in ["AMENT_PREFIX_PATH", "COLCON_PREFIX_PATH"] {
+        if let Some(raw) = env_value(process_env, key) {
+            for path in std::env::split_paths(&raw) {
+                push_unique_path(&mut prefixes, path);
+            }
+        }
+    }
+    prefixes
+}
+
+fn is_flowrt_private_library_path(path: &Path, process_env: &BTreeMap<String, String>) -> bool {
+    if path.starts_with("/opt/flowrt") {
+        return true;
+    }
+    ["FLOWRT_PRIVATE_PREFIX", "FLOWRT_CPP_RUNTIME_DIR"]
+        .into_iter()
+        .filter_map(|key| env_value(process_env, key))
+        .flat_map(|raw| std::env::split_paths(&raw).collect::<Vec<_>>())
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn env_value(process_env: &BTreeMap<String, String>, key: &str) -> Option<OsString> {
+    process_env
+        .get(key)
+        .map(|value| OsString::from(value.as_str()))
+        .or_else(|| std::env::var_os(key))
 }
 
 fn build_launch_process_command(
@@ -1910,6 +1983,7 @@ mod tests {
 
     static ZENOH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static EXTERNAL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ROS2_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct EnvOverride {
         key: &'static str,
@@ -1954,6 +2028,12 @@ mod tests {
             .get_envs()
             .find(|(env_key, _)| env_key.to_string_lossy() == key)
             .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    fn path_list(raw: &str) -> Vec<String> {
+        std::env::split_paths(raw)
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
     }
 
     fn test_process(name: &str, depends_on: Vec<String>) -> LaunchProcess {
@@ -2316,6 +2396,40 @@ mod tests {
         assert_eq!(
             command_env(&command, "RMW_IMPLEMENTATION").as_deref(),
             Some("rmw_zenoh_cpp")
+        );
+    }
+
+    #[test]
+    fn ros2_bridge_runtime_command_isolates_ros2_zenoh_library_path() {
+        let _lock = ROS2_ENV_LOCK.lock().expect("ros2 env lock should work");
+        let _ament = EnvOverride::set(
+            "AMENT_PREFIX_PATH",
+            Some("/opt/ros/lyrical:/home/robot/ros_overlay"),
+        );
+        let _ld = EnvOverride::set(
+            "LD_LIBRARY_PATH",
+            Some(
+                "/opt/flowrt/0.8.3/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib:/custom/lib:/opt/flowrt/0.8.3/targets/linux-arm64/lib",
+            ),
+        );
+        let _flowrt_prefix = EnvOverride::set("FLOWRT_PRIVATE_PREFIX", Some("/opt/flowrt/0.8.3"));
+
+        let mut process = test_process("adapter", vec![]);
+        process.runtime_kind = "ros2_bridge".into();
+        let command =
+            build_process_command(Path::new("/tmp/flowrt_ros2_bridge"), &process, None, None);
+        let library_path = command_env(&command, "LD_LIBRARY_PATH")
+            .expect("ros2 bridge command should set isolated LD_LIBRARY_PATH");
+        let paths = path_list(&library_path);
+
+        assert_eq!(paths[0], "/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib");
+        assert_eq!(paths[1], "/home/robot/ros_overlay/opt/zenoh_cpp_vendor/lib");
+        assert!(paths.contains(&"/opt/ros/lyrical/lib/aarch64-linux-gnu".to_string()));
+        assert!(paths.contains(&"/opt/ros/lyrical/lib".to_string()));
+        assert!(paths.contains(&"/custom/lib".to_string()));
+        assert!(
+            !paths.iter().any(|path| path.starts_with("/opt/flowrt/")),
+            "{paths:?}"
         );
     }
 
