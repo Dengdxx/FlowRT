@@ -16,7 +16,7 @@ use flowrt_selfdesc::{
 
 pub(crate) use flowrt_selfdesc::self_description_hash;
 
-const LOCAL_INTROSPECTION_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const LOCAL_INTROSPECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
     load_selfdesc(path).with_context(|| {
@@ -27,7 +27,7 @@ pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
     })
 }
 
-fn load_self_description_with_hash(path: &Path) -> Result<(SelfDescription, String)> {
+pub(crate) fn load_self_description_with_hash(path: &Path) -> Result<(SelfDescription, String)> {
     load_selfdesc_with_hash(path).with_context(|| {
         format!(
             "failed to read FlowRT self-description from `{}`",
@@ -472,7 +472,7 @@ fn load_echo_context(
     }
 }
 
-fn load_echo_context_from_live_socket(
+pub(crate) fn load_echo_context_from_live_socket(
     socket: Option<&Path>,
 ) -> Result<(SelfDescription, String, PathBuf)> {
     let socket = select_live_self_description_socket(socket)?;
@@ -626,7 +626,10 @@ pub(crate) fn echo_channel_follow_for_polls(
     Ok(())
 }
 
-fn select_echo_socket(socket: Option<&Path>, self_description_hash: &str) -> Result<PathBuf> {
+pub(crate) fn select_echo_socket(
+    socket: Option<&Path>,
+    self_description_hash: &str,
+) -> Result<PathBuf> {
     let socket = match socket {
         Some(socket) => {
             ensure_socket_matches_self_description_hash(socket, self_description_hash)?;
@@ -677,7 +680,8 @@ fn request_echo_snapshot(
         }
         flowrt::IntrospectionResponse::SelfDescription { .. }
         | flowrt::IntrospectionResponse::ObserveReady { .. }
-        | flowrt::IntrospectionResponse::OperationValue { .. } => {
+        | flowrt::IntrospectionResponse::OperationValue { .. }
+        | flowrt::IntrospectionResponse::BoundaryPublish { .. } => {
             anyhow::bail!(
                 "runtime socket `{}` returned an unexpected introspection response",
                 socket.display()
@@ -795,10 +799,27 @@ pub(crate) fn find_echo_channel(
                 });
             }
         }
+        for boundary in &graph.boundary_endpoints {
+            if boundary.direction == "output"
+                && (boundary.name == channel_name || boundary.endpoint == channel_name)
+            {
+                matches.push(EchoChannelSpec {
+                    name: boundary.name.clone(),
+                    message_type: boundary.message_type.clone(),
+                    payload_shape: echo_payload_shape(
+                        &self_description.message_abi,
+                        &self_description.message_frames,
+                        &boundary.message_type,
+                    )?,
+                });
+            }
+        }
     }
 
     match matches.len() {
-        0 => anyhow::bail!("FlowRT self-description does not contain channel `{channel_name}`"),
+        0 => anyhow::bail!(
+            "FlowRT self-description does not contain channel or boundary output `{channel_name}`"
+        ),
         1 => Ok(matches.remove(0)),
         _ => anyhow::bail!(
             "FlowRT self-description contains multiple channels named `{channel_name}`"
@@ -845,7 +866,7 @@ fn echo_payload_shape(
     }
 }
 
-fn message_abi_layout<'a>(
+pub(crate) fn message_abi_layout<'a>(
     messages: &'a [SelfDescriptionMessageAbi],
     message_type: &str,
 ) -> Result<Option<&'a SelfDescriptionMessageAbi>> {
@@ -1270,7 +1291,7 @@ fn ensure_param_declared(self_description: &SelfDescription, name: &str) -> Resu
     Ok(())
 }
 
-fn ensure_handshake_hash(
+pub(crate) fn ensure_handshake_hash(
     handshake: &flowrt::IntrospectionHandshake,
     self_description_hash: &str,
     socket: &Path,
@@ -1644,6 +1665,27 @@ pub(crate) fn live_status_summary_for_sockets(
                     dropped_samples,
                     socket.display()
                 ));
+                for graph in &enrichment.graphs {
+                    lines.push(format!(
+                        "graph={} mode={} boundary_endpoints={} socket={}",
+                        graph.name,
+                        graph.mode,
+                        graph.boundary_endpoint_count,
+                        socket.display()
+                    ));
+                }
+                for boundary in &enrichment.boundary_endpoints {
+                    lines.push(format!(
+                        "boundary_endpoint={} direction={} endpoint={} type={} graph={} mode={} socket={}",
+                        boundary.name,
+                        boundary.direction,
+                        boundary.endpoint,
+                        boundary.message_type,
+                        boundary.graph,
+                        boundary.graph_mode,
+                        socket.display()
+                    ));
+                }
                 for channel in &status.channels {
                     lines.push(format!(
                         "channel={} type={} published_count={} last_payload_len={} observers={} dropped_samples={} socket={}",
@@ -1854,7 +1896,8 @@ pub(crate) fn live_status_summary_for_sockets(
             }
             Ok(flowrt::IntrospectionResponse::SelfDescription { .. })
             | Ok(flowrt::IntrospectionResponse::ObserveReady { .. })
-            | Ok(flowrt::IntrospectionResponse::OperationValue { .. }) => {
+            | Ok(flowrt::IntrospectionResponse::OperationValue { .. })
+            | Ok(flowrt::IntrospectionResponse::BoundaryPublish { .. }) => {
                 if live_only {
                     continue;
                 }
@@ -1910,9 +1953,30 @@ struct ServiceEndpointAssoc {
     server_instance: String,
 }
 
+/// graph 级静态模式摘要。
+#[derive(Clone)]
+struct GraphModeAssoc {
+    name: String,
+    mode: String,
+    boundary_endpoint_count: usize,
+}
+
+/// island boundary endpoint 静态摘要。
+#[derive(Clone)]
+struct BoundaryEndpointAssoc {
+    graph: String,
+    graph_mode: String,
+    name: String,
+    direction: String,
+    endpoint: String,
+    message_type: String,
+}
+
 /// live status 输出的静态合同增强信息。
 #[derive(Default)]
 struct StatusEnrichment {
+    graphs: Vec<GraphModeAssoc>,
+    boundary_endpoints: Vec<BoundaryEndpointAssoc>,
     service_endpoints: BTreeMap<String, ServiceEndpointAssoc>,
     resource_descriptors: BTreeMap<String, SelfDescriptionResourceDescriptor>,
 }
@@ -1939,6 +2003,21 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
     };
     let mut enrichment = StatusEnrichment::default();
     for graph in &sd.graphs {
+        enrichment.graphs.push(GraphModeAssoc {
+            name: graph.name.clone(),
+            mode: graph.mode.clone(),
+            boundary_endpoint_count: graph.boundary_endpoints.len(),
+        });
+        for boundary in &graph.boundary_endpoints {
+            enrichment.boundary_endpoints.push(BoundaryEndpointAssoc {
+                graph: graph.name.clone(),
+                graph_mode: graph.mode.clone(),
+                name: boundary.name.clone(),
+                direction: boundary.direction.clone(),
+                endpoint: boundary.endpoint.clone(),
+                message_type: boundary.message_type.clone(),
+            });
+        }
         for ep in &graph.services {
             if !ep.client_instance.is_empty() && !ep.server_instance.is_empty() {
                 enrichment.service_endpoints.insert(

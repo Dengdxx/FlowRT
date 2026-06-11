@@ -1281,6 +1281,54 @@ fn live_status_summary_displays_service_health() {
 }
 
 #[test]
+fn live_status_summary_enriches_island_boundary_endpoints() {
+    let root = temp_test_dir("live-status-island-boundary");
+    let socket = root.join("main.sock");
+    let selfdesc_json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "island_demo" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "boundary_endpoints": [{
+      "name": "sample_out",
+      "direction": "output",
+      "endpoint": "producer.sample",
+      "instance": "producer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": []
+}"#;
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(selfdesc_json.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.set_self_description_json(selfdesc_json);
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("graph=default mode=island boundary_endpoints=1"));
+    assert!(output.contains(
+        "boundary_endpoint=sample_out direction=output endpoint=producer.sample type=Sample graph=default mode=island"
+    ));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_status_summary_associates_service_health_with_instances() {
     let root = temp_test_dir("live-status-svc-instance");
     let socket = root.join("main.sock");

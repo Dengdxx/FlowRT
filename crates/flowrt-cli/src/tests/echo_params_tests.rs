@@ -65,6 +65,333 @@ fn echo_reads_channel_snapshot_from_fake_status_server() {
 }
 
 #[test]
+fn pub_injects_json_into_boundary_input() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-boundary-input");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 81,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let captured_for_handler = captured.clone();
+    state.register_boundary_input_handler("sample_in", "Sample", move |payload, timestamp| {
+        assert_eq!(timestamp, Some(123));
+        *captured_for_handler.lock().unwrap() = payload.to_vec();
+        Ok(1)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = boundary_publish(
+        "sample_in",
+        r#"{"value": 42}"#,
+        Some(&selfdesc),
+        Some(&socket),
+        Some(123),
+    )
+    .unwrap();
+
+    assert!(output.contains("boundary=sample_in"));
+    assert!(output.contains("type=Sample"));
+    assert!(output.contains("revision=1"));
+    assert_eq!(*captured.lock().unwrap(), 42u32.to_le_bytes());
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn pub_encodes_nested_fixed_message_json() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Point",
+    "size_bytes": 8,
+    "align_bytes": 4,
+    "fields": [
+      { "name": "x", "type": "u32", "offset_bytes": 0, "size_bytes": 4, "align_bytes": 4 },
+      { "name": "y", "type": "u32", "offset_bytes": 4, "size_bytes": 4, "align_bytes": 4 }
+    ]
+  }, {
+    "type_name": "Sample",
+    "size_bytes": 12,
+    "align_bytes": 4,
+    "fields": [
+      { "name": "point", "type": "Point", "offset_bytes": 0, "size_bytes": 8, "align_bytes": 4 },
+      { "name": "values", "type": "[u16;2]", "offset_bytes": 8, "size_bytes": 4, "align_bytes": 2 }
+    ]
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-nested-boundary-input");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 82,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let captured_for_handler = captured.clone();
+    state.register_boundary_input_handler("sample_in", "Sample", move |payload, _| {
+        *captured_for_handler.lock().unwrap() = payload.to_vec();
+        Ok(2)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = boundary_publish(
+        "sample_in",
+        r#"{"point":{"x":1,"y":2},"values":[3,4]}"#,
+        Some(&selfdesc),
+        Some(&socket),
+        None,
+    )
+    .unwrap();
+
+    let mut expected = Vec::new();
+    expected.extend(1u32.to_le_bytes());
+    expected.extend(2u32.to_le_bytes());
+    expected.extend(3u16.to_le_bytes());
+    expected.extend(4u16.to_le_bytes());
+    assert!(output.contains("revision=2"));
+    assert_eq!(*captured.lock().unwrap(), expected);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn pub_rejects_boundary_output_and_strict_selfdesc() {
+    let output_source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "boundary_endpoints": [{
+      "name": "sample_out",
+      "direction": "output",
+      "endpoint": "producer.sample",
+      "instance": "producer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Sample", "size_bytes": 4 }]
+}
+"#;
+    let strict_source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "strict_demo" },
+  "profiles": [{ "name": "default", "backend": "inproc", "mode": "strict" }],
+  "graphs": [{ "name": "default", "mode": "strict", "boundary_endpoints": [] }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("pub-boundary-reject");
+    let output_dir = root.join("output");
+    let strict_dir = root.join("strict");
+    let output_selfdesc = output_dir.join("selfdesc.json");
+    let strict_selfdesc = strict_dir.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    std::fs::create_dir_all(&strict_dir).unwrap();
+    std::fs::write(&output_selfdesc, output_source).unwrap();
+    std::fs::write(&strict_selfdesc, strict_source).unwrap();
+
+    let err = boundary_publish(
+        "sample_out",
+        r#"{"value": 1}"#,
+        Some(&output_selfdesc),
+        Some(root.join("missing.sock").as_path()),
+        None,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("is a boundary output"),
+        "unexpected error: {err}"
+    );
+
+    let err = boundary_publish(
+        "sample_in",
+        r#"{"value": 1}"#,
+        Some(&strict_selfdesc),
+        Some(root.join("missing.sock").as_path()),
+        None,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("is not island mode"),
+        "unexpected error: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn echo_reads_boundary_output_snapshot_from_self_description() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_out",
+      "direction": "output",
+      "endpoint": "producer.sample",
+      "instance": "producer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-boundary-output");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 81,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_channel("sample_out", "Sample");
+    state.record_channel_publish_bytes(
+        "sample_out",
+        "Sample",
+        7u32.to_le_bytes().to_vec(),
+        Some(9),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channel_from_image(&selfdesc, "sample_out", Some(&socket)).unwrap();
+
+    assert!(output.contains("channel=sample_out"));
+    assert!(output.contains("type=Sample"));
+    assert!(output.contains("fields={value=7}"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_formats_fixed_abi_fields_from_self_description_layout() {
     let source = r#"
 {

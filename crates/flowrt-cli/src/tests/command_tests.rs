@@ -261,6 +261,74 @@ fn cli_parses_echo_image_option() {
 }
 
 #[test]
+fn cli_parses_pub_boundary_input_command() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "pub",
+        "sample_in",
+        "--json",
+        r#"{"value":7}"#,
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+
+    let Command::Pub {
+        endpoint,
+        json,
+        image,
+        socket,
+        published_at_ms,
+    } = cli.command
+    else {
+        panic!("pub command should parse into Command::Pub")
+    };
+
+    assert_eq!(endpoint, "sample_in");
+    assert_eq!(json, r#"{"value":7}"#);
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(published_at_ms, None);
+}
+
+#[test]
+fn cli_parses_island_bundle_and_deploy_escape_hatches() {
+    let bundle_cli = Cli::try_parse_from([
+        "flowrt",
+        "bundle",
+        "rsdl/robot.rsdl",
+        "--output",
+        "dist/island",
+        "--allow-island",
+    ])
+    .unwrap();
+    let Command::Bundle { allow_island, .. } = bundle_cli.command else {
+        panic!("bundle command should parse into Command::Bundle")
+    };
+    assert!(allow_island);
+
+    let deploy_cli = Cli::try_parse_from([
+        "flowrt",
+        "deploy",
+        "dist/island",
+        "--host",
+        "robot@192.0.2.10",
+        "--target",
+        "pi",
+        "--remote-dir",
+        "/tmp/flowrt-demo",
+        "--allow-island",
+    ])
+    .unwrap();
+    let Command::Deploy { allow_island, .. } = deploy_cli.command else {
+        panic!("deploy command should parse into Command::Deploy")
+    };
+    assert!(allow_island);
+}
+
+#[test]
 fn cli_parses_echo_follow_options() {
     let cli = Cli::try_parse_from([
         "flowrt",
@@ -723,6 +791,7 @@ fn cli_parses_bundle_command() {
         output,
         profile,
         build_mode,
+        allow_island,
     } = cli.command
     else {
         panic!("bundle command should parse into Command::Bundle")
@@ -735,6 +804,7 @@ fn cli_parses_bundle_command() {
     assert_eq!(output, PathBuf::from("dist/external-demo"));
     assert_eq!(profile.as_deref(), Some("default"));
     assert_eq!(build_mode, Some(BuildMode::Release));
+    assert!(!allow_island);
 }
 
 #[test]
@@ -759,6 +829,7 @@ fn cli_parses_deploy_command() {
         target,
         remote_dir,
         dry_run,
+        allow_island,
     } = cli.command
     else {
         panic!("deploy command should parse into Command::Deploy")
@@ -768,6 +839,7 @@ fn cli_parses_deploy_command() {
     assert_eq!(target, "pi");
     assert_eq!(remote_dir, "/tmp/flowrt-demo");
     assert!(dry_run);
+    assert!(!allow_island);
 }
 
 /// 兼容测试：`--run-ticks 0` 仍会被 CLI 拒绝。

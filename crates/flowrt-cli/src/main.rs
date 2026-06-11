@@ -12,19 +12,21 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
 use flowrt_ir::{
-    ContractIr, LanguageKind, TargetPlatform, hash_source, normalize_loaded_document,
+    ContractIr, GraphMode, LanguageKind, TargetPlatform, hash_source, normalize_loaded_document,
     project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod boundary_pub;
 mod build_model;
 mod cache;
 mod introspection;
 mod record;
 mod toolchain;
 
+use boundary_pub::boundary_publish;
 use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd};
 use introspection::{
@@ -175,6 +177,10 @@ enum Command {
         /// 要打包的构建模式；省略时使用最近一次成功 build 记录的模式。
         #[arg(long, value_enum)]
         build_mode: Option<BuildMode>,
+
+        /// 允许打包 island 脚手架产物；默认拒绝，避免误发为生产 bundle。
+        #[arg(long)]
+        allow_island: bool,
     },
 
     /// 通过 ssh/scp 部署本地 bundle baseline。
@@ -197,6 +203,10 @@ enum Command {
         /// 只输出计划，不执行 ssh/scp。
         #[arg(long)]
         dry_run: bool,
+
+        /// 允许部署 island 脚手架 bundle；默认拒绝，避免误部署为生产系统。
+        #[arg(long)]
+        allow_island: bool,
     },
 
     /// 准备并运行 FlowRT 管理的应用 crate。
@@ -288,6 +298,28 @@ enum Command {
         /// `--follow` 模式下的轮询间隔，单位毫秒。
         #[arg(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(1..))]
         interval_ms: u64,
+    },
+
+    /// 向 island boundary input 注入一条 typed JSON 数据。
+    Pub {
+        /// boundary input endpoint 名称，例如 `sample_in`。
+        endpoint: String,
+
+        /// JSON 对象或 primitive，按 self-description Message ABI 编码后注入。
+        #[arg(long)]
+        json: String,
+
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json；省略时从 live runtime 请求。
+        #[arg(long)]
+        image: Option<PathBuf>,
+
+        /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// 覆盖注入样本的 runtime 毫秒时间戳；省略时由 runtime 作为无时间戳样本处理。
+        #[arg(long)]
+        published_at_ms: Option<u64>,
     },
 
     /// 查询或提交 live runtime 参数。
@@ -698,6 +730,7 @@ fn main() -> Result<()> {
             output,
             profile,
             build_mode,
+            allow_island,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let build_hint = build_command_hint(&rsdl, profile.as_deref(), true);
@@ -705,7 +738,14 @@ fn main() -> Result<()> {
             ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
             println!(
                 "{}",
-                bundle_workspace(&rsdl, &contract, &out_dir, &output, build_mode)?
+                bundle_workspace(
+                    &rsdl,
+                    &contract,
+                    &out_dir,
+                    &output,
+                    build_mode,
+                    allow_island
+                )?
             );
         }
         Command::Deploy {
@@ -714,10 +754,11 @@ fn main() -> Result<()> {
             target,
             remote_dir,
             dry_run,
+            allow_island,
         } => {
             println!(
                 "{}",
-                deploy_bundle(&bundle, &host, &target, &remote_dir, dry_run)?
+                deploy_bundle(&bundle, &host, &target, &remote_dir, dry_run, allow_island)?
             );
         }
         Command::Run {
@@ -784,6 +825,24 @@ fn main() -> Result<()> {
             } else {
                 println!("{}", echo_channel(&echo_target, socket.as_deref())?);
             }
+        }
+        Command::Pub {
+            endpoint,
+            json,
+            image,
+            socket,
+            published_at_ms,
+        } => {
+            println!(
+                "{}",
+                boundary_publish(
+                    &endpoint,
+                    &json,
+                    image.as_deref(),
+                    socket.as_deref(),
+                    published_at_ms,
+                )?
+            );
         }
         Command::Params { command } => match command {
             ParamsCommand::List {
@@ -1225,6 +1284,8 @@ struct BundleManifest {
     flowrt_version: String,
     package: String,
     profile: Option<String>,
+    #[serde(default = "default_bundle_artifact_mode")]
+    artifact_mode: String,
     target: String,
     platform: Option<String>,
     build_mode: BuildMode,
@@ -1236,6 +1297,10 @@ struct BundleManifest {
     external_processes: Vec<BundleExternalProcess>,
     #[serde(default)]
     artifacts: Vec<BundleArtifact>,
+}
+
+fn default_bundle_artifact_mode() -> String {
+    "strict".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1294,13 +1359,39 @@ struct FlowrtReleaseVersion {
     patch: u64,
 }
 
+fn contract_artifact_mode_name(contract: &ContractIr) -> &'static str {
+    if contract
+        .profiles
+        .iter()
+        .any(|profile| profile.mode == GraphMode::Island)
+    {
+        "island"
+    } else {
+        "strict"
+    }
+}
+
+fn ensure_island_artifact_allowed(mode: &str, allow_island: bool, action: &str) -> Result<()> {
+    match mode {
+        "strict" => Ok(()),
+        "island" if allow_island => Ok(()),
+        "island" => anyhow::bail!(
+            "refusing to {action} island FlowRT artifact by default; pass `--allow-island` only for development, test, or migration scaffolds"
+        ),
+        other => anyhow::bail!("unsupported FlowRT artifact mode `{other}`"),
+    }
+}
+
 fn bundle_workspace(
     rsdl: &Path,
     contract: &ContractIr,
     out_dir: &Path,
     output: &Path,
     requested_build_mode: Option<BuildMode>,
+    allow_island: bool,
 ) -> Result<String> {
+    let artifact_mode = contract_artifact_mode_name(contract);
+    ensure_island_artifact_allowed(artifact_mode, allow_island, "bundle")?;
     let build_info = load_build_info(out_dir, requested_build_mode, true)?;
     let supervisor = executable_from_build_info(
         out_dir,
@@ -1425,6 +1516,7 @@ fn bundle_workspace(
         flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
         package: contract.package.name.clone(),
         profile: build_info.rsdl_profile,
+        artifact_mode: artifact_mode.to_string(),
         target: target_name,
         platform: target_platform,
         build_mode: build_info.build_mode,
@@ -1902,11 +1994,13 @@ fn deploy_bundle(
     target: &str,
     remote_dir: &str,
     dry_run: bool,
+    allow_island: bool,
 ) -> Result<String> {
     validate_deploy_host(host)?;
     validate_deploy_remote_dir(remote_dir)?;
     let loaded = load_bundle_manifest(bundle)?;
     let manifest = loaded.manifest;
+    ensure_island_artifact_allowed(&manifest.artifact_mode, allow_island, "deploy")?;
     let selected_artifacts = select_deploy_artifacts(bundle, &manifest, target)?;
     let mut warnings = Vec::new();
     if let Some(version_warning) = loaded.version_warning {
