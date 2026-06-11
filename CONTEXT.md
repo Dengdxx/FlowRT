@@ -125,8 +125,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.8.3` | 完整 `linux-amd64 -> linux-arm64` target SDK、SDK overlay、doctor 预检和真实交叉 smoke。 |
 | `v0.8.4` | 板级私有依赖工程化：component build pkg-config、toolchain C++ 选项和私有 SDK 链接配置。 |
 | `v0.8.5` | 公开真实交叉 SDK 示例、demo-local overlay prepare 和安装后 cross SDK smoke。 |
-| `v0.9.0` | C/Python API、生态互操作扩展。 |
-| `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
+| `v0.9.0` | Migration Island / Boundary Endpoint：支持 ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`。 |
+| `v1.0.0` | C/Python API、SDK 化和生态互操作扩展。 |
+| `v1.1.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
 
@@ -149,8 +150,18 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 - `v0.8.1` 收紧大 payload 的可工程化路径：本机高频图像/大帧只在 channel 上传递
   标准 fixed descriptor，payload 生命周期仍归 I/O boundary 或 external package 的
   side-channel 负责；echo、status、record 和 smoke 都围绕 descriptor-only 路径验证。
-- `v0.9.0` 扩展 C/Python API 和可选生态互操作，但仍以 FlowRT 自身语义为中心。
-- `v1.0.0` 冻结 ABI/schema 基线，并补齐兼容策略、故障注入和性能矩阵。
+- `v0.9.0` 先解决 ROS2 项目迁移不顺手的问题：引入显式 migration mode、
+  Migration Island 和 Boundary Endpoint。常规 strict 模式下，缺 active input bind
+  仍是 error，不允许 warning 后生成不完整生产代码；迁移模式必须在 RSDL/IR/profile
+  中显式标记，并把未迁移的输入表达为 typed boundary input，把需要对比的输出表达为
+  typed boundary output、record sink 或 ROS2 adapter sink。迁移生成物必须在
+  self-description、manifest 和 status 中标注 migration mode，`bundle` / `deploy`
+  默认拒绝迁移产物，除非用户显式允许。`flowrt pub` 作为迁移测试工具，只向
+  boundary input 注入按 self-description / Message ABI 编码的数据，不默认向任意生产
+  channel 写入。
+- 原 `v0.9.0` 的 C/Python API 和可选生态互操作顺延到 `v1.0.0`，仍以 FlowRT 自身
+  语义为中心，不把 Python 放进实时热路径。
+- 原 `v1.0.0` 的 ABI/schema 冻结、兼容策略、故障注入和性能矩阵顺延到 `v1.1.0`。
 
 `v0.4.0` 的 Service runtime 目标是：生成 Rust/C++ service client/server 用户 API；
 Service transport 支持 `inproc` 与 `zenoh`；`iox2` 暂不作为 Service transport，
