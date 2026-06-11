@@ -4083,8 +4083,30 @@ fn cmake_configure_args(
                 args.push(format!("-DCMAKE_SYSROOT={}", sysroot.to_string_lossy()));
             }
         }
+        if !profile.cpp_compile_args.is_empty() {
+            args.push(format!(
+                "-DFLOWRT_CXX_COMPILE_OPTIONS={}",
+                join_cmake_list_values(&profile.cpp_compile_args)
+            ));
+        }
+        if !profile.cpp_link_args.is_empty() {
+            args.push(format!(
+                "-DFLOWRT_EXE_LINK_OPTIONS={}",
+                join_cmake_list_values(&profile.cpp_link_args)
+            ));
+        }
+        if !profile.cpp_link_libraries.is_empty() {
+            args.push(format!(
+                "-DFLOWRT_EXE_LINK_LIBRARIES={}",
+                join_cmake_list_values(&profile.cpp_link_libraries)
+            ));
+        }
     }
     args
+}
+
+fn join_cmake_list_values(values: &[String]) -> String {
+    values.join(";")
 }
 
 fn cmake_system_processor_for_platform(platform: &str) -> Option<&'static str> {

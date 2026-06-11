@@ -1827,6 +1827,9 @@ fn linux_arm64_toolchain_profile() -> crate::toolchain::ToolchainProfile {
         pkg_config_libdirs: Vec::new(),
         cmake_prefix_paths: Vec::new(),
         sdk_overlays: Vec::new(),
+        cpp_compile_args: Vec::new(),
+        cpp_link_args: Vec::new(),
+        cpp_link_libraries: Vec::new(),
         runtime_dependency_policy: crate::toolchain::RuntimeDependencyPolicy::Bundle,
     }
 }
@@ -1834,7 +1837,7 @@ fn linux_arm64_toolchain_profile() -> crate::toolchain::ToolchainProfile {
 #[test]
 fn cmake_target_sdk_root_requires_complete_manifest() {
     let root = temp_test_dir("target-sdk-incomplete");
-    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let private_prefix = root.join("opt/flowrt/0.8.4");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", false);
 
@@ -1853,7 +1856,7 @@ fn cmake_target_sdk_root_requires_complete_manifest() {
 #[test]
 fn cmake_target_sdk_root_reports_missing_manifest() {
     let root = temp_test_dir("target-sdk-missing");
-    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let private_prefix = root.join("opt/flowrt/0.8.4");
     std::fs::create_dir_all(private_prefix.join("targets/linux-arm64")).unwrap();
 
     let error = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap_err();
@@ -1875,7 +1878,7 @@ fn cmake_configure_args_use_target_sdk_and_compilers_without_toolchain_file() {
         .expect("repo runtime fallback env lock should not be poisoned");
     let _env = EnvOverride::repo_runtime_fallback(None);
     let root = temp_test_dir("cmake-target-sdk-compilers");
-    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let private_prefix = root.join("opt/flowrt/0.8.4");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
     let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
@@ -1957,9 +1960,48 @@ fn cmake_configure_args_use_profile_toolchain_file_when_present() {
 }
 
 #[test]
+fn cmake_configure_args_pass_toolchain_cpp_options() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let mut profile = linux_arm64_toolchain_profile();
+    profile.cpp_compile_args = vec!["-DFLOWRT_BOARD_CAMERA=1".to_string()];
+    profile.cpp_link_args = vec![
+        "-Wl,--allow-shlib-undefined".to_string(),
+        "-Wl,-rpath-link,/opt/vendor/lib".to_string(),
+    ];
+    profile.cpp_link_libraries = vec![
+        "/opt/vendor/lib/libboost_program_options.so".to_string(),
+        "m".to_string(),
+    ];
+
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        None,
+        &[],
+        BuildMode::Release,
+        Some(&profile),
+        true,
+    );
+
+    assert!(args.contains(&"-DFLOWRT_CXX_COMPILE_OPTIONS=-DFLOWRT_BOARD_CAMERA=1".to_string()));
+    assert!(args.contains(
+        &"-DFLOWRT_EXE_LINK_OPTIONS=-Wl,--allow-shlib-undefined;-Wl,-rpath-link,/opt/vendor/lib"
+            .to_string()
+    ));
+    assert!(args.contains(
+        &"-DFLOWRT_EXE_LINK_LIBRARIES=/opt/vendor/lib/libboost_program_options.so;m".to_string()
+    ));
+}
+
+#[test]
 fn cmake_configure_env_sets_pkg_config_libdir_for_target_sdk() {
     let root = temp_test_dir("cmake-target-sdk-pkgconfig");
-    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let private_prefix = root.join("opt/flowrt/0.8.4");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
     let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();
@@ -2002,7 +2044,7 @@ fn cmake_prefix_paths_merge_existing_env_and_runtime_prefix() {
 #[test]
 fn launch_library_paths_include_private_and_target_sdk_libs() {
     let root = temp_test_dir("launch-library-paths");
-    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let private_prefix = root.join("opt/flowrt/0.8.4");
     std::fs::create_dir_all(private_prefix.join("lib")).unwrap();
     std::fs::create_dir_all(private_prefix.join("targets/linux-arm64/lib")).unwrap();
     std::fs::create_dir_all(private_prefix.join("include/flowrt")).unwrap();
@@ -2025,7 +2067,7 @@ fn launch_library_paths_include_private_and_target_sdk_libs() {
 #[test]
 fn cmake_configure_uses_toolchain_sdk_overlays() {
     let root = temp_test_dir("cmake-toolchain-sdk-overlays");
-    let private_prefix = root.join("opt/flowrt/0.8.3");
+    let private_prefix = root.join("opt/flowrt/0.8.4");
     let sdk_root = private_prefix.join("targets/linux-arm64");
     write_target_sdk_manifest(&sdk_root, "linux-arm64", true);
     let sdk = resolve_cpp_target_sdk_root(Some(&private_prefix), "linux-arm64").unwrap();

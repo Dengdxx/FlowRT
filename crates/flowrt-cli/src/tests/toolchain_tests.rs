@@ -161,10 +161,13 @@ fn toolchain_workspace_config_overrides_defaults() {
 [toolchain.linux-arm64]
 c_compiler = "custom-aarch64-gcc"
 sysroot = "/opt/flowrt/sysroots/linux-arm64"
-pkg_config_libdir = "/opt/flowrt/0.8.3/targets/linux-arm64/lib/pkgconfig"
+pkg_config_libdir = "/opt/flowrt/0.8.4/targets/linux-arm64/lib/pkgconfig"
 pkg_config_libdirs = ["/opt/vendor/lib/pkgconfig"]
 cmake_prefix_paths = ["/opt/vendor/cmake"]
 sdk_overlays = ["/opt/vendor/rknn"]
+cpp_compile_args = ["-DFLOWRT_BOARD_CAMERA=1"]
+cpp_link_args = ["-Wl,--allow-shlib-undefined"]
+cpp_link_libraries = ["/opt/vendor/lib/libboost_program_options.so"]
 runtime_dependency_policy = "external"
 "#,
     );
@@ -188,7 +191,7 @@ runtime_dependency_policy = "external"
     assert_eq!(
         profile.pkg_config_libdir,
         Some(PathBuf::from(
-            "/opt/flowrt/0.8.3/targets/linux-arm64/lib/pkgconfig"
+            "/opt/flowrt/0.8.4/targets/linux-arm64/lib/pkgconfig"
         ))
     );
     assert_eq!(
@@ -203,9 +206,45 @@ runtime_dependency_policy = "external"
         profile.sdk_overlays,
         vec![PathBuf::from("/opt/vendor/rknn")]
     );
+    assert_eq!(profile.cpp_compile_args, vec!["-DFLOWRT_BOARD_CAMERA=1"]);
+    assert_eq!(profile.cpp_link_args, vec!["-Wl,--allow-shlib-undefined"]);
+    assert_eq!(
+        profile.cpp_link_libraries,
+        vec!["/opt/vendor/lib/libboost_program_options.so"]
+    );
     assert_eq!(
         profile.runtime_dependency_policy,
         RuntimeDependencyPolicy::External
+    );
+}
+
+#[test]
+fn toolchain_rejects_cmake_list_separators_in_cpp_args() {
+    let root = temp_test_dir("toolchain-cmake-list-separator");
+    let workspace = root.join(".flowrt/toolchains.toml");
+    write_toolchains(
+        &workspace,
+        r#"
+[toolchain.linux-arm64]
+cpp_compile_args = ["-DFLOWRT_BOARD_CAMERA=1"]
+cpp_link_args = ["-Wl,--allow-shlib-undefined;-Wl,-rpath-link,/opt/vendor/lib"]
+cpp_link_libraries = ["boost_program_options"]
+"#,
+    );
+
+    let sources = ToolchainConfigSources {
+        system: None,
+        user: None,
+        workspace: Some(workspace),
+    };
+    let error =
+        resolve_toolchain_profile_with_sources("linux-arm64", &sources, &Default::default())
+            .expect_err("semicolon should be rejected in CMake list args");
+
+    assert!(
+        error
+            .to_string()
+            .contains("must not contain `;` because it is passed as a CMake list")
     );
 }
 

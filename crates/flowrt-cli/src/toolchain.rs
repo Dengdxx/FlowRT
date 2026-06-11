@@ -19,6 +19,9 @@ pub(crate) struct ToolchainProfile {
     pub(crate) pkg_config_libdirs: Vec<PathBuf>,
     pub(crate) cmake_prefix_paths: Vec<PathBuf>,
     pub(crate) sdk_overlays: Vec<PathBuf>,
+    pub(crate) cpp_compile_args: Vec<String>,
+    pub(crate) cpp_link_args: Vec<String>,
+    pub(crate) cpp_link_libraries: Vec<String>,
     pub(crate) runtime_dependency_policy: RuntimeDependencyPolicy,
 }
 
@@ -46,6 +49,12 @@ pub(crate) struct ToolchainProfileOverrides {
     pub(crate) cmake_prefix_paths: Vec<PathBuf>,
     #[serde(default)]
     pub(crate) sdk_overlays: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) cpp_compile_args: Vec<String>,
+    #[serde(default)]
+    pub(crate) cpp_link_args: Vec<String>,
+    #[serde(default)]
+    pub(crate) cpp_link_libraries: Vec<String>,
     pub(crate) runtime_dependency_policy: Option<RuntimeDependencyPolicy>,
 }
 
@@ -153,6 +162,9 @@ fn default_profile(platform: &str) -> Result<ToolchainProfile> {
         pkg_config_libdirs: Vec::new(),
         cmake_prefix_paths: Vec::new(),
         sdk_overlays: Vec::new(),
+        cpp_compile_args: Vec::new(),
+        cpp_link_args: Vec::new(),
+        cpp_link_libraries: Vec::new(),
         runtime_dependency_policy: RuntimeDependencyPolicy::Bundle,
     })
 }
@@ -228,6 +240,12 @@ fn apply_overrides(
         &overrides.cmake_prefix_paths,
     );
     append_unique_paths(&mut profile.sdk_overlays, &overrides.sdk_overlays);
+    append_unique_strings(&mut profile.cpp_compile_args, &overrides.cpp_compile_args);
+    append_unique_strings(&mut profile.cpp_link_args, &overrides.cpp_link_args);
+    append_unique_strings(
+        &mut profile.cpp_link_libraries,
+        &overrides.cpp_link_libraries,
+    );
     if let Some(value) = overrides.runtime_dependency_policy {
         profile.runtime_dependency_policy = value;
     }
@@ -244,6 +262,12 @@ fn validate_overrides(overrides: &ToolchainProfileOverrides, source: &str) -> Re
     ensure_non_empty_paths(&overrides.pkg_config_libdirs, "pkg_config_libdirs", source)?;
     ensure_non_empty_paths(&overrides.cmake_prefix_paths, "cmake_prefix_paths", source)?;
     ensure_non_empty_paths(&overrides.sdk_overlays, "sdk_overlays", source)?;
+    ensure_non_empty_strings(&overrides.cpp_compile_args, "cpp_compile_args", source)?;
+    ensure_non_empty_strings(&overrides.cpp_link_args, "cpp_link_args", source)?;
+    ensure_non_empty_strings(&overrides.cpp_link_libraries, "cpp_link_libraries", source)?;
+    ensure_cmake_list_safe_strings(&overrides.cpp_compile_args, "cpp_compile_args", source)?;
+    ensure_cmake_list_safe_strings(&overrides.cpp_link_args, "cpp_link_args", source)?;
+    ensure_cmake_list_safe_strings(&overrides.cpp_link_libraries, "cpp_link_libraries", source)?;
     Ok(())
 }
 
@@ -259,6 +283,12 @@ fn validate_profile(profile: &ToolchainProfile, source: &str) -> Result<()> {
     ensure_non_empty_paths(&profile.pkg_config_libdirs, "pkg_config_libdirs", source)?;
     ensure_non_empty_paths(&profile.cmake_prefix_paths, "cmake_prefix_paths", source)?;
     ensure_non_empty_paths(&profile.sdk_overlays, "sdk_overlays", source)?;
+    ensure_non_empty_strings(&profile.cpp_compile_args, "cpp_compile_args", source)?;
+    ensure_non_empty_strings(&profile.cpp_link_args, "cpp_link_args", source)?;
+    ensure_non_empty_strings(&profile.cpp_link_libraries, "cpp_link_libraries", source)?;
+    ensure_cmake_list_safe_strings(&profile.cpp_compile_args, "cpp_compile_args", source)?;
+    ensure_cmake_list_safe_strings(&profile.cpp_link_args, "cpp_link_args", source)?;
+    ensure_cmake_list_safe_strings(&profile.cpp_link_libraries, "cpp_link_libraries", source)?;
     Ok(())
 }
 
@@ -302,7 +332,33 @@ fn ensure_non_empty_paths(values: &[PathBuf], field: &str, source: &str) -> Resu
     Ok(())
 }
 
+fn ensure_non_empty_strings(values: &[String], field: &str, source: &str) -> Result<()> {
+    for value in values {
+        ensure_non_empty_string(value, field, source)?;
+    }
+    Ok(())
+}
+
+fn ensure_cmake_list_safe_strings(values: &[String], field: &str, source: &str) -> Result<()> {
+    for value in values {
+        if value.contains(';') {
+            bail!(
+                "toolchain {source} field `{field}` must not contain `;` because it is passed as a CMake list"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn append_unique_paths(target: &mut Vec<PathBuf>, values: &[PathBuf]) {
+    for value in values {
+        if !target.iter().any(|existing| existing == value) {
+            target.push(value.clone());
+        }
+    }
+}
+
+fn append_unique_strings(target: &mut Vec<String>, values: &[String]) {
     for value in values {
         if !target.iter().any(|existing| existing == value) {
             target.push(value.clone());
