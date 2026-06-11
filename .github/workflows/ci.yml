@@ -409,6 +409,46 @@ jobs:
         run: |
           FLOWRT_BENCH_ITERS=8 FLOWRT_BENCH_PAYLOAD_BYTES=1024 scripts/bench-frame-descriptor.sh
 
+  v090-island-smoke:
+    name: v0.9.0 Island Demo Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT island deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v090-island-${{ matrix.arch }}
+          key: flowrt-v090-island-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'scripts/test-v090-island-demo.sh', 'examples/island_demo/**') }}
+
+      - name: v0.9.0 island demo smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v090-island-${{ matrix.arch }}"
+          scripts/test-v090-island-demo.sh
+
   v083-toolchain-smoke:
     name: v0.8.3 Cross Toolchain Smoke
     runs-on: ubuntu-latest
@@ -535,6 +575,7 @@ jobs:
       - v070-runtime-smoke
       - v080-runtime-smoke
       - v081-runtime-smoke
+      - v090-island-smoke
       - v083-toolchain-smoke
 
     steps:
