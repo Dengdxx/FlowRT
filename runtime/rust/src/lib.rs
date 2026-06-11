@@ -38,8 +38,9 @@ pub use backend::{
     inproc_backend, iox2_backend, zenoh_backend,
 };
 pub use channel::{
-    BackendCapabilities, ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel,
-    OverflowPolicy, StaleConfig, StalePolicy,
+    BackendCapabilities, BoundaryInput, BoundaryInputRead, BoundaryOutput, BoundaryOutputSinkGuard,
+    ChannelError, ChannelWriteOutcome, FifoChannel, FifoRead, LatestChannel, OverflowPolicy,
+    StaleConfig, StalePolicy,
 };
 pub use descriptor::{
     FrameDescriptor, FrameDescriptorError, FrameDescriptorFields, FrameLease, FrameLeaseError,

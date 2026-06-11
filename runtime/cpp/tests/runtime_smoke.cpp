@@ -9,6 +9,7 @@
 #include <optional>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 struct Sample {
@@ -100,8 +101,7 @@ int main() {
     assert(!context.is_io_boundary());
     bool boundary_reported = false;
     auto boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext{
-        "camera",
-        "CameraDriver",
+        "camera", "CameraDriver",
         std::vector<flowrt::BoundaryResourceStatus>{
             flowrt::BoundaryResourceStatus{.name = "camera_shm", .kind = "shm"}},
         [&boundary_reported](flowrt::BoundaryStatus status) {
@@ -196,25 +196,24 @@ int main() {
     const auto empty_span =
         flowrt::append_tail_block(variable_tail, std::span<const std::uint8_t>{});
     std::array<std::uint8_t, flowrt::VAR_SPAN_WIRE_SIZE * 3U> variable_header{};
-    flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(0, 8),
-                           payload_span);
+    flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(0, 8), payload_span);
     flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(8, 8), label_span);
     flowrt::write_var_span(std::span<std::uint8_t>{variable_header}.subspan(16, 8), empty_span);
-    assert((variable_header == std::array<std::uint8_t, 24>{
-                                   0U, 0U, 0U, 0U, 3U, 0U, 0U, 0U, 3U, 0U, 0U, 0U,
-                                   2U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}));
+    assert((variable_header == std::array<std::uint8_t, 24>{0U, 0U, 0U, 0U, 3U, 0U, 0U, 0U,
+                                                            3U, 0U, 0U, 0U, 2U, 0U, 0U, 0U,
+                                                            0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}));
     assert((variable_tail == std::vector<std::uint8_t>{1U, 2U, 3U, 'o', 'k'}));
     flowrt::FrameDecoder frame_decoder{std::span<const std::uint8_t>{variable_tail}};
-    const auto payload_block = frame_decoder.read_block(flowrt::read_var_span(
-        std::span<const std::uint8_t>{variable_header}.subspan(0, 8)));
+    const auto payload_block = frame_decoder.read_block(
+        flowrt::read_var_span(std::span<const std::uint8_t>{variable_header}.subspan(0, 8)));
     assert(payload_block.size() == 3U);
     assert(payload_block[0] == 1U);
-    const auto label_block = frame_decoder.read_block(flowrt::read_var_span(
-        std::span<const std::uint8_t>{variable_header}.subspan(8, 8)));
+    const auto label_block = frame_decoder.read_block(
+        flowrt::read_var_span(std::span<const std::uint8_t>{variable_header}.subspan(8, 8)));
     assert(label_block.size() == 2U);
     assert(label_block[0] == static_cast<std::uint8_t>('o'));
-    const auto empty_block = frame_decoder.read_block(flowrt::read_var_span(
-        std::span<const std::uint8_t>{variable_header}.subspan(16, 8)));
+    const auto empty_block = frame_decoder.read_block(
+        flowrt::read_var_span(std::span<const std::uint8_t>{variable_header}.subspan(16, 8)));
     assert(empty_block.empty());
     frame_decoder.finish();
 
@@ -619,6 +618,45 @@ int main() {
     assert(block_channel.revision() == 1U);
     assert(block_channel.pop()->value == 3U);
     assert(block_channel.revision() == 1U);
+
+    flowrt::BoundaryInput<Sample> boundary_input;
+    flowrt::ScheduleWaiter boundary_waiter;
+    boundary_input.set_schedule_waiter(boundary_waiter);
+    const auto boundary_generation = boundary_waiter.data_generation();
+    const auto boundary_revision = boundary_input.inject_at(Sample{51U}, 100U);
+    const auto boundary_read = boundary_input.read_at(109U);
+    const auto boundary_view = boundary_read.view();
+    assert(boundary_revision == 1U);
+    assert(boundary_read.revision() == 1U);
+    assert(boundary_view.present());
+    assert(!boundary_view.stale());
+    assert(boundary_view.get()->value == 51U);
+    assert(boundary_waiter.data_generation() > boundary_generation);
+
+    auto stale_boundary_input = flowrt::BoundaryInput<Sample>::with_stale_config(
+        flowrt::StaleConfig{std::chrono::milliseconds{10}, flowrt::StalePolicy::Drop});
+    stale_boundary_input.inject_at(Sample{53U}, 100U);
+    const auto stale_boundary_read = stale_boundary_input.read_at(111U);
+    const auto stale_boundary_view = stale_boundary_read.view();
+    assert(stale_boundary_read.revision() == 1U);
+    assert(!stale_boundary_view.present());
+    assert(stale_boundary_view.stale());
+
+    flowrt::BoundaryOutput<Sample> boundary_output;
+    std::vector<std::pair<std::uint32_t, std::optional<std::uint64_t>>> boundary_seen;
+    {
+        auto guard = boundary_output.register_sink(
+            [&boundary_seen](const Sample &value, std::optional<std::uint64_t> published_at_ms) {
+                boundary_seen.emplace_back(value.value, published_at_ms);
+            });
+        boundary_output.publish_at(Sample{59U}, 100U);
+        assert(boundary_output.sink_count() == 1U);
+    }
+    boundary_output.publish_at(Sample{61U}, 110U);
+    assert(boundary_output.sink_count() == 0U);
+    assert(boundary_seen.size() == 1U);
+    assert(boundary_seen[0].first == 59U);
+    assert(boundary_seen[0].second == std::optional<std::uint64_t>{100U});
 
     auto iox2_config = flowrt::iox2::Iox2ChannelConfig::fifo(0, flowrt::OverflowPolicy::DropOldest)
                            .with_stale_config(flowrt::StaleConfig{std::chrono::milliseconds{5},

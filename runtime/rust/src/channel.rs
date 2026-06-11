@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex, MutexGuard, Weak},
+};
 
 use crate::Latest;
 
@@ -354,6 +357,225 @@ impl<T> FifoChannel<T> {
     }
 }
 
+#[derive(Debug)]
+struct BoundaryInputInner<T> {
+    value: Option<Arc<T>>,
+    published_at_ms: Option<u64>,
+    stale_config: StaleConfig,
+    revision: u64,
+    schedule_waiter: Option<crate::ScheduleWaiter>,
+}
+
+/// island boundary input 的显式注入端。
+///
+/// 该类型只服务于 `boundary.input`：测试工具、ROS2 adapter 或其他边界驱动通过
+/// `inject*` 写入 latest snapshot，generated shell 通过 `read*` 读取该 snapshot。普通
+/// dataflow channel 不依赖该类型，因此未启用 boundary 时不会在热路径增加 sink 或分支。
+#[derive(Debug, Clone)]
+pub struct BoundaryInput<T> {
+    inner: Arc<Mutex<BoundaryInputInner<T>>>,
+}
+
+impl<T> Default for BoundaryInput<T> {
+    fn default() -> Self {
+        Self::with_stale_config(StaleConfig::default())
+    }
+}
+
+impl<T> BoundaryInput<T> {
+    /// 构造空 boundary input。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 使用 freshness 配置构造空 boundary input。
+    pub fn with_stale_config(stale_config: StaleConfig) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(BoundaryInputInner {
+                value: None,
+                published_at_ms: None,
+                stale_config,
+                revision: 0,
+                schedule_waiter: None,
+            })),
+        }
+    }
+
+    /// 绑定 scheduler waiter；后续注入会唤醒 `on_message` / `any_ready` 等数据触发任务。
+    pub fn set_schedule_waiter(&self, waiter: crate::ScheduleWaiter) {
+        lock_recover(&self.inner).schedule_waiter = Some(waiter);
+    }
+
+    /// 注入一个无 runtime 时间戳的样本，返回注入后的修订号。
+    pub fn inject(&self, value: T) -> u64 {
+        self.inject_entry(value, None)
+    }
+
+    /// 注入一个带 runtime 毫秒时间戳的样本，返回注入后的修订号。
+    pub fn inject_at(&self, value: T, now_ms: u64) -> u64 {
+        self.inject_entry(value, Some(now_ms))
+    }
+
+    fn inject_entry(&self, value: T, published_at_ms: Option<u64>) -> u64 {
+        let (revision, waiter) = {
+            let mut inner = lock_recover(&self.inner);
+            inner.value = Some(Arc::new(value));
+            inner.published_at_ms = published_at_ms;
+            inner.revision = inner.revision.saturating_add(1);
+            (inner.revision, inner.schedule_waiter.clone())
+        };
+        if let Some(waiter) = waiter {
+            waiter.notify_data();
+        }
+        revision
+    }
+
+    /// 借出当前 latest snapshot；不重新计算 freshness。
+    pub fn read(&self) -> BoundaryInputRead<T> {
+        let inner = lock_recover(&self.inner);
+        BoundaryInputRead::new(inner.value.clone(), false, inner.revision)
+    }
+
+    /// 按 runtime 毫秒时间读取 latest snapshot，并应用 freshness 配置。
+    pub fn read_at(&self, now_ms: u64) -> BoundaryInputRead<T> {
+        let inner = lock_recover(&self.inner);
+        let stale = inner.stale_config.stale_at(inner.published_at_ms, now_ms);
+        let value = if stale && inner.stale_config.policy == StalePolicy::Drop {
+            None
+        } else {
+            inner.value.clone()
+        };
+        BoundaryInputRead::new(value, stale, inner.revision)
+    }
+
+    /// 返回已注入样本修订号。
+    pub fn revision(&self) -> u64 {
+        lock_recover(&self.inner).revision
+    }
+}
+
+/// boundary input 的一次读取结果。
+///
+/// 读取结果持有一个 `Arc` snapshot，使调用方释放锁后仍能安全构造 `Latest<'_, T>`。这条
+/// 路径只存在于显式 boundary 注入，不影响普通 inproc/iox2/zenoh channel 的零额外观测路径。
+#[derive(Debug, Clone)]
+pub struct BoundaryInputRead<T> {
+    value: Option<Arc<T>>,
+    stale: bool,
+    revision: u64,
+}
+
+impl<T> BoundaryInputRead<T> {
+    fn new(value: Option<Arc<T>>, stale: bool, revision: u64) -> Self {
+        Self {
+            value,
+            stale,
+            revision,
+        }
+    }
+
+    /// 借用本次读取结果，形成组件输入使用的 latest-style 视图。
+    pub fn view(&self) -> Latest<'_, T> {
+        Latest::new(self.value.as_deref(), self.stale)
+    }
+
+    /// 返回本次读取对应的注入修订号。
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+type BoundarySink<T> = Arc<dyn Fn(&T, Option<u64>) + Send + Sync + 'static>;
+
+struct BoundaryOutputInner<T> {
+    sinks: BTreeMap<u64, BoundarySink<T>>,
+    next_sink_id: u64,
+}
+
+/// island boundary output 的显式观测 sink。
+///
+/// generated shell 只会在声明了 `boundary.output` 的端口发布到该类型。sink 由工具或 adapter
+/// 显式注册，guard drop 后自动移除，避免临时观测永久改变运行时行为。
+#[derive(Clone)]
+pub struct BoundaryOutput<T> {
+    inner: Arc<Mutex<BoundaryOutputInner<T>>>,
+}
+
+impl<T> Default for BoundaryOutput<T> {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(BoundaryOutputInner {
+                sinks: BTreeMap::new(),
+                next_sink_id: 0,
+            })),
+        }
+    }
+}
+
+impl<T> BoundaryOutput<T> {
+    /// 构造没有 sink 的 boundary output。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 注册一个 sink，并返回自动注销 guard。
+    pub fn register_sink<F>(&self, sink: F) -> BoundaryOutputSinkGuard<T>
+    where
+        F: Fn(&T, Option<u64>) + Send + Sync + 'static,
+    {
+        let mut inner = lock_recover(&self.inner);
+        let id = inner.next_sink_id;
+        inner.next_sink_id = inner.next_sink_id.saturating_add(1);
+        inner.sinks.insert(id, Arc::new(sink));
+        BoundaryOutputSinkGuard {
+            inner: Arc::downgrade(&self.inner),
+            id,
+        }
+    }
+
+    /// 发布一个无 runtime 时间戳的样本到当前已注册 sink。
+    pub fn publish(&self, value: &T) {
+        self.publish_entry(value, None);
+    }
+
+    /// 发布一个带 runtime 毫秒时间戳的样本到当前已注册 sink。
+    pub fn publish_at(&self, value: &T, now_ms: u64) {
+        self.publish_entry(value, Some(now_ms));
+    }
+
+    fn publish_entry(&self, value: &T, published_at_ms: Option<u64>) {
+        let sinks: Vec<BoundarySink<T>> =
+            lock_recover(&self.inner).sinks.values().cloned().collect();
+        for sink in sinks {
+            sink(value, published_at_ms);
+        }
+    }
+
+    /// 返回当前注册 sink 数量，供测试和诊断使用。
+    pub fn sink_count(&self) -> usize {
+        lock_recover(&self.inner).sinks.len()
+    }
+}
+
+/// boundary output sink 注册生命周期 guard。
+pub struct BoundaryOutputSinkGuard<T> {
+    inner: Weak<Mutex<BoundaryOutputInner<T>>>,
+    id: u64,
+}
+
+impl<T> Drop for BoundaryOutputSinkGuard<T> {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        lock_recover(&inner).sinks.remove(&self.id);
+    }
+}
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +748,53 @@ mod tests {
 
         let _ = channel.pop();
         assert_eq!(channel.revision(), 1);
+    }
+
+    #[test]
+    fn boundary_input_injects_latest_value_and_notifies_waiter() {
+        let input = BoundaryInput::new();
+        let waiter = crate::ScheduleWaiter::new();
+        input.set_schedule_waiter(waiter.clone());
+        let seen_generation = waiter.data_generation();
+
+        let revision = input.inject_at(7u32, 100);
+        let read = input.read_at(109);
+        let view = read.view();
+
+        assert_eq!(revision, 1);
+        assert_eq!(read.revision(), 1);
+        assert_eq!(view.as_ref(), Some(&7));
+        assert!(!view.stale());
+        assert!(waiter.data_generation() > seen_generation);
+    }
+
+    #[test]
+    fn boundary_input_applies_stale_policy() {
+        let input = BoundaryInput::with_stale_config(StaleConfig::new(Some(10), StalePolicy::Drop));
+
+        input.inject_at(7u32, 100);
+        let stale = input.read_at(111);
+        let view = stale.view();
+
+        assert_eq!(stale.revision(), 1);
+        assert!(!view.present());
+        assert!(view.stale());
+    }
+
+    #[test]
+    fn boundary_output_sink_is_removed_when_guard_drops() {
+        let output = BoundaryOutput::new();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u32, Option<u64>)>::new()));
+        let sink_seen = seen.clone();
+        let guard = output.register_sink(move |value: &u32, published_at_ms| {
+            sink_seen.lock().unwrap().push((*value, published_at_ms));
+        });
+
+        output.publish_at(&7, 100);
+        drop(guard);
+        output.publish_at(&9, 110);
+
+        assert_eq!(output.sink_count(), 0);
+        assert_eq!(*seen.lock().unwrap(), vec![(7, Some(100))]);
     }
 }

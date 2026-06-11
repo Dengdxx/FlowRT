@@ -4,10 +4,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <flowrt/executor.hpp>
+#include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace flowrt {
 
@@ -576,6 +581,306 @@ class FifoChannel {
     OverflowPolicy overflow_ = OverflowPolicy::DropOldest;
     StaleConfig stale_config_;
     std::uint64_t revision_ = 0;
+};
+
+/**
+ * @brief island boundary input 的一次读取结果。
+ *
+ * @tparam T 输入消息类型。
+ *
+ * 读取结果持有一个 shared_ptr snapshot，使 generated shell 在释放 boundary input 锁后仍能
+ * 构造 `Latest<T>` 视图。该类型只用于显式 `boundary.input`，不参与普通 channel 热路径。
+ */
+template <typename T>
+class BoundaryInputRead {
+   public:
+    /**
+     * @brief 构造空读取结果。
+     */
+    BoundaryInputRead() = default;
+
+    /**
+     * @brief 从 snapshot、stale 标记和修订号构造读取结果。
+     *
+     * @param value 当前 snapshot；为空表示没有样本或 stale drop 已隐藏样本。
+     * @param stale 本次读取是否发现样本过期。
+     * @param revision boundary input 注入修订号。
+     */
+    BoundaryInputRead(std::shared_ptr<const T> value, bool stale, std::uint64_t revision)
+        : value_(std::move(value)), stale_(stale), revision_(revision) {}
+
+    /**
+     * @brief 借用本次读取结果，形成组件输入使用的 latest-style 视图。
+     *
+     * @return 只在本读取结果对象存活期间可用的输入视图。
+     */
+    Latest<T> view() const noexcept { return Latest<T>{value_.get(), stale_}; }
+
+    /**
+     * @brief 返回本次读取对应的注入修订号。
+     *
+     * @return 每次注入后递增的计数。
+     */
+    std::uint64_t revision() const noexcept { return revision_; }
+
+   private:
+    std::shared_ptr<const T> value_;
+    bool stale_ = false;
+    std::uint64_t revision_ = 0;
+};
+
+/**
+ * @brief island boundary input 的显式注入端。
+ *
+ * @tparam T 输入消息类型。
+ *
+ * 测试工具、ROS2 adapter 或其他边界驱动通过 `inject*` 写入 latest snapshot，generated shell
+ * 通过 `read*` 读取。普通 dataflow channel 不依赖该类型，因此未启用 boundary 时不会增加
+ * 常驻观测或额外分支。
+ */
+template <typename T>
+class BoundaryInput {
+   public:
+    /**
+     * @brief 构造空 boundary input。
+     */
+    BoundaryInput() = default;
+
+    /**
+     * @brief 使用 freshness 配置构造空 boundary input。
+     *
+     * @param stale_config 读取时使用的 freshness 配置。
+     */
+    explicit BoundaryInput(StaleConfig stale_config) : stale_config_(stale_config) {}
+
+    /**
+     * @brief 使用 freshness 配置构造空 boundary input。
+     *
+     * @param stale_config 读取时使用的 freshness 配置。
+     * @return 配置后的 boundary input。
+     */
+    static BoundaryInput with_stale_config(StaleConfig stale_config) {
+        return BoundaryInput(stale_config);
+    }
+
+    /**
+     * @brief 绑定 scheduler waiter；后续注入会唤醒数据触发任务。
+     *
+     * @param waiter scheduler waiter 副本。
+     */
+    void set_schedule_waiter(ScheduleWaiter waiter) {
+        std::lock_guard lock(mutex_);
+        schedule_waiter_ = std::move(waiter);
+    }
+
+    /**
+     * @brief 注入一个无 runtime 时间戳的样本。
+     *
+     * @param value 新样本。
+     * @return 注入后的修订号。
+     */
+    std::uint64_t inject(T value) { return inject_entry(std::move(value), std::nullopt); }
+
+    /**
+     * @brief 注入一个带 runtime 毫秒时间戳的样本。
+     *
+     * @param value 新样本。
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 注入后的修订号。
+     */
+    std::uint64_t inject_at(T value, std::uint64_t now_ms) {
+        return inject_entry(std::move(value), now_ms);
+    }
+
+    /**
+     * @brief 读取当前 latest snapshot；不重新计算 freshness。
+     *
+     * @return 本次读取结果。
+     */
+    BoundaryInputRead<T> read() const {
+        std::lock_guard lock(mutex_);
+        return BoundaryInputRead<T>{value_, false, revision_};
+    }
+
+    /**
+     * @brief 按 runtime 毫秒时间读取 latest snapshot，并应用 freshness 配置。
+     *
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     * @return 本次读取结果。
+     */
+    BoundaryInputRead<T> read_at(std::uint64_t now_ms) const {
+        std::lock_guard lock(mutex_);
+        const bool stale = stale_config_.stale_at(published_at_ms_, now_ms);
+        const bool drop_stale = stale && stale_config_.policy() == StalePolicy::Drop;
+        return BoundaryInputRead<T>{drop_stale ? nullptr : value_, stale, revision_};
+    }
+
+    /**
+     * @brief 返回已注入样本修订号。
+     *
+     * @return 每次注入后递增的计数。
+     */
+    std::uint64_t revision() const noexcept {
+        std::lock_guard lock(mutex_);
+        return revision_;
+    }
+
+   private:
+    std::uint64_t inject_entry(T value, std::optional<std::uint64_t> published_at_ms) {
+        std::optional<ScheduleWaiter> waiter;
+        std::uint64_t revision{};
+        {
+            std::lock_guard lock(mutex_);
+            value_ = std::make_shared<T>(std::move(value));
+            published_at_ms_ = published_at_ms;
+            ++revision_;
+            revision = revision_;
+            waiter = schedule_waiter_;
+        }
+        if (waiter.has_value()) {
+            waiter->notify_data();
+        }
+        return revision;
+    }
+
+    mutable std::mutex mutex_;
+    std::shared_ptr<const T> value_;
+    std::optional<std::uint64_t> published_at_ms_;
+    StaleConfig stale_config_;
+    std::uint64_t revision_ = 0;
+    std::optional<ScheduleWaiter> schedule_waiter_;
+};
+
+/**
+ * @brief island boundary output 的显式观测 sink。
+ *
+ * @tparam T 输出消息类型。
+ *
+ * generated shell 只会在声明了 `boundary.output` 的端口发布到该类型。sink 由工具或 adapter
+ * 显式注册，guard 析构后自动移除，避免临时观测永久改变运行时行为。
+ */
+template <typename T>
+class BoundaryOutput {
+    struct Inner;
+
+   public:
+    class SinkGuard;
+    using Sink = std::function<void(const T &, std::optional<std::uint64_t>)>;
+
+    /**
+     * @brief 构造没有 sink 的 boundary output。
+     */
+    BoundaryOutput() : inner_(std::make_shared<Inner>()) {}
+
+    /**
+     * @brief 注册一个 sink，并返回自动注销 guard。
+     *
+     * @param sink sink 回调。回调在发布线程同步执行。
+     * @return sink 生命周期 guard。
+     */
+    SinkGuard register_sink(Sink sink) {
+        std::lock_guard lock(inner_->mutex);
+        const auto id = inner_->next_sink_id++;
+        inner_->sinks.emplace(id, std::move(sink));
+        return SinkGuard{inner_, id};
+    }
+
+    /**
+     * @brief 发布一个无 runtime 时间戳的样本到当前已注册 sink。
+     *
+     * @param value 输出样本。
+     */
+    void publish(const T &value) const { publish_entry(value, std::nullopt); }
+
+    /**
+     * @brief 发布一个带 runtime 毫秒时间戳的样本到当前已注册 sink。
+     *
+     * @param value 输出样本。
+     * @param now_ms 当前 runtime 时间，单位为毫秒。
+     */
+    void publish_at(const T &value, std::uint64_t now_ms) const { publish_entry(value, now_ms); }
+
+    /**
+     * @brief 返回当前注册 sink 数量。
+     *
+     * @return sink 数量。
+     */
+    std::size_t sink_count() const noexcept {
+        std::lock_guard lock(inner_->mutex);
+        return inner_->sinks.size();
+    }
+
+    /**
+     * @brief boundary output sink 注册生命周期 guard。
+     */
+    class SinkGuard {
+       public:
+        SinkGuard() = default;
+        SinkGuard(const SinkGuard &) = delete;
+        SinkGuard &operator=(const SinkGuard &) = delete;
+
+        SinkGuard(SinkGuard &&other) noexcept : inner_(std::move(other.inner_)), id_(other.id_) {
+            other.id_.reset();
+        }
+
+        SinkGuard &operator=(SinkGuard &&other) noexcept {
+            if (this != &other) {
+                reset();
+                inner_ = std::move(other.inner_);
+                id_ = other.id_;
+                other.id_.reset();
+            }
+            return *this;
+        }
+
+        ~SinkGuard() { reset(); }
+
+        /**
+         * @brief 主动注销 sink。
+         */
+        void reset() noexcept {
+            if (!id_.has_value()) {
+                return;
+            }
+            if (const auto inner = inner_.lock()) {
+                std::lock_guard lock(inner->mutex);
+                inner->sinks.erase(*id_);
+            }
+            id_.reset();
+        }
+
+       private:
+        friend class BoundaryOutput<T>;
+
+        SinkGuard(std::weak_ptr<Inner> inner, std::uint64_t id)
+            : inner_(std::move(inner)), id_(id) {}
+
+        std::weak_ptr<Inner> inner_;
+        std::optional<std::uint64_t> id_;
+    };
+
+   private:
+    struct Inner {
+        mutable std::mutex mutex;
+        std::map<std::uint64_t, Sink> sinks;
+        std::uint64_t next_sink_id = 0;
+    };
+
+    void publish_entry(const T &value, std::optional<std::uint64_t> published_at_ms) const {
+        std::vector<Sink> sinks;
+        {
+            std::lock_guard lock(inner_->mutex);
+            sinks.reserve(inner_->sinks.size());
+            for (const auto &[_, sink] : inner_->sinks) {
+                sinks.push_back(sink);
+            }
+        }
+        for (const auto &sink : sinks) {
+            sink(value, published_at_ms);
+        }
+    }
+
+    std::shared_ptr<Inner> inner_;
 };
 
 }  // namespace flowrt
