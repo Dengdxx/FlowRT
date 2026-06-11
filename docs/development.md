@@ -224,6 +224,13 @@ profile、Rust target、C/C++ 交叉编译器、SDK overlay 配置和 CMake targ
 `flowrt doctor --target linux-arm64` 和真实 `flowrt build --target linux-arm64`
 C++ demo，并用 ELF header 确认输出为 AArch64。
 
+`v0.8.5 Public Cross SDK Smoke` 固定在 amd64 host 上安装 package job 产出的 amd64
+deb，使用 `examples/cross_sdk_deps` 准备公开 arm64 SDK overlay，并运行
+`scripts/test-v085-cross-sdk-demos.sh`。该 gate 覆盖两类真实外部依赖：平台无关 C/C++
+库 `libjpeg-turbo`，以及 Arm 专用公开 SDK `Arm KleidiAI`。CI 缓存只保存
+`.flowrt-public-sdk/v085-arm64` 和 `.flowrt-cache`，不把第三方源代码或编译产物加入
+Git。
+
 发布前检查：
 
 ```bash

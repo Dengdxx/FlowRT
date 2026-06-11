@@ -1,0 +1,57 @@
+[package]
+name = "kleidiai_cross_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.KleidiaiStats]
+rows = "u32"
+cols = "u32"
+checksum = "u32"
+mismatches = "u32"
+
+[component.kleidiai_worker]
+language = "cpp"
+output = ["stats:KleidiaiStats"]
+
+[component.kleidiai_worker.build]
+pkg_config = ["kleidiai"]
+
+[component.stats_sink]
+language = "cpp"
+input = ["stats:KleidiaiStats"]
+
+[instance.kleidiai_worker]
+component = "kleidiai_worker"
+process = "main"
+target = "arm64"
+
+[instance.kleidiai_worker.task]
+trigger = "periodic"
+period_ms = 10
+output = ["stats"]
+
+[instance.stats_sink]
+component = "stats_sink"
+process = "main"
+target = "arm64"
+
+[instance.stats_sink.task]
+trigger = "on_message"
+input = ["stats"]
+deadline_ms = 5
+
+[[bind.dataflow]]
+from = "kleidiai_worker.stats"
+to = "stats_sink.stats"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 100
+
+[target.arm64]
+platform = "linux-arm64"
+runtime = ["cpp"]
+backends = ["inproc"]

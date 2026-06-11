@@ -21,6 +21,8 @@
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor-only 观测 |
+| `examples/libjpeg_cross_demo` | C++ | `inproc` | `scripts/test-v085-cross-sdk-demos.sh` | 验证公开可移植 C/C++ 库通过 pkg-config overlay 接入 amd64 到 arm64 交叉构建 |
+| `examples/kleidiai_cross_demo` | C++ | `inproc` | `scripts/test-v085-cross-sdk-demos.sh` | 验证 Arm 专用公开 SDK 通过 pkg-config overlay 接入 FlowRT C++ component 并在 arm64 运行 |
 
 ## `import_demo`
 
@@ -226,6 +228,72 @@ flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-
 该示例不访问真实硬件。`bin/driver` 只校验 supervisor 注入的 `FLOWRT_*` 环境变量和
 manifest args，用于证明 external process 可以纳入 FlowRT 的 Contract IR、launch
 manifest、self-description、supervisor 和离线 bundle 主路径。
+
+## 公开交叉 SDK 示例
+
+入口文件：
+
+```text
+examples/libjpeg_cross_demo/rsdl/robot.rsdl
+examples/kleidiai_cross_demo/rsdl/robot.rsdl
+```
+
+配套依赖 prepare 项目：
+
+```text
+examples/cross_sdk_deps/CMakeLists.txt
+```
+
+这组示例验证 `v0.8.4` 引入的 component build `pkg_config` 与 toolchain SDK overlay 能否
+覆盖真实交叉编译场景。`cross_sdk_deps` 用 CMake 显式拉取并交叉编译公开依赖，不把第三方
+源代码或二进制提交进仓库；`flowrt build` 阶段只消费已经准备好的
+`lib/aarch64-linux-gnu/pkgconfig/*.pc`、头文件和静态库。
+
+推荐 smoke：
+
+```bash
+scripts/test-v085-cross-sdk-demos.sh
+```
+
+手动拆开执行时，先准备公开 arm64 SDK overlay：
+
+```bash
+sdk_root="$PWD/.flowrt/public-arm64-sdk"
+cmake -S examples/cross_sdk_deps -B build/cross_sdk_deps -G Ninja \
+  -DFLOWRT_CROSS_SDK_PREFIX="$sdk_root" \
+  -DFLOWRT_CROSS_BUILD_JOBS=1
+cmake --build build/cross_sdk_deps --target flowrt_public_arm64_sdk -j1
+```
+
+然后在每个示例工作区写入 `.flowrt/toolchains.toml`：
+
+```toml
+[toolchain.linux-arm64]
+sdk_overlays = ["/absolute/path/to/.flowrt/public-arm64-sdk"]
+pkg_config_libdirs = [
+  "/absolute/path/to/.flowrt/public-arm64-sdk/lib/aarch64-linux-gnu/pkgconfig",
+  "/absolute/path/to/.flowrt/public-arm64-sdk/lib/pkgconfig",
+]
+runtime_dependency_policy = "external"
+```
+
+最后进入对应示例目录执行：
+
+```bash
+cd examples/libjpeg_cross_demo
+flowrt doctor --target linux-arm64
+flowrt deps rsdl/robot.rsdl --target linux-arm64 --backend inproc
+flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl
+
+cd ../kleidiai_cross_demo
+flowrt doctor --target linux-arm64
+flowrt deps rsdl/robot.rsdl --target linux-arm64 --backend inproc
+flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl
+```
+
+`libjpeg_cross_demo` 覆盖平台无关公开 C/C++ 库；`kleidiai_cross_demo` 覆盖 Arm 专用公开
+SDK 和 NEON kernel。它们都不代表 FlowRT 内置硬件 backend，只验证用户项目如何通过
+toolchain overlay 接入外部 SDK。
 
 ## iox2 mixed 示例
 

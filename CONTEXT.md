@@ -42,6 +42,14 @@ focused release gate。
 build 的 pkg-config 依赖声明、toolchain profile 的 C++ compile/link 选项，以及
 `cpp_link_libraries` 对板级私有 SDK 裸库或私有 `.so` 的注入。
 
+`v0.8.5` 是 `v0.8.4` 之后的公开交叉 SDK 示例与验证线：仓库提供
+`examples/cross_sdk_deps` 作为显式 prepare 项目，用 CMake 拉取并交叉编译公开真实依赖
+`libjpeg-turbo` 和 `Arm KleidiAI` 到 demo-local arm64 SDK overlay；FlowRT 构建阶段只
+消费 `component.build.pkg_config` 和 toolchain profile 中的 overlay，不隐式联网。对应
+示例 `libjpeg_cross_demo` 覆盖平台无关 C/C++ 库，`kleidiai_cross_demo` 覆盖 Arm 专用
+公开 SDK，CI 使用安装后的 amd64 deb 执行 `flowrt doctor/deps/build --target
+linux-arm64` 并检查 AArch64 ELF。
+
 `v0.8.0` 已发布，是真实机器人应用接入边界版本，聚焦 I/O boundary component、
 variable frame 工程化、FrameDescriptor / side-channel descriptor、ROS2 zenoh 共存
 桥接扩展、多目标部署闭环和 v0.8.0 focused release gate。
@@ -116,6 +124,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.8.2` | `linux-amd64` host 到 `linux-arm64` target 的交叉编译支持基础。 |
 | `v0.8.3` | 完整 `linux-amd64 -> linux-arm64` target SDK、SDK overlay、doctor 预检和真实交叉 smoke。 |
 | `v0.8.4` | 板级私有依赖工程化：component build pkg-config、toolchain C++ 选项和私有 SDK 链接配置。 |
+| `v0.8.5` | 公开真实交叉 SDK 示例、demo-local overlay prepare 和安装后 cross SDK smoke。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
