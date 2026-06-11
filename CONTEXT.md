@@ -5,33 +5,33 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.5`。`v0.8.4` 聚焦板级私有依赖工程化：在继续保留
-`linux-amd64` host 到 `linux-arm64` target 交叉编译主路径的同时，把组件层可移植
-pkg-config 依赖、toolchain 级 C++ compile/link 选项和板级 SDK overlay 彻底分层。
-amd64 deb 继续内嵌完整 `linux-arm64` target SDK，包含 FlowRT C++ runtime、
-`iceoryx2-cxx`、`zenoh-c`、`zenoh-cpp`、CMake package 和 pkg-config 事实源。RSDL
-target 继续描述目标语义，toolchain profile 描述本机如何编译；交叉编译器、sysroot、
-CMake toolchain、pkg-config 路径、SDK overlay、C++ compile/link args 和 runtime
-dependency policy 都属于 toolchain/profile 配置，不写入 RSDL 或 Contract IR；
-需要参与符号解析的裸库名或私有 `.so` 路径走 `cpp_link_libraries`，不混入
-linker option。
-板级私有依赖通过显式 sysroot、SDK overlay 或 component build 的 pkg-config 名称接入，
-由 `flowrt doctor --target <platform>` 提前诊断。
-当前 CLI 已接通 `flowrt deps/build --target <platform>` 的交叉编译主路径：显式
-`--target` 优先，否则从选定 Contract IR target platform 推导，仍无 platform 时保持
-native 构建。Rust/Cargo 会使用对应 Rust target triple，并把 cache key、ready marker
-和输出路径按 triple 隔离；`flowrt build` 默认保留共享 target cache 中可复用的 Cargo
-fingerprint、用户代码增量产物和底层依赖产物，最终运行二进制复制到项目自己的
-`flowrt/build/bin/...`。C++/CMake 有完整 target SDK 时会优先使用
-`targets/<platform>` 的 prefix、toolchain profile 中的 compiler/sysroot 或 CMake
-toolchain file，并设置 cross build 的 `PKG_CONFIG_LIBDIR`；generated CMake 临时
-build dir 按 target platform 分层以避免 native/cross 互相污染，同时保留增量构建
-能力。target SDK 缺失或 `complete = false` 会清晰报错。FlowRT 当前只承诺
-`linux-amd64 -> linux-arm64` 交叉编译，不承诺 `linux-arm64 -> linux-amd64`。
-CI/release 侧使用两层缓存降低重复构建成本：Rust/Cargo job 使用按架构隔离的
-GitHub Actions cache；安装后 package/demo/ROS2 smoke 使用外部传入的
-`FLOWRT_CACHE_DIR` 缓存 FlowRT 底层依赖预热结果。deb 成品、release notes 和
-artifact manifest 不缓存，仍每次从源码重建。
+当前 workspace 版本为 `0.8.6`。`v0.8.6` 是 `v0.8.5` 之后的交叉编译 / SDK overlay
+体验硬化版本，不新增 RSDL 语义或 backend。CLI 新增 `flowrt toolchain show/init`，
+让用户用最小 workspace profile 接入 `linux-arm64` SDK overlay；`flowrt doctor
+[<rsdl>] --target <platform>` 可以按 Contract IR 检查 selected target 下 C++
+component `build.pkg_config` 依赖；`flowrt build --target <platform>` 会在 CMake 前
+fail-fast 检查 target SDK / pkg-config 可见性，并在成功后输出 target、toolchain、
+SDK overlay、pkg-config 模块和最终二进制 summary。
+
+`flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
+incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、
+永不自动清区分，不得自动删除安装前缀、用户 SDK overlay、`.flowrt/toolchains.toml`、
+最终二进制、live socket、MCAP 或日志。用户最终二进制通常不是磁盘大头；GB 级占用
+主要来自 Cargo/FRT deps cache、中间产物、多 target、多 feature 和 vendor hash。
+
+当前仍只承诺 `linux-amd64 -> linux-arm64` 交叉编译，不承诺
+`linux-arm64 -> linux-amd64`。amd64 deb 继续内嵌完整 `linux-arm64` target SDK，包含
+FlowRT C++ runtime、`iceoryx2-cxx`、`zenoh-c`、`zenoh-cpp`、CMake package 和
+pkg-config 事实源。RSDL target 描述目标语义，toolchain profile 描述本机如何编译；
+交叉编译器、sysroot、CMake toolchain、pkg-config 路径、SDK overlay、C++ compile/link
+args 和 runtime dependency policy 都属于 toolchain/profile 配置，不写入 RSDL 或
+Contract IR。
+
+CI/release 侧使用按架构隔离的 Rust/Cargo cache 和外部 `FLOWRT_CACHE_DIR` 降低重复
+构建成本。`v0.8.6 Cross UX SDK Smoke` 固定在 amd64 host 上安装 package job 产出的
+amd64 deb，准备公开 arm64 SDK overlay，运行 `toolchain init/show`、带 RSDL 的
+`doctor`、`deps/build --target linux-arm64`，并检查 AArch64 ELF。deb 成品、release
+notes 和 artifact manifest 不缓存，仍每次从源码重建。
 
 `v0.8.1` 是 `v0.8.0` 之后的大 payload descriptor
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
@@ -125,6 +125,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.8.3` | 完整 `linux-amd64 -> linux-arm64` target SDK、SDK overlay、doctor 预检和真实交叉 smoke。 |
 | `v0.8.4` | 板级私有依赖工程化：component build pkg-config、toolchain C++ 选项和私有 SDK 链接配置。 |
 | `v0.8.5` | 公开真实交叉 SDK 示例、demo-local overlay prepare 和安装后 cross SDK smoke。 |
+| `v0.8.6` | 交叉编译 UX hardening：toolchain init/show、Contract-aware doctor、build diagnostics、cache 治理和 Cross UX SDK smoke。 |
 | `v0.9.0` | Migration Island / Boundary Endpoint：支持 ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`。 |
 | `v1.0.0` | C/Python API、SDK 化和生态互操作扩展。 |
 | `v1.1.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
