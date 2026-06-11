@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use flowrt_ir::{ContractIr, LanguageKind};
 
 use crate::ros2_bridge::ros2_bridge_stem;
@@ -26,12 +28,19 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
     if has_cpp_runtime {
         let shell_target = format!("{}_cpp_shell", package_name.replace('-', "_"));
         let app_target = format!("{}_cpp_app", package_name.replace('-', "_"));
+        let cpp_pkg_config_packages = cpp_component_pkg_config_packages(contract);
         output.push_str(
             "\nset(FLOWRT_CPP_RUNTIME_DIR \"\" CACHE PATH \"FlowRT C++ runtime root containing include/flowrt/runtime.hpp\")\n",
         );
         output.push_str(
+            "set(FLOWRT_CXX_COMPILE_OPTIONS \"\" CACHE STRING \"Extra C++ compile options from the FlowRT toolchain profile\")\nset(FLOWRT_EXE_LINK_OPTIONS \"\" CACHE STRING \"Extra executable link options from the FlowRT toolchain profile\")\nset(FLOWRT_EXE_LINK_LIBRARIES \"\" CACHE STRING \"Extra executable link libraries from the FlowRT toolchain profile\")\n",
+        );
+        output.push_str(
             "if(FLOWRT_CPP_RUNTIME_DIR)\n    list(PREPEND CMAKE_PREFIX_PATH \"${FLOWRT_CPP_RUNTIME_DIR}\")\n    list(PREPEND CMAKE_BUILD_RPATH \"${FLOWRT_CPP_RUNTIME_DIR}/lib\")\nendif()\n",
         );
+        if !cpp_pkg_config_packages.is_empty() {
+            output.push_str(&cmake_pkg_config_dependency_block(&cpp_pkg_config_packages));
+        }
         if contract_uses_backend(contract, "iox2") {
             output.push_str(cmake_iox2_dependency_block());
             output.push_str(&format!(
@@ -80,13 +89,28 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
                 "    add_library({user_target} STATIC ${{FLOWRT_USER_CPP_SOURCES}})\n"
             ));
             output.push_str(&format!(
+                "    if(FLOWRT_CXX_COMPILE_OPTIONS)\n        target_compile_options({user_target} PRIVATE ${{FLOWRT_CXX_COMPILE_OPTIONS}})\n    endif()\n"
+            ));
+            output.push_str(&format!(
                 "    target_link_libraries({user_target} PUBLIC {package_name}_flowrt_app)\n"
             ));
+            if !cpp_pkg_config_packages.is_empty() {
+                output.push_str(&format!(
+                    "    target_link_libraries({user_target} PUBLIC {})\n",
+                    cmake_pkg_config_targets(&cpp_pkg_config_packages).join(" ")
+                ));
+            }
             output.push_str(&format!(
                 "    add_executable({app_target} ../cpp/src/main.cpp)\n"
             ));
             output.push_str(&format!(
+                "    if(FLOWRT_EXE_LINK_OPTIONS)\n        target_link_options({app_target} PRIVATE ${{FLOWRT_EXE_LINK_OPTIONS}})\n    endif()\n"
+            ));
+            output.push_str(&format!(
                 "    target_link_libraries({app_target} PRIVATE {shell_target} {user_target})\n"
+            ));
+            output.push_str(&format!(
+                "    if(FLOWRT_EXE_LINK_LIBRARIES)\n        target_link_libraries({app_target} PRIVATE ${{FLOWRT_EXE_LINK_LIBRARIES}})\n    endif()\n"
             ));
             output.push_str("endif()\n");
         }
@@ -204,6 +228,56 @@ fn flowrt_dependency(features: Option<&str>) -> String {
     }
 }
 
+fn cpp_component_pkg_config_packages(contract: &ContractIr) -> Vec<String> {
+    contract
+        .components
+        .iter()
+        .filter(|component| component.language == LanguageKind::Cpp)
+        .flat_map(|component| component.build.pkg_config.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn cmake_pkg_config_dependency_block(packages: &[String]) -> String {
+    let mut output = String::from("\nfind_package(PkgConfig REQUIRED)\n");
+    for (index, package) in packages.iter().enumerate() {
+        output.push_str(&format!(
+            "pkg_check_modules({} REQUIRED IMPORTED_TARGET {})\n",
+            cmake_pkg_config_module_name(index, package),
+            package
+        ));
+    }
+    output
+}
+
+fn cmake_pkg_config_targets(packages: &[String]) -> Vec<String> {
+    packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| {
+            format!(
+                "PkgConfig::{}",
+                cmake_pkg_config_module_name(index, package)
+            )
+        })
+        .collect()
+}
+
+fn cmake_pkg_config_module_name(index: usize, package: &str) -> String {
+    format!(
+        "FLOWRT_PKG_{index}_{}",
+        sanitize_cmake_identifier(package).to_ascii_uppercase()
+    )
+}
+
+fn sanitize_cmake_identifier(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
 fn cmake_iox2_dependency_block() -> &'static str {
     r#"
 find_package(iceoryx2-cxx 0.9.1 QUIET)
@@ -284,6 +358,12 @@ endif()
 target_include_directories({bridge_target} BEFORE PRIVATE ${{FLOWRT_ROS2_ZENOH_INCLUDE}})
 target_compile_definitions({bridge_target} PRIVATE ZENOHCXX_ZENOHC)
 target_link_libraries({bridge_target} PRIVATE rclcpp::rclcpp{geometry_msgs_target} std_msgs::std_msgs__rosidl_typesupport_cpp rosidl_typesupport_cpp::rosidl_typesupport_cpp ${{FLOWRT_ROS2_ZENOH_LIB}})
+if(FLOWRT_EXE_LINK_OPTIONS)
+  target_link_options({bridge_target} PRIVATE ${{FLOWRT_EXE_LINK_OPTIONS}})
+endif()
+if(FLOWRT_EXE_LINK_LIBRARIES)
+  target_link_libraries({bridge_target} PRIVATE ${{FLOWRT_EXE_LINK_LIBRARIES}})
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options({bridge_target} PRIVATE "-Wl,--disable-new-dtags")
 endif()

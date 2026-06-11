@@ -22,6 +22,7 @@ pub(crate) fn validate_components(
 
     for component in &ir.components {
         validate_component_kind_and_resources(component, &types_by_name, errors);
+        validate_component_build(component, errors);
 
         let mut ports = BTreeSet::new();
         for port in component.inputs.iter().chain(component.outputs.iter()) {
@@ -130,6 +131,38 @@ pub(crate) fn validate_components(
             validate_param_schema(component, param, errors);
         }
     }
+}
+
+fn validate_component_build(component: &ComponentIr, errors: &mut Vec<ValidationError>) {
+    if !component.build.pkg_config.is_empty() && component.language != LanguageKind::Cpp {
+        errors.push(ValidationError::new(format!(
+            "component `{}` declares pkg-config dependencies but language is not `cpp`",
+            component.name
+        )));
+    }
+
+    let mut packages = BTreeSet::new();
+    for package in &component.build.pkg_config {
+        if !packages.insert(package.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "component `{}` has duplicate pkg-config dependency `{}`",
+                component.name, package
+            )));
+        }
+        if !is_valid_pkg_config_name(package) {
+            errors.push(ValidationError::new(format!(
+                "component `{}` pkg-config dependency `{}` is invalid; use ASCII letters, digits, `_`, `.`, `+` or `-`",
+                component.name, package
+            )));
+        }
+    }
+}
+
+fn is_valid_pkg_config_name(package: &str) -> bool {
+    !package.is_empty()
+        && package
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'+' | b'-'))
 }
 
 fn validate_component_kind_and_resources(

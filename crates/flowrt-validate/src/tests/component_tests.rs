@@ -80,6 +80,90 @@ output = ["sample"]
 }
 
 #[test]
+fn accepts_cpp_component_build_pkg_config_dependencies() {
+    let source = r#"
+[package]
+name = "cpp_sdk_ok"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.camera]
+language = "cpp"
+kind = "io_boundary"
+output = ["sample:Sample"]
+io_side_effect = ["device", "read"]
+io_readiness = "resource_ready"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+
+[component.camera.build]
+pkg_config = ["rpicam_app", "libcamera"]
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_rust_component_build_pkg_config_dependencies() {
+    let source = r#"
+[package]
+name = "rust_sdk_bad"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[component.worker.build]
+pkg_config = ["rpicam_app"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("Rust component pkg-config should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "component `worker` declares pkg-config dependencies but language is not `cpp`",
+        )
+    }));
+}
+
+#[test]
+fn rejects_invalid_component_build_pkg_config_name() {
+    let source = r#"
+[package]
+name = "cpp_sdk_bad"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "cpp"
+
+[component.camera.build]
+pkg_config = ["bad/package"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("invalid pkg-config name should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("component `camera` pkg-config dependency `bad/package` is invalid")
+    }));
+}
+
+#[test]
 fn accepts_io_boundary_frame_descriptor_bound_to_fixed_output_port() {
     let source = frame_descriptor_contract_source("FrameDescriptor");
     let raw = parse_str(&source).unwrap();

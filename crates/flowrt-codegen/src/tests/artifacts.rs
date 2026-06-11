@@ -511,6 +511,62 @@ channel = "latest"
 }
 
 #[test]
+fn generated_cmake_links_cpp_component_pkg_config_dependencies() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "cpp_sdk_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.camera]
+language = "cpp"
+kind = "io_boundary"
+output = ["sample:Sample"]
+io_side_effect = ["device", "read"]
+io_readiness = "resource_ready"
+io_health = "runtime_reported"
+io_shutdown = "cooperative"
+
+[component.camera.build]
+pkg_config = ["rpicam_app", "libcamera"]
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+
+    assert!(cmake.contains("find_package(PkgConfig REQUIRED)"));
+    assert!(
+        cmake.contains(
+            "pkg_check_modules(FLOWRT_PKG_0_LIBCAMERA REQUIRED IMPORTED_TARGET libcamera)"
+        )
+    );
+    assert!(cmake.contains(
+        "pkg_check_modules(FLOWRT_PKG_1_RPICAM_APP REQUIRED IMPORTED_TARGET rpicam_app)"
+    ));
+    assert!(cmake.contains(
+        "target_link_libraries(cpp_sdk_demo_cpp_user PUBLIC PkgConfig::FLOWRT_PKG_0_LIBCAMERA PkgConfig::FLOWRT_PKG_1_RPICAM_APP)"
+    ));
+    assert!(cmake.contains(
+        "set(FLOWRT_EXE_LINK_LIBRARIES \"\" CACHE STRING \"Extra executable link libraries from the FlowRT toolchain profile\")"
+    ));
+    assert!(cmake.contains(
+        "target_link_libraries(cpp_sdk_demo_cpp_app PRIVATE ${FLOWRT_EXE_LINK_LIBRARIES})"
+    ));
+}
+
+#[test]
 fn generated_cargo_manifest_uses_current_flowrt_minor_version() {
     let ir = contract_from_source(
         r#"

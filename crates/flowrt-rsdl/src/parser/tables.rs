@@ -110,6 +110,7 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
         &[
             "language",
             "kind",
+            "build",
             "input",
             "output",
             "service_client",
@@ -128,6 +129,7 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
     Ok(RawComponent {
         language: required_string(table, &context, "language")?,
         kind: optional_string(table, &context, "kind")?,
+        build: optional_component_build(table, &context)?,
         input: optional_port_array(table, &context, "input")?,
         output: optional_port_array(table, &context, "output")?,
         service_clients: optional_service_port_array(table, &context, "service_client")?,
@@ -140,6 +142,18 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
         io_health: optional_string(table, &context, "io_health")?,
         io_shutdown: optional_string(table, &context, "io_shutdown")?,
         resources: optional_resource_table(table, &context)?,
+    })
+}
+
+fn optional_component_build(table: &Table, context: &str) -> Result<RawComponentBuild> {
+    let Some(value) = table.get("build") else {
+        return Ok(RawComponentBuild::default());
+    };
+    let build_table = expect_table_value(context, "build", value)?;
+    let build_context = format!("{context}.build");
+    validate_known_fields(build_table, &build_context, &["pkg_config"])?;
+    Ok(RawComponentBuild {
+        pkg_config: optional_string_array(build_table, &build_context, "pkg_config")?,
     })
 }
 

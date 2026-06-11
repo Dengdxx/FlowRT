@@ -697,6 +697,7 @@ mod tests {
             generated_name: name.to_string(),
             language: crate::LanguageKind::Rust,
             kind: crate::ComponentKind::Native,
+            build: crate::ComponentBuildIr::default(),
             inputs: vec![],
             outputs,
             service_clients: vec![],

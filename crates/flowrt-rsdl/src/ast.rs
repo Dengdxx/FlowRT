@@ -119,6 +119,7 @@ pub struct RawField {
 pub struct RawComponent {
     pub language: String,
     pub kind: Option<String>,
+    pub build: RawComponentBuild,
     pub input: Vec<RawPort>,
     pub output: Vec<RawPort>,
     pub service_clients: Vec<RawServicePort>,
@@ -131,6 +132,12 @@ pub struct RawComponent {
     pub io_health: Option<String>,
     pub io_shutdown: Option<String>,
     pub resources: Vec<RawResourceRequirement>,
+}
+
+/// `[component.<name>.build]` 表。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawComponentBuild {
+    pub pkg_config: Vec<String>,
 }
 
 /// `[component.<name>.resource.<resource_name>]` 表。

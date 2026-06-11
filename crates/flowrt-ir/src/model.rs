@@ -112,6 +112,8 @@ pub struct ComponentIr {
     pub generated_name: String,
     pub language: LanguageKind,
     pub kind: ComponentKind,
+    #[serde(default)]
+    pub build: ComponentBuildIr,
     pub inputs: Vec<PortIr>,
     pub outputs: Vec<PortIr>,
     pub service_clients: Vec<ServicePortIr>,
@@ -126,6 +128,13 @@ pub struct ComponentIr {
     #[serde(default)]
     pub io_boundary: Option<IoBoundaryIr>,
     pub lifecycle: LifecycleSurface,
+}
+
+/// 组件的语言侧构建依赖。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentBuildIr {
+    #[serde(default)]
+    pub pkg_config: Vec<String>,
 }
 
 /// 组件声明的资源需求。

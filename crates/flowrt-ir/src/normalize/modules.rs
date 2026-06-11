@@ -6,10 +6,11 @@ use flowrt_rsdl::{
 };
 
 use crate::{
-    ComponentIr, ComponentKind, EntityId, FieldIr, IoBoundaryHealth, IoBoundaryIr,
-    IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError, LanguageKind, LifecycleSurface,
-    ModuleIr, OperationPortIr, PortIr, ResourceDescriptorKind, ResourceDescriptorSchemaIr,
-    ResourceKind, ResourceRequirementIr, Result, ServicePortIr, TypeIr, parse_type_expr,
+    ComponentBuildIr, ComponentIr, ComponentKind, EntityId, FieldIr, IoBoundaryHealth,
+    IoBoundaryIr, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError, LanguageKind,
+    LifecycleSurface, ModuleIr, OperationPortIr, PortIr, ResourceDescriptorKind,
+    ResourceDescriptorSchemaIr, ResourceKind, ResourceRequirementIr, Result, ServicePortIr, TypeIr,
+    parse_type_expr,
 };
 
 use super::ids::entity_id;
@@ -108,6 +109,7 @@ pub(super) fn normalize_components(
                     Some(kind) => parse_component_kind(&format!("component.{name}.kind"), kind)?,
                     None => ComponentKind::Native,
                 },
+                build: normalize_component_build(raw),
                 inputs: normalize_ports(&raw.input, resolver, current_module)?,
                 outputs: normalize_ports(&raw.output, resolver, current_module)?,
                 service_clients: normalize_service_ports(
@@ -141,6 +143,12 @@ pub(super) fn normalize_components(
             components.sort_by(|left, right| left.qualified_name.cmp(&right.qualified_name));
             components
         })
+}
+
+fn normalize_component_build(raw: &RawComponent) -> ComponentBuildIr {
+    let mut pkg_config = raw.build.pkg_config.clone();
+    pkg_config.sort();
+    ComponentBuildIr { pkg_config }
 }
 
 pub(super) fn normalize_ports(

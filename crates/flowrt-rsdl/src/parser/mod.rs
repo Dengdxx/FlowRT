@@ -317,6 +317,40 @@ backends = ["zenoh"]
     }
 
     #[test]
+    fn parses_component_build_pkg_config_dependencies() {
+        let document = parse_str(
+            r#"
+[package]
+name = "cpp_sdk_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.camera]
+language = "cpp"
+kind = "io_boundary"
+output = ["sample:Sample"]
+
+[component.camera.build]
+pkg_config = ["rpicam_app", "libcamera"]
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#,
+        )
+        .unwrap();
+
+        let camera = &document.components["camera"];
+        assert_eq!(camera.build.pkg_config, vec!["rpicam_app", "libcamera"]);
+    }
+
+    #[test]
     fn parses_io_boundary_resource_descriptor_tables() {
         let document = parse_str(
             r#"
