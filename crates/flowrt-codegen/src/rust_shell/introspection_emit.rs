@@ -6,6 +6,7 @@ use crate::runtime_plan::{
     BindRuntimePlan, BridgeRuntimePlan, active_binds_for_instances, runtime_channel_message_type,
     runtime_channel_name, runtime_channel_probe_capacity,
 };
+use crate::rust_shell::backend_emit::input_revision_local;
 
 pub(super) fn emit_rust_introspection_helpers(
     include_channel_helpers: bool,
@@ -232,7 +233,7 @@ pub(super) fn rust_input_read_record_for_bind(
         input,
         &runtime_channel_name(bind),
         &runtime_channel_message_type(bind),
-        &format!("self.{}.revision()", bind.field_name),
+        &input_revision_local(input),
     )
 }
 
@@ -246,7 +247,7 @@ pub(super) fn rust_input_read_record_for_bridge(
         input,
         &bridge.name,
         &bridge.source_type.canonical_syntax(),
-        &format!("self.{}.revision()", bridge.field_name),
+        &input_revision_local(input),
     )
 }
 

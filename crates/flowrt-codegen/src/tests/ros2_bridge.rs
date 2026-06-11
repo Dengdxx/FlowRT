@@ -202,7 +202,7 @@ backends = ["zenoh"]
     assert!(rust_shell.contains("flowrt::zenoh::ZenohPubSub<Pose>"));
     assert!(rust_shell.contains("let _ = self.ros2_bridge_2.receive_latest_at(tick_time_ms);"));
     assert!(rust_shell.contains("let pose = self.ros2_bridge_2.cached_latest_at(tick_time_ms);"));
-    assert!(rust_shell.contains("self.ros2_bridge_2.revision()"));
+    assert!(rust_shell.contains("let __flowrt_pose_revision = self.ros2_bridge_2.revision();"));
     assert!(rust_shell.contains("name: \"ros2_bridge_1\".to_string(),"));
     assert!(rust_shell.contains("from: \"source.pose\".to_string(),"));
     assert!(rust_shell.contains("to: \"ros2:/flowrt/pose\".to_string(),"));
@@ -222,7 +222,7 @@ backends = ["zenoh"]
         )
     );
     assert!(rust_shell.contains(
-        "record_introspection_input_read(&introspection_state, \"sink.main.pose\", \"sink.main\", \"pose\", \"ros2_bridge_2\", \"Pose\", &pose, self.ros2_bridge_2.revision(), tick_time_ms);"
+        "record_introspection_input_read(&introspection_state, \"sink.main.pose\", \"sink.main\", \"pose\", \"ros2_bridge_2\", \"Pose\", &pose, __flowrt_pose_revision, tick_time_ms);"
     ));
     assert!(!rust_shell.contains("task input `sink.pose` has no incoming bind"));
 }

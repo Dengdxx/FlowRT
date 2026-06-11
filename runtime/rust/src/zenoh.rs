@@ -361,6 +361,25 @@ where
         Ok(self.cached_latest_at(now_ms))
     }
 
+    /// 接收当前 latest view，并同时返回接收后的修订号。
+    pub fn receive_latest_with_revision_at(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<(Latest<'_, T>, u64), ZenohError> {
+        self.ensure_ready("receive Zenoh sample")?;
+        if self.config.is_latest() {
+            while let Some(sample) = self.try_receive_sample_with_recovery()? {
+                self.received = Some(decode_sample(sample)?);
+                self.revision = self.revision.saturating_add(1);
+            }
+        } else if let Some(sample) = self.try_receive_sample_with_recovery()? {
+            self.received = Some(decode_sample(sample)?);
+            self.revision = self.revision.saturating_add(1);
+        }
+        let revision = self.revision;
+        Ok((self.cached_latest_at(now_ms), revision))
+    }
+
     /// 返回最近一次已接收样本的 cached latest view，不触碰 transport。
     pub fn cached_latest_at(&self, now_ms: u64) -> Latest<'_, T> {
         let stale = self

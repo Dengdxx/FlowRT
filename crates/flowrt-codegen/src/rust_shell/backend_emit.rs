@@ -78,34 +78,39 @@ pub(super) fn runtime_channel_read(
     bind: &BindRuntimePlan,
     use_cached_transport: bool,
 ) -> String {
+    let revision = input_revision_local(input);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         if use_cached_transport {
             return format!(
-                "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n",
+                "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n",
                 input = input.name,
-                field = bind.field_name
+                field = bind.field_name,
+                revision = revision,
             );
         }
         return format!(
-            "        let {input} = match self.{field}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
+            "        let ({input}, {revision}) = match self.{field}.receive_latest_with_revision_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
             input = input.name,
-            field = bind.field_name
+            field = bind.field_name,
+            revision = revision,
         );
     }
 
     match bind.channel {
         ChannelKind::Latest => {
             format!(
-                "        let {input} = self.{field}.view_at(tick_time_ms);\n",
+                "        let {input} = self.{field}.view_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n",
                 input = input.name,
-                field = bind.field_name
+                field = bind.field_name,
+                revision = revision,
             )
         }
         ChannelKind::Fifo => {
             format!(
-                "        let {input}_read = self.{field}.pop_at(tick_time_ms);\n        let {input} = {input}_read.view();\n",
+                "        let {input}_read = self.{field}.pop_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n        let {input} = {input}_read.view();\n",
                 input = input.name,
-                field = bind.field_name
+                field = bind.field_name,
+                revision = revision,
             )
         }
     }
@@ -174,18 +179,25 @@ pub(super) fn bridge_runtime_channel_read(
     bridge: &BridgeRuntimePlan,
     use_cached_transport: bool,
 ) -> String {
+    let revision = input_revision_local(input);
     if use_cached_transport {
         return format!(
-            "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n",
+            "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n",
             input = input.name,
-            field = bridge.field_name
+            field = bridge.field_name,
+            revision = revision,
         );
     }
     format!(
-        "        let {input} = match self.{field}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
+        "        let ({input}, {revision}) = match self.{field}.receive_latest_with_revision_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
         input = input.name,
-        field = bridge.field_name
+        field = bridge.field_name,
+        revision = revision,
     )
+}
+
+pub(super) fn input_revision_local(input: &flowrt_ir::PortIr) -> String {
+    format!("__flowrt_{}_revision", input.name)
 }
 
 pub(crate) fn iox2_service_name(

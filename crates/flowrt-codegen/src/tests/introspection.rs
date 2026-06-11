@@ -136,7 +136,7 @@ backends = ["iox2"]
         "state.try_record_channel_sample_bytes(name, message_type, payload, Some(published_at_ms));"
     ));
     assert!(rust_shell.contains(&format!(
-        "record_introspection_input_read(&introspection_state, \"sensor_sink.main.sample\", \"sensor_sink.main\", \"sample\", {}, \"Sample\", &sample, self.bind_1.revision(), tick_time_ms);",
+        "record_introspection_input_read(&introspection_state, \"sensor_sink.main.sample\", \"sensor_sink.main\", \"sample\", {}, \"Sample\", &sample, __flowrt_sample_revision, tick_time_ms);",
         rust_string_literal(sensor_channel)
     )));
     assert!(rust_shell.contains(&format!(
