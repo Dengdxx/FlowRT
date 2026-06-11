@@ -231,6 +231,171 @@ input = ["sample"]
 }
 
 #[test]
+fn accepts_island_boundary_input_as_task_source() {
+    let source = r#"
+[package]
+name = "island_ok"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.dev]
+mode = "island"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "Sample"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).expect("island boundary input should satisfy task input");
+}
+
+#[test]
+fn rejects_boundary_endpoints_in_strict_profile() {
+    let source = r#"
+[package]
+name = "strict_bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[profile.default]
+mode = "strict"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "Sample"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("strict profile must reject boundary endpoints");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("strict profile `default` cannot be used with boundary endpoints")
+    }));
+}
+
+#[test]
+fn rejects_boundary_input_that_duplicates_dataflow_bind() {
+    let source = r#"
+[package]
+name = "island_bad"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.dev]
+mode = "island"
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "Sample"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir)
+        .expect_err("boundary input must not duplicate an ordinary dataflow bind");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "input port `consumer.sample` is satisfied by both a dataflow bind and boundary input",
+        )
+    }));
+}
+
+#[test]
+fn rejects_boundary_output_bound_to_input_port() {
+    let source = r#"
+[package]
+name = "island_bad_output"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[profile.dev]
+mode = "island"
+
+[[boundary.output]]
+name = "sample_out"
+port = "consumer.sample"
+type = "Sample"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("boundary output must bind an output port");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("instance `consumer` component `consumer` has no Output port `sample`")
+    }));
+}
+
+#[test]
 fn rejects_duplicate_task_inputs() {
     let source = r#"
 [package]

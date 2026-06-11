@@ -183,6 +183,14 @@ input = ["sample:Sample"]
 language = "rust"
 input = ["sample:Sample"]
 
+[component.gamma]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.delta]
+language = "rust"
+input = ["sample:Sample"]
+
 [instance.producer]
 component = "producer"
 target = "linux"
@@ -195,6 +203,17 @@ target = "linux"
 component = "beta"
 target = "linux"
 
+[instance.gamma]
+component = "gamma"
+target = "linux"
+
+[instance.delta]
+component = "delta"
+target = "linux"
+
+[profile.dev]
+mode = "island"
+
 [[bind.dataflow]]
 from = "producer.sample"
 to = "alpha.sample"
@@ -204,6 +223,16 @@ channel = "latest"
 from = "producer.sample"
 to = "beta.sample"
 channel = "latest"
+
+[[boundary.input]]
+name = "gamma_in"
+port = "gamma.sample"
+type = "Sample"
+
+[[boundary.input]]
+name = "delta_in"
+port = "delta.sample"
+type = "Sample"
 
 [target.linux]
 runtime = ["cpp", "rust"]
@@ -215,6 +244,7 @@ backends = ["inproc", "iox2"]
 
     ir.package.imports[0].patterns.reverse();
     ir.graphs[0].binds.reverse();
+    ir.graphs[0].boundary_endpoints.reverse();
     ir.targets[0].runtime.reverse();
     ir.targets[0].backends.reverse();
 
@@ -222,6 +252,7 @@ backends = ["inproc", "iox2"]
     for expected in [
         "package import `types` patterns must use canonical sorted order",
         "graph `default` binds must use canonical endpoint order",
+        "graph `default` boundary endpoints must use canonical direction/name order",
         "target `linux` runtime must use canonical sorted order",
         "target `linux` backends must use canonical sorted order",
     ] {

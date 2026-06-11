@@ -14,9 +14,11 @@ fail-fast 检查 target SDK / pkg-config 可见性，并在成功后输出 targe
 SDK overlay、pkg-config 模块和最终二进制 summary。
 
 `dev/v0.9.0` 已开始推进 Island Mode / Boundary Endpoint 主线。当前已接入 RSDL
-语法和 Contract IR normalization：profile mode canonical 为 `strict` 或 `island`；
-graph 级 `BoundaryEndpointIr` 记录 stable id、name、direction、真实 `instance.port`
-引用和解析后的 `TypeExpr`，并按方向和名称稳定排序。strict/island 拓扑规则、
+语法、Contract IR normalization 和 validator 拓扑规则：profile mode canonical 为
+`strict` 或 `island`；graph 级 `BoundaryEndpointIr` 记录 stable id、name、direction、
+真实 `instance.port` 引用和解析后的 `TypeExpr`，并按方向和名称稳定排序；strict
+profile 拒绝 boundary endpoint，island profile 下 typed boundary input 可以满足 task
+active input，但同一 input port 不允许同时由 dataflow bind 和 boundary input 满足。
 self-description/manifest/status、runtime primitive、codegen、CLI `flowrt pub`、ROS2/zenoh
 adapter、demo 和 release gate 仍在 `v0.9.0` 后续切片中推进。
 

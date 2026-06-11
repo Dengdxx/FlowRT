@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION, ChannelEdgeIr, ContractIr, EntityId, EntityRef,
-    LanguageKind, OperationEdgeIr, RSDL_VERSION,
+    BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
+    ChannelEdgeIr, ContractIr, EntityId, EntityRef, LanguageKind, OperationEdgeIr, RSDL_VERSION,
 };
 
 use crate::ValidationError;
@@ -76,6 +76,9 @@ pub(crate) fn validate_contract_canonical_fields(
         }
         for operation in &graph.operations {
             validate_entity_id_shape("operation id", "operation", &operation.id, errors);
+        }
+        for endpoint in &graph.boundary_endpoints {
+            validate_entity_id_shape("boundary endpoint id", "boundary", &endpoint.id, errors);
         }
         for bridge in &graph.ros2_bridges {
             validate_entity_id_shape("ROS2 bridge id", "bridge", &bridge.id, errors);
@@ -259,6 +262,14 @@ pub(crate) fn validate_contract_canonical_ordering(
                 graph.name
             )));
         }
+        if !graph.boundary_endpoints.windows(2).all(|pair| {
+            boundary_endpoint_canonical_key(&pair[0]) <= boundary_endpoint_canonical_key(&pair[1])
+        }) {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` boundary endpoints must use canonical direction/name order",
+                graph.name
+            )));
+        }
         if !graph
             .ros2_bridges
             .windows(2)
@@ -375,6 +386,22 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
             graph.ros2_bridges.iter().map(|bridge| bridge.name.as_str()),
             errors,
         );
+        for direction in [BoundaryDirection::Input, BoundaryDirection::Output] {
+            let direction_name = match direction {
+                BoundaryDirection::Input => "boundary input",
+                BoundaryDirection::Output => "boundary output",
+            };
+            validate_unique_names(
+                &format!("graph `{}`", graph.name),
+                direction_name,
+                graph
+                    .boundary_endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.direction == direction)
+                    .map(|endpoint| endpoint.name.as_str()),
+                errors,
+            );
+        }
     }
 }
 
@@ -456,6 +483,14 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
                     operation.server.instance.name,
                     operation.server.port
                 ),
+                errors,
+            );
+        }
+        for endpoint in &graph.boundary_endpoints {
+            record_entity_id(
+                &mut seen,
+                &endpoint.id,
+                format!("boundary endpoint `{}`", endpoint.name),
                 errors,
             );
         }
@@ -632,6 +667,16 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
                 errors,
             );
         }
+
+        for endpoint in &graph.boundary_endpoints {
+            validate_named_entity_ref(
+                &format!("boundary endpoint `{}` instance reference", endpoint.name),
+                "instance",
+                &endpoint.port.instance,
+                &instance_ids,
+                errors,
+            );
+        }
     }
 
     for deployment in &ir.deployments {
@@ -739,6 +784,10 @@ fn operation_canonical_key(operation: &OperationEdgeIr) -> (&str, &str, &str, &s
         operation.server.instance.name.as_str(),
         operation.server.port.as_str(),
     )
+}
+
+fn boundary_endpoint_canonical_key(endpoint: &BoundaryEndpointIr) -> (BoundaryDirection, &str) {
+    (endpoint.direction, endpoint.name.as_str())
 }
 
 fn task_canonical_key(task: &flowrt_ir::TaskIr) -> (&str, &str) {

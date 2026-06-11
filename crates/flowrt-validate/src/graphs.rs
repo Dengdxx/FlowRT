@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use flowrt_ir::{
-    BackendName, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr, InstanceIr, LanguageKind,
-    OperationConcurrencyPolicy, OperationPortIr, OperationPortRef, OperationPreemptPolicy, PortIr,
-    PortRef, PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr,
-    ServicePortRef, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
+    GraphMode, InstanceIr, LanguageKind, OperationConcurrencyPolicy, OperationPortIr,
+    OperationPortRef, OperationPreemptPolicy, PortIr, PortRef, PrimitiveType, ProcessReadinessGate,
+    Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr, TaskReadiness, TriggerKind,
+    TypeExpr,
 };
 
 use crate::ValidationError;
@@ -34,7 +35,9 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_process_targets(graph, errors);
         validate_process_orchestration(graph, errors);
         validate_external_processes(&components, graph, errors);
-        validate_tasks(&components, &instances, graph, errors);
+        validate_boundary_mode(ir, graph, errors);
+        validate_boundary_endpoints(&components, &instances, graph, errors);
+        validate_tasks(ir, &components, &instances, graph, errors);
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
         validate_service_binds(&components, &instances, graph, errors);
@@ -617,7 +620,58 @@ fn validate_process_targets(graph: &GraphIr, errors: &mut Vec<ValidationError>) 
     }
 }
 
+fn validate_boundary_mode(ir: &ContractIr, graph: &GraphIr, errors: &mut Vec<ValidationError>) {
+    if graph.boundary_endpoints.is_empty() {
+        return;
+    }
+
+    for profile in &ir.profiles {
+        if profile.mode == GraphMode::Strict {
+            errors.push(ValidationError::new(format!(
+                "strict profile `{}` cannot be used with boundary endpoints",
+                profile.name
+            )));
+        }
+    }
+}
+
+fn validate_boundary_endpoints(
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut names_by_direction = BTreeSet::new();
+    for endpoint in &graph.boundary_endpoints {
+        let direction = match endpoint.direction {
+            BoundaryDirection::Input => PortDirection::Input,
+            BoundaryDirection::Output => PortDirection::Output,
+        };
+        if !names_by_direction.insert((endpoint.direction, endpoint.name.as_str())) {
+            errors.push(ValidationError::new(format!(
+                "boundary {:?} `{}` is declared more than once",
+                endpoint.direction, endpoint.name
+            )));
+        }
+        match resolve_port(components, instances, &endpoint.port, direction) {
+            Ok(port) if port.ty != endpoint.ty => {
+                errors.push(ValidationError::new(format!(
+                    "boundary endpoint `{}` type `{}` does not match port `{}.{}` type `{}`",
+                    endpoint.name,
+                    endpoint.ty.canonical_syntax(),
+                    endpoint.port.instance.name,
+                    endpoint.port.port,
+                    port.ty.canonical_syntax()
+                )));
+            }
+            Ok(_) => {}
+            Err(message) => errors.push(ValidationError::new(message)),
+        }
+    }
+}
+
 fn validate_tasks(
+    ir: &ContractIr,
     components: &BTreeMap<&str, &ComponentIr>,
     instances: &BTreeMap<&str, &InstanceIr>,
     graph: &GraphIr,
@@ -641,6 +695,22 @@ fn validate_tasks(
                 }),
         )
         .collect::<BTreeSet<_>>();
+    let boundary_inputs = graph
+        .boundary_endpoints
+        .iter()
+        .filter(|endpoint| endpoint.direction == BoundaryDirection::Input)
+        .map(|endpoint| {
+            (
+                endpoint.port.instance.id.clone(),
+                endpoint.port.port.as_str(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    validate_boundary_input_overlap(&incoming_binds, &boundary_inputs, graph, errors);
+    let island_enabled = ir
+        .profiles
+        .iter()
+        .any(|profile| profile.mode == GraphMode::Island);
 
     for task in &graph.tasks {
         if !task_names_by_instance
@@ -697,7 +767,33 @@ fn validate_tasks(
         }
 
         validate_task_ports(task, component, errors);
-        validate_task_input_binds(task, component, &incoming_binds, errors);
+        validate_task_input_binds(
+            task,
+            component,
+            &incoming_binds,
+            &boundary_inputs,
+            island_enabled,
+            errors,
+        );
+    }
+}
+
+fn validate_boundary_input_overlap(
+    incoming_binds: &BTreeSet<(EntityId, &str)>,
+    boundary_inputs: &BTreeSet<(EntityId, &str)>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (instance_id, port) in incoming_binds.intersection(boundary_inputs) {
+        let instance_name = graph
+            .instances
+            .iter()
+            .find(|instance| instance.id == *instance_id)
+            .map(|instance| instance.name.as_str())
+            .unwrap_or("<unknown>");
+        errors.push(ValidationError::new(format!(
+            "input port `{instance_name}.{port}` is satisfied by both a dataflow bind and boundary input"
+        )));
     }
 }
 
@@ -749,6 +845,8 @@ fn validate_task_input_binds(
     task: &TaskIr,
     component: &ComponentIr,
     incoming_binds: &BTreeSet<(EntityId, &str)>,
+    boundary_inputs: &BTreeSet<(EntityId, &str)>,
+    island_enabled: bool,
     errors: &mut Vec<ValidationError>,
 ) {
     let input_ports = component
@@ -761,7 +859,10 @@ fn validate_task_input_binds(
         if !input_ports.contains(input.as_str()) {
             continue;
         }
-        if !incoming_binds.contains(&(task.instance.id.clone(), input.as_str())) {
+        let key = (task.instance.id.clone(), input.as_str());
+        let has_incoming_bind = incoming_binds.contains(&key);
+        let has_boundary_input = island_enabled && boundary_inputs.contains(&key);
+        if !has_incoming_bind && !has_boundary_input {
             errors.push(ValidationError::new(format!(
                 "task input `{}.{}` has no incoming bind",
                 task.instance.name, input
