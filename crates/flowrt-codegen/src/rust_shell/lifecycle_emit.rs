@@ -395,14 +395,16 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         output.push_str("        }\n");
     }
     output.push_str(&scheduler_emit::emit_rust_scheduler_v2_loop(
-        emission.contract,
-        emission.graph,
-        emission.order,
-        emission.binds,
-        emission.bridges,
-        emission.boundaries,
-        emission.process,
-        emission.steps.scheduler,
+        scheduler_emit::RustSchedulerLoopEmission {
+            contract: emission.contract,
+            graph: emission.graph,
+            order: emission.order,
+            binds: emission.binds,
+            bridges: emission.bridges,
+            boundaries: emission.boundaries,
+            process: emission.process,
+            fallback_step_function: emission.steps.scheduler,
+        },
     ));
     output.push_str(&format!(
         "        if status == flowrt::Status::Ok {{\n            status = self.{shutdown_function_name}(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }}\n",

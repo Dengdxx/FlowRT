@@ -110,16 +110,28 @@ pub(super) fn emit_process_step_functions(
     }
 }
 
-pub(super) fn emit_rust_scheduler_v2_loop(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    order: &[&InstanceIr],
-    binds: &[BindRuntimePlan],
-    bridges: &[BridgeRuntimePlan],
-    boundaries: &[BoundaryRuntimePlan],
-    process: Option<&ProcessRuntimePlan<'_>>,
-    fallback_step_function: &str,
-) -> String {
+pub(super) struct RustSchedulerLoopEmission<'a> {
+    pub(super) contract: &'a ContractIr,
+    pub(super) graph: &'a GraphIr,
+    pub(super) order: &'a [&'a InstanceIr],
+    pub(super) binds: &'a [BindRuntimePlan],
+    pub(super) bridges: &'a [BridgeRuntimePlan],
+    pub(super) boundaries: &'a [BoundaryRuntimePlan],
+    pub(super) process: Option<&'a ProcessRuntimePlan<'a>>,
+    pub(super) fallback_step_function: &'a str,
+}
+
+pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_>) -> String {
+    let RustSchedulerLoopEmission {
+        contract,
+        graph,
+        order,
+        binds,
+        bridges,
+        boundaries,
+        process,
+        fallback_step_function,
+    } = emission;
     let tasks = scheduler_tasks_for_order(graph, order);
     let mut output = String::new();
     output.push_str(&format!(
