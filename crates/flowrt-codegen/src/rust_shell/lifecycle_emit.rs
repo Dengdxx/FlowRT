@@ -2,7 +2,10 @@ use flowrt_ir::{
     ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness, ResourceKind,
 };
 
-use crate::runtime_plan::{BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, bind_backend};
+use crate::runtime_plan::{
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan,
+    active_boundaries_for_instances, bind_backend,
+};
 
 use super::backend_emit;
 use super::operation_emit;
@@ -15,6 +18,7 @@ pub(super) fn emit_rust_app_new(
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
     dataflow_lane_count: usize,
 ) -> String {
     let mut output = String::new();
@@ -113,6 +117,16 @@ pub(super) fn emit_rust_app_new(
             backend_emit::bridge_runtime_channel_initializer(contract, graph, bridge)
         ));
     }
+    for boundary in active_boundaries_for_instances(boundaries, order) {
+        let initializer = match boundary.direction {
+            flowrt_ir::BoundaryDirection::Input => "flowrt::BoundaryInput::new()",
+            flowrt_ir::BoundaryDirection::Output => "flowrt::BoundaryOutput::new()",
+        };
+        output.push_str(&format!(
+            "            {}: {},\n",
+            boundary.field_name, initializer
+        ));
+    }
     // service field initializers
     let (_service_registration, service_initializers) =
         service_emit::emit_rust_service_new(contract, graph, dataflow_lane_count);
@@ -148,6 +162,7 @@ pub(super) fn emit_rust_app_run(
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
@@ -167,6 +182,7 @@ pub(super) fn emit_rust_app_run(
         order,
         binds,
         bridges,
+        boundaries,
         graph,
         process: None,
         process_name: "main",
@@ -196,6 +212,7 @@ pub(super) fn emit_process_run_functions(
     graph: &GraphIr,
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
     processes: &[ProcessRuntimePlan<'_>],
     output: &mut String,
 ) {
@@ -221,6 +238,7 @@ pub(super) fn emit_process_run_functions(
             order: &process.instances,
             binds,
             bridges,
+            boundaries,
             graph,
             process: Some(process),
             process_name: &process.name,
@@ -244,6 +262,7 @@ struct RustRunFunctionEmission<'a> {
     order: &'a [&'a InstanceIr],
     binds: &'a [BindRuntimePlan],
     bridges: &'a [BridgeRuntimePlan],
+    boundaries: &'a [BoundaryRuntimePlan],
     graph: &'a GraphIr,
     process: Option<&'a ProcessRuntimePlan<'a>>,
     process_name: &'a str,
@@ -264,6 +283,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     output.push_str("        let scheduler_events = flowrt::ScheduleWaiter::new();\n");
     output.push_str(&scheduler_emit::emit_rust_scheduler_event_registration(
         emission.binds,
+        emission.boundaries,
     ));
     output.push_str(
         "        introspection_state.set_self_description_json(selfdesc::self_description_json());\n",
@@ -375,6 +395,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         emission.order,
         emission.binds,
         emission.bridges,
+        emission.boundaries,
         emission.process,
         emission.steps.scheduler,
     ));

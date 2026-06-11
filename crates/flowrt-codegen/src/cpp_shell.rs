@@ -9,13 +9,14 @@ use flowrt_ir::{
 
 use crate::messages::cpp_type;
 use crate::runtime_plan::{
-    BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
-    active_binds_for_instances, bind_backend, bind_runtime_plans, bridge_runtime_plans,
-    incoming_bind_index_map, incoming_bridge_index_map, indent_generated_block,
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    active_binds_for_instances, active_boundaries_for_instances, bind_backend, bind_runtime_plans,
+    boundary_runtime_plans, bridge_runtime_plans, incoming_bind_index_map,
+    incoming_boundary_index_map, incoming_bridge_index_map, indent_generated_block,
     indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
-    outgoing_bind_indices_map, outgoing_bridge_indices_map, process_runtime_plans,
-    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
-    runtime_param_name, step_indent,
+    outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
+    process_runtime_plans, runtime_channel_message_type, runtime_channel_name,
+    runtime_channel_probe_capacity, runtime_param_name, step_indent,
 };
 use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
@@ -147,10 +148,13 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
+    let boundary_plans = boundary_runtime_plans(graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
     let incoming_bridge_index = incoming_bridge_index_map(&bridge_plans);
+    let incoming_boundary_index = incoming_boundary_index_map(&boundary_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
     let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
+    let outgoing_boundary_indices = outgoing_boundary_indices_map(&boundary_plans);
     let selected_backend = selected_backend_name(contract);
 
     let mut output = managed_header();
@@ -176,10 +180,13 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         graph,
         binds: &bind_plans,
         bridges: &bridge_plans,
+        boundaries: &boundary_plans,
         incoming_bind_index: &incoming_bind_index,
         incoming_bridge_index: &incoming_bridge_index,
+        incoming_boundary_index: &incoming_boundary_index,
         outgoing_bind_indices: &outgoing_bind_indices,
         outgoing_bridge_indices: &outgoing_bridge_indices,
+        outgoing_boundary_indices: &outgoing_boundary_indices,
     };
     output.push_str(&emit_cpp_app_step(
         &step_emission,
@@ -279,6 +286,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         order: &order,
         binds: &bind_plans,
         bridges: &bridge_plans,
+        boundaries: &boundary_plans,
         graph,
         process: None,
         package_name: &contract.package.name,
@@ -299,6 +307,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             order: &process.instances,
             binds: &bind_plans,
             bridges: &bridge_plans,
+            boundaries: &boundary_plans,
             graph,
             process: Some(process),
             package_name: &contract.package.name,
@@ -326,6 +335,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
+    let boundary_plans = boundary_runtime_plans(graph);
 
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
@@ -418,6 +428,14 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             cpp_bridge_runtime_channel_type(bridge),
             bridge.field_name
         ));
+    }
+    for boundary in active_boundaries_for_instances(&boundary_plans, &order) {
+        let ty = cpp_type(&boundary.ty);
+        let field_ty = match boundary.direction {
+            flowrt_ir::BoundaryDirection::Input => format!("flowrt::BoundaryInput<{ty}>"),
+            flowrt_ir::BoundaryDirection::Output => format!("flowrt::BoundaryOutput<{ty}>"),
+        };
+        output.push_str(&format!("    {} {}_;\n", field_ty, boundary.field_name));
     }
     // service client/server fields
     for plan in &service_plans {
@@ -805,10 +823,13 @@ struct CppStepEmission<'a> {
     graph: &'a GraphIr,
     binds: &'a [BindRuntimePlan],
     bridges: &'a [BridgeRuntimePlan],
+    boundaries: &'a [BoundaryRuntimePlan],
     incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     incoming_bridge_index: &'a BTreeMap<(String, String), usize>,
+    incoming_boundary_index: &'a BTreeMap<(String, String), usize>,
     outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+    outgoing_boundary_indices: &'a BTreeMap<(String, String), Vec<usize>>,
 }
 
 fn emit_cpp_app_step(
@@ -822,7 +843,7 @@ fn emit_cpp_app_step(
     output.push_str(&format!(
         "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
     ));
-    if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges) {
+    if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str(
             "    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n    (void)tick_time_ms;\n",
         );
@@ -907,6 +928,15 @@ fn emit_cpp_app_step(
                                 &input_local,
                                 task.trigger == flowrt_ir::TriggerKind::OnMessage,
                             ),
+                            true,
+                        ));
+                    } else if let Some(boundary_index) = emission
+                        .incoming_boundary_index
+                        .get(&(instance.name.clone(), input.name.clone()))
+                    {
+                        let boundary = &emission.boundaries[*boundary_index];
+                        output.push_str(&indent_generated_block(
+                            &cpp_boundary_input_read(boundary, &input_local),
                             true,
                         ));
                     } else {
@@ -1031,7 +1061,13 @@ fn emit_cpp_app_step(
                     .get(&(instance.name.clone(), port.name.clone()))
                     .cloned()
                     .unwrap_or_default();
-                if outgoing.is_empty() && bridge_outgoing.is_empty() {
+                let boundary_outgoing = emission
+                    .outgoing_boundary_indices
+                    .get(&(instance.name.clone(), port.name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if outgoing.is_empty() && bridge_outgoing.is_empty() && boundary_outgoing.is_empty()
+                {
                     continue;
                 }
                 let publish_indent = if has_deadline {
@@ -1055,6 +1091,13 @@ fn emit_cpp_app_step(
                     let bridge = &emission.bridges[bridge_index];
                     output.push_str(&indent_generated_block_levels(
                         &cpp_bridge_runtime_channel_write(bridge),
+                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                    ));
+                }
+                for boundary_index in boundary_outgoing {
+                    let boundary = &emission.boundaries[boundary_index];
+                    output.push_str(&indent_generated_block_levels(
+                        &cpp_boundary_output_write(boundary),
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
@@ -1100,6 +1143,7 @@ struct CppRunEmission<'a> {
     order: &'a [&'a InstanceIr],
     binds: &'a [BindRuntimePlan],
     bridges: &'a [BridgeRuntimePlan],
+    boundaries: &'a [BoundaryRuntimePlan],
     graph: &'a GraphIr,
     process: Option<&'a ProcessRuntimePlan<'a>>,
     package_name: &'a str,
@@ -1116,7 +1160,10 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     output.push_str("    auto shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
     output.push_str("    flowrt::ScheduleWaiter scheduler_events;\n");
-    output.push_str(&emit_cpp_scheduler_event_registration(run.binds));
+    output.push_str(&emit_cpp_scheduler_event_registration(
+        run.binds,
+        run.boundaries,
+    ));
     output.push_str(
         "    introspection_state.set_self_description_json(std::string{flowrt_app::self_description_json()});\n",
     );
@@ -1336,6 +1383,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         &tasks,
         run.binds,
         run.bridges,
+        run.boundaries,
     ));
     output.push_str(&format!(
         "    const auto scheduler_base_period_ms = std::uint64_t{{{}}};\n",
@@ -1366,7 +1414,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "        introspection_state.record_tick();\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
     ));
     output.push_str(&indent_generated_block_levels(
-        &emit_cpp_on_message_wake_checks(&tasks, run.binds, run.bridges),
+        &emit_cpp_on_message_wake_checks(&tasks, run.binds, run.bridges, run.boundaries),
         1,
     ));
     // service wake checks
@@ -1467,7 +1515,10 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     output
 }
 
-fn emit_cpp_scheduler_event_registration(binds: &[BindRuntimePlan]) -> String {
+fn emit_cpp_scheduler_event_registration(
+    binds: &[BindRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
     let mut output = String::new();
     for bind in binds
         .iter()
@@ -1476,6 +1527,15 @@ fn emit_cpp_scheduler_event_registration(binds: &[BindRuntimePlan]) -> String {
         output.push_str(&format!(
             "    {field}_.set_schedule_waiter(scheduler_events);\n",
             field = bind.field_name
+        ));
+    }
+    for boundary in boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
+    {
+        output.push_str(&format!(
+            "    {field}_.set_schedule_waiter(scheduler_events);\n",
+            field = boundary.field_name
         ));
     }
     output
@@ -1615,6 +1675,18 @@ fn cpp_bridge_seen_revision_name(bridge: &BridgeRuntimePlan, task: &flowrt_ir::T
     )
 }
 
+fn cpp_boundary_seen_revision_name(
+    boundary: &BoundaryRuntimePlan,
+    task: &flowrt_ir::TaskIr,
+) -> String {
+    format!(
+        "{}_seen_revision_for_{}_{}",
+        boundary.field_name,
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
 fn cpp_input_binds_for_task<'a>(
     task: &flowrt_ir::TaskIr,
     binds: &'a [BindRuntimePlan],
@@ -1645,10 +1717,27 @@ fn cpp_input_bridges_for_task<'a>(
         .collect()
 }
 
+fn cpp_input_boundaries_for_task<'a>(
+    task: &flowrt_ir::TaskIr,
+    boundaries: &'a [BoundaryRuntimePlan],
+) -> Vec<&'a BoundaryRuntimePlan> {
+    task.inputs
+        .iter()
+        .filter_map(|input| {
+            boundaries.iter().find(|boundary| {
+                boundary.direction == flowrt_ir::BoundaryDirection::Input
+                    && boundary.instance == task.instance.name
+                    && boundary.port == *input
+            })
+        })
+        .collect()
+}
+
 fn emit_cpp_on_message_revision_state(
     tasks: &[&flowrt_ir::TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for task in tasks
@@ -1668,6 +1757,12 @@ fn emit_cpp_on_message_revision_state(
                 seen = cpp_bridge_seen_revision_name(bridge, task)
             ));
         }
+        for boundary in cpp_input_boundaries_for_task(task, boundaries) {
+            output.push_str(&format!(
+                "    std::uint64_t {seen} = 0;\n",
+                seen = cpp_boundary_seen_revision_name(boundary, task)
+            ));
+        }
     }
     output
 }
@@ -1676,6 +1771,7 @@ fn emit_cpp_on_message_wake_checks(
     tasks: &[&flowrt_ir::TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for (index, task) in tasks.iter().enumerate() {
@@ -1684,7 +1780,8 @@ fn emit_cpp_on_message_wake_checks(
         }
         let input_binds = cpp_input_binds_for_task(task, binds);
         let input_bridges = cpp_input_bridges_for_task(task, bridges);
-        if input_binds.is_empty() && input_bridges.is_empty() {
+        let input_boundaries = cpp_input_boundaries_for_task(task, boundaries);
+        if input_binds.is_empty() && input_bridges.is_empty() && input_boundaries.is_empty() {
             continue;
         }
         for bind in &input_binds {
@@ -1726,6 +1823,13 @@ fn emit_cpp_on_message_wake_checks(
                 seen = cpp_bridge_seen_revision_name(bridge, task)
             )
         }));
+        checks.extend(input_boundaries.iter().map(|boundary| {
+            format!(
+                "{field}_.revision() != {seen}",
+                field = boundary.field_name,
+                seen = cpp_boundary_seen_revision_name(boundary, task)
+            )
+        }));
         let joiner = match task.readiness {
             flowrt_ir::TaskReadiness::AnyReady => " || ",
             flowrt_ir::TaskReadiness::AllReady => " && ",
@@ -1743,6 +1847,13 @@ fn emit_cpp_on_message_wake_checks(
                 "            {seen} = {field}_.revision();\n",
                 seen = cpp_bridge_seen_revision_name(bridge, task),
                 field = bridge.field_name
+            ));
+        }
+        for boundary in &input_boundaries {
+            output.push_str(&format!(
+                "            {seen} = {field}_.revision();\n",
+                seen = cpp_boundary_seen_revision_name(boundary, task),
+                field = boundary.field_name
             ));
         }
         output.push_str(&format!(
@@ -2034,13 +2145,29 @@ fn cpp_bridge_runtime_channel_read(
 fn cpp_runtime_step_uses_tick_time(
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> bool {
-    if !bridges.is_empty() {
+    if !bridges.is_empty() || !boundaries.is_empty() {
         return true;
     }
     binds
         .iter()
         .any(|bind| matches!(bind.channel, ChannelKind::Latest | ChannelKind::Fifo))
+}
+
+fn cpp_boundary_input_read(boundary: &BoundaryRuntimePlan, local_name: &str) -> String {
+    format!(
+        "    const auto {local}_read = {field}_.read_at(tick_time_ms);\n    const auto {local} = {local}_read.view();\n",
+        local = local_name,
+        field = boundary.field_name,
+    )
+}
+
+fn cpp_boundary_output_write(boundary: &BoundaryRuntimePlan) -> String {
+    format!(
+        "        {field}_.publish_at(*value, tick_time_ms);\n",
+        field = boundary.field_name,
+    )
 }
 
 fn cpp_backend_factory(selected_backend: &str) -> &'static str {

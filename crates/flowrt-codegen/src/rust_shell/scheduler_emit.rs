@@ -1,7 +1,7 @@
 use flowrt_ir::{ContractIr, GraphIr, InstanceIr, TaskIr, TriggerKind};
 
 use crate::runtime_plan::{
-    BindRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
 };
 use crate::{scheduler_tasks_for_order, selected_profile_worker_threads};
 
@@ -116,6 +116,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(
     order: &[&InstanceIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
     process: Option<&ProcessRuntimePlan<'_>>,
     fallback_step_function: &str,
 ) -> String {
@@ -166,7 +167,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         );
     output.push_str(&operation_lanes);
     output.push_str(&operation_tasks);
-    output.push_str(&emit_rust_on_message_revision_state(&tasks, binds, bridges));
+    output.push_str(&emit_rust_on_message_revision_state(
+        &tasks, binds, bridges, boundaries,
+    ));
     output.push_str(&format!(
         "        let scheduler_base_period_ms: u64 = {};\n",
         scheduler_base_period_ms(&tasks)
@@ -196,7 +199,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(
         "            introspection_state.record_tick();\n            loop {{\n                observed_data_generation = scheduler_events.data_generation();\n                {woke_on_message_decl}\n"
     ));
     output.push_str(&crate::runtime_plan::indent_generated_block_levels(
-        &emit_rust_on_message_wake_checks(&tasks, binds, bridges),
+        &emit_rust_on_message_wake_checks(&tasks, binds, bridges, boundaries),
         1,
     ));
     // service wake checks
@@ -259,7 +262,10 @@ pub(super) fn emit_rust_scheduler_v2_loop(
     output
 }
 
-pub(super) fn emit_rust_scheduler_event_registration(binds: &[BindRuntimePlan]) -> String {
+pub(super) fn emit_rust_scheduler_event_registration(
+    binds: &[BindRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
     let mut output = String::new();
     for bind in binds
         .iter()
@@ -268,6 +274,15 @@ pub(super) fn emit_rust_scheduler_event_registration(binds: &[BindRuntimePlan]) 
         output.push_str(&format!(
             "        self.{field}.set_schedule_waiter(scheduler_events.clone());\n",
             field = bind.field_name
+        ));
+    }
+    for boundary in boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
+    {
+        output.push_str(&format!(
+            "        self.{field}.set_schedule_waiter(scheduler_events.clone());\n",
+            field = boundary.field_name
         ));
     }
     output

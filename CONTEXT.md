@@ -24,8 +24,10 @@ self-description 和 launch manifest 已暴露 profile/graph mode 与 typed
 每个 boundary input/output 的绑定端点。Rust/C++ runtime 已提供显式
 `BoundaryInput` / `BoundaryOutput` primitive：boundary input 使用 latest snapshot 注入、
 revision、stale policy 和 scheduler waiter 唤醒；boundary output 使用 sink guard 自动
-回收临时观测。codegen boundary 接线、CLI `flowrt pub`、ROS2/zenoh adapter、demo 和
-release gate 仍在 `v0.9.0` 后续切片中推进。
+回收临时观测。Rust/C++ generated runtime shell 已接入 boundary primitive：island
+boundary input 会参与 `on_message` revision/wake 和 task 输入读取，boundary output 会在
+用户输出后发布到显式 sink，strict 生成物不携带 boundary 字段。CLI `flowrt pub`、
+ROS2/zenoh adapter、demo 和 release gate 仍在 `v0.9.0` 后续切片中推进。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、

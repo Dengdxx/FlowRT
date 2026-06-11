@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, ChannelBackendSource, ChannelKind, ContractIr, GraphIr, InstanceIr,
-    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
+    BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr, GraphIr,
+    InstanceIr, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
     OverflowPolicy as IrOverflowPolicy, ParamIr, Ros2BridgeDirection, Ros2BridgeIr,
     ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness, TriggerKind,
     TypeExpr,
@@ -145,6 +145,17 @@ pub(crate) struct BridgeRuntimePlan {
     pub(crate) field: String,
 }
 
+/// island boundary endpoint 的 codegen 计划。
+#[derive(Debug, Clone)]
+pub(crate) struct BoundaryRuntimePlan {
+    pub(crate) index: usize,
+    pub(crate) field_name: String,
+    pub(crate) direction: BoundaryDirection,
+    pub(crate) ty: TypeExpr,
+    pub(crate) instance: String,
+    pub(crate) port: String,
+}
+
 pub(crate) fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<ProcessRuntimePlan<'a>> {
     let mut by_process = BTreeMap::<String, Vec<&'a InstanceIr>>::new();
     for &instance in order {
@@ -221,6 +232,28 @@ pub(crate) fn bridge_runtime_plans(
         .iter()
         .enumerate()
         .map(|(index, bridge)| bridge_runtime_plan(contract, graph, index, bridge))
+        .collect()
+}
+
+pub(crate) fn boundary_runtime_plans(graph: &GraphIr) -> Vec<BoundaryRuntimePlan> {
+    graph
+        .boundary_endpoints
+        .iter()
+        .enumerate()
+        .map(|(index, endpoint)| {
+            let prefix = match endpoint.direction {
+                BoundaryDirection::Input => "boundary_input",
+                BoundaryDirection::Output => "boundary_output",
+            };
+            BoundaryRuntimePlan {
+                index,
+                field_name: format!("{prefix}_{}", snake_identifier(&endpoint.name)),
+                direction: endpoint.direction,
+                ty: endpoint.ty.clone(),
+                instance: endpoint.port.instance.name.clone(),
+                port: endpoint.port.port.clone(),
+            }
+        })
         .collect()
 }
 
@@ -310,6 +343,31 @@ pub(crate) fn incoming_bridge_index_map(
         .collect()
 }
 
+pub(crate) fn incoming_boundary_index_map(
+    plans: &[BoundaryRuntimePlan],
+) -> BTreeMap<(String, String), usize> {
+    plans
+        .iter()
+        .filter(|plan| plan.direction == BoundaryDirection::Input)
+        .map(|plan| ((plan.instance.clone(), plan.port.clone()), plan.index))
+        .collect()
+}
+
+pub(crate) fn outgoing_boundary_indices_map(
+    plans: &[BoundaryRuntimePlan],
+) -> BTreeMap<(String, String), Vec<usize>> {
+    let mut map = BTreeMap::new();
+    for plan in plans
+        .iter()
+        .filter(|plan| plan.direction == BoundaryDirection::Output)
+    {
+        map.entry((plan.instance.clone(), plan.port.clone()))
+            .or_insert_with(Vec::new)
+            .push(plan.index);
+    }
+    map
+}
+
 pub(crate) fn active_binds_for_instances<'a>(
     binds: &'a [BindRuntimePlan],
     order: &[&InstanceIr],
@@ -324,6 +382,20 @@ pub(crate) fn active_binds_for_instances<'a>(
             active_instances.contains(bind.source_instance.as_str())
                 || active_instances.contains(bind.target_instance.as_str())
         })
+        .collect()
+}
+
+pub(crate) fn active_boundaries_for_instances<'a>(
+    boundaries: &'a [BoundaryRuntimePlan],
+    order: &[&InstanceIr],
+) -> Vec<&'a BoundaryRuntimePlan> {
+    let active_instances = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
+    boundaries
+        .iter()
+        .filter(|boundary| active_instances.contains(boundary.instance.as_str()))
         .collect()
 }
 

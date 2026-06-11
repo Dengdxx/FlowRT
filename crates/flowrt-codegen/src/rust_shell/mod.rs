@@ -10,9 +10,10 @@ mod step_emit;
 use flowrt_ir::{ComponentIr, ContractIr, LanguageKind};
 
 use crate::runtime_plan::{
-    bind_runtime_plans, bridge_runtime_plans, contract_has_runtime_params_for_language,
-    incoming_bind_index_map, incoming_bridge_index_map, outgoing_bind_indices_map,
-    outgoing_bridge_indices_map, process_runtime_plans,
+    active_boundaries_for_instances, bind_runtime_plans, boundary_runtime_plans,
+    bridge_runtime_plans, contract_has_runtime_params_for_language, incoming_bind_index_map,
+    incoming_boundary_index_map, incoming_bridge_index_map, outgoing_bind_indices_map,
+    outgoing_boundary_indices_map, outgoing_bridge_indices_map, process_runtime_plans,
 };
 use crate::{component_by_name, component_rust_name, managed_header};
 
@@ -119,10 +120,13 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
+    let boundary_plans = boundary_runtime_plans(graph);
     let incoming_bind_index = incoming_bind_index_map(&bind_plans);
     let incoming_bridge_index = incoming_bridge_index_map(&bridge_plans);
+    let incoming_boundary_index = incoming_boundary_index_map(&boundary_plans);
     let outgoing_bind_indices = outgoing_bind_indices_map(&bind_plans);
     let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
+    let outgoing_boundary_indices = outgoing_boundary_indices_map(&boundary_plans);
     let selected_backend = selected_backend_name(contract);
 
     let mut output = managed_header();
@@ -194,6 +198,14 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
             backend_emit::bridge_runtime_channel_type(bridge)
         ));
     }
+    for boundary in active_boundaries_for_instances(&boundary_plans, &order) {
+        let ty = crate::messages::rust_type(&boundary.ty);
+        let field_ty = match boundary.direction {
+            flowrt_ir::BoundaryDirection::Input => format!("flowrt::BoundaryInput<{ty}>"),
+            flowrt_ir::BoundaryDirection::Output => format!("flowrt::BoundaryOutput<{ty}>"),
+        };
+        output.push_str(&format!("    {}: {},\n", boundary.field_name, field_ty));
+    }
     // service client/server fields
     output.push_str(&service_emit::rust_app_service_fields(contract, graph));
     output.push_str(&operation_emit::rust_app_operation_fields(contract, graph));
@@ -208,6 +220,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         &order,
         &bind_plans,
         &bridge_plans,
+        &boundary_plans,
         dataflow_lane_count,
     ));
     let service_plans_for_emission = crate::runtime_plan::service_runtime_plans(contract, graph);
@@ -227,10 +240,13 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         graph,
         binds: &bind_plans,
         bridges: &bridge_plans,
+        boundaries: &boundary_plans,
         incoming_bind_index: &incoming_bind_index,
         incoming_bridge_index: &incoming_bridge_index,
+        incoming_boundary_index: &incoming_boundary_index,
         outgoing_bind_indices: &outgoing_bind_indices,
         outgoing_bridge_indices: &outgoing_bridge_indices,
+        outgoing_boundary_indices: &outgoing_boundary_indices,
         service_server_instances: &service_server_instances,
     };
 
@@ -245,6 +261,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         &order,
         &bind_plans,
         &bridge_plans,
+        &boundary_plans,
     ));
     output.push_str(&lifecycle_emit::emit_rust_app_run_process_dispatch(
         &process_plans,
@@ -254,6 +271,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         graph,
         &bind_plans,
         &bridge_plans,
+        &boundary_plans,
         &process_plans,
         &mut output,
     );

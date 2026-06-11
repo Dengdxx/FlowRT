@@ -7,8 +7,8 @@ use flowrt_ir::{
 
 use crate::messages::rust_type;
 use crate::runtime_plan::{
-    BindRuntimePlan, BridgeRuntimePlan, TaskEmissionPhase, bind_backend, indent_generated_block,
-    indent_generated_block_levels, on_message_trigger_guard,
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, TaskEmissionPhase, bind_backend,
+    indent_generated_block, indent_generated_block_levels, on_message_trigger_guard,
 };
 use crate::{component_by_name, tasks_for_instance};
 
@@ -19,10 +19,13 @@ pub(super) struct RustStepEmission<'a> {
     pub graph: &'a GraphIr,
     pub binds: &'a [BindRuntimePlan],
     pub bridges: &'a [BridgeRuntimePlan],
+    pub boundaries: &'a [BoundaryRuntimePlan],
     pub incoming_bind_index: &'a BTreeMap<(String, String), usize>,
     pub incoming_bridge_index: &'a BTreeMap<(String, String), usize>,
+    pub incoming_boundary_index: &'a BTreeMap<(String, String), usize>,
     pub outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     pub outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
+    pub outgoing_boundary_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     /// 需要 Arc<Mutex<...>> 存储的 service / Operation server 实例名集合。
     pub service_server_instances: &'a std::collections::BTreeSet<String>,
 }
@@ -42,7 +45,7 @@ pub(super) fn emit_rust_app_step(
     output.push_str("        let _ = introspection_state;\n");
     output.push_str("        let _ = scheduler_events;\n");
     output.push_str("        let _ = health_map;\n");
-    if runtime_step_uses_tick_time(emission.binds, emission.bridges) {
+    if runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
 
@@ -127,6 +130,15 @@ pub(super) fn emit_rust_app_step(
                             &super::introspection_emit::rust_input_read_record_for_bridge(
                                 task, input, bridge,
                             ),
+                            true,
+                        ));
+                    } else if let Some(boundary_index) = emission
+                        .incoming_boundary_index
+                        .get(&(instance.name.clone(), input.name.clone()))
+                    {
+                        let boundary = &emission.boundaries[*boundary_index];
+                        output.push_str(&indent_generated_block(
+                            &rust_boundary_input_read(input, boundary),
                             true,
                         ));
                     } else {
@@ -259,7 +271,13 @@ pub(super) fn emit_rust_app_step(
                     .get(&(instance.name.clone(), port.name.clone()))
                     .cloned()
                     .unwrap_or_default();
-                if outgoing.is_empty() && bridge_outgoing.is_empty() {
+                let boundary_outgoing = emission
+                    .outgoing_boundary_indices
+                    .get(&(instance.name.clone(), port.name.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if outgoing.is_empty() && bridge_outgoing.is_empty() && boundary_outgoing.is_empty()
+                {
                     continue;
                 }
                 let publish_indent = if has_deadline {
@@ -286,6 +304,13 @@ pub(super) fn emit_rust_app_step(
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
+                for boundary_index in boundary_outgoing {
+                    let boundary = &emission.boundaries[boundary_index];
+                    output.push_str(&indent_generated_block_levels(
+                        &rust_boundary_output_write(boundary),
+                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                    ));
+                }
                 output.push_str(&format!("{publish_indent}}}\n"));
             }
             if has_deadline {
@@ -306,8 +331,9 @@ pub(super) fn emit_rust_app_step(
 pub(super) fn runtime_step_uses_tick_time(
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> bool {
-    if !bridges.is_empty() {
+    if !bridges.is_empty() || !boundaries.is_empty() {
         return true;
     }
     binds
@@ -319,6 +345,7 @@ pub(super) fn emit_rust_on_message_revision_state(
     tasks: &[&TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for task in tasks
@@ -338,6 +365,12 @@ pub(super) fn emit_rust_on_message_revision_state(
                 seen = bridge_seen_revision_name(bridge, task)
             ));
         }
+        for boundary in input_boundaries_for_task(task, boundaries) {
+            output.push_str(&format!(
+                "        let mut {seen}: u64 = 0;\n",
+                seen = boundary_seen_revision_name(boundary, task)
+            ));
+        }
     }
     output
 }
@@ -346,6 +379,7 @@ pub(super) fn emit_rust_on_message_wake_checks(
     tasks: &[&TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
     for (index, task) in tasks.iter().enumerate() {
@@ -354,7 +388,8 @@ pub(super) fn emit_rust_on_message_wake_checks(
         }
         let input_binds = input_binds_for_task(task, binds);
         let input_bridges = input_bridges_for_task(task, bridges);
-        if input_binds.is_empty() && input_bridges.is_empty() {
+        let input_boundaries = input_boundaries_for_task(task, boundaries);
+        if input_binds.is_empty() && input_bridges.is_empty() && input_boundaries.is_empty() {
             continue;
         }
         for bind in &input_binds {
@@ -396,6 +431,13 @@ pub(super) fn emit_rust_on_message_wake_checks(
                 seen = bridge_seen_revision_name(bridge, task)
             )
         }));
+        checks.extend(input_boundaries.iter().map(|boundary| {
+            format!(
+                "self.{field}.revision() != {seen}",
+                field = boundary.field_name,
+                seen = boundary_seen_revision_name(boundary, task)
+            )
+        }));
         let joiner = match task.readiness {
             flowrt_ir::TaskReadiness::AnyReady => " || ",
             flowrt_ir::TaskReadiness::AllReady => " && ",
@@ -413,6 +455,13 @@ pub(super) fn emit_rust_on_message_wake_checks(
                 "                {seen} = self.{field}.revision();\n",
                 seen = bridge_seen_revision_name(bridge, task),
                 field = bridge.field_name
+            ));
+        }
+        for boundary in &input_boundaries {
+            output.push_str(&format!(
+                "                {seen} = self.{field}.revision();\n",
+                seen = boundary_seen_revision_name(boundary, task),
+                field = boundary.field_name
             ));
         }
         output.push_str(&format!(
@@ -490,6 +539,15 @@ pub(super) fn bridge_seen_revision_name(bridge: &BridgeRuntimePlan, task: &TaskI
     )
 }
 
+pub(super) fn boundary_seen_revision_name(boundary: &BoundaryRuntimePlan, task: &TaskIr) -> String {
+    format!(
+        "{}_seen_revision_for_{}_{}",
+        boundary.field_name,
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
 pub(super) fn input_binds_for_task<'a>(
     task: &TaskIr,
     binds: &'a [BindRuntimePlan],
@@ -518,6 +576,39 @@ pub(super) fn input_bridges_for_task<'a>(
             })
         })
         .collect()
+}
+
+pub(super) fn input_boundaries_for_task<'a>(
+    task: &TaskIr,
+    boundaries: &'a [BoundaryRuntimePlan],
+) -> Vec<&'a BoundaryRuntimePlan> {
+    task.inputs
+        .iter()
+        .filter_map(|input| {
+            boundaries.iter().find(|boundary| {
+                boundary.direction == flowrt_ir::BoundaryDirection::Input
+                    && boundary.instance == task.instance.name
+                    && boundary.port == *input
+            })
+        })
+        .collect()
+}
+
+fn rust_boundary_input_read(input: &PortIr, boundary: &BoundaryRuntimePlan) -> String {
+    let revision = super::backend_emit::input_revision_local(input);
+    format!(
+        "        let {input}_read = self.{field}.read_at(tick_time_ms);\n        let {revision} = {input}_read.revision();\n        let {input} = {input}_read.view();\n",
+        input = input.name,
+        field = boundary.field_name,
+        revision = revision,
+    )
+}
+
+fn rust_boundary_output_write(boundary: &BoundaryRuntimePlan) -> String {
+    format!(
+        "            self.{field}.publish_at(&value, tick_time_ms);\n",
+        field = boundary.field_name,
+    )
 }
 
 fn runtime_stale_error_guard(input: &PortIr, bind: &BindRuntimePlan) -> String {
