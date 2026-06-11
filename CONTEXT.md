@@ -5,15 +5,18 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.8.3`。`v0.8.3` 聚焦安装版 FlowRT 的完整
-`linux-amd64` host 到 `linux-arm64` target 交叉编译主路径：amd64 deb 内嵌完整
-`linux-arm64` target SDK，包含 FlowRT C++ runtime、`iceoryx2-cxx`、`zenoh-c`、
-`zenoh-cpp`、CMake package 和 pkg-config 事实源。RSDL target 继续描述目标语义，
-toolchain profile 描述本机如何编译；交叉编译器、sysroot、CMake toolchain、
-pkg-config 路径、SDK overlay 和 runtime dependency policy 都属于 toolchain/profile
-配置，不写入 RSDL 或 Contract IR。标准路径不依赖从目标机拉取整棵目录；板级私有
-依赖通过显式 sysroot 或 SDK overlay 接入，由 `flowrt doctor --target <platform>`
-提前诊断。
+当前 workspace 版本为 `0.8.4`。`v0.8.4` 聚焦板级私有依赖工程化：在继续保留
+`linux-amd64` host 到 `linux-arm64` target 交叉编译主路径的同时，把组件层可移植
+pkg-config 依赖、toolchain 级 C++ compile/link 选项和板级 SDK overlay 彻底分层。
+amd64 deb 继续内嵌完整 `linux-arm64` target SDK，包含 FlowRT C++ runtime、
+`iceoryx2-cxx`、`zenoh-c`、`zenoh-cpp`、CMake package 和 pkg-config 事实源。RSDL
+target 继续描述目标语义，toolchain profile 描述本机如何编译；交叉编译器、sysroot、
+CMake toolchain、pkg-config 路径、SDK overlay、C++ compile/link args 和 runtime
+dependency policy 都属于 toolchain/profile 配置，不写入 RSDL 或 Contract IR；
+需要参与符号解析的裸库名或私有 `.so` 路径走 `cpp_link_libraries`，不混入
+linker option。
+板级私有依赖通过显式 sysroot、SDK overlay 或 component build 的 pkg-config 名称接入，
+由 `flowrt doctor --target <platform>` 提前诊断。
 当前 CLI 已接通 `flowrt deps/build --target <platform>` 的交叉编译主路径：显式
 `--target` 优先，否则从选定 Contract IR target platform 推导，仍无 platform 时保持
 native 构建。Rust/Cargo 会使用对应 Rust target triple，并把 cache key、ready marker
@@ -34,6 +37,10 @@ artifact manifest 不缓存，仍每次从源码重建。
 小升级，聚焦标准 64 字节 FrameDescriptor、I/O boundary descriptor port 绑定、
 descriptor-only 观测/录制、`frame_descriptor_demo` 示例、microbench 和 v0.8.1
 focused release gate。
+
+`v0.8.4` 是在 `v0.8.3` 交叉编译基础上的板级私有依赖工程化小升级，聚焦 component
+build 的 pkg-config 依赖声明、toolchain profile 的 C++ compile/link 选项，以及
+`cpp_link_libraries` 对板级私有 SDK 裸库或私有 `.so` 的注入。
 
 `v0.8.0` 已发布，是真实机器人应用接入边界版本，聚焦 I/O boundary component、
 variable frame 工程化、FrameDescriptor / side-channel descriptor、ROS2 zenoh 共存
@@ -108,6 +115,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.8.1` | 标准 FrameDescriptor、descriptor-only 大 payload 观测/录制和安装后 smoke。 |
 | `v0.8.2` | `linux-amd64` host 到 `linux-arm64` target 的交叉编译支持基础。 |
 | `v0.8.3` | 完整 `linux-amd64 -> linux-arm64` target SDK、SDK overlay、doctor 预检和真实交叉 smoke。 |
+| `v0.8.4` | 板级私有依赖工程化：component build pkg-config、toolchain C++ 选项和私有 SDK 链接配置。 |
 | `v0.9.0` | C/Python API、生态互操作扩展。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -296,7 +304,7 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   CI 增加 `v0.8.1 FrameDescriptor Smoke` amd64/arm64 focused gate，安装后 demo smoke
   增加 `scripts/test-v081-installed-smoke.sh`。
 
-当前 `v0.8.3` 已落地边界：
+当前 `v0.8.4` 已落地边界：
 
 - `flowrt deps` 和 `flowrt build` 支持 `--target linux-amd64|linux-arm64`。显式
   `--target` 优先于 Contract IR target platform；仍无 platform 时保持 native 构建。
@@ -304,6 +312,12 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
   Debian multiarch、默认 C/C++ compiler、sysroot、CMake toolchain file、pkg-config
   路径、SDK overlay 和 runtime dependency policy 的映射；profile 配置不写入 RSDL
   或 Contract IR。
+- component build 可以声明可移植的 `pkg_config` 依赖名；codegen 会据此生成
+  CMake 的 `find_package(PkgConfig)` / `pkg_check_modules(...)` / `PkgConfig::...`
+  链接路径，但不会把板端路径写进 RSDL。
+- toolchain profile 还支持 `cpp_compile_args`、`cpp_link_args` 和
+  `cpp_link_libraries`，用于把板端私有 SDK 需要的编译选项、链接选项、私有库路径
+  和 FlowRT 运行时链接约束放在配置层，不污染组件语义。
 - Rust/Cargo build 和 deps prewarm 会使用对应 Rust target triple，并把 cache key、
   ready marker、Cargo target dir 和本地二进制输出按 target 隔离。
 - C++/CMake cross build 会优先使用 `/opt/flowrt/<version>/targets/<platform>` 的

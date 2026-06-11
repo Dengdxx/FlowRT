@@ -227,7 +227,7 @@ C++ demo，并用 ELF header 确认输出为 AArch64。
 发布前检查：
 
 ```bash
-version=0.8.3
+version=0.8.4
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -243,8 +243,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.8.3 -m "v0.8.3"
-git push origin v0.8.3
+git tag -a v0.8.4 -m "v0.8.4"
+git push origin v0.8.4
 ```
 
 ## 提交规则

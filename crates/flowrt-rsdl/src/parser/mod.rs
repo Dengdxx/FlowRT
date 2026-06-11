@@ -333,7 +333,7 @@ kind = "io_boundary"
 output = ["sample:Sample"]
 
 [component.camera.build]
-pkg_config = ["rpicam_app", "libcamera"]
+pkg_config = ["vendor_capture", "vendor_codec"]
 
 [instance.camera]
 component = "camera"
@@ -347,7 +347,10 @@ output = ["sample"]
         .unwrap();
 
         let camera = &document.components["camera"];
-        assert_eq!(camera.build.pkg_config, vec!["rpicam_app", "libcamera"]);
+        assert_eq!(
+            camera.build.pkg_config,
+            vec!["vendor_capture", "vendor_codec"]
+        );
     }
 
     #[test]

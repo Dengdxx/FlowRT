@@ -531,7 +531,7 @@ io_health = "runtime_reported"
 io_shutdown = "cooperative"
 
 [component.camera.build]
-pkg_config = ["rpicam_app", "libcamera"]
+pkg_config = ["vendor_capture", "vendor_codec"]
 
 [instance.camera]
 component = "camera"
@@ -547,16 +547,14 @@ output = ["sample"]
     let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
 
     assert!(cmake.contains("find_package(PkgConfig REQUIRED)"));
-    assert!(
-        cmake.contains(
-            "pkg_check_modules(FLOWRT_PKG_0_LIBCAMERA REQUIRED IMPORTED_TARGET libcamera)"
-        )
-    );
     assert!(cmake.contains(
-        "pkg_check_modules(FLOWRT_PKG_1_RPICAM_APP REQUIRED IMPORTED_TARGET rpicam_app)"
+        "pkg_check_modules(FLOWRT_PKG_0_VENDOR_CAPTURE REQUIRED IMPORTED_TARGET vendor_capture)"
     ));
     assert!(cmake.contains(
-        "target_link_libraries(cpp_sdk_demo_cpp_user PUBLIC PkgConfig::FLOWRT_PKG_0_LIBCAMERA PkgConfig::FLOWRT_PKG_1_RPICAM_APP)"
+        "pkg_check_modules(FLOWRT_PKG_1_VENDOR_CODEC REQUIRED IMPORTED_TARGET vendor_codec)"
+    ));
+    assert!(cmake.contains(
+        "target_link_libraries(cpp_sdk_demo_cpp_user PUBLIC PkgConfig::FLOWRT_PKG_0_VENDOR_CAPTURE PkgConfig::FLOWRT_PKG_1_VENDOR_CODEC)"
     ));
     assert!(cmake.contains(
         "set(FLOWRT_EXE_LINK_LIBRARIES \"\" CACHE STRING \"Extra executable link libraries from the FlowRT toolchain profile\")"

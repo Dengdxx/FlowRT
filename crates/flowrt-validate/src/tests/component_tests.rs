@@ -99,7 +99,7 @@ io_health = "runtime_reported"
 io_shutdown = "cooperative"
 
 [component.camera.build]
-pkg_config = ["rpicam_app", "libcamera"]
+pkg_config = ["vendor_capture", "vendor_codec"]
 
 [instance.camera]
 component = "camera"
@@ -126,7 +126,7 @@ rsdl_version = "0.1"
 language = "rust"
 
 [component.worker.build]
-pkg_config = ["rpicam_app"]
+pkg_config = ["vendor_capture"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
