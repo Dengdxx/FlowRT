@@ -74,8 +74,9 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
     );
     output.push_str("namespace flowrt_app {\n\n");
     let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
-    let needs_wire_codec =
-        contract_uses_backend(contract, "zenoh") || contract_has_variable_messages(contract);
+    let needs_wire_codec = contract_uses_backend(contract, "zenoh")
+        || contract_has_variable_messages(contract)
+        || contract_has_boundary_endpoints(contract);
     let frame_descriptor_messages = frame_descriptor_message_names(contract);
     for ty in ordered_types(contract) {
         let variable_message = type_contains_variable_data(
@@ -116,8 +117,9 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push('\n');
     let needs_iox2_type_name = contract_uses_backend(contract, "iox2");
-    let needs_wire_codec =
-        contract_uses_backend(contract, "zenoh") || contract_has_variable_messages(contract);
+    let needs_wire_codec = contract_uses_backend(contract, "zenoh")
+        || contract_has_variable_messages(contract)
+        || contract_has_boundary_endpoints(contract);
     let zero_copy_derive = if needs_iox2_type_name {
         output.push_str("use flowrt::ZeroCopySend;\n\n");
         ", flowrt::ZeroCopySend"
@@ -261,6 +263,13 @@ fn contract_has_variable_messages(contract: &ContractIr) -> bool {
             },
         )
     })
+}
+
+fn contract_has_boundary_endpoints(contract: &ContractIr) -> bool {
+    contract
+        .graphs
+        .iter()
+        .any(|graph| !graph.boundary_endpoints.is_empty())
 }
 
 pub(crate) fn type_contains_variable_data(contract: &ContractIr, expr: &TypeExpr) -> bool {

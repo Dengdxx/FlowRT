@@ -149,6 +149,7 @@ pub(crate) struct BridgeRuntimePlan {
 #[derive(Debug, Clone)]
 pub(crate) struct BoundaryRuntimePlan {
     pub(crate) index: usize,
+    pub(crate) endpoint_name: String,
     pub(crate) field_name: String,
     pub(crate) direction: BoundaryDirection,
     pub(crate) ty: TypeExpr,
@@ -247,6 +248,7 @@ pub(crate) fn boundary_runtime_plans(graph: &GraphIr) -> Vec<BoundaryRuntimePlan
             };
             BoundaryRuntimePlan {
                 index,
+                endpoint_name: endpoint.name.clone(),
                 field_name: format!("{prefix}_{}", snake_identifier(&endpoint.name)),
                 direction: endpoint.direction,
                 ty: endpoint.ty.clone(),

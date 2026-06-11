@@ -313,6 +313,10 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         emission.contract,
         emission.order,
     ));
+    output.push_str(&emit_rust_boundary_input_registration(emission.boundaries));
+    output.push_str(&emit_rust_boundary_output_probe_registration(
+        emission.boundaries,
+    ));
     output.push_str(&service_emit::emit_rust_service_introspection_registration(
         emission.contract,
         emission.graph,
@@ -453,6 +457,42 @@ fn emit_rust_io_boundary_registration(contract: &ContractIr, order: &[&InstanceI
             ));
         }
         output.push_str("        ]);\n");
+    }
+    output
+}
+
+fn emit_rust_boundary_input_registration(boundaries: &[BoundaryRuntimePlan]) -> String {
+    let mut output = String::new();
+    for boundary in boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
+    {
+        let ty = crate::messages::rust_type(&boundary.ty);
+        output.push_str(&format!(
+            "        introspection_state.register_boundary_input::<{ty}>({}, {}, self.{}.clone());\n",
+            crate::rust_string_literal(&boundary.endpoint_name),
+            crate::rust_string_literal(&boundary.ty.canonical_syntax()),
+            boundary.field_name,
+        ));
+    }
+    output
+}
+
+fn emit_rust_boundary_output_probe_registration(boundaries: &[BoundaryRuntimePlan]) -> String {
+    let mut output = String::new();
+    for boundary in boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Output)
+    {
+        let ty = crate::messages::rust_type(&boundary.ty);
+        output.push_str(&format!(
+            "        introspection_state.register_channel({}, {});\n        let _{field}_probe = self.{field}.register_sink({{\n            let introspection_state = introspection_state.clone();\n            move |value, published_at_ms| {{\n                let mut payload = vec![0u8; <{ty} as flowrt::FrameCodec>::encoded_frame_size(value)];\n                if <{ty} as flowrt::FrameCodec>::encode_frame(value, &mut payload).is_ok() {{\n                    introspection_state.record_channel_publish_bytes({}, {}, payload, published_at_ms);\n                }}\n            }}\n        }});\n",
+            crate::rust_string_literal(&boundary.endpoint_name),
+            crate::rust_string_literal(&boundary.ty.canonical_syntax()),
+            crate::rust_string_literal(&boundary.endpoint_name),
+            crate::rust_string_literal(&boundary.ty.canonical_syntax()),
+            field = boundary.field_name,
+        ));
     }
     output
 }

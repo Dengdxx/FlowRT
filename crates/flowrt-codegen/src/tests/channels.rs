@@ -45,10 +45,14 @@ backends = ["inproc"]
     );
     let bundle = emit_artifacts(&ir).unwrap();
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
 
     assert!(rust_shell.contains("boundary_input_sample_in: flowrt::BoundaryInput<Sample>"));
     assert!(rust_shell.contains("boundary_output_echo_out: flowrt::BoundaryOutput<Sample>"));
     assert!(rust_shell.contains("boundary_input_sample_in: flowrt::BoundaryInput::new()"));
+    assert!(rust_shell.contains(
+        "introspection_state.register_boundary_input::<Sample>(\"sample_in\", \"Sample\", self.boundary_input_sample_in.clone());"
+    ));
     assert!(
         rust_shell.contains(
             "self.boundary_input_sample_in.set_schedule_waiter(scheduler_events.clone());"
@@ -62,6 +66,11 @@ backends = ["inproc"]
     assert!(rust_shell.contains("let sample = sample_read.view();"));
     assert!(rust_shell.contains("self.boundary_input_sample_in.revision() != boundary_input_sample_in_seen_revision_for_consumer_main"));
     assert!(rust_shell.contains("self.boundary_output_echo_out.publish_at(&value, tick_time_ms);"));
+    assert!(rust_shell.contains(
+        "let _boundary_output_echo_out_probe = self.boundary_output_echo_out.register_sink"
+    ));
+    assert!(rust_shell.contains("introspection_state.record_channel_publish_bytes(\"echo_out\""));
+    assert!(rust_messages.contains("impl flowrt::WireCodec for Sample"));
 }
 
 #[test]
@@ -110,9 +119,13 @@ backends = ["inproc"]
     let bundle = emit_artifacts(&ir).unwrap();
     let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
     let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
 
     assert!(cpp_header.contains("flowrt::BoundaryInput<Sample> boundary_input_sample_in_;"));
     assert!(cpp_header.contains("flowrt::BoundaryOutput<Sample> boundary_output_echo_out_;"));
+    assert!(cpp_shell.contains(
+        "introspection_state.register_boundary_input(\"sample_in\", \"Sample\", boundary_input_sample_in_);"
+    ));
     assert!(cpp_shell.contains("boundary_input_sample_in_.set_schedule_waiter(scheduler_events);"));
     assert!(cpp_shell.contains(
         "const auto consumer_sample_read = boundary_input_sample_in_.read_at(tick_time_ms);"
@@ -120,6 +133,13 @@ backends = ["inproc"]
     assert!(cpp_shell.contains("const auto consumer_sample = consumer_sample_read.view();"));
     assert!(cpp_shell.contains("boundary_input_sample_in_.revision() != boundary_input_sample_in_seen_revision_for_consumer_main"));
     assert!(cpp_shell.contains("boundary_output_echo_out_.publish_at(*value, tick_time_ms);"));
+    assert!(
+        cpp_shell.contains(
+            "auto boundary_output_echo_out_probe = boundary_output_echo_out_.register_sink"
+        )
+    );
+    assert!(cpp_shell.contains("introspection_state.record_channel_publish_bytes(\"echo_out\""));
+    assert!(cpp_messages.contains("static constexpr std::size_t wire_size() noexcept"));
 }
 
 #[test]

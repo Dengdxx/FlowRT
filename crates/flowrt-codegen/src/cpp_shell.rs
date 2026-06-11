@@ -1177,6 +1177,8 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.order,
     ));
     output.push_str(&emit_cpp_io_boundary_registration(run.contract, run.order));
+    output.push_str(&emit_cpp_boundary_input_registration(run.boundaries));
+    output.push_str(&emit_cpp_boundary_output_probe_registration(run.boundaries));
     output.push_str(&format!(
         "    auto introspection_server = flowrt::spawn_status_server(\n        flowrt::IntrospectionIdentity{{\n            .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n            .package = {},\n            .process = {},\n            .runtime = \"cpp\",\n        }},\n        introspection_state);\n    (void)introspection_server;\n",
         cpp_string_literal(run.package_name),
@@ -1261,6 +1263,41 @@ fn emit_cpp_io_boundary_registration(contract: &ContractIr, order: &[&InstanceIr
             cpp_string_literal(&instance.name),
             cpp_string_literal(&component.name),
             cpp_boundary_resources_literal(component)
+        ));
+    }
+    output
+}
+
+fn emit_cpp_boundary_input_registration(boundaries: &[BoundaryRuntimePlan]) -> String {
+    let mut output = String::new();
+    for boundary in boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
+    {
+        output.push_str(&format!(
+            "    introspection_state.register_boundary_input({}, {}, {}_);\n",
+            cpp_string_literal(&boundary.endpoint_name),
+            cpp_string_literal(&boundary.ty.canonical_syntax()),
+            boundary.field_name,
+        ));
+    }
+    output
+}
+
+fn emit_cpp_boundary_output_probe_registration(boundaries: &[BoundaryRuntimePlan]) -> String {
+    let mut output = String::new();
+    for boundary in boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Output)
+    {
+        let ty = cpp_type(&boundary.ty);
+        output.push_str(&format!(
+            "    introspection_state.register_channel({}, {});\n    auto {field}_probe = {field}_.register_sink(\n        [&introspection_state](const {ty}& value, std::optional<std::uint64_t> published_at_ms) {{\n            try {{\n                std::vector<std::uint8_t> payload(flowrt::detail::encoded_frame_size(value));\n                flowrt::detail::encode_frame(value, std::span<std::uint8_t>{{payload}});\n                introspection_state.record_channel_publish_bytes({}, {}, std::move(payload), published_at_ms);\n            }} catch (...) {{\n            }}\n        }});\n    (void){field}_probe;\n",
+            cpp_string_literal(&boundary.endpoint_name),
+            cpp_string_literal(&boundary.ty.canonical_syntax()),
+            cpp_string_literal(&boundary.endpoint_name),
+            cpp_string_literal(&boundary.ty.canonical_syntax()),
+            field = boundary.field_name,
         ));
     }
     output
