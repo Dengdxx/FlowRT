@@ -2000,6 +2000,29 @@ fn cmake_prefix_paths_merge_existing_env_and_runtime_prefix() {
 }
 
 #[test]
+fn launch_library_paths_include_private_and_target_sdk_libs() {
+    let root = temp_test_dir("launch-library-paths");
+    let private_prefix = root.join("opt/flowrt/0.8.3");
+    std::fs::create_dir_all(private_prefix.join("lib")).unwrap();
+    std::fs::create_dir_all(private_prefix.join("targets/linux-arm64/lib")).unwrap();
+    std::fs::create_dir_all(private_prefix.join("include/flowrt")).unwrap();
+    std::fs::create_dir_all(private_prefix.join("share")).unwrap();
+    std::fs::write(private_prefix.join("include/flowrt/runtime.hpp"), "").unwrap();
+
+    let paths = flowrt_runtime_library_paths(&private_prefix, Some("linux-arm64"));
+
+    assert_eq!(
+        paths,
+        vec![
+            private_prefix.join("lib"),
+            private_prefix.join("targets/linux-arm64/lib")
+        ]
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn cmake_configure_uses_toolchain_sdk_overlays() {
     let root = temp_test_dir("cmake-toolchain-sdk-overlays");
     let private_prefix = root.join("opt/flowrt/0.8.3");

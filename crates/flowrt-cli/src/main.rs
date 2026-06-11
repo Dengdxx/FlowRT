@@ -4543,6 +4543,7 @@ fn cargo_build_invocation(
 
 fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> Result<()> {
     let mut command = ProcessCommand::new(binary);
+    inject_flowrt_launch_library_path(&mut command)?;
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
@@ -4553,6 +4554,71 @@ fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> Result<()> 
         anyhow::bail!("FlowRT supervisor invocation failed with status {status}");
     }
     Ok(())
+}
+
+fn inject_flowrt_launch_library_path(command: &mut ProcessCommand) -> Result<()> {
+    let Some(runtime_dir) = cpp_runtime_dir_for_generated_build()? else {
+        return Ok(());
+    };
+    let paths = flowrt_runtime_library_paths(&runtime_dir, host_flowrt_platform());
+    if paths.is_empty() {
+        return Ok(());
+    }
+    command.env(
+        "LD_LIBRARY_PATH",
+        prepend_env_paths("LD_LIBRARY_PATH", &paths)?,
+    );
+    Ok(())
+}
+
+fn flowrt_runtime_library_paths(runtime_dir: &Path, platform: Option<&str>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    push_existing_unique_path(&mut paths, runtime_dir.join("lib"));
+    if let Some(prefix) = flowrt_private_prefix_from_cpp_runtime_dir(runtime_dir)
+        .or_else(|| flowrt_private_prefix_from_target_sdk_dir(runtime_dir))
+    {
+        push_existing_unique_path(&mut paths, prefix.join("lib"));
+        if let Some(platform) = platform {
+            push_existing_unique_path(
+                &mut paths,
+                prefix.join("targets").join(platform).join("lib"),
+            );
+        }
+    }
+    paths
+}
+
+fn flowrt_private_prefix_from_target_sdk_dir(runtime_dir: &Path) -> Option<PathBuf> {
+    if !runtime_dir.join("flowrt-target-sdk.toml").exists() {
+        return None;
+    }
+    let targets = runtime_dir.parent()?;
+    if targets.file_name()? != OsStr::new("targets") {
+        return None;
+    }
+    Some(targets.parent()?.to_path_buf())
+}
+
+fn host_flowrt_platform() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("linux-amd64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        _ => None,
+    }
+}
+
+fn push_existing_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.is_dir() && !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn prepend_env_paths(var_name: &str, paths: &[PathBuf]) -> Result<OsString> {
+    let mut merged = paths.to_vec();
+    if let Some(existing) = env::var_os(var_name) {
+        merged.extend(env::split_paths(&existing));
+    }
+    env::join_paths(merged).with_context(|| format!("failed to build {var_name}"))
 }
 
 fn resolve_output_dir(rsdl: &Path, out_dir: &Path) -> Result<PathBuf> {
