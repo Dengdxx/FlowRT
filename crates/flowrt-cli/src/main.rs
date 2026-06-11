@@ -33,7 +33,9 @@ use introspection::{
 };
 use record::{RecordOptions, record_runtime};
 use toolchain::{
-    RuntimeDependencyPolicy, ToolchainProfile, ToolchainProfileOverrides, resolve_toolchain_profile,
+    RuntimeDependencyPolicy, ToolchainFieldSources, ToolchainProfile, ToolchainProfileOverrides,
+    generate_toolchain_init_toml, resolve_toolchain_profile,
+    resolve_toolchain_profile_with_field_sources,
 };
 
 #[cfg(test)]
@@ -310,6 +312,12 @@ enum Command {
         window_ms: u64,
     },
 
+    /// 管理 toolchain profile 配置。
+    Toolchain {
+        #[command(subcommand)]
+        command: ToolchainCommand,
+    },
+
     /// 按需录制 live runtime 事件到 MCAP 文件。
     Record {
         /// 输出 MCAP 文件路径。
@@ -470,6 +478,31 @@ enum OpCommand {
         /// 显式指定 runtime introspection socket。
         #[arg(long)]
         socket: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolchainCommand {
+    /// 展示指定 platform 的合并后 toolchain profile。
+    Show {
+        /// 目标 platform，例如 linux-arm64。
+        #[arg(long)]
+        target: String,
+    },
+
+    /// 初始化 workspace 级 toolchain 配置文件。
+    Init {
+        /// 目标 platform，当前支持 linux-arm64。
+        #[arg(long)]
+        target: String,
+
+        /// 显式 SDK overlay 路径，可重复。
+        #[arg(long)]
+        sdk_overlay: Vec<PathBuf>,
+
+        /// 覆盖已有配置文件。
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -769,6 +802,25 @@ fn main() -> Result<()> {
                 live_hz_summary(channel.as_deref(), socket.as_deref(), window_ms)?
             );
         }
+        Command::Toolchain { command } => match command {
+            ToolchainCommand::Show { target } => {
+                let workspace_root =
+                    env::current_dir().context("failed to resolve current working directory")?;
+                println!("{}", toolchain_show(&target, &workspace_root)?);
+            }
+            ToolchainCommand::Init {
+                target,
+                sdk_overlay,
+                force,
+            } => {
+                let workspace_root =
+                    env::current_dir().context("failed to resolve current working directory")?;
+                println!(
+                    "{}",
+                    toolchain_init(&target, &sdk_overlay, force, &workspace_root)?
+                );
+            }
+        },
         Command::Record {
             output,
             socket,
@@ -2728,6 +2780,167 @@ fn runtime_dependency_policy_name(policy: RuntimeDependencyPolicy) -> &'static s
         RuntimeDependencyPolicy::Bundle => "bundle",
         RuntimeDependencyPolicy::External => "external",
     }
+}
+
+fn toolchain_show(target: &str, workspace_root: &Path) -> Result<String> {
+    let platform = canonical_toolchain_platform(target)?;
+    let (profile, field_sources) =
+        resolve_toolchain_profile_with_field_sources(&platform, workspace_root)?;
+    Ok(format_toolchain_show(&profile, &field_sources))
+}
+
+fn format_toolchain_show(
+    profile: &ToolchainProfile,
+    field_sources: &ToolchainFieldSources,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "platform: {} (source: {})",
+        profile.platform, field_sources.platform_source
+    ));
+    lines.push(format!(
+        "rust_target: {} (source: {})",
+        profile.rust_target, field_sources.rust_target_source
+    ));
+    lines.push(format!(
+        "deb_multiarch: {} (source: builtin)",
+        profile.deb_multiarch
+    ));
+    lines.push(format!(
+        "c_compiler: {} (source: {})",
+        profile.c_compiler, field_sources.c_compiler_source
+    ));
+    lines.push(format!(
+        "cpp_compiler: {} (source: {})",
+        profile.cpp_compiler, field_sources.cpp_compiler_source
+    ));
+    lines.push(format!(
+        "sysroot: {} (source: {})",
+        profile
+            .sysroot
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        field_sources.sysroot_source
+    ));
+    lines.push(format!(
+        "cmake_toolchain: {} (source: {})",
+        profile
+            .cmake_toolchain
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        field_sources.cmake_toolchain_source
+    ));
+    lines.push(format!(
+        "pkg_config_libdir: {} (source: {})",
+        profile
+            .pkg_config_libdir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        field_sources.pkg_config_libdir_source
+    ));
+    if !profile.pkg_config_libdirs.is_empty() {
+        lines.push(format!(
+            "pkg_config_libdirs: {}",
+            profile
+                .pkg_config_libdirs
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !profile.cmake_prefix_paths.is_empty() {
+        lines.push(format!(
+            "cmake_prefix_paths: {}",
+            profile
+                .cmake_prefix_paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !profile.sdk_overlays.is_empty() {
+        lines.push(format!(
+            "sdk_overlays: {}",
+            profile
+                .sdk_overlays
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !profile.cpp_compile_args.is_empty() {
+        lines.push(format!(
+            "cpp_compile_args: {}",
+            profile.cpp_compile_args.join(" ")
+        ));
+    }
+    if !profile.cpp_link_args.is_empty() {
+        lines.push(format!(
+            "cpp_link_args: {}",
+            profile.cpp_link_args.join(" ")
+        ));
+    }
+    if !profile.cpp_link_libraries.is_empty() {
+        lines.push(format!(
+            "cpp_link_libraries: {}",
+            profile.cpp_link_libraries.join(", ")
+        ));
+    }
+    lines.push(format!(
+        "runtime_dependency_policy: {} (source: {})",
+        runtime_dependency_policy_name(profile.runtime_dependency_policy),
+        field_sources.runtime_dependency_policy_source
+    ));
+    lines.push(String::new());
+    lines.push("source priority: builtin < system < user < workspace < CLI override".to_string());
+    lines.join("\n")
+}
+
+fn toolchain_init(
+    target: &str,
+    sdk_overlays: &[PathBuf],
+    force: bool,
+    workspace_root: &Path,
+) -> Result<String> {
+    let platform = canonical_toolchain_platform(target)?;
+    let config_path = workspace_root.join(".flowrt").join("toolchains.toml");
+
+    if config_path.exists() && !force {
+        anyhow::bail!(
+            "toolchain config `{}` already exists; use `--force` to overwrite",
+            config_path.display()
+        );
+    }
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+
+    let sdk_overlays = sdk_overlays
+        .iter()
+        .map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                workspace_root.join(path)
+            }
+        })
+        .collect::<Vec<_>>();
+    let toml_content = generate_toolchain_init_toml(&platform, &sdk_overlays)?;
+    fs::write(&config_path, &toml_content)
+        .with_context(|| format!("failed to write `{}`", config_path.display()))?;
+
+    Ok(format!(
+        "wrote toolchain config to `{}`",
+        config_path.display()
+    ))
 }
 
 fn command_check(label: &'static str, command: &str) -> DoctorCheck {

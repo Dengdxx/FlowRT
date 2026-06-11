@@ -43,10 +43,21 @@ flowrt deps examples/import_demo/rsdl/robot.rsdl
 交叉编译时，用 target platform 选择 toolchain profile：
 
 ```bash
+flowrt toolchain init --target linux-arm64
+flowrt toolchain show --target linux-arm64
 flowrt doctor --target linux-arm64
 flowrt deps examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl --target linux-arm64
 ```
+
+`toolchain init` 会在当前 workspace 下生成 `.flowrt/toolchains.toml`，用户不需要手写完整
+配置。如果需要接入板级私有 SDK，可以用 `--sdk-overlay <path>` 指定路径：
+
+```bash
+flowrt toolchain init --target linux-arm64 --sdk-overlay /opt/vendor/rknn
+```
+
+生成后可以用 `flowrt toolchain show --target linux-arm64` 确认合并后的 profile 是否符合预期。
 
 `--target` 当前支持 `linux-amd64` 和 `linux-arm64`。显式参数优先于 RSDL/Contract IR target
 platform；省略时如果选定 Contract IR target 已声明 platform，CLI 会自动使用该 platform，

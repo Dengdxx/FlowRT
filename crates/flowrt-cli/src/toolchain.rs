@@ -93,9 +93,9 @@ const PLATFORM_DEFAULTS: &[PlatformDefaults] = &[
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ToolchainsFile {
+pub(crate) struct ToolchainsFile {
     #[serde(default)]
-    toolchain: BTreeMap<String, ToolchainProfileOverrides>,
+    pub(crate) toolchain: BTreeMap<String, ToolchainProfileOverrides>,
 }
 
 // T03/T04 会把该查询入口接入 deps/build；T01 只提供可测试配置层。
@@ -364,4 +364,124 @@ fn append_unique_strings(target: &mut Vec<String>, values: &[String]) {
             target.push(value.clone());
         }
     }
+}
+
+/// 每个 profile 字段的来源标注。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolchainFieldSources {
+    pub(crate) platform_source: String,
+    pub(crate) rust_target_source: String,
+    pub(crate) c_compiler_source: String,
+    pub(crate) cpp_compiler_source: String,
+    pub(crate) sysroot_source: String,
+    pub(crate) cmake_toolchain_source: String,
+    pub(crate) pkg_config_libdir_source: String,
+    pub(crate) runtime_dependency_policy_source: String,
+}
+
+/// 为 `toolchain show` 解析 profile 并跟踪每层来源。
+pub(crate) fn resolve_toolchain_profile_with_field_sources(
+    platform: &str,
+    workspace_root: &Path,
+) -> Result<(ToolchainProfile, ToolchainFieldSources)> {
+    let sources = default_toolchain_sources(workspace_root);
+    resolve_toolchain_profile_with_field_sources_from_sources(platform, &sources)
+}
+
+/// 使用显式 sources 为 `toolchain show` 解析 profile 并跟踪每层来源。
+pub(crate) fn resolve_toolchain_profile_with_field_sources_from_sources(
+    platform: &str,
+    sources: &ToolchainConfigSources,
+) -> Result<(ToolchainProfile, ToolchainFieldSources)> {
+    let mut profile = default_profile(platform)?;
+    let mut field_sources = ToolchainFieldSources {
+        platform_source: "builtin".to_string(),
+        rust_target_source: "builtin".to_string(),
+        c_compiler_source: "builtin".to_string(),
+        cpp_compiler_source: "builtin".to_string(),
+        sysroot_source: "(none)".to_string(),
+        cmake_toolchain_source: "(none)".to_string(),
+        pkg_config_libdir_source: "(none)".to_string(),
+        runtime_dependency_policy_source: "builtin".to_string(),
+    };
+
+    for (source_name, source_path) in [
+        ("system", sources.system.as_deref()),
+        ("user", sources.user.as_deref()),
+        ("workspace", sources.workspace.as_deref()),
+    ] {
+        if let Some(config) = load_toolchain_config(source_path)? {
+            if let Some(config_overrides) = config.toolchain.get(platform) {
+                track_and_apply_overrides(
+                    &mut profile,
+                    &mut field_sources,
+                    config_overrides,
+                    source_name,
+                )?;
+            }
+        }
+    }
+
+    Ok((profile, field_sources))
+}
+
+fn track_and_apply_overrides(
+    profile: &mut ToolchainProfile,
+    field_sources: &mut ToolchainFieldSources,
+    overrides: &ToolchainProfileOverrides,
+    source: &str,
+) -> Result<()> {
+    validate_overrides(overrides, source)?;
+
+    if overrides.rust_target.is_some() {
+        field_sources.rust_target_source = source.to_string();
+    }
+    if overrides.c_compiler.is_some() {
+        field_sources.c_compiler_source = source.to_string();
+    }
+    if overrides.cpp_compiler.is_some() {
+        field_sources.cpp_compiler_source = source.to_string();
+    }
+    if overrides.sysroot.is_some() {
+        field_sources.sysroot_source = source.to_string();
+    }
+    if overrides.cmake_toolchain.is_some() {
+        field_sources.cmake_toolchain_source = source.to_string();
+    }
+    if overrides.pkg_config_libdir.is_some() {
+        field_sources.pkg_config_libdir_source = source.to_string();
+    }
+    if overrides.runtime_dependency_policy.is_some() {
+        field_sources.runtime_dependency_policy_source = source.to_string();
+    }
+
+    apply_overrides(profile, overrides, source)
+}
+
+/// 生成 `toolchain init` 的最小 TOML 内容。
+pub(crate) fn generate_toolchain_init_toml(
+    platform: &str,
+    sdk_overlays: &[PathBuf],
+) -> Result<String> {
+    let _defaults = platform_defaults(platform)?;
+    let mut toml = String::new();
+    toml.push_str(&format!("[toolchain.{platform}]\n"));
+    if !sdk_overlays.is_empty() {
+        let overlay_strs: Vec<String> = sdk_overlays
+            .iter()
+            .map(|p| {
+                let escaped = p
+                    .to_string_lossy()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\t', "\\t")
+                    .replace('\0', "\\0");
+                format!("\"{escaped}\"")
+            })
+            .collect();
+        toml.push_str(&format!("sdk_overlays = [{}]\n", overlay_strs.join(", ")));
+    }
+    Ok(toml)
 }

@@ -2,6 +2,7 @@ use super::*;
 
 use crate::toolchain::{
     RuntimeDependencyPolicy, ToolchainConfigSources, ToolchainProfileOverrides,
+    generate_toolchain_init_toml, resolve_toolchain_profile_with_field_sources,
     resolve_toolchain_profile_with_sources,
 };
 
@@ -420,4 +421,224 @@ c_compiler = ""
 
     assert!(error.to_string().contains("c_compiler"));
     assert!(error.to_string().contains("must not be empty"));
+}
+
+#[test]
+fn toolchain_field_sources_track_defaults() {
+    let root = temp_test_dir("toolchain-field-sources-defaults");
+    let (profile, field_sources) =
+        resolve_toolchain_profile_with_field_sources("linux-arm64", &root).unwrap();
+
+    assert_eq!(profile.platform, "linux-arm64");
+    assert_eq!(field_sources.platform_source, "builtin");
+    assert_eq!(field_sources.rust_target_source, "builtin");
+    assert_eq!(field_sources.c_compiler_source, "builtin");
+    assert_eq!(field_sources.cpp_compiler_source, "builtin");
+    assert_eq!(field_sources.sysroot_source, "(none)");
+    assert_eq!(field_sources.cmake_toolchain_source, "(none)");
+    assert_eq!(field_sources.pkg_config_libdir_source, "(none)");
+    assert_eq!(field_sources.runtime_dependency_policy_source, "builtin");
+}
+
+#[test]
+fn toolchain_field_sources_track_workspace_overrides() {
+    let root = temp_test_dir("toolchain-field-sources-workspace");
+    let workspace = root.join(".flowrt/toolchains.toml");
+    write_toolchains(
+        &workspace,
+        r#"
+[toolchain.linux-arm64]
+c_compiler = "workspace-gcc"
+sysroot = "/workspace/sysroot"
+runtime_dependency_policy = "external"
+"#,
+    );
+
+    let (profile, field_sources) =
+        resolve_toolchain_profile_with_field_sources("linux-arm64", &root).unwrap();
+
+    assert_eq!(profile.c_compiler, "workspace-gcc");
+    assert_eq!(field_sources.c_compiler_source, "workspace");
+    assert_eq!(profile.sysroot, Some(PathBuf::from("/workspace/sysroot")));
+    assert_eq!(field_sources.sysroot_source, "workspace");
+    assert_eq!(
+        profile.runtime_dependency_policy,
+        RuntimeDependencyPolicy::External
+    );
+    assert_eq!(field_sources.runtime_dependency_policy_source, "workspace");
+    // Fields not overridden stay builtin.
+    assert_eq!(field_sources.cpp_compiler_source, "builtin");
+    assert_eq!(field_sources.rust_target_source, "builtin");
+}
+
+#[test]
+fn toolchain_field_sources_track_system_and_user_layers() {
+    let root = temp_test_dir("toolchain-field-sources-layers");
+    let system = root.join("system/toolchains.toml");
+    let user = root.join("user/toolchains.toml");
+
+    write_toolchains(
+        &system,
+        r#"
+[toolchain.linux-arm64]
+c_compiler = "system-gcc"
+sysroot = "/system/sysroot"
+"#,
+    );
+    write_toolchains(
+        &user,
+        r#"
+[toolchain.linux-arm64]
+c_compiler = "user-gcc"
+"#,
+    );
+
+    let sources = ToolchainConfigSources {
+        system: Some(system),
+        user: Some(user),
+        workspace: None,
+    };
+    let (profile, field_sources) =
+        crate::toolchain::resolve_toolchain_profile_with_field_sources_from_sources(
+            "linux-arm64",
+            &sources,
+        )
+        .unwrap();
+
+    // user overrides system for c_compiler
+    assert_eq!(profile.c_compiler, "user-gcc");
+    assert_eq!(field_sources.c_compiler_source, "user");
+    // sysroot only set by system
+    assert_eq!(profile.sysroot, Some(PathBuf::from("/system/sysroot")));
+    assert_eq!(field_sources.sysroot_source, "system");
+}
+
+#[test]
+fn toolchain_init_generates_minimal_toml() {
+    let toml = generate_toolchain_init_toml("linux-arm64", &[]).unwrap();
+
+    assert!(toml.contains("[toolchain.linux-arm64]"));
+    assert!(!toml.contains("sdk_overlays"));
+}
+
+#[test]
+fn toolchain_init_includes_sdk_overlays() {
+    let overlays = vec![
+        PathBuf::from("/opt/vendor/rknn"),
+        PathBuf::from("/opt/vendor/camera"),
+    ];
+    let toml = generate_toolchain_init_toml("linux-arm64", &overlays).unwrap();
+
+    assert!(toml.contains("[toolchain.linux-arm64]"));
+    assert!(toml.contains("sdk_overlays"));
+    assert!(toml.contains("/opt/vendor/rknn"));
+    assert!(toml.contains("/opt/vendor/camera"));
+}
+
+#[test]
+fn toolchain_init_rejects_unknown_platform() {
+    let error = generate_toolchain_init_toml("linux-riscv64", &[]).unwrap_err();
+
+    assert!(error.to_string().contains("unsupported toolchain platform"));
+}
+
+#[test]
+fn toolchain_init_toml_is_valid_and_parseable() {
+    let overlays = vec![PathBuf::from("/opt/vendor/rknn")];
+    let toml_content = generate_toolchain_init_toml("linux-arm64", &overlays).unwrap();
+
+    // Verify the generated TOML can be parsed back as a valid toolchain config.
+    let config: crate::toolchain::ToolchainsFile =
+        toml::from_str(&toml_content).expect("generated TOML should be parseable");
+    let overrides = config
+        .toolchain
+        .get("linux-arm64")
+        .expect("should have linux-arm64 section");
+    assert_eq!(
+        overrides.sdk_overlays,
+        vec![PathBuf::from("/opt/vendor/rknn")]
+    );
+}
+
+#[test]
+fn toolchain_init_writes_relative_overlay_as_workspace_path() {
+    let root = temp_test_dir("toolchain-init-relative-overlay");
+
+    toolchain_init("linux-arm64", &[PathBuf::from("vendor/rknn")], false, &root).unwrap();
+
+    let toml_content = std::fs::read_to_string(root.join(".flowrt/toolchains.toml")).unwrap();
+    assert!(toml_content.contains(&root.join("vendor/rknn").display().to_string()));
+}
+
+#[test]
+fn toolchain_show_output_contains_expected_fields() {
+    let root = temp_test_dir("toolchain-show-output");
+    let workspace = root.join(".flowrt/toolchains.toml");
+    write_toolchains(
+        &workspace,
+        r#"
+[toolchain.linux-arm64]
+c_compiler = "custom-gcc"
+sysroot = "/opt/sysroot"
+sdk_overlays = ["/opt/vendor/rknn"]
+runtime_dependency_policy = "external"
+"#,
+    );
+
+    let (profile, field_sources) =
+        resolve_toolchain_profile_with_field_sources("linux-arm64", &root).unwrap();
+    let output = crate::format_toolchain_show(&profile, &field_sources);
+
+    assert!(output.contains("platform: linux-arm64 (source: builtin)"));
+    assert!(output.contains("rust_target: aarch64-unknown-linux-gnu (source: builtin)"));
+    assert!(output.contains("c_compiler: custom-gcc (source: workspace)"));
+    assert!(output.contains("cpp_compiler: aarch64-linux-gnu-g++ (source: builtin)"));
+    assert!(output.contains("sysroot: /opt/sysroot (source: workspace)"));
+    assert!(output.contains("sdk_overlays: /opt/vendor/rknn"));
+    assert!(output.contains("runtime_dependency_policy: external (source: workspace)"));
+    assert!(output.contains("source priority: builtin < system < user < workspace < CLI override"));
+}
+
+#[test]
+fn cli_parses_toolchain_show_command() {
+    let cli =
+        Cli::try_parse_from(["flowrt", "toolchain", "show", "--target", "linux-arm64"]).unwrap();
+
+    let Command::Toolchain {
+        command: ToolchainCommand::Show { target },
+    } = cli.command
+    else {
+        panic!("toolchain show should parse into Command::Toolchain")
+    };
+    assert_eq!(target, "linux-arm64");
+}
+
+#[test]
+fn cli_parses_toolchain_init_command_with_sdk_overlay() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "toolchain",
+        "init",
+        "--target",
+        "linux-arm64",
+        "--sdk-overlay",
+        "/opt/vendor/rknn",
+        "--force",
+    ])
+    .unwrap();
+
+    let Command::Toolchain {
+        command:
+            ToolchainCommand::Init {
+                target,
+                sdk_overlay,
+                force,
+            },
+    } = cli.command
+    else {
+        panic!("toolchain init should parse into Command::Toolchain")
+    };
+    assert_eq!(target, "linux-arm64");
+    assert_eq!(sdk_overlay, vec![PathBuf::from("/opt/vendor/rknn")]);
+    assert!(force);
 }
