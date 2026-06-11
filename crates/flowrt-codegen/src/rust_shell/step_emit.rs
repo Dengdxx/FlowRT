@@ -48,6 +48,7 @@ pub(super) fn emit_rust_app_step(
     if runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
+    output.push_str(&emit_rust_ros2_boundary_input_pump(emission, order));
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -571,6 +572,7 @@ pub(super) fn input_bridges_for_task<'a>(
         .filter_map(|input| {
             bridges.iter().find(|bridge| {
                 bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+                    && bridge.boundary_endpoint.is_none()
                     && bridge.source_instance == task.instance.name
                     && bridge.source_port == *input
             })
@@ -592,6 +594,39 @@ pub(super) fn input_boundaries_for_task<'a>(
             })
         })
         .collect()
+}
+
+fn emit_rust_ros2_boundary_input_pump(
+    emission: &RustStepEmission<'_>,
+    order: &[&InstanceIr],
+) -> String {
+    let active_instances = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let boundaries_by_name = emission
+        .boundaries
+        .iter()
+        .map(|boundary| (boundary.endpoint_name.as_str(), boundary))
+        .collect::<BTreeMap<_, _>>();
+    let mut output = String::new();
+    for bridge in emission.bridges.iter().filter(|bridge| {
+        bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+            && active_instances.contains(bridge.source_instance.as_str())
+    }) {
+        let Some(endpoint_name) = bridge.boundary_endpoint.as_deref() else {
+            continue;
+        };
+        let Some(boundary) = boundaries_by_name.get(endpoint_name).copied() else {
+            continue;
+        };
+        output.push_str(&format!(
+            "        let {bridge}_boundary_value = match self.{bridge}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value.as_ref().cloned(),\n            Err(_) => return flowrt::Status::Error,\n        }};\n        if let Some(value) = {bridge}_boundary_value {{\n            self.{boundary}.inject_at(value, tick_time_ms);\n        }}\n",
+            bridge = bridge.field_name,
+            boundary = boundary.field_name,
+        ));
+    }
+    output
 }
 
 fn rust_boundary_input_read(input: &PortIr, boundary: &BoundaryRuntimePlan) -> String {

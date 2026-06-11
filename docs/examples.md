@@ -418,7 +418,40 @@ direction = "flowrt_to_ros2"
 field = "data"
 ```
 
-FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。FlowRT source 会把 bridge tap 发布到 deterministic zenoh key，生成的 C++ ROS2 adapter 订阅该 key 并发布 `std_msgs/msg/String`。ROS2 侧必须使用 `rmw_zenoh_cpp`；adapter 启动时会设置并校验 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`，不会回退到 DDS。普通 FlowRT `zenoh` backend 使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的 `zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`，让 plain CMake 找到 ROS2 C++ packages。CI 当前在 Jazzy 和 Lyrical 上强制验证该示例。
+FlowRT 与 ROS2 的唯一桥梁固定为 `zenoh`。FlowRT source 会把 bridge tap 发布到
+deterministic zenoh key，生成的 C++ ROS2 adapter 订阅该 key 并发布 ROS2 topic；
+`ros2_to_flowrt` 方向则由 adapter 订阅 ROS2 topic 后发布到同一类 bridge key。ROS2
+侧必须使用 `rmw_zenoh_cpp`；adapter 启动时会设置并校验
+`RMW_IMPLEMENTATION=rmw_zenoh_cpp`，不会回退到 DDS。普通 FlowRT `zenoh` backend
+使用 FlowRT 包内私有 zenoh SDK；ROS2 bridge adapter 进程使用 ROS2 安装中的
+`zenoh_cpp_vendor`，以匹配 `rmw_zenoh_cpp` 的同进程 ABI。构建前 source ROS2 环境即可；
+生成 CMake 会把 `AMENT_PREFIX_PATH` 映射到 `CMAKE_PREFIX_PATH`，让 plain CMake 找到
+ROS2 C++ packages。CI 当前在 Jazzy 和 Lyrical 上强制验证该示例。
+
+Island profile 下，`[[bridge.ros2]].flowrt` 也可以引用 `boundary.input` 或
+`boundary.output` 名称，而不是普通 `instance.port`：
+
+```toml
+[profile.default]
+backend = "zenoh"
+mode = "island"
+
+[[boundary.input]]
+name = "request_in"
+port = "echo.request"
+type = "TextFrame"
+
+[[bridge.ros2]]
+flowrt = "request_in"
+ros2_topic = "/ros2/request"
+ros2_type = "std_msgs/msg/String"
+direction = "ros2_to_flowrt"
+field = "data"
+```
+
+这条路径用于 ROS2 共存和逐功能单位迁移测试，不是 ROS2 drop-in。generated shell 会把
+ROS2 样本先注入 `BoundaryInput`，task 仍从 island boundary 读取；拆掉 bridge 或拆掉
+boundary 后，功能单位可以回到普通 strict graph。
 
 构建和运行：
 
@@ -440,9 +473,9 @@ ros2 topic echo /flowrt/text --once
 
 当前限制：
 
-- 只支持 `direction = "flowrt_to_ros2"`。
-- 只支持 `ros2_type = "std_msgs/msg/String"`。
-- `field` 必须是 FlowRT message 的 `string` 字段。
+- 支持 `flowrt_to_ros2` / `ros2_to_flowrt` 的窄 typed subset。
+- 支持 `std_msgs/msg/String` 和 `geometry_msgs/msg/Pose`；暂不覆盖完整 ROS2 消息生态。
+- `std_msgs/msg/String` 的 `field` 必须是 FlowRT message 的 `string` 字段。
 - `target.<name>.backends` 必须包含 `zenoh`。
 - 构建需要 ROS2 C++ 开发包；运行需要安装 `rmw_zenoh_cpp`。
 

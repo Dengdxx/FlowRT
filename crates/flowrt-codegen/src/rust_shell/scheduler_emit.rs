@@ -264,6 +264,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(
 
 pub(super) fn emit_rust_scheduler_event_registration(
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
     boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
@@ -274,6 +275,12 @@ pub(super) fn emit_rust_scheduler_event_registration(
         output.push_str(&format!(
             "        self.{field}.set_schedule_waiter(scheduler_events.clone());\n",
             field = bind.field_name
+        ));
+    }
+    for bridge in bridges {
+        output.push_str(&format!(
+            "        self.{field}.set_schedule_waiter(scheduler_events.clone());\n",
+            field = bridge.field_name
         ));
     }
     for boundary in boundaries

@@ -283,6 +283,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     output.push_str("        let scheduler_events = flowrt::ScheduleWaiter::new();\n");
     output.push_str(&scheduler_emit::emit_rust_scheduler_event_registration(
         emission.binds,
+        emission.bridges,
         emission.boundaries,
     ));
     output.push_str(

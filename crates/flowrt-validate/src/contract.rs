@@ -574,6 +574,11 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
             .iter()
             .map(|instance| (instance.name.as_str(), &instance.id))
             .collect::<BTreeMap<_, _>>();
+        let boundary_ids = graph
+            .boundary_endpoints
+            .iter()
+            .map(|endpoint| (endpoint.name.as_str(), &endpoint.id))
+            .collect::<BTreeMap<_, _>>();
 
         for instance in &graph.instances {
             validate_named_entity_ref(
@@ -666,6 +671,15 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
                 &instance_ids,
                 errors,
             );
+            if let Some(endpoint) = &bridge.boundary_endpoint {
+                validate_named_entity_ref(
+                    &format!("ROS2 bridge `{}` boundary endpoint reference", bridge.name),
+                    "boundary endpoint",
+                    endpoint,
+                    &boundary_ids,
+                    errors,
+                );
+            }
         }
 
         for endpoint in &graph.boundary_endpoints {

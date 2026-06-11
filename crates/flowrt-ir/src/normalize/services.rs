@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use flowrt_rsdl::RawDocument;
 
 use crate::{
-    BackendName, ComponentIr, EntityRef, InstanceIr, IrError, LanguageKind, PolicyValueSource,
-    Result, Ros2BridgeDirection, Ros2BridgeIr, SERVICE_DEFAULT_MAX_IN_FLIGHT,
-    SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS, ServiceBackendSource, ServiceEdgeIr,
-    ServiceOverflowPolicy, ServicePolicyIr, ServicePolicySourceIr, ServicePortRef,
+    BackendName, BoundaryDirection, BoundaryEndpointIr, ComponentIr, EntityRef, InstanceIr,
+    IrError, LanguageKind, PolicyValueSource, Result, Ros2BridgeDirection, Ros2BridgeIr,
+    SERVICE_DEFAULT_MAX_IN_FLIGHT, SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS,
+    ServiceBackendSource, ServiceEdgeIr, ServiceOverflowPolicy, ServicePolicyIr,
+    ServicePolicySourceIr, ServicePortRef,
 };
 
 use super::ids::entity_id;
@@ -251,23 +252,35 @@ fn service_policy_source(raw: &flowrt_rsdl::RawServiceBind) -> ServicePolicySour
 pub(super) fn normalize_ros2_bridges(
     document: &RawDocument,
     instance_refs: &BTreeMap<String, EntityRef>,
+    boundary_endpoints: &[BoundaryEndpointIr],
     graph_name: &str,
 ) -> Result<Vec<Ros2BridgeIr>> {
+    let boundary_by_name = boundary_endpoints
+        .iter()
+        .map(|endpoint| (endpoint.name.as_str(), endpoint))
+        .collect::<BTreeMap<_, _>>();
     document
         .ros2_bridges
         .iter()
         .enumerate()
         .map(|(index, raw)| {
-            let flowrt = parse_port_ref(&raw.flowrt, instance_refs)?;
             let direction = parse_ros2_bridge_direction(
                 &format!("bridge.ros2[{index}].direction"),
                 &raw.direction,
+            )?;
+            let (flowrt, boundary_endpoint) = resolve_ros2_flowrt_ref(
+                index,
+                &raw.flowrt,
+                direction,
+                instance_refs,
+                &boundary_by_name,
             )?;
             let name = format!("ros2_bridge_{index}");
             Ok(Ros2BridgeIr {
                 id: entity_id("bridge", &format!("{graph_name}.{name}")),
                 name,
                 flowrt,
+                boundary_endpoint,
                 ros2_topic: raw.ros2_topic.clone(),
                 ros2_type: raw.ros2_type.clone(),
                 direction,
@@ -276,6 +289,65 @@ pub(super) fn normalize_ros2_bridges(
             })
         })
         .collect()
+}
+
+fn resolve_ros2_flowrt_ref(
+    index: usize,
+    endpoint: &str,
+    direction: Ros2BridgeDirection,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    boundary_by_name: &BTreeMap<&str, &BoundaryEndpointIr>,
+) -> Result<(crate::PortRef, Option<EntityRef>)> {
+    if endpoint.contains('.') {
+        return Ok((parse_port_ref(endpoint, instance_refs)?, None));
+    }
+
+    let Some(boundary) = boundary_by_name.get(endpoint).copied() else {
+        return Err(IrError::InvalidValue {
+            context: format!("bridge.ros2[{index}].flowrt"),
+            message: format!(
+                "expected `<instance>.<port>` or boundary endpoint name; unknown boundary endpoint `{endpoint}`"
+            ),
+        });
+    };
+
+    let expected = match direction {
+        Ros2BridgeDirection::FlowrtToRos2 => BoundaryDirection::Output,
+        Ros2BridgeDirection::Ros2ToFlowrt => BoundaryDirection::Input,
+    };
+    if boundary.direction != expected {
+        return Err(IrError::InvalidValue {
+            context: format!("bridge.ros2[{index}].flowrt"),
+            message: format!(
+                "boundary endpoint `{endpoint}` direction `{}` is incompatible with ROS2 bridge direction `{}`; expected boundary {}",
+                boundary_direction_name(boundary.direction),
+                ros2_bridge_direction_name(direction),
+                boundary_direction_name(expected)
+            ),
+        });
+    }
+
+    Ok((
+        boundary.port.clone(),
+        Some(EntityRef {
+            id: boundary.id.clone(),
+            name: boundary.name.clone(),
+        }),
+    ))
+}
+
+fn boundary_direction_name(direction: BoundaryDirection) -> &'static str {
+    match direction {
+        BoundaryDirection::Input => "input",
+        BoundaryDirection::Output => "output",
+    }
+}
+
+fn ros2_bridge_direction_name(direction: Ros2BridgeDirection) -> &'static str {
+    match direction {
+        Ros2BridgeDirection::FlowrtToRos2 => "flowrt_to_ros2",
+        Ros2BridgeDirection::Ros2ToFlowrt => "ros2_to_flowrt",
+    }
 }
 
 fn parse_service_port_ref(

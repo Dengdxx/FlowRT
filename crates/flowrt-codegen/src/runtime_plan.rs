@@ -139,6 +139,7 @@ pub(crate) struct BridgeRuntimePlan {
     pub(crate) source_type: TypeExpr,
     pub(crate) source_instance: String,
     pub(crate) source_port: String,
+    pub(crate) boundary_endpoint: Option<String>,
     pub(crate) ros2_topic: String,
     pub(crate) ros2_type: String,
     pub(crate) direction: Ros2BridgeDirection,
@@ -282,6 +283,10 @@ fn bridge_runtime_plan(
         source_type: flowrt_port.ty.clone(),
         source_instance: flowrt_instance.name.clone(),
         source_port: bridge.flowrt.port.clone(),
+        boundary_endpoint: bridge
+            .boundary_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.name.clone()),
         ros2_topic: bridge.ros2_topic.clone(),
         ros2_type: bridge.ros2_type.clone(),
         direction: bridge.direction,
@@ -336,6 +341,7 @@ pub(crate) fn incoming_bridge_index_map(
     plans
         .iter()
         .filter(|plan| plan.direction == Ros2BridgeDirection::Ros2ToFlowrt)
+        .filter(|plan| plan.boundary_endpoint.is_none())
         .map(|plan| {
             (
                 (plan.source_instance.clone(), plan.source_port.clone()),

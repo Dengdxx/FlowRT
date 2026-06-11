@@ -148,6 +148,88 @@ fn validates_ros2_bridge_pose_bidirectional_subset() {
     validate_contract(&ir).unwrap();
 }
 
+fn ros2_boundary_bridge_contract() -> ContractIr {
+    let source = r#"
+[package]
+name = "ros2_boundary_demo"
+rsdl_version = "0.1"
+
+[type.TextFrame]
+data = "string"
+
+[component.echo]
+language = "rust"
+input = ["request:TextFrame"]
+output = ["reply:TextFrame"]
+
+[instance.echo]
+component = "echo"
+target = "linux"
+
+[instance.echo.task]
+trigger = "on_message"
+input = ["request"]
+output = ["reply"]
+
+[profile.default]
+backend = "zenoh"
+mode = "island"
+
+[[boundary.input]]
+name = "request_in"
+port = "echo.request"
+type = "TextFrame"
+
+[[boundary.output]]
+name = "reply_out"
+port = "echo.reply"
+type = "TextFrame"
+
+[[bridge.ros2]]
+flowrt = "request_in"
+ros2_topic = "/ros2/request"
+ros2_type = "std_msgs/msg/String"
+direction = "ros2_to_flowrt"
+field = "data"
+
+[[bridge.ros2]]
+flowrt = "reply_out"
+ros2_topic = "/flowrt/reply"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    normalize_document(&raw, hash_source(source)).unwrap()
+}
+
+#[test]
+fn validates_ros2_bridge_bound_to_island_boundary_endpoints() {
+    let ir = ros2_boundary_bridge_contract();
+    validate_contract(&ir).expect("ROS2 bridge should be able to bind island boundary endpoint");
+}
+
+#[test]
+fn rejects_tampered_ros2_boundary_endpoint_ref() {
+    let mut ir = ros2_boundary_bridge_contract();
+    ir.graphs[0].ros2_bridges[0]
+        .boundary_endpoint
+        .as_mut()
+        .unwrap()
+        .name = "reply_out".into();
+    let report = validate_contract(&ir).expect_err("tampered bridge boundary ref should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "ROS2 bridge `ros2_bridge_0` direction `ros2_to_flowrt` is incompatible with boundary endpoint `reply_out` direction `output`",
+        )
+    }));
+}
+
 #[test]
 fn rejects_unsupported_ros2_bridge_type() {
     let ir = ros2_pose_bridge_contract("sensor_msgs/msg/Image");

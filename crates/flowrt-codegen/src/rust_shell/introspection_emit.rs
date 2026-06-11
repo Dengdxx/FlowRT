@@ -285,7 +285,10 @@ fn route_selected_reason(bind: &BindRuntimePlan) -> &'static str {
 }
 
 fn bridge_route_endpoints(bridge: &BridgeRuntimePlan) -> (String, String) {
-    let flowrt_endpoint = format!("{}.{}", bridge.source_instance, bridge.source_port);
+    let flowrt_endpoint = bridge.boundary_endpoint.as_ref().map_or_else(
+        || format!("{}.{}", bridge.source_instance, bridge.source_port),
+        |endpoint| format!("boundary:{endpoint}"),
+    );
     let ros2_endpoint = format!("ros2:{}", bridge.ros2_topic);
     match bridge.direction {
         Ros2BridgeDirection::FlowrtToRos2 => (flowrt_endpoint, ros2_endpoint),

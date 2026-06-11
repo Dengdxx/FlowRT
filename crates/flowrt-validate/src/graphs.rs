@@ -687,6 +687,7 @@ fn validate_tasks(
                 .ros2_bridges
                 .iter()
                 .filter(|bridge| bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt)
+                .filter(|bridge| bridge.boundary_endpoint.is_none())
                 .map(|bridge| {
                     (
                         bridge.flowrt.instance.id.clone(),
@@ -989,11 +990,17 @@ fn validate_ros2_bridges(
         .iter()
         .map(|target| (target.name.as_str(), target))
         .collect::<BTreeMap<_, _>>();
+    let boundary_endpoints = graph
+        .boundary_endpoints
+        .iter()
+        .map(|endpoint| (endpoint.name.as_str(), endpoint))
+        .collect::<BTreeMap<_, _>>();
     let types = ir
         .types
         .iter()
         .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
+    let mut ros2_boundary_inputs = BTreeSet::new();
 
     for bridge in &graph.ros2_bridges {
         if bridge.backend != BackendName("zenoh".to_string()) {
@@ -1001,6 +1008,15 @@ fn validate_ros2_bridges(
                 "ROS2 bridge `{}` must use backend `zenoh`; found `{}`",
                 bridge.name, bridge.backend.0
             )));
+        }
+        if let Some(boundary_ref) = &bridge.boundary_endpoint {
+            validate_ros2_bridge_boundary_endpoint(
+                bridge,
+                boundary_ref,
+                &boundary_endpoints,
+                &mut ros2_boundary_inputs,
+                errors,
+            );
         }
         let endpoint_direction = match bridge.direction {
             Ros2BridgeDirection::FlowrtToRos2 => PortDirection::Output,
@@ -1058,6 +1074,77 @@ fn validate_ros2_bridges(
                 bridge.name, target.name
             )));
         }
+    }
+}
+
+fn validate_ros2_bridge_boundary_endpoint(
+    bridge: &flowrt_ir::Ros2BridgeIr,
+    boundary_ref: &flowrt_ir::EntityRef,
+    boundary_endpoints: &BTreeMap<&str, &flowrt_ir::BoundaryEndpointIr>,
+    ros2_boundary_inputs: &mut BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(boundary) = boundary_endpoints.get(boundary_ref.name.as_str()).copied() else {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` references unknown boundary endpoint `{}`",
+            bridge.name, boundary_ref.name
+        )));
+        return;
+    };
+    if boundary.id != boundary_ref.id {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` boundary endpoint reference `{}` points to ID `{}`, expected ID `{}`",
+            bridge.name, boundary_ref.name, boundary_ref.id.0, boundary.id.0
+        )));
+    }
+    let expected_direction = match bridge.direction {
+        Ros2BridgeDirection::FlowrtToRos2 => BoundaryDirection::Output,
+        Ros2BridgeDirection::Ros2ToFlowrt => BoundaryDirection::Input,
+    };
+    if boundary.direction != expected_direction {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` direction `{}` is incompatible with boundary endpoint `{}` direction `{}`",
+            bridge.name,
+            ros2_bridge_direction_name(bridge.direction),
+            boundary.name,
+            boundary_direction_name(boundary.direction)
+        )));
+    }
+    if boundary.port.instance.id != bridge.flowrt.instance.id
+        || boundary.port.instance.name != bridge.flowrt.instance.name
+        || boundary.port.port != bridge.flowrt.port
+    {
+        errors.push(ValidationError::new(format!(
+            "ROS2 bridge `{}` boundary endpoint `{}` must resolve to FlowRT port `{}.{}`; found `{}.{}`",
+            bridge.name,
+            boundary.name,
+            boundary.port.instance.name,
+            boundary.port.port,
+            bridge.flowrt.instance.name,
+            bridge.flowrt.port
+        )));
+    }
+    if bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+        && !ros2_boundary_inputs.insert(boundary.name.clone())
+    {
+        errors.push(ValidationError::new(format!(
+            "boundary input `{}` has multiple ROS2 bridge sources",
+            boundary.name
+        )));
+    }
+}
+
+fn boundary_direction_name(direction: BoundaryDirection) -> &'static str {
+    match direction {
+        BoundaryDirection::Input => "input",
+        BoundaryDirection::Output => "output",
+    }
+}
+
+fn ros2_bridge_direction_name(direction: Ros2BridgeDirection) -> &'static str {
+    match direction {
+        Ros2BridgeDirection::FlowrtToRos2 => "flowrt_to_ros2",
+        Ros2BridgeDirection::Ros2ToFlowrt => "ros2_to_flowrt",
     }
 }
 

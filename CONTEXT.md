@@ -30,7 +30,11 @@ boundary input 会参与 `on_message` revision/wake 和 task 输入读取，boun
 fixed Message ABI JSON 注入，只允许写 boundary input；`flowrt echo`、`flowrt status` 和
 `flowrt record` 已能围绕 boundary output 做观测/录制；`flowrt bundle` / `flowrt deploy`
 默认拒绝 island 脚手架产物，只有显式 `--allow-island` 才允许。ROS2/zenoh boundary
-adapter、island demo 和 release gate 仍在 `v0.9.0` 后续切片中推进。
+adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instance.port`，也可以
+在 island profile 下引用 `boundary.input` / `boundary.output` 名称；Contract IR 会保留
+可校验的 boundary endpoint 引用，generated shell 通过 zenoh-only bridge key 把 ROS2
+输入注入 boundary input，并把 boundary output 发布给 ROS2 adapter。island demo 和
+release gate 仍在 `v0.9.0` 后续切片中推进。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、
@@ -580,16 +584,21 @@ publisher/subscriber/session；codec/schema 错误不得触发重连。
 ## ROS2 Bridge 状态
 
 FlowRT 与 ROS2 bridge 的唯一通信桥梁固定为 `zenoh`。RSDL 使用 `[[bridge.ros2]]`
-声明 bridge，当前只支持：
+声明 bridge，当前支持：
 
-- `direction = "flowrt_to_ros2"`。
-- `ros2_type = "std_msgs/msg/String"`。
-- `field` 指向 FlowRT message 中的 `string` 字段。
+- `direction = "flowrt_to_ros2"` 和 `direction = "ros2_to_flowrt"`。
+- `ros2_type = "std_msgs/msg/String"` 与 `geometry_msgs/msg/Pose` 的 typed subset。
+- `field` 指向 FlowRT message 中的 `string` 字段；Pose 映射要求 FlowRT message 结构与
+  ROS2 Pose 的 position/orientation 字段匹配。
+- `flowrt = "instance.port"` 继续表示普通 FlowRT 端口；island profile 下也可以写
+  `flowrt = "boundary_endpoint_name"`，把 ROS2 topic 显式接到 typed boundary input/output。
 
 normalization 生成的 bridge backend 必须是 `zenoh`；validator 必须拒绝 source target
 不支持 `zenoh` 的 contract，不得添加 DDS fallback。codegen 会在 source process 中
 生成 zenoh bridge tap，并额外生成 FlowRT 管理的 C++ ROS2 adapter process
-`ros2_bridge`。launch manifest 中该 process 的 `runtime_kind` 为 `ros2_bridge`。
+`ros2_bridge`。boundary-bound bridge 不把 ROS2 输入伪装成普通 dataflow bind；generated
+shell 会先把样本注入对应 `BoundaryInput`，再由正常 island boundary 路径驱动 task。
+launch manifest 中该 process 的 `runtime_kind` 为 `ros2_bridge`。
 
 generated supervisor 必须为 ROS2 bridge process 选择 CMake 产出的 adapter executable，
 启动时设置 `RMW_IMPLEMENTATION=rmw_zenoh_cpp`；adapter 自身也必须校验 ROS2 侧实际

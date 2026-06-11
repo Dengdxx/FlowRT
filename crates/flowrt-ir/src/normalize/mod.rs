@@ -143,7 +143,12 @@ fn normalize_document_with_modules(
         &name_resolver,
         &graph_name,
     )?;
-    let ros2_bridges = services::normalize_ros2_bridges(document, &instance_refs, &graph_name)?;
+    let ros2_bridges = services::normalize_ros2_bridges(
+        document,
+        &instance_refs,
+        &boundary_endpoints,
+        &graph_name,
+    )?;
     let graph = crate::GraphIr {
         id: graph_id.clone(),
         name: graph_name.clone(),
@@ -325,6 +330,85 @@ backends = ["zenoh"]
         assert_eq!(bridges[2].flowrt.instance.name, "sink");
         assert_eq!(bridges[2].flowrt.port, "pose");
         assert_eq!(bridges[2].backend.0, "zenoh");
+    }
+
+    #[test]
+    fn normalizes_ros2_bridge_boundary_endpoint_refs() {
+        let source = r#"
+[package]
+name = "ros2_boundary_demo"
+rsdl_version = "0.1"
+
+[type.TextFrame]
+data = "string"
+
+[component.echo]
+language = "rust"
+input = ["request:TextFrame"]
+output = ["reply:TextFrame"]
+
+[instance.echo]
+component = "echo"
+target = "linux"
+
+[instance.echo.task]
+trigger = "on_message"
+input = ["request"]
+output = ["reply"]
+
+[profile.default]
+backend = "zenoh"
+mode = "island"
+
+[[boundary.input]]
+name = "request_in"
+port = "echo.request"
+type = "TextFrame"
+
+[[boundary.output]]
+name = "reply_out"
+port = "echo.reply"
+type = "TextFrame"
+
+[[bridge.ros2]]
+flowrt = "request_in"
+ros2_topic = "/ros2/request"
+ros2_type = "std_msgs/msg/String"
+direction = "ros2_to_flowrt"
+
+[[bridge.ros2]]
+flowrt = "reply_out"
+ros2_topic = "/flowrt/reply"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let bridges = &ir.graphs[0].ros2_bridges;
+
+        assert_eq!(bridges.len(), 2);
+        assert_eq!(bridges[0].flowrt.instance.name, "echo");
+        assert_eq!(bridges[0].flowrt.port, "request");
+        assert_eq!(
+            bridges[0]
+                .boundary_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.name.as_str()),
+            Some("request_in")
+        );
+        assert_eq!(bridges[1].flowrt.instance.name, "echo");
+        assert_eq!(bridges[1].flowrt.port, "reply");
+        assert_eq!(
+            bridges[1]
+                .boundary_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.name.as_str()),
+            Some("reply_out")
+        );
     }
 
     #[test]

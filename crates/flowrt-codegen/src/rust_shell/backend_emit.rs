@@ -258,14 +258,22 @@ pub(crate) fn ros2_bridge_key_expr(
     graph: &GraphIr,
     bridge: &BridgeRuntimePlan,
 ) -> String {
+    let (source_instance, source_port) = ros2_bridge_flowrt_key_parts(bridge);
     ros2_bridge_key_expr_from_parts(
         &contract.package.name,
         &selected_profile_name(contract),
         &graph.name,
         bridge.index,
-        &bridge.source_instance,
-        &bridge.source_port,
+        &source_instance,
+        &source_port,
         &bridge.ros2_topic,
+    )
+}
+
+fn ros2_bridge_flowrt_key_parts(bridge: &BridgeRuntimePlan) -> (String, String) {
+    bridge.boundary_endpoint.as_ref().map_or_else(
+        || (bridge.source_instance.clone(), bridge.source_port.clone()),
+        |endpoint| ("boundary".to_string(), endpoint.clone()),
     )
 }
 

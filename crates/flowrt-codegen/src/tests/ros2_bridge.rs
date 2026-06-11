@@ -232,3 +232,167 @@ backends = ["zenoh"]
     ));
     assert!(!rust_shell.contains("task input `sink.pose` has no incoming bind"));
 }
+
+#[test]
+fn emits_ros2_bridge_for_island_boundary_endpoints() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "ros2_boundary_demo"
+rsdl_version = "0.1"
+
+[type.TextFrame]
+data = "string"
+
+[component.echo]
+language = "rust"
+input = ["request:TextFrame"]
+output = ["reply:TextFrame"]
+
+[instance.echo]
+component = "echo"
+process = "echo"
+target = "linux"
+
+[instance.echo.task]
+trigger = "on_message"
+input = ["request"]
+output = ["reply"]
+
+[profile.default]
+backend = "zenoh"
+mode = "island"
+
+[[boundary.input]]
+name = "request_in"
+port = "echo.request"
+type = "TextFrame"
+
+[[boundary.output]]
+name = "reply_out"
+port = "echo.reply"
+type = "TextFrame"
+
+[[bridge.ros2]]
+flowrt = "request_in"
+ros2_topic = "/ros2/request"
+ros2_type = "std_msgs/msg/String"
+direction = "ros2_to_flowrt"
+field = "data"
+
+[[bridge.ros2]]
+flowrt = "reply_out"
+ros2_topic = "/flowrt/reply"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let adapter = artifact_content(&bundle, "cpp/src/ros2_bridge.cpp");
+    let launch = artifact_content(&bundle, "launch/launch.json");
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(adapter.contains("BridgeZenohPublisher<TextFrame>"));
+    assert!(adapter.contains("BridgeZenohLatest<TextFrame>"));
+    assert!(adapter.contains(
+        "\"flowrt/ros2_boundary_demo/default/default/ros2_bridge_0/boundary_request_in_to__ros2_request\""
+    ));
+    assert!(adapter.contains(
+        "\"flowrt/ros2_boundary_demo/default/default/ros2_bridge_1/boundary_reply_out_to__flowrt_reply\""
+    ));
+    assert!(!adapter.contains("iox2"));
+
+    assert!(launch.contains("\"mode\": \"island\""));
+    assert!(launch.contains("\"boundary_endpoint\": \"request_in\""));
+    assert!(launch.contains("\"boundary_endpoint\": \"reply_out\""));
+    assert!(launch.contains("\"flowrt\": \"boundary:request_in\""));
+    assert!(launch.contains("\"flowrt\": \"boundary:reply_out\""));
+
+    assert!(rust_shell.contains("boundary_input_request_in: flowrt::BoundaryInput<TextFrame>"));
+    assert!(rust_shell.contains("boundary_output_reply_out: flowrt::BoundaryOutput<TextFrame>"));
+    assert!(
+        rust_shell.contains("self.ros2_bridge_0.set_schedule_waiter(scheduler_events.clone());")
+    );
+    assert!(rust_shell.contains("Ok(value) => value.as_ref().cloned(),"));
+    assert!(rust_shell.contains("self.boundary_input_request_in.inject_at(value, tick_time_ms);"));
+    assert!(
+        rust_shell
+            .contains("let request_read = self.boundary_input_request_in.read_at(tick_time_ms);")
+    );
+    assert!(rust_shell.contains("self.ros2_bridge_1.publish_at(value.clone(), tick_time_ms)"));
+    assert!(rust_shell.contains("from: \"ros2:/ros2/request\".to_string()"));
+    assert!(rust_shell.contains("to: \"boundary:request_in\".to_string()"));
+    assert!(rust_shell.contains("from: \"boundary:reply_out\".to_string()"));
+    assert!(rust_shell.contains("to: \"ros2:/flowrt/reply\".to_string()"));
+    assert!(!rust_shell.contains("task input `echo.request` has no incoming bind"));
+
+    let cpp_ir = contract_from_source(
+        r#"
+[package]
+name = "ros2_boundary_cpp_demo"
+rsdl_version = "0.1"
+
+[type.TextFrame]
+data = "string"
+
+[component.echo]
+language = "cpp"
+input = ["request:TextFrame"]
+output = ["reply:TextFrame"]
+
+[instance.echo]
+component = "echo"
+process = "echo"
+target = "linux"
+
+[instance.echo.task]
+trigger = "on_message"
+input = ["request"]
+output = ["reply"]
+
+[profile.default]
+backend = "zenoh"
+mode = "island"
+
+[[boundary.input]]
+name = "request_in"
+port = "echo.request"
+type = "TextFrame"
+
+[[boundary.output]]
+name = "reply_out"
+port = "echo.reply"
+type = "TextFrame"
+
+[[bridge.ros2]]
+flowrt = "request_in"
+ros2_topic = "/ros2/request"
+ros2_type = "std_msgs/msg/String"
+direction = "ros2_to_flowrt"
+field = "data"
+
+[[bridge.ros2]]
+flowrt = "reply_out"
+ros2_topic = "/flowrt/reply"
+ros2_type = "std_msgs/msg/String"
+direction = "flowrt_to_ros2"
+field = "data"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(cpp_shell.contains("ros2_bridge_0_.set_schedule_waiter(scheduler_events);"));
+    assert!(cpp_shell.contains("boundary_input_request_in_.inject_at(*value, tick_time_ms);"));
+    assert!(cpp_shell.contains("boundary_output_reply_out_.publish_at(*value, tick_time_ms);"));
+    assert!(cpp_shell.contains("ros2_bridge_1_.publish_at(*value, tick_time_ms)"));
+}

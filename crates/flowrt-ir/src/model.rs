@@ -573,6 +573,8 @@ pub struct Ros2BridgeIr {
     pub id: EntityId,
     pub name: String,
     pub flowrt: PortRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary_endpoint: Option<EntityRef>,
     pub ros2_topic: String,
     pub ros2_type: String,
     pub direction: Ros2BridgeDirection,

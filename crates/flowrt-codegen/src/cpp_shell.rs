@@ -854,6 +854,7 @@ fn emit_cpp_app_step(
     output.push_str("    (void)introspection_state;\n");
     output.push_str("    (void)scheduler_events;\n");
     output.push_str("    (void)health_map;\n");
+    output.push_str(&emit_cpp_ros2_boundary_input_pump(emission, order));
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -1162,6 +1163,7 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     output.push_str("    flowrt::ScheduleWaiter scheduler_events;\n");
     output.push_str(&emit_cpp_scheduler_event_registration(
         run.binds,
+        run.bridges,
         run.boundaries,
     ));
     output.push_str(
@@ -1554,6 +1556,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
 
 fn emit_cpp_scheduler_event_registration(
     binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
     boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
@@ -1564,6 +1567,12 @@ fn emit_cpp_scheduler_event_registration(
         output.push_str(&format!(
             "    {field}_.set_schedule_waiter(scheduler_events);\n",
             field = bind.field_name
+        ));
+    }
+    for bridge in bridges {
+        output.push_str(&format!(
+            "    {field}_.set_schedule_waiter(scheduler_events);\n",
+            field = bridge.field_name
         ));
     }
     for boundary in boundaries
@@ -1747,6 +1756,7 @@ fn cpp_input_bridges_for_task<'a>(
         .filter_map(|input| {
             bridges.iter().find(|bridge| {
                 bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+                    && bridge.boundary_endpoint.is_none()
                     && bridge.source_instance == task.instance.name
                     && bridge.source_port == *input
             })
@@ -1768,6 +1778,40 @@ fn cpp_input_boundaries_for_task<'a>(
             })
         })
         .collect()
+}
+
+fn emit_cpp_ros2_boundary_input_pump(
+    emission: &CppStepEmission<'_>,
+    order: &[&InstanceIr],
+) -> String {
+    let active_instances = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let boundaries_by_name = emission
+        .boundaries
+        .iter()
+        .map(|boundary| (boundary.endpoint_name.as_str(), boundary))
+        .collect::<BTreeMap<_, _>>();
+    let mut output = String::new();
+    for bridge in emission.bridges.iter().filter(|bridge| {
+        bridge.direction == Ros2BridgeDirection::Ros2ToFlowrt
+            && active_instances.contains(bridge.source_instance.as_str())
+    }) {
+        let Some(endpoint_name) = bridge.boundary_endpoint.as_deref() else {
+            continue;
+        };
+        let Some(boundary) = boundaries_by_name.get(endpoint_name).copied() else {
+            continue;
+        };
+        output.push_str(&format!(
+            "    auto {bridge}_boundary_latest_result = {bridge}_.receive_latest_at(tick_time_ms);\n    if (std::holds_alternative<flowrt::ChannelError>({bridge}_boundary_latest_result)) {{\n        return flowrt::Status::Error;\n    }}\n    const auto {bridge}_boundary_latest = std::get<flowrt::Latest<{ty}>>({bridge}_boundary_latest_result);\n    if (const auto* value = {bridge}_boundary_latest.get()) {{\n        {boundary}_.inject_at(*value, tick_time_ms);\n    }}\n",
+            bridge = bridge.field_name,
+            boundary = boundary.field_name,
+            ty = cpp_type(&bridge.source_type),
+        ));
+    }
+    output
 }
 
 fn emit_cpp_on_message_revision_state(

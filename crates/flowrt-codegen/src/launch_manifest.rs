@@ -261,9 +261,11 @@ fn launch_ros2_bridges(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json
     bridge_runtime_plans(contract, graph)
         .iter()
         .map(|bridge| {
+            let flowrt = bridge_flowrt_endpoint(bridge);
             serde_json::json!({
                 "name": bridge.name,
-                "flowrt": format!("{}.{}", bridge.source_instance, bridge.source_port),
+                "flowrt": flowrt,
+                "boundary_endpoint": bridge.boundary_endpoint.as_deref(),
                 "ros2_topic": bridge.ros2_topic,
                 "ros2_type": bridge.ros2_type,
                 "direction": ros2_bridge_direction_name(bridge.direction),
@@ -273,6 +275,13 @@ fn launch_ros2_bridges(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json
             })
         })
         .collect()
+}
+
+fn bridge_flowrt_endpoint(bridge: &crate::runtime_plan::BridgeRuntimePlan) -> String {
+    bridge.boundary_endpoint.as_ref().map_or_else(
+        || format!("{}.{}", bridge.source_instance, bridge.source_port),
+        |endpoint| format!("boundary:{endpoint}"),
+    )
 }
 
 fn ros2_bridge_direction_name(direction: flowrt_ir::Ros2BridgeDirection) -> &'static str {
