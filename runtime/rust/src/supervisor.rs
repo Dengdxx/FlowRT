@@ -68,8 +68,18 @@ pub struct LaunchManifest {
     pub package: String,
     pub ir_version: String,
     pub profiles: Vec<String>,
+    #[serde(default)]
+    pub profile_modes: Vec<LaunchProfileMode>,
     pub targets: Vec<String>,
     pub graphs: Vec<LaunchGraph>,
+}
+
+/// manifest 中 profile 的 graph 完整性模式摘要。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchProfileMode {
+    pub name: String,
+    pub mode: String,
 }
 
 /// manifest 中的 graph 节点。
@@ -77,10 +87,14 @@ pub struct LaunchManifest {
 #[serde(deny_unknown_fields)]
 pub struct LaunchGraph {
     pub name: String,
+    #[serde(default = "default_graph_mode")]
+    pub mode: String,
     #[serde(default)]
     pub scheduler: serde_json::Value,
     #[serde(default)]
     pub channels: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub boundary_endpoints: Vec<LaunchBoundaryEndpoint>,
     #[serde(default)]
     pub services: Vec<LaunchService>,
     #[serde(default)]
@@ -90,6 +104,24 @@ pub struct LaunchGraph {
     #[serde(default)]
     pub tasks: Vec<serde_json::Value>,
     pub processes: Vec<LaunchProcess>,
+}
+
+fn default_graph_mode() -> String {
+    "strict".to_string()
+}
+
+/// manifest 中的 island boundary endpoint 静态摘要。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchBoundaryEndpoint {
+    pub name: String,
+    #[serde(default)]
+    pub canonical_id: String,
+    pub direction: String,
+    pub endpoint: String,
+    pub instance: String,
+    pub port: String,
+    pub message_type: String,
 }
 
 /// manifest 中单个 service bind 描述。
@@ -2952,6 +2984,9 @@ mod tests {
             }]
         }"#;
         let manifest = parse_launch_manifest(json).unwrap();
+        assert!(manifest.profile_modes.is_empty());
+        assert_eq!(manifest.graphs[0].mode, "strict");
+        assert!(manifest.graphs[0].boundary_endpoints.is_empty());
         let process = &manifest.graphs[0].processes[0];
         assert_eq!(process.name, "sensor");
         assert!(process.target.is_none());
@@ -2997,6 +3032,48 @@ mod tests {
         let error = parse_launch_manifest(json).expect_err("unknown manifest fields must fail");
 
         assert!(error.contains("unknown field"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_island_boundary_metadata() {
+        let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["dev"],
+            "profile_modes": [{ "name": "dev", "mode": "island" }],
+            "targets": ["default"],
+            "graphs": [{
+                "name": "main",
+                "mode": "island",
+                "scheduler": {},
+                "channels": [],
+                "boundary_endpoints": [{
+                    "name": "sample_in",
+                    "canonical_id": "boundary_0123456789abcdef",
+                    "direction": "input",
+                    "endpoint": "consumer.sample",
+                    "instance": "consumer",
+                    "port": "sample",
+                    "message_type": "Sample"
+                }],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": []
+            }]
+        }"#;
+
+        let manifest = parse_launch_manifest(json).unwrap();
+
+        assert_eq!(manifest.profile_modes[0].name, "dev");
+        assert_eq!(manifest.profile_modes[0].mode, "island");
+        assert_eq!(manifest.graphs[0].mode, "island");
+        assert_eq!(manifest.graphs[0].boundary_endpoints[0].name, "sample_in");
+        assert_eq!(
+            manifest.graphs[0].boundary_endpoints[0].endpoint,
+            "consumer.sample"
+        );
     }
 
     #[test]
@@ -3334,8 +3411,10 @@ mod tests {
     fn expected_services_for_process_uses_server_instances() {
         let graph = LaunchGraph {
             name: "main".to_string(),
+            mode: "strict".to_string(),
             scheduler: serde_json::json!({}),
             channels: vec![],
+            boundary_endpoints: vec![],
             services: vec![
                 LaunchService {
                     name: "client.plan".to_string(),

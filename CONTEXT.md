@@ -19,8 +19,10 @@ SDK overlay、pkg-config 模块和最终二进制 summary。
 真实 `instance.port` 引用和解析后的 `TypeExpr`，并按方向和名称稳定排序；strict
 profile 拒绝 boundary endpoint，island profile 下 typed boundary input 可以满足 task
 active input，但同一 input port 不允许同时由 dataflow bind 和 boundary input 满足。
-self-description/manifest/status、runtime primitive、codegen、CLI `flowrt pub`、ROS2/zenoh
-adapter、demo 和 release gate 仍在 `v0.9.0` 后续切片中推进。
+self-description 和 launch manifest 已暴露 profile/graph mode 与 typed
+`boundary_endpoints`；`flowrt list` 可以展示 `island_profiles`、`boundary_endpoints` 和
+每个 boundary input/output 的绑定端点。runtime primitive、codegen boundary 接线、CLI
+`flowrt pub`、ROS2/zenoh adapter、demo 和 release gate 仍在 `v0.9.0` 后续切片中推进。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、

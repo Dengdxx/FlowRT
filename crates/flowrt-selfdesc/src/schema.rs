@@ -56,7 +56,13 @@ pub struct SelfDescriptionPackage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfDescriptionProfile {
     pub name: String,
+    #[serde(default = "default_graph_mode")]
+    pub mode: String,
     pub backend: String,
+}
+
+fn default_graph_mode() -> String {
+    "strict".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +222,8 @@ pub struct SelfDescriptionParamDecl {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfDescriptionGraph {
     pub name: String,
+    #[serde(default = "default_graph_mode")]
+    pub mode: String,
     #[serde(default)]
     pub scheduler: SelfDescriptionScheduler,
     /// v0.7+ external process package/executable 摘要。
@@ -227,12 +235,39 @@ pub struct SelfDescriptionGraph {
     pub tasks: Vec<SelfDescriptionTask>,
     #[serde(default)]
     pub channels: Vec<SelfDescriptionChannel>,
+    /// v0.9+ island mode typed boundary endpoint 拓扑。
+    #[serde(default)]
+    pub boundary_endpoints: Vec<SelfDescriptionBoundaryEndpoint>,
     /// v0.4+ service endpoint 拓扑。
     #[serde(default)]
     pub services: Vec<SelfDescriptionServiceEndpoint>,
     /// v0.6+ operation endpoint 拓扑。
     #[serde(default)]
     pub operations: Vec<SelfDescriptionOperationEndpoint>,
+}
+
+/// island mode 的 typed boundary endpoint 静态拓扑信息。
+///
+/// endpoint 必须绑定真实 component port；它不是 backend、transport 或 ROS2 topic。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionBoundaryEndpoint {
+    /// Contract IR 中 boundary endpoint 的稳定实体 ID。
+    #[serde(default)]
+    pub canonical_id: String,
+    #[serde(default)]
+    pub name: String,
+    /// `input` 或 `output`。
+    #[serde(default)]
+    pub direction: String,
+    /// `<instance>.<port>` 形式的用户可读端点名。
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub instance: String,
+    #[serde(default)]
+    pub port: String,
+    #[serde(default)]
+    pub message_type: String,
 }
 
 /// external process 静态包元数据。

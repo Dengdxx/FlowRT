@@ -2,21 +2,23 @@ use std::collections::BTreeMap;
 
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
-    ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr,
-    IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect,
-    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
-    OverflowPolicy as IrOverflowPolicy, ResourceKind, ServiceOverflowPolicy,
-    StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind,
+    ContractIr, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
+    IoBoundaryShutdown, IoSideEffect, OperationConcurrencyPolicy, OperationFeedbackPolicy,
+    OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ResourceKind,
+    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind, TypeExpr,
+    TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
-    SelfDescriptionChannel, SelfDescriptionComponentType, SelfDescriptionDeployment,
-    SelfDescriptionExternalProcess, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
-    SelfDescriptionGraph, SelfDescriptionInstance, SelfDescriptionIoBoundary,
-    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
-    SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
-    SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
-    SelfDescriptionProfile, SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
+    SelfDescriptionBoundaryEndpoint, SelfDescriptionChannel, SelfDescriptionComponentType,
+    SelfDescriptionDeployment, SelfDescriptionExternalProcess, SelfDescriptionFieldAbi,
+    SelfDescriptionFrameField, SelfDescriptionGraph, SelfDescriptionInstance,
+    SelfDescriptionIoBoundary, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
+    SelfDescriptionOperationEndpoint, SelfDescriptionOperationLowering,
+    SelfDescriptionOperationPortDecl, SelfDescriptionPackage, SelfDescriptionParam,
+    SelfDescriptionParamDecl, SelfDescriptionPortDecl, SelfDescriptionProfile,
+    SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
     SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
     SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
     SelfDescriptionTask,
@@ -113,6 +115,7 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
             .iter()
             .map(|profile| SelfDescriptionProfile {
                 name: profile.name.clone(),
+                mode: graph_mode_name(profile.mode).to_string(),
                 backend: profile.backend.0.clone(),
             })
             .collect(),
@@ -173,6 +176,7 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
 fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescriptionGraph {
     SelfDescriptionGraph {
         name: graph.name.clone(),
+        mode: graph_mode_name(contract_artifact_mode(contract)).to_string(),
         scheduler: self_description_scheduler(contract, graph),
         external_processes: graph
             .external_processes
@@ -256,12 +260,57 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
                 }
             })
             .collect(),
+        boundary_endpoints: graph
+            .boundary_endpoints
+            .iter()
+            .map(self_description_boundary_endpoint)
+            .collect(),
         services: graph
             .services
             .iter()
             .map(|service| self_description_service_endpoint(contract, graph, service))
             .collect(),
         operations: self_description_operation_endpoints(contract, graph),
+    }
+}
+
+fn self_description_boundary_endpoint(
+    endpoint: &BoundaryEndpointIr,
+) -> SelfDescriptionBoundaryEndpoint {
+    SelfDescriptionBoundaryEndpoint {
+        canonical_id: endpoint.id.0.clone(),
+        name: endpoint.name.clone(),
+        direction: boundary_direction_name(endpoint.direction).to_string(),
+        endpoint: format!("{}.{}", endpoint.port.instance.name, endpoint.port.port),
+        instance: endpoint.port.instance.name.clone(),
+        port: endpoint.port.port.clone(),
+        message_type: endpoint.ty.canonical_syntax(),
+    }
+}
+
+fn graph_mode_name(mode: GraphMode) -> &'static str {
+    match mode {
+        GraphMode::Strict => "strict",
+        GraphMode::Island => "island",
+    }
+}
+
+fn contract_artifact_mode(contract: &ContractIr) -> GraphMode {
+    if contract
+        .profiles
+        .iter()
+        .any(|profile| profile.mode == GraphMode::Island)
+    {
+        GraphMode::Island
+    } else {
+        GraphMode::Strict
+    }
+}
+
+fn boundary_direction_name(direction: BoundaryDirection) -> &'static str {
+    match direction {
+        BoundaryDirection::Input => "input",
+        BoundaryDirection::Output => "output",
     }
 }
 

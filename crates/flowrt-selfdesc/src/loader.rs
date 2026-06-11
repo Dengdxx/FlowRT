@@ -246,6 +246,50 @@ fn main() {{}}
     }
 
     #[test]
+    fn new_json_with_island_boundary_fields_loads_correctly() {
+        let json = r#"{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "island_demo" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": []
+}"#;
+        let dir = std::env::temp_dir().join(format!(
+            "flowrt-selfdesc-island-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("selfdesc.json");
+        std::fs::write(&path, json).unwrap();
+
+        let sd = load_self_description(&path).unwrap();
+        assert_eq!(sd.profiles[0].mode, "island");
+        assert_eq!(sd.graphs[0].mode, "island");
+        assert_eq!(sd.graphs[0].boundary_endpoints[0].direction, "input");
+        assert_eq!(
+            sd.graphs[0].boundary_endpoints[0].endpoint,
+            "consumer.sample"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn unsupported_version_reports_clear_error() {
         let json = r#"{
   "self_description_version": "99.0",

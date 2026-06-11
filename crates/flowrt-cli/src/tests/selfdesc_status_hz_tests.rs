@@ -82,6 +82,52 @@ fn self_description_sidecar_drives_list_and_nodes_output() {
 }
 
 #[test]
+fn self_description_summary_shows_island_boundary_endpoints() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{ "type_name": "Sample", "size_bytes": 4 }]
+}
+"#;
+    let root = temp_test_dir("selfdesc-island-boundary");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    assert!(list.contains("profiles=1 island_profiles=1"));
+    assert!(list.contains("graph default mode=island"));
+    assert!(list.contains("boundary input sample_in endpoint=consumer.sample type=Sample"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn reads_self_description_from_object_section() {
     let root = temp_test_dir("selfdesc-section");
     std::fs::create_dir_all(root.join("src")).unwrap();

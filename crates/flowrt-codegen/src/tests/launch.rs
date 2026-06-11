@@ -664,6 +664,103 @@ backends = ["inproc"]
 }
 
 #[test]
+fn launch_manifest_and_selfdesc_expose_island_boundary_contract() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "island_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.producer]
+component = "producer"
+
+[profile.dev]
+mode = "island"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "Sample"
+
+[[boundary.output]]
+name = "sample_out"
+port = "producer.sample"
+type = "Sample"
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+
+    assert_eq!(launch["profile_modes"][0]["name"], "dev");
+    assert_eq!(launch["profile_modes"][0]["mode"], "island");
+    assert_eq!(
+        launch["graphs"][0]["boundary_endpoints"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        launch["graphs"][0]["boundary_endpoints"][0]["name"],
+        "sample_in"
+    );
+    assert_eq!(
+        launch["graphs"][0]["boundary_endpoints"][0]["direction"],
+        "input"
+    );
+    assert_eq!(
+        launch["graphs"][0]["boundary_endpoints"][0]["endpoint"],
+        "consumer.sample"
+    );
+    assert_eq!(
+        launch["graphs"][0]["boundary_endpoints"][0]["message_type"],
+        "Sample"
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    assert_eq!(selfdesc["profiles"][0]["mode"], "island");
+    assert_eq!(
+        selfdesc["graphs"][0]["boundary_endpoints"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["boundary_endpoints"][1]["name"],
+        "sample_out"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["boundary_endpoints"][1]["direction"],
+        "output"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["boundary_endpoints"][1]["endpoint"],
+        "producer.sample"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["boundary_endpoints"][1]["message_type"],
+        "Sample"
+    );
+}
+
+#[test]
 fn rust_and_cpp_shells_wire_io_boundary_contexts() {
     let rust_ir = contract_from_source(
         r#"

@@ -627,13 +627,13 @@ flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app
 ```
 
-`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出组件视图或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、component type、instance、task、channel、service、operation 和 params 是否与预期一致。
+`list` 和 `nodes` 读取生成应用二进制中的 `.flowrt.selfdesc` section，直接输出组件视图或 instance 列表；也可以读取 `flowrt/selfdesc/selfdesc.json` 作为调试辅助。它们不需要 RSDL 源文件，适合部署后在目标机器上确认 package、graph、component type、instance、task、channel、boundary endpoint、service、operation 和 params 是否与预期一致。
 
-`list` 的摘要行包含 `component_types=<N>`、`services=<N>` 和 `operations=<N>` 计数。每个 graph 内先展示 component type 声明，再按 instance 展示其 tasks、channel endpoints、service endpoints、operation endpoints 和 params：
+`list` 的摘要行包含 `profiles=<N>`、`island_profiles=<N>`、`component_types=<N>`、`boundary_endpoints=<N>`、`services=<N>` 和 `operations=<N>` 计数。每个 graph 行会展示 `mode=strict|island`；graph 内先展示 component type 声明和 boundary endpoints，再按 instance 展示其 tasks、channel endpoints、service endpoints、operation endpoints 和 params：
 
 ```text
-package=robot_demo selfdesc=0.1 source_hash=abc graphs=1 component_types=2 instances=2 tasks=3 channels=2 services=1 operations=1 messages=1
-graph default
+package=robot_demo selfdesc=0.1 source_hash=abc profiles=1 island_profiles=0 graphs=1 component_types=2 instances=2 tasks=3 channels=2 boundary_endpoints=0 services=1 operations=1 messages=1
+graph default mode=strict
   component planner language=rust kind=native
     service_clients: plan:PlanRequest->PlanResponse
     operation_clients: navigate:NavGoal->NavFeedback->NavResult
@@ -652,6 +652,14 @@ graph default
     channel planner.cmd -> executor.cmd type=Cmd backend=inproc
     service planner.plan_to_executor.execute client=planner.plan server=executor.execute request=PlanRequest response=PlanResponse backend=inproc
     operation planner.navigate client=planner.navigate server=executor.navigate goal=NavGoal feedback=NavFeedback result=NavResult backend=inproc
+```
+
+island profile 生成物会在同一输出中显式标注脚手架边界：
+
+```text
+package=island_demo selfdesc=0.1 source_hash=abc profiles=1 island_profiles=1 graphs=1 component_types=1 instances=1 tasks=1 channels=0 boundary_endpoints=1 services=0 operations=0 messages=1
+graph default mode=island
+  boundary input sample_in endpoint=consumer.sample type=Sample
 ```
 
 `nodes` 输出 instance 列表，当 self-description 包含 component type 信息时会附加 `kind=` 字段：

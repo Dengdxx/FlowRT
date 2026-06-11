@@ -47,11 +47,23 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         .iter()
         .map(|graph| graph.operations.len())
         .sum();
+    let total_boundaries: usize = self_description
+        .graphs
+        .iter()
+        .map(|graph| graph.boundary_endpoints.len())
+        .sum();
+    let island_profiles = self_description
+        .profiles
+        .iter()
+        .filter(|profile| profile.mode == "island")
+        .count();
     let mut output = format!(
-        "package={} selfdesc={} source_hash={} graphs={} component_types={} instances={} tasks={} channels={} services={} operations={} messages={}",
+        "package={} selfdesc={} source_hash={} profiles={} island_profiles={} graphs={} component_types={} instances={} tasks={} channels={} boundary_endpoints={} services={} operations={} messages={}",
         self_description.package.name,
         self_description.self_description_version,
         self_description.source_hash,
+        self_description.profiles.len(),
+        island_profiles,
         self_description.graphs.len(),
         self_description.component_types.len(),
         self_description
@@ -69,6 +81,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
             .iter()
             .map(|graph| graph.channels.len())
             .sum::<usize>(),
+        total_boundaries,
         total_services,
         total_operations,
         self_description.message_abi.len()
@@ -82,7 +95,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         .collect();
 
     for graph in &self_description.graphs {
-        output.push_str(&format!("\ngraph {}", graph.name));
+        output.push_str(&format!("\ngraph {} mode={}", graph.name, graph.mode));
 
         // 展示 component types。
         let graph_component_names: BTreeMap<&str, ()> = graph
@@ -163,6 +176,13 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     output.push_str(&format!("\n    params: {}", params.join(", ")));
                 }
             }
+        }
+
+        for endpoint in &graph.boundary_endpoints {
+            output.push_str(&format!(
+                "\n  boundary {} {} endpoint={} type={}",
+                endpoint.direction, endpoint.name, endpoint.endpoint, endpoint.message_type
+            ));
         }
 
         // 按 instance 分组展示 tasks、channels、services 和 params。

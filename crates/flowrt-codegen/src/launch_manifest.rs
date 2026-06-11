@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ComponentIr, ComponentKind, ContractIr, ExternalHealthKind, ExternalProcessIr,
-    ExternalWorkingDir, GraphIr, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
-    IoBoundaryShutdown, IoSideEffect, ProcessIr, ResourceKind, ResourceRequirementIr,
-    ServicePortIr, TaskIr,
+    BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind, ContractIr,
+    ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode, InstanceIr,
+    IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
+    ResourceKind, ResourceRequirementIr, ServicePortIr, TaskIr,
 };
 
 use crate::runtime_plan::bridge_runtime_plans;
@@ -20,9 +20,11 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         .map(|graph| {
             Ok(serde_json::json!({
                 "name": graph.name,
+                "mode": graph_mode_name(contract_artifact_mode(contract)),
                 "scheduler": launch_scheduler(contract, graph),
                 "processes": launch_processes(contract, graph),
                 "channels": launch_channels(contract, graph),
+                "boundary_endpoints": launch_boundary_endpoints(graph),
                 "services": launch_services(contract, graph)?,
                 "ros2_bridges": launch_ros2_bridges(contract, graph),
                 "instances": graph.instances.iter().map(|instance| {
@@ -43,6 +45,10 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         "package": contract.package.name,
         "ir_version": contract.ir_version,
         "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
+        "profile_modes": contract.profiles.iter().map(|profile| serde_json::json!({
+            "name": profile.name,
+            "mode": graph_mode_name(profile.mode),
+        })).collect::<Vec<_>>(),
         "targets": contract.targets.iter().map(|target| &target.name).collect::<Vec<_>>(),
         "graphs": graphs,
     });
@@ -125,6 +131,52 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
             }))
         })
         .collect()
+}
+
+fn launch_boundary_endpoints(graph: &GraphIr) -> Vec<serde_json::Value> {
+    graph
+        .boundary_endpoints
+        .iter()
+        .map(launch_boundary_endpoint)
+        .collect()
+}
+
+fn launch_boundary_endpoint(endpoint: &BoundaryEndpointIr) -> serde_json::Value {
+    serde_json::json!({
+        "name": endpoint.name,
+        "canonical_id": endpoint.id.0,
+        "direction": boundary_direction_name(endpoint.direction),
+        "endpoint": format!("{}.{}", endpoint.port.instance.name, endpoint.port.port),
+        "instance": endpoint.port.instance.name,
+        "port": endpoint.port.port,
+        "message_type": endpoint.ty.canonical_syntax(),
+    })
+}
+
+fn graph_mode_name(mode: GraphMode) -> &'static str {
+    match mode {
+        GraphMode::Strict => "strict",
+        GraphMode::Island => "island",
+    }
+}
+
+fn contract_artifact_mode(contract: &ContractIr) -> GraphMode {
+    if contract
+        .profiles
+        .iter()
+        .any(|profile| profile.mode == GraphMode::Island)
+    {
+        GraphMode::Island
+    } else {
+        GraphMode::Strict
+    }
+}
+
+fn boundary_direction_name(direction: BoundaryDirection) -> &'static str {
+    match direction {
+        BoundaryDirection::Input => "input",
+        BoundaryDirection::Output => "output",
+    }
 }
 
 fn service_port_for_instance<'a>(
