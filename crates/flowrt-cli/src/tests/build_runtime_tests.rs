@@ -102,6 +102,89 @@ language = "cpp"
 }
 
 #[test]
+fn build_success_summary_includes_target_toolchain_and_final_binary() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "robot"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "cpp"
+
+[component.camera.build]
+pkg_config = ["vendor_capture", "libjpeg"]
+
+[instance.camera]
+component = "camera"
+target = "arm64"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 100
+
+[target.arm64]
+platform = "linux-arm64"
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let mut build_info = crate::build_model::BuildInfo::new(
+        env!("CARGO_PKG_VERSION"),
+        Some("default".to_string()),
+        BuildMode::Release,
+        None,
+    );
+    build_info.platform = Some("linux-arm64".to_string());
+    build_info.rust_target_triple = Some("aarch64-unknown-linux-gnu".to_string());
+    build_info.executables.cpp_app =
+        Some(PathBuf::from("build/bin/linux-arm64/release/robot_cpp_app"));
+    let target_profile = BuildToolchainProfile {
+        profile: ToolchainProfile {
+            platform: "linux-arm64".to_string(),
+            rust_target: "aarch64-unknown-linux-gnu".to_string(),
+            deb_multiarch: "aarch64-linux-gnu".to_string(),
+            c_compiler: "aarch64-linux-gnu-gcc".to_string(),
+            cpp_compiler: "aarch64-linux-gnu-g++".to_string(),
+            sysroot: None,
+            cmake_toolchain: None,
+            pkg_config_libdir: Some(PathBuf::from("/opt/vendor/pkgconfig")),
+            pkg_config_libdirs: Vec::new(),
+            cmake_prefix_paths: Vec::new(),
+            sdk_overlays: vec![PathBuf::from("/opt/vendor/rknn")],
+            cpp_compile_args: Vec::new(),
+            cpp_link_args: Vec::new(),
+            cpp_link_libraries: Vec::new(),
+            runtime_dependency_policy: RuntimeDependencyPolicy::Bundle,
+        },
+        cargo_target_triple: Some("aarch64-unknown-linux-gnu".to_string()),
+        is_cross: true,
+    };
+
+    let summary = format_build_success_summary(
+        &contract,
+        &build_info,
+        Some(&target_profile),
+        Path::new("/tmp/project/flowrt"),
+    );
+
+    assert!(summary.contains("target=linux-arm64"));
+    assert!(summary.contains("mode=release"));
+    assert!(summary.contains("rust_target=aarch64-unknown-linux-gnu"));
+    assert!(summary.contains("c=aarch64-linux-gnu-gcc"));
+    assert!(summary.contains("cxx=aarch64-linux-gnu-g++"));
+    assert!(summary.contains("runtime_deps=bundle"));
+    assert!(summary.contains("sdk_overlays=/opt/vendor/rknn"));
+    assert!(summary.contains("pkg-config=libjpeg, vendor_capture"));
+    assert!(
+        summary.contains("/tmp/project/flowrt/build/bin/linux-arm64/release/robot_cpp_app"),
+        "unexpected summary: {summary}"
+    );
+}
+
+#[test]
 fn build_plan_selects_cargo_and_cmake_for_mixed_contract() {
     let contract = contract_from_source(
         r#"

@@ -174,6 +174,10 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl --target linux-arm64
 - `--launcher` 会额外构建 `flowrt launch` 需要的 generated supervisor；省略时只构建可由 `flowrt run` 直接执行的 app。
 - `--target <platform>` 选择交叉编译 toolchain platform。Rust/Cargo 路径会使用对应
   Rust target triple；C++/CMake 路径会消费对应 `ToolchainProfile` 和 target SDK。
+- `build` 成功后会输出一段简短 summary。显式 `--target` 或由 Contract IR 选中的 target
+  构建会显示 target platform、build mode、Rust target triple、C/C++ compiler、
+  runtime dependency policy、SDK overlay、选中的 `pkg_config` 模块和最终二进制路径；
+  native 路径只保留必要字段，避免普通本机构建输出过于嘈杂。
 - 含 C++ component 时，生成的 CMake 工程会构建 managed shell、app target 和 ABI conformance test target。
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会查找 `iceoryx2-cxx 0.9.1` 的 `iceoryx2-cxx::static-lib-cxx` 目标。
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
@@ -215,6 +219,13 @@ target SDK root 及其 `cmake/` 目录，避免只使用 host 私有前缀。pro
 `-DCMAKE_C_COMPILER=...`、`-DCMAKE_CXX_COMPILER=...`，有 `sysroot` 时同时传
 `-DCMAKE_SYSROOT=...`。profile 或 target SDK 提供 `pkgconfig/` 时，configure 环境会
 设置 `PKG_CONFIG_LIBDIR`，避免 cross build 误用 host pkg-config 搜索路径。
+
+在真正进入 `cmake configure` 之前，CLI 会对 selected target 下 C++ component 的
+`build.pkg_config` 依赖做一次 fail-fast 预检。若 target SDK 缺失、`complete = false`
+或 `pkg-config` 模块不可见，错误文案会直接带出当前 target、当前
+`PKG_CONFIG_LIBDIR`、缺失模块或 target SDK 搜索路径，并建议先执行
+`flowrt doctor <rsdl> --target <platform>`；底层 CMake/Cargo 原始输出仍保持直出，
+CLI 只在前后补充上下文，不会隐式下载或修复任何外部 SDK。
 
 toolchain profile 由系统、用户、workspace 和 CLI override 按优先级合并。默认路径为
 `/etc/flowrt/toolchains.toml`、`~/.config/flowrt/toolchains.toml` 和项目

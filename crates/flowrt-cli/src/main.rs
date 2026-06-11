@@ -611,7 +611,7 @@ fn main() -> Result<()> {
                 target.as_deref(),
                 &workspace_root,
             )?;
-            build_workspace(
+            let build_info = build_workspace(
                 &prepared.selected_contract,
                 &out_dir,
                 launcher,
@@ -622,6 +622,15 @@ fn main() -> Result<()> {
                 "built {} and {} artifact(s)",
                 prepared.contract_path.display(),
                 prepared.artifact_count
+            );
+            println!(
+                "{}",
+                format_build_success_summary(
+                    &prepared.selected_contract,
+                    &build_info,
+                    target_profile.as_ref(),
+                    &out_dir,
+                )
             );
         }
         Command::Deps {
@@ -3184,7 +3193,7 @@ where
 {
     let mut command = ProcessCommand::new("pkg-config");
     command.args(args);
-    for (key, value) in doctor_pkg_config_env(profile, target_sdk) {
+    for (key, value) in doctor_pkg_config_env(profile, target_sdk)? {
         command.env(key, value);
     }
     if profile.sysroot.is_none() {
@@ -3198,21 +3207,26 @@ where
 fn doctor_pkg_config_env(
     profile: &ToolchainProfile,
     target_sdk: Option<&CppTargetSdk>,
-) -> BTreeMap<&'static str, OsString> {
+) -> Result<BTreeMap<&'static str, OsString>> {
     let mut values = BTreeMap::new();
     let search_paths = pkg_config_search_paths(Some(profile), target_sdk);
     let joined = if search_paths.is_empty() {
         OsString::new()
     } else {
-        env::join_paths(&search_paths)
-            .expect("PKG_CONFIG_LIBDIR paths should be joinable on this host")
+        env::join_paths(&search_paths).with_context(|| {
+            format!(
+                "failed to join PKG_CONFIG_LIBDIR paths for target `{}`: {}",
+                profile.platform,
+                format_path_list(&search_paths)
+            )
+        })?
     };
     values.insert("PKG_CONFIG_LIBDIR", joined);
     values.insert("PKG_CONFIG_PATH", OsString::new());
     if let Some(sysroot) = &profile.sysroot {
         values.insert("PKG_CONFIG_SYSROOT_DIR", sysroot.as_os_str().to_os_string());
     }
-    values
+    Ok(values)
 }
 
 fn find_pkg_config_pc_path(
@@ -4658,7 +4672,7 @@ fn pid_exists(pid: u32) -> bool {
             return true;
         }
         let code = std::io::Error::last_os_error().raw_os_error();
-        return code == Some(libc::EPERM);
+        code == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
     {
@@ -5096,13 +5110,15 @@ fn build_workspace(
     include_launcher: bool,
     build_mode: BuildMode,
     target_profile: Option<&BuildToolchainProfile>,
-) -> Result<()> {
+) -> Result<build_model::BuildInfo> {
     ensure_backend_runtime_supported(contract, "build")?;
     let rust_runtime_dir = rust_runtime_dir_for_generated_build()?;
     let mut build_info = build_info_for_contract(contract, build_mode)?;
     apply_build_target_metadata(&mut build_info, target_profile)?;
+    let steps = build_steps(contract, include_launcher);
+    preflight_cmake_build_diagnostics(contract, &steps, target_profile)?;
     let bin_target_identity = bin_target_identity(target_profile);
-    let cargo_cache = if build_steps(contract, include_launcher)
+    let cargo_cache = if steps
         .iter()
         .any(|step| matches!(step, BuildStep::CargoApp | BuildStep::CargoSupervisor))
     {
@@ -5121,7 +5137,7 @@ fn build_workspace(
             .as_ref()
             .map(|_| profile.profile.c_compiler.as_str())
     });
-    for step in build_steps(contract, include_launcher) {
+    for step in steps {
         match step {
             BuildStep::CargoApp => {
                 let manifest =
@@ -5201,7 +5217,203 @@ fn build_workspace(
         }
     }
     build_info.write(out_dir)?;
-    Ok(())
+    Ok(build_info)
+}
+
+fn preflight_cmake_build_diagnostics(
+    contract: &ContractIr,
+    steps: &[BuildStep],
+    target_profile: Option<&BuildToolchainProfile>,
+) -> Result<()> {
+    if !steps.contains(&BuildStep::CmakeApp) {
+        return Ok(());
+    }
+    let Some(target_profile) = target_profile else {
+        return Ok(());
+    };
+    let target_sdk = if target_profile.cargo_target_triple.is_some() {
+        let runtime_dir = cpp_runtime_dir_for_generated_build()?;
+        Some(resolve_cpp_target_sdk_for_build(
+            runtime_dir.as_deref(),
+            &target_profile.profile,
+        )?)
+    } else {
+        None
+    };
+    ensure_cmake_build_diagnostics_ready(contract, target_profile, target_sdk.as_ref())
+}
+
+fn format_build_success_summary(
+    contract: &ContractIr,
+    build_info: &build_model::BuildInfo,
+    target_profile: Option<&BuildToolchainProfile>,
+    out_dir: &Path,
+) -> String {
+    let target = target_profile
+        .map(|profile| profile.profile.platform.as_str())
+        .or(build_info.platform.as_deref())
+        .or(host_flowrt_platform())
+        .unwrap_or("native");
+    let final_paths = build_success_paths(build_info, out_dir)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    let final_label = if final_paths.len() > 1 {
+        "final_binaries"
+    } else {
+        "final_binary"
+    };
+    let mut lines = vec![format!(
+        "build summary: target={target} mode={}{} {final_label}={}",
+        build_info.build_mode,
+        build_info
+            .rust_target_triple
+            .as_deref()
+            .map(|triple| format!(" rust_target={triple}"))
+            .unwrap_or_default(),
+        if final_paths.is_empty() {
+            "<none>".to_string()
+        } else {
+            final_paths.join(", ")
+        }
+    )];
+    if let Some(target_profile) = target_profile
+        && build_uses_cpp_toolchain(contract)
+    {
+        lines.push(format!(
+            "toolchain: c={} cxx={} runtime_deps={}",
+            target_profile.profile.c_compiler,
+            target_profile.profile.cpp_compiler,
+            runtime_dependency_policy_name(target_profile.profile.runtime_dependency_policy),
+        ));
+        lines.push(format!(
+            "sdk_overlays={}",
+            format_path_list(&target_profile.profile.sdk_overlays)
+        ));
+        lines.push(format!(
+            "pkg-config={}",
+            format_string_list(&build_pkg_config_modules(
+                contract,
+                &target_profile.profile.platform,
+            ))
+        ));
+    }
+    lines.join("\n")
+}
+
+fn build_success_paths(build_info: &build_model::BuildInfo, out_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for relative in [
+        build_info.executables.rust_app.as_ref(),
+        build_info.executables.cpp_app.as_ref(),
+        build_info.executables.ros2_bridge.as_ref(),
+        build_info.executables.supervisor.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        push_unique_path(&mut paths, &out_dir.join(relative));
+    }
+    paths
+}
+
+fn build_uses_cpp_toolchain(contract: &ContractIr) -> bool {
+    has_component_language(contract, LanguageKind::Cpp) || has_ros2_bridge(contract)
+}
+
+fn build_pkg_config_modules(contract: &ContractIr, selected_platform: &str) -> Vec<String> {
+    selected_cpp_pkg_config_requirements(contract, selected_platform)
+        .into_iter()
+        .map(|requirement| requirement.module)
+        .collect()
+}
+
+fn format_string_list(values: &[String]) -> String {
+    if values.is_empty() {
+        return "<none>".to_string();
+    }
+    values.join(", ")
+}
+
+fn ensure_cmake_build_diagnostics_ready(
+    contract: &ContractIr,
+    target_profile: &BuildToolchainProfile,
+    target_sdk: Option<&CppTargetSdk>,
+) -> Result<()> {
+    let requirements =
+        selected_cpp_pkg_config_requirements(contract, &target_profile.profile.platform);
+    if requirements.is_empty() {
+        return Ok(());
+    }
+    let doctor_hint = build_doctor_hint(&target_profile.profile.platform);
+    let pkg_config_libdir = current_pkg_config_libdir(&target_profile.profile, target_sdk);
+    if !command_available("pkg-config") {
+        let missing_modules = requirements
+            .iter()
+            .map(|requirement| format!("{}:{}", requirement.component, requirement.module))
+            .collect::<Vec<_>>();
+        anyhow::bail!(
+            "build diagnostics: target={} PKG_CONFIG_LIBDIR={} missing_modules={} sdk_overlays={} reason=`pkg-config` not found in PATH; run `{}` before retrying",
+            target_profile.profile.platform,
+            pkg_config_libdir,
+            missing_modules.join(", "),
+            format_path_list(&target_profile.profile.sdk_overlays),
+            doctor_hint,
+        );
+    }
+
+    let missing_modules = requirements
+        .iter()
+        .filter_map(|requirement| {
+            match pkg_config_module_exists(
+                requirement.module.as_str(),
+                &target_profile.profile,
+                target_sdk,
+            ) {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(format!(
+                    "{}:{}",
+                    requirement.component, requirement.module
+                ))),
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if missing_modules.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "build diagnostics: target={} PKG_CONFIG_LIBDIR={} missing_modules={} sdk_overlays={} hint=run `{}` before retrying",
+        target_profile.profile.platform,
+        pkg_config_libdir,
+        missing_modules.join(", "),
+        format_path_list(&target_profile.profile.sdk_overlays),
+        doctor_hint,
+    );
+}
+
+fn build_doctor_hint(platform: &str) -> String {
+    format!("flowrt doctor <rsdl> --target {platform}")
+}
+
+fn current_pkg_config_libdir(
+    profile: &ToolchainProfile,
+    target_sdk: Option<&CppTargetSdk>,
+) -> String {
+    match doctor_pkg_config_env(profile, target_sdk) {
+        Ok(mut env) => env
+            .remove("PKG_CONFIG_LIBDIR")
+            .map(|value| {
+                let text = value.to_string_lossy().into_owned();
+                if text.is_empty() {
+                    "<empty>".to_string()
+                } else {
+                    text
+                }
+            })
+            .unwrap_or_else(|| "<empty>".to_string()),
+        Err(error) => format!("<invalid: {error}>"),
+    }
 }
 
 fn run_workspace(
@@ -5590,7 +5802,7 @@ fn run_cmake_configure_and_build(
         .map(toolchain_profile_cmake_prefix_paths)
         .unwrap_or_default();
     let target_sdk = toolchain_profile
-        .map(|profile| resolve_cpp_target_sdk_root(runtime_dir.as_deref(), &profile.platform))
+        .map(|profile| resolve_cpp_target_sdk_for_build(runtime_dir.as_deref(), profile))
         .transpose()?;
     let cmake_runtime_dir = target_sdk
         .as_ref()
@@ -5614,8 +5826,27 @@ fn run_cmake_configure_and_build(
         toolchain_profile,
         cmake_cross_compiling,
         target_sdk: target_sdk.as_ref(),
+    })
+    .map_err(|error| {
+        format_cmake_build_error(
+            "cmake configure",
+            &error,
+            contract,
+            build_mode,
+            target_profile,
+            target_sdk.as_ref(),
+        )
     })?;
-    run_cmake_build(&build_dir)?;
+    run_cmake_build(&build_dir).map_err(|error| {
+        format_cmake_build_error(
+            "cmake build",
+            &error,
+            contract,
+            build_mode,
+            target_profile,
+            target_sdk.as_ref(),
+        )
+    })?;
     let cpp_app = build_dir.join(cpp_app_executable_name(contract));
     let ros2_bridge = build_dir.join(ros2_bridge_executable_name(contract));
     Ok(CmakeBuildOutputs {
@@ -5665,7 +5896,7 @@ fn run_cmake_configure(spec: &CmakeConfigureSpec<'_>) -> Result<()> {
         spec.toolchain_profile,
         spec.cmake_cross_compiling,
     );
-    let configure_env = cmake_configure_env(spec.toolchain_profile, spec.target_sdk);
+    let configure_env = cmake_configure_env(spec.toolchain_profile, spec.target_sdk)?;
     let mut command = ProcessCommand::new("cmake");
     command.args(args);
     for (key, value) in configure_env {
@@ -5767,15 +5998,19 @@ fn cmake_system_processor_for_platform(platform: &str) -> Option<&'static str> {
 fn cmake_configure_env(
     toolchain_profile: Option<&ToolchainProfile>,
     target_sdk: Option<&CppTargetSdk>,
-) -> BTreeMap<&'static str, OsString> {
+) -> Result<BTreeMap<&'static str, OsString>> {
     let mut values = BTreeMap::new();
     let pkg_config_paths = pkg_config_search_paths(toolchain_profile, target_sdk);
     if !pkg_config_paths.is_empty() {
-        let joined = env::join_paths(&pkg_config_paths)
-            .expect("PKG_CONFIG_LIBDIR paths should be joinable on this host");
+        let joined = env::join_paths(&pkg_config_paths).with_context(|| {
+            format!(
+                "failed to join PKG_CONFIG_LIBDIR paths: {}",
+                format_path_list(&pkg_config_paths)
+            )
+        })?;
         values.insert("PKG_CONFIG_LIBDIR", joined);
     }
-    values
+    Ok(values)
 }
 
 fn pkg_config_search_paths(
@@ -5878,6 +6113,66 @@ fn toolchain_profile_overlay_pkgconfig_paths(profile: &ToolchainProfile) -> Vec<
         }
     }
     paths
+}
+
+fn resolve_cpp_target_sdk_for_build(
+    runtime_dir: Option<&Path>,
+    profile: &ToolchainProfile,
+) -> Result<CppTargetSdk> {
+    let target_sdk_candidates = runtime_dir
+        .map(|runtime_dir| cpp_target_sdk_root_candidates(runtime_dir, &profile.platform))
+        .unwrap_or_default();
+    resolve_cpp_target_sdk_root(runtime_dir, &profile.platform).map_err(|error| {
+        anyhow::anyhow!(
+            "build diagnostics: target={} PKG_CONFIG_LIBDIR={} target_sdk_candidates={} sdk_overlays={} hint=run `{}` before retrying: {}",
+            profile.platform,
+            current_pkg_config_libdir(profile, None),
+            format_path_list(&target_sdk_candidates),
+            format_path_list(&profile.sdk_overlays),
+            build_doctor_hint(&profile.platform),
+            error,
+        )
+    })
+}
+
+fn format_cmake_build_error(
+    step: &str,
+    error: &anyhow::Error,
+    contract: &ContractIr,
+    build_mode: BuildMode,
+    target_profile: Option<&BuildToolchainProfile>,
+    target_sdk: Option<&CppTargetSdk>,
+) -> anyhow::Error {
+    let target = target_profile
+        .map(|profile| profile.profile.platform.as_str())
+        .map(str::to_string)
+        .or_else(|| contract_target_platform(contract))
+        .or_else(|| host_flowrt_platform().map(str::to_string))
+        .unwrap_or_else(|| "native".to_string());
+    let doctor_hint = build_doctor_hint(&target);
+    let pkg_config_modules = target_profile
+        .map(|profile| build_pkg_config_modules(contract, &profile.profile.platform))
+        .unwrap_or_default();
+    let toolchain_line = target_profile
+        .map(|profile| {
+            format!(
+                " c={} cxx={} runtime_deps={}",
+                profile.profile.c_compiler,
+                profile.profile.cpp_compiler,
+                runtime_dependency_policy_name(profile.profile.runtime_dependency_policy),
+            )
+        })
+        .unwrap_or_default();
+    let pkg_config_libdir = target_profile
+        .map(|profile| current_pkg_config_libdir(&profile.profile, target_sdk))
+        .unwrap_or_else(|| "<empty>".to_string());
+    let sdk_overlays = target_profile
+        .map(|profile| format_path_list(&profile.profile.sdk_overlays))
+        .unwrap_or_else(|| "<none>".to_string());
+    anyhow::anyhow!(
+        "{step} failed for target={target} mode={build_mode}{toolchain_line} PKG_CONFIG_LIBDIR={pkg_config_libdir} sdk_overlays={sdk_overlays} pkg-config={} hint=run `{doctor_hint}` before retrying: {error}",
+        format_string_list(&pkg_config_modules),
+    )
 }
 
 fn resolve_cpp_target_sdk_root(runtime_dir: Option<&Path>, platform: &str) -> Result<CppTargetSdk> {
