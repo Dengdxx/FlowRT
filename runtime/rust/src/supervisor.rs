@@ -179,6 +179,23 @@ pub struct LaunchIoResource {
     pub kind: String,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub descriptor: Option<LaunchResourceDescriptor>,
+}
+
+/// manifest 中 I/O boundary 资源的 descriptor schema。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchResourceDescriptor {
+    pub kind: String,
+    pub port: String,
+    pub format: String,
+    #[serde(default)]
+    pub encoding: Option<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub record_payload: bool,
 }
 
 /// manifest 中 external process package/executable 描述。
@@ -3137,6 +3154,66 @@ mod tests {
             Some(resource_placement::RtPolicy::Fifo)
         );
         assert_eq!(process.resource_placement.rt_priority, Some(50));
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_io_resource_descriptor_schema() {
+        let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["default"],
+            "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": [{
+                    "name": "camera",
+                    "backend": "iox2",
+                    "runtime_kind": "rust",
+                    "io_boundaries": [{
+                        "instance": "camera",
+                        "component": "camera",
+                        "side_effects": ["device", "read"],
+                        "readiness": "resource_ready",
+                        "health": "runtime_reported",
+                        "shutdown": "cooperative",
+                        "resources": [{
+                            "name": "frames",
+                            "kind": "shm",
+                            "required": true,
+                            "descriptor": {
+                                "kind": "frame",
+                                "port": "frame",
+                                "format": "rgb8",
+                                "encoding": "row_major",
+                                "metadata": {
+                                    "width": "640",
+                                    "height": "480"
+                                },
+                                "record_payload": false
+                            }
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+        let manifest: LaunchManifest = serde_json::from_str(json).unwrap();
+        let resource = &manifest.graphs[0].processes[0].io_boundaries[0].resources[0];
+        let descriptor = resource.descriptor.as_ref().unwrap();
+
+        assert_eq!(resource.name, "frames");
+        assert!(resource.required);
+        assert_eq!(descriptor.kind, "frame");
+        assert_eq!(descriptor.port, "frame");
+        assert_eq!(descriptor.format, "rgb8");
+        assert_eq!(descriptor.encoding.as_deref(), Some("row_major"));
+        assert_eq!(descriptor.metadata["width"], "640");
+        assert!(!descriptor.record_payload);
     }
 
     #[test]
