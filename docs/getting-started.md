@@ -127,6 +127,38 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 
 当前 `import_demo` 是 Rust-only inproc 示例，适合验证 RSDL import、Contract IR、Rust codegen 和 launch manifest 的基础闭环。
 
+## 运行 Island Mode 单功能单位示例
+
+`examples/island_demo` 只包含一个 Rust component，profile 显式声明 `mode = "island"`。
+示例用 `boundary.input sample_in` 代替尚未接入的上游，用 `boundary.output result_out`
+暴露可对比输出，因此不需要先搭完整 graph 也能测试组件 IO。
+
+```bash
+flowrt deps examples/island_demo/rsdl/robot.rsdl --backend inproc
+flowrt build --launcher examples/island_demo/rsdl/robot.rsdl
+flowrt run examples/island_demo/rsdl/robot.rsdl --process main
+```
+
+另开一个终端注入输入并观察输出：
+
+```bash
+flowrt pub sample_in \
+  --json '{"seq": 7, "value": 21}' \
+  --image examples/island_demo/flowrt/selfdesc/selfdesc.json \
+  --published-at-ms 1000
+flowrt echo result_out --image examples/island_demo/flowrt/selfdesc/selfdesc.json
+```
+
+`echo` 会把 fixed Message ABI payload 格式化成字段，例如 `seq=7` 和 `doubled=42`。
+如果要留下对比证据，可以把输出录成 MCAP：
+
+```bash
+flowrt record --output island.mcap --duration 500ms --channel result_out
+```
+
+Island Mode 是可拆卸脚手架。组件行为稳定后，删除 `boundary.input` / `boundary.output`，
+补上普通 `[[bind.dataflow]]`，并把 profile 切回默认 `strict`，同一份用户算法代码不需要改。
+
 ## 运行 C++ only 示例
 
 ```bash

@@ -17,6 +17,7 @@
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | 验证主 demo 的语言分离 iox2 运行变体，并覆盖 Rust/C++ 用户组件参数接口 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证无界 variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
+| `examples/island_demo` | Rust | `inproc` | `flowrt build --launcher examples/island_demo/rsdl/robot.rsdl` | 验证 Island Mode 下 boundary input/output 的单功能单位 IO 测试闭环 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
@@ -478,6 +479,69 @@ ros2 topic echo /flowrt/text --once
 - `std_msgs/msg/String` 的 `field` 必须是 FlowRT message 的 `string` 字段。
 - `target.<name>.backends` 必须包含 `zenoh`。
 - 构建需要 ROS2 C++ 开发包；运行需要安装 `rmw_zenoh_cpp`。
+
+## `island_demo`
+
+入口文件：
+
+```text
+examples/island_demo/rsdl/robot.rsdl
+examples/island_demo/src/rust/mod.rs
+```
+
+该示例只有一个 Rust `processor` 组件：
+
+```text
+boundary input sample_in -> processor.sample -> processor.result -> boundary output result_out
+```
+
+`sample_in` 和 `result_out` 都绑定真实 component port，因此用户算法代码仍是普通
+FlowRT component trait 实现。Island Mode 只负责在完整拓扑缺席时补齐外部 IO：
+
+```toml
+[profile.default]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "sample_in"
+port = "processor.sample"
+type = "Sample"
+
+[[boundary.output]]
+name = "result_out"
+port = "processor.result"
+type = "ProcessedSample"
+```
+
+构建并运行：
+
+```bash
+flowrt deps examples/island_demo/rsdl/robot.rsdl --backend inproc
+flowrt build --launcher examples/island_demo/rsdl/robot.rsdl
+flowrt run examples/island_demo/rsdl/robot.rsdl --process main
+```
+
+另开终端注入输入并读取输出：
+
+```bash
+flowrt pub sample_in \
+  --json '{"seq": 7, "value": 21}' \
+  --image examples/island_demo/flowrt/selfdesc/selfdesc.json \
+  --published-at-ms 1000
+flowrt echo result_out --image examples/island_demo/flowrt/selfdesc/selfdesc.json
+```
+
+输出 payload 会按 Message ABI 格式化，能看到 `seq=7`、`doubled=42`。如果需要保存
+对比证据，可以录制 boundary output：
+
+```bash
+flowrt record --output island-demo.mcap --duration 500ms --channel result_out
+```
+
+`flowrt pub` 只允许写 boundary input；尝试写普通 channel、strict graph 或 boundary
+output 都会报错。完成单功能单位测试后，删除 boundary endpoint，补上普通
+`[[bind.dataflow]]`，再把 profile 切回 `strict`。
 
 ## `service_demo`
 

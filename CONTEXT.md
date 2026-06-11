@@ -33,8 +33,11 @@ fixed Message ABI JSON 注入，只允许写 boundary input；`flowrt echo`、`f
 adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instance.port`，也可以
 在 island profile 下引用 `boundary.input` / `boundary.output` 名称；Contract IR 会保留
 可校验的 boundary endpoint 引用，generated shell 通过 zenoh-only bridge key 把 ROS2
-输入注入 boundary input，并把 boundary output 发布给 ROS2 adapter。island demo 和
-release gate 仍在 `v0.9.0` 后续切片中推进。
+输入注入 boundary input，并把 boundary output 发布给 ROS2 adapter。`examples/island_demo`
+已提供无硬件依赖的最小闭环：`flowrt pub` 向 `sample_in` 注入 typed JSON，组件处理后
+通过 `result_out` 供 `flowrt echo` / `flowrt record` 观察；CI 已加入 amd64/arm64 的
+`v0.9.0 Island Demo Smoke`。`v0.9.0` 剩余工作是最终集成 hardening、release readiness
+检查和版本发布准备。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、

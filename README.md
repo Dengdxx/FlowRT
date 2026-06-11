@@ -68,6 +68,8 @@ flowrt --version
 | service route | 从 service client 到 service server 的 typed request/response 边。 |
 | operation route | 从 operation client 到 operation server 的 typed long-running command 边。 |
 | profile | 一套构建/部署选择，例如默认 backend、channel policy。 |
+| Island Mode | 用 typed boundary endpoint 补齐外部 IO 的可拆测试脚手架；生产 graph 默认仍是 strict。 |
+| boundary endpoint | 绑定真实 component port 的外部输入或待对比输出，可用 `flowrt pub`、`echo`、`record` 做单功能单位 IO 测试。 |
 | target | 部署目标能力，例如 runtime 语言和可用 backend。 |
 | backend | FlowRT 管理的通信实现，例如 `inproc`、`iox2`、`zenoh`。 |
 | bridge | FlowRT 管理的外部系统适配进程；用户组件仍只读写 FlowRT message。 |
@@ -82,6 +84,34 @@ component -> instance -> task -> channel route / service route / operation route
 ```
 
 FlowRT 的核心对象是可编译、可校验、可重新生成的数据流系统契约。
+
+## Island Mode
+
+普通 `strict` graph 要求每个 active input 都有一条明确的 dataflow bind。开发单个功能
+单位、或把旧系统逐步迁到 FlowRT 时，可以临时使用 Island Mode：profile 显式声明
+`mode = "island"`，未接入的外部输入写成 typed `boundary.input`，需要对比的输出写成
+typed `boundary.output`。
+
+```toml
+[profile.default]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "sample_in"
+port = "processor.sample"
+type = "Sample"
+
+[[boundary.output]]
+name = "result_out"
+port = "processor.result"
+type = "ProcessedSample"
+```
+
+运行时可以用 `flowrt pub sample_in --json ...` 注入 boundary input，用 `flowrt echo
+result_out` 或 `flowrt record --channel result_out` 观察输出。boundary endpoint 不是
+backend，也不是 ROS2 topic；完成测试后应删除 boundary endpoint，改回普通
+`[[bind.dataflow]]`，并把 profile 切回 `strict`。
 
 ## 应用目录
 
@@ -728,6 +758,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | Rust source 与 C++ sink 的 iox2 分进程 contract。 |
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 无界 variable frame、zenoh 跨主机 transport 和 mixed launch。 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | FlowRT string 输出经 zenoh bridge 发布到 ROS2 topic。 |
+| `examples/island_demo` | Rust | `inproc` | `flowrt build --launcher examples/island_demo/rsdl/robot.rsdl` | Island Mode 下通过 boundary input/output 做单功能单位 IO 测试。 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | Service request/response、typed API、inproc call、service policy 和健康观测。 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | Operation client/server typed API、自描述和 `flowrt op list`。 |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | I/O boundary 只发布固定 FrameDescriptor，真实 payload 由 side-channel 管理。 |
