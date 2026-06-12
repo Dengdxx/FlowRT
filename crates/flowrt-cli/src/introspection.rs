@@ -19,6 +19,44 @@ pub(crate) use flowrt_selfdesc::self_description_hash;
 
 pub(crate) const LOCAL_INTROSPECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
+pub(crate) fn discover_cli_runtime_sockets() -> Result<Vec<PathBuf>> {
+    let sockets =
+        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
+    Ok(sockets
+        .into_iter()
+        .filter(|socket| !cleanup_stale_runtime_socket(socket))
+        .collect())
+}
+
+fn cleanup_stale_runtime_socket(socket: &Path) -> bool {
+    match flowrt::request_status_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT) {
+        Ok(_) => false,
+        Err(_) if runtime_socket_is_discoverable(socket) => std::fs::remove_file(socket).is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn runtime_socket_is_discoverable(socket: &Path) -> bool {
+    let Ok(socket) = socket.canonicalize().or_else(|_| {
+        let parent = socket
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        parent.canonicalize().map(|parent| {
+            socket
+                .file_name()
+                .map(|name| parent.join(name))
+                .unwrap_or(parent)
+        })
+    }) else {
+        return false;
+    };
+    let Ok(runtime_dir) = flowrt::runtime_socket_dir().canonicalize() else {
+        return false;
+    };
+    socket.starts_with(runtime_dir) && socket.extension().is_some_and(|ext| ext == "sock")
+}
+
 pub(crate) fn load_self_description(path: &Path) -> Result<SelfDescription> {
     load_selfdesc(path).with_context(|| {
         format!(
@@ -600,9 +638,7 @@ fn select_live_self_description_socket(socket: Option<&Path>) -> Result<PathBuf>
         return Ok(socket.to_path_buf());
     }
     let mut matches = Vec::new();
-    for socket in
-        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
-    {
+    for socket in discover_cli_runtime_sockets()? {
         let Ok(flowrt::IntrospectionResponse::SelfDescription { .. }) =
             flowrt::request_self_description_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT)
         else {
@@ -765,8 +801,7 @@ pub(crate) fn select_echo_socket(
             socket.to_path_buf()
         }
         None => {
-            let sockets = flowrt::discover_runtime_sockets()
-                .context("failed to scan FlowRT runtime sockets")?;
+            let sockets = discover_cli_runtime_sockets()?;
             select_matching_runtime_socket(self_description_hash, sockets)?
         }
     };
@@ -1723,9 +1758,7 @@ pub(crate) fn operation_status_summary(
 ) -> Result<String> {
     let sockets = match socket {
         Some(socket) => vec![socket.to_path_buf()],
-        None => {
-            flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
-        }
+        None => discover_cli_runtime_sockets()?,
     };
     operation_status_summary_for_sockets(name, sockets)
 }
@@ -1773,8 +1806,7 @@ pub(crate) fn operation_cancel(operation_id: &str, socket: Option<&Path>) -> Res
     if let Some(socket) = socket {
         return operation_cancel_on_socket(operation_id, socket);
     }
-    let sockets =
-        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
+    let sockets = discover_cli_runtime_sockets()?;
     operation_cancel_for_sockets(operation_id, sockets)
 }
 
@@ -1890,8 +1922,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn live_status_summary(live_only: bool) -> Result<String> {
-    let sockets =
-        flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?;
+    let sockets = discover_cli_runtime_sockets()?;
     live_status_summary_for_sockets(sockets, live_only)
 }
 
@@ -2407,9 +2438,7 @@ pub(crate) fn live_hz_summary(
 ) -> Result<String> {
     let sockets = match socket {
         Some(socket) => vec![socket.to_path_buf()],
-        None => {
-            flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")?
-        }
+        None => discover_cli_runtime_sockets()?,
     };
     live_hz_summary_for_sockets(channel, sockets, Duration::from_millis(window_ms))
 }

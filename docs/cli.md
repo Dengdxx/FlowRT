@@ -707,7 +707,12 @@ flowrt echo path/to/generated-app source.imu
 
 `echo` 默认从 live runtime socket 请求 self-description，再按消息 layout 格式化 payload。也可以用 `--image <path>` 或兼容旧式 `flowrt echo <image> <channel>` 显式指定生成应用二进制或 `selfdesc.json`。`<channel>` 可以写完整 channel 名 `<from>_to_<to>`，也可以写唯一的 source 或 target 端点名，例如 `source.imu`；端点名匹配多条 channel 时需要改用完整 channel 名。island profile 下也可以传入 boundary output 名称或其绑定端点名，`echo` 会按同一 self-description layout 读取 generated shell 注册的 boundary output snapshot。
 
-省略 `--socket` 时，CLI 会扫描当前用户 runtime socket 目录。未指定 `--image` 时，需要恰好一个 live FlowRT 进程暴露 self-description；指定 `--image` 时，会选择 `self_description_hash` 与静态 self-description JSON hash 匹配的唯一进程。若多个进程匹配，需要显式传入 `--socket <path>`，避免从错误进程读取 channel。
+省略 `--socket` 时，CLI 会扫描当前用户 runtime socket 目录，并跳过、清理 FlowRT 管理
+目录中确认 stale 的 socket。未指定 `--image` 时，需要恰好一个 live FlowRT 进程暴露
+self-description；指定 `--image` 时，会选择 `self_description_hash` 与静态 self-description
+JSON hash 匹配的唯一进程。若多个进程匹配，需要显式传入 `--socket <path>`，避免从错误
+进程读取 channel。显式 `--socket` 指向 dead socket 时，CLI 只报告该目标错误，不会自动切换
+到其他 runtime。
 
 输出是最小稳定摘要：
 
@@ -888,7 +893,10 @@ flowrt status --live-only
 
 `status` 扫描当前用户 runtime socket 目录中的 FlowRT 进程，并通过 handshake 验证 PID、package、process、runtime、静态自描述 hash 和 tick/channel 摘要。socket 路径只作为发现入口；CLI 不把文件名当作进程身份事实。
 
-默认输出会保留 stale socket 诊断，便于排查 SIGKILL、异常退出或非 FlowRT socket。`--live-only` 只输出成功返回 live status 的 runtime；如果没有 live runtime，会输出 `no live FlowRT processes`。
+自动发现路径会清理 FlowRT 管理目录中确认 stale 的 socket，避免 SIGKILL 或异常退出后
+残留文件阻断后续 `echo`、`pub`、`params`、`record` 等命令。不能安全确认或不在 FlowRT
+socket 目录下的异常 socket 只作为诊断处理，不会被粗暴删除。`--live-only` 只输出成功返回
+live status 的 runtime；如果没有 live runtime，会输出 `no live FlowRT processes`。
 
 当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数、active echo observer 数量和 probe drop 计数写入 live status；payload 只在 echo 数据面 probe 启用期间 best-effort 记录。
 

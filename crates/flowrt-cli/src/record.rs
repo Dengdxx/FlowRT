@@ -92,7 +92,7 @@ pub(crate) fn record_runtime_sockets_for_options(options: &RecordOptions) -> Res
     if options.socket.is_some() {
         return Ok(Vec::new());
     }
-    flowrt::discover_runtime_sockets().context("failed to scan FlowRT runtime sockets")
+    crate::introspection::discover_cli_runtime_sockets()
 }
 
 pub(crate) fn record_runtime_for_sockets(

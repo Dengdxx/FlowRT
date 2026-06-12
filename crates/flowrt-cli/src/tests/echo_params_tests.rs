@@ -1,4 +1,38 @@
 use super::*;
+use crate::introspection::select_echo_socket;
+
+static XDG_RUNTIME_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvOverride {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvOverride {
+    fn set(key: &'static str, value: Option<&std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests guard process-wide environment mutation with a mutex.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvOverride {
+    fn drop(&mut self) {
+        // SAFETY: guarded by XDG_RUNTIME_DIR_ENV_LOCK in tests below.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
 use zenoh::Wait;
 
 #[test]
@@ -2049,6 +2083,49 @@ fn echo_auto_socket_requires_explicit_socket_for_multiple_matches() {
 
     drop(first);
     drop(second);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn auto_socket_discovery_removes_stale_runtime_socket_candidates() {
+    let _lock = XDG_RUNTIME_DIR_ENV_LOCK
+        .lock()
+        .expect("runtime dir env lock should not be poisoned");
+    let root = temp_test_dir("echo-stale-socket-cleanup");
+    let runtime_root = root.join("xdg-runtime");
+    let _env = EnvOverride::set("XDG_RUNTIME_DIR", Some(runtime_root.as_os_str()));
+    let socket_dir = flowrt::runtime_socket_dir();
+    std::fs::create_dir_all(&socket_dir).unwrap();
+
+    let stale_socket = socket_dir.join("999999.sock");
+    std::fs::write(&stale_socket, "not a unix socket").unwrap();
+
+    let live_socket = socket_dir.join("1000.sock");
+    let self_description_hash = "feedface".to_string();
+    let server = flowrt::spawn_status_server_at(
+        live_socket.clone(),
+        flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 1000,
+            started_at_unix_ms: 1,
+            self_description_hash: self_description_hash.clone(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        },
+        flowrt::IntrospectionState::new(),
+    )
+    .expect("status server should start");
+
+    let selected = select_echo_socket(None, &self_description_hash).unwrap();
+
+    assert_eq!(selected, live_socket);
+    assert!(
+        !stale_socket.exists(),
+        "stale runtime socket candidate should be removed"
+    );
+
+    drop(server);
     let _ = std::fs::remove_dir_all(&root);
 }
 
