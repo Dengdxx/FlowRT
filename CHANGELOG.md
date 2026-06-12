@@ -6,6 +6,8 @@ Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接�
 
 ## 未发布
 
+## v0.9.1 - 2026-06-12
+
 ### 新增
 
 - `flowrt pub` 支持按 self-description 的 canonical frame metadata 将自然 JSON 编码为
