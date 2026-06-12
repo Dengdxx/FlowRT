@@ -24,7 +24,7 @@ use operation_emit::{
     emit_rust_operation_client_handles, emit_rust_operation_step_functions,
     operation_client_handle_name, rust_operation_handler_methods,
 };
-use params_emit::rust_params_struct;
+use params_emit::{emit_rust_param_constraint_helpers, rust_params_struct};
 use scheduler_emit::emit_all_step_functions;
 use service_emit::{
     client_handle_name, emit_rust_service_client_handles, emit_rust_service_step_functions,
@@ -148,6 +148,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         has_active_rust_channels,
         contract_has_runtime_params_for_language(contract, LanguageKind::Rust),
     ));
+    output.push_str(&emit_rust_param_constraint_helpers(&order, contract));
     output.push_str("pub struct App {\n");
     output.push_str("    startup_status: flowrt::Status,\n");
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);

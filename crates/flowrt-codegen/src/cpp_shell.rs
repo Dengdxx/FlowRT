@@ -166,6 +166,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
     );
     output.push_str(&emit_cpp_introspection_helpers());
+    output.push_str(&emit_cpp_param_constraint_helpers(&order, contract));
     output.push_str("}  // namespace\n\n");
     output.push_str("namespace flowrt_app {\n\n");
     output.push_str(&emit_cpp_app_constructor(
@@ -2342,6 +2343,25 @@ fn emit_cpp_introspection_param_registration(
     output
 }
 
+fn emit_cpp_param_constraint_helpers(order: &[&InstanceIr], contract: &ContractIr) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        for param in &component.params {
+            if param.update != ParamUpdatePolicy::OnTick || !param_has_constraints(param) {
+                continue;
+            }
+            let helper = cpp_param_constraint_helper_name(instance, param);
+            let ty = cpp_param_type(param.ty);
+            let checks = cpp_param_constraint_checks(param);
+            output.push_str(&format!(
+                "bool {helper}(const {ty}& value) {{\n    return {checks};\n}}\n\n"
+            ));
+        }
+    }
+    output
+}
+
 fn cpp_apply_pending_params(
     instance: &InstanceIr,
     component: &ComponentIr,
@@ -2371,6 +2391,14 @@ fn cpp_apply_pending_params(
             field = param.name,
             deep_indent = if nested { "                " } else { "            " }
         ));
+        if param_has_constraints(param) {
+            output.push_str(&format!(
+                "{inner_indent}if (!{}({next}.{field})) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+                cpp_param_constraint_helper_name(instance, param),
+                field = param.name,
+                deep_indent = if nested { "                " } else { "            " }
+            ));
+        }
         output.push_str(&format!(
             "{inner_indent}if ({instance}_ && {instance}_->on_params_update({instance}_params_, {next}, {context_name}) != flowrt::Status::Ok) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
             instance = instance.name,
@@ -2384,6 +2412,88 @@ fn cpp_apply_pending_params(
         output.push_str(&format!("{indent}}}\n"));
     }
     output
+}
+
+fn param_has_constraints(param: &ParamIr) -> bool {
+    param.min.is_some() || param.max.is_some() || !param.choices.is_empty()
+}
+
+fn cpp_param_constraint_helper_name(instance: &InstanceIr, param: &ParamIr) -> String {
+    format!(
+        "flowrt_validate_pending_param_{}_{}",
+        crate::snake_identifier(&instance.name),
+        crate::snake_identifier(&param.name)
+    )
+}
+
+fn cpp_param_constraint_checks(param: &ParamIr) -> String {
+    let mut checks = Vec::new();
+    if param_type_supports_range(param.ty)
+        && let Some(min) = &param.min
+    {
+        if let Some(literal) = cpp_param_constraint_literal(param, min) {
+            checks.push(format!("value >= {literal}"));
+        }
+    }
+    if param_type_supports_range(param.ty)
+        && let Some(max) = &param.max
+    {
+        if let Some(literal) = cpp_param_constraint_literal(param, max) {
+            checks.push(format!("value <= {literal}"));
+        }
+    }
+    let choices = param
+        .choices
+        .iter()
+        .filter_map(|choice| cpp_param_constraint_literal(param, choice))
+        .map(|literal| format!("value == {literal}"))
+        .collect::<Vec<_>>();
+    if !choices.is_empty() {
+        checks.push(format!("({})", choices.join(" || ")));
+    }
+    if checks.is_empty() {
+        "true".to_string()
+    } else {
+        checks.join(" && ")
+    }
+}
+
+fn param_type_supports_range(ty: ParamType) -> bool {
+    matches!(
+        ty,
+        ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64
+            | ParamType::F32
+            | ParamType::F64
+            | ParamType::String
+    )
+}
+
+fn cpp_param_constraint_literal(param: &ParamIr, value: &ParamValue) -> Option<String> {
+    match (param.ty, value) {
+        (
+            ParamType::Bool
+            | ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64
+            | ParamType::F32
+            | ParamType::F64
+            | ParamType::String,
+            _,
+        ) => Some(cpp_param_literal(param, value)),
+        (ParamType::Array | ParamType::Table, _) => Some(cpp_param_literal(param, value)),
+    }
 }
 
 fn cpp_optional_json_literal(value: Option<&ParamValue>) -> String {

@@ -233,6 +233,55 @@ period_ms = 5
 }
 
 #[test]
+fn generated_rust_param_apply_checks_runtime_constraints_before_hook() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gain = { type = "f64", default = 1.0, min = 0.5, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    let gain_guard = shell
+        .find("flowrt_validate_pending_param_controller_gain")
+        .expect(shell);
+    let hook = shell
+        .find("self.controller.on_params_update(")
+        .expect(shell);
+    assert!(gain_guard < hook, "{shell}");
+    assert!(
+        shell.contains("fn flowrt_validate_pending_param_controller_gain(value: &f64) -> bool"),
+        "{shell}"
+    );
+    assert!(shell.contains("*value >= 0.5f64"), "{shell}");
+    assert!(shell.contains("*value <= 10.0f64"), "{shell}");
+    assert!(
+        shell.contains("fn flowrt_validate_pending_param_controller_mode(value: &String) -> bool"),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("value == \"normal\" || value == \"safe\""),
+        "{shell}"
+    );
+}
+
+#[test]
 fn generated_cpp_components_receive_typed_params_and_register_runtime_params() {
     let ir = contract_from_source(
         r#"
@@ -341,4 +390,53 @@ period_ms = 5
 
     assert!(shell.contains("#include <cmath>"));
     assert!(shell.contains("!std::isfinite(parsed)"));
+}
+
+#[test]
+fn generated_cpp_param_apply_checks_runtime_constraints_before_hook() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "param_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "cpp"
+
+[component.controller.params]
+gain = { type = "f64", default = 1.0, min = 0.5, max = 10.0, update = "on_tick" }
+mode = { type = "string", default = "normal", enum = ["normal", "safe"], update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    let gain_guard = shell
+        .find("flowrt_validate_pending_param_controller_gain")
+        .expect(shell);
+    let hook = shell.find("controller_->on_params_update(").expect(shell);
+    assert!(gain_guard < hook, "{shell}");
+    assert!(
+        shell.contains("bool flowrt_validate_pending_param_controller_gain(const double& value)"),
+        "{shell}"
+    );
+    assert!(shell.contains("value >= 0.5"), "{shell}");
+    assert!(shell.contains("value <= 10.0"), "{shell}");
+    assert!(
+        shell.contains(
+            "bool flowrt_validate_pending_param_controller_mode(const std::string& value)"
+        ),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("value == \"normal\" || value == \"safe\""),
+        "{shell}"
+    );
 }

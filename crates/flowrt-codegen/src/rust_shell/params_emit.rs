@@ -68,6 +68,28 @@ pub(crate) fn emit_rust_introspection_param_registration(
     output
 }
 
+pub(super) fn emit_rust_param_constraint_helpers(
+    order: &[&InstanceIr],
+    contract: &ContractIr,
+) -> String {
+    let mut output = String::new();
+    for instance in order {
+        let component = crate::component_by_name(contract, &instance.component.name);
+        for param in &component.params {
+            if param.update != ParamUpdatePolicy::OnTick || !param_has_constraints(param) {
+                continue;
+            }
+            let helper = rust_param_constraint_helper_name(instance, param);
+            let ty = rust_param_type(param.ty);
+            let checks = rust_param_constraint_checks(param);
+            output.push_str(&format!(
+                "fn {helper}(value: &{ty}) -> bool {{\n    {checks}\n}}\n\n"
+            ));
+        }
+    }
+    output
+}
+
 pub(super) fn rust_apply_pending_params(
     instance: &InstanceIr,
     component: &ComponentIr,
@@ -102,6 +124,13 @@ pub(super) fn rust_apply_pending_params(
             rust_param_type(param.ty),
             field = param.name
         ));
+        if param_has_constraints(param) {
+            output.push_str(&format!(
+                "{inner_indent}if !{}(&{next}.{field}) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+                rust_param_constraint_helper_name(instance, param),
+                field = param.name
+            ));
+        }
         output.push_str(&format!(
             "{inner_indent}if self.{instance}.on_params_update(&self.{instance}_params, &{next}, {context_name}) != flowrt::Status::Ok {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
             instance = instance.name
@@ -114,6 +143,89 @@ pub(super) fn rust_apply_pending_params(
         output.push_str(&format!("{indent}}}\n"));
     }
     output
+}
+
+fn param_has_constraints(param: &ParamIr) -> bool {
+    param.min.is_some() || param.max.is_some() || !param.choices.is_empty()
+}
+
+fn rust_param_constraint_helper_name(instance: &InstanceIr, param: &ParamIr) -> String {
+    format!(
+        "flowrt_validate_pending_param_{}_{}",
+        crate::snake_identifier(&instance.name),
+        crate::snake_identifier(&param.name)
+    )
+}
+
+fn rust_param_constraint_checks(param: &ParamIr) -> String {
+    let mut checks = Vec::new();
+    if param_type_supports_range(param.ty)
+        && let Some(min) = &param.min
+    {
+        if let Some(literal) = rust_param_constraint_literal(param, min) {
+            checks.push(format!("*value >= {literal}"));
+        }
+    }
+    if param_type_supports_range(param.ty)
+        && let Some(max) = &param.max
+    {
+        if let Some(literal) = rust_param_constraint_literal(param, max) {
+            checks.push(format!("*value <= {literal}"));
+        }
+    }
+    let choices = param
+        .choices
+        .iter()
+        .filter_map(|choice| rust_param_constraint_literal(param, choice))
+        .map(|literal| format!("value == {literal}"))
+        .collect::<Vec<_>>();
+    if !choices.is_empty() {
+        checks.push(format!("({})", choices.join(" || ")));
+    }
+    if checks.is_empty() {
+        "true".to_string()
+    } else {
+        checks.join(" && ")
+    }
+}
+
+fn param_type_supports_range(ty: ParamType) -> bool {
+    matches!(
+        ty,
+        ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64
+            | ParamType::F32
+            | ParamType::F64
+            | ParamType::String
+    )
+}
+
+fn rust_param_constraint_literal(param: &ParamIr, value: &ParamValue) -> Option<String> {
+    match (param.ty, value) {
+        (ParamType::String, ParamValue::String(value)) => Some(crate::rust_string_literal(value)),
+        (
+            ParamType::Bool
+            | ParamType::U8
+            | ParamType::U16
+            | ParamType::U32
+            | ParamType::U64
+            | ParamType::I8
+            | ParamType::I16
+            | ParamType::I32
+            | ParamType::I64
+            | ParamType::F32
+            | ParamType::F64,
+            _,
+        ) => Some(rust_param_literal(param, value)),
+        (ParamType::Array | ParamType::Table, _) => Some(rust_param_literal(param, value)),
+        _ => None,
+    }
 }
 
 fn rust_optional_param_json_value(value: Option<&ParamValue>) -> String {
