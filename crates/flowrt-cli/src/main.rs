@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 mod boundary_pub;
 mod build_model;
 mod cache;
+mod frame_json;
 mod introspection;
 mod record;
 mod toolchain;
