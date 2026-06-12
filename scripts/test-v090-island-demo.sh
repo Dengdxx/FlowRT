@@ -40,6 +40,25 @@ demo_dir="$work_dir/island_demo"
 cp -a "$demo_src" "$demo_dir"
 rm -rf "$demo_dir/flowrt"
 
+smoke_target_platform="${FLOWRT_SMOKE_TARGET_PLATFORM:-}"
+if [[ -n "$smoke_target_platform" ]]; then
+    case "$smoke_target_platform" in
+        linux-amd64|linux-arm64) ;;
+        *)
+            printf 'unsupported FLOWRT_SMOKE_TARGET_PLATFORM: %s\n' "$smoke_target_platform" >&2
+            exit 1
+            ;;
+    esac
+
+    demo_rsdl="$demo_dir/rsdl/robot.rsdl"
+    if ! grep -qE '^platform = "linux-(amd64|arm64)"$' "$demo_rsdl"; then
+        printf 'island demo target platform line is missing or unsupported: %s\n' "$demo_rsdl" >&2
+        exit 1
+    fi
+    # CI 在 amd64/arm64 runner 上运行同一个 demo；只改临时副本，避免示例源码变成 CI 专用。
+    sed -i -E "s/^platform = \"linux-(amd64|arm64)\"$/platform = \"$smoke_target_platform\"/" "$demo_rsdl"
+fi
+
 export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$work_dir/flowrt-cache}"
 export FLOWRT_TICK_SLEEP_MS="${FLOWRT_TICK_SLEEP_MS:-10}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"

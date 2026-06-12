@@ -29,9 +29,11 @@ adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instan
 输入注入 boundary input，并把 boundary output 发布给 ROS2 adapter。`examples/island_demo`
 已提供无硬件依赖的最小闭环：`flowrt pub` 向 `sample_in` 注入 typed JSON，组件处理后
 通过 `result_out` 供 `flowrt echo` / `flowrt record` 观察；CI 已加入 amd64/arm64 的
-`v0.9.0 Island Demo Smoke`，发布就绪脚本也会检查该 focused gate。最终集成 hardening
-已收掉 generated Rust fixed `WireCodec` 的 `cursor` unused warning：生成代码在
-encode/decode 末尾断言 cursor 等于 `WIRE_SIZE`，避免 release smoke 输出噪声。
+`v0.9.0 Island Demo Smoke`，smoke 脚本会按 CI runner 架构只改写临时 demo RSDL 的
+target platform，避免 arm64 runner 误按示例默认 `linux-amd64` target 构建；发布就绪
+脚本也会检查该 focused gate。最终集成 hardening 已收掉 generated Rust fixed
+`WireCodec` 的 `cursor` unused warning：生成代码在 encode/decode 末尾断言 cursor
+等于 `WIRE_SIZE`，避免 release smoke 输出噪声。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、

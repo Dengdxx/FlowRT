@@ -447,6 +447,7 @@ jobs:
         run: |
           export CARGO_BUILD_JOBS=1
           export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v090-island-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
           scripts/test-v090-island-demo.sh
 
   v083-toolchain-smoke:

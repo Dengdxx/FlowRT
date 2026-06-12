@@ -602,6 +602,8 @@ else
         "arch: arm64" "$ci_file"
     require_ci_text "v0.9.0 gate 使用 FlowRT island cache" \
         ".flowrt-cache/v090-island" "$ci_file"
+    require_ci_text "v0.9.0 gate 按 runner 架构选择 island target" \
+        "FLOWRT_SMOKE_TARGET_PLATFORM=\"linux-\${{ matrix.arch }}\"" "$ci_file"
     require_ci_text "v0.9.0 gate 运行 island smoke 脚本" \
         "scripts/test-v090-island-demo.sh" "$ci_file"
     require_ci_text "package 依赖 v0.9.0 island gate" \
@@ -611,6 +613,8 @@ fi
 installed_v090_smoke="$repo_root/scripts/test-v090-island-demo.sh"
 if [[ -x "$installed_v090_smoke" ]]; then
     pass "v0.9.0 island smoke 脚本存在且可执行"
+    require_file_text "v0.9.0 smoke 支持 target platform override" \
+        "FLOWRT_SMOKE_TARGET_PLATFORM" "$installed_v090_smoke"
     require_file_text "v0.9.0 smoke 运行 island demo build" \
         "build --launcher" "$installed_v090_smoke"
     require_file_text "v0.9.0 smoke 运行 runtime" \
