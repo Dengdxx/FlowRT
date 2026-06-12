@@ -13,6 +13,47 @@ use crate::introspection::{
     load_self_description_with_hash, select_echo_socket,
 };
 
+pub(crate) struct BoundaryPublishTarget {
+    self_description: SelfDescription,
+    self_description_hash: String,
+    socket: std::path::PathBuf,
+}
+
+impl BoundaryPublishTarget {
+    pub(crate) fn open_for_command(
+        image: &Path,
+        socket: Option<&Path>,
+        command: &'static str,
+    ) -> Result<Self> {
+        let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+        ensure_island_boundary_publish_mode(&self_description, command)?;
+        let socket = select_echo_socket(socket, &self_description_hash)?;
+        Ok(Self {
+            self_description,
+            self_description_hash,
+            socket,
+        })
+    }
+
+    pub(crate) fn publish_for_command(
+        &self,
+        endpoint: &str,
+        json: &str,
+        published_at_ms: Option<u64>,
+        command: &str,
+    ) -> Result<String> {
+        let spec = find_boundary_publish_endpoint(&self.self_description, endpoint, command)?;
+        let payload = encode_boundary_json(&self.self_description, &spec, json)?;
+        publish_boundary_payload(
+            &self.socket,
+            &self.self_description_hash,
+            &spec,
+            payload,
+            published_at_ms,
+        )
+    }
+}
+
 pub(crate) fn boundary_publish(
     endpoint: &str,
     json: &str,
@@ -23,7 +64,7 @@ pub(crate) fn boundary_publish(
     let (self_description, self_description_hash, socket) = match image {
         Some(image) => {
             let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
-            let spec = find_boundary_publish_endpoint(&self_description, endpoint)?;
+            let spec = find_boundary_publish_endpoint(&self_description, endpoint, "flowrt pub")?;
             let payload = encode_boundary_json(&self_description, &spec, json)?;
             let socket = select_echo_socket(socket, &self_description_hash)?;
             return publish_boundary_payload(
@@ -36,7 +77,7 @@ pub(crate) fn boundary_publish(
         }
         None => load_echo_context_from_live_socket(socket)?,
     };
-    let spec = find_boundary_publish_endpoint(&self_description, endpoint)?;
+    let spec = find_boundary_publish_endpoint(&self_description, endpoint, "flowrt pub")?;
     let payload = encode_boundary_json(&self_description, &spec, json)?;
     publish_boundary_payload(
         &socket,
@@ -301,21 +342,9 @@ struct BoundaryPublishSpec {
 fn find_boundary_publish_endpoint(
     self_description: &SelfDescription,
     endpoint: &str,
+    command: &str,
 ) -> Result<BoundaryPublishSpec> {
-    let has_island_profile = self_description
-        .profiles
-        .iter()
-        .any(|profile| profile.mode == "island");
-    let has_island_graph = self_description
-        .graphs
-        .iter()
-        .any(|graph| graph.mode == "island");
-    if !has_island_profile && !has_island_graph {
-        anyhow::bail!(
-            "FlowRT self-description is not island mode; flowrt pub only writes island boundary input"
-        );
-    }
-
+    ensure_island_boundary_publish_mode(self_description, command)?;
     let mut matches = Vec::new();
     for graph in &self_description.graphs {
         for boundary in &graph.boundary_endpoints {
@@ -333,7 +362,7 @@ fn find_boundary_publish_endpoint(
             match boundary.direction.as_str() {
                 "input" => {}
                 "output" => anyhow::bail!(
-                    "FlowRT boundary endpoint `{endpoint}` is a boundary output; flowrt pub only writes boundary input"
+                    "FlowRT boundary endpoint `{endpoint}` is a boundary output; {command} only writes boundary input"
                 ),
                 other => anyhow::bail!(
                     "FlowRT boundary endpoint `{endpoint}` has unsupported direction `{other}`"
@@ -351,6 +380,26 @@ fn find_boundary_publish_endpoint(
             "FlowRT self-description contains multiple boundary endpoints named `{endpoint}`"
         ),
     }
+}
+
+pub(crate) fn ensure_island_boundary_publish_mode(
+    self_description: &SelfDescription,
+    command: &str,
+) -> Result<()> {
+    let has_island_profile = self_description
+        .profiles
+        .iter()
+        .any(|profile| profile.mode == "island");
+    let has_island_graph = self_description
+        .graphs
+        .iter()
+        .any(|graph| graph.mode == "island");
+    if !has_island_profile && !has_island_graph {
+        anyhow::bail!(
+            "FlowRT self-description is not island mode; {command} only writes island boundary input. Use an island profile or temporary island overlay for offline validation"
+        );
+    }
+    Ok(())
 }
 
 fn encode_boundary_json(

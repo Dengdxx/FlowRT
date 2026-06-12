@@ -604,12 +604,17 @@ flowrt pub scan_in \
   --file samples.jsonl \
   --freq 100 \
   --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
+flowrt replay \
+  --file fixture.jsonl \
+  --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json \
+  --as-fast-as-possible
 flowrt echo summary_out --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
 flowrt record --output scan-compare.mcap --duration 2s --channel summary_out
 ```
 
-FlowRT 不在该路径中原生读取 rosbag，也不提供 ROS2 drop-in 兼容层；边界输入输出是
-可拆的行为测试脚手架。验证完成后应删除 boundary endpoint，改为普通
+单个 boundary input 可继续用 `pub --file`；需要一条 fixture 驱动多个 boundary input 时，
+使用 `flowrt replay`。FlowRT 不在该路径中原生读取 rosbag，也不提供 ROS2 drop-in
+兼容层；边界输入输出是可拆的行为测试脚手架。验证完成后应删除 boundary endpoint，改为普通
 `[[bind.dataflow]]` 并切回 `strict`。
 
 ## `service_demo`

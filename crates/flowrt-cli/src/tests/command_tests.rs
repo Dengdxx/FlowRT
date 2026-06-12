@@ -530,6 +530,40 @@ fn cli_parses_echo_raw_option() {
 }
 
 #[test]
+fn cli_parses_replay_fixture_command() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "replay",
+        "--file",
+        "fixtures/scan.jsonl",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--speed",
+        "2.0",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+
+    let Command::Replay {
+        file,
+        image,
+        socket,
+        speed,
+        as_fast_as_possible,
+    } = cli.command
+    else {
+        panic!("replay command should parse into Command::Replay")
+    };
+
+    assert_eq!(file, PathBuf::from("fixtures/scan.jsonl"));
+    assert_eq!(image, PathBuf::from("flowrt/selfdesc/selfdesc.json"));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+    assert_eq!(speed, 2.0);
+    assert!(!as_fast_as_possible);
+}
+
+#[test]
 fn cli_parses_params_set_command() {
     let cli = Cli::try_parse_from([
         "flowrt",

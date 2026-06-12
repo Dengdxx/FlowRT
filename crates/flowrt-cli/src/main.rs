@@ -25,6 +25,7 @@ mod cache;
 mod frame_json;
 mod introspection;
 mod record;
+mod replay;
 mod toolchain;
 
 use boundary_pub::{boundary_publish, boundary_publish_from_file};
@@ -38,6 +39,7 @@ use introspection::{
     remote_params_set_from_file, self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
+use replay::replay_fixture;
 use toolchain::{
     RuntimeDependencyPolicy, ToolchainFieldSources, ToolchainProfile, ToolchainProfileOverrides,
     generate_toolchain_init_toml, resolve_toolchain_profile,
@@ -340,6 +342,29 @@ enum Command {
         /// 覆盖注入样本的 runtime 毫秒时间戳；省略时由 runtime 作为无时间戳样本处理。
         #[arg(long)]
         published_at_ms: Option<u64>,
+    },
+
+    /// 按 FlowRT-native fixture 回放事件，驱动多个 island boundary input。
+    Replay {
+        /// FlowRT replay fixture，支持 JSONL 或 JSON array。
+        #[arg(long)]
+        file: PathBuf,
+
+        /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
+        #[arg(long)]
+        image: PathBuf,
+
+        /// 显式指定 runtime introspection socket；省略时按 selfdesc hash 自动匹配。
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// 按事件 at_ms/dt_ms 的回放速度倍率。
+        #[arg(long, default_value_t = 1.0, value_parser = parse_positive_f64)]
+        speed: f64,
+
+        /// 忽略事件时间，尽快注入所有事件。
+        #[arg(long)]
+        as_fast_as_possible: bool,
     },
 
     /// 查询或提交 live runtime 参数。
@@ -916,6 +941,18 @@ fn main() -> Result<()> {
                 (Some(_), Some(_)) => unreachable!("clap enforces pub input exclusivity"),
             };
             println!("{output}");
+        }
+        Command::Replay {
+            file,
+            image,
+            socket,
+            speed,
+            as_fast_as_possible,
+        } => {
+            println!(
+                "{}",
+                replay_fixture(&file, &image, socket.as_deref(), speed, as_fast_as_possible)?
+            );
         }
         Command::Params { command } => match command {
             ParamsCommand::List {

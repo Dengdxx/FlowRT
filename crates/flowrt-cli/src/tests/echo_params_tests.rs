@@ -1307,6 +1307,245 @@ fn pub_rejects_boundary_output_and_strict_selfdesc() {
 }
 
 #[test]
+fn replay_fixture_drives_multiple_boundary_inputs() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "scan_in",
+      "canonical_id": "boundary_scan",
+      "direction": "input",
+      "endpoint": "lidar.scan",
+      "instance": "lidar",
+      "port": "scan",
+      "message_type": "Sample"
+    }, {
+      "name": "pose_in",
+      "canonical_id": "boundary_pose",
+      "direction": "input",
+      "endpoint": "localizer.pose",
+      "instance": "localizer",
+      "port": "pose",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-multi-boundary");
+    let selfdesc = root.join("selfdesc.json");
+    let fixture = root.join("fixture.jsonl");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &fixture,
+        r#"{"boundary":"pose_in","at_ms":20,"payload":{"value":2}}
+{"boundary":"scan_in","at_ms":10,"payload":{"value":1}}
+{"boundary":"scan_in","dt_ms":5,"payload":{"value":3}}
+"#,
+    )
+    .unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 910,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(
+        Vec::<(String, u32, Option<u64>)>::new(),
+    ));
+    for endpoint in ["scan_in", "pose_in"] {
+        let captured_for_handler = captured.clone();
+        state.register_boundary_input_handler(endpoint, "Sample", move |payload, timestamp| {
+            let bytes: [u8; 4] = payload.try_into().expect("u32 payload");
+            captured_for_handler.lock().unwrap().push((
+                endpoint.to_string(),
+                u32::from_le_bytes(bytes),
+                timestamp,
+            ));
+            Ok(1)
+        });
+    }
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = replay_fixture(&fixture, &selfdesc, Some(&socket), 1.0, true).unwrap();
+
+    assert!(output.contains("replay source="));
+    assert!(output.contains("events=3"));
+    assert!(output.contains("boundaries=2"));
+    assert!(output.contains("duration_ms=20"));
+    assert_eq!(
+        *captured.lock().unwrap(),
+        vec![
+            ("scan_in".to_string(), 1, Some(10)),
+            ("scan_in".to_string(), 3, Some(15)),
+            ("pose_in".to_string(), 2, Some(20)),
+        ]
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_rejects_strict_self_description() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "strict_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "default", "backend": "inproc", "mode": "strict" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{ "name": "default", "mode": "strict", "instances": [], "tasks": [], "channels": [], "boundary_endpoints": [] }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("replay-strict-reject");
+    let selfdesc = root.join("selfdesc.json");
+    let fixture = root.join("fixture.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(&fixture, r#"[{"boundary":"scan_in","payload":{}}]"#).unwrap();
+
+    let error = replay_fixture(&fixture, &selfdesc, None, 1.0, true).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("not island mode; flowrt replay only writes island boundary input")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_rejects_unknown_boundary_input() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "known_in",
+      "canonical_id": "boundary_known",
+      "direction": "input",
+      "endpoint": "source.sample",
+      "instance": "source",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-unknown-boundary");
+    let selfdesc = root.join("selfdesc.json");
+    let fixture = root.join("fixture.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &fixture,
+        r#"[{"boundary":"missing_in","payload":{"value":1}}]"#,
+    )
+    .unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 911,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let error = replay_fixture(&fixture, &selfdesc, Some(&socket), 1.0, true).unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("missing_in"));
+    assert!(message.contains("does not contain boundary endpoint"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_reports_bad_jsonl_line_number() {
+    let root = temp_test_dir("replay-bad-jsonl");
+    let selfdesc = root.join("selfdesc.json");
+    let fixture = root.join("fixture.jsonl");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, "{}").unwrap();
+    std::fs::write(&fixture, "{\"boundary\":\"a\",\"payload\":{}}\nnot-json\n").unwrap();
+
+    let error = replay_fixture(&fixture, &selfdesc, None, 1.0, true).unwrap_err();
+
+    assert!(error.to_string().contains("line 2"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_reads_boundary_output_snapshot_from_self_description() {
     let source = r#"
 {
