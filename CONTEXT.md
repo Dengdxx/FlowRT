@@ -5,7 +5,7 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.9.1`。`v0.9.0` 是 Island Mode / Boundary Endpoint 版本，
+当前 workspace 版本为 `0.9.2`。`v0.9.0` 是 Island Mode / Boundary Endpoint 版本，
 用于支持单功能单位开发、ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`；
 `v0.9.1` 在此基础上补齐迁移验证常用工具：canonical frame JSON 注入、`pub --file
 --freq`、`params set --file`、多 channel `echo` 和显式空消息。

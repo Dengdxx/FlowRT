@@ -187,10 +187,11 @@ amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused sm
 amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integration
 focused smoke、amd64/arm64 v0.8.1 FrameDescriptor focused smoke、v0.8.3 交叉编译
 focused smoke、amd64/arm64 v0.9.0 island focused smoke、amd64/arm64 v0.9.1 island
-tooling focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、
-v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64 demo smoke、amd64/arm64
-ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建
-GitHub Release，并上传 `flowrt_*_amd64.deb`、
+tooling focused smoke、amd64/arm64 v0.9.2 island offline validation focused smoke、
+amd64/arm64 C++ zenoh runtime、amd64/arm64 deb package、v0.8.3 安装版 amd64 到
+arm64 cross smoke、amd64/arm64 demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和
+amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，再创建 GitHub Release，并上传
+`flowrt_*_amd64.deb`、
 `flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
 
 `v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
@@ -246,10 +247,16 @@ parser/IR/validator/codegen/CLI 路径；真实 smoke 运行
 `examples/variable_frame_island_demo`，用 JSONL、`pub --file --freq` 和 `echo`
 验证 variable frame boundary input 到 fixed summary output 的闭环。
 
+`v0.9.2 Island Offline Validation Smoke` 在 amd64 与 arm64 runner 上覆盖
+`flowrt check` generated handler signature、`flowrt replay`、`echo --raw`、
+temporary island overlay、bundle/deploy island gate 和共享 Cargo target 下的 app
+hash 隔离。真实 smoke 使用临时 RSDL 和用户代码，不新增长期示例目录，验证 strict
+contract 可以通过 CLI 一次性投影成 test-only island 进行多 boundary input 离线注入。
+
 发布前检查：
 
 ```bash
-version=0.9.0
+version=0.9.2
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -265,8 +272,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.9.0 -m "v0.9.0"
-git push origin v0.9.0
+git tag -a v0.9.2 -m "v0.9.2"
+git push origin v0.9.2
 ```
 
 ## 提交规则
