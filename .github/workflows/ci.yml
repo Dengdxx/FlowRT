@@ -501,6 +501,55 @@ jobs:
           export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
           scripts/test-v091-variable-frame-island-demo.sh
 
+  v092-island-offline-validation-smoke:
+    name: v0.9.2 Island Offline Validation Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: v0.9.2 island offline validation focused tests
+        run: |
+          cargo test -p flowrt-cli check -j1
+          cargo test -p flowrt-cli replay -j1
+          cargo test -p flowrt-cli echo -j1
+          cargo test -p flowrt-cli cargo_internal_names_include_contract_hash_without_changing_public_names -j1
+          cargo test -p flowrt-codegen island -j1
+
+      - name: 缓存 FlowRT v0.9.2 island deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v092-island-${{ matrix.arch }}
+          key: flowrt-v092-island-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'crates/flowrt-cli/src/build_model.rs', 'crates/flowrt-cli/src/main.rs', 'scripts/test-v092-island-replay-demo.sh') }}
+
+      - name: v0.9.2 island replay demo smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v092-island-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          scripts/test-v092-island-replay-demo.sh
+
   v083-toolchain-smoke:
     name: v0.8.3 Cross Toolchain Smoke
     runs-on: ubuntu-latest
@@ -629,6 +678,7 @@ jobs:
       - v081-runtime-smoke
       - v090-island-smoke
       - v091-island-tooling-smoke
+      - v092-island-offline-validation-smoke
       - v083-toolchain-smoke
 
     steps:
@@ -1104,6 +1154,7 @@ jobs:
       - v081-runtime-smoke
       - v090-island-smoke
       - v091-island-tooling-smoke
+      - v092-island-offline-validation-smoke
       - v083-toolchain-smoke
       - cpp-zenoh-runtime
       - package

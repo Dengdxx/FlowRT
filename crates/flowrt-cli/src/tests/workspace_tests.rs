@@ -1895,6 +1895,68 @@ fn cargo_build_invocation_uses_manifest_dir_and_offline_config() {
 }
 
 #[test]
+fn cargo_internal_names_include_contract_hash_without_changing_public_names() {
+    let strict = contract_from_source(
+        r#"
+[package]
+name = "robot_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+target = "linux"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+platform = "linux-amd64"
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let mut changed = strict.clone();
+    changed.source_hash = "different-source".to_string();
+    changed.artifact.test_only = true;
+    let strict_names = cargo_internal_names(&strict).unwrap();
+    let changed_names = cargo_internal_names(&changed).unwrap();
+
+    assert_eq!(strict_names.app_stable, "robot-demo-flowrt-app");
+    assert_eq!(
+        strict_names.supervisor_stable,
+        "robot-demo-flowrt-supervisor"
+    );
+    assert_ne!(strict_names.app_internal, changed_names.app_internal);
+    assert_ne!(
+        strict_names.supervisor_internal,
+        changed_names.supervisor_internal
+    );
+
+    let manifest = r#"# FlowRT 管理产物。不要手工修改。
+[package]
+name = "robot-demo-flowrt-app"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "robot-demo-flowrt-app"
+path = "../rust/src/main.rs"
+
+[[bin]]
+name = "robot-demo-flowrt-supervisor"
+path = "../rust/src/supervisor_main.rs"
+"#;
+    let rewritten = rewrite_cargo_manifest_for_internal_names(manifest, &strict_names).unwrap();
+    assert!(rewritten.contains(&format!("name = \"{}\"", strict_names.package_internal)));
+    assert!(rewritten.contains(&format!("name = \"{}\"", strict_names.app_internal)));
+    assert!(rewritten.contains(&format!("name = \"{}\"", strict_names.supervisor_internal)));
+    assert!(!rewritten.contains("\nname = \"robot-demo-flowrt-app\"\n"));
+}
+
+#[test]
 fn cargo_build_invocation_resolves_relative_manifest_before_changing_dir() {
     let repo_dir = std::env::current_dir().unwrap();
     let root = repo_dir.join("target").join("tmp").join(format!(

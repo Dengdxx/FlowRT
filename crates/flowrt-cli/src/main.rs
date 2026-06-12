@@ -2770,6 +2770,7 @@ struct PreparedWorkspace {
     selected_contract: ContractIr,
 }
 
+#[cfg(test)]
 fn prepare_workspace(
     rsdl: &Path,
     out_dir: &Path,
@@ -4615,32 +4616,41 @@ fn build_workspace(
     for step in steps {
         match step {
             BuildStep::CargoApp => {
-                let manifest =
-                    cargo_manifest_with_runtime_patch(out_dir, rust_runtime_dir.as_deref())?;
+                let cargo_names = cargo_internal_names(contract)?;
+                let manifest = cargo_build_manifest_with_runtime_patch(
+                    out_dir,
+                    rust_runtime_dir.as_deref(),
+                    &cargo_names,
+                )?;
                 let target_dir = cargo_cache
                     .as_ref()
                     .map(|layout| layout.target_dir.as_path())
                     .context("internal error: Cargo app build missing dependency cache layout")?;
                 let built = run_cargo_build_bin(
                     &manifest,
-                    &app_bin_name(contract),
+                    &cargo_names.app_internal,
                     build_mode,
                     target_dir,
                     cargo_target_triple,
                     cargo_target_linker,
                 )?;
-                let local = copy_executable_to_local_bin(
+                let local = copy_executable_to_local_bin_as(
                     out_dir,
                     build_mode,
                     bin_target_identity.as_deref(),
                     &built,
+                    std::ffi::OsStr::new(&cargo_names.app_stable),
                 )?;
                 build_info.executables.rust_app = Some(relative_to_out_dir(out_dir, &local)?);
                 record_build_artifact(&mut build_info, "rust_app", out_dir, &local)?;
             }
             BuildStep::CargoSupervisor => {
-                let manifest =
-                    cargo_manifest_with_runtime_patch(out_dir, rust_runtime_dir.as_deref())?;
+                let cargo_names = cargo_internal_names(contract)?;
+                let manifest = cargo_build_manifest_with_runtime_patch(
+                    out_dir,
+                    rust_runtime_dir.as_deref(),
+                    &cargo_names,
+                )?;
                 let target_dir = cargo_cache
                     .as_ref()
                     .map(|layout| layout.target_dir.as_path())
@@ -4649,17 +4659,18 @@ fn build_workspace(
                     )?;
                 let built = run_cargo_build_bin(
                     &manifest,
-                    &supervisor_bin_name(contract),
+                    &cargo_names.supervisor_internal,
                     build_mode,
                     target_dir,
                     cargo_target_triple,
                     cargo_target_linker,
                 )?;
-                let local = copy_executable_to_local_bin(
+                let local = copy_executable_to_local_bin_as(
                     out_dir,
                     build_mode,
                     bin_target_identity.as_deref(),
                     &built,
+                    std::ffi::OsStr::new(&cargo_names.supervisor_stable),
                 )?;
                 build_info.executables.supervisor = Some(relative_to_out_dir(out_dir, &local)?);
                 record_build_artifact(&mut build_info, "supervisor", out_dir, &local)?;
@@ -5837,7 +5848,24 @@ fn copy_executable_to_local_bin(
 ) -> Result<PathBuf> {
     let file_name = built
         .file_name()
-        .context("built executable path has no file name")?;
+        .context("built executable path has no file name")?
+        .to_owned();
+    copy_executable_to_local_bin_as(
+        out_dir,
+        build_mode,
+        target_identity,
+        built,
+        file_name.as_os_str(),
+    )
+}
+
+fn copy_executable_to_local_bin_as(
+    out_dir: &Path,
+    build_mode: BuildMode,
+    target_identity: Option<&str>,
+    built: &Path,
+    file_name: &std::ffi::OsStr,
+) -> Result<PathBuf> {
     let mut destination = out_dir.join("build").join("bin");
     if let Some(target_identity) = target_identity {
         destination = destination.join(target_identity);
@@ -5920,6 +5948,89 @@ fn run_cargo_build_bin(
         )?;
     }
     Ok(invocation.executable_path())
+}
+
+#[derive(Debug, Clone)]
+struct CargoInternalNames {
+    app_stable: String,
+    app_internal: String,
+    supervisor_stable: String,
+    supervisor_internal: String,
+    package_internal: String,
+}
+
+fn cargo_internal_names(contract: &ContractIr) -> Result<CargoInternalNames> {
+    let app_stable = app_bin_name(contract);
+    let supervisor_stable = supervisor_bin_name(contract);
+    let suffix = contract_source_hash_suffix(contract)?;
+    Ok(CargoInternalNames {
+        app_internal: format!("{app_stable}-{suffix}"),
+        supervisor_internal: format!("{supervisor_stable}-{suffix}"),
+        package_internal: format!("{}-{suffix}", app_stable),
+        app_stable,
+        supervisor_stable,
+    })
+}
+
+fn contract_source_hash_suffix(contract: &ContractIr) -> Result<String> {
+    let canonical = contract
+        .to_canonical_json()
+        .context("failed to serialize Contract IR for Cargo artifact namespace")?;
+    Ok(hash_source(&canonical).chars().take(16).collect::<String>())
+}
+
+fn replace_cargo_manifest_name(manifest: &str, key: &str, from: &str, to: &str) -> Result<String> {
+    let from_line = format!("{key} = \"{from}\"");
+    let to_line = format!("{key} = \"{to}\"");
+    if !manifest.contains(&from_line) {
+        anyhow::bail!("generated Cargo manifest is missing `{from_line}`");
+    }
+    Ok(manifest.replacen(&from_line, &to_line, 1))
+}
+
+fn rewrite_cargo_manifest_for_internal_names(
+    manifest: &str,
+    names: &CargoInternalNames,
+) -> Result<String> {
+    let package_line = format!("name = \"{}\"", names.package_internal);
+    let mut rewritten = if manifest.contains(&package_line) {
+        manifest.to_string()
+    } else {
+        replace_cargo_manifest_name(manifest, "name", &names.app_stable, &names.package_internal)?
+    };
+    if rewritten.contains(&format!("name = \"{}\"", names.app_stable)) {
+        rewritten = replace_cargo_manifest_name(
+            &rewritten,
+            "name",
+            &names.app_stable,
+            &names.app_internal,
+        )?;
+    }
+    if rewritten.contains(&format!("name = \"{}\"", names.supervisor_stable)) {
+        rewritten = replace_cargo_manifest_name(
+            &rewritten,
+            "name",
+            &names.supervisor_stable,
+            &names.supervisor_internal,
+        )?;
+    }
+    Ok(rewritten)
+}
+
+fn cargo_build_manifest_with_runtime_patch(
+    out_dir: &Path,
+    runtime_dir: Option<&Path>,
+    names: &CargoInternalNames,
+) -> Result<PathBuf> {
+    let generated_manifest = out_dir.join("build").join("Cargo.toml");
+    let generated = fs::read_to_string(&generated_manifest)
+        .with_context(|| format!("failed to read `{}`", generated_manifest.display()))?;
+    let rewritten = rewrite_cargo_manifest_for_internal_names(&generated, names)?;
+    if generated != rewritten {
+        fs::write(&generated_manifest, rewritten)
+            .with_context(|| format!("failed to write `{}`", generated_manifest.display()))?;
+    }
+    cargo_manifest_with_runtime_patch(out_dir, runtime_dir)
 }
 
 struct CargoBuildInvocation {
