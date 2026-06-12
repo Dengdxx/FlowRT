@@ -11,6 +11,8 @@ pub struct ContractIr {
     pub ir_version: String,
     pub schema_version: String,
     pub source_hash: String,
+    #[serde(default, skip_serializing_if = "ContractArtifactIr::is_default")]
+    pub artifact: ContractArtifactIr,
     pub package_id: EntityId,
     pub package: PackageIr,
     pub modules: Vec<ModuleIr>,
@@ -46,6 +48,26 @@ impl ContractIr {
             )));
         }
         Ok(contract)
+    }
+}
+
+/// 当前 Contract IR 产物的使用边界。
+///
+/// 常规 normalized IR 默认为 strict、非测试产物；temporary island overlay 会把这里标记为
+/// test-only island，让 self-description、launch manifest、bundle/deploy gate 共享同一事实源。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractArtifactIr {
+    #[serde(default)]
+    pub mode: GraphMode,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub temporary_island: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub test_only: bool,
+}
+
+impl ContractArtifactIr {
+    pub fn is_default(&self) -> bool {
+        self.mode == GraphMode::Strict && !self.temporary_island && !self.test_only
     }
 }
 
@@ -887,6 +909,7 @@ mod tests {
             ir_version: CONTRACT_IR_VERSION.to_string(),
             schema_version: CONTRACT_SCHEMA_VERSION.to_string(),
             source_hash: "sha256:test".to_string(),
+            artifact: Default::default(),
             package_id: EntityId("package:demo".to_string()),
             package: PackageIr {
                 name: "demo".to_string(),

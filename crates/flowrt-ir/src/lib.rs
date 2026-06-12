@@ -7,6 +7,7 @@ mod backend;
 mod error;
 mod model;
 mod normalize;
+mod temporary_island;
 mod type_expr;
 
 pub use backend::{
@@ -23,6 +24,9 @@ pub use model::*;
 pub use normalize::{
     hash_source, normalize_document, normalize_loaded_document, param_value_compatible,
     param_value_kind, project_contract_to_profile,
+};
+pub use temporary_island::{
+    TemporaryBoundaryMapping, TemporaryIslandOverlay, apply_temporary_island_overlay,
 };
 pub use type_expr::{PrimitiveType, StringEncoding, TypeExpr, parse_type_expr};
 

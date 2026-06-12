@@ -19,6 +19,10 @@ pub use ids::hash_source;
 pub use params::{param_value_compatible, param_value_kind};
 pub use profiles::project_contract_to_profile;
 
+pub(crate) fn entity_id_for_projection(kind: &str, qualified_name: &str) -> crate::EntityId {
+    ids::entity_id(kind, qualified_name)
+}
+
 /// 将已解析的 RSDL 文档归一化为 Contract IR。
 pub fn normalize_document(document: &RawDocument, source_hash: String) -> Result<ContractIr> {
     normalize_document_with_modules(document, &[], source_hash)
@@ -170,6 +174,7 @@ fn normalize_document_with_modules(
         ir_version: crate::CONTRACT_IR_VERSION.to_string(),
         schema_version: crate::CONTRACT_SCHEMA_VERSION.to_string(),
         source_hash,
+        artifact: Default::default(),
         package_id,
         package,
         modules: normalized_modules,
@@ -193,7 +198,8 @@ mod tests {
         OperationPreemptPolicy, OverflowPolicy, ParamType, ParamUpdatePolicy, ParamValue,
         PolicyValueSource, PrimitiveType, ProcessFailurePropagation, ProcessReadinessGate,
         ProcessRestartPolicyKind, Ros2BridgeDirection, RouteTopology, RtPolicy,
-        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness, TypeExpr,
+        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness,
+        TemporaryBoundaryMapping, TemporaryIslandOverlay, TypeExpr, apply_temporary_island_overlay,
         channel_route_capabilities, deployment_capability_decision,
     };
 
@@ -1827,6 +1833,176 @@ type = "Scan"
         assert!(json.contains("\"mode\": \"island\""));
         assert!(json.contains("\"boundary_endpoints\""));
         assert!(json.contains("\"direction\": \"input\""));
+    }
+
+    #[test]
+    fn temporary_island_overlay_projects_strict_contract_to_test_only_island() {
+        let source = r#"
+[package]
+name = "temporary_island_demo"
+rsdl_version = "0.1"
+
+[type.Command]
+speed = "f32"
+
+[type.Scan]
+range = "f32"
+
+[component.planner]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Command"]
+
+[instance.planner]
+component = "planner"
+
+[instance.planner.task]
+trigger = "on_message"
+input = ["scan"]
+output = ["cmd"]
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, None).unwrap();
+        let overlay = TemporaryIslandOverlay {
+            boundary_inputs: vec![TemporaryBoundaryMapping {
+                name: "scan_in".to_string(),
+                endpoint: "planner.scan".to_string(),
+            }],
+            boundary_outputs: vec![TemporaryBoundaryMapping {
+                name: "cmd_out".to_string(),
+                endpoint: "planner.cmd".to_string(),
+            }],
+        };
+
+        let island = apply_temporary_island_overlay(&projected, &overlay).unwrap();
+
+        assert_eq!(island.profiles[0].mode, GraphMode::Island);
+        assert_eq!(island.artifact.mode, GraphMode::Island);
+        assert!(island.artifact.temporary_island);
+        assert!(island.artifact.test_only);
+        assert_eq!(island.graphs[0].boundary_endpoints.len(), 2);
+        assert_eq!(island.graphs[0].boundary_endpoints[0].name, "scan_in");
+        assert_eq!(
+            island.graphs[0].boundary_endpoints[0].ty,
+            TypeExpr::Named {
+                name: "Scan".to_string()
+            }
+        );
+        assert_eq!(island.graphs[0].boundary_endpoints[1].name, "cmd_out");
+        assert_eq!(
+            island.graphs[0].boundary_endpoints[1].ty,
+            TypeExpr::Named {
+                name: "Command".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn temporary_island_overlay_rejects_duplicate_boundary_names() {
+        let source = r#"
+[package]
+name = "temporary_duplicate_demo"
+rsdl_version = "0.1"
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+output = ["sample:u32"]
+
+[instance.consumer]
+component = "consumer"
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, None).unwrap();
+        let overlay = TemporaryIslandOverlay {
+            boundary_inputs: vec![TemporaryBoundaryMapping {
+                name: "sample".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+            boundary_outputs: vec![TemporaryBoundaryMapping {
+                name: "sample".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+        };
+
+        let error = apply_temporary_island_overlay(&projected, &overlay)
+            .expect_err("duplicate boundary names should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate temporary boundary name")
+        );
+    }
+
+    #[test]
+    fn temporary_island_overlay_rejects_input_with_existing_dataflow_bind() {
+        let source = r#"
+[package]
+name = "temporary_overlap_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.producer]
+component = "producer"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let projected = project_contract_to_profile(&ir, None).unwrap();
+        let overlay = TemporaryIslandOverlay {
+            boundary_inputs: vec![TemporaryBoundaryMapping {
+                name: "sample_in".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+            boundary_outputs: vec![],
+        };
+
+        let error = apply_temporary_island_overlay(&projected, &overlay)
+            .expect_err("dataflow plus temporary boundary input should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("already has an incoming dataflow bind")
+        );
     }
 
     #[test]
