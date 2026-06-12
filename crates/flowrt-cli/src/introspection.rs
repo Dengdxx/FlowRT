@@ -2341,8 +2341,10 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
     let Ok(sd) = serde_json::from_str::<SelfDescription>(&json) else {
         return StatusEnrichment::default();
     };
-    let mut enrichment = StatusEnrichment::default();
-    enrichment.artifact = sd.artifact.clone();
+    let mut enrichment = StatusEnrichment {
+        artifact: sd.artifact.clone(),
+        ..StatusEnrichment::default()
+    };
     for graph in &sd.graphs {
         enrichment.graphs.push(GraphModeAssoc {
             name: graph.name.clone(),

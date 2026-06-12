@@ -10,16 +10,10 @@ use crate::schema::{SelfDescriptionFieldAbi, SelfDescriptionFrameField};
 const DEFAULT_SEQUENCE_SUMMARY_THRESHOLD: usize = 16;
 
 /// canonical frame 字段格式化选项。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FrameFormatOptions {
     /// 为 true 时完整输出 sequence/bytes 等字段，不做摘要。
     pub raw: bool,
-}
-
-impl Default for FrameFormatOptions {
-    fn default() -> Self {
-        Self { raw: false }
-    }
 }
 
 /// 格式化错误。

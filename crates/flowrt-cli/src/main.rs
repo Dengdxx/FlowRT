@@ -980,22 +980,20 @@ fn main() -> Result<()> {
                         &mut io::stdout(),
                     )?;
                 }
+            } else if echo_target.channels.len() == 1 {
+                println!(
+                    "{}",
+                    echo_channel(
+                        &echo_target.to_single_target()?,
+                        socket.as_deref(),
+                        echo_options
+                    )?
+                );
             } else {
-                if echo_target.channels.len() == 1 {
-                    println!(
-                        "{}",
-                        echo_channel(
-                            &echo_target.to_single_target()?,
-                            socket.as_deref(),
-                            echo_options
-                        )?
-                    );
-                } else {
-                    println!(
-                        "{}",
-                        echo_channels(&echo_target, socket.as_deref(), echo_options)?
-                    );
-                }
+                println!(
+                    "{}",
+                    echo_channels(&echo_target, socket.as_deref(), echo_options)?
+                );
             }
         }
         Command::Pub {
