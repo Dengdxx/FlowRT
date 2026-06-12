@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
-use flowrt_codegen::{ArtifactBundle, emit_artifacts};
+use flowrt_codegen::{ArtifactBundle, emit_artifacts, handler_signature_summary};
 use flowrt_ir::{
     ContractIr, GraphMode, LanguageKind, TargetPlatform, hash_source, normalize_loaded_document,
     project_contract_to_profile,
@@ -621,6 +621,7 @@ fn main() -> Result<()> {
         Command::Check { rsdl } => {
             let contract = load_contract_from_rsdl(&rsdl)?;
             println!("OK {}", summary(&contract));
+            println!("{}", handler_signature_summary(&contract));
         }
         Command::Prepare {
             rsdl,

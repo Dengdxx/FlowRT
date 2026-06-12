@@ -303,7 +303,7 @@ pub(crate) fn emit_rust_main() -> String {
     output
 }
 
-fn rust_callback_args(
+pub(crate) fn rust_callback_args(
     component: &ComponentIr,
     service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
     operation_plans: &[crate::runtime_plan::OperationRuntimePlan],

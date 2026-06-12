@@ -20,6 +20,7 @@ mod ros2_bridge;
 mod runtime_plan;
 mod rust_shell;
 mod selfdesc;
+mod signature_summary;
 mod supervisor;
 
 use build_files::{emit_cargo_manifest, emit_cmake};
@@ -38,6 +39,8 @@ use selfdesc::{
     emit_cpp_selfdesc_header, emit_cpp_selfdesc_source, emit_rust_selfdesc, emit_self_description,
 };
 use supervisor::{emit_rust_supervisor, emit_rust_supervisor_main};
+
+pub use signature_summary::handler_signature_summary;
 
 // Re-export functions moved to rust_shell that other modules depend on.
 pub(crate) use rust_shell::backend_emit::{

@@ -83,9 +83,16 @@ flowrt check examples/import_demo/rsdl/robot.rsdl
 
 ```text
 OK package=import_demo types=2 components=2 instances=2 tasks=2 binds=1
+generated user API summary:
+graph default
+  component source language=rust kind=native
+    user handlers:
+      fn on_tick(&mut self, imu: &mut flowrt::Output<Imu>) -> flowrt::Status
 ```
 
-`check` 会解析 RSDL、展开 `[package.imports]`、归一化 Contract IR，并运行 validator。它不会生成或构建应用产物。
+`check` 会解析 RSDL、展开 `[package.imports]`、归一化 Contract IR，并运行 validator。
+它不会生成或构建应用产物。摘要中的 handler 签名来自同一套 codegen 规则；如果组件声明
+了参数，`on_tick` 会显示额外的 typed params 参数，用户不需要等编译失败后再去翻生成头文件。
 
 ## 生成产物
 

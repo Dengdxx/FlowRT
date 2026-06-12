@@ -45,7 +45,20 @@ flowrt record --output <path/to/run.mcap> [--socket <path>] [--duration <10s|500
 flowrt check examples/import_demo/rsdl/robot.rsdl
 ```
 
-`check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。
+`check` 解析 RSDL、展开 imports、生成内存中的 Contract IR 并运行 validator。它不会写入 `flowrt/` 目录，也不会构建应用。校验通过后，输出会附带 generated user API 摘要，用于提前确认用户代码需要实现的 handler 签名：
+
+```text
+generated user API summary:
+graph default
+  component controller language=cpp kind=native
+    user handlers:
+      flowrt::Status on_tick(const ControllerParams& params, flowrt::Output<Cmd>& cmd)
+      flowrt::Status on_params_update(const ControllerParams& old_params, const ControllerParams& new_params, flowrt::Context& context)
+```
+
+带 `params` 的 component 会在 `on_tick` 中收到 typed params 快照；带 input、output、service
+client 或 operation client 的 component 也会在摘要中看到对应 generated 参数。该摘要只
+描述生成接口形状，不写生成文件，也不替代 `prepare` / `build`。
 
 Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes`、`string` 和 `sequence<u32>` 这类无界 variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 variable frame 时，该 route 会自动选择支持变长消息的 backend（当前为 `zenoh`），其他 fixed-size route 仍继续走 `iox2`。
 

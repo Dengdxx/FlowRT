@@ -73,6 +73,76 @@ output = ["cmd"]
 }
 
 #[test]
+fn handler_signature_summary_exposes_param_on_tick_arguments() {
+    let rust_ir = contract_from_source(
+        r#"
+[package]
+name = "rust_signature_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "rust"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+    );
+    let rust_summary = handler_signature_summary(&rust_ir);
+    assert!(rust_summary.contains("component controller language=rust"));
+    assert!(
+        rust_summary
+            .contains("fn on_tick(&mut self, params: &ControllerParams, cmd: &mut flowrt::Output<Cmd>) -> flowrt::Status"),
+        "{rust_summary}"
+    );
+
+    let cpp_ir = contract_from_source(
+        r#"
+[package]
+name = "cpp_signature_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "cpp"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+    );
+    let cpp_summary = handler_signature_summary(&cpp_ir);
+    assert!(cpp_summary.contains("component controller language=cpp"));
+    assert!(
+        cpp_summary.contains(
+            "flowrt::Status on_tick(const ControllerParams& params, flowrt::Output<Cmd>& cmd)"
+        ),
+        "{cpp_summary}"
+    );
+}
+
+#[test]
 fn generated_rust_shell_omits_param_decoder_for_no_param_contracts() {
     let ir = contract_from_source(
         r#"

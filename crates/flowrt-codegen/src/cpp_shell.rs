@@ -26,7 +26,7 @@ use crate::{
     zenoh_key_expr,
 };
 
-fn component_cpp_name(component: &ComponentIr) -> String {
+pub(crate) fn component_cpp_name(component: &ComponentIr) -> String {
     component_rust_name(component)
 }
 
@@ -2897,7 +2897,7 @@ fn cpp_service_step_fn_name(plan: &crate::runtime_plan::ServiceRuntimePlan) -> S
     )
 }
 
-fn cpp_callback_args(
+pub(crate) fn cpp_callback_args(
     component: &ComponentIr,
     service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
     operation_plans: &[crate::runtime_plan::OperationRuntimePlan],

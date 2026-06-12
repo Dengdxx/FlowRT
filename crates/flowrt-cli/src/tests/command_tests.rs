@@ -9,6 +9,54 @@ fn cli_exposes_installed_binary_metadata() {
 }
 
 #[test]
+fn check_summary_exposes_generated_handler_signature_with_params() {
+    let root = temp_test_dir("check-generated-signature");
+    std::fs::create_dir_all(&root).unwrap();
+    let rsdl = root.join("robot.rsdl");
+    std::fs::write(
+        &rsdl,
+        r#"
+[package]
+name = "check_signature_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "f32"
+
+[component.controller]
+language = "cpp"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+kp = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+    )
+    .unwrap();
+
+    let contract = load_contract_from_rsdl(&rsdl).unwrap();
+    let output = format!(
+        "OK {}\n{}",
+        summary(&contract),
+        handler_signature_summary(&contract)
+    );
+
+    assert!(output.contains("generated user API summary:"));
+    assert!(output.contains("component controller language=cpp"));
+    assert!(output.contains(
+        "flowrt::Status on_tick(const ControllerParams& params, flowrt::Output<Cmd>& cmd)"
+    ));
+    assert!(!root.join("flowrt").exists());
+}
+
+#[test]
 fn command_build_parses_target_platform() {
     let cli = Cli::try_parse_from([
         "flowrt",
