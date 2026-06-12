@@ -394,26 +394,68 @@ pub(crate) struct EchoTarget {
     pub(crate) channel: String,
 }
 
-impl EchoTarget {
+#[derive(Debug, Clone)]
+pub(crate) struct EchoSelection {
+    pub(crate) image: Option<PathBuf>,
+    pub(crate) channels: Vec<String>,
+}
+
+impl EchoSelection {
     pub(crate) fn from_cli(
         target: String,
-        channel: Option<String>,
+        channels: Vec<String>,
         image: Option<PathBuf>,
     ) -> Result<Self> {
-        match (channel, image) {
-            (Some(channel), None) => Ok(Self {
+        match (channels.as_slice(), image) {
+            ([channel], None) if looks_like_self_description_path(&target) => Ok(Self {
                 image: Some(PathBuf::from(target)),
-                channel,
+                channels: vec![channel.clone()],
             }),
-            (Some(_), Some(_)) => anyhow::bail!(
-                "flowrt echo accepts either `<image> <channel>` or `--image <path> <channel>`, not both"
-            ),
-            (None, image) => Ok(Self {
+            ([channel], None) => Ok(Self {
+                image: None,
+                channels: vec![target, channel.clone()],
+            }),
+            ([], image) => Ok(Self {
                 image,
-                channel: target,
+                channels: vec![target],
             }),
+            (_, Some(image)) => {
+                let mut all_channels = Vec::with_capacity(channels.len() + 1);
+                all_channels.push(target);
+                all_channels.extend(channels);
+                Ok(Self {
+                    image: Some(image),
+                    channels: all_channels,
+                })
+            }
+            (_, None) => {
+                let mut all_channels = Vec::with_capacity(channels.len() + 1);
+                all_channels.push(target);
+                all_channels.extend(channels);
+                Ok(Self {
+                    image: None,
+                    channels: all_channels,
+                })
+            }
         }
     }
+
+    pub(crate) fn to_single_target(&self) -> Result<EchoTarget> {
+        let [channel] = self.channels.as_slice() else {
+            anyhow::bail!(
+                "expected exactly one echo channel, got {}",
+                self.channels.len()
+            );
+        };
+        Ok(EchoTarget {
+            image: self.image.clone(),
+            channel: channel.clone(),
+        })
+    }
+}
+
+fn looks_like_self_description_path(value: &str) -> bool {
+    value.ends_with(".json") || value.contains('/') || value.contains('\\')
 }
 
 pub(crate) fn echo_channel(target: &EchoTarget, socket: Option<&Path>) -> Result<String> {
@@ -429,6 +471,29 @@ pub(crate) fn echo_channel(target: &EchoTarget, socket: Option<&Path>) -> Result
     )?;
 
     format_echo_snapshot(&channel_spec, &snapshot)
+}
+
+pub(crate) fn echo_channels(selection: &EchoSelection, socket: Option<&Path>) -> Result<String> {
+    let (self_description, self_description_hash, socket) =
+        load_echo_selection_context(selection, socket)?;
+    let channel_specs = echo_channel_specs(&self_description, &selection.channels)?;
+    let mut lines = Vec::with_capacity(channel_specs.len());
+    for channel_spec in &channel_specs {
+        let _observe = open_echo_observer(&socket, channel_spec, &self_description_hash)?;
+        let snapshot = wait_for_echo_snapshot(
+            &socket,
+            channel_spec,
+            &self_description_hash,
+            Duration::from_millis(1000),
+            Duration::from_millis(50),
+        )?;
+        lines.push(format!(
+            "channel={} {}",
+            channel_spec.name,
+            format_echo_snapshot(channel_spec, &snapshot)?
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -464,6 +529,20 @@ fn load_echo_context(
     socket: Option<&Path>,
 ) -> Result<(SelfDescription, String, PathBuf)> {
     match &target.image {
+        Some(image) => {
+            let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+            let socket = select_echo_socket(socket, &self_description_hash)?;
+            Ok((self_description, self_description_hash, socket))
+        }
+        None => load_echo_context_from_live_socket(socket),
+    }
+}
+
+fn load_echo_selection_context(
+    selection: &EchoSelection,
+    socket: Option<&Path>,
+) -> Result<(SelfDescription, String, PathBuf)> {
+    match &selection.image {
         Some(image) => {
             let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
             let socket = select_echo_socket(socket, &self_description_hash)?;
@@ -618,6 +697,55 @@ pub(crate) fn echo_channel_follow_for_polls(
             .context("failed to write echo output")?;
             output.flush().context("failed to flush echo output")?;
             last_snapshot_key = Some(snapshot_key);
+        }
+        if index + 1 < max_polls {
+            std::thread::sleep(interval);
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn echo_channels_follow(
+    selection: &EchoSelection,
+    socket: Option<&Path>,
+    interval: Duration,
+    output: &mut dyn Write,
+) -> Result<()> {
+    echo_channels_follow_for_polls(selection, socket, interval, usize::MAX, output)
+}
+
+pub(crate) fn echo_channels_follow_for_polls(
+    selection: &EchoSelection,
+    socket: Option<&Path>,
+    interval: Duration,
+    max_polls: usize,
+    output: &mut dyn Write,
+) -> Result<()> {
+    let (self_description, self_description_hash, socket) =
+        load_echo_selection_context(selection, socket)?;
+    let channel_specs = echo_channel_specs(&self_description, &selection.channels)?;
+    let _observes = channel_specs
+        .iter()
+        .map(|channel_spec| open_echo_observer(&socket, channel_spec, &self_description_hash))
+        .collect::<Result<Vec<_>>>()?;
+    let mut last_snapshot_keys = BTreeMap::<String, EchoSnapshotKey>::new();
+
+    for index in 0..max_polls {
+        for channel_spec in &channel_specs {
+            let snapshot = request_echo_snapshot(&socket, channel_spec, &self_description_hash)?;
+            let snapshot_key = EchoSnapshotKey::from(&snapshot);
+            if last_snapshot_keys.get(&channel_spec.name) != Some(&snapshot_key) {
+                writeln!(
+                    output,
+                    "channel={} {}",
+                    channel_spec.name,
+                    format_echo_snapshot(channel_spec, &snapshot)?
+                )
+                .context("failed to write echo output")?;
+                output.flush().context("failed to flush echo output")?;
+                last_snapshot_keys.insert(channel_spec.name.clone(), snapshot_key);
+            }
         }
         if index + 1 < max_polls {
             std::thread::sleep(interval);
@@ -826,6 +954,19 @@ pub(crate) fn find_echo_channel(
             "FlowRT self-description contains multiple channels named `{channel_name}`"
         ),
     }
+}
+
+fn echo_channel_specs(
+    self_description: &SelfDescription,
+    channels: &[String],
+) -> Result<Vec<EchoChannelSpec>> {
+    if channels.is_empty() {
+        anyhow::bail!("flowrt echo requires at least one channel");
+    }
+    channels
+        .iter()
+        .map(|channel| find_echo_channel(self_description, channel))
+        .collect()
 }
 
 fn echo_channel_name(channel: &SelfDescriptionChannel) -> String {

@@ -200,7 +200,7 @@ fn cli_parses_echo_command_with_optional_socket() {
 
     assert_eq!(target, "flowrt/selfdesc/selfdesc.json");
     assert_eq!(image, None);
-    assert_eq!(channel.as_deref(), Some("source.imu_to_sink.imu"));
+    assert_eq!(channel, vec!["source.imu_to_sink.imu".to_string()]);
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
     assert!(!follow);
     assert_eq!(interval_ms, 250);
@@ -230,7 +230,7 @@ fn cli_parses_echo_channel_without_image() {
 
     assert_eq!(target, "source.imu_to_sink.imu");
     assert_eq!(image, None);
-    assert_eq!(channel, None);
+    assert!(channel.is_empty());
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
 }
 
@@ -257,7 +257,34 @@ fn cli_parses_echo_image_option() {
 
     assert_eq!(target, "source.imu_to_sink.imu");
     assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
-    assert_eq!(channel, None);
+    assert!(channel.is_empty());
+}
+
+#[test]
+fn cli_parses_echo_multiple_channels_with_image_option() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "echo",
+        "result_a",
+        "result_b",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+    ])
+    .unwrap();
+
+    let Command::Echo {
+        target,
+        image,
+        channel,
+        ..
+    } = cli.command
+    else {
+        panic!("echo command should parse into Command::Echo")
+    };
+
+    assert_eq!(target, "result_a");
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(channel, vec!["result_b".to_string()]);
 }
 
 #[test]

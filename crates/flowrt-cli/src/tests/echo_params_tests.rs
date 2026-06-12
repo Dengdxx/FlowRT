@@ -1811,6 +1811,99 @@ fn main() {{}}
 }
 
 #[test]
+fn echo_multiple_channels_from_image_prefixes_each_line() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.a",
+      "to": "sink.a",
+      "message_type": "Count"
+    }, {
+      "from": "source.b",
+      "to": "sink.b",
+      "message_type": "Count"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Count",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-multi-channel");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 91,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_channel("source.a_to_sink.a", "Count");
+    state.register_channel("source.b_to_sink.b", "Count");
+    state.record_channel_publish_bytes(
+        "source.a_to_sink.a",
+        "Count",
+        1u32.to_le_bytes().to_vec(),
+        Some(10),
+    );
+    state.record_channel_publish_bytes(
+        "source.b_to_sink.b",
+        "Count",
+        2u32.to_le_bytes().to_vec(),
+        Some(20),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channels(
+        &EchoSelection {
+            image: Some(selfdesc.clone()),
+            channels: vec!["source.a".to_string(), "source.b".to_string()],
+        },
+        Some(&socket),
+    )
+    .unwrap();
+
+    let lines = output.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].starts_with("channel=source.a_to_sink.a "));
+    assert!(lines[0].contains("fields={value=1}"));
+    assert!(lines[1].starts_with("channel=source.b_to_sink.b "));
+    assert!(lines[1].contains("fields={value=2}"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_follow_outputs_changed_snapshots_from_fake_status_server() {
     let source = r#"
 {

@@ -31,11 +31,11 @@ use boundary_pub::{boundary_publish, boundary_publish_from_file};
 use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd};
 use introspection::{
-    EchoTarget, echo_channel, echo_channel_follow, live_hz_summary, live_status_summary,
-    load_self_description, operation_cancel, operation_list, operation_status_summary, params_get,
-    params_list, params_set, params_set_from_file, remote_params_get, remote_params_list,
-    remote_params_set, remote_params_set_from_file, self_description_nodes,
-    self_description_summary,
+    EchoSelection, echo_channel, echo_channel_follow, echo_channels, echo_channels_follow,
+    live_hz_summary, live_status_summary, load_self_description, operation_cancel, operation_list,
+    operation_status_summary, params_get, params_list, params_set, params_set_from_file,
+    remote_params_get, remote_params_list, remote_params_set, remote_params_set_from_file,
+    self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use toolchain::{
@@ -48,9 +48,9 @@ use toolchain::{
 use flowrt_selfdesc::SelfDescription;
 #[cfg(test)]
 use introspection::{
-    echo_channel_follow_for_polls, echo_channel_from_image, echo_channel_snapshot_from_image,
-    find_echo_channel, format_hz_summary_from_status_pair, live_hz_summary_for_sockets,
-    live_status_summary_for_sockets, operation_cancel_for_sockets,
+    EchoTarget, echo_channel_follow_for_polls, echo_channel_from_image,
+    echo_channel_snapshot_from_image, find_echo_channel, format_hz_summary_from_status_pair,
+    live_hz_summary_for_sockets, live_status_summary_for_sockets, operation_cancel_for_sockets,
     operation_status_summary_for_sockets, select_matching_runtime_socket, self_description_hash,
 };
 
@@ -282,8 +282,8 @@ enum Command {
         /// channel 名称；旧式兼容用法中这是 FlowRT 应用二进制或 selfdesc.json。
         target: String,
 
-        /// 旧式兼容用法：channel 名称。
-        channel: Option<String>,
+        /// 额外 channel 名称；旧式兼容用法中单个值表示 `<image> <channel>`。
+        channel: Vec<String>,
 
         /// 显式提供 FlowRT 应用二进制或 selfdesc.json；省略时从 live runtime 请求 self-description。
         #[arg(long)]
@@ -835,16 +835,32 @@ fn main() -> Result<()> {
             follow,
             interval_ms,
         } => {
-            let echo_target = EchoTarget::from_cli(target, channel, image)?;
+            let echo_target = EchoSelection::from_cli(target, channel, image)?;
             if follow {
-                echo_channel_follow(
-                    &echo_target,
-                    socket.as_deref(),
-                    Duration::from_millis(interval_ms),
-                    &mut io::stdout(),
-                )?;
+                if echo_target.channels.len() == 1 {
+                    echo_channel_follow(
+                        &echo_target.to_single_target()?,
+                        socket.as_deref(),
+                        Duration::from_millis(interval_ms),
+                        &mut io::stdout(),
+                    )?;
+                } else {
+                    echo_channels_follow(
+                        &echo_target,
+                        socket.as_deref(),
+                        Duration::from_millis(interval_ms),
+                        &mut io::stdout(),
+                    )?;
+                }
             } else {
-                println!("{}", echo_channel(&echo_target, socket.as_deref())?);
+                if echo_target.channels.len() == 1 {
+                    println!(
+                        "{}",
+                        echo_channel(&echo_target.to_single_target()?, socket.as_deref())?
+                    );
+                } else {
+                    println!("{}", echo_channels(&echo_target, socket.as_deref())?);
+                }
             }
         }
         Command::Pub {
