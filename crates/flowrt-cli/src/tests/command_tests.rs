@@ -278,6 +278,8 @@ fn cli_parses_pub_boundary_input_command() {
     let Command::Pub {
         endpoint,
         json,
+        file,
+        freq,
         image,
         socket,
         published_at_ms,
@@ -287,10 +289,89 @@ fn cli_parses_pub_boundary_input_command() {
     };
 
     assert_eq!(endpoint, "sample_in");
-    assert_eq!(json, r#"{"value":7}"#);
+    assert_eq!(json.as_deref(), Some(r#"{"value":7}"#));
+    assert_eq!(file, None);
+    assert_eq!(freq, None);
     assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
     assert_eq!(published_at_ms, None);
+}
+
+#[test]
+fn cli_parses_pub_boundary_file_input() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "pub",
+        "sample_in",
+        "--file",
+        "input.jsonl",
+        "--freq",
+        "200",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+    ])
+    .unwrap();
+
+    let Command::Pub {
+        endpoint,
+        json,
+        file,
+        freq,
+        image,
+        ..
+    } = cli.command
+    else {
+        panic!("pub command should parse into Command::Pub")
+    };
+
+    assert_eq!(endpoint, "sample_in");
+    assert_eq!(json, None);
+    assert_eq!(file, Some(PathBuf::from("input.jsonl")));
+    assert_eq!(freq, Some(200.0));
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+}
+
+#[test]
+fn cli_rejects_pub_without_json_or_file() {
+    let error = Cli::try_parse_from(["flowrt", "pub", "sample_in"])
+        .expect_err("pub requires json or file input");
+
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
+fn cli_rejects_pub_mixing_json_and_file() {
+    let error = Cli::try_parse_from([
+        "flowrt",
+        "pub",
+        "sample_in",
+        "--json",
+        r#"{"value":7}"#,
+        "--file",
+        "input.jsonl",
+    ])
+    .expect_err("pub json and file inputs are mutually exclusive");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn cli_rejects_pub_non_positive_freq() {
+    let error = Cli::try_parse_from([
+        "flowrt",
+        "pub",
+        "sample_in",
+        "--file",
+        "input.jsonl",
+        "--freq",
+        "0",
+    ])
+    .expect_err("pub freq must be positive");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
 }
 
 #[test]

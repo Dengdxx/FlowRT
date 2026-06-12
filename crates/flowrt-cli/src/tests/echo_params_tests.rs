@@ -639,6 +639,207 @@ fn pub_accepts_byte_array_json_for_canonical_frame_bytes_field() {
 }
 
 #[test]
+fn pub_file_injects_jsonl_into_boundary_input() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_sample_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-file-jsonl");
+    let selfdesc = root.join("selfdesc.json");
+    let input = root.join("samples.jsonl");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(&input, "{\"value\":7}\n\n{\"value\":8}\n").unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 83,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+    let captured_for_handler = captured.clone();
+    state.register_boundary_input_handler("sample_in", "Sample", move |payload, timestamp| {
+        assert_eq!(timestamp, Some(789));
+        let bytes: [u8; 4] = payload.try_into().expect("u32 payload");
+        let value = u32::from_le_bytes(bytes);
+        let mut captured = captured_for_handler.lock().unwrap();
+        captured.push(value);
+        Ok(captured.len() as u64)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = boundary_publish_from_file(
+        "sample_in",
+        &input,
+        Some(&selfdesc),
+        Some(&socket),
+        Some(789),
+        None,
+    )
+    .unwrap();
+
+    assert!(output.contains("revision=1"));
+    assert!(output.contains("revision=2"));
+    assert!(output.contains("summary: endpoint=sample_in sent=2"));
+    assert_eq!(*captured.lock().unwrap(), vec![7, 8]);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn pub_file_injects_json_array_into_boundary_input_with_freq() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_sample_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-file-array");
+    let selfdesc = root.join("selfdesc.json");
+    let input = root.join("samples.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(&input, r#"[{"value":10},{"value":11}]"#).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 84,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+    let captured_for_handler = captured.clone();
+    state.register_boundary_input_handler("sample_in", "Sample", move |payload, _| {
+        let bytes: [u8; 4] = payload.try_into().expect("u32 payload");
+        let value = u32::from_le_bytes(bytes);
+        let mut captured = captured_for_handler.lock().unwrap();
+        captured.push(value);
+        Ok(captured.len() as u64)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = boundary_publish_from_file(
+        "sample_in",
+        &input,
+        Some(&selfdesc),
+        Some(&socket),
+        None,
+        Some(10_000.0),
+    )
+    .unwrap();
+
+    assert!(output.contains("summary: endpoint=sample_in sent=2"));
+    assert_eq!(*captured.lock().unwrap(), vec![10, 11]);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn pub_file_reports_jsonl_line_for_invalid_json() {
+    let root = temp_test_dir("pub-file-bad-jsonl");
+    let input = root.join("samples.jsonl");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&input, "{bad json}\n").unwrap();
+
+    let error =
+        boundary_publish_from_file("sample_in", &input, None, None, None, None).unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("line 1"), "unexpected error: {message}");
+    assert!(
+        message.contains("must be valid JSON"),
+        "unexpected error: {message}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn pub_rejects_invalid_canonical_frame_base64_json() {
     let source = r#"
 {

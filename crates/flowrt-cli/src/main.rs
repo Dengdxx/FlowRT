@@ -9,7 +9,7 @@ use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
 use flowrt_ir::{
     ContractIr, GraphMode, LanguageKind, TargetPlatform, hash_source, normalize_loaded_document,
@@ -27,7 +27,7 @@ mod introspection;
 mod record;
 mod toolchain;
 
-use boundary_pub::boundary_publish;
+use boundary_pub::{boundary_publish, boundary_publish_from_file};
 use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd};
 use introspection::{
@@ -302,14 +302,27 @@ enum Command {
         interval_ms: u64,
     },
 
-    /// 向 island boundary input 注入一条 typed JSON 数据。
+    /// 向 island boundary input 注入 typed JSON 数据。
+    #[command(group(
+        ArgGroup::new("pub-input")
+            .required(true)
+            .args(["json", "file"])
+    ))]
     Pub {
         /// boundary input endpoint 名称，例如 `sample_in`。
         endpoint: String,
 
         /// JSON 对象或 primitive，按 self-description Message ABI 编码后注入。
-        #[arg(long)]
-        json: String,
+        #[arg(long, group = "pub-input")]
+        json: Option<String>,
+
+        /// JSONL、JSON array 或单个 JSON value 文件，逐条按 self-description 编码后注入。
+        #[arg(long, group = "pub-input")]
+        file: Option<PathBuf>,
+
+        /// `--file` 模式下的 wall-clock 注入频率，单位 Hz；不解释或修改消息字段时间戳。
+        #[arg(long, value_parser = parse_positive_f64)]
+        freq: Option<f64>,
 
         /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json；省略时从 live runtime 请求。
         #[arg(long)]
@@ -837,20 +850,39 @@ fn main() -> Result<()> {
         Command::Pub {
             endpoint,
             json,
+            file,
+            freq,
             image,
             socket,
             published_at_ms,
         } => {
-            println!(
-                "{}",
-                boundary_publish(
+            let output = match (json, file) {
+                (Some(json), None) => {
+                    if freq.is_some() {
+                        anyhow::bail!("flowrt pub --freq is only valid with --file");
+                    }
+                    boundary_publish(
+                        &endpoint,
+                        &json,
+                        image.as_deref(),
+                        socket.as_deref(),
+                        published_at_ms,
+                    )?
+                }
+                (None, Some(file)) => boundary_publish_from_file(
                     &endpoint,
-                    &json,
+                    &file,
                     image.as_deref(),
                     socket.as_deref(),
                     published_at_ms,
-                )?
-            );
+                    freq,
+                )?,
+                (None, None) => {
+                    anyhow::bail!("flowrt pub requires exactly one of --json or --file");
+                }
+                (Some(_), Some(_)) => unreachable!("clap enforces pub input exclusivity"),
+            };
+            println!("{output}");
         }
         Command::Params { command } => match command {
             ParamsCommand::List {
@@ -1041,6 +1073,13 @@ fn parse_positive_usize(raw: &str) -> std::result::Result<usize, String> {
     match raw.parse::<usize>() {
         Ok(value) if value > 0 => Ok(value),
         _ => Err("must be a positive integer".to_string()),
+    }
+}
+
+fn parse_positive_f64(raw: &str) -> std::result::Result<f64, String> {
+    match raw.parse::<f64>() {
+        Ok(value) if value.is_finite() && value > 0.0 => Ok(value),
+        _ => Err("must be a positive finite number".to_string()),
     }
 }
 

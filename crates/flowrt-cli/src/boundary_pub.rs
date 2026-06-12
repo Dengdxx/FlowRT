@@ -1,7 +1,11 @@
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use flowrt_selfdesc::SelfDescription;
+use serde_json::Value;
 
 use crate::frame_json::encode_boundary_json as encode_message_json;
 use crate::introspection::{
@@ -41,6 +45,251 @@ pub(crate) fn boundary_publish(
         payload,
         published_at_ms,
     )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BoundaryPubInput {
+    pub json: String,
+    pub source: BoundaryPubInputSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BoundaryPubInputSource {
+    JsonArrayIndex(usize),
+    JsonLine(usize),
+    SingleJsonValue,
+}
+
+impl BoundaryPubInputSource {
+    fn describe(&self, path: &Path) -> String {
+        match self {
+            Self::JsonArrayIndex(index) => {
+                format!("{} array index {index}", path.display())
+            }
+            Self::JsonLine(line) => format!("{} line {line}", path.display()),
+            Self::SingleJsonValue => path.display().to_string(),
+        }
+    }
+}
+
+pub(crate) fn boundary_publish_from_file(
+    endpoint: &str,
+    file: &Path,
+    image: Option<&Path>,
+    socket: Option<&Path>,
+    published_at_ms: Option<u64>,
+    freq_hz: Option<f64>,
+) -> Result<String> {
+    if is_jsonl_path(file) {
+        return boundary_publish_from_jsonl_file(
+            endpoint,
+            file,
+            image,
+            socket,
+            published_at_ms,
+            freq_hz,
+        );
+    }
+
+    match boundary_pub_inputs_from_json_document(file) {
+        Ok(inputs) => boundary_publish_inputs(
+            endpoint,
+            file,
+            image,
+            socket,
+            published_at_ms,
+            freq_hz,
+            inputs,
+        ),
+        Err(json_error) => boundary_publish_from_jsonl_file(
+            endpoint,
+            file,
+            image,
+            socket,
+            published_at_ms,
+            freq_hz,
+        )
+        .with_context(|| {
+            format!(
+                "failed to parse `{}` as JSON document: {json_error}",
+                file.display()
+            )
+        }),
+    }
+}
+
+fn boundary_publish_inputs(
+    endpoint: &str,
+    file: &Path,
+    image: Option<&Path>,
+    socket: Option<&Path>,
+    published_at_ms: Option<u64>,
+    freq_hz: Option<f64>,
+    inputs: Vec<BoundaryPubInput>,
+) -> Result<String> {
+    if inputs.is_empty() {
+        anyhow::bail!(
+            "flowrt pub --file `{}` does not contain any JSON messages",
+            file.display()
+        );
+    }
+    let interval = freq_hz.map(|freq| Duration::from_secs_f64(1.0 / freq));
+    let mut lines = Vec::with_capacity(inputs.len() + 1);
+    let mut next_send = Instant::now();
+
+    for input in inputs {
+        pace_boundary_publish(interval, &mut next_send);
+        lines.push(boundary_publish_one_input(
+            endpoint,
+            file,
+            image,
+            socket,
+            published_at_ms,
+            input,
+        )?);
+    }
+    lines.push(format!(
+        "summary: endpoint={endpoint} sent={} source={}",
+        lines.len(),
+        file.display()
+    ));
+    Ok(lines.join("\n"))
+}
+
+fn boundary_publish_from_jsonl_file(
+    endpoint: &str,
+    file: &Path,
+    image: Option<&Path>,
+    socket: Option<&Path>,
+    published_at_ms: Option<u64>,
+    freq_hz: Option<f64>,
+) -> Result<String> {
+    let input = File::open(file)
+        .with_context(|| format!("failed to open boundary pub input `{}`", file.display()))?;
+    let reader = BufReader::new(input);
+    let interval = freq_hz.map(|freq| Duration::from_secs_f64(1.0 / freq));
+    let mut next_send = Instant::now();
+    let mut sent = 0usize;
+    let mut lines = Vec::new();
+
+    for (index, line) in reader.lines().enumerate() {
+        let line_number = index + 1;
+        let line = line.with_context(|| {
+            format!(
+                "failed to read boundary pub input `{}` line {line_number}",
+                file.display()
+            )
+        })?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let input = boundary_pub_input_from_jsonl_line(file, trimmed, line_number)?;
+        pace_boundary_publish(interval, &mut next_send);
+        lines.push(boundary_publish_one_input(
+            endpoint,
+            file,
+            image,
+            socket,
+            published_at_ms,
+            input,
+        )?);
+        sent += 1;
+    }
+    if sent == 0 {
+        anyhow::bail!(
+            "flowrt pub --file `{}` does not contain any JSON messages",
+            file.display()
+        );
+    }
+    lines.push(format!(
+        "summary: endpoint={endpoint} sent={sent} source={}",
+        file.display()
+    ));
+    Ok(lines.join("\n"))
+}
+
+fn boundary_publish_one_input(
+    endpoint: &str,
+    file: &Path,
+    image: Option<&Path>,
+    socket: Option<&Path>,
+    published_at_ms: Option<u64>,
+    input: BoundaryPubInput,
+) -> Result<String> {
+    boundary_publish(endpoint, &input.json, image, socket, published_at_ms).with_context(|| {
+        format!(
+            "failed to publish boundary input `{endpoint}` from {}",
+            input.source.describe(file)
+        )
+    })
+}
+
+fn pace_boundary_publish(interval: Option<Duration>, next_send: &mut Instant) {
+    if let Some(interval) = interval {
+        let now = Instant::now();
+        if *next_send > now {
+            std::thread::sleep(*next_send - now);
+        }
+        *next_send += interval;
+    }
+}
+
+fn boundary_pub_inputs_from_json_document(file: &Path) -> Result<Vec<BoundaryPubInput>> {
+    let input = File::open(file)
+        .with_context(|| format!("failed to open boundary pub input `{}`", file.display()))?;
+    let value = serde_json::from_reader::<_, Value>(input)
+        .with_context(|| format!("failed to parse `{}` as JSON", file.display()))?;
+    match value {
+        Value::Array(values) => values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                Ok(BoundaryPubInput {
+                    json: serde_json::to_string(&value).with_context(|| {
+                        format!(
+                            "failed to serialize `{}` array index {index}",
+                            file.display()
+                        )
+                    })?,
+                    source: BoundaryPubInputSource::JsonArrayIndex(index),
+                })
+            })
+            .collect(),
+        other => Ok(vec![BoundaryPubInput {
+            json: serde_json::to_string(&other)
+                .with_context(|| format!("failed to serialize `{}`", file.display()))?,
+            source: BoundaryPubInputSource::SingleJsonValue,
+        }]),
+    }
+}
+
+fn boundary_pub_input_from_jsonl_line(
+    file: &Path,
+    raw: &str,
+    line_number: usize,
+) -> Result<BoundaryPubInput> {
+    let value = serde_json::from_str::<Value>(raw).with_context(|| {
+        format!(
+            "flowrt pub --file JSONL entry `{}` line {line_number} must be valid JSON",
+            file.display()
+        )
+    })?;
+    Ok(BoundaryPubInput {
+        json: serde_json::to_string(&value).with_context(|| {
+            format!(
+                "failed to serialize boundary pub input `{}` line {line_number}",
+                file.display()
+            )
+        })?,
+        source: BoundaryPubInputSource::JsonLine(line_number),
+    })
+}
+
+fn is_jsonl_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
 }
 
 #[derive(Debug, Clone)]
