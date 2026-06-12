@@ -940,6 +940,93 @@ proces = "main"
     }
 
     #[test]
+    fn parses_component_and_task_concurrency() {
+        let source = r#"
+[package]
+name = "concurrency_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+concurrency = "parallel"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+concurrency = "parallel"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 10
+output = ["slow"]
+"#;
+
+        let document = parse_str(source).expect("document should parse");
+
+        assert_eq!(
+            document.components["worker"].concurrency.as_deref(),
+            Some("parallel")
+        );
+        assert_eq!(
+            document.instances["worker"].tasks[0].concurrency.as_deref(),
+            Some("parallel")
+        );
+        assert_eq!(document.instances["worker"].tasks[1].concurrency, None);
+    }
+
+    #[test]
+    fn rejects_invalid_component_concurrency() {
+        let source = r#"
+[package]
+name = "bad_concurrency"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+concurrency = "shared"
+"#;
+
+        let error = parse_str(source).expect_err("invalid component concurrency should fail");
+        assert!(error.to_string().contains("component concurrency"));
+        assert!(error.to_string().contains("exclusive"));
+        assert!(error.to_string().contains("parallel"));
+    }
+
+    #[test]
+    fn rejects_invalid_task_concurrency() {
+        let source = r#"
+[package]
+name = "bad_concurrency"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["sample:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+concurrency = "shared"
+output = ["sample"]
+"#;
+
+        let error = parse_str(source).expect_err("invalid task concurrency should fail");
+        assert!(error.to_string().contains("task concurrency"));
+        assert!(error.to_string().contains("exclusive"));
+        assert!(error.to_string().contains("parallel"));
+    }
+
+    #[test]
     fn parse_file_expands_package_imports() {
         let root = unique_temp_dir();
         std::fs::create_dir_all(root.join("types")).unwrap();

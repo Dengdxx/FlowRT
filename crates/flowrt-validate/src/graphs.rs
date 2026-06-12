@@ -5,8 +5,8 @@ use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
     GraphMode, InstanceIr, LanguageKind, OperationConcurrencyPolicy, OperationPortIr,
     OperationPortRef, OperationPreemptPolicy, PortIr, PortRef, PrimitiveType, ProcessReadinessGate,
-    Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskIr, TaskReadiness, TriggerKind,
-    TypeExpr,
+    Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency, TaskIr, TaskReadiness,
+    TriggerKind, TypeExpr,
 };
 
 use crate::ValidationError;
@@ -764,6 +764,14 @@ fn validate_tasks(
             errors.push(ValidationError::new(format!(
                 "task on instance `{}` must not set readiness unless trigger is on_message",
                 instance.name
+            )));
+        }
+        if task.concurrency == TaskConcurrency::Parallel
+            && component.concurrency != TaskConcurrency::Parallel
+        {
+            errors.push(ValidationError::new(format!(
+                "task `{}.{}` declares concurrency `parallel` but component `{}` concurrency is `exclusive`",
+                task.instance.name, task.name, component.name
             )));
         }
 

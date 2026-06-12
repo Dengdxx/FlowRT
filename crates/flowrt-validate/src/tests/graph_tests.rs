@@ -1813,3 +1813,72 @@ backend = "inproc"
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
     validate_contract(&ir).expect("valid resource hints should pass");
 }
+
+#[test]
+fn rejects_concurrency_parallel_task_under_exclusive_component() {
+    let source = r#"
+[package]
+name = "bad_concurrency"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["sample:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+concurrency = "parallel"
+output = ["sample"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("parallel task under exclusive component");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "task `worker.main` declares concurrency `parallel` but component `worker` concurrency is `exclusive`",
+        )
+    }));
+}
+
+#[test]
+fn accepts_concurrency_parallel_declaration_with_single_worker_thread() {
+    let source = r#"
+[package]
+name = "good_concurrency"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+concurrency = "parallel"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+concurrency = "parallel"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 10
+output = ["slow"]
+
+[profile.default]
+backend = "inproc"
+worker_threads = 1
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).expect("worker_threads=1 should not reject parallel declaration");
+}

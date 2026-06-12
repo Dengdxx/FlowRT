@@ -9,8 +9,8 @@ use crate::{
     ComponentBuildIr, ComponentIr, ComponentKind, EntityId, FieldIr, IoBoundaryHealth,
     IoBoundaryIr, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError, LanguageKind,
     LifecycleSurface, ModuleIr, OperationPortIr, PortIr, ResourceDescriptorKind,
-    ResourceDescriptorSchemaIr, ResourceKind, ResourceRequirementIr, Result, ServicePortIr, TypeIr,
-    parse_type_expr,
+    ResourceDescriptorSchemaIr, ResourceKind, ResourceRequirementIr, Result, ServicePortIr,
+    TaskConcurrency, TypeIr, parse_type_expr,
 };
 
 use super::ids::entity_id;
@@ -99,6 +99,11 @@ pub(super) fn normalize_components(
         .map(|(decl_name, name, raw)| {
             let symbol = resolver.component_info_for_decl(&decl_name);
             let current_module = symbol.module.as_deref();
+            let declared_concurrency = parse_declared_concurrency(
+                &format!("component.{name}.concurrency"),
+                "component concurrency",
+                raw.concurrency.as_deref(),
+            )?;
             Ok(ComponentIr {
                 id: entity_id("component", &symbol.qualified_name),
                 module: symbol.module.clone(),
@@ -110,6 +115,8 @@ pub(super) fn normalize_components(
                     Some(kind) => parse_component_kind(&format!("component.{name}.kind"), kind)?,
                     None => ComponentKind::Native,
                 },
+                concurrency: declared_concurrency.unwrap_or(TaskConcurrency::Exclusive),
+                declared_concurrency,
                 build: normalize_component_build(raw),
                 inputs: normalize_ports(&raw.input, resolver, current_module)?,
                 outputs: normalize_ports(&raw.output, resolver, current_module)?,
@@ -388,6 +395,28 @@ pub(super) fn parse_readiness(context: &str, value: Option<&str>) -> Result<crat
         "any_ready" => Ok(crate::TaskReadiness::AnyReady),
         "all_ready" => Ok(crate::TaskReadiness::AllReady),
         other => Err(invalid_enum(context, "readiness", other)),
+    }
+}
+
+pub(super) fn parse_declared_concurrency(
+    context: &str,
+    kind: &'static str,
+    value: Option<&str>,
+) -> Result<Option<crate::TaskConcurrency>> {
+    value
+        .map(|value| parse_concurrency(context, kind, value))
+        .transpose()
+}
+
+fn parse_concurrency(
+    context: &str,
+    kind: &'static str,
+    value: &str,
+) -> Result<crate::TaskConcurrency> {
+    match value {
+        "exclusive" => Ok(crate::TaskConcurrency::Exclusive),
+        "parallel" => Ok(crate::TaskConcurrency::Parallel),
+        _ => Err(invalid_enum(context, kind, value)),
     }
 }
 

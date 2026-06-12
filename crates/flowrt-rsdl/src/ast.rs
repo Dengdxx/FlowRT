@@ -124,6 +124,7 @@ pub struct RawField {
 pub struct RawComponent {
     pub language: String,
     pub kind: Option<String>,
+    pub concurrency: Option<String>,
     pub build: RawComponentBuild,
     pub input: Vec<RawPort>,
     pub output: Vec<RawPort>,
@@ -204,6 +205,7 @@ pub struct RawInstance {
 pub struct RawTask {
     pub name: Option<String>,
     pub trigger: String,
+    pub concurrency: Option<String>,
     pub readiness: Option<String>,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,

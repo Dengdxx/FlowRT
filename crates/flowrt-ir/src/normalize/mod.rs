@@ -83,6 +83,10 @@ fn normalize_document_with_modules(
         .iter()
         .map(|component| (component.qualified_name.clone(), component.id.clone()))
         .collect::<BTreeMap<_, _>>();
+    let component_concurrency = components
+        .iter()
+        .map(|component| (component.qualified_name.clone(), component.concurrency))
+        .collect::<BTreeMap<_, _>>();
 
     let profiles = profiles::normalize_profiles(document)?;
     let targets = targets::normalize_targets(document)?;
@@ -98,6 +102,7 @@ fn normalize_document_with_modules(
         raw_modules,
         &name_resolver,
         &component_ids,
+        &component_concurrency,
         &target_ids,
         &graph_name,
     )?;
@@ -3784,5 +3789,90 @@ overflow = "drop_oldest"
                 .as_nanos()
         );
         std::env::temp_dir().join(suffix)
+    }
+
+    #[test]
+    fn task_concurrency_defaults_to_exclusive() {
+        let source = r#"
+[package]
+name = "concurrency_defaults"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["sample:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(
+            ir.components[0].concurrency,
+            crate::TaskConcurrency::Exclusive
+        );
+        assert_eq!(
+            ir.graphs[0].tasks[0].concurrency,
+            crate::TaskConcurrency::Exclusive
+        );
+        assert_eq!(ir.components[0].declared_concurrency, None);
+        assert_eq!(ir.graphs[0].tasks[0].declared_concurrency, None);
+    }
+
+    #[test]
+    fn task_parallel_concurrency_enters_canonical_json() {
+        let source = r#"
+[package]
+name = "concurrency_parallel"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+concurrency = "parallel"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+concurrency = "parallel"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 10
+output = ["slow"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let json = ir.to_canonical_json().unwrap();
+
+        assert_eq!(
+            ir.components[0].concurrency,
+            crate::TaskConcurrency::Parallel
+        );
+        assert_eq!(
+            ir.graphs[0].tasks[0].concurrency,
+            crate::TaskConcurrency::Parallel
+        );
+        assert_eq!(
+            ir.components[0].declared_concurrency,
+            Some(crate::TaskConcurrency::Parallel)
+        );
+        assert_eq!(
+            ir.graphs[0].tasks[0].declared_concurrency,
+            Some(crate::TaskConcurrency::Parallel)
+        );
+        assert!(json.contains("\"concurrency\": \"parallel\""));
     }
 }

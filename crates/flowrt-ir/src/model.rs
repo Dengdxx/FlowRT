@@ -141,6 +141,10 @@ pub struct ComponentIr {
     pub language: LanguageKind,
     pub kind: ComponentKind,
     #[serde(default)]
+    pub concurrency: TaskConcurrency,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_concurrency: Option<TaskConcurrency>,
+    #[serde(default)]
     pub build: ComponentBuildIr,
     pub inputs: Vec<PortIr>,
     pub outputs: Vec<PortIr>,
@@ -625,6 +629,10 @@ pub struct TaskIr {
     pub name: String,
     pub instance: EntityRef,
     pub trigger: TriggerKind,
+    #[serde(default)]
+    pub concurrency: TaskConcurrency,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_concurrency: Option<TaskConcurrency>,
     pub readiness: TaskReadiness,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,
@@ -830,6 +838,15 @@ pub enum ComponentKind {
     Native,
     IoBoundary,
     External,
+}
+
+/// component/task 执行单元的并发语义。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskConcurrency {
+    #[default]
+    Exclusive,
+    Parallel,
 }
 
 /// task 触发类型。

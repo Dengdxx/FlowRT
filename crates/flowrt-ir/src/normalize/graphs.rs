@@ -10,13 +10,13 @@ use crate::{
     ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr, IrError, OverflowPolicy,
     PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessReadinessGate,
     ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy,
-    TargetIr, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
+    TargetIr, TaskConcurrency, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
     deployment_capability_decision, graph_required_capabilities, parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
 use super::ids::entity_id;
-use super::modules::{parse_readiness, parse_trigger};
+use super::modules::{parse_declared_concurrency, parse_readiness, parse_trigger};
 use super::params::merge_instance_params;
 use super::profiles::{parse_overflow_policy, parse_stale_policy};
 use super::resolver::NameResolver;
@@ -26,6 +26,7 @@ pub(super) fn normalize_instances(
     raw_modules: &[RawModuleDocument],
     resolver: &NameResolver,
     component_ids: &BTreeMap<String, EntityId>,
+    component_concurrency: &BTreeMap<String, TaskConcurrency>,
     target_ids: &BTreeMap<String, EntityId>,
     graph_name: &str,
 ) -> Result<(Vec<InstanceIr>, Vec<TaskIr>)> {
@@ -65,6 +66,9 @@ pub(super) fn normalize_instances(
             id: component_id,
             name: component_symbol.qualified_name.clone(),
         };
+        let resolved_component_concurrency = *component_concurrency
+            .get(component_symbol.qualified_name.as_str())
+            .expect("component concurrency must be derived from normalized components");
         let component = component_param_schemas
             .get(component_symbol.qualified_name.as_str())
             .expect("component IDs and normalized components must be built from the same document");
@@ -97,6 +101,11 @@ pub(super) fn normalize_instances(
                 .name
                 .clone()
                 .unwrap_or_else(|| default_task_name(task_index));
+            let declared_concurrency = parse_declared_concurrency(
+                &format!("instance.{name}.task.concurrency"),
+                "task concurrency",
+                raw_task.concurrency.as_deref(),
+            )?;
             tasks.push(TaskIr {
                 id: entity_id("task", &format!("{graph_name}.{name}.{task_name}")),
                 name: task_name,
@@ -105,6 +114,8 @@ pub(super) fn normalize_instances(
                     &format!("instance.{name}.task.trigger"),
                     &raw_task.trigger,
                 )?,
+                concurrency: declared_concurrency.unwrap_or(resolved_component_concurrency),
+                declared_concurrency,
                 readiness: parse_readiness(
                     &format!("instance.{name}.task.readiness"),
                     raw_task.readiness.as_deref(),

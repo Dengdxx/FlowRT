@@ -117,6 +117,7 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
         &[
             "language",
             "kind",
+            "concurrency",
             "build",
             "input",
             "output",
@@ -136,6 +137,12 @@ pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent>
     Ok(RawComponent {
         language: required_string(table, &context, "language")?,
         kind: optional_string(table, &context, "kind")?,
+        concurrency: optional_declared_concurrency(
+            table,
+            &context,
+            "concurrency",
+            "component concurrency",
+        )?,
         build: optional_component_build(table, &context)?,
         input: optional_port_array(table, &context, "input")?,
         output: optional_port_array(table, &context, "output")?,
@@ -328,6 +335,7 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
         &[
             "name",
             "trigger",
+            "concurrency",
             "readiness",
             "period_ms",
             "deadline_ms",
@@ -341,6 +349,12 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
     Ok(RawTask {
         name: optional_string(table, &context, "name")?,
         trigger: required_string(table, &context, "trigger")?,
+        concurrency: optional_declared_concurrency(
+            table,
+            &context,
+            "concurrency",
+            "task concurrency",
+        )?,
         readiness: optional_string(table, &context, "readiness")?,
         period_ms: optional_u64(table, &context, "period_ms")?,
         deadline_ms: optional_u64(table, &context, "deadline_ms")?,
@@ -349,6 +363,29 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
         input: optional_string_array(table, &context, "input")?,
         output: optional_string_array(table, &context, "output")?,
     })
+}
+
+fn optional_declared_concurrency(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+    kind: &'static str,
+) -> Result<Option<String>> {
+    let value = optional_string(table, context, field)?;
+    if let Some(concurrency) = &value {
+        validate_declared_concurrency(&format!("{context}.{field}"), kind, concurrency)?;
+    }
+    Ok(value)
+}
+
+fn validate_declared_concurrency(context: &str, kind: &str, value: &str) -> Result<()> {
+    match value {
+        "exclusive" | "parallel" => Ok(()),
+        _ => Err(RsdlError::InvalidValue {
+            context: context.to_string(),
+            message: format!("{kind} must be `exclusive` or `parallel`"),
+        }),
+    }
 }
 
 pub(super) fn parse_processes(root: &Table) -> Result<Vec<RawProcess>> {
