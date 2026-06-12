@@ -6,8 +6,8 @@ use flowrt_ir::{
     ContractIr, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
     IoBoundaryShutdown, IoSideEffect, OperationConcurrencyPolicy, OperationFeedbackPolicy,
     OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ResourceKind,
-    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskReadiness, TriggerKind, TypeExpr,
-    TypeIr,
+    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskReadiness,
+    TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
@@ -226,6 +226,7 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
                 instance: task.instance.name.clone(),
                 trigger: trigger_name(task.trigger).to_string(),
                 readiness: readiness_name(task.readiness).to_string(),
+                concurrency: task_concurrency_name(task.concurrency).to_string(),
                 period_ms: task.period_ms,
                 deadline_ms: task.deadline_ms,
                 lane: task_lane_name(task),
@@ -686,6 +687,7 @@ fn self_description_scheduler(contract: &ContractIr, graph: &GraphIr) -> SelfDes
                 lane: task_lane_name(task),
                 trigger: trigger_name(task.trigger).to_string(),
                 readiness: readiness_name(task.readiness).to_string(),
+                concurrency: task_concurrency_name(task.concurrency).to_string(),
                 period_ms: task.period_ms,
                 deadline_ms: task.deadline_ms,
                 priority: task.priority,
@@ -695,9 +697,14 @@ fn self_description_scheduler(contract: &ContractIr, graph: &GraphIr) -> SelfDes
 }
 
 fn task_lane_name(task: &flowrt_ir::TaskIr) -> String {
-    task.lane
-        .clone()
-        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
+    crate::runtime_plan::resolved_task_lane_name(task)
+}
+
+fn task_concurrency_name(concurrency: TaskConcurrency) -> &'static str {
+    match concurrency {
+        TaskConcurrency::Exclusive => "exclusive",
+        TaskConcurrency::Parallel => "parallel",
+    }
 }
 
 fn self_description_message_abi(

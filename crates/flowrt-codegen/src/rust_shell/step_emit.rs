@@ -9,6 +9,7 @@ use crate::messages::rust_type;
 use crate::runtime_plan::{
     BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, TaskEmissionPhase, bind_backend,
     indent_generated_block, indent_generated_block_levels, on_message_trigger_guard,
+    resolved_task_lane_name,
 };
 use crate::{component_by_name, tasks_for_instance};
 
@@ -26,8 +27,6 @@ pub(super) struct RustStepEmission<'a> {
     pub outgoing_bind_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     pub outgoing_bridge_indices: &'a BTreeMap<(String, String), Vec<usize>>,
     pub outgoing_boundary_indices: &'a BTreeMap<(String, String), Vec<usize>>,
-    /// 需要 Arc<Mutex<...>> 存储的 service / Operation server 实例名集合。
-    pub service_server_instances: &'a std::collections::BTreeSet<String>,
 }
 
 pub(super) fn emit_rust_app_step(
@@ -39,7 +38,7 @@ pub(super) fn emit_rust_app_step(
 ) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "    #[allow(dead_code)]\n    fn {function_name}(\n        &mut self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n        health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>,\n    ) -> flowrt::Status {{\n",
+        "    #[allow(dead_code)]\n    fn {function_name}(\n        &self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n        health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>,\n    ) -> flowrt::Status {{\n",
     ));
     output.push_str("        let _ = tick;\n");
     output.push_str("        let _ = introspection_state;\n");
@@ -215,24 +214,19 @@ pub(super) fn emit_rust_app_step(
                 call_args.push(input.name.clone());
             }
             if !component.params.is_empty() {
-                call_args.push(format!("&self.{}_params", instance.name));
+                call_args.push(format!(
+                    "&self.{}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner())",
+                    instance.name
+                ));
             }
             for port in &component.outputs {
                 call_args.push(format!("&mut {}", port.name));
             }
-            let on_tick_call = if emission.service_server_instances.contains(&instance.name) {
-                format!(
-                    "self.{name}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick({args})",
-                    name = instance.name,
-                    args = call_args.join(", ")
-                )
-            } else {
-                format!(
-                    "self.{name}.on_tick({args})",
-                    name = instance.name,
-                    args = call_args.join(", ")
-                )
-            };
+            let on_tick_call = super::rust_component_method_call(
+                component,
+                &instance.name,
+                &format!("on_tick({})", call_args.join(", ")),
+            );
             output.push_str(&format!(
                 "{body_indent}match {on_tick_call} {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::Status::Retry,\n{body_inner_indent}flowrt::Status::Error => return flowrt::Status::Error,\n{body_indent}}}\n",
             ));
@@ -396,14 +390,14 @@ pub(super) fn emit_rust_on_message_wake_checks(
         for bind in &input_binds {
             if matches!(bind_backend(bind), "iox2" | "zenoh") {
                 output.push_str(&format!(
-                    "            let _ = self.{field}.receive_latest_at(tick_time_ms);\n",
+                    "            let _ = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).receive_latest_at(tick_time_ms);\n",
                     field = bind.field_name
                 ));
             }
         }
         for bridge in &input_bridges {
             output.push_str(&format!(
-                "            let _ = self.{field}.receive_latest_at(tick_time_ms);\n",
+                "            let _ = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).receive_latest_at(tick_time_ms);\n",
                 field = bridge.field_name
             ));
         }
@@ -411,13 +405,13 @@ pub(super) fn emit_rust_on_message_wake_checks(
             .iter()
             .map(|bind| {
                 let revision_changed = format!(
-                    "self.{field}.revision() != {seen}",
+                    "self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != {seen}",
                     field = bind.field_name,
                     seen = task_seen_revision_name(bind, task)
                 );
                 if bind.channel == ChannelKind::Fifo && bind_backend(bind) == "inproc" {
                     format!(
-                        "({revision_changed} || !self.{field}.is_empty())",
+                        "({revision_changed} || !self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty())",
                         field = bind.field_name
                     )
                 } else {
@@ -427,7 +421,7 @@ pub(super) fn emit_rust_on_message_wake_checks(
             .collect::<Vec<_>>();
         checks.extend(input_bridges.iter().map(|bridge| {
             format!(
-                "self.{field}.revision() != {seen}",
+                "self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != {seen}",
                 field = bridge.field_name,
                 seen = bridge_seen_revision_name(bridge, task)
             )
@@ -446,14 +440,14 @@ pub(super) fn emit_rust_on_message_wake_checks(
         output.push_str(&format!("            if {} {{\n", checks.join(joiner)));
         for bind in &input_binds {
             output.push_str(&format!(
-                "                {seen} = self.{field}.revision();\n",
+                "                {seen} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision();\n",
                 seen = task_seen_revision_name(bind, task),
                 field = bind.field_name
             ));
         }
         for bridge in &input_bridges {
             output.push_str(&format!(
-                "                {seen} = self.{field}.revision();\n",
+                "                {seen} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision();\n",
                 seen = bridge_seen_revision_name(bridge, task),
                 field = bridge.field_name
             ));
@@ -493,9 +487,7 @@ pub(super) fn emit_rust_apply_pending_params_for_order(
 }
 
 pub(super) fn task_lane_name(task: &TaskIr) -> String {
-    task.lane
-        .clone()
-        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
+    resolved_task_lane_name(task)
 }
 
 pub(super) fn task_health_name(task: &TaskIr) -> String {
@@ -621,7 +613,7 @@ fn emit_rust_ros2_boundary_input_pump(
             continue;
         };
         output.push_str(&format!(
-            "        let {bridge}_boundary_value = match self.{bridge}.receive_latest_at(tick_time_ms) {{\n            Ok(value) => value.as_ref().cloned(),\n            Err(_) => return flowrt::Status::Error,\n        }};\n        if let Some(value) = {bridge}_boundary_value {{\n            self.{boundary}.inject_at(value, tick_time_ms);\n        }}\n",
+            "        let {bridge}_boundary_value = match self.{bridge}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).receive_latest_at(tick_time_ms) {{\n            Ok(value) => value.as_ref().cloned(),\n            Err(_) => return flowrt::Status::Error,\n        }};\n        if let Some(value) = {bridge}_boundary_value {{\n            self.{boundary}.inject_at(value, tick_time_ms);\n        }}\n",
             bridge = bridge.field_name,
             boundary = boundary.field_name,
         ));

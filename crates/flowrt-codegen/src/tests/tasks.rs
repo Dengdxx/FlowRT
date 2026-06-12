@@ -165,8 +165,8 @@ backends = ["iox2"]
 
     assert!(!rust_components.contains("pub trait Source"));
     assert!(rust_components.contains("pub trait Sink"));
-    assert!(!rust_shell.contains("source: Box<dyn Source>"));
-    assert!(rust_shell.contains("sink: Box<dyn Sink>"));
+    assert!(!rust_shell.contains("source: Box<dyn Source"));
+    assert!(rust_shell.contains("sink: std::sync::Arc<std::sync::Mutex<Box<dyn Sink + Send>>>"));
     assert!(!rust_shell.contains("mixed-language runtime shell is not implemented"));
     assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<u32>"));
     assert!(rust_shell.contains("receive_latest_at(tick_time_ms)"));
@@ -225,8 +225,10 @@ channel = "latest"
     let bundle = emit_artifacts(&ir).unwrap();
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
-    assert!(rust_shell.contains("source: Box<dyn Source>"));
-    assert!(rust_shell.contains("sink: Box<dyn Sink>"));
+    assert!(
+        rust_shell.contains("source: std::sync::Arc<std::sync::Mutex<Box<dyn Source + Send>>>")
+    );
+    assert!(rust_shell.contains("sink: std::sync::Arc<std::sync::Mutex<Box<dyn Sink + Send>>>"));
 }
 
 #[test]
@@ -324,9 +326,9 @@ channel = "latest"
     let sink_unused_bind = bind_index("sink", "unused_in");
     let monitor_used_bind = bind_index("monitor", "used_in");
     let sink_used_read =
-        format!("        let used_in = self.bind_{sink_used_bind}.view_at(tick_time_ms);");
+        format!("let used_in = __flowrt_bind_{sink_used_bind}_guard.view_at(tick_time_ms);");
     let monitor_used_read =
-        format!("        let used_in = self.bind_{monitor_used_bind}.view_at(tick_time_ms);");
+        format!("let used_in = __flowrt_bind_{monitor_used_bind}_guard.view_at(tick_time_ms);");
     let sink_step_start = rust_shell.find(&sink_used_read).unwrap();
     let monitor_step_start = rust_shell.find(&monitor_used_read).unwrap();
     let sink_step = &rust_shell[sink_step_start..monitor_step_start];
@@ -337,11 +339,11 @@ channel = "latest"
     assert!(sink_step.contains("let mut unused_out = flowrt::Output::<Sample>::new();"));
     assert!(sink_step.contains("if used_in.present() {"));
     assert!(
-        sink_step.contains("self.sink.on_tick(used_in, unused_in, &mut used_out, &mut unused_out)")
+        sink_step.contains("self.sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick(used_in, unused_in, &mut used_out, &mut unused_out)")
     );
     assert!(sink_step.contains("if let Some(value) = used_out.as_ref().cloned()"));
     assert!(!sink_step.contains(&format!(
-        "self.bind_{sink_unused_bind}.view_at(tick_time_ms)"
+        "__flowrt_bind_{sink_unused_bind}_guard.view_at(tick_time_ms)"
     )));
     assert!(!sink_step.contains("if let Some(value) = unused_out.as_ref().cloned()"));
 }
@@ -380,7 +382,12 @@ output = ["slow"]
     let launch: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
 
-    assert_eq!(scheduler_step.matches("self.worker.on_tick(").count(), 2);
+    assert_eq!(
+        scheduler_step
+            .matches("self.worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick(")
+            .count(),
+        2
+    );
     assert!(scheduler_step.contains("let mut fast = flowrt::Output::<u32>::new();"));
     assert!(scheduler_step.contains("let mut slow = flowrt::Output::<u32>::new();"));
     assert!(rust_shell.contains("health_map.entry(\"worker.fast_loop\".to_string())"));
@@ -388,6 +395,138 @@ output = ["slow"]
     assert!(!rust_shell.contains("health_map.entry(\"worker\".to_string())"));
     assert_eq!(launch["graphs"][0]["tasks"][0]["name"], "fast_loop");
     assert_eq!(launch["graphs"][0]["tasks"][1]["name"], "slow_loop");
+}
+
+#[test]
+fn rust_shell_uses_parallel_dispatch_and_preserves_exclusive_instance_lane() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "rust_parallel_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+lane = "fast_lane"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+lane = "slow_lane"
+output = ["slow"]
+
+[profile.default]
+worker_threads = 4
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(!rust_shell.contains("scheduler.run_ready(|task| match task"));
+    assert!(rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
+    assert!(rust_shell.contains("let ready_batch = scheduler.take_ready_batch();"));
+    assert!(rust_shell.contains("ready_batch.run(&worker_pool, move |task|"));
+    assert!(
+        rust_shell.contains("worker: std::sync::Arc<std::sync::Mutex<Box<dyn Worker + Send>>>")
+    );
+    assert!(rust_shell.contains("worker: Box<dyn Worker + Send>"));
+    assert!(
+        rust_shell.contains("let worker = std::sync::Arc::new(std::sync::Mutex::new(worker));")
+    );
+    assert!(rust_shell.contains(
+        "flowrt::TaskSpec { id: flowrt::TaskId(1), lane: flowrt::LaneId(1), priority: 0 }"
+    ));
+    assert!(rust_shell.contains(
+        "flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneId(1), priority: 0 }"
+    ));
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["concurrency"],
+        "exclusive"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["lane"],
+        "worker_serial"
+    );
+}
+
+#[test]
+fn rust_parallel_component_uses_sync_trait_and_explicit_lanes() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "rust_parallel_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+concurrency = "parallel"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+lane = "fast_lane"
+concurrency = "parallel"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+lane = "slow_lane"
+concurrency = "parallel"
+output = ["slow"]
+
+[profile.default]
+worker_threads = 4
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_components = artifact_content(&bundle, "rust/src/components.rs");
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(rust_components.contains("pub trait Worker: Send + Sync {"));
+    assert!(rust_components.contains("fn on_tick(\n        &self,"));
+    assert!(rust_shell.contains("worker: std::sync::Arc<Box<dyn Worker + Send + Sync>>"));
+    assert!(rust_shell.contains("worker: Box<dyn Worker + Send + Sync>"));
+    assert!(rust_shell.contains("let worker = std::sync::Arc::new(worker);"));
+    assert!(rust_shell.contains(
+        "flowrt::TaskSpec { id: flowrt::TaskId(1), lane: flowrt::LaneId(1), priority: 0 }"
+    ));
+    assert!(rust_shell.contains(
+        "flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneId(2), priority: 0 }"
+    ));
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["concurrency"],
+        "parallel"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["lane"],
+        "fast_lane"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][1]["lane"],
+        "slow_lane"
+    );
 }
 
 #[test]
@@ -437,6 +576,14 @@ output = ["slow"]
     assert!(!cpp_shell.contains("health_map[\"worker\"].name"));
     assert_eq!(selfdesc["graphs"][0]["tasks"][0]["name"], "fast_loop");
     assert_eq!(selfdesc["graphs"][0]["tasks"][1]["name"], "slow_loop");
+    assert_eq!(
+        selfdesc["graphs"][0]["tasks"][0]["concurrency"],
+        "exclusive"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["tasks"][1]["concurrency"],
+        "exclusive"
+    );
     assert_eq!(selfdesc["graphs"][0]["scheduler"]["worker_threads"], 1);
     assert_eq!(
         selfdesc["graphs"][0]["scheduler"]["lanes"][0],
@@ -445,6 +592,149 @@ output = ["slow"]
     assert_eq!(
         selfdesc["graphs"][0]["scheduler"]["tasks"][0]["lane"],
         "worker_serial"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][1]["lane"],
+        "worker_serial"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["concurrency"],
+        "exclusive"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][1]["concurrency"],
+        "exclusive"
+    );
+}
+
+#[test]
+fn cpp_shell_parallel_tasks_keep_explicit_lanes_and_emit_parallel_metadata() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "parallel_task_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+concurrency = "parallel"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+concurrency = "parallel"
+lane = "fast_lane"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 10
+concurrency = "parallel"
+lane = "slow_lane"
+output = ["slow"]
+
+[profile.default]
+backend = "inproc"
+worker_threads = 2
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
+    assert!(cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(cpp_shell.contains("std::move(ready_batch).run(worker_pool"));
+    assert!(!cpp_shell.contains(
+        "scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"
+    ));
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["lanes"],
+        serde_json::json!([
+            {"name": "fast_lane", "kind": "serial", "instance": "worker"},
+            {"name": "slow_lane", "kind": "serial", "instance": "worker"}
+        ])
+    );
+    assert_eq!(selfdesc["graphs"][0]["tasks"][0]["concurrency"], "parallel");
+    assert_eq!(selfdesc["graphs"][0]["tasks"][1]["concurrency"], "parallel");
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["lane"],
+        "fast_lane"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][1]["lane"],
+        "slow_lane"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["concurrency"],
+        "parallel"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][1]["concurrency"],
+        "parallel"
+    );
+}
+
+#[test]
+fn cpp_shell_parallel_declaration_with_single_worker_thread_still_generates_valid_shell() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "parallel_single_worker"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+concurrency = "parallel"
+output = ["fast:u32", "slow:u32"]
+
+[instance.worker]
+component = "worker"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+concurrency = "parallel"
+lane = "fast_lane"
+output = ["fast"]
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 10
+concurrency = "parallel"
+lane = "slow_lane"
+output = ["slow"]
+
+[profile.default]
+backend = "inproc"
+worker_threads = 1
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert!(cpp_shell.contains("flowrt::DeterministicExecutor scheduler{1};"));
+    assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{1};"));
+    assert!(cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
+    assert_eq!(selfdesc["graphs"][0]["scheduler"]["worker_threads"], 1);
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][0]["concurrency"],
+        "parallel"
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["scheduler"]["tasks"][1]["concurrency"],
+        "parallel"
     );
 }
 
@@ -488,14 +778,14 @@ period_ms = 5
     let run = &rust_shell[run_start..];
     let startup_call = run
         .find(
-            "self.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new())",
+            "app.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new())",
         )
         .unwrap();
     let scheduler_call = run
         .find("let mut scheduler = flowrt::DeterministicExecutor")
         .unwrap();
     let shutdown_call = run
-        .find("self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new())")
+        .find("app.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new())")
         .unwrap();
     let startup_step = generated_function_block(rust_shell, "fn step_startup");
     let shutdown_step = generated_function_block(rust_shell, "fn step_shutdown");
@@ -504,15 +794,23 @@ period_ms = 5
     assert!(startup_call < scheduler_call);
     assert!(scheduler_call < shutdown_call);
     assert!(run.contains(
-        "if status == flowrt::Status::Ok {\n            status = self.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }"
+        "if status == flowrt::Status::Ok {\n            status = app.step_shutdown(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());\n        }"
     ));
     assert!(run.contains("let shutdown = flowrt::install_signal_shutdown_token();"));
     assert!(run.contains("&& !shutdown.is_requested()"));
     assert!(!run.contains("backend.scheduler().run_ticks_until_shutdown("));
-    assert!(startup_step.contains("match self.boot.on_tick()"));
-    assert!(shutdown_step.contains("match self.cleanup.on_tick()"));
-    assert!(!scheduler_step.contains("match self.boot.on_tick()"));
-    assert!(!scheduler_step.contains("match self.cleanup.on_tick()"));
+    assert!(startup_step.contains(
+        "match self.boot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick()"
+    ));
+    assert!(shutdown_step.contains(
+        "match self.cleanup.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick()"
+    ));
+    assert!(!scheduler_step.contains(
+        "match self.boot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick()"
+    ));
+    assert!(!scheduler_step.contains(
+        "match self.cleanup.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick()"
+    ));
 }
 
 #[test]
@@ -625,7 +923,7 @@ channel = "latest"
         .find("let source_main_deadline_started_at = std::time::Instant::now();")
         .unwrap();
     let source_call = rust_shell
-        .find("match self.source.on_tick(&mut sample)")
+        .find("match self.source.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_tick(&mut sample)")
         .unwrap();
     let deadline_guard = rust_shell
         .find("source_main_deadline_started_at.elapsed() > std::time::Duration::from_millis(10)")
@@ -812,7 +1110,7 @@ channel = "latest"
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(rust_shell.contains(
-        "if self.bind_0.revision() != bind_0_seen_revision_for_sink_main && self.bind_1.revision() != bind_1_seen_revision_for_sink_main"
+        "if app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != bind_0_seen_revision_for_sink_main && app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != bind_1_seen_revision_for_sink_main"
     ));
     assert!(rust_shell.contains("if left.present() && right.present() {"));
 }
@@ -869,9 +1167,10 @@ worker_threads = 2
     assert!(rust_shell.contains("let tick_time_ms = scheduler_now_ms;"));
     assert!(rust_shell.contains("scheduler.add_periodic(flowrt::PeriodicSpec"));
     assert!(rust_shell.contains("let mut bind_0_seen_revision_for_sink_main: u64 = 0;"));
-    assert!(rust_shell.contains("if self.bind_0.revision() != bind_0_seen_revision_for_sink_main"));
+    assert!(rust_shell.contains("if app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != bind_0_seen_revision_for_sink_main"));
     assert!(rust_shell.contains("scheduler.wake(flowrt::TaskId("));
-    assert!(rust_shell.contains("scheduler.run_ready(|task| match task"));
+    assert!(rust_shell.contains("let ready_batch = scheduler.take_ready_batch();"));
+    assert!(rust_shell.contains("ready_batch.run(&worker_pool, move |task|"));
     assert!(rust_shell.contains("let mut woke_on_message = false;"));
     assert!(rust_shell.contains("woke_on_message = true;"));
     assert!(rust_shell.contains("if !woke_on_message && task_statuses.is_empty()"));
@@ -889,7 +1188,7 @@ worker_threads = 2
     ));
     assert!(!rust_shell.contains("backend.scheduler().run_ticks_until_shutdown(1"));
     assert!(rust_shell.contains("flowrt::Status::Retry => return flowrt::Status::Retry,"));
-    assert!(rust_shell.contains("if task_status == flowrt::Status::Error"));
+    assert!(rust_shell.contains("if task_result.status == flowrt::Status::Error"));
 }
 
 #[test]
@@ -941,9 +1240,11 @@ backend = "zenoh"
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     let sink_step = generated_function_block(rust_shell, "fn step_task_sink_main");
 
-    assert!(rust_shell.contains("self.bind_0.set_schedule_waiter(scheduler_events.clone());"));
-    assert!(rust_shell.contains("let _ = self.bind_0.receive_latest_at(tick_time_ms);"));
-    assert!(sink_step.contains("let sample = self.bind_0.cached_latest_at(tick_time_ms);"));
+    assert!(rust_shell.contains("app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).set_schedule_waiter(scheduler_events.clone());"));
+    assert!(rust_shell.contains("let _ = app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).receive_latest_at(tick_time_ms);"));
+    assert!(
+        sink_step.contains("let sample = __flowrt_bind_0_guard.cached_latest_at(tick_time_ms);")
+    );
     assert!(!sink_step.contains("receive_latest_at(tick_time_ms)"));
 }
 
@@ -1068,7 +1369,10 @@ worker_threads = 2
     assert!(cpp_shell.contains("std::uint64_t bind_0_seen_revision_for_sink_main = 0;"));
     assert!(cpp_shell.contains("if (bind_0_.revision() != bind_0_seen_revision_for_sink_main)"));
     assert!(cpp_shell.contains("scheduler.wake(flowrt::TaskId{"));
-    assert!(cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"));
+    assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
+    assert!(cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(cpp_shell.contains("std::move(ready_batch).run(worker_pool"));
+    assert!(!cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"));
     assert!(cpp_shell.contains("bool woke_on_message = false;"));
     assert!(cpp_shell.contains("woke_on_message = true;"));
     assert!(cpp_shell.contains("if (!woke_on_message && task_statuses.empty())"));
@@ -1091,7 +1395,7 @@ worker_threads = 2
     assert!(!cpp_shell.contains("backend.scheduler().run_ticks_until_shutdown("));
     assert!(cpp_shell.contains("case flowrt::Status::Retry:"));
     assert!(cpp_shell.contains("return flowrt::Status::Retry;"));
-    assert!(cpp_shell.contains("if (task_status == flowrt::Status::Error)"));
+    assert!(cpp_shell.contains("if (task_result.status == flowrt::Status::Error)"));
 }
 
 #[test]
@@ -1198,8 +1502,8 @@ overflow = "block"
     assert!(source_step.contains("Ok(flowrt::ChannelWriteOutcome::Backpressured) =>"));
     assert!(source_step.contains("backpressure += 1"));
     assert!(source_step.contains("return flowrt::Status::Retry"));
-    assert!(run_loop.contains("if task_status == flowrt::Status::Error"));
-    assert!(!run_loop.contains("if task_status != flowrt::Status::Ok"));
+    assert!(run_loop.contains("if task_result.status == flowrt::Status::Error"));
+    assert!(!run_loop.contains("if task_result.status != flowrt::Status::Ok"));
 }
 
 #[test]
@@ -1250,6 +1554,6 @@ overflow = "block"
 
     assert!(source_step.contains("case flowrt::Status::Retry:"));
     assert!(source_step.contains("return flowrt::Status::Retry;"));
-    assert!(run_loop.contains("if (task_status == flowrt::Status::Error)"));
+    assert!(run_loop.contains("if (task_result.status == flowrt::Status::Error)"));
     assert!(!run_loop.contains("if (task_status != flowrt::Status::Ok)"));
 }

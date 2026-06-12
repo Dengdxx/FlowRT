@@ -55,13 +55,14 @@ pub(crate) fn rust_operation_handler_methods(
         ));
         output.push_str(&format!(
             "    fn {method_name}(\n\
-                 &mut self,\n\
+                 {}self,\n\
                  _goal: &{goal_ty},\n\
                  _cancel: flowrt::OperationCancelToken,\n\
                  _progress: &mut flowrt::OperationProgressPublisher<{feedback_ty}>,\n\
              ) -> flowrt::OperationHandlerResult<{result_ty}> {{\n\
                  flowrt::OperationHandlerResult::failed()\n\
              }}\n\n",
+            super::rust_component_receiver(component),
         ));
     }
 
@@ -206,6 +207,25 @@ pub(crate) fn emit_rust_operation_new(
         operation_lane_offset += 1;
         let server_instance = &plan.server_instance;
         let method_name = operation_handler_method_name(&plan.server_port);
+        let server_instance_ir = graph
+            .instances
+            .iter()
+            .find(|instance| instance.name == *server_instance)
+            .expect("validated operation server instance must exist");
+        let server_component =
+            crate::component_by_name(contract, &server_instance_ir.component.name);
+        let operation_handler_call = if super::rust_component_is_parallel(server_component) {
+            format!(
+                "operation_worker_server.as_ref().as_ref().{method_name}(&goal_for_worker, cancel.clone(), &mut progress)"
+            )
+        } else {
+            format!(
+                "operation_worker_server\n\
+                                 .lock()\n\
+                                 .unwrap_or_else(|poisoned| poisoned.into_inner())\n\
+                                 .{method_name}(&goal_for_worker, cancel.clone(), &mut progress)"
+            )
+        };
         let state_var = format!("operation_state_{}", plan.index);
         let sequence_var = format!("operation_sequence_{}", plan.index);
         let cancel_token_var = format!("operation_cancel_token_{}", plan.index);
@@ -279,10 +299,7 @@ pub(crate) fn emit_rust_operation_new(
                      .spawn(move || {{\n\
                          let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::new(id);\n\
                          let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
-                             operation_worker_server\n\
-                                 .lock()\n\
-                                 .unwrap_or_else(|poisoned| poisoned.into_inner())\n\
-                                 .{method_name}(&goal_for_worker, cancel.clone(), &mut progress)\n\
+                             {operation_handler_call}\n\
                          }}));\n\
                          let terminal_state = match result {{\n\
                              Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
@@ -379,7 +396,7 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
             continue;
         }
         output.push_str(&format!(
-            "    fn {fn_name}(&mut self, _introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
+            "    fn {fn_name}(&self, _introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
                  self.{start_server}.process_pending_requests();\n\
                  self.{cancel_server}.process_pending_requests();\n\
                  self.{status_server}.process_pending_requests();\n\
@@ -455,7 +472,7 @@ pub(crate) fn rust_operation_dispatch_cases(
         output.push_str(&format!(
             "                flowrt::TaskId({task_id}) => {{\n\
                  let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
-                 self.{fn_name}(&introspection_state, &mut health_map)\n\
+                 app.{fn_name}(&introspection_state, &mut local_health_map)\n\
              }},\n",
             fn_name = operation_step_fn_name(plan),
         ));

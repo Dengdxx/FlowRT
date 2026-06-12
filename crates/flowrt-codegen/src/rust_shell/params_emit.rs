@@ -40,8 +40,9 @@ pub(super) fn rust_params_update_signature(component: &ComponentIr) -> String {
         return String::new();
     }
     let params_ty = format!("{}Params", crate::component_rust_name(component));
+    let receiver = super::rust_component_receiver(component);
     format!(
-        "    /// 参数 pending 值在 tick 边界通过校验后调用。\n    ///\n    /// 返回 `Ok` 后 shell 才会提交新参数。\n    fn on_params_update(\n        &mut self,\n        _old: &{params_ty},\n        _new: &{params_ty},\n        _context: &mut flowrt::Context,\n    ) -> flowrt::Status {{\n        flowrt::Status::ok()\n    }}\n\n"
+        "    /// 参数 pending 值在 tick 边界通过校验后调用。\n    ///\n    /// 返回 `Ok` 后 shell 才会提交新参数。\n    fn on_params_update(\n        {receiver}self,\n        _old: &{params_ty},\n        _new: &{params_ty},\n        _context: &mut flowrt::Context,\n    ) -> flowrt::Status {{\n        flowrt::Status::ok()\n    }}\n\n"
     )
 }
 
@@ -116,7 +117,7 @@ pub(super) fn rust_apply_pending_params(
             crate::rust_string_literal(&runtime_name)
         ));
         output.push_str(&format!(
-            "{inner_indent}let mut {next} = self.{}_params.clone();\n",
+            "{inner_indent}let mut {next} = self.{}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();\n",
             instance.name
         ));
         output.push_str(&format!(
@@ -131,12 +132,21 @@ pub(super) fn rust_apply_pending_params(
                 field = param.name
             ));
         }
+        let current = format!("{}_current_params", instance.name);
         output.push_str(&format!(
-            "{inner_indent}if self.{instance}.on_params_update(&self.{instance}_params, &{next}, {context_name}) != flowrt::Status::Ok {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
-            instance = instance.name
+            "{inner_indent}let {current} = self.{instance}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();\n",
+            instance = instance.name,
+        ));
+        let update_call = super::rust_component_method_call(
+            component,
+            &instance.name,
+            &format!("on_params_update(&{current}, &{next}, {context_name})"),
+        );
+        output.push_str(&format!(
+            "{inner_indent}if {update_call} != flowrt::Status::Ok {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
         ));
         output.push_str(&format!(
-            "{inner_indent}self.{instance}_params = {next};\n{inner_indent}introspection_state.record_param_applied({}, {pending});\n",
+            "{inner_indent}*self.{instance}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = {next};\n{inner_indent}introspection_state.record_param_applied({}, {pending});\n",
             crate::rust_string_literal(&runtime_name),
             instance = instance.name
         ));

@@ -339,6 +339,8 @@ pub struct SelfDescriptionSchedulerTask {
     pub trigger: String,
     #[serde(default)]
     pub readiness: String,
+    #[serde(default)]
+    pub concurrency: String,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,
     pub priority: Option<u32>,
@@ -386,6 +388,8 @@ pub struct SelfDescriptionTask {
     pub trigger: String,
     #[serde(default)]
     pub readiness: String,
+    #[serde(default)]
+    pub concurrency: String,
     pub period_ms: Option<u64>,
     pub deadline_ms: Option<u64>,
     #[serde(default)]

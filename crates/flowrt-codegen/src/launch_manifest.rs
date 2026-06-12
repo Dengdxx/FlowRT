@@ -258,9 +258,7 @@ fn scheduler_task(task: &TaskIr) -> serde_json::Value {
 }
 
 fn task_lane_name(task: &TaskIr) -> String {
-    task.lane
-        .clone()
-        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
+    crate::runtime_plan::resolved_task_lane_name(task)
 }
 
 fn launch_ros2_bridges(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {

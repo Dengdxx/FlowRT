@@ -79,38 +79,43 @@ pub(super) fn runtime_channel_read(
     use_cached_transport: bool,
 ) -> String {
     let revision = input_revision_local(input);
+    let guard = format!("__flowrt_{}_guard", bind.field_name);
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         if use_cached_transport {
             return format!(
-                "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n",
+                "        let {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n        let {input} = {guard}.cached_latest_at(tick_time_ms);\n        let {revision} = {guard}.revision();\n",
                 input = input.name,
                 field = bind.field_name,
                 revision = revision,
+                guard = guard,
             );
         }
         return format!(
-            "        let ({input}, {revision}) = match self.{field}.receive_latest_with_revision_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
+            "        let mut {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n        let ({input}, {revision}) = match {guard}.receive_latest_with_revision_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
             input = input.name,
             field = bind.field_name,
             revision = revision,
+            guard = guard,
         );
     }
 
     match bind.channel {
         ChannelKind::Latest => {
             format!(
-                "        let {input} = self.{field}.view_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n",
+                "        let {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n        let {input} = {guard}.view_at(tick_time_ms);\n        let {revision} = {guard}.revision();\n",
                 input = input.name,
                 field = bind.field_name,
                 revision = revision,
+                guard = guard,
             )
         }
         ChannelKind::Fifo => {
             format!(
-                "        let {input}_read = self.{field}.pop_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n        let {input} = {input}_read.view();\n",
+                "        let mut {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n        let {input}_read = {guard}.pop_at(tick_time_ms);\n        let {revision} = {guard}.revision();\n        let {input} = {input}_read.view();\n",
                 input = input.name,
                 field = bind.field_name,
                 revision = revision,
+                guard = guard,
             )
         }
     }
@@ -132,7 +137,7 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
     let route_name = crate::rust_string_literal(&runtime_channel_name(bind));
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
-            "            if let Err(error) = self.{field}.publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
+            "            if let Err(error) = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
             field = bind.field_name,
             route_name = route_name,
         );
@@ -141,7 +146,7 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
     match bind.channel {
         ChannelKind::Latest => {
             format!(
-                "            self.{field}.publish_at(value.clone(), tick_time_ms);\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
+                "            self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms);\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
                 field = bind.field_name,
                 route_name = route_name,
             )
@@ -149,14 +154,14 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
         ChannelKind::Fifo => {
             if let Some(task_health) = task_health_name {
                 format!(
-                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    introspection_state.record_route_drop({route_name});\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{\n                    introspection_state.record_route_drop({route_name});\n                }}\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    introspection_state.record_route_backpressure({route_name});\n                    health_map.entry({task_health:?}.to_string()).or_default().backpressure += 1;\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    introspection_state.record_route_overflow({route_name});\n                    health_map.entry({task_health:?}.to_string()).or_default().overflow += 1;\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
+                    "            match self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    introspection_state.record_route_drop({route_name});\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{\n                    introspection_state.record_route_drop({route_name});\n                }}\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    introspection_state.record_route_backpressure({route_name});\n                    health_map.entry({task_health:?}.to_string()).or_default().backpressure += 1;\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    introspection_state.record_route_overflow({route_name});\n                    health_map.entry({task_health:?}.to_string()).or_default().overflow += 1;\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
                     field = bind.field_name,
                     task_health = task_health,
                     route_name = route_name,
                 )
             } else {
                 format!(
-                    "            match self.{field}.push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    introspection_state.record_route_drop({route_name});\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{\n                    introspection_state.record_route_drop({route_name});\n                }}\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    introspection_state.record_route_backpressure({route_name});\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    introspection_state.record_route_overflow({route_name});\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
+                    "            match self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at(value.clone(), tick_time_ms) {{\n                Ok(flowrt::ChannelWriteOutcome::Accepted) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedOldest) => {{\n                    introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                    introspection_state.record_route_drop({route_name});\n                    scheduler_events.notify_data();\n{introspection_record}                }}\n                Ok(flowrt::ChannelWriteOutcome::DroppedNewest) => {{\n                    introspection_state.record_route_drop({route_name});\n                }}\n                Ok(flowrt::ChannelWriteOutcome::Backpressured) => {{\n                    introspection_state.record_route_backpressure({route_name});\n                    return flowrt::Status::Retry;\n                }}\n                Err(flowrt::ChannelError::Overflow) => {{\n                    introspection_state.record_route_overflow({route_name});\n                    return flowrt::Status::Error;\n                }}\n            }}\n",
                     field = bind.field_name,
                     route_name = route_name,
                 )
@@ -168,7 +173,7 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
 pub(super) fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
     let route_name = crate::rust_string_literal(&bridge.name);
     format!(
-        "            if let Err(error) = self.{field}.publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n",
+        "            if let Err(error) = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n",
         field = bridge.field_name,
         route_name = route_name,
     )
@@ -180,19 +185,22 @@ pub(super) fn bridge_runtime_channel_read(
     use_cached_transport: bool,
 ) -> String {
     let revision = input_revision_local(input);
+    let guard = format!("__flowrt_{}_guard", bridge.field_name);
     if use_cached_transport {
         return format!(
-            "        let {input} = self.{field}.cached_latest_at(tick_time_ms);\n        let {revision} = self.{field}.revision();\n",
+            "        let {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n        let {input} = {guard}.cached_latest_at(tick_time_ms);\n        let {revision} = {guard}.revision();\n",
             input = input.name,
             field = bridge.field_name,
             revision = revision,
+            guard = guard,
         );
     }
     format!(
-        "        let ({input}, {revision}) = match self.{field}.receive_latest_with_revision_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
+        "        let mut {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n        let ({input}, {revision}) = match {guard}.receive_latest_with_revision_at(tick_time_ms) {{\n            Ok(value) => value,\n            Err(_) => return flowrt::Status::Error,\n        }};\n",
         input = input.name,
         field = bridge.field_name,
         revision = revision,
+        guard = guard,
     )
 }
 
@@ -321,7 +329,7 @@ fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
         "record_introspection_publish_copy"
     };
     format!(
-        "            {helper}(&introspection_state, {channel}, {message_type}, &self.{probe}, &value, tick_time_ms);\n",
+        "            let {probe}_guard = self.{probe}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n            {helper}(&introspection_state, {channel}, {message_type}, &{probe}_guard, &value, tick_time_ms);\n",
         channel = crate::rust_string_literal(&runtime_channel_name(bind)),
         message_type = crate::rust_string_literal(&runtime_channel_message_type(bind)),
         probe = bind.probe_field_name

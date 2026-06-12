@@ -147,7 +147,7 @@ pub(super) fn emit_rust_introspection_channel_registration(
         let channel_name = runtime_channel_name(bind);
         let message_type = runtime_channel_message_type(bind);
         output.push_str(&format!(
-            "        self.{probe} = register_introspection_channel(&introspection_state, {}, {}, {});\n",
+            "        *self.{probe}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = register_introspection_channel(&introspection_state, {}, {}, {});\n",
             crate::rust_string_literal(&channel_name),
             crate::rust_string_literal(&message_type),
             rust_optional_usize_literal(runtime_channel_probe_capacity(contract, bind)),

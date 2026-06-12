@@ -146,7 +146,7 @@ fn rust_runtime_shell_lowers_operation_to_internal_endpoints() {
         "App struct must store operation client handle.\n\n{shell}"
     );
     assert!(
-        shell.contains("self.controller.on_tick(&self.operation_client_controller_plan)"),
+        shell.contains("on_tick(&self.operation_client_controller_plan)"),
         "runtime shell must pass operation client handle into on_tick.\n\n{shell}"
     );
     assert!(

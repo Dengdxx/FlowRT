@@ -206,9 +206,18 @@ backends = ["zenoh"]
     assert!(launch.contains("\"ros2_type\": \"geometry_msgs/msg/Pose\""));
 
     assert!(rust_shell.contains("flowrt::zenoh::ZenohPubSub<Pose>"));
-    assert!(rust_shell.contains("let _ = self.ros2_bridge_2.receive_latest_at(tick_time_ms);"));
-    assert!(rust_shell.contains("let pose = self.ros2_bridge_2.cached_latest_at(tick_time_ms);"));
-    assert!(rust_shell.contains("let __flowrt_pose_revision = self.ros2_bridge_2.revision();"));
+    assert!(rust_shell.contains(
+        "let _ = app.ros2_bridge_2.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).receive_latest_at(tick_time_ms);"
+    ));
+    assert!(rust_shell.contains("let __flowrt_ros2_bridge_2_guard = self.ros2_bridge_2.lock().unwrap_or_else(|poisoned| poisoned.into_inner());"));
+    assert!(
+        rust_shell
+            .contains("let pose = __flowrt_ros2_bridge_2_guard.cached_latest_at(tick_time_ms);")
+    );
+    assert!(
+        rust_shell
+            .contains("let __flowrt_pose_revision = __flowrt_ros2_bridge_2_guard.revision();")
+    );
     assert!(rust_shell.contains("name: \"ros2_bridge_1\".to_string(),"));
     assert!(rust_shell.contains("from: \"source.pose\".to_string(),"));
     assert!(rust_shell.contains("to: \"ros2:/flowrt/pose\".to_string(),"));
@@ -316,7 +325,7 @@ backends = ["zenoh"]
     assert!(rust_shell.contains("boundary_input_request_in: flowrt::BoundaryInput<TextFrame>"));
     assert!(rust_shell.contains("boundary_output_reply_out: flowrt::BoundaryOutput<TextFrame>"));
     assert!(
-        rust_shell.contains("self.ros2_bridge_0.set_schedule_waiter(scheduler_events.clone());")
+        rust_shell.contains("app.ros2_bridge_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).set_schedule_waiter(scheduler_events.clone());")
     );
     assert!(rust_shell.contains("Ok(value) => value.as_ref().cloned(),"));
     assert!(rust_shell.contains("self.boundary_input_request_in.inject_at(value, tick_time_ms);"));
@@ -324,7 +333,9 @@ backends = ["zenoh"]
         rust_shell
             .contains("let request_read = self.boundary_input_request_in.read_at(tick_time_ms);")
     );
-    assert!(rust_shell.contains("self.ros2_bridge_1.publish_at(value.clone(), tick_time_ms)"));
+    assert!(rust_shell.contains(
+        "self.ros2_bridge_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms)"
+    ));
     assert!(rust_shell.contains("from: \"ros2:/ros2/request\".to_string()"));
     assert!(rust_shell.contains("to: \"boundary:request_in\".to_string()"));
     assert!(rust_shell.contains("from: \"boundary:reply_out\".to_string()"));

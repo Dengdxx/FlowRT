@@ -68,11 +68,12 @@ pub(crate) fn rust_service_handler_methods(
         ));
         output.push_str(&format!(
             "    fn {method_name}(\n\
-                 &mut self,\n\
+                 {}self,\n\
                  _request: &{req_ty},\n\
              ) -> flowrt::ServiceResult<{resp_ty}> {{\n\
                  flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError)\n\
              }}\n\n",
+            super::rust_component_receiver(component),
         ));
     }
 
@@ -273,6 +274,21 @@ pub(crate) fn emit_rust_service_new(
         let _server_lane = service_server_lane(plan);
         let server_instance = &plan.server_instance;
         let method_name = service_handler_method_name(&plan.server_port);
+        let component_var = format!("{}_handler", server_instance);
+        let server_instance_ir = graph
+            .instances
+            .iter()
+            .find(|instance| instance.name == *server_instance)
+            .expect("validated service server instance must exist");
+        let server_component =
+            crate::component_by_name(contract, &server_instance_ir.component.name);
+        let handler_call = if super::rust_component_is_parallel(server_component) {
+            format!("{component_var}.as_ref().as_ref().{method_name}(&req)")
+        } else {
+            format!(
+                "{component_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_name}(&req)"
+            )
+        };
 
         // service lane ID 与 scheduler 中的 lane 注册保持一致
         let service_lane_id = dataflow_lane_count + service_lane_offset + 1;
@@ -280,13 +296,12 @@ pub(crate) fn emit_rust_service_new(
 
         let reg_var = format!("service_reg_{}", plan.index);
         let handler_var = format!("service_handler_{}", plan.index);
-        let component_var = format!("{}_handler", server_instance);
 
         // 注册 handler：捕获 component Arc clone，调用其 service handler 方法
         registration.push_str(&format!(
             "        let {component_var} = {server_instance}.clone();\n\
              let {handler_var} = move |req: {req_ty}| -> flowrt::ServiceResult<{resp_ty}> {{\n\
-                 {component_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_name}(&req)\n\
+                 {handler_call}\n\
              }};\n\
              let {reg_var} = service_registry.register_result_with_config::<{req_ty}, {resp_ty}, _>(\n\
                  {service_name_literal},\n\
@@ -336,7 +351,7 @@ pub(crate) fn emit_rust_service_step_functions(contract: &ContractIr, graph: &Gr
 
         output.push_str(&format!(
             "    /// Hidden service task: process pending requests for `{server_instance}.{server_port}`。\n\
-             fn {fn_name}(&mut self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
+             fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
                  self.{server_field}.process_pending_requests();\n\
                  {status_update}\
                  flowrt::Status::Ok\n\
@@ -485,7 +500,7 @@ pub(crate) fn rust_service_dispatch_cases(
         output.push_str(&format!(
             "                flowrt::TaskId({task_id}) => {{\n\
                  let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
-                 self.{fn_name}(&introspection_state, &mut health_map)\n\
+                 app.{fn_name}(&introspection_state, &mut local_health_map)\n\
              }},\n"
         ));
     }

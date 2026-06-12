@@ -320,7 +320,11 @@ backends = ["zenoh"]
     assert!(!rust_components.contains("pub trait Processor {"));
 
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
-    assert!(rust_shell.contains("source: Box<dyn PerceptionProcessor>"));
+    assert!(
+        rust_shell.contains(
+            "source: std::sync::Arc<std::sync::Mutex<Box<dyn PerceptionProcessor + Send>>>"
+        )
+    );
 
     let cpp_components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
     assert!(cpp_components.contains("class ControlProcessorInterface"));

@@ -95,6 +95,7 @@ backends = ["iox2"]
     );
     let sensor_probe = extract_probe_field_for_registration(sensors_run, &sensor_register_marker)
         .expect("sensors process should register sensor channel");
+    assert!(sensor_probe.starts_with("introspection_probe_bind_"));
     assert!(
         sensors_run
             .contains("introspection_state.register_route(flowrt::IntrospectionRouteStatus {")
@@ -125,10 +126,12 @@ backends = ["iox2"]
         "sensors process should not register aux channel:\n{sensors_run}"
     );
     let sensor_record = format!(
-        "record_introspection_publish_copy(&introspection_state, {channel}, \"Sample\", &self.{sensor_probe}, &value, tick_time_ms);",
+        "record_introspection_publish_copy(&introspection_state, {channel}, \"Sample\", &",
         channel = rust_string_literal(sensor_channel)
     );
     assert!(rust_shell.contains(&sensor_record));
+    assert!(rust_shell.contains("let introspection_probe_bind_"));
+    assert!(rust_shell.contains("_guard, &value, tick_time_ms);"));
     assert!(rust_shell.contains(
         "if !probe.enabled() && !state.recorder_enabled_for_channel(name) {\n        return;\n    }"
     ));

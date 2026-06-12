@@ -81,6 +81,12 @@ fn extract_probe_field_for_registration<'a>(
         })
         .or_else(|| {
             before
+                .rsplit_once("app.")
+                .map(|(_, probe)| probe.trim())
+                .filter(|probe| probe.starts_with("introspection_probe_bind_"))
+        })
+        .or_else(|| {
+            before
                 .rsplit_once("this->")
                 .map(|(_, probe)| probe.trim())
                 .filter(|probe| probe.starts_with("introspection_probe_bind_"))

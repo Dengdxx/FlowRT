@@ -15,8 +15,8 @@ use crate::runtime_plan::{
     incoming_boundary_index_map, incoming_bridge_index_map, indent_generated_block,
     indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
     outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
-    process_runtime_plans, runtime_channel_message_type, runtime_channel_name,
-    runtime_channel_probe_capacity, runtime_param_name, step_indent,
+    process_runtime_plans, resolved_task_lane_name, runtime_channel_message_type,
+    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name, step_indent,
 };
 use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
@@ -636,9 +636,11 @@ fn emit_cpp_app_constructor(
         let queue_depth = plan.queue_depth.max(1);
         let max_in_flight = plan.max_in_flight.max(1);
         let default_timeout = plan.timeout_ms.max(1);
+        let server_lane = crate::runtime_plan::service_server_lane(plan);
+        let server_lane_id = cpp_lane_id_u64_expr(&server_lane);
 
         output.push_str(&format!(
-            "    {{\n        flowrt::InprocServiceConfig config;\n        config.queue_depth = {queue_depth};\n        config.max_in_flight = {max_in_flight};\n        config.default_timeout_ms = {default_timeout};\n        {server_field}_.emplace(\n            {service_name_literal},\n            [this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n                if (!this->{server_instance}_) {{\n                    return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n                }}\n                return this->{server_instance}_->on_{port}_request(request);\n            }},\n            config);\n        {client_field}_ = {cpp_handle_name}(\n            flowrt::InprocServiceClient<{req_ty}, {resp_ty}>(\n                {service_name_literal}, *{server_field}_));\n    }}\n",
+            "    {{\n        flowrt::InprocServiceConfig config;\n        config.queue_depth = {queue_depth};\n        config.max_in_flight = {max_in_flight};\n        config.default_timeout_ms = {default_timeout};\n        {server_field}_.emplace(\n            {service_name_literal},\n            [this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n                if (!this->{server_instance}_) {{\n                    return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n                }}\n                return this->{server_instance}_->on_{port}_request(request);\n            }},\n            config);\n        {client_field}_ = {cpp_handle_name}(\n            flowrt::InprocServiceClient<{req_ty}, {resp_ty}>(\n                {service_name_literal}, *{server_field}_, 0, {server_lane_id}));\n    }}\n",
             port = crate::snake_identifier(&plan.server_port),
             cpp_handle_name = cpp_service_client_handle_name(plan),
             server_instance = plan.server_instance,
@@ -679,6 +681,7 @@ fn cpp_operation_registration_block(plan: &crate::runtime_plan::OperationRuntime
     let operation_index = plan.index;
     let port = crate::snake_identifier(&plan.server_port);
     let server_instance = &plan.server_instance;
+    let server_lane_id = cpp_lane_id_u64_expr(&crate::runtime_plan::operation_server_lane(plan));
 
     format!(
         r#"    {{
@@ -811,9 +814,9 @@ fn cpp_operation_registration_block(plan: &crate::runtime_plan::OperationRuntime
             }},
             config);
         {client_field}_ = {handle_name}(
-            flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck>({start_name}, *{start_server}_),
-            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({cancel_name}, *{cancel_server}_),
-            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({status_name}, *{status_server}_));
+            flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck>({start_name}, *{start_server}_, 0, {server_lane_id}),
+            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({cancel_name}, *{cancel_server}_, 0, {server_lane_id}),
+            flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({status_name}, *{status_server}_, 0, {server_lane_id}));
     }}
 "#,
     )
@@ -1362,24 +1365,40 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
 fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     let tasks = scheduler_tasks_for_order(run.graph, run.order);
     let mut output = String::new();
+    let worker_threads = selected_profile_worker_threads(run.contract);
     output.push_str(&format!(
-        "    flowrt::DeterministicExecutor scheduler{{{}}};\n",
-        selected_profile_worker_threads(run.contract)
+        "    flowrt::DeterministicExecutor scheduler{{{worker_threads}}};\n    flowrt::WorkerPool worker_pool{{{worker_threads}}};\n",
     ));
 
-    let lane_ids = cpp_scheduler_lane_ids(&tasks);
-    for (lane, lane_id) in &lane_ids {
+    let mut lane_names = tasks
+        .iter()
+        .map(|task| cpp_task_lane_name(task))
+        .collect::<BTreeSet<_>>();
+    let service_plans = crate::runtime_plan::service_runtime_plans(run.contract, run.graph);
+    let operation_plans = crate::runtime_plan::operation_runtime_plans(run.contract, run.graph);
+    for plan in &service_plans {
+        if plan.backend.0 != "zenoh" {
+            lane_names.insert(crate::runtime_plan::service_server_lane(plan));
+        }
+    }
+    for plan in &operation_plans {
+        if plan.backend.0 != "zenoh" {
+            lane_names.insert(crate::runtime_plan::operation_server_lane(plan));
+        }
+    }
+    for lane in &lane_names {
+        let lane_expr = cpp_lane_id_expr(lane);
         output.push_str(&format!(
-            "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    (void){};\n",
-            cpp_string_literal(lane)
+            "    scheduler.add_lane({lane_expr}, flowrt::LaneKind::Serial);\n    (void){};\n",
+            cpp_string_literal(lane),
         ));
     }
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
-        let lane_id = lane_ids[&cpp_task_lane_name(task)];
+        let lane_id = cpp_lane_id_expr(&cpp_task_lane_name(task));
         let priority = task.priority.unwrap_or(0);
         output.push_str(&format!(
-            "    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = {priority}}});\n"
+            "    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{task_id}}}, .lane = {lane_id}, .priority = {priority}}});\n"
         ));
         if task.trigger == flowrt_ir::TriggerKind::Periodic {
             output.push_str(&format!(
@@ -1389,22 +1408,18 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         }
     }
     // service task registration
-    let service_plans = crate::runtime_plan::service_runtime_plans(run.contract, run.graph);
-    let operation_plans = crate::runtime_plan::operation_runtime_plans(run.contract, run.graph);
     let mut next_task_id = tasks.len();
-    let mut next_extra_lane_id = lane_ids.len() + 1;
-    let mut hidden_task_lane_ids = BTreeMap::<usize, usize>::new();
+    let mut hidden_task_lane_names = BTreeMap::<usize, String>::new();
     for plan in &service_plans {
         if plan.backend.0 == "zenoh" {
             continue;
         }
         next_task_id += 1;
-        let _server_lane = crate::runtime_plan::service_server_lane(plan);
-        let lane_id = next_extra_lane_id;
-        next_extra_lane_id += 1;
-        hidden_task_lane_ids.insert(next_task_id, lane_id);
+        let server_lane = crate::runtime_plan::service_server_lane(plan);
+        let lane_id = cpp_lane_id_expr(&server_lane);
+        hidden_task_lane_names.insert(next_task_id, server_lane);
         output.push_str(&format!(
-            "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = 0}});\n"
+            "    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = {lane_id}, .priority = 0}});\n"
         ));
     }
     for plan in &operation_plans {
@@ -1412,11 +1427,11 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             continue;
         }
         next_task_id += 1;
-        let lane_id = next_extra_lane_id;
-        next_extra_lane_id += 1;
-        hidden_task_lane_ids.insert(next_task_id, lane_id);
+        let server_lane = crate::runtime_plan::operation_server_lane(plan);
+        let lane_id = cpp_lane_id_expr(&server_lane);
+        hidden_task_lane_names.insert(next_task_id, server_lane);
         output.push_str(&format!(
-            "    scheduler.add_lane(flowrt::LaneId{{{lane_id}}}, flowrt::LaneKind::Serial);\n    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = flowrt::LaneId{{{lane_id}}}, .priority = 0}});\n"
+            "    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{next_task_id}}}, .lane = {lane_id}, .priority = 0}});\n"
         ));
     }
     output.push_str(&emit_cpp_on_message_revision_state(
@@ -1482,20 +1497,22 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(
-        "            const auto task_statuses = scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task) {\n                switch (task.value) {\n",
+        "            auto batch_health_map = health_map;\n            std::mutex batch_health_mutex;\n            const auto ready_batch = scheduler.take_ready_batch();\n            const auto task_statuses = std::move(ready_batch).run(worker_pool, [this, &lifecycle_context, &introspection_state, &scheduler_events, &batch_health_map, &batch_health_mutex, tick_time_ms](flowrt::TaskId task) {\n                auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                auto merge_local_health = [&batch_health_map, &batch_health_mutex](std::map<std::string, flowrt::IntrospectionTaskHealth>&& local_health_map) {\n                    std::lock_guard<std::mutex> lock(batch_health_mutex);\n                    for (auto &[name, health] : local_health_map) {\n                        batch_health_map.insert_or_assign(name, std::move(health));\n                    }\n                };\n                switch (task.value) {\n",
     );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
-        let lane_id = lane_ids[&cpp_task_lane_name(task)];
+        let lane_id = cpp_lane_id_expr(&cpp_task_lane_name(task));
         let function_name = match run.process {
             Some(process) => cpp_process_task_step_function_name(process, task),
             None => cpp_task_step_function_name(task),
         };
         output.push_str(&format!(
             "                    case {task_id}: {{\n\
-                         auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{{{lane_id}}});\n\
+                         auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         return {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n\
+                         auto task_status = {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         merge_local_health(std::move(local_health_map));\n\
+                         return task_status;\n\
                      }}\n"
         ));
     }
@@ -1507,12 +1524,14 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         }
         service_task_id += 1;
         let fn_name = cpp_service_step_fn_name(plan);
-        let lane_id = hidden_task_lane_ids[&service_task_id];
+        let lane_id = cpp_lane_id_expr(&hidden_task_lane_names[&service_task_id]);
         output.push_str(&format!(
             "                    case {service_task_id}: {{\n\
-                         auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{{{lane_id}}});\n\
+                         auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n\
+                         auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         merge_local_health(std::move(local_health_map));\n\
+                         return task_status;\n\
                      }}\n"
         ));
     }
@@ -1522,12 +1541,14 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         }
         service_task_id += 1;
         let fn_name = cpp_operation_step_fn_name(plan);
-        let lane_id = hidden_task_lane_ids[&service_task_id];
+        let lane_id = cpp_lane_id_expr(&hidden_task_lane_names[&service_task_id]);
         output.push_str(&format!(
             "                    case {service_task_id}: {{\n\
-                         auto flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId{{{lane_id}}});\n\
+                         auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         return {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n\
+                         auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         merge_local_health(std::move(local_health_map));\n\
+                         return task_status;\n\
                      }}\n"
         ));
     }
@@ -1536,15 +1557,17 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         && operation_plans.iter().all(|p| p.backend.0 == "zenoh")
     {
         output.push_str(&format!(
-            "                    default: return {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, health_map);\n",
+            "                    default: {{\n                        auto task_status = {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n                        merge_local_health(std::move(local_health_map));\n                        return task_status;\n                    }}\n",
             run.step_function_name
         ));
     } else {
         output.push_str("                    default: return flowrt::Status::Error;\n");
     }
-    let fairness_check = emit_cpp_fairness_check(&lane_ids);
+    let task_result_health_update = emit_cpp_task_result_health_update(&tasks);
+    let fairness_check = emit_cpp_fairness_check(&lane_names);
     output.push_str(&format!(
-        "                }}\n            }});\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (const auto task_status : task_statuses) {{\n                if (task_status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
+        "                }}\n            }});\n            health_map = std::move(batch_health_map);\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (const auto &task_result : task_statuses) {{\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
+        task_result_health_update = task_result_health_update,
             next_deadline_expr = cpp_next_periodic_deadline_expr(&tasks)
         )
         .replace(
@@ -1589,9 +1612,7 @@ fn emit_cpp_scheduler_event_registration(
 }
 
 fn cpp_task_lane_name(task: &flowrt_ir::TaskIr) -> String {
-    task.lane
-        .clone()
-        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
+    resolved_task_lane_name(task)
 }
 
 fn cpp_task_health_name(task: &flowrt_ir::TaskIr) -> String {
@@ -1628,12 +1649,44 @@ fn emit_cpp_task_health_init(tasks: &[&flowrt_ir::TaskIr]) -> String {
     output
 }
 
-/// 生成 C++ lane 饥饿检测代码。
-fn emit_cpp_fairness_check(lane_ids: &std::collections::BTreeMap<String, usize>) -> String {
+fn emit_cpp_task_result_health_update(tasks: &[&flowrt_ir::TaskIr]) -> String {
     let mut output = String::new();
-    for (lane, lane_id) in lane_ids {
+    output.push_str("                switch (task_result.task.value) {\n");
+    for (index, task) in tasks.iter().enumerate() {
+        let task_id = index + 1;
+        let task_health = cpp_task_health_name(task);
         output.push_str(&format!(
-            "        if (scheduler.lane_starvation_ticks(flowrt::LaneId{{{lane_id}}}) > fairness_starvation_threshold) {{\n            for (auto &[name, health] : health_map) {{\n                if (health.lane == \"{lane}\") {{\n                    health.fairness_violations += 1;\n                }}\n            }}\n        }}\n"
+            "                    case {task_id}: {{\n\
+                         auto health_it = health_map.find(\"{task_health}\");\n\
+                         if (health_it != health_map.end()) {{\n\
+                             auto &health = health_it->second;\n\
+                             health.run_count += 1;\n\
+                             health.last_run_ms = tick_time_ms;\n\
+                             if (task_result.status == flowrt::Status::Ok) {{\n\
+                                 health.success_count += 1;\n\
+                                 health.consecutive_failures = 0;\n\
+                                 health.last_success_ms = tick_time_ms;\n\
+                             }} else if (task_result.status == flowrt::Status::Error) {{\n\
+                                 health.consecutive_failures += 1;\n\
+                             }}\n\
+                         }}\n\
+                         break;\n\
+                     }}\n"
+        ));
+    }
+    output.push_str(
+        "                    default:\n                        break;\n                }\n",
+    );
+    output
+}
+
+/// 生成 C++ lane 饥饿检测代码。
+fn emit_cpp_fairness_check(lane_names: &BTreeSet<String>) -> String {
+    let mut output = String::new();
+    for lane in lane_names {
+        let lane_id = cpp_lane_id_expr(lane);
+        output.push_str(&format!(
+            "        if (scheduler.lane_starvation_ticks({lane_id}) > fairness_starvation_threshold) {{\n            for (auto &[name, health] : health_map) {{\n                if (health.lane == \"{lane}\") {{\n                    health.fairness_violations += 1;\n                }}\n            }}\n        }}\n"
         ));
     }
     output
@@ -1672,16 +1725,15 @@ fn emit_cpp_apply_pending_params_for_order(contract: &ContractIr, order: &[&Inst
     output
 }
 
-fn cpp_scheduler_lane_ids(tasks: &[&flowrt_ir::TaskIr]) -> BTreeMap<String, usize> {
-    let mut lanes = BTreeMap::new();
-    for task in tasks {
-        let lane = cpp_task_lane_name(task);
-        if !lanes.contains_key(&lane) {
-            let next_id = lanes.len() + 1;
-            lanes.insert(lane, next_id);
-        }
-    }
-    lanes
+fn cpp_lane_id_expr(lane_name: &str) -> String {
+    format!(
+        "flowrt::LaneId{{flowrt::fnv1a64({})}}",
+        cpp_string_literal(lane_name)
+    )
+}
+
+fn cpp_lane_id_u64_expr(lane_name: &str) -> String {
+    format!("flowrt::fnv1a64({})", cpp_string_literal(lane_name))
 }
 
 fn cpp_task_step_function_name(task: &flowrt_ir::TaskIr) -> String {

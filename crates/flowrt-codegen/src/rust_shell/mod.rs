@@ -7,7 +7,7 @@ mod scheduler_emit;
 pub(crate) mod service_emit;
 mod step_emit;
 
-use flowrt_ir::{ComponentIr, ContractIr, LanguageKind};
+use flowrt_ir::{ComponentIr, ContractIr, LanguageKind, TaskConcurrency};
 
 use crate::runtime_plan::{
     active_boundaries_for_instances, bind_runtime_plans, boundary_runtime_plans,
@@ -68,28 +68,33 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
         }
         output.push_str(&rust_component_trait_doc(component));
         output.push_str(&format!(
-            "pub trait {} {{\n",
-            component_rust_name(component)
+            "pub trait {}{} {{\n",
+            component_rust_name(component),
+            rust_component_trait_bound(component)
         ));
         output.push_str(&rust_lifecycle_doc("组件初始化钩子"));
-        output.push_str(
-            "    fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
-        );
+        output.push_str(&format!(
+            "    fn on_init({}self, _context: &mut flowrt::Context) -> flowrt::Status {{\n",
+            rust_component_receiver(component)
+        ));
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
         output.push_str(&rust_lifecycle_doc("组件启动钩子"));
-        output.push_str(
-            "    fn on_start(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
-        );
+        output.push_str(&format!(
+            "    fn on_start({}self, _context: &mut flowrt::Context) -> flowrt::Status {{\n",
+            rust_component_receiver(component)
+        ));
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
         output.push_str(&rust_lifecycle_doc("组件停止钩子"));
-        output.push_str(
-            "    fn on_stop(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
-        );
+        output.push_str(&format!(
+            "    fn on_stop({}self, _context: &mut flowrt::Context) -> flowrt::Status {{\n",
+            rust_component_receiver(component)
+        ));
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
         output.push_str(&rust_lifecycle_doc("组件关闭钩子"));
-        output.push_str(
-            "    fn on_shutdown(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {\n",
-        );
+        output.push_str(&format!(
+            "    fn on_shutdown({}self, _context: &mut flowrt::Context) -> flowrt::Status {{\n",
+            rust_component_receiver(component)
+        ));
         output.push_str("        flowrt::Status::ok()\n    }\n\n");
         output.push_str(&params_emit::rust_params_update_signature(component));
         // service handler 方法
@@ -151,31 +156,16 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output.push_str(&emit_rust_param_constraint_helpers(&order, contract));
     output.push_str("pub struct App {\n");
     output.push_str("    startup_status: flowrt::Status,\n");
-    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
-    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
-    let server_instances: std::collections::BTreeSet<&str> = service_plans
-        .iter()
-        .map(|p| p.server_instance.as_str())
-        .chain(operation_plans.iter().map(|p| p.server_instance.as_str()))
-        .collect();
     for instance in &order {
         let component = component_by_name(contract, &instance.component.name);
-        if server_instances.contains(instance.name.as_str()) {
-            output.push_str(&format!(
-                "    {}: std::sync::Arc<std::sync::Mutex<Box<dyn {} + Send>>>,\n",
-                instance.name,
-                component_rust_name(component)
-            ));
-        } else {
-            output.push_str(&format!(
-                "    {}: Box<dyn {}>,\n",
-                instance.name,
-                component_rust_name(component)
-            ));
-        }
+        output.push_str(&format!(
+            "    {}: {},\n",
+            instance.name,
+            rust_component_storage_type(component)
+        ));
         if !component.params.is_empty() {
             output.push_str(&format!(
-                "    {}_params: {}Params,\n",
+                "    {}_params: std::sync::Arc<std::sync::Mutex<{}Params>>,\n",
                 instance.name,
                 component_rust_name(component)
             ));
@@ -183,18 +173,18 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     }
     for bind in &bind_plans {
         output.push_str(&format!(
-            "    {}: {},\n",
+            "    {}: std::sync::Arc<std::sync::Mutex<{}>>,\n",
             bind.field_name,
             backend_emit::runtime_channel_type(bind)
         ));
         output.push_str(&format!(
-            "    {}: flowrt::IntrospectionChannelProbe,\n",
+            "    {}: std::sync::Arc<std::sync::Mutex<flowrt::IntrospectionChannelProbe>>,\n",
             bind.probe_field_name
         ));
     }
     for bridge in &bridge_plans {
         output.push_str(&format!(
-            "    {}: {},\n",
+            "    {}: std::sync::Arc<std::sync::Mutex<{}>>,\n",
             bridge.field_name,
             backend_emit::bridge_runtime_channel_type(bridge)
         ));
@@ -224,18 +214,6 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         &boundary_plans,
         dataflow_lane_count,
     ));
-    let service_plans_for_emission = crate::runtime_plan::service_runtime_plans(contract, graph);
-    let operation_plans_for_emission =
-        crate::runtime_plan::operation_runtime_plans(contract, graph);
-    let service_server_instances: std::collections::BTreeSet<String> = service_plans_for_emission
-        .iter()
-        .map(|p| p.server_instance.clone())
-        .chain(
-            operation_plans_for_emission
-                .iter()
-                .map(|p| p.server_instance.clone()),
-        )
-        .collect();
     let step_emission = RustStepEmission {
         contract,
         graph,
@@ -248,7 +226,6 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         outgoing_bind_indices: &outgoing_bind_indices,
         outgoing_bridge_indices: &outgoing_bridge_indices,
         outgoing_boundary_indices: &outgoing_boundary_indices,
-        service_server_instances: &service_server_instances,
     };
 
     emit_all_step_functions(&step_emission, graph, &order, &mut output);
@@ -363,14 +340,76 @@ fn rust_tick_signature(
     let args = rust_callback_args(component, service_plans, operation_plans);
     let doc = rust_tick_doc(component, service_plans, operation_plans);
     if args.is_empty() {
-        format!("{doc}    fn on_tick(&mut self) -> flowrt::Status;\n")
+        format!(
+            "{doc}    fn on_tick({}self) -> flowrt::Status;\n",
+            rust_component_receiver(component)
+        )
     } else {
         let joined = args
             .iter()
             .map(|arg| format!("        {arg}"))
             .collect::<Vec<_>>()
             .join(",\n");
-        format!("{doc}    fn on_tick(\n        &mut self,\n{joined},\n    ) -> flowrt::Status;\n")
+        format!(
+            "{doc}    fn on_tick(\n        {}self,\n{joined},\n    ) -> flowrt::Status;\n",
+            rust_component_receiver(component)
+        )
+    }
+}
+
+pub(crate) fn rust_component_is_parallel(component: &ComponentIr) -> bool {
+    component.concurrency == TaskConcurrency::Parallel
+}
+
+pub(crate) fn rust_component_trait_bound(component: &ComponentIr) -> &'static str {
+    if rust_component_is_parallel(component) {
+        ": Send + Sync"
+    } else {
+        ": Send"
+    }
+}
+
+pub(crate) fn rust_component_receiver(component: &ComponentIr) -> &'static str {
+    if rust_component_is_parallel(component) {
+        "&"
+    } else {
+        "&mut "
+    }
+}
+
+pub(crate) fn rust_component_constructor_type(component: &ComponentIr) -> String {
+    if rust_component_is_parallel(component) {
+        format!("Box<dyn {} + Send + Sync>", component_rust_name(component))
+    } else {
+        format!("Box<dyn {} + Send>", component_rust_name(component))
+    }
+}
+
+pub(crate) fn rust_component_storage_type(component: &ComponentIr) -> String {
+    if rust_component_is_parallel(component) {
+        format!(
+            "std::sync::Arc<Box<dyn {} + Send + Sync>>",
+            component_rust_name(component)
+        )
+    } else {
+        format!(
+            "std::sync::Arc<std::sync::Mutex<Box<dyn {} + Send>>>",
+            component_rust_name(component)
+        )
+    }
+}
+
+pub(crate) fn rust_component_method_call(
+    component: &ComponentIr,
+    instance_name: &str,
+    method_call: &str,
+) -> String {
+    if rust_component_is_parallel(component) {
+        format!("self.{instance_name}.as_ref().as_ref().{method_call}")
+    } else {
+        format!(
+            "self.{instance_name}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_call}"
+        )
     }
 }
 

@@ -134,9 +134,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     } = emission;
     let tasks = scheduler_tasks_for_order(graph, order);
     let mut output = String::new();
+    let worker_threads = selected_profile_worker_threads(contract);
     output.push_str(&format!(
-        "        let mut scheduler = flowrt::DeterministicExecutor::new({});\n",
-        selected_profile_worker_threads(contract)
+        "        let mut scheduler = flowrt::DeterministicExecutor::new({worker_threads});\n        let worker_pool = flowrt::WorkerPool::new({worker_threads});\n",
     ));
 
     let mut lane_ids = scheduler_lane_ids(&tasks);
@@ -231,8 +231,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
             1,
         ));
     }
-    output
-        .push_str("                let task_statuses = scheduler.run_ready(|task| match task {\n");
+    output.push_str(
+        "                let batch_health_map = std::sync::Arc::new(std::sync::Mutex::new(health_map.clone()));\n                let batch_health_map_for_tasks = batch_health_map.clone();\n                let ready_batch = scheduler.take_ready_batch();\n                let app_for_batch = self.clone();\n                let introspection_state_for_batch = introspection_state.clone();\n                let scheduler_events_for_batch = scheduler_events.clone();\n                let task_statuses = ready_batch.run(&worker_pool, move |task| {\n                    let app = app_for_batch.clone();\n                    let introspection_state = introspection_state_for_batch.clone();\n                    let scheduler_events = scheduler_events_for_batch.clone();\n                    let mut local_context = flowrt::Context::default();\n                    let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n                    let task_status = match task {\n",
+    );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
         let lane_id = lane_ids[&task_lane_name(task)];
@@ -243,7 +244,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         output.push_str(&format!(
             "                flowrt::TaskId({task_id}) => {{\n\
                  let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
-                 self.{function_name}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut health_map)\n\
+                 app.{function_name}(tick_time_ms as usize, &mut local_context, &introspection_state, &scheduler_events, &mut local_health_map)\n\
              }},\n"
         ));
     }
@@ -260,15 +261,16 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     }
     if tasks.is_empty() && service_cases.is_empty() && operation_cases.is_empty() {
         output.push_str(&format!(
-            "                _ => self.{fallback_step_function}(tick_time_ms as usize, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut health_map),\n"
+            "                _ => app.{fallback_step_function}(tick_time_ms as usize, &mut local_context, &introspection_state, &scheduler_events, &mut local_health_map),\n"
         ));
     } else {
         output.push_str("                _ => flowrt::Status::Error,\n");
     }
     output.push_str(&format!(
-        "                }});\n                if !woke_on_message && task_statuses.is_empty() {{\n                    break;\n                }}\n                for task_status in task_statuses {{\n                    if task_status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{}}\n                }}\n            }}\n        }}\n",
+        "                }};\n                    {{\n                        let mut merged_health = batch_health_map_for_tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                        for (name, health) in local_health_map {{\n                            merged_health.insert(name, health);\n                        }}\n                    }}\n                    task_status\n                }});\n                health_map = batch_health_map.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();\n                if !woke_on_message && task_statuses.is_empty() {{\n                    break;\n                }}\n                for task_result in task_statuses {{\n{task_result_health_update}                    if task_result.status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{}}\n                }}\n            }}\n        }}\n",
         next_deadline_expr = rust_next_periodic_deadline_expr(&tasks),
         fairness_check = emit_rust_fairness_check(&lane_ids),
+        task_result_health_update = emit_rust_task_result_health_update(&tasks),
     ));
     let _ = operation_task_end;
     output
@@ -285,13 +287,13 @@ pub(super) fn emit_rust_scheduler_event_registration(
         .filter(|bind| matches!(crate::runtime_plan::bind_backend(bind), "iox2" | "zenoh"))
     {
         output.push_str(&format!(
-            "        self.{field}.set_schedule_waiter(scheduler_events.clone());\n",
+            "        self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).set_schedule_waiter(scheduler_events.clone());\n",
             field = bind.field_name
         ));
     }
     for bridge in bridges {
         output.push_str(&format!(
-            "        self.{field}.set_schedule_waiter(scheduler_events.clone());\n",
+            "        self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).set_schedule_waiter(scheduler_events.clone());\n",
             field = bridge.field_name
         ));
     }
@@ -304,6 +306,20 @@ pub(super) fn emit_rust_scheduler_event_registration(
             field = boundary.field_name
         ));
     }
+    output
+}
+
+fn emit_rust_task_result_health_update(tasks: &[&TaskIr]) -> String {
+    let mut output = String::new();
+    output.push_str("                    match task_result.task {\n");
+    for (index, task) in tasks.iter().enumerate() {
+        let task_id = index + 1;
+        let task_health = task_health_name(task);
+        output.push_str(&format!(
+            "                        flowrt::TaskId({task_id}) => {{\n                            let health = health_map.entry({task_health:?}.to_string()).or_default();\n                            health.run_count += 1;\n                            health.last_run_ms = Some(tick_time_ms);\n                            if task_result.status == flowrt::Status::Ok {{\n                                health.success_count += 1;\n                                health.consecutive_failures = 0;\n                                health.last_success_ms = Some(tick_time_ms);\n                            }} else if task_result.status == flowrt::Status::Error {{\n                                health.consecutive_failures += 1;\n                            }}\n                        }}\n"
+        ));
+    }
+    output.push_str("                        _ => {}\n                    }\n");
     output
 }
 

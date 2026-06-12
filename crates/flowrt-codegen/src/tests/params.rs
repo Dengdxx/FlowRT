@@ -44,11 +44,13 @@ output = ["cmd"]
     assert!(components.contains("pub mode: String"));
     assert!(components.contains("params: &ControllerParams"));
     assert!(components.contains("fn on_params_update("));
-    assert!(shell.contains("controller_params: ControllerParams"));
+    assert!(
+        shell.contains("controller_params: std::sync::Arc<std::sync::Mutex<ControllerParams>>")
+    );
     assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
     assert!(shell.contains("name: \"controller.kp\".to_string()"));
     assert!(shell.contains("take_pending_param(\"controller.kp\")"));
-    assert!(shell.contains("self.controller.on_params_update("));
+    assert!(shell.contains("on_params_update("));
     assert!(shell.contains("flowrt::params_key_expr(PACKAGE_NAME"));
     assert!(shell.contains("flowrt::ZenohParamsServer::open_from_environment"));
     assert!(shell.contains("let _remote_params_server = match"));
@@ -261,9 +263,7 @@ period_ms = 5
     let gain_guard = shell
         .find("flowrt_validate_pending_param_controller_gain")
         .expect(shell);
-    let hook = shell
-        .find("self.controller.on_params_update(")
-        .expect(shell);
+    let hook = shell.find("on_params_update(").expect(shell);
     assert!(gain_guard < hook, "{shell}");
     assert!(
         shell.contains("fn flowrt_validate_pending_param_controller_gain(value: &f64) -> bool"),

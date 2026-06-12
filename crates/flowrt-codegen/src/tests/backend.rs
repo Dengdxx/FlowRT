@@ -319,7 +319,9 @@ backends = ["inproc"]
     let bundle = emit_artifacts(&ir).unwrap();
     let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
-    assert!(rust_shell.contains("pub fn new(\n        worker: Box<dyn Worker>,\n    ) -> Self"));
+    assert!(
+        rust_shell.contains("pub fn new(\n        worker: Box<dyn Worker + Send>,\n    ) -> Self")
+    );
     assert!(rust_shell.contains("user::build_app().run(backend.as_ref(), run_ticks)"));
     assert!(!rust_shell.contains("match user::build_app()"));
     assert!(!rust_shell.contains("-> Result<Self"));

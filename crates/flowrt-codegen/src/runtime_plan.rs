@@ -4,8 +4,8 @@ use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr, GraphIr,
     InstanceIr, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
     OverflowPolicy as IrOverflowPolicy, ParamIr, Ros2BridgeDirection, Ros2BridgeIr,
-    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskIr, TaskReadiness, TriggerKind,
-    TypeExpr,
+    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
+    TriggerKind, TypeExpr,
 };
 
 use crate::{
@@ -102,6 +102,15 @@ pub(crate) fn rust_nested_step_indent(nested: bool) -> &'static str {
     } else {
         "            "
     }
+}
+
+pub(crate) fn resolved_task_lane_name(task: &TaskIr) -> String {
+    if task.concurrency == TaskConcurrency::Exclusive {
+        return format!("{}_serial", task.instance.name);
+    }
+    task.lane
+        .clone()
+        .unwrap_or_else(|| format!("{}_serial", task.instance.name))
 }
 
 #[derive(Debug, Clone)]

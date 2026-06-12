@@ -80,7 +80,7 @@ fn rust_service_client_is_injected_into_on_tick() {
     );
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        shell.contains("self.plan_client.on_tick(&self.service_client_plan_client_plan)"),
+        shell.contains("on_tick(&self.service_client_plan_client_plan)"),
         "runtime shell must pass the App-owned service client handle into on_tick.\n\n{shell}"
     );
 }
@@ -148,7 +148,7 @@ fn rust_runtime_shell_registers_service() {
         "runtime shell must mark service ready only after lifecycle startup.\n\n{shell}"
     );
     let startup_index = shell
-        .find("status = self.step_startup")
+        .find("status = app.step_startup")
         .expect("runtime shell must call startup task");
     let ready_index = shell
         .find("introspection_state.mark_service_ready")
@@ -182,7 +182,9 @@ fn rust_scheduler_dispatches_service_tasks() {
     let bundle = emit_artifacts(&contract).unwrap();
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
-        shell.contains("step_service_plan_svc_plan(&introspection_state, &mut health_map)"),
+        shell.contains(
+            "app.step_service_plan_svc_plan(&introspection_state, &mut local_health_map)"
+        ),
         "scheduler must dispatch service task.\n\n{shell}"
     );
     assert!(

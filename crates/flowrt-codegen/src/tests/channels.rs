@@ -51,11 +51,11 @@ backends = ["inproc"]
     assert!(rust_shell.contains("boundary_output_echo_out: flowrt::BoundaryOutput<Sample>"));
     assert!(rust_shell.contains("boundary_input_sample_in: flowrt::BoundaryInput::new()"));
     assert!(rust_shell.contains(
-        "introspection_state.register_boundary_input::<Sample>(\"sample_in\", \"Sample\", self.boundary_input_sample_in.clone());"
+        "introspection_state.register_boundary_input::<Sample>(\"sample_in\", \"Sample\", app.boundary_input_sample_in.clone());"
     ));
     assert!(
         rust_shell.contains(
-            "self.boundary_input_sample_in.set_schedule_waiter(scheduler_events.clone());"
+            "app.boundary_input_sample_in.set_schedule_waiter(scheduler_events.clone());"
         )
     );
     assert!(
@@ -64,10 +64,10 @@ backends = ["inproc"]
     );
     assert!(rust_shell.contains("let __flowrt_sample_revision = sample_read.revision();"));
     assert!(rust_shell.contains("let sample = sample_read.view();"));
-    assert!(rust_shell.contains("self.boundary_input_sample_in.revision() != boundary_input_sample_in_seen_revision_for_consumer_main"));
+    assert!(rust_shell.contains("app.boundary_input_sample_in.revision() != boundary_input_sample_in_seen_revision_for_consumer_main"));
     assert!(rust_shell.contains("self.boundary_output_echo_out.publish_at(&value, tick_time_ms);"));
     assert!(rust_shell.contains(
-        "let _boundary_output_echo_out_probe = self.boundary_output_echo_out.register_sink"
+        "let _boundary_output_echo_out_probe = app.boundary_output_echo_out.register_sink"
     ));
     assert!(rust_shell.contains("introspection_state.record_channel_publish_bytes(\"echo_out\""));
     assert!(rust_messages.contains("impl flowrt::WireCodec for Sample"));
@@ -351,7 +351,8 @@ backends = ["inproc"]
     assert!(rust_shell.contains(
             "flowrt::FifoChannel::with_stale_config(4, flowrt::OverflowPolicy::DropOldest, flowrt::StaleConfig::new(Some(20), flowrt::StalePolicy::Error))"
         ));
-    assert!(rust_shell.contains("let imu_read = self.bind_0.pop_at(tick_time_ms);"));
+    assert!(rust_shell.contains("let mut __flowrt_bind_0_guard = self.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());"));
+    assert!(rust_shell.contains("let imu_read = __flowrt_bind_0_guard.pop_at(tick_time_ms);"));
     assert!(rust_shell.contains("let imu = imu_read.view();"));
     assert!(rust_shell.contains("push_at(value.clone(), tick_time_ms)"));
     assert!(rust_shell.contains("if imu.stale() {"));
