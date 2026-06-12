@@ -7,7 +7,9 @@
 #include <flowrt/abi.h>
 #include <flowrt/runtime.hpp>
 #include <optional>
+#include <mutex>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -493,6 +495,165 @@ int main() {
     assert(failing_pool.spawn([]() { return flowrt::Status::Error; }));
     assert(failing_pool.spawn([]() { return flowrt::Status::Ok; }));
     assert(failing_pool.shutdown() == flowrt::Status::Error);
+
+    flowrt::DeterministicExecutor parallel_executor{2};
+    parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    parallel_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
+    parallel_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    parallel_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
+    parallel_executor.wake(flowrt::TaskId{1});
+    parallel_executor.wake(flowrt::TaskId{2});
+    flowrt::WorkerPool parallel_pool{2};
+    std::atomic<std::size_t> parallel_started{0};
+    std::atomic<std::size_t> parallel_active{0};
+    std::atomic<std::size_t> parallel_max_active{0};
+    const auto parallel_results = parallel_executor.run_ready_parallel(
+        parallel_pool, [&](flowrt::TaskId task) {
+            const auto current = parallel_active.fetch_add(1U) + 1U;
+            auto observed = parallel_max_active.load();
+            while (observed < current &&
+                   !parallel_max_active.compare_exchange_weak(observed, current)) {
+            }
+            parallel_started.fetch_add(1U);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{200};
+            while (parallel_started.load() < 2U) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    parallel_active.fetch_sub(1U);
+                    return task == flowrt::TaskId{1} ? flowrt::Status::Error
+                                                     : flowrt::Status::Retry;
+                }
+                std::this_thread::yield();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            parallel_active.fetch_sub(1U);
+            return flowrt::Status::Ok;
+        });
+    assert((parallel_results ==
+            std::vector<flowrt::TaskRunResult>{
+                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Ok},
+                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
+    assert(parallel_max_active.load() >= 2U);
+    assert(parallel_pool.shutdown() == flowrt::Status::Ok);
+
+    flowrt::DeterministicExecutor serial_parallel_executor{2};
+    serial_parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    serial_parallel_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    serial_parallel_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
+    serial_parallel_executor.wake(flowrt::TaskId{1});
+    serial_parallel_executor.wake(flowrt::TaskId{2});
+    flowrt::WorkerPool serial_parallel_pool{2};
+    std::atomic<std::size_t> serial_parallel_active{0};
+    std::atomic<std::size_t> serial_parallel_max_active{0};
+    std::vector<flowrt::TaskId> serial_parallel_order;
+    std::mutex serial_parallel_mutex;
+    auto serial_parallel_run = [&](flowrt::TaskId task) {
+        const auto current = serial_parallel_active.fetch_add(1U) + 1U;
+        auto observed = serial_parallel_max_active.load();
+        while (observed < current &&
+               !serial_parallel_max_active.compare_exchange_weak(observed, current)) {
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        serial_parallel_active.fetch_sub(1U);
+        {
+            std::lock_guard lock(serial_parallel_mutex);
+            serial_parallel_order.push_back(task);
+        }
+        return flowrt::Status::Ok;
+    };
+    const auto serial_parallel_first =
+        serial_parallel_executor.run_ready_parallel(serial_parallel_pool, serial_parallel_run);
+    const auto serial_parallel_second =
+        serial_parallel_executor.run_ready_parallel(serial_parallel_pool, serial_parallel_run);
+    assert((serial_parallel_first ==
+            std::vector<flowrt::TaskRunResult>{
+                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Ok}}));
+    assert((serial_parallel_second ==
+            std::vector<flowrt::TaskRunResult>{
+                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
+    assert((serial_parallel_order ==
+            std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{2}}));
+    assert(serial_parallel_max_active.load() == 1U);
+    assert(serial_parallel_pool.shutdown() == flowrt::Status::Ok);
+
+    flowrt::DeterministicExecutor single_worker_executor{1};
+    single_worker_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    single_worker_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
+    single_worker_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    single_worker_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
+    single_worker_executor.wake(flowrt::TaskId{1});
+    single_worker_executor.wake(flowrt::TaskId{2});
+    flowrt::WorkerPool single_worker_pool{1};
+    std::atomic<std::size_t> single_worker_active{0};
+    std::atomic<std::size_t> single_worker_max_active{0};
+    const auto single_worker_results = single_worker_executor.run_ready_parallel(
+        single_worker_pool, [&](flowrt::TaskId task) {
+            const auto current = single_worker_active.fetch_add(1U) + 1U;
+            auto observed = single_worker_max_active.load();
+            while (observed < current &&
+                   !single_worker_max_active.compare_exchange_weak(observed, current)) {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            single_worker_active.fetch_sub(1U);
+            return task == flowrt::TaskId{1} ? flowrt::Status::Ok : flowrt::Status::Retry;
+        });
+    assert((single_worker_results ==
+            std::vector<flowrt::TaskRunResult>{
+                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Ok},
+                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Retry}}));
+    assert(single_worker_max_active.load() == 1U);
+    assert(single_worker_pool.shutdown() == flowrt::Status::Ok);
+
+    flowrt::DeterministicExecutor panic_parallel_executor{2};
+    panic_parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    panic_parallel_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
+    panic_parallel_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    panic_parallel_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
+    panic_parallel_executor.wake(flowrt::TaskId{1});
+    panic_parallel_executor.wake(flowrt::TaskId{2});
+    flowrt::WorkerPool panic_parallel_pool{2};
+    const auto panic_parallel_results = panic_parallel_executor.run_ready_parallel(
+        panic_parallel_pool, [](flowrt::TaskId task) {
+            if (task == flowrt::TaskId{1}) {
+                throw std::runtime_error("parallel task failed");
+            }
+            return flowrt::Status::Ok;
+        });
+    assert((panic_parallel_results ==
+            std::vector<flowrt::TaskRunResult>{
+                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Error},
+                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
+    assert(panic_parallel_pool.shutdown() == flowrt::Status::Error);
+
+    flowrt::WorkerPool closed_pool{2};
+    std::atomic<std::size_t> close_entered{0};
+    std::atomic<std::size_t> close_release{0};
+    assert(closed_pool.spawn([&]() {
+        close_entered.fetch_add(1U);
+        while (close_release.load() == 0U) {
+            std::this_thread::yield();
+        }
+        return flowrt::Status::Ok;
+    }));
+    while (close_entered.load() == 0U) {
+        std::this_thread::yield();
+    }
+    closed_pool.close_admission();
+    assert(!closed_pool.spawn([]() { return flowrt::Status::Ok; }));
+    close_release.store(1U);
+    assert(closed_pool.drain() == flowrt::Status::Ok);
+    assert(closed_pool.shutdown() == flowrt::Status::Ok);
+
+    flowrt::WorkerPool empty_pool{4};
+    assert(empty_pool.shutdown() == flowrt::Status::Ok);
+    assert(!empty_pool.spawn([]() { return flowrt::Status::Ok; }));
 
     Sample sample{42U};
     flowrt::Latest<Sample> latest(&sample, true);

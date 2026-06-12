@@ -8,6 +8,7 @@
 #include <exception>
 #include <flowrt/core.hpp>
 #include <functional>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -48,6 +49,13 @@ struct TaskSpec {
 struct PeriodicSpec {
     TaskId task;
     std::chrono::milliseconds period{1};
+};
+
+struct TaskRunResult {
+    TaskId task;
+    Status status{Status::Ok};
+
+    friend constexpr bool operator==(const TaskRunResult &, const TaskRunResult &) = default;
 };
 
 enum class ScheduleEvent {
@@ -112,6 +120,27 @@ class ScheduleWaiter {
     };
 
     std::shared_ptr<State> state_;
+};
+
+class WorkerPool;
+
+class ReadyBatch {
+   public:
+    ReadyBatch() = default;
+
+    explicit ReadyBatch(std::vector<TaskId> tasks) : tasks_(std::move(tasks)) {}
+
+    [[nodiscard]] bool empty() const noexcept { return tasks_.empty(); }
+
+    [[nodiscard]] std::size_t size() const noexcept { return tasks_.size(); }
+
+    [[nodiscard]] const std::vector<TaskId> &tasks() const noexcept { return tasks_; }
+
+    template <typename Fn>
+    std::vector<TaskRunResult> run(WorkerPool &worker_pool, Fn &&fn) &&;
+
+   private:
+    std::vector<TaskId> tasks_;
 };
 
 class DeterministicExecutor {
@@ -192,6 +221,22 @@ class DeterministicExecutor {
         return results;
     }
 
+    [[nodiscard]] ReadyBatch take_ready_batch() {
+        auto tasks = ready_parallel_order();
+        for (const auto task : tasks) {
+            ready_.erase(task);
+            if (const auto it = tasks_.find(task); it != tasks_.end()) {
+                lane_last_dispatched_tick_[it->second.lane] = current_tick_;
+            }
+        }
+        return ReadyBatch{std::move(tasks)};
+    }
+
+    template <typename Fn>
+    std::vector<TaskRunResult> run_ready_parallel(WorkerPool &worker_pool, Fn &&fn) {
+        return take_ready_batch().run(worker_pool, std::forward<Fn>(fn));
+    }
+
     /**
      * @brief 设置当前调度 tick 编号，用于 lane 饥饿检测。
      */
@@ -251,6 +296,34 @@ class DeterministicExecutor {
                     lane_tasks.erase(lane_tasks.begin());
                     has_ready = true;
                 }
+            }
+        }
+        return tasks;
+    }
+
+    [[nodiscard]] std::vector<TaskId> ready_parallel_order() const {
+        std::map<LaneId, std::vector<TaskId>> by_lane;
+        for (const auto task : ready_) {
+            by_lane[tasks_.at(task).lane].push_back(task);
+        }
+        for (auto &[lane, lane_tasks] : by_lane) {
+            (void)lane;
+            std::sort(lane_tasks.begin(), lane_tasks.end(), [this](TaskId left, TaskId right) {
+                const auto &left_spec = tasks_.at(left);
+                const auto &right_spec = tasks_.at(right);
+                if (left_spec.priority != right_spec.priority) {
+                    return left_spec.priority < right_spec.priority;
+                }
+                return left_spec.id < right_spec.id;
+            });
+        }
+
+        std::vector<TaskId> tasks;
+        tasks.reserve(by_lane.size());
+        for (auto &[lane, lane_tasks] : by_lane) {
+            (void)lane;
+            if (!lane_tasks.empty()) {
+                tasks.push_back(lane_tasks.front());
             }
         }
         return tasks;
@@ -320,6 +393,7 @@ class DetachedTask {
 class WorkerPool {
    public:
     using Job = std::function<Status()>;
+    using Completion = std::function<void(Status)>;
 
     explicit WorkerPool(std::size_t worker_threads) : worker_threads_(std::max<std::size_t>(1, worker_threads)) {
         workers_.reserve(worker_threads_);
@@ -343,18 +417,36 @@ class WorkerPool {
         if (!admission_open_) {
             return false;
         }
-        jobs_.push(std::move(job));
+        jobs_.push(QueuedJob{.job = std::move(job)});
         ready_.notify_one();
         return true;
     }
 
-    Status shutdown() {
-        {
-            std::unique_lock lock(mutex_);
-            admission_open_ = false;
-            ready_.notify_all();
-            drained_.wait(lock, [this]() { return jobs_.empty() && active_ == 0U; });
+    bool spawn_with_completion(Job job, Completion completion) {
+        std::lock_guard lock(mutex_);
+        if (!admission_open_) {
+            return false;
         }
+        jobs_.push(QueuedJob{.job = std::move(job), .completion = std::move(completion)});
+        ready_.notify_one();
+        return true;
+    }
+
+    void close_admission() noexcept {
+        std::lock_guard lock(mutex_);
+        admission_open_ = false;
+        ready_.notify_all();
+    }
+
+    Status drain() {
+        std::unique_lock lock(mutex_);
+        drained_.wait(lock, [this]() { return jobs_.empty() && active_ == 0U; });
+        return status_;
+    }
+
+    Status shutdown() {
+        close_admission();
+        (void)drain();
 
         for (auto &worker : workers_) {
             if (worker.joinable()) {
@@ -362,26 +454,41 @@ class WorkerPool {
             }
         }
 
-        std::lock_guard lock(mutex_);
-        return status_;
+        return drain();
     }
 
    private:
+    struct QueuedJob {
+        Job job;
+        Completion completion;
+    };
+
     void worker_loop() {
         while (true) {
-            Job job;
+            QueuedJob queued_job;
             {
                 std::unique_lock lock(mutex_);
                 ready_.wait(lock, [this]() { return !jobs_.empty() || !admission_open_; });
                 if (jobs_.empty() && !admission_open_) {
                     return;
                 }
-                job = std::move(jobs_.front());
+                queued_job = std::move(jobs_.front());
                 jobs_.pop();
                 ++active_;
             }
 
-            const auto status = job();
+            Status status = Status::Error;
+            try {
+                status = queued_job.job();
+            } catch (...) {
+                status = Status::Error;
+            }
+            if (queued_job.completion) {
+                try {
+                    queued_job.completion(status);
+                } catch (...) {
+                }
+            }
 
             std::lock_guard lock(mutex_);
             if (status == Status::Error) {
@@ -401,10 +508,73 @@ class WorkerPool {
     std::condition_variable ready_;
     std::condition_variable drained_;
     bool admission_open_{true};
-    std::queue<Job> jobs_;
+    std::queue<QueuedJob> jobs_;
     std::size_t active_{};
     Status status_{Status::Ok};
     std::vector<std::thread> workers_;
 };
+
+template <typename Fn>
+std::vector<TaskRunResult> ReadyBatch::run(WorkerPool &worker_pool, Fn &&fn) && {
+    if (tasks_.empty()) {
+        return {};
+    }
+
+    struct BatchState {
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::size_t remaining{};
+        std::vector<std::optional<TaskRunResult>> results;
+    };
+
+    auto state = std::make_shared<BatchState>();
+    state->remaining = tasks_.size();
+    state->results.resize(tasks_.size());
+    auto fn_shared = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+
+    for (std::size_t index = 0; index < tasks_.size(); ++index) {
+        const auto task = tasks_[index];
+        auto submitted = worker_pool.spawn_with_completion(
+            [fn_shared, task]() { return std::invoke(*fn_shared, task); },
+            [state, index, task](Status status) {
+                std::lock_guard lock(state->mutex);
+                state->results[index] = TaskRunResult{.task = task, .status = status};
+                if (state->remaining > 0U) {
+                    --state->remaining;
+                }
+                if (state->remaining == 0U) {
+                    state->ready.notify_all();
+                }
+            });
+        if (submitted) {
+            continue;
+        }
+
+        Status status = Status::Error;
+        try {
+            status = std::invoke(*fn_shared, task);
+        } catch (...) {
+            status = Status::Error;
+        }
+        std::lock_guard lock(state->mutex);
+        state->results[index] = TaskRunResult{.task = task, .status = status};
+        if (state->remaining > 0U) {
+            --state->remaining;
+        }
+        if (state->remaining == 0U) {
+            state->ready.notify_all();
+        }
+    }
+
+    std::unique_lock lock(state->mutex);
+    state->ready.wait(lock, [&state]() { return state->remaining == 0U; });
+
+    std::vector<TaskRunResult> results;
+    results.reserve(state->results.size());
+    for (const auto &result : state->results) {
+        results.push_back(*result);
+    }
+    return results;
+}
 
 }  // namespace flowrt

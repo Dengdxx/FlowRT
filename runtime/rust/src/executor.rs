@@ -38,6 +38,12 @@ pub struct PeriodicSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FutureHandle(TaskId);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskRunResult {
+    pub task: TaskId,
+    pub status: Status,
+}
+
 #[derive(Debug, Clone)]
 struct TaskState {
     spec: TaskSpec,
@@ -64,7 +70,34 @@ pub struct DeterministicExecutor {
     lane_last_dispatched_tick: BTreeMap<LaneId, u64>,
 }
 
-type WorkerJob = Box<dyn FnOnce() -> Status + Send + 'static>;
+type WorkerJobFn = Box<dyn FnOnce() -> Status + Send + 'static>;
+type WorkerCompletion = Box<dyn FnOnce(Status) + Send + 'static>;
+
+struct WorkerJob {
+    run: WorkerJobFn,
+    on_complete: Option<WorkerCompletion>,
+}
+
+impl WorkerJob {
+    fn new(run: WorkerJobFn) -> Self {
+        Self {
+            run,
+            on_complete: None,
+        }
+    }
+
+    fn with_completion(run: WorkerJobFn, on_complete: WorkerCompletion) -> Self {
+        Self {
+            run,
+            on_complete: Some(on_complete),
+        }
+    }
+}
+
+struct TaskBatchState {
+    remaining: usize,
+    results: Vec<Option<TaskRunResult>>,
+}
 
 struct WorkerPoolState {
     admission_open: bool,
@@ -88,6 +121,11 @@ pub struct WorkerPool {
     worker_threads: usize,
     inner: Arc<WorkerPoolInner>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyBatch {
+    tasks: Vec<TaskId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,27 +247,52 @@ impl WorkerPool {
         if !state.admission_open {
             return None;
         }
-        state.queue.push_back(Box::new(job));
+        state.queue.push_back(WorkerJob::new(Box::new(job)));
+        self.inner.ready.notify_one();
+        Some(())
+    }
+
+    pub fn close_admission(&self) {
+        let mut state = lock_recover(&self.inner.state);
+        state.admission_open = false;
+        self.inner.ready.notify_all();
+    }
+
+    pub fn drain(&self) -> Status {
+        let mut state = lock_recover(&self.inner.state);
+        while !state.queue.is_empty() || state.active != 0 {
+            state = wait_recover(&self.inner.drained, state);
+        }
+        state.status
+    }
+
+    pub fn spawn_with_completion<F, C>(&self, job: F, on_complete: C) -> Option<()>
+    where
+        F: FnOnce() -> Status + Send + 'static,
+        C: FnOnce(Status) + Send + 'static,
+    {
+        let mut state = lock_recover(&self.inner.state);
+        if !state.admission_open {
+            return None;
+        }
+        state.queue.push_back(WorkerJob::with_completion(
+            Box::new(job),
+            Box::new(on_complete),
+        ));
         self.inner.ready.notify_one();
         Some(())
     }
 
     pub fn shutdown(&self) -> Status {
-        {
-            let mut state = lock_recover(&self.inner.state);
-            state.admission_open = false;
-            self.inner.ready.notify_all();
-            while !state.queue.is_empty() || state.active != 0 {
-                state = wait_recover(&self.inner.drained, state);
-            }
-        }
+        self.close_admission();
+        let _ = self.drain();
 
         let mut workers = lock_recover(&self.workers);
         while let Some(worker) = workers.pop() {
             let _ = worker.join();
         }
 
-        lock_recover(&self.inner.state).status
+        self.drain()
     }
 }
 
@@ -255,8 +318,15 @@ fn worker_loop(inner: Arc<WorkerPoolInner>) {
             }
         };
 
+        let WorkerJob { run, on_complete } = job;
         let status =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or(Status::Error);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or(Status::Error);
+        if let Some(on_complete) = on_complete {
+            let completion_status = status;
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                on_complete(completion_status);
+            }));
+        }
         let mut state = lock_recover(&inner.state);
         if status == Status::Error {
             state.status = Status::Error;
@@ -365,6 +435,26 @@ impl DeterministicExecutor {
         output
     }
 
+    pub fn take_ready_batch(&mut self) -> ReadyBatch {
+        let tasks = self.ready_parallel_order();
+        for task in &tasks {
+            self.ready.remove(task);
+            if let Some(state) = self.tasks.get(task) {
+                self.lane_last_dispatched_tick
+                    .insert(state.spec.lane, self.current_tick);
+            }
+        }
+        ReadyBatch { tasks }
+    }
+
+    pub fn run_ready_parallel(
+        &mut self,
+        worker_pool: &WorkerPool,
+        run: impl Fn(TaskId) -> Status + Send + Sync + 'static,
+    ) -> Vec<TaskRunResult> {
+        self.take_ready_batch().run(worker_pool, run)
+    }
+
     fn ready_order(&self) -> Vec<TaskId> {
         let mut by_lane = BTreeMap::<LaneId, Vec<TaskId>>::new();
         for task in &self.ready {
@@ -393,6 +483,29 @@ impl DeterministicExecutor {
         tasks
     }
 
+    fn ready_parallel_order(&self) -> Vec<TaskId> {
+        let mut by_lane = BTreeMap::<LaneId, Vec<TaskId>>::new();
+        for task in &self.ready {
+            let spec = &self.tasks[task].spec;
+            by_lane.entry(spec.lane).or_default().push(*task);
+        }
+        for lane_tasks in by_lane.values_mut() {
+            lane_tasks.sort_by(|left, right| {
+                let left_spec = &self.tasks[left].spec;
+                let right_spec = &self.tasks[right].spec;
+                left_spec
+                    .priority
+                    .cmp(&right_spec.priority)
+                    .then_with(|| left_spec.id.cmp(&right_spec.id))
+            });
+        }
+
+        by_lane
+            .into_values()
+            .filter_map(|lane_tasks| lane_tasks.into_iter().next())
+            .collect()
+    }
+
     /// 设置当前调度 tick 编号，用于 lane 饥饿检测。
     pub fn set_current_tick(&mut self, tick: u64) {
         self.current_tick = tick;
@@ -411,6 +524,88 @@ impl DeterministicExecutor {
             Some(last) => self.current_tick.saturating_sub(*last),
             None => u64::MAX,
         }
+    }
+}
+
+impl ReadyBatch {
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tasks.len()
+    }
+
+    pub fn tasks(&self) -> &[TaskId] {
+        &self.tasks
+    }
+
+    pub fn run(
+        self,
+        worker_pool: &WorkerPool,
+        run: impl Fn(TaskId) -> Status + Send + Sync + 'static,
+    ) -> Vec<TaskRunResult> {
+        if self.tasks.is_empty() {
+            return Vec::new();
+        }
+
+        let task_count = self.tasks.len();
+        let state = Arc::new((
+            Mutex::new(TaskBatchState {
+                remaining: task_count,
+                results: vec![None; task_count],
+            }),
+            Condvar::new(),
+        ));
+        let run = Arc::new(run);
+        let mut fallback = Vec::new();
+
+        for (index, task) in self.tasks.into_iter().enumerate() {
+            let batch_state = Arc::clone(&state);
+            let run_fn = Arc::clone(&run);
+            let submitted = worker_pool.spawn_with_completion(
+                move || run_fn(task),
+                move |status| {
+                    let (mutex, ready) = &*batch_state;
+                    let mut state = lock_recover(mutex);
+                    state.results[index] = Some(TaskRunResult { task, status });
+                    state.remaining = state.remaining.saturating_sub(1);
+                    if state.remaining == 0 {
+                        ready.notify_all();
+                    }
+                },
+            );
+
+            if submitted.is_none() {
+                fallback.push((index, task));
+            }
+        }
+
+        if !fallback.is_empty() {
+            let (mutex, ready) = &*state;
+            let mut batch_state = lock_recover(mutex);
+            for (index, task) in fallback {
+                let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
+                    .unwrap_or(Status::Error);
+                batch_state.results[index] = Some(TaskRunResult { task, status });
+                batch_state.remaining = batch_state.remaining.saturating_sub(1);
+            }
+            if batch_state.remaining == 0 {
+                ready.notify_all();
+            }
+        }
+
+        let (mutex, ready) = &*state;
+        let mut batch_state = lock_recover(mutex);
+        while batch_state.remaining != 0 {
+            batch_state = wait_recover(ready, batch_state);
+        }
+
+        batch_state
+            .results
+            .iter()
+            .map(|result| result.expect("ready batch result should be recorded"))
+            .collect()
     }
 }
 
@@ -566,6 +761,16 @@ mod tests {
         task::{Context, Poll},
     };
 
+    fn update_max(target: &AtomicUsize, value: usize) {
+        let mut observed = target.load(Ordering::SeqCst);
+        while observed < value {
+            match target.compare_exchange(observed, value, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
     #[test]
     fn serial_lane_runs_one_task_at_a_time_in_priority_order() {
         let mut executor = DeterministicExecutor::new(1);
@@ -673,6 +878,235 @@ mod tests {
         assert!(executor.is_drained());
     }
 
+    #[test]
+    fn parallel_ready_batch_overlaps_across_lanes() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let worker_pool = WorkerPool::new(2);
+        let started = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let results = executor.run_ready_parallel(&worker_pool, {
+            let started = Arc::clone(&started);
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            move |task| {
+                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                update_max(&max_active, current_active);
+                started.fetch_add(1, Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_millis(200);
+                while started.load(Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        return if task == TaskId(1) {
+                            Status::Error
+                        } else {
+                            Status::Retry
+                        };
+                    }
+                    thread::yield_now();
+                }
+                thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, Ordering::SeqCst);
+                Status::Ok
+            }
+        });
+
+        assert_eq!(
+            results,
+            vec![
+                TaskRunResult {
+                    task: TaskId(1),
+                    status: Status::Ok,
+                },
+                TaskRunResult {
+                    task: TaskId(2),
+                    status: Status::Ok,
+                }
+            ]
+        );
+        assert!(max_active.load(Ordering::SeqCst) >= 2);
+        assert_eq!(worker_pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
+    fn parallel_ready_batch_keeps_same_lane_serial() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(1),
+            priority: 1,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let worker_pool = WorkerPool::new(2);
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let executed = Arc::new(Mutex::new(Vec::new()));
+        let run = {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let executed = Arc::clone(&executed);
+            move |task| {
+                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                update_max(&max_active, current_active);
+                thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, Ordering::SeqCst);
+                lock_recover(&executed).push(task);
+                Status::Ok
+            }
+        };
+
+        let first = executor.run_ready_parallel(&worker_pool, run);
+        assert_eq!(
+            first,
+            vec![TaskRunResult {
+                task: TaskId(1),
+                status: Status::Ok,
+            }]
+        );
+        let second = executor.run_ready_parallel(&worker_pool, {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let executed = Arc::clone(&executed);
+            move |task| {
+                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                update_max(&max_active, current_active);
+                thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, Ordering::SeqCst);
+                lock_recover(&executed).push(task);
+                Status::Ok
+            }
+        });
+        assert_eq!(
+            second,
+            vec![TaskRunResult {
+                task: TaskId(2),
+                status: Status::Ok,
+            }]
+        );
+        assert_eq!(*lock_recover(&executed), vec![TaskId(1), TaskId(2)]);
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(worker_pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
+    fn parallel_ready_batch_degrades_to_serial_with_single_worker() {
+        let mut executor = DeterministicExecutor::new(1);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let worker_pool = WorkerPool::new(1);
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let results = executor.run_ready_parallel(&worker_pool, {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            move |task| {
+                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                update_max(&max_active, current_active);
+                thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, Ordering::SeqCst);
+                if task == TaskId(1) {
+                    Status::Ok
+                } else {
+                    Status::Retry
+                }
+            }
+        });
+
+        assert_eq!(
+            results,
+            vec![
+                TaskRunResult {
+                    task: TaskId(1),
+                    status: Status::Ok,
+                },
+                TaskRunResult {
+                    task: TaskId(2),
+                    status: Status::Retry,
+                }
+            ]
+        );
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(worker_pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
+    fn parallel_ready_batch_converts_panic_to_error_and_shutdown_still_drains() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let worker_pool = WorkerPool::new(2);
+        let results = executor.run_ready_parallel(&worker_pool, |task| {
+            if task == TaskId(1) {
+                panic!("parallel task panicked");
+            }
+            Status::Ok
+        });
+
+        assert_eq!(
+            results,
+            vec![
+                TaskRunResult {
+                    task: TaskId(1),
+                    status: Status::Error,
+                },
+                TaskRunResult {
+                    task: TaskId(2),
+                    status: Status::Ok,
+                }
+            ]
+        );
+        assert_eq!(worker_pool.shutdown(), Status::Error);
+    }
+
     struct YieldOnce {
         yielded: bool,
     }
@@ -744,6 +1178,44 @@ mod tests {
         let status = pool.shutdown();
 
         assert_eq!(status, Status::Error);
+    }
+
+    #[test]
+    fn worker_pool_close_admission_rejects_new_jobs_but_drains_inflight() {
+        let pool = WorkerPool::new(2);
+        let release = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        assert!(
+            pool.spawn({
+                let release = Arc::clone(&release);
+                let entered = Arc::clone(&entered);
+                move || {
+                    entered.fetch_add(1, Ordering::SeqCst);
+                    while release.load(Ordering::SeqCst) == 0 {
+                        thread::yield_now();
+                    }
+                    Status::Ok
+                }
+            })
+            .is_some()
+        );
+        while entered.load(Ordering::SeqCst) == 0 {
+            thread::yield_now();
+        }
+
+        pool.close_admission();
+        assert!(pool.spawn(|| Status::Ok).is_none());
+        release.store(1, Ordering::SeqCst);
+
+        assert_eq!(pool.drain(), Status::Ok);
+        assert_eq!(pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
+    fn worker_pool_shutdown_with_empty_queue_returns_ok() {
+        let pool = WorkerPool::new(4);
+        assert_eq!(pool.shutdown(), Status::Ok);
+        assert!(pool.spawn(|| Status::Ok).is_none());
     }
 
     #[test]

@@ -52,6 +52,14 @@ RSDL 的 target platform，避免 arm64 runner 误按示例默认 `linux-amd64` 
 `WireCodec` 的 `cursor` unused warning：生成代码在 encode/decode 末尾断言 cursor
 等于 `WIRE_SIZE`，避免 release smoke 输出噪声。
 
+为后续 runtime shell 真并发 dispatch 做准备，Rust/C++ runtime executor 已补齐共同
+primitive：`DeterministicExecutor` 保留原有串行 `run_ready`，同时新增稳定的
+`ReadyBatch` / `run_ready_parallel` admission 形态，按 ready set 的确定性顺序为每个 lane
+一次只取一个 task，并在 dispatch 前更新 `lane_last_dispatched_tick` 后从 ready set
+移除。`WorkerPool` 两侧也已对齐 `close_admission`、`drain`、panic/exception 聚合为
+`Status::Error`、空队列 shutdown 和多 worker active 计数释放语义；用户组件 API 仍不
+直接暴露这些 executor primitive，后续 generated shell 只需复用该边界。
+
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、
 永不自动清区分，不得自动删除安装前缀、用户 SDK overlay、`.flowrt/toolchains.toml`、

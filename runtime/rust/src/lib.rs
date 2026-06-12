@@ -48,7 +48,7 @@ pub use descriptor::{
 };
 pub use executor::{
     DeterministicExecutor, FutureExecutor, FutureHandle, LaneId, LaneKind, PeriodicSpec,
-    ScheduleEvent, ScheduleWaiter, TaskId, TaskSpec, WorkerPool,
+    ReadyBatch, ScheduleEvent, ScheduleWaiter, TaskId, TaskRunResult, TaskSpec, WorkerPool,
 };
 pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_tail_block};
 #[cfg(feature = "iox2")]
