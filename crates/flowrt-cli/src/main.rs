@@ -31,11 +31,11 @@ use boundary_pub::{boundary_publish, boundary_publish_from_file};
 use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd};
 use introspection::{
-    EchoSelection, echo_channel, echo_channel_follow, echo_channels, echo_channels_follow,
-    live_hz_summary, live_status_summary, load_self_description, operation_cancel, operation_list,
-    operation_status_summary, params_get, params_list, params_set, params_set_from_file,
-    remote_params_get, remote_params_list, remote_params_set, remote_params_set_from_file,
-    self_description_nodes, self_description_summary,
+    EchoFormatOptions, EchoSelection, echo_channel, echo_channel_follow, echo_channels,
+    echo_channels_follow, live_hz_summary, live_status_summary, load_self_description,
+    operation_cancel, operation_list, operation_status_summary, params_get, params_list,
+    params_set, params_set_from_file, remote_params_get, remote_params_list, remote_params_set,
+    remote_params_set_from_file, self_description_nodes, self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use toolchain::{
@@ -49,8 +49,9 @@ use flowrt_selfdesc::SelfDescription;
 #[cfg(test)]
 use introspection::{
     EchoTarget, echo_channel_follow_for_polls, echo_channel_from_image,
-    echo_channel_snapshot_from_image, find_echo_channel, format_hz_summary_from_status_pair,
-    live_hz_summary_for_sockets, live_status_summary_for_sockets, operation_cancel_for_sockets,
+    echo_channel_from_image_with_options, echo_channel_snapshot_from_image, find_echo_channel,
+    format_hz_summary_from_status_pair, live_hz_summary_for_sockets,
+    live_status_summary_for_sockets, operation_cancel_for_sockets,
     operation_status_summary_for_sockets, select_matching_runtime_socket, self_description_hash,
 };
 
@@ -296,6 +297,10 @@ enum Command {
         /// 持续轮询该 channel；按 Ctrl-C 结束。
         #[arg(long)]
         follow: bool,
+
+        /// 完整输出 payload，不对长 sequence 做摘要。
+        #[arg(long)]
+        raw: bool,
 
         /// `--follow` 模式下的轮询间隔，单位毫秒。
         #[arg(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(1..))]
@@ -834,15 +839,18 @@ fn main() -> Result<()> {
             image,
             socket,
             follow,
+            raw,
             interval_ms,
         } => {
             let echo_target = EchoSelection::from_cli(target, channel, image)?;
+            let echo_options = EchoFormatOptions { raw };
             if follow {
                 if echo_target.channels.len() == 1 {
                     echo_channel_follow(
                         &echo_target.to_single_target()?,
                         socket.as_deref(),
                         Duration::from_millis(interval_ms),
+                        echo_options,
                         &mut io::stdout(),
                     )?;
                 } else {
@@ -850,6 +858,7 @@ fn main() -> Result<()> {
                         &echo_target,
                         socket.as_deref(),
                         Duration::from_millis(interval_ms),
+                        echo_options,
                         &mut io::stdout(),
                     )?;
                 }
@@ -857,10 +866,17 @@ fn main() -> Result<()> {
                 if echo_target.channels.len() == 1 {
                     println!(
                         "{}",
-                        echo_channel(&echo_target.to_single_target()?, socket.as_deref())?
+                        echo_channel(
+                            &echo_target.to_single_target()?,
+                            socket.as_deref(),
+                            echo_options
+                        )?
                     );
                 } else {
-                    println!("{}", echo_channels(&echo_target, socket.as_deref())?);
+                    println!(
+                        "{}",
+                        echo_channels(&echo_target, socket.as_deref(), echo_options)?
+                    );
                 }
             }
         }

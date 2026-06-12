@@ -1,5 +1,5 @@
 use super::*;
-use crate::introspection::select_echo_socket;
+use crate::introspection::{EchoFormatOptions, select_echo_socket};
 
 static XDG_RUNTIME_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1636,6 +1636,185 @@ fn echo_formats_variable_frame_fields_from_self_description_layout() {
 }
 
 #[test]
+fn echo_summarizes_long_numeric_sequence_by_default_and_raw_keeps_values() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.scan",
+      "to": "sink.scan",
+      "message_type": "Scan"
+    }]
+  }],
+  "message_abi": [],
+  "message_frames": [{
+    "type_name": "Scan",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 8,
+    "max_size_bytes": null,
+    "variable": true,
+    "fields": [{
+      "name": "ranges",
+      "type": "sequence<f32>",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 8,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-sequence-summary");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 901,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&68u32.to_le_bytes());
+    for value in 0..17 {
+        payload.extend_from_slice(&(value as f32).to_le_bytes());
+    }
+
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes("source.scan_to_sink.scan", "Scan", payload, Some(123));
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let summary = echo_channel_from_image(&selfdesc, "source.scan", Some(&socket)).unwrap();
+    assert!(summary.contains(
+        "ranges=sequence_summary(count=17,min=0.0,max=16.0,mean=8.0,first=0.0,last=16.0)"
+    ));
+    assert!(!summary.contains("ranges=[0.0,1.0"));
+
+    let raw = echo_channel_from_image_with_options(
+        &selfdesc,
+        "source.scan",
+        Some(&socket),
+        EchoFormatOptions { raw: true },
+    )
+    .unwrap();
+    assert!(raw.contains("ranges=[0.0,1.0"));
+    assert!(raw.contains(",16.0]"));
+    assert!(!raw.contains("sequence_summary"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn echo_multiple_channels_keep_prefix_when_sequence_is_summarized() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.a",
+      "to": "sink.a",
+      "message_type": "Scan"
+    }, {
+      "from": "source.b",
+      "to": "sink.b",
+      "message_type": "Scan"
+    }]
+  }],
+  "message_abi": [],
+  "message_frames": [{
+    "type_name": "Scan",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 8,
+    "max_size_bytes": null,
+    "variable": true,
+    "fields": [{
+      "name": "ranges",
+      "type": "sequence<u32>",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 8,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-sequence-summary-multi");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 902,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&68u32.to_le_bytes());
+    for value in 0..17 {
+        payload.extend_from_slice(&(value as u32).to_le_bytes());
+    }
+
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes("source.a_to_sink.a", "Scan", payload.clone(), Some(10));
+    state.record_channel_publish_bytes("source.b_to_sink.b", "Scan", payload, Some(20));
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channels(
+        &EchoSelection {
+            image: Some(selfdesc.clone()),
+            channels: vec!["source.a".to_string(), "source.b".to_string()],
+        },
+        Some(&socket),
+        EchoFormatOptions::default(),
+    )
+    .unwrap();
+
+    let lines = output.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].starts_with("channel=source.a_to_sink.a "));
+    assert!(lines[0].contains("ranges=sequence_summary(count=17"));
+    assert!(lines[1].starts_with("channel=source.b_to_sink.b "));
+    assert!(lines[1].contains("ranges=sequence_summary(count=17"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_online_loads_self_description_and_enables_probe() {
     let source = r#"
 {
@@ -1726,6 +1905,7 @@ fn echo_online_loads_self_description_and_enables_probe() {
             channel: "source.count".to_string(),
         },
         Some(&socket),
+        EchoFormatOptions::default(),
     )
     .unwrap();
     publisher.join().unwrap();
@@ -1923,6 +2103,7 @@ fn echo_multiple_channels_from_image_prefixes_each_line() {
             channels: vec!["source.a".to_string(), "source.b".to_string()],
         },
         Some(&socket),
+        EchoFormatOptions::default(),
     )
     .unwrap();
 
@@ -1995,6 +2176,7 @@ fn echo_follow_outputs_changed_snapshots_from_fake_status_server() {
         },
         Some(&socket),
         std::time::Duration::from_millis(0),
+        EchoFormatOptions::default(),
         1,
         &mut output,
     )
@@ -2012,6 +2194,7 @@ fn echo_follow_outputs_changed_snapshots_from_fake_status_server() {
         },
         Some(&socket),
         std::time::Duration::from_millis(0),
+        EchoFormatOptions::default(),
         2,
         &mut output,
     )

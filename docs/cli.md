@@ -23,8 +23,8 @@ flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --r
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
 flowrt list <path/to/generated-app-or-selfdesc.json>
 flowrt nodes <path/to/generated-app-or-selfdesc.json>
-flowrt echo <channel> [<channel> ...] [--socket <path>] [--image <path/to/generated-app-or-selfdesc.json>] [--follow] [--interval-ms <ms>]
-flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>] [--follow] [--interval-ms <ms>]
+flowrt echo <channel> [<channel> ...] [--socket <path>] [--image <path/to/generated-app-or-selfdesc.json>] [--follow] [--interval-ms <ms>] [--raw]
+flowrt echo <path/to/generated-app-or-selfdesc.json> <channel> [--socket <path>] [--follow] [--interval-ms <ms>] [--raw]
 flowrt pub <boundary-input> --json <json> [--image <path/to/generated-app-or-selfdesc.json>] [--socket <path>] [--published-at-ms <ms>]
 flowrt pub <boundary-input> --file <path/to/input.jsonl|input.json> [--freq <hz>] [--image <path/to/generated-app-or-selfdesc.json>] [--socket <path>] [--published-at-ms <ms>]
 flowrt params list --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
@@ -702,6 +702,7 @@ executor process=main runtime=rust component=executor kind=native
 flowrt echo source.imu
 flowrt echo source.imu_to_sink.imu --socket /run/user/1000/flowrt/12345.sock
 flowrt echo source.imu --image flowrt/selfdesc/selfdesc.json --follow --interval-ms 100
+flowrt echo source.scan --image flowrt/selfdesc/selfdesc.json --raw
 flowrt echo path/to/generated-app source.imu
 ```
 
@@ -720,7 +721,7 @@ JSON hash 匹配的唯一进程。若多个进程匹配，需要显式传入 `--
 channel=source.imu_to_sink.imu type=Imu abi_size=24 published_count=1 published_at_ms=42 payload_len=24 fields={timestamp=1,ax=0.1,ay=0.0,az=9.81} raw=...
 ```
 
-fixed-size Message ABI 会按 self-description 中的 field offset 和类型格式化整数、浮点、布尔和固定数组。variable frame 会按固定 header + tail layout 格式化 `bytes`、`string` 和 `sequence<T>`；runtime socket 仍只暴露 raw/canonical bytes，字段 schema 来自 self-description。
+fixed-size Message ABI 会按 self-description 中的 field offset 和类型格式化整数、浮点、布尔和固定数组。variable frame 会按固定 header + tail layout 格式化 `bytes`、`string` 和 `sequence<T>`；runtime socket 仍只暴露 raw/canonical bytes，字段 schema 来自 self-description。`sequence<T>` 长度不超过 16 时默认完整输出；超过 16 时默认输出 `sequence_summary(...)`，numeric sequence 包含 `count`、`min`、`max`、`mean`、`first` 和 `last`，`sequence<fixed struct>` 包含 `count`、`first` 和 `last`。需要完整数组时传入 `--raw`。
 
 标准 FrameDescriptor 是 fixed-size ABI 的特殊展示路径。消息 layout 如果是 64 字节、
 字段为 `resource_id_hash`、`slot`、`generation`、`size_bytes`、

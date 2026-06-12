@@ -438,6 +438,11 @@ pub(crate) struct EchoSelection {
     pub(crate) channels: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct EchoFormatOptions {
+    pub(crate) raw: bool,
+}
+
 impl EchoSelection {
     pub(crate) fn from_cli(
         target: String,
@@ -496,7 +501,11 @@ fn looks_like_self_description_path(value: &str) -> bool {
     value.ends_with(".json") || value.contains('/') || value.contains('\\')
 }
 
-pub(crate) fn echo_channel(target: &EchoTarget, socket: Option<&Path>) -> Result<String> {
+pub(crate) fn echo_channel(
+    target: &EchoTarget,
+    socket: Option<&Path>,
+    options: EchoFormatOptions,
+) -> Result<String> {
     let (self_description, self_description_hash, socket) = load_echo_context(target, socket)?;
     let channel_spec = find_echo_channel(&self_description, &target.channel)?;
     let _observe = open_echo_observer(&socket, &channel_spec, &self_description_hash)?;
@@ -508,10 +517,14 @@ pub(crate) fn echo_channel(target: &EchoTarget, socket: Option<&Path>) -> Result
         Duration::from_millis(50),
     )?;
 
-    format_echo_snapshot(&channel_spec, &snapshot)
+    format_echo_snapshot(&channel_spec, &snapshot, options)
 }
 
-pub(crate) fn echo_channels(selection: &EchoSelection, socket: Option<&Path>) -> Result<String> {
+pub(crate) fn echo_channels(
+    selection: &EchoSelection,
+    socket: Option<&Path>,
+    options: EchoFormatOptions,
+) -> Result<String> {
     let (self_description, self_description_hash, socket) =
         load_echo_selection_context(selection, socket)?;
     let channel_specs = echo_channel_specs(&self_description, &selection.channels)?;
@@ -528,7 +541,7 @@ pub(crate) fn echo_channels(selection: &EchoSelection, socket: Option<&Path>) ->
         lines.push(format!(
             "channel={} {}",
             channel_spec.name,
-            format_echo_snapshot(channel_spec, &snapshot)?
+            format_echo_snapshot(channel_spec, &snapshot, options)?
         ));
     }
     Ok(lines.join("\n"))
@@ -540,12 +553,23 @@ pub(crate) fn echo_channel_from_image(
     channel: &str,
     socket: Option<&Path>,
 ) -> Result<String> {
+    echo_channel_from_image_with_options(image, channel, socket, EchoFormatOptions::default())
+}
+
+#[cfg(test)]
+pub(crate) fn echo_channel_from_image_with_options(
+    image: &Path,
+    channel: &str,
+    socket: Option<&Path>,
+    options: EchoFormatOptions,
+) -> Result<String> {
     echo_channel(
         &EchoTarget {
             image: Some(image.to_path_buf()),
             channel: channel.to_string(),
         },
         socket,
+        options,
     )
 }
 
@@ -559,7 +583,7 @@ pub(crate) fn echo_channel_snapshot_from_image(
     let channel_spec = find_echo_channel(&self_description, channel)?;
     let socket = select_echo_socket(socket, &self_description_hash)?;
     let snapshot = request_echo_snapshot(&socket, &channel_spec, &self_description_hash)?;
-    format_echo_snapshot(&channel_spec, &snapshot)
+    format_echo_snapshot(&channel_spec, &snapshot, EchoFormatOptions::default())
 }
 
 fn load_echo_context(
@@ -704,15 +728,17 @@ pub(crate) fn echo_channel_follow(
     target: &EchoTarget,
     socket: Option<&Path>,
     interval: Duration,
+    options: EchoFormatOptions,
     output: &mut dyn Write,
 ) -> Result<()> {
-    echo_channel_follow_for_polls(target, socket, interval, usize::MAX, output)
+    echo_channel_follow_for_polls(target, socket, interval, options, usize::MAX, output)
 }
 
 pub(crate) fn echo_channel_follow_for_polls(
     target: &EchoTarget,
     socket: Option<&Path>,
     interval: Duration,
+    options: EchoFormatOptions,
     max_polls: usize,
     output: &mut dyn Write,
 ) -> Result<()> {
@@ -728,7 +754,7 @@ pub(crate) fn echo_channel_follow_for_polls(
             writeln!(
                 output,
                 "{}",
-                format_echo_snapshot(&channel_spec, &snapshot)?
+                format_echo_snapshot(&channel_spec, &snapshot, options)?
             )
             .context("failed to write echo output")?;
             output.flush().context("failed to flush echo output")?;
@@ -746,15 +772,17 @@ pub(crate) fn echo_channels_follow(
     selection: &EchoSelection,
     socket: Option<&Path>,
     interval: Duration,
+    options: EchoFormatOptions,
     output: &mut dyn Write,
 ) -> Result<()> {
-    echo_channels_follow_for_polls(selection, socket, interval, usize::MAX, output)
+    echo_channels_follow_for_polls(selection, socket, interval, options, usize::MAX, output)
 }
 
 pub(crate) fn echo_channels_follow_for_polls(
     selection: &EchoSelection,
     socket: Option<&Path>,
     interval: Duration,
+    options: EchoFormatOptions,
     max_polls: usize,
     output: &mut dyn Write,
 ) -> Result<()> {
@@ -776,7 +804,7 @@ pub(crate) fn echo_channels_follow_for_polls(
                     output,
                     "channel={} {}",
                     channel_spec.name,
-                    format_echo_snapshot(channel_spec, &snapshot)?
+                    format_echo_snapshot(channel_spec, &snapshot, options)?
                 )
                 .context("failed to write echo output")?;
                 output.flush().context("failed to flush echo output")?;
@@ -1197,6 +1225,7 @@ pub(crate) fn select_matching_runtime_socket(
 fn format_echo_snapshot(
     channel: &EchoChannelSpec,
     snapshot: &flowrt::introspection::IntrospectionChannelSnapshot,
+    options: EchoFormatOptions,
 ) -> Result<String> {
     let published_at_ms = snapshot
         .published_at_ms
@@ -1282,7 +1311,12 @@ fn format_echo_snapshot(
                     );
                 }
             }
-            let fields = flowrt_selfdesc::format_frame_fields(fields, *header_size_bytes, payload)?;
+            let fields = flowrt_selfdesc::format_frame_fields_with_options(
+                fields,
+                *header_size_bytes,
+                payload,
+                flowrt_selfdesc::FrameFormatOptions { raw: options.raw },
+            )?;
             if !fields.is_empty() {
                 return Ok(format!(
                     "channel={} type={} {} published_count={} published_at_ms={} payload_len={} fields={{{}}} raw={}",

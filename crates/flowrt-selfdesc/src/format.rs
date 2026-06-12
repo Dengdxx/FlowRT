@@ -7,6 +7,21 @@ use thiserror::Error;
 
 use crate::schema::{SelfDescriptionFieldAbi, SelfDescriptionFrameField};
 
+const DEFAULT_SEQUENCE_SUMMARY_THRESHOLD: usize = 16;
+
+/// canonical frame 字段格式化选项。
+#[derive(Debug, Clone, Copy)]
+pub struct FrameFormatOptions {
+    /// 为 true 时完整输出 sequence/bytes 等字段，不做摘要。
+    pub raw: bool,
+}
+
+impl Default for FrameFormatOptions {
+    fn default() -> Self {
+        Self { raw: false }
+    }
+}
+
 /// 格式化错误。
 #[derive(Debug, Error)]
 pub enum FormatError {
@@ -141,6 +156,21 @@ pub fn format_frame_fields(
     header_size_bytes: usize,
     payload: &[u8],
 ) -> Result<String, FormatError> {
+    format_frame_fields_with_options(
+        fields,
+        header_size_bytes,
+        payload,
+        FrameFormatOptions::default(),
+    )
+}
+
+/// 按选项格式化 variable frame 字段，返回 `name=value,...` 字符串。
+pub fn format_frame_fields_with_options(
+    fields: &[SelfDescriptionFrameField],
+    header_size_bytes: usize,
+    payload: &[u8],
+    options: FrameFormatOptions,
+) -> Result<String, FormatError> {
     if payload.len() < header_size_bytes {
         return Err(FormatError::HeaderOverflow {
             header_size: header_size_bytes,
@@ -161,7 +191,7 @@ pub fn format_frame_fields(
             });
         }
         let bytes = &header[start..end];
-        let value = format_frame_field_value(field, bytes, tail)?;
+        let value = format_frame_field_value(field, bytes, tail, options)?;
         formatted.push(format!("{}={value}", field.name));
     }
     Ok(formatted.join(","))
@@ -171,6 +201,7 @@ fn format_frame_field_value(
     field: &SelfDescriptionFrameField,
     header_bytes: &[u8],
     tail: &[u8],
+    options: FrameFormatOptions,
 ) -> Result<String, FormatError> {
     let ty = field.ty.trim();
     if ty == "string" {
@@ -198,14 +229,92 @@ fn format_frame_field_value(
                 element_size,
             });
         }
-        let element_count = block.len() / element_size;
-        let mut values = Vec::with_capacity(element_count);
-        for chunk in block.chunks_exact(element_size) {
-            values.push(format_fixed_abi_value(element_ty, chunk)?);
-        }
-        return Ok(format!("[{}]", values.join(",")));
+        return format_sequence_value(element_ty, block, element_size, options);
     }
     format_fixed_abi_value(ty, header_bytes)
+}
+
+fn format_sequence_value(
+    element_ty: &str,
+    block: &[u8],
+    element_size: usize,
+    options: FrameFormatOptions,
+) -> Result<String, FormatError> {
+    let element_count = block.len() / element_size;
+    if !options.raw && element_count > DEFAULT_SEQUENCE_SUMMARY_THRESHOLD {
+        if let Some(summary) = summarize_numeric_sequence(element_ty, block, element_size)? {
+            return Ok(summary);
+        }
+        let Some(first) = block.chunks_exact(element_size).next() else {
+            return Ok("sequence_summary(count=0,first=none,last=none)".to_string());
+        };
+        let last_start = block.len().saturating_sub(element_size);
+        let last = &block[last_start..last_start + element_size];
+        return Ok(format!(
+            "sequence_summary(count={element_count},first={},last={})",
+            format_fixed_abi_value(element_ty, first)?,
+            format_fixed_abi_value(element_ty, last)?
+        ));
+    }
+
+    let mut values = Vec::with_capacity(element_count);
+    for chunk in block.chunks_exact(element_size) {
+        values.push(format_fixed_abi_value(element_ty, chunk)?);
+    }
+    Ok(format!("[{}]", values.join(",")))
+}
+
+fn summarize_numeric_sequence(
+    element_ty: &str,
+    block: &[u8],
+    element_size: usize,
+) -> Result<Option<String>, FormatError> {
+    if !numeric_sequence_supported(element_ty) {
+        return Ok(None);
+    }
+    let mut count = 0usize;
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut sum = 0f64;
+    let mut first = None;
+    let mut last = None;
+    for chunk in block.chunks_exact(element_size) {
+        let value = numeric_value_as_f64(element_ty, chunk)?;
+        first.get_or_insert(value);
+        last = Some(value);
+        min = min.min(value);
+        max = max.max(value);
+        sum += value;
+        count += 1;
+    }
+    if count == 0 {
+        return Ok(Some(
+            "sequence_summary(count=0,min=none,max=none,mean=none,first=none,last=none)"
+                .to_string(),
+        ));
+    }
+    let mean = sum / count as f64;
+    Ok(Some(format!(
+        "sequence_summary(count={count},min={},max={},mean={},first={},last={})",
+        format_float(min),
+        format_float(max),
+        format_float(mean),
+        format_float(first.unwrap_or_default()),
+        format_float(last.unwrap_or_default())
+    )))
+}
+
+fn numeric_sequence_supported(element_ty: &str) -> bool {
+    matches!(
+        element_ty.trim(),
+        "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64" | "f32" | "f64"
+    )
+}
+
+fn numeric_value_as_f64(ty: &str, bytes: &[u8]) -> Result<f64, FormatError> {
+    let text = format_fixed_abi_value(ty, bytes)?;
+    text.parse::<f64>()
+        .map_err(|_| FormatError::UnsupportedSequenceElement { ty: ty.to_string() })
 }
 
 fn frame_tail_block<'a>(
@@ -495,6 +604,70 @@ mod tests {
         payload.extend_from_slice(&200u32.to_le_bytes());
         let result = format_frame_fields(&fields, 8, &payload).unwrap();
         assert_eq!(result, "vals=[100,200]");
+    }
+
+    #[test]
+    fn summarize_long_numeric_sequence_field_by_default() {
+        let fields = [frame_field("ranges", "sequence<f32>", 0, 8, Some(256))];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&68u32.to_le_bytes());
+        for value in 0..17 {
+            payload.extend_from_slice(&(value as f32).to_le_bytes());
+        }
+
+        let result =
+            format_frame_fields_with_options(&fields, 8, &payload, FrameFormatOptions::default())
+                .unwrap();
+
+        assert_eq!(
+            result,
+            "ranges=sequence_summary(count=17,min=0.0,max=16.0,mean=8.0,first=0.0,last=16.0)"
+        );
+    }
+
+    #[test]
+    fn raw_option_keeps_long_sequence_values() {
+        let fields = [frame_field("ranges", "sequence<u32>", 0, 8, Some(256))];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&68u32.to_le_bytes());
+        for value in 0..17 {
+            payload.extend_from_slice(&(value as u32).to_le_bytes());
+        }
+
+        let result = format_frame_fields_with_options(
+            &fields,
+            8,
+            &payload,
+            FrameFormatOptions { raw: true },
+        )
+        .unwrap();
+
+        assert!(result.contains("ranges=[0,1,2"));
+        assert!(result.contains(",16]"));
+        assert!(!result.contains("sequence_summary"));
+    }
+
+    #[test]
+    fn summarize_long_struct_sequence_with_first_and_last() {
+        let fields = [frame_field("points", "sequence<[u32;2]>", 0, 8, Some(256))];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&136u32.to_le_bytes());
+        for value in 0..17 {
+            payload.extend_from_slice(&(value as u32).to_le_bytes());
+            payload.extend_from_slice(&((value + 100) as u32).to_le_bytes());
+        }
+
+        let result =
+            format_frame_fields_with_options(&fields, 8, &payload, FrameFormatOptions::default())
+                .unwrap();
+
+        assert_eq!(
+            result,
+            "points=sequence_summary(count=17,first=[0,100],last=[16,116])"
+        );
     }
 
     #[test]

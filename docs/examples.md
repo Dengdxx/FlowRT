@@ -591,6 +591,10 @@ flowrt echo summary_out --image examples/variable_frame_island_demo/flowrt/selfd
 `summary_out` 是 fixed ABI 摘要，便于稳定断言 `seq`、`count` 和 `mean_milli`。该示例
 只展示可拆卸 island 脚手架，不要求 ROS2、硬件或外部私有库。
 
+如果直接观察包含长 `sequence<T>` 的 boundary output 或 channel，`flowrt echo` 默认会
+把超过 16 个元素的 sequence 压缩成 `sequence_summary(...)`。需要完整数组时传入
+`--raw`，该选项只影响 CLI 展示，不改变 runtime payload 或 record 文件。
+
 迁移验证时可以把旧系统的 live topic、bag 片段或测试 fixture 先转换成同形状 JSONL，
 再复用该示例路径：
 

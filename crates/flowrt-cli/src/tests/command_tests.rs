@@ -240,6 +240,7 @@ fn cli_parses_echo_command_with_optional_socket() {
         channel,
         socket,
         follow,
+        raw,
         interval_ms,
     } = cli.command
     else {
@@ -251,6 +252,7 @@ fn cli_parses_echo_command_with_optional_socket() {
     assert_eq!(channel, vec!["source.imu_to_sink.imu".to_string()]);
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
     assert!(!follow);
+    assert!(!raw);
     assert_eq!(interval_ms, 250);
 }
 
@@ -507,6 +509,24 @@ fn cli_parses_echo_follow_options() {
 
     assert!(follow);
     assert_eq!(interval_ms, 10);
+}
+
+#[test]
+fn cli_parses_echo_raw_option() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "echo",
+        "flowrt/selfdesc/selfdesc.json",
+        "source.scan",
+        "--raw",
+    ])
+    .unwrap();
+
+    let Command::Echo { raw, .. } = cli.command else {
+        panic!("echo --raw should parse into Command::Echo")
+    };
+
+    assert!(raw);
 }
 
 #[test]
