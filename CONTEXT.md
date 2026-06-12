@@ -5,14 +5,18 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.9.2`。RSDL / Contract IR / validator 现已承载 v0.10.0 并发
+当前 workspace 版本为 `0.10.0`。RSDL / Contract IR / validator 现已承载 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized
 `ComponentIr` / `TaskIr` 会同时保留 resolved 值和用户显式来源。validator 当前采用
 保守规则：task 声明 `parallel` 只有在所属 component 也声明 `parallel` 时才合法，task
 不会隐式提升 component；`worker_threads = 1` 仍允许 parallel 声明，只是运行时行为
-退化为串行。self-description / launch manifest 的 task concurrency 元数据尚未在该
-子任务中落盘，后续需要在允许范围更大的 T03/T05 子任务继续补齐。`v0.9.0` 是 Island
+退化为串行。self-description / launch manifest 现已落盘 task `concurrency`、scheduler
+task `lane` / `concurrency` 元数据；Rust/C++ generated runtime shell 已从串行
+`scheduler.run_ready(...)` 主路径切到 `ReadyBatch` / `WorkerPool` admission。默认
+`exclusive` component 继续保护同一用户对象串行访问；显式 `parallel` component 才生成
+`Send + Sync` 用户 trait / interface，并按显式 lane 让不同 ready task 真正跨 worker
+并行执行。`v0.9.0` 是 Island
 Mode / Boundary Endpoint 版本，
 用于支持单功能单位开发、ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`；
 `v0.9.1` 在此基础上补齐迁移验证常用工具：canonical frame JSON 注入、`pub --file
