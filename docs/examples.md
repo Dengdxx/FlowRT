@@ -591,6 +591,23 @@ flowrt echo summary_out --image examples/variable_frame_island_demo/flowrt/selfd
 `summary_out` 是 fixed ABI 摘要，便于稳定断言 `seq`、`count` 和 `mean_milli`。该示例
 只展示可拆卸 island 脚手架，不要求 ROS2、硬件或外部私有库。
 
+迁移验证时可以把旧系统的 live topic、bag 片段或测试 fixture 先转换成同形状 JSONL，
+再复用该示例路径：
+
+```bash
+flowrt params set --file params.json --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
+flowrt pub scan_in \
+  --file samples.jsonl \
+  --freq 100 \
+  --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
+flowrt echo summary_out --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
+flowrt record --output scan-compare.mcap --duration 2s --channel summary_out
+```
+
+FlowRT 不在该路径中原生读取 rosbag，也不提供 ROS2 drop-in 兼容层；边界输入输出是
+可拆的行为测试脚手架。验证完成后应删除 boundary endpoint，改为普通
+`[[bind.dataflow]]` 并切回 `strict`。
+
 ## `service_demo`
 
 入口文件：

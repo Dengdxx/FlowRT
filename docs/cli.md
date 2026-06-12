@@ -732,6 +732,7 @@ flowrt pub sample_in --json '{"value": 42}' --image flowrt/selfdesc/selfdesc.jso
 flowrt pub sample_in --json '{"value": 42}' --socket /run/user/1000/flowrt/12345.sock --published-at-ms 1000
 flowrt pub sample_in --json '{"seq": 7, "value": 21}' --image examples/island_demo/flowrt/selfdesc/selfdesc.json
 flowrt pub sample_in --file samples.jsonl --freq 200 --image flowrt/selfdesc/selfdesc.json
+flowrt pub scan_in --file samples.jsonl --freq 100 --image flowrt/selfdesc/selfdesc.json
 ```
 
 `pub` 是 island 开发、单功能单位测试和迁移对比工具，只能写 self-description 中声明为
@@ -767,6 +768,17 @@ examples/island_demo/flowrt/selfdesc/selfdesc.json` 观察 `ProcessedSample` 输
 self-description 下有多个 live socket，可从 `flowrt status --live-only` 选择目标 process
 的 `socket=` 并显式传给 `--socket`。
 
+迁移旧系统时，`pub` 不直接读取 ROS2 bag，也不把 ROS2 message schema 当作 FlowRT
+核心语义。推荐在 FlowRT 外部把 rosbag、live ROS2 topic 或已有测试输入转换成 RSDL
+字段自然 JSONL，再用 `--file` 注入 typed boundary input；输出通过 `echo`、`record`
+或测试 sink 捕获后和旧系统 oracle 对比。对多个 boundary output 做人工检查时，可以
+用多 channel echo：
+
+```bash
+flowrt echo cmd_out diagnostics --image flowrt/selfdesc/selfdesc.json
+flowrt record --output compare.mcap --duration 2s --channel cmd_out
+```
+
 ## `params`
 
 ```bash
@@ -776,6 +788,7 @@ flowrt params get --image path/to/generated-app controller.kp
 flowrt params set --image path/to/generated-app controller.kp 2.5
 flowrt params set --image path/to/generated-app controller.mode '"safe"'
 flowrt params set --image path/to/generated-app --file params.json
+flowrt params set --file params.json --image path/to/generated-app
 
 # 跨机 zenoh control-plane 路径
 flowrt params list --image path/to/generated-app --remote
@@ -1020,6 +1033,15 @@ type = "ControlCommand"
 ```
 
 boundary endpoint 绑定真实 component port，不是传输后端、ROS2 topic 或 transport API。开发或迁移完成后，应删除 boundary endpoint，改用普通 `[[bind.dataflow]]`，并把 profile 切回 `strict`。
+
+典型验证顺序是：先写 `mode = "island"` 与 typed `boundary.input` /
+`boundary.output`；把外部输入转换为 JSONL 或 JSON array；用
+`flowrt params set --file params.json --image ...` 应用迁移测试参数；用
+`flowrt pub <boundary> --file samples.jsonl --freq <hz> --image ...` 注入输入；用
+`flowrt echo <out_a> <out_b> --image ...` 或
+`flowrt record --channel <boundary-output>` 捕获输出。行为对比通过后，删除 boundary
+endpoint 并切回 `strict`。如果仍有缺失 active input，validator 会继续报错，而不是
+把残缺生产 graph 当 warning 放行。
 
 ## RSDL task 写法
 

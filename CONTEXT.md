@@ -20,16 +20,22 @@ revision、stale policy 和 scheduler waiter 唤醒；boundary output 使用 sin
 回收临时观测。Rust/C++ generated runtime shell 已接入 boundary primitive：island
 boundary input 会参与 `on_message` revision/wake 和 task 输入读取，boundary output 会在
 用户输出后发布到显式 sink，strict 生成物不携带 boundary 字段。CLI `flowrt pub` 已接入
-fixed Message ABI 和 canonical frame JSON 注入，只允许写 boundary input；显式
-`empty = true` 空消息使用零长度 wire payload，可通过 `{}` 或 `null` 注入；`flowrt echo`、
-`flowrt status` 和 `flowrt record` 已能围绕 boundary output 做观测/录制；`flowrt bundle` / `flowrt deploy`
+fixed Message ABI、canonical frame JSON、JSONL/JSON array 文件流和 wall-clock `--freq`
+注入，只允许写 boundary input；显式 `empty = true` 空消息使用零长度 wire payload，
+可通过 `{}` 或 `null` 注入；`flowrt params set --file` 可用于迁移测试参数批量导入；
+`flowrt echo` 支持单 channel 旧格式和多 channel `channel=<name>` 前缀输出；`flowrt status`
+和 `flowrt record` 已能围绕 boundary output 做观测/录制；`flowrt bundle` / `flowrt deploy`
 默认拒绝 island 脚手架产物，只有显式 `--allow-island` 才允许。ROS2/zenoh boundary
 adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instance.port`，也可以
 在 island profile 下引用 `boundary.input` / `boundary.output` 名称；Contract IR 会保留
 可校验的 boundary endpoint 引用，generated shell 通过 zenoh-only bridge key 把 ROS2
 输入注入 boundary input，并把 boundary output 发布给 ROS2 adapter。`examples/island_demo`
 已提供无硬件依赖的最小闭环：`flowrt pub` 向 `sample_in` 注入 typed JSON，组件处理后
-通过 `result_out` 供 `flowrt echo` / `flowrt record` 观察；CI 已加入 amd64/arm64 的
+通过 `result_out` 供 `flowrt echo` / `flowrt record` 观察；`examples/variable_frame_island_demo`
+展示 `string` / `sequence<f32>` boundary input、`pub --file --freq` JSONL 注入和 fixed
+summary 输出。迁移旧系统或普通单功能单位开发时，外部 live topic、bag 片段或测试
+fixture 应先在 FlowRT 外部转换成 RSDL 字段自然 JSONL 或 JSON array，再用 `flowrt pub`
+注入；FlowRT 不做 ROS2 drop-in，也不在 core 中原生读取 rosbag。CI 已加入 amd64/arm64 的
 `v0.9.0 Island Demo Smoke`，smoke 脚本会按 CI runner 架构只改写临时 demo RSDL 的
 target platform，避免 arm64 runner 误按示例默认 `linux-amd64` target 构建；发布就绪
 脚本也会检查该 focused gate。最终集成 hardening 已收掉 generated Rust fixed

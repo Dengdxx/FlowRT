@@ -108,10 +108,12 @@ port = "processor.result"
 type = "ProcessedSample"
 ```
 
-运行时可以用 `flowrt pub sample_in --json ...` 注入 boundary input，用 `flowrt echo
-result_out` 或 `flowrt record --channel result_out` 观察输出。boundary endpoint 不是
-backend，也不是 ROS2 topic；完成测试后应删除 boundary endpoint，改回普通
-`[[bind.dataflow]]`，并把 profile 切回 `strict`。
+运行时可以用 `flowrt pub sample_in --json ...` 注入 boundary input，也可以把外部
+样本转换成 JSONL 后用 `flowrt pub sample_in --file samples.jsonl --freq <hz>` 按
+wall-clock 节奏喂入；输出用 `flowrt echo result_out` 或
+`flowrt record --channel result_out` 捕获。boundary endpoint 不是 backend，也不是
+ROS2 topic；FlowRT 不做 ROS2 drop-in，也不直接读取 rosbag。完成测试后应删除
+boundary endpoint，改回普通 `[[bind.dataflow]]`，并把 profile 切回 `strict`。
 
 ## 应用目录
 

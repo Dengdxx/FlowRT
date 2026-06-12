@@ -34,6 +34,8 @@ description: >
   ROS2 topic、SDK handle 或临时调试口。
 - 先定义行为 oracle：rosbag、live ROS2 topic、固定 JSON 样本、MCAP 或测试 fixture。
   没有对比输入输出，不得宣布迁移完成。
+- `v0.9.1` 不原生读取 ROS2 bag；bag、live topic 或旧测试 fixture 必须先在 FlowRT
+  外部转换成 RSDL 字段自然 JSONL 或 JSON array。
 - 用户算法只能进 `src/` 用户代码；不得手写或修改 `flowrt/` 生成物。
 - 串口、相机、NPU、Web/UDP 等副作用必须标为 I/O boundary 或 external process 候选，
   不能伪装成纯 dataflow component。
@@ -49,9 +51,11 @@ description: >
 3. **建立 RSDL island**：外部输入写 `boundary.input`，待对比输出写 `boundary.output`；
    能闭合的 FlowRT 内部连接写普通 `[[bind]]`。
 4. **迁移算法代码**：把纯算法放进 FlowRT component；把 I/O 和副作用留在明确边界。
-5. **跑行为对比**：用 `flowrt pub` 或 ROS2 bridge 喂 boundary input，用 `echo` /
-   `record` / test sink 观察 boundary output，并记录命令和关键输出。
-6. **拆脚手架**：每迁完相邻功能单位，就用普通 bind 替换对应 boundary；全部闭合后切回
+5. **准备输入和参数**：把外部样本转换为 JSONL 或 JSON array；把运行态参数写成
+   `params.json`，用 `flowrt params set --file` 应用。
+6. **跑行为对比**：用 `flowrt pub --file --freq` 或 ROS2 bridge 喂 boundary input，
+   用多 channel `echo` / `record` / test sink 观察 boundary output，并记录命令和关键输出。
+7. **拆脚手架**：每迁完相邻功能单位，就用普通 bind 替换对应 boundary；全部闭合后切回
    `strict`。
 
 ## Common Rationalizations
@@ -63,6 +67,7 @@ description: >
 | “先把 topic 名搬过来” | FlowRT channel/boundary 必须 typed，并绑定真实端口 |
 | “跑起来就算迁完” | 没有输入输出行为对比，就不知道是否迁对 |
 | “bridge 能用就不用拆 boundary” | bridge 是迁移边界，不是长期拓扑替代品 |
+| “直接让 FlowRT 读 bag” | 当前主路径是外部转换成 JSONL，再由 `flowrt pub --file` 注入 |
 
 ## Quick Reference
 
@@ -70,7 +75,10 @@ description: >
 |---|---|
 | 单包迁移 | `mode = "island"` + typed boundary input/output |
 | 手动喂输入 | `flowrt pub <boundary-input> --json ... --image ...` |
+| 文件流注入 | `flowrt pub <boundary-input> --file samples.jsonl --freq <hz> --image ...` |
+| 批量参数 | `flowrt params set --file params.json --image ...` |
 | 观察输出 | `flowrt echo <boundary-output> --image ...` |
+| 多输出观察 | `flowrt echo out_a out_b --image ...` |
 | 录制对比 | `flowrt record --channel <boundary-output>` |
 | 临时 ROS2 共存 | ROS2 bridge 绑定 boundary endpoint，仍保持 zenoh 隔离 |
 | 迁移完成 | 删除 boundary，改普通 bind，profile 切回 `strict` |

@@ -168,6 +168,20 @@ Island Mode 是可拆卸脚手架。组件行为稳定后，删除 `boundary.inp
 scripts/test-v091-variable-frame-island-demo.sh
 ```
 
+把旧系统逐功能单位迁到 FlowRT 时，推荐把 live topic、bag 片段或测试 fixture 先在
+FlowRT 外部转换成 RSDL 字段自然 JSONL，再按同一条路径验证：
+
+```bash
+flowrt params set --image flowrt/selfdesc/selfdesc.json --file params.json
+flowrt pub scan_in --file samples.jsonl --freq 100 --image flowrt/selfdesc/selfdesc.json
+flowrt echo summary_out --image flowrt/selfdesc/selfdesc.json
+flowrt record --output island.mcap --duration 2s --channel summary_out
+```
+
+这条路径同样适用于普通开发中“只先写一个功能单位”的 IO 测试。FlowRT 仍不会在
+`strict` 模式下 warning 后生成残缺拓扑；残缺输入输出必须显式建模为 island
+boundary，验证完成后再拆掉。
+
 ## 运行 C++ only 示例
 
 ```bash

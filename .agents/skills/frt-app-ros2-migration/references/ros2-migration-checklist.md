@@ -13,7 +13,7 @@
 | timer | 周期、deadline、和订阅回调的依赖关系 |
 | launch | 启动顺序、环境变量、进程依赖、restart 期望 |
 | side effect | 串口、相机、NPU、Web/UDP、文件、共享内存、外部 SDK |
-| test oracle | rosbag、live topic、固定输入 JSON、期望输出、误差范围 |
+| test oracle | rosbag、live topic、固定输入 JSON/JSONL、期望输出、误差范围 |
 
 ## 映射规则
 
@@ -34,16 +34,23 @@
 2. 为所有未迁移输入声明 typed `boundary.input`。
 3. 为要对比的输出声明 typed `boundary.output`。
 4. 运行 `flowrt deps`、`flowrt build`、`flowrt run`。
-5. 用 `flowrt pub` 或 ROS2 bridge 输入同一批样本。
-6. 用 `flowrt echo`、`flowrt record` 或 test sink 捕获输出。
-7. 对比字段值、时间戳、频率、stale/overflow 和错误状态。
-8. 每迁完一个相邻功能单位，删除对应 boundary，改用普通 FlowRT bind。
-9. 全部 boundary 删除后，把 profile 切回 `strict`。
+5. 在 FlowRT 外部把 bag、live topic 或旧测试 fixture 转换为 RSDL 字段自然 JSONL
+   或 JSON array；当前不让 FlowRT 原生读取 ROS2 bag。
+6. 用 `flowrt params set --file params.json --image ...` 应用迁移测试参数。
+7. 用 `flowrt pub <boundary> --file samples.jsonl --freq <hz> --image ...` 或 ROS2 bridge
+   输入同一批样本。
+8. 用 `flowrt echo out_a out_b --image ...`、`flowrt record --channel <boundary-output>`
+   或 test sink 捕获输出。
+9. 对比字段值、时间戳、频率、stale/overflow 和错误状态。
+10. 每迁完一个相邻功能单位，删除对应 boundary，改用普通 FlowRT bind。
+11. 全部 boundary 删除后，把 profile 切回 `strict`。
 
 ## 完成定义
 
 - RSDL 中没有未解释的残缺拓扑。
 - 所有 boundary 都有明确的拆除计划，或已经被普通 bind 替换。
 - 行为对比有命令、输入样本、输出结果和误差说明。
+- 如果使用外部 ROS2 数据，已记录转换命令或脚本，并说明 FlowRT 输入 JSONL 与 RSDL
+  类型字段一一对应。
 - 用户算法只在 `src/`；`flowrt/` 生成物可删除重建。
 - 需要长期保留的 I/O 或外部进程有显式边界，不混入纯 dataflow component。
