@@ -14,6 +14,8 @@ examples/*/flowrt/
 !.agents/skills/frt-subtask/**
 !.agents/skills/frt-core-*/
 !.agents/skills/frt-core-*/**
+!.agents/skills/frt-app-*/
+!.agents/skills/frt-app-*/**
 .claude/
 
 # 本地设计/规格草案不入库；docs/ 下其他用户和维护者配套文档可入库。
