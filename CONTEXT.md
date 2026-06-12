@@ -5,8 +5,10 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.9.0`。`v0.9.0` 是 Island Mode / Boundary Endpoint 版本，
-用于支持单功能单位开发、ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`。
+当前 workspace 版本为 `0.9.1`。`v0.9.0` 是 Island Mode / Boundary Endpoint 版本，
+用于支持单功能单位开发、ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`；
+`v0.9.1` 在此基础上补齐迁移验证常用工具：canonical frame JSON 注入、`pub --file
+--freq`、`params set --file`、多 channel `echo` 和显式空消息。
 已接入 RSDL 语法、Contract IR normalization 和 validator 拓扑规则：profile mode canonical 为
 `strict` 或 `island`；graph 级 `BoundaryEndpointIr` 记录 stable id、name、direction、
 真实 `instance.port` 引用和解析后的 `TypeExpr`，并按方向和名称稳定排序；strict
@@ -34,11 +36,19 @@ adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instan
 通过 `result_out` 供 `flowrt echo` / `flowrt record` 观察；`examples/variable_frame_island_demo`
 展示 `string` / `sequence<f32>` boundary input、`pub --file --freq` JSONL 注入和 fixed
 summary 输出。迁移旧系统或普通单功能单位开发时，外部 live topic、bag 片段或测试
-fixture 应先在 FlowRT 外部转换成 RSDL 字段自然 JSONL 或 JSON array，再用 `flowrt pub`
-注入；FlowRT 不做 ROS2 drop-in，也不在 core 中原生读取 rosbag。CI 已加入 amd64/arm64 的
-`v0.9.0 Island Demo Smoke`，smoke 脚本会按 CI runner 架构只改写临时 demo RSDL 的
-target platform，避免 arm64 runner 误按示例默认 `linux-amd64` target 构建；发布就绪
-脚本也会检查该 focused gate。最终集成 hardening 已收掉 generated Rust fixed
+fixture 应先在 FlowRT 外部转换成 RSDL 字段自然 JSONL 或 JSON array，再通过 island
+boundary input 注入；FlowRT 不做 ROS2 drop-in，不在 core 中实现 ROS2 message 语义，
+也不让用户代码直接读取 rosbag。后续 `flowrt replay` 或 bag 播放能力必须是
+runtime/control-plane 注入：像真实传感器一样把样本灌入 FlowRT 输入，让用户组件只看到
+普通 FlowRT input、`on_message` 和 latest view。replay/bag 注入只属于 island 语义；
+strict 生产模式必须拒绝，避免真实上游和测试输入形成多来源数据竞争。为了避免临时测试
+反复修改 `.rsdl`，后续应支持 CLI 触发的临时 island overlay：基础 RSDL 保持 strict，
+CLI 生成一次性的 test-only island projection、manifest 和 self-description，显式声明
+哪些端口成为 boundary input/output；该产物仍按 island 规则被 `bundle` / `deploy`
+默认拒绝，除非显式允许。CI 已加入 amd64/arm64 的 `v0.9.0 Island Demo Smoke` 和
+`v0.9.1 Island Migration Tooling Smoke`，smoke 会按 CI runner 架构只改写临时 demo
+RSDL 的 target platform，避免 arm64 runner 误按示例默认 `linux-amd64` target 构建；
+发布就绪脚本也会检查该 focused gate。最终集成 hardening 已收掉 generated Rust fixed
 `WireCodec` 的 `cursor` unused warning：生成代码在 encode/decode 末尾断言 cursor
 等于 `WIRE_SIZE`，避免 release smoke 输出噪声。
 
@@ -156,6 +166,8 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.8.5` | 公开真实交叉 SDK 示例、demo-local overlay prepare 和安装后 cross SDK smoke。 |
 | `v0.8.6` | 交叉编译 UX hardening：toolchain init/show、Contract-aware doctor、build diagnostics、cache 治理和 Cross UX SDK smoke。 |
 | `v0.9.0` | Island Mode / Boundary Endpoint：支持单功能单位开发、ROS2 项目逐功能包迁移、边界输入输出和 `flowrt pub`。 |
+| `v0.9.1` | Island 迁移验证工具补强：canonical frame JSON 注入、批量参数、文件流 pub、多 channel echo 和显式空消息。 |
+| `v0.9.2` | Island offline validation：replay/bag 播放、临时 island overlay、fixture 工作流和 strict/island 诊断收口。 |
 | `v1.0.0` | C/Python API、SDK 化和生态互操作扩展。 |
 | `v1.1.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -190,6 +202,19 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   boundary input 注入按 self-description / Message ABI 编码的数据，不默认向任意生产
   channel 写入。迁移完成后应拆掉 boundary endpoint，把 profile 切回 strict，使功能
   单位回到普通 FlowRT graph。
+- `v0.9.1` 把 island 从“可隔离运行”推进到“可做行为验证”：外部样本、bag 片段或
+  旧系统录制数据先转换成 FlowRT RSDL 字段自然 JSONL / JSON array，再由 `flowrt pub`
+  作为 boundary input 注入；参数快照通过 `params set --file` 恢复；输出用多 channel
+  `echo`、`record` 或 test sink 对比。FlowRT core 不引入 ROS2 message 类型，用户仍以
+  自己的 RSDL message 表达业务数据。
+- `v0.9.2` 应补齐 replay/offline validation 与 island 的有机整体：FlowRT 只支持
+  “播放数据，像真实传感器一样灌给运行中代码”的模式，不支持用户算法直接读取 bag
+  或绕过 FlowRT graph。bag/replay 注入只允许 island 语义；strict 生产 contract
+  必须拒绝，避免多来源数据竞争。为了让生产 contract 可临时测试，CLI 应提供
+  temporary island overlay：不修改源 `.rsdl`，而是在 build/run/replay 阶段生成
+  test-only island projection，并在 self-description、manifest、status 和 artifact
+  metadata 中明确标记。初始实现应要求用户显式声明 boundary mapping；自动把所有缺失
+  input 变成 boundary 只能作为后续便利功能，且必须打印完整映射并保持 test-only 标记。
 - 原 `v0.9.0` 的 C/Python API 和可选生态互操作顺延到 `v1.0.0`，仍以 FlowRT 自身
   语义为中心，不把 Python 放进实时热路径。
 - 原 `v1.0.0` 的 ABI/schema 冻结、兼容策略、故障注入和性能矩阵顺延到 `v1.1.0`。
