@@ -6,7 +6,7 @@
 
 ```bash
 flowrt check <path/to/robot.rsdl>
-flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>]
+flowrt prepare <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
 flowrt cache status
 flowrt cache clean [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--dry-run] [--flowrt-deps] [--project-build] [--incremental] [--stale-temp]
@@ -15,8 +15,8 @@ flowrt toolchain show --target <linux-amd64|linux-arm64>
 flowrt toolchain init --target <linux-arm64> [--sdk-overlay <path>] [--force]
 flowrt external check <path/to/external-package>
 flowrt external list --path <path/to/search-root>
-flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>]
-flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>]
+flowrt build <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
+flowrt run <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>] [--allow-island]
 flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run] [--allow-island]
@@ -81,6 +81,23 @@ flowrt prepare examples/import_demo/rsdl/robot.rsdl
 默认输出目录是 RSDL 所在项目根目录下的 `flowrt/`。可以用 `--out-dir <dir>` 改写。
 
 `prepare` 和 `build` 会写入输出目录。CLI 会在输出目录中创建 `.flowrt.lock` 并持有 OS advisory lock；如果另一个写命令正在使用同一输出目录，当前命令会直接失败，避免并发写入损坏生成产物。锁文件可以在进程崩溃后残留，后续命令会重新打开该文件并用 OS 锁判断是否仍被占用；文件中的 PID 只作为诊断信息。`run` 和 `launch` 只读取已生成产物，不写输出目录，也不获取该锁。
+
+临时测试 strict contract 时，可以显式生成一次性 island projection：
+
+```bash
+flowrt prepare robot.rsdl \
+  --temporary-island \
+  --boundary-input scan_in=planner.scan \
+  --boundary-output cmd_out=planner.cmd
+```
+
+`--temporary-island` 不会修改源 `.rsdl`。CLI 会先完成正常 normalization 和 profile
+projection，再把选定 profile 切成 `island`，并从 `instance.port` 推导 typed
+boundary endpoint。`--boundary-input` 可以满足同名 task active input；如果该 input 已经有普通
+dataflow bind，命令会拒绝，避免真实上游和测试输入形成多来源。`--boundary-output`
+必须引用存在的 output port。生成的 `contract.ir.json`、`selfdesc.json` 和
+`launch.json` 会标记 `temporary_island=true`、`test_only=true`、`mode=island`。
+`bundle` / `deploy` 仍按 island 安全门默认拒绝该产物。
 
 ## `deps`
 
@@ -199,6 +216,8 @@ flowrt build examples/cpp_counter_demo/rsdl/robot.rsdl --target linux-arm64
 - 选择 `iox2` 且 contract 含 C++ component 时，CMake 会查找 `iceoryx2-cxx 0.9.1` 的 `iceoryx2-cxx::static-lib-cxx` 目标。
 - 选择 `zenoh` 且 contract 含 C++ component 时，CMake 会查找 `zenohcxx 1.9.0` 的 `zenohcxx::zenohc` 目标。
 - 声明 `[[bridge.ros2]]` 时，`build` 会额外构建 FlowRT 管理的 C++ ROS2 adapter target；即使没有 C++ 用户 component，也会运行生成 CMake。
+- 传入 `--temporary-island` 时，`build` 先生成 test-only island projection，再构建该次
+  临时产物；源 RSDL 保持 strict，不写回 boundary 声明。
 
 构建出的用户项目二进制包括 Rust app、generated supervisor、C++ app 和 ROS2 bridge
 adapter。native 构建或未使用 Cargo cross target triple 时继续写入兼容路径
@@ -360,6 +379,11 @@ flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 ```
 
 `run` 只读取 `flowrt/contract/contract.ir.json`、`flowrt/build/build-info.json` 和已构建的 generated app，然后运行单个 process group。它不会执行 `prepare`、不会构建、不会写 `flowrt/` 目录。首次运行或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build`。
+
+如果显式传入 `--temporary-island`，`run` 会改走测试路径：先在当前命令中生成
+test-only island projection、构建该临时产物，再运行。这样可以临时验证一个 strict
+源 contract 的边界 IO，而不需要把 `.rsdl` 改成 island 后再改回。未传
+`--temporary-island` 时，`run` 的只读语义保持不变。
 
 `--process <name>` 运行一个 RSDL process group。process 名称来自 `instance.<name>.process`，未声明时默认属于 `main`；RSDL process label 必须使用 `snake_case`，并且不得使用大小写不敏感的保留 `flowrt` 前缀。
 

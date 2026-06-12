@@ -761,6 +761,58 @@ type = "Sample"
 }
 
 #[test]
+fn launch_manifest_and_selfdesc_expose_temporary_island_artifact_metadata() {
+    let strict = contract_from_source(
+        r#"
+[package]
+name = "temporary_island_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.default]
+backend = "inproc"
+"#,
+    );
+    let projected = flowrt_ir::project_contract_to_profile(&strict, None).unwrap();
+    let island = flowrt_ir::apply_temporary_island_overlay(
+        &projected,
+        &flowrt_ir::TemporaryIslandOverlay {
+            boundary_inputs: vec![flowrt_ir::TemporaryBoundaryMapping {
+                name: "sample_in".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+            boundary_outputs: vec![],
+        },
+    )
+    .unwrap();
+    let bundle = emit_artifacts(&island).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+
+    assert_eq!(launch["artifact"]["mode"], "island");
+    assert_eq!(launch["artifact"]["temporary_island"], true);
+    assert_eq!(launch["artifact"]["test_only"], true);
+    assert_eq!(selfdesc["artifact"]["mode"], "island");
+    assert_eq!(selfdesc["artifact"]["temporary_island"], true);
+    assert_eq!(selfdesc["artifact"]["test_only"], true);
+}
+
+#[test]
 fn rust_and_cpp_shells_wire_io_boundary_contexts() {
     let rust_ir = contract_from_source(
         r#"

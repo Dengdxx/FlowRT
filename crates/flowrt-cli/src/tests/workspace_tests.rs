@@ -2744,6 +2744,111 @@ backends = ["inproc"]
 }
 
 #[test]
+fn prepare_workspace_applies_temporary_island_overlay_without_rewriting_source() {
+    let source = r#"
+[package]
+name = "temporary_island_demo"
+rsdl_version = "0.1"
+
+[type.Scan]
+range = "f32"
+
+[type.Command]
+speed = "f32"
+
+[component.planner]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Command"]
+
+[instance.planner]
+component = "planner"
+
+[instance.planner.task]
+trigger = "on_message"
+input = ["scan"]
+output = ["cmd"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let rsdl_dir = temp_test_dir("prepare-temporary-island");
+    let rsdl_path = rsdl_dir.join("robot.rsdl");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    std::fs::write(&rsdl_path, source).unwrap();
+    let out_dir = rsdl_dir.join("flowrt");
+
+    assert!(load_contract_from_rsdl(&rsdl_path).is_err());
+    let overlay = TemporaryIslandCliOptions {
+        enabled: true,
+        boundary_inputs: vec!["scan_in=planner.scan".to_string()],
+        boundary_outputs: vec!["cmd_out=planner.cmd".to_string()],
+    };
+    let prepared = prepare_workspace_with_options(&rsdl_path, &out_dir, None, &overlay)
+        .expect("temporary island overlay should prepare a strict source");
+    let prepared_ir =
+        ContractIr::from_json_str(&std::fs::read_to_string(&prepared.contract_path).unwrap())
+            .unwrap();
+    let selfdesc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out_dir.join("selfdesc/selfdesc.json")).unwrap(),
+    )
+    .unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("launch/launch.json")).unwrap())
+            .unwrap();
+
+    assert_eq!(std::fs::read_to_string(&rsdl_path).unwrap(), source);
+    assert_eq!(prepared_ir.profiles[0].mode, GraphMode::Island);
+    assert_eq!(prepared_ir.artifact.mode, GraphMode::Island);
+    assert!(prepared_ir.artifact.temporary_island);
+    assert!(prepared_ir.artifact.test_only);
+    assert_eq!(prepared_ir.graphs[0].boundary_endpoints.len(), 2);
+    assert_eq!(selfdesc["artifact"]["temporary_island"], true);
+    assert_eq!(selfdesc["artifact"]["test_only"], true);
+    assert_eq!(launch["artifact"]["temporary_island"], true);
+    assert_eq!(launch["artifact"]["test_only"], true);
+
+    let _ = std::fs::remove_dir_all(&rsdl_dir);
+}
+
+#[test]
+fn prepare_workspace_rejects_boundary_flags_without_temporary_island() {
+    let source = r#"
+[package]
+name = "temporary_flag_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.worker]
+component = "worker"
+
+[profile.default]
+backend = "inproc"
+"#;
+    let rsdl_dir = temp_test_dir("prepare-boundary-without-temporary");
+    let rsdl_path = rsdl_dir.join("robot.rsdl");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    std::fs::write(&rsdl_path, source).unwrap();
+    let out_dir = rsdl_dir.join("flowrt");
+    let overlay = TemporaryIslandCliOptions {
+        enabled: false,
+        boundary_inputs: vec!["sample_in=worker.sample".to_string()],
+        boundary_outputs: vec![],
+    };
+
+    let error = prepare_workspace_with_options(&rsdl_path, &out_dir, None, &overlay)
+        .expect_err("boundary flag without temporary island should fail");
+
+    assert!(error.to_string().contains("require `--temporary-island`"));
+    assert_eq!(std::fs::read_to_string(&rsdl_path).unwrap(), source);
+
+    let _ = std::fs::remove_dir_all(&rsdl_dir);
+}
+
+#[test]
 fn prepare_workspace_writes_projected_channel_policy_to_managed_artifacts() {
     let source = r#"
 [package]

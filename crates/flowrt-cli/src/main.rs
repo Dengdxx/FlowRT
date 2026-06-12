@@ -12,7 +12,8 @@ use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts, handler_signature_summary};
 use flowrt_ir::{
-    ContractIr, GraphMode, LanguageKind, TargetPlatform, hash_source, normalize_loaded_document,
+    ContractIr, GraphMode, LanguageKind, TargetPlatform, TemporaryBoundaryMapping,
+    TemporaryIslandOverlay, apply_temporary_island_overlay, hash_source, normalize_loaded_document,
     project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
@@ -86,6 +87,18 @@ enum Command {
         /// 选择用于生成产物的 profile 名称。
         #[arg(long)]
         profile: Option<String>,
+
+        /// 生成一次性 test-only island projection，不修改源 RSDL。
+        #[arg(long)]
+        temporary_island: bool,
+
+        /// 临时 boundary input 映射，格式为 `name=instance.port`。
+        #[arg(long = "boundary-input")]
+        boundary_input: Vec<String>,
+
+        /// 临时 boundary output 映射，格式为 `name=instance.port`。
+        #[arg(long = "boundary-output")]
+        boundary_output: Vec<String>,
     },
 
     /// 准备并构建 FlowRT 管理的应用产物。
@@ -112,6 +125,18 @@ enum Command {
         /// 构建模式；默认 release，debug 仅用于本地调试。
         #[arg(long, default_value_t, value_enum)]
         build_mode: BuildMode,
+
+        /// 生成一次性 test-only island projection，不修改源 RSDL。
+        #[arg(long)]
+        temporary_island: bool,
+
+        /// 临时 boundary input 映射，格式为 `name=instance.port`。
+        #[arg(long = "boundary-input")]
+        boundary_input: Vec<String>,
+
+        /// 临时 boundary output 映射，格式为 `name=instance.port`。
+        #[arg(long = "boundary-output")]
+        boundary_output: Vec<String>,
     },
 
     /// 补全并预热 FlowRT 底层依赖缓存。
@@ -238,6 +263,18 @@ enum Command {
         /// 要运行的构建模式；省略时使用最近一次成功 build 记录的模式。
         #[arg(long, value_enum)]
         build_mode: Option<BuildMode>,
+
+        /// 先生成一次性 test-only island projection 并构建运行，不修改源 RSDL。
+        #[arg(long)]
+        temporary_island: bool,
+
+        /// 临时 boundary input 映射，格式为 `name=instance.port`。
+        #[arg(long = "boundary-input")]
+        boundary_input: Vec<String>,
+
+        /// 临时 boundary output 映射，格式为 `name=instance.port`。
+        #[arg(long = "boundary-output")]
+        boundary_output: Vec<String>,
     },
 
     /// 准备、构建并运行生成的 process supervisor。
@@ -657,15 +694,24 @@ fn main() -> Result<()> {
             rsdl,
             out_dir,
             profile,
+            temporary_island,
+            boundary_input,
+            boundary_output,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
+            let overlay =
+                TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);
+            let prepared =
+                prepare_workspace_with_options(&rsdl, &out_dir, profile.as_deref(), &overlay)?;
             println!(
                 "prepared {} and {} artifact(s)",
                 prepared.contract_path.display(),
                 prepared.artifact_count
             );
+            if let Some(summary) = overlay_summary(&prepared.selected_contract) {
+                println!("{summary}");
+            }
         }
         Command::Build {
             rsdl,
@@ -674,10 +720,16 @@ fn main() -> Result<()> {
             profile,
             target,
             build_mode,
+            temporary_island,
+            boundary_input,
+            boundary_output,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
-            let prepared = prepare_workspace(&rsdl, &out_dir, profile.as_deref())?;
+            let overlay =
+                TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);
+            let prepared =
+                prepare_workspace_with_options(&rsdl, &out_dir, profile.as_deref(), &overlay)?;
             let workspace_root = application_root_from_rsdl(&rsdl)?;
             let target_profile = resolve_build_toolchain_profile(
                 &prepared.selected_contract,
@@ -696,6 +748,9 @@ fn main() -> Result<()> {
                 prepared.contract_path.display(),
                 prepared.artifact_count
             );
+            if let Some(summary) = overlay_summary(&prepared.selected_contract) {
+                println!("{summary}");
+            }
             println!(
                 "{}",
                 format_build_success_summary(
@@ -820,11 +875,49 @@ fn main() -> Result<()> {
             run_ticks,
             profile,
             build_mode,
+            temporary_island,
+            boundary_input,
+            boundary_output,
         } => {
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
-            let build_hint = build_command_hint(&rsdl, profile.as_deref(), false);
-            let contract = load_prepared_contract(&out_dir, &build_hint)?;
-            ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
+            let overlay =
+                TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);
+            let contract = if overlay.enabled {
+                let _lock = WorkspaceLock::acquire(&out_dir)?;
+                let prepared =
+                    prepare_workspace_with_options(&rsdl, &out_dir, profile.as_deref(), &overlay)?;
+                let workspace_root = application_root_from_rsdl(&rsdl)?;
+                let target_profile = resolve_build_toolchain_profile(
+                    &prepared.selected_contract,
+                    None,
+                    &workspace_root,
+                )?;
+                let build_info = build_workspace(
+                    &prepared.selected_contract,
+                    &out_dir,
+                    false,
+                    build_mode.unwrap_or_default(),
+                    target_profile.as_ref(),
+                )?;
+                if let Some(summary) = overlay_summary(&prepared.selected_contract) {
+                    println!("{summary}");
+                }
+                println!(
+                    "{}",
+                    format_build_success_summary(
+                        &prepared.selected_contract,
+                        &build_info,
+                        target_profile.as_ref(),
+                        &out_dir,
+                    )
+                );
+                prepared.selected_contract
+            } else {
+                let build_hint = build_command_hint(&rsdl, profile.as_deref(), false);
+                let contract = load_prepared_contract(&out_dir, &build_hint)?;
+                ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
+                contract
+            };
             run_workspace(
                 &contract,
                 &out_dir,
@@ -1511,10 +1604,11 @@ struct FlowrtReleaseVersion {
 }
 
 fn contract_artifact_mode_name(contract: &ContractIr) -> &'static str {
-    if contract
-        .profiles
-        .iter()
-        .any(|profile| profile.mode == GraphMode::Island)
+    if contract.artifact.mode == GraphMode::Island
+        || contract
+            .profiles
+            .iter()
+            .any(|profile| profile.mode == GraphMode::Island)
     {
         "island"
     } else {
@@ -2669,6 +2763,7 @@ fn write_contract(contract: &ContractIr, out_dir: &Path) -> Result<PathBuf> {
     Ok(output)
 }
 
+#[derive(Debug)]
 struct PreparedWorkspace {
     contract_path: PathBuf,
     artifact_count: usize,
@@ -2680,9 +2775,49 @@ fn prepare_workspace(
     out_dir: &Path,
     profile: Option<&str>,
 ) -> Result<PreparedWorkspace> {
+    prepare_workspace_with_options(
+        rsdl,
+        out_dir,
+        profile,
+        &TemporaryIslandCliOptions::default(),
+    )
+}
+
+#[derive(Debug, Clone, Default)]
+struct TemporaryIslandCliOptions {
+    enabled: bool,
+    boundary_inputs: Vec<String>,
+    boundary_outputs: Vec<String>,
+}
+
+impl TemporaryIslandCliOptions {
+    fn new(enabled: bool, boundary_inputs: Vec<String>, boundary_outputs: Vec<String>) -> Self {
+        Self {
+            enabled,
+            boundary_inputs,
+            boundary_outputs,
+        }
+    }
+}
+
+fn prepare_workspace_with_options(
+    rsdl: &Path,
+    out_dir: &Path,
+    profile: Option<&str>,
+    temporary_island: &TemporaryIslandCliOptions,
+) -> Result<PreparedWorkspace> {
     let contract = normalize_contract_from_rsdl(rsdl)?;
-    let selected_contract = project_contract_to_profile(&contract, profile)
+    let mut selected_contract = project_contract_to_profile(&contract, profile)
         .with_context(|| format!("failed to select profile for `{}`", rsdl.display()))?;
+    if temporary_island.enabled {
+        let overlay = parse_temporary_island_overlay(temporary_island)?;
+        selected_contract = apply_temporary_island_overlay(&selected_contract, &overlay)
+            .context("failed to apply temporary island overlay")?;
+    } else if !temporary_island.boundary_inputs.is_empty()
+        || !temporary_island.boundary_outputs.is_empty()
+    {
+        anyhow::bail!("`--boundary-input` and `--boundary-output` require `--temporary-island`");
+    }
     validate_contract(&selected_contract).context("contract validation failed")?;
     let contract_path = write_contract(&selected_contract, out_dir)?;
     let artifacts = emit_artifacts(&selected_contract).context("failed to prepare artifacts")?;
@@ -2692,6 +2827,70 @@ fn prepare_workspace(
         artifact_count,
         selected_contract,
     })
+}
+
+fn parse_temporary_island_overlay(
+    options: &TemporaryIslandCliOptions,
+) -> Result<TemporaryIslandOverlay> {
+    Ok(TemporaryIslandOverlay {
+        boundary_inputs: options
+            .boundary_inputs
+            .iter()
+            .map(|mapping| parse_temporary_boundary_mapping(mapping, "--boundary-input"))
+            .collect::<Result<Vec<_>>>()?,
+        boundary_outputs: options
+            .boundary_outputs
+            .iter()
+            .map(|mapping| parse_temporary_boundary_mapping(mapping, "--boundary-output"))
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
+fn parse_temporary_boundary_mapping(mapping: &str, flag: &str) -> Result<TemporaryBoundaryMapping> {
+    let Some((name, endpoint)) = mapping.split_once('=') else {
+        anyhow::bail!("{flag} expects `name=instance.port`, got `{mapping}`");
+    };
+    let name = name.trim();
+    let endpoint = endpoint.trim();
+    if name.is_empty() || endpoint.is_empty() {
+        anyhow::bail!("{flag} expects non-empty `name=instance.port`, got `{mapping}`");
+    }
+    Ok(TemporaryBoundaryMapping {
+        name: name.to_string(),
+        endpoint: endpoint.to_string(),
+    })
+}
+
+fn overlay_summary(contract: &ContractIr) -> Option<String> {
+    if !contract.artifact.temporary_island {
+        return None;
+    }
+    let mappings = contract
+        .graphs
+        .iter()
+        .flat_map(|graph| {
+            graph.boundary_endpoints.iter().map(move |endpoint| {
+                format!(
+                    "{}:{}={}.{}",
+                    boundary_direction_name(endpoint.direction),
+                    endpoint.name,
+                    endpoint.port.instance.name,
+                    endpoint.port.port
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(format!(
+        "temporary_island=true test_only=true mappings={}",
+        mappings.join(",")
+    ))
+}
+
+fn boundary_direction_name(direction: flowrt_ir::BoundaryDirection) -> &'static str {
+    match direction {
+        flowrt_ir::BoundaryDirection::Input => "input",
+        flowrt_ir::BoundaryDirection::Output => "output",
+    }
 }
 
 fn write_artifacts(bundle: &ArtifactBundle, out_dir: &Path) -> Result<usize> {

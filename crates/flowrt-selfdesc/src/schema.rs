@@ -26,6 +26,8 @@ pub struct SelfDescription {
     #[serde(default)]
     pub source_hash: String,
     #[serde(default)]
+    pub artifact: SelfDescriptionArtifact,
+    #[serde(default)]
     pub package: SelfDescriptionPackage,
     #[serde(default)]
     pub profiles: Vec<SelfDescriptionProfile>,
@@ -42,6 +44,29 @@ pub struct SelfDescription {
     pub message_abi: Vec<SelfDescriptionMessageAbi>,
     #[serde(default)]
     pub message_frames: Vec<SelfDescriptionMessageFrame>,
+}
+
+/// FlowRT 产物边界标记。
+///
+/// `temporary_island` / `test_only` 用于区分临时测试投影和可发布生产产物。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionArtifact {
+    #[serde(default = "default_graph_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub temporary_island: bool,
+    #[serde(default)]
+    pub test_only: bool,
+}
+
+impl Default for SelfDescriptionArtifact {
+    fn default() -> Self {
+        Self {
+            mode: default_graph_mode(),
+            temporary_island: false,
+            test_only: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

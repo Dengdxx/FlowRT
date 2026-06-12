@@ -75,6 +75,35 @@ fn command_build_parses_target_platform() {
 }
 
 #[test]
+fn cli_parses_temporary_island_overlay_flags() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "prepare",
+        "rsdl/robot.rsdl",
+        "--temporary-island",
+        "--boundary-input",
+        "scan_in=planner.scan",
+        "--boundary-output",
+        "cmd_out=planner.cmd",
+    ])
+    .unwrap();
+
+    let Command::Prepare {
+        temporary_island,
+        boundary_input,
+        boundary_output,
+        ..
+    } = cli.command
+    else {
+        panic!("prepare command should parse into Command::Prepare")
+    };
+
+    assert!(temporary_island);
+    assert_eq!(boundary_input, vec!["scan_in=planner.scan"]);
+    assert_eq!(boundary_output, vec!["cmd_out=planner.cmd"]);
+}
+
+#[test]
 fn command_deps_parses_target_platform() {
     let cli = Cli::try_parse_from([
         "flowrt",

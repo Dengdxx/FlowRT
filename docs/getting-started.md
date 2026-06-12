@@ -189,6 +189,23 @@ flowrt record --output island.mcap --duration 2s --channel summary_out
 `strict` 模式下 warning 后生成残缺拓扑；残缺输入输出必须显式建模为 island
 boundary，验证完成后再拆掉。
 
+如果源 RSDL 想保持 `strict`，可以用 CLI 触发临时 island projection，而不是手改
+`.rsdl`：
+
+```bash
+flowrt build robot.rsdl \
+  --temporary-island \
+  --boundary-input scan_in=planner.scan \
+  --boundary-output summary_out=planner.summary
+flowrt replay --file fixture.jsonl --image flowrt/selfdesc/selfdesc.json --as-fast-as-possible
+flowrt echo summary_out --image flowrt/selfdesc/selfdesc.json
+```
+
+临时 projection 只影响本次生成物，`selfdesc.json` 和 `launch.json` 会标记
+`temporary_island=true` 与 `test_only=true`。它仍属于 island 测试脚手架，默认不能
+`bundle` 或 `deploy` 为生产产物；验证完成后，应移除命令行 overlay，或把真实拓扑补成
+普通 dataflow bind。
+
 ## 运行 C++ only 示例
 
 ```bash

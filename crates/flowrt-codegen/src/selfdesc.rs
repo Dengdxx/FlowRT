@@ -11,14 +11,14 @@ use flowrt_ir::{
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
-    SelfDescriptionBoundaryEndpoint, SelfDescriptionChannel, SelfDescriptionComponentType,
-    SelfDescriptionDeployment, SelfDescriptionExternalProcess, SelfDescriptionFieldAbi,
-    SelfDescriptionFrameField, SelfDescriptionGraph, SelfDescriptionInstance,
-    SelfDescriptionIoBoundary, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
-    SelfDescriptionOperationEndpoint, SelfDescriptionOperationLowering,
-    SelfDescriptionOperationPortDecl, SelfDescriptionPackage, SelfDescriptionParam,
-    SelfDescriptionParamDecl, SelfDescriptionPortDecl, SelfDescriptionProfile,
-    SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
+    SelfDescriptionArtifact, SelfDescriptionBoundaryEndpoint, SelfDescriptionChannel,
+    SelfDescriptionComponentType, SelfDescriptionDeployment, SelfDescriptionExternalProcess,
+    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionGraph,
+    SelfDescriptionInstance, SelfDescriptionIoBoundary, SelfDescriptionMessageAbi,
+    SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
+    SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
+    SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
+    SelfDescriptionProfile, SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
     SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
     SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
     SelfDescriptionTask,
@@ -105,6 +105,11 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
         ir_version: contract.ir_version.clone(),
         schema_version: contract.schema_version.clone(),
         source_hash: contract.source_hash.clone(),
+        artifact: SelfDescriptionArtifact {
+            mode: graph_mode_name(contract_artifact_mode(contract)).to_string(),
+            temporary_island: contract.artifact.temporary_island,
+            test_only: contract.artifact.test_only,
+        },
         package: SelfDescriptionPackage {
             name: contract.package.name.clone(),
             version: contract.package.version.clone(),
@@ -296,10 +301,11 @@ fn graph_mode_name(mode: GraphMode) -> &'static str {
 }
 
 fn contract_artifact_mode(contract: &ContractIr) -> GraphMode {
-    if contract
-        .profiles
-        .iter()
-        .any(|profile| profile.mode == GraphMode::Island)
+    if contract.artifact.mode == GraphMode::Island
+        || contract
+            .profiles
+            .iter()
+            .any(|profile| profile.mode == GraphMode::Island)
     {
         GraphMode::Island
     } else {

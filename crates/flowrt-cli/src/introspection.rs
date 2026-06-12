@@ -97,10 +97,13 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         .filter(|profile| profile.mode == "island")
         .count();
     let mut output = format!(
-        "package={} selfdesc={} source_hash={} profiles={} island_profiles={} graphs={} component_types={} instances={} tasks={} channels={} boundary_endpoints={} services={} operations={} messages={}",
+        "package={} selfdesc={} source_hash={} artifact_mode={} temporary_island={} test_only={} profiles={} island_profiles={} graphs={} component_types={} instances={} tasks={} channels={} boundary_endpoints={} services={} operations={} messages={}",
         self_description.package.name,
         self_description.self_description_version,
         self_description.source_hash,
+        self_description.artifact.mode,
+        self_description.artifact.temporary_island,
+        self_description.artifact.test_only,
         self_description.profiles.len(),
         island_profiles,
         self_description.graphs.len(),
@@ -1984,7 +1987,7 @@ pub(crate) fn live_status_summary_for_sockets(
                     .map(|channel| channel.dropped_samples)
                     .sum::<u64>();
                 lines.push(format!(
-                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} inputs={} routes={} observers={} dropped_samples={} socket={}",
+                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} inputs={} routes={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} socket={}",
                     handshake.pid,
                     handshake.package,
                     handshake.process,
@@ -1996,6 +1999,9 @@ pub(crate) fn live_status_summary_for_sockets(
                     status.routes.len(),
                     active_observers,
                     dropped_samples,
+                    enrichment.artifact.mode,
+                    enrichment.artifact.temporary_island,
+                    enrichment.artifact.test_only,
                     socket.display()
                 ));
                 for graph in &enrichment.graphs {
@@ -2308,6 +2314,7 @@ struct BoundaryEndpointAssoc {
 /// live status 输出的静态合同增强信息。
 #[derive(Default)]
 struct StatusEnrichment {
+    artifact: flowrt_selfdesc::SelfDescriptionArtifact,
     graphs: Vec<GraphModeAssoc>,
     boundary_endpoints: Vec<BoundaryEndpointAssoc>,
     service_endpoints: BTreeMap<String, ServiceEndpointAssoc>,
@@ -2335,6 +2342,7 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
         return StatusEnrichment::default();
     };
     let mut enrichment = StatusEnrichment::default();
+    enrichment.artifact = sd.artifact.clone();
     for graph in &sd.graphs {
         enrichment.graphs.push(GraphModeAssoc {
             name: graph.name.clone(),

@@ -44,6 +44,11 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let launch = serde_json::json!({
         "package": contract.package.name,
         "ir_version": contract.ir_version,
+        "artifact": {
+            "mode": graph_mode_name(contract_artifact_mode(contract)),
+            "temporary_island": contract.artifact.temporary_island,
+            "test_only": contract.artifact.test_only,
+        },
         "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
         "profile_modes": contract.profiles.iter().map(|profile| serde_json::json!({
             "name": profile.name,
@@ -161,10 +166,11 @@ fn graph_mode_name(mode: GraphMode) -> &'static str {
 }
 
 fn contract_artifact_mode(contract: &ContractIr) -> GraphMode {
-    if contract
-        .profiles
-        .iter()
-        .any(|profile| profile.mode == GraphMode::Island)
+    if contract.artifact.mode == GraphMode::Island
+        || contract
+            .profiles
+            .iter()
+            .any(|profile| profile.mode == GraphMode::Island)
     {
         GraphMode::Island
     } else {

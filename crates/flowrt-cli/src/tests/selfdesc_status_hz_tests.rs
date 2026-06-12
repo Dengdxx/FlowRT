@@ -89,6 +89,7 @@ fn self_description_summary_shows_island_boundary_endpoints() {
   "ir_version": "0.1",
   "schema_version": "0.1",
   "source_hash": "0123456789abcdef",
+  "artifact": { "mode": "island", "temporary_island": true, "test_only": true },
   "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
   "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
   "targets": [],
@@ -121,6 +122,7 @@ fn self_description_summary_shows_island_boundary_endpoints() {
     let list = self_description_summary(&self_description);
 
     assert!(list.contains("profiles=1 island_profiles=1"));
+    assert!(list.contains("artifact_mode=island temporary_island=true test_only=true"));
     assert!(list.contains("graph default mode=island"));
     assert!(list.contains("boundary input sample_in endpoint=consumer.sample type=Sample"));
 
@@ -1287,6 +1289,7 @@ fn live_status_summary_enriches_island_boundary_endpoints() {
     let selfdesc_json = r#"{
   "self_description_version": "0.1",
   "source_hash": "abc",
+  "artifact": { "mode": "island", "temporary_island": true, "test_only": true },
   "package": { "name": "island_demo" },
   "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
   "graphs": [{
@@ -1320,6 +1323,7 @@ fn live_status_summary_enriches_island_boundary_endpoints() {
     let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
 
     assert!(output.contains("graph=default mode=island boundary_endpoints=1"));
+    assert!(output.contains("artifact_mode=island temporary_island=true test_only=true"));
     assert!(output.contains(
         "boundary_endpoint=sample_out direction=output endpoint=producer.sample type=Sample graph=default mode=island"
     ));
