@@ -18,6 +18,7 @@
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 验证无界 variable frame、zenoh 跨主机 transport 和 mixed launch 路径 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
 | `examples/island_demo` | Rust | `inproc` | `flowrt build --launcher examples/island_demo/rsdl/robot.rsdl` | 验证 Island Mode 下 boundary input/output 的单功能单位 IO 测试闭环 |
+| `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 验证 `sequence<f32>` canonical frame boundary input、`flowrt pub --file --freq` 和 echo 输出摘要 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
@@ -542,6 +543,53 @@ flowrt record --output island-demo.mcap --duration 500ms --channel result_out
 `flowrt pub` 只允许写 boundary input；尝试写普通 channel、strict graph 或 boundary
 output 都会报错。完成单功能单位测试后，删除 boundary endpoint，补上普通
 `[[bind.dataflow]]`，再把 profile 切回 `strict`。
+
+## `variable_frame_island_demo`
+
+入口文件：
+
+```text
+examples/variable_frame_island_demo/rsdl/robot.rsdl
+examples/variable_frame_island_demo/src/rust/mod.rs
+examples/variable_frame_island_demo/samples/scan.jsonl
+```
+
+该示例验证迁移测试里常见的变长输入：`ScanFrame` 包含 `string` 和
+`sequence<f32>`，island boundary input 接收 JSONL 后由组件计算固定大小摘要：
+
+```toml
+[type.ScanFrame]
+seq = "u32"
+label = "string"
+ranges = "sequence<f32>"
+```
+
+运行 smoke：
+
+```bash
+scripts/test-v091-variable-frame-island-demo.sh
+```
+
+手动运行时，先启动 runtime：
+
+```bash
+flowrt deps examples/variable_frame_island_demo/rsdl/robot.rsdl --backend inproc
+flowrt build --launcher examples/variable_frame_island_demo/rsdl/robot.rsdl
+flowrt run examples/variable_frame_island_demo/rsdl/robot.rsdl --process main
+```
+
+另开终端按 wall-clock 节奏注入 JSONL，并观察摘要：
+
+```bash
+flowrt pub scan_in \
+  --file examples/variable_frame_island_demo/samples/scan.jsonl \
+  --freq 200 \
+  --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
+flowrt echo summary_out --image examples/variable_frame_island_demo/flowrt/selfdesc/selfdesc.json
+```
+
+`summary_out` 是 fixed ABI 摘要，便于稳定断言 `seq`、`count` 和 `mean_milli`。该示例
+只展示可拆卸 island 脚手架，不要求 ROS2、硬件或外部私有库。
 
 ## `service_demo`
 

@@ -759,6 +759,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | `examples/mixed_zenoh_demo` | Rust + C++ | `zenoh` | `flowrt build --launcher examples/mixed_zenoh_demo/rsdl/robot.rsdl` | 无界 variable frame、zenoh 跨主机 transport 和 mixed launch。 |
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | FlowRT string 输出经 zenoh bridge 发布到 ROS2 topic。 |
 | `examples/island_demo` | Rust | `inproc` | `flowrt build --launcher examples/island_demo/rsdl/robot.rsdl` | Island Mode 下通过 boundary input/output 做单功能单位 IO 测试。 |
+| `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 通过 JSONL 注入 `sequence<f32>` canonical frame 并观察 fixed summary。 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | Service request/response、typed API、inproc call、service policy 和健康观测。 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | Operation client/server typed API、自描述和 `flowrt op list`。 |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | I/O boundary 只发布固定 FrameDescriptor，真实 payload 由 side-channel 管理。 |

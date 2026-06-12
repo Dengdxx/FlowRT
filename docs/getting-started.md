@@ -160,6 +160,14 @@ flowrt record --output island.mcap --duration 500ms --channel result_out
 Island Mode 是可拆卸脚手架。组件行为稳定后，删除 `boundary.input` / `boundary.output`，
 补上普通 `[[bind.dataflow]]`，并把 profile 切回默认 `strict`，同一份用户算法代码不需要改。
 
+如果输入含 `string`、`bytes` 或 `sequence<T>`，可以参考
+`examples/variable_frame_island_demo`。它用 `flowrt pub --file --freq` 从 JSONL 注入
+`sequence<f32>`，再用 `flowrt echo` 观察 fixed summary：
+
+```bash
+scripts/test-v091-variable-frame-island-demo.sh
+```
+
 ## 运行 C++ only 示例
 
 ```bash
