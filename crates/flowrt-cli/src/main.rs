@@ -33,8 +33,9 @@ use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd
 use introspection::{
     EchoTarget, echo_channel, echo_channel_follow, live_hz_summary, live_status_summary,
     load_self_description, operation_cancel, operation_list, operation_status_summary, params_get,
-    params_list, params_set, remote_params_get, remote_params_list, remote_params_set,
-    self_description_nodes, self_description_summary,
+    params_list, params_set, params_set_from_file, remote_params_get, remote_params_list,
+    remote_params_set, remote_params_set_from_file, self_description_nodes,
+    self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use toolchain::{
@@ -445,13 +446,19 @@ enum ParamsCommand {
         timeout_ms: u64,
     },
 
-    /// 设置单个 live runtime 参数 pending 值。
+    /// 设置 live runtime 参数 pending 值。
     Set {
         /// 参数名，格式为 `<instance>.<param>`。
-        name: String,
+        #[arg(required_unless_present = "file", conflicts_with = "file")]
+        name: Option<String>,
 
         /// JSON 参数值，例如 `2.5`、`true` 或 `"safe"`。
-        value: String,
+        #[arg(required_unless_present = "file", conflicts_with = "file")]
+        value: Option<String>,
+
+        /// 从 JSON 文件批量导入参数。
+        #[arg(long, conflicts_with_all = ["name", "value"])]
+        file: Option<PathBuf>,
 
         /// FlowRT 管理应用二进制，或 flowrt/selfdesc/selfdesc.json。
         #[arg(long)]
@@ -892,6 +899,7 @@ fn main() -> Result<()> {
             ParamsCommand::Set {
                 name,
                 value,
+                file,
                 image,
                 socket,
                 runtime,
@@ -903,19 +911,52 @@ fn main() -> Result<()> {
                 if remote {
                     let image = require_image_for_remote(image.as_deref())?;
                     let hash = introspection::self_description_hash_for_image(&image)?;
-                    println!(
-                        "{}",
-                        remote_params_set(
+                    if let Some(file) = file.as_deref() {
+                        let result = remote_params_set_from_file(
                             &hash,
-                            &name,
-                            &value,
+                            file,
                             remote_runtime.as_deref(),
-                            timeout_ms
-                        )?
-                    );
+                            timeout_ms,
+                        )?;
+                        println!("{}", result.output);
+                        if result.has_errors {
+                            anyhow::bail!("one or more FlowRT parameters failed to apply");
+                        }
+                    } else {
+                        let name = name.as_deref().context(
+                            "missing required argument `<name>` for `flowrt params set`",
+                        )?;
+                        let value = value.as_deref().context(
+                            "missing required argument `<value>` for `flowrt params set`",
+                        )?;
+                        println!(
+                            "{}",
+                            remote_params_set(
+                                &hash,
+                                name,
+                                value,
+                                remote_runtime.as_deref(),
+                                timeout_ms
+                            )?
+                        );
+                    }
                 } else {
                     let image = require_image_for_local(image.as_deref())?;
-                    println!("{}", params_set(&image, &name, &value, socket.as_deref())?);
+                    if let Some(file) = file.as_deref() {
+                        let result = params_set_from_file(&image, file, socket.as_deref())?;
+                        println!("{}", result.output);
+                        if result.has_errors {
+                            anyhow::bail!("one or more FlowRT parameters failed to apply");
+                        }
+                    } else {
+                        let name = name.as_deref().context(
+                            "missing required argument `<name>` for `flowrt params set`",
+                        )?;
+                        let value = value.as_deref().context(
+                            "missing required argument `<value>` for `flowrt params set`",
+                        )?;
+                        println!("{}", params_set(&image, name, value, socket.as_deref())?);
+                    }
                 }
             }
         },

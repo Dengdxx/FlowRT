@@ -29,6 +29,7 @@ flowrt pub <boundary-input> --json <json> [--image <path/to/generated-app-or-sel
 flowrt params list --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params get <instance.param> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt params set <instance.param> <json-value> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
+flowrt params set --file <path/to/params.json> --image <path> [--socket <path>] [--remote] [--runtime <key_expr>] [--timeout-ms <ms>]
 flowrt op list [--image <path>] [--socket <path>]
 flowrt op status [operation] [--socket <path>]
 flowrt op cancel <operation_id> [--socket <path>]
@@ -756,11 +757,13 @@ flowrt params list --image path/to/generated-app
 flowrt params get --image path/to/generated-app controller.kp
 flowrt params set --image path/to/generated-app controller.kp 2.5
 flowrt params set --image path/to/generated-app controller.mode '"safe"'
+flowrt params set --image path/to/generated-app --file params.json
 
 # 跨机 zenoh control-plane 路径
 flowrt params list --image path/to/generated-app --remote
 flowrt params get --image path/to/generated-app controller.kp --remote
 flowrt params set --image path/to/generated-app controller.kp 2.5 --remote
+flowrt params set --image path/to/generated-app --file params.json --remote
 flowrt params list --image path/to/generated-app --remote --runtime flowrt/params/robot/hash/12345
 ```
 
@@ -772,10 +775,30 @@ flowrt params list --image path/to/generated-app --remote --runtime flowrt/param
 
 参数不是 dataflow channel。RSDL/Contract IR 声明参数 schema，生成 shell 持有 typed params 快照，并在 scheduler tick 边界把 `on_tick` 参数的 pending 值应用到用户组件。用户组件可以实现默认提供的 `on_params_update(old, new, context)` 钩子；该钩子返回 `Ok` 后，新参数才会提交并反映到后续 `on_tick`。
 
-`set` 的值必须是合法 JSON：数字写 `2.5`，布尔写 `true`，字符串需要带 JSON 引号，例如 shell 中常写成 `'"safe"'`。`startup` 参数运行时不可修改；`on_tick` 参数可以提交 pending 值，由生成 shell 在下一个 tick 边界应用。输出中的 `runtime_update=startup-only` 表示该参数只能在进程启动前确定，运行中只能读取当前值。输出格式是行式摘要：
+`set` 可以走单项模式，也可以用 `--file` 批量导入。两种模式互斥；`--file` 当前只支持 JSON，不额外引入 TOML 解析依赖。文件可写成 object：
+
+```json
+{"controller.kp": 2.5, "controller.enabled": true}
+```
+
+也可写成 array，便于保留重复项顺序或后续扩展：
+
+```json
+[{"name":"controller.kp","value":2.5},{"name":"controller.mode","value":"safe"}]
+```
+
+单项模式下，值必须是合法 JSON：数字写 `2.5`，布尔写 `true`，字符串需要带 JSON 引号，例如 shell 中常写成 `'"safe"'`。`startup` 参数运行时不可修改；`on_tick` 参数可以提交 pending 值，由生成 shell 在下一个 tick 边界应用。输出中的 `runtime_update=startup-only` 表示该参数只能在进程启动前确定，运行中只能读取当前值。单项模式输出格式是行式摘要：
 
 ```text
 controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 choices=[] runtime_update=pending-on-tick
+```
+
+批量模式默认逐项 apply，不做 atomic 事务。CLI 会尝试文件中的全部参数，即使中途某一项失败也不会提前停止；最终按每项输出 `ok` / `error` 摘要，并附一行总计。只要任一参数失败，命令整体返回非零退出码。例如：
+
+```text
+controller.kp: ok: controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 choices=[] runtime_update=pending-on-tick
+controller.mode: error: failed to set FlowRT parameter `controller.mode` via `/tmp/flowrt.sock`: FlowRT parameter `controller.mode` is startup-only
+summary: ok=1 error=1
 ```
 
 `zenoh` 示例在跨机时通常需要为两个进程分别注入连接信息。常用环境变量是：

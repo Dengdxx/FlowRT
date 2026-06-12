@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -1233,22 +1234,74 @@ pub(crate) fn params_set(
     socket: Option<&Path>,
 ) -> Result<String> {
     let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
-    ensure_param_declared(&self_description, name)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    params_set_with_target(
+        &self_description,
+        &self_description_hash,
+        &socket,
+        name,
+        raw_value,
+    )
+}
+
+pub(crate) struct ParamSetBatchResult {
+    pub(crate) output: String,
+    pub(crate) has_errors: bool,
+}
+
+#[derive(Debug)]
+struct ParamSetFileEntry {
+    name: String,
+    raw_value: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ParamSetFileArrayEntry {
+    name: String,
+    value: serde_json::Value,
+}
+
+pub(crate) fn params_set_from_file(
+    image: &Path,
+    file: &Path,
+    socket: Option<&Path>,
+) -> Result<ParamSetBatchResult> {
+    let (self_description, self_description_hash) = load_self_description_with_hash(image)?;
+    let socket = select_echo_socket(socket, &self_description_hash)?;
+    let entries = load_param_set_file(file)?;
+    params_set_batch(entries, |name, raw_value| {
+        params_set_with_target(
+            &self_description,
+            &self_description_hash,
+            &socket,
+            name,
+            raw_value,
+        )
+    })
+}
+
+fn params_set_with_target(
+    self_description: &SelfDescription,
+    self_description_hash: &str,
+    socket: &Path,
+    name: &str,
+    raw_value: &str,
+) -> Result<String> {
+    ensure_param_declared(self_description, name)?;
     let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
         format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
     })?;
-    let socket = select_echo_socket(socket, &self_description_hash)?;
     let response =
-        flowrt::request_param_set_with_timeout(&socket, name, value, LOCAL_INTROSPECTION_TIMEOUT)
+        flowrt::request_param_set_with_timeout(socket, name, value, LOCAL_INTROSPECTION_TIMEOUT)
             .with_context(|| {
-            format!(
-                "failed to set parameter `{name}` via `{}`",
-                socket.display()
-            )
-        })?;
+                format!(
+                    "failed to set parameter `{name}` via `{}`",
+                    socket.display()
+                )
+            })?;
     let param = match response {
         flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
-            ensure_handshake_hash(&handshake, &self_description_hash, &socket)?;
+            ensure_handshake_hash(&handshake, self_description_hash, socket)?;
             param
         }
         flowrt::IntrospectionResponse::Error { message, .. } => {
@@ -1263,6 +1316,80 @@ pub(crate) fn params_set(
         ),
     };
     Ok(format_param_status(&param))
+}
+
+fn load_param_set_file(file: &Path) -> Result<Vec<ParamSetFileEntry>> {
+    let raw = fs::read_to_string(file)
+        .with_context(|| format!("failed to read params file `{}`", file.display()))?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw)
+        .with_context(|| format!("params file `{}` must be valid JSON", file.display()))?;
+    parse_param_set_entries(file, value)
+}
+
+fn parse_param_set_entries(
+    file: &Path,
+    value: serde_json::Value,
+) -> Result<Vec<ParamSetFileEntry>> {
+    match value {
+        serde_json::Value::Object(map) => Ok(map
+            .into_iter()
+            .map(|(name, value)| ParamSetFileEntry {
+                name,
+                raw_value: json_inline(&value),
+            })
+            .collect()),
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let entry: ParamSetFileArrayEntry =
+                    serde_json::from_value(item).with_context(|| {
+                        format!(
+                            "params file `{}` entry {} must be an object with `name` and `value`",
+                            file.display(),
+                            index + 1
+                        )
+                    })?;
+                Ok(ParamSetFileEntry {
+                    name: entry.name,
+                    raw_value: json_inline(&entry.value),
+                })
+            })
+            .collect(),
+        _ => anyhow::bail!(
+            "params file `{}` must be a JSON object or array",
+            file.display()
+        ),
+    }
+}
+
+fn params_set_batch<F>(entries: Vec<ParamSetFileEntry>, mut apply: F) -> Result<ParamSetBatchResult>
+where
+    F: FnMut(&str, &str) -> Result<String>,
+{
+    let mut lines = Vec::new();
+    let mut ok_count = 0usize;
+    let mut error_count = 0usize;
+
+    for entry in entries {
+        match apply(&entry.name, &entry.raw_value) {
+            Ok(status) => {
+                ok_count += 1;
+                lines.push(format!("{}: ok: {}", entry.name, status));
+            }
+            Err(error) => {
+                error_count += 1;
+                lines.push(format!("{}: error: {}", entry.name, error));
+            }
+        }
+    }
+
+    lines.push(format!("summary: ok={ok_count} error={error_count}"));
+
+    Ok(ParamSetBatchResult {
+        output: lines.join("\n"),
+        has_errors: error_count > 0,
+    })
 }
 
 fn declared_param<'a>(
@@ -2611,9 +2738,6 @@ pub(crate) fn remote_params_set(
     runtime_key_expr: Option<&str>,
     timeout_ms: u64,
 ) -> Result<String> {
-    let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
-        format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
-    })?;
     let session = open_zenoh_params_session()?;
     let runtime = select_remote_runtime_for_request(
         &session,
@@ -2621,14 +2745,61 @@ pub(crate) fn remote_params_set(
         runtime_key_expr,
         timeout_ms,
     )?;
+    remote_params_set_with_target(
+        &session,
+        self_description_hash,
+        &runtime,
+        name,
+        raw_value,
+        timeout_ms,
+    )
+}
+
+pub(crate) fn remote_params_set_from_file(
+    self_description_hash: &str,
+    file: &Path,
+    runtime_key_expr: Option<&str>,
+    timeout_ms: u64,
+) -> Result<ParamSetBatchResult> {
+    let entries = load_param_set_file(file)?;
+    let session = open_zenoh_params_session()?;
+    let runtime = select_remote_runtime_for_request(
+        &session,
+        self_description_hash,
+        runtime_key_expr,
+        timeout_ms,
+    )?;
+    params_set_batch(entries, |name, raw_value| {
+        remote_params_set_with_target(
+            &session,
+            self_description_hash,
+            &runtime,
+            name,
+            raw_value,
+            timeout_ms,
+        )
+    })
+}
+
+fn remote_params_set_with_target(
+    session: &zenoh::Session,
+    self_description_hash: &str,
+    runtime: &RemoteRuntimeEntry,
+    name: &str,
+    raw_value: &str,
+    timeout_ms: u64,
+) -> Result<String> {
+    let value = serde_json::from_str::<serde_json::Value>(raw_value).with_context(|| {
+        format!("FlowRT parameter values must be valid JSON; got `{raw_value}`")
+    })?;
     let response =
-        flowrt::request_remote_param_set(&session, &runtime.key_expr, name, value, timeout_ms)
+        flowrt::request_remote_param_set(session, &runtime.key_expr, name, value, timeout_ms)
             .map_err(|error| {
                 anyhow::anyhow!("failed to set remote param `{name}` via `{runtime}`: {error}")
             })?;
     match response {
         flowrt::IntrospectionResponse::ParamValue { handshake, param } => {
-            ensure_remote_handshake(&handshake, self_description_hash, &runtime)?;
+            ensure_remote_handshake(&handshake, self_description_hash, runtime)?;
             eprintln!("target: {runtime}");
             Ok(format_param_status(&param))
         }

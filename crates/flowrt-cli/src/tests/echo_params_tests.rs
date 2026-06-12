@@ -1726,6 +1726,216 @@ fn params_commands_use_selfdesc_matched_runtime_socket() {
 }
 
 #[test]
+fn params_set_file_applies_json_object_entries() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "param_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "controller",
+      "component": "controller",
+      "process": "main",
+      "runtime": "rust",
+      "params": [{
+        "name": "kp",
+        "type": "f32",
+        "update": "on_tick"
+      }, {
+        "name": "enabled",
+        "type": "bool",
+        "update": "on_tick"
+      }]
+    }],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("params-file-object");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let params_file = root.join("params.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &params_file,
+        r#"{"controller.kp":2.5,"controller.enabled":true}"#,
+    )
+    .unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 88,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "param_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.kp".to_string(),
+        ty: "f32".to_string(),
+        update: "on_tick".to_string(),
+        current: serde_json::json!(1.0),
+        min: Some(serde_json::json!(0.0)),
+        max: Some(serde_json::json!(10.0)),
+        choices: Vec::new(),
+    });
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.enabled".to_string(),
+        ty: "bool".to_string(),
+        update: "on_tick".to_string(),
+        current: serde_json::json!(false),
+        min: None,
+        max: None,
+        choices: Vec::new(),
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state.clone())
+        .expect("status server should start");
+
+    let result =
+        introspection::params_set_from_file(&selfdesc, &params_file, Some(&socket)).unwrap();
+
+    assert!(!result.has_errors);
+    assert!(
+        result
+            .output
+            .contains("controller.kp: ok: controller.kp type=f32")
+    );
+    assert!(result.output.contains("pending=2.5"));
+    assert!(
+        result
+            .output
+            .contains("controller.enabled: ok: controller.enabled type=bool")
+    );
+    assert!(result.output.contains("pending=true"));
+    assert!(result.output.contains("summary: ok=2 error=0"));
+    assert_eq!(
+        state.pending_param("controller.kp"),
+        Some(serde_json::json!(2.5))
+    );
+    assert_eq!(
+        state.pending_param("controller.enabled"),
+        Some(serde_json::json!(true))
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn params_set_file_reports_partial_failures_for_json_array() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "param_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [{
+      "name": "controller",
+      "component": "controller",
+      "process": "main",
+      "runtime": "rust",
+      "params": [{
+        "name": "kp",
+        "type": "f32",
+        "update": "on_tick"
+      }, {
+        "name": "mode",
+        "type": "string",
+        "update": "startup"
+      }]
+    }],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("params-file-array");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    let params_file = root.join("params.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &params_file,
+        r#"[{"name":"controller.kp","value":2.5},{"name":"controller.mode","value":"normal"},{"name":"controller.kp","value":3.5}]"#,
+    )
+    .unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 89,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "param_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.kp".to_string(),
+        ty: "f32".to_string(),
+        update: "on_tick".to_string(),
+        current: serde_json::json!(1.0),
+        min: Some(serde_json::json!(0.0)),
+        max: Some(serde_json::json!(10.0)),
+        choices: Vec::new(),
+    });
+    state.register_param(flowrt::IntrospectionParamSchema {
+        name: "controller.mode".to_string(),
+        ty: "string".to_string(),
+        update: "startup".to_string(),
+        current: serde_json::json!("safe"),
+        min: None,
+        max: None,
+        choices: vec![serde_json::json!("safe"), serde_json::json!("normal")],
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state.clone())
+        .expect("status server should start");
+
+    let result =
+        introspection::params_set_from_file(&selfdesc, &params_file, Some(&socket)).unwrap();
+
+    assert!(result.has_errors);
+    let lines: Vec<&str> = result.output.lines().collect();
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].starts_with("controller.kp: ok: "));
+    assert!(
+        lines[1]
+            .contains("controller.mode: error: failed to set FlowRT parameter `controller.mode`")
+    );
+    assert!(lines[1].contains("startup-only"));
+    assert!(lines[2].starts_with("controller.kp: ok: "));
+    assert_eq!(lines[3], "summary: ok=2 error=1");
+    assert_eq!(
+        state.pending_param("controller.kp"),
+        Some(serde_json::json!(3.5))
+    );
+    assert_eq!(state.pending_param("controller.mode"), None);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn echo_endpoint_alias_reports_ambiguous_channels() {
     let source = r#"
 {

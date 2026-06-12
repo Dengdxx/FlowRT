@@ -383,9 +383,73 @@ fn cli_parses_params_set_command() {
     };
 
     assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
-    assert_eq!(name, "controller.kp");
-    assert_eq!(value, "2.5");
+    assert_eq!(name.as_deref(), Some("controller.kp"));
+    assert_eq!(value.as_deref(), Some("2.5"));
     assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+}
+
+#[test]
+fn cli_parses_params_set_file_command() {
+    let cli = Cli::try_parse_from([
+        "flowrt",
+        "params",
+        "set",
+        "--file",
+        "params.json",
+        "--image",
+        "flowrt/selfdesc/selfdesc.json",
+        "--socket",
+        "/tmp/flowrt-main.sock",
+    ])
+    .unwrap();
+
+    let Command::Params {
+        command:
+            ParamsCommand::Set {
+                name,
+                value,
+                file,
+                image,
+                socket,
+                ..
+            },
+    } = cli.command
+    else {
+        panic!("params set --file should parse into Command::Params")
+    };
+
+    assert_eq!(name, None);
+    assert_eq!(value, None);
+    assert_eq!(file, Some(PathBuf::from("params.json")));
+    assert_eq!(image, Some(PathBuf::from("flowrt/selfdesc/selfdesc.json")));
+    assert_eq!(socket, Some(PathBuf::from("/tmp/flowrt-main.sock")));
+}
+
+#[test]
+fn cli_rejects_params_set_file_mixed_with_single_value() {
+    let error = Cli::try_parse_from([
+        "flowrt",
+        "params",
+        "set",
+        "controller.kp",
+        "2.5",
+        "--file",
+        "params.json",
+    ])
+    .expect_err("params set should reject mixing --file with positional name/value");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn cli_rejects_params_set_without_single_value_or_file() {
+    let error =
+        Cli::try_parse_from(["flowrt", "params", "set"]).expect_err("params set requires input");
+
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]
