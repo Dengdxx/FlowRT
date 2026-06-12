@@ -725,3 +725,68 @@ backends = ["zenoh"]
     assert!(cpp_abi.contains("const auto decoded = flowrt_app::Packet::decode_wire(wire);"));
     assert!(cpp_abi.contains("assert(bytes_of(decoded) == bytes_of(value));"));
 }
+
+#[test]
+fn emits_explicit_empty_message_artifacts() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "empty_demo"
+rsdl_version = "0.1"
+
+[type.Empty]
+empty = true
+
+[component.source]
+language = "rust"
+output = ["packet:Empty"]
+
+[component.sink]
+language = "cpp"
+input = ["packet:Empty"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+
+    let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
+    assert!(rust_messages.contains("pub struct Empty {"));
+    assert!(rust_messages.contains("const WIRE_SIZE: usize = 0;"));
+
+    let cpp_messages = artifact_content(&bundle, "cpp/include/flowrt_app/messages.hpp");
+    assert!(cpp_messages.contains("struct Empty {"));
+    assert!(
+        cpp_messages.contains("static constexpr std::size_t wire_size() noexcept { return 0; }")
+    );
+
+    let rust_abi = artifact_content(&bundle, "rust/tests/message_abi.rs");
+    assert!(rust_abi.contains("const EXPECTED_EMPTY_BYTES: &[u8] = &[];"));
+    assert!(rust_abi.contains("fn empty_message_abi()"));
+    assert!(rust_abi.contains("fn empty_wire_codec_omits_native_padding()"));
+
+    let cpp_abi = artifact_content(&bundle, "cpp/tests/message_abi.cpp");
+    assert!(cpp_abi.contains("constexpr std::array<std::uint8_t, 0> EXPECTED_EMPTY_BYTES"));
+    assert!(cpp_abi.contains("void test_empty_message_abi()"));
+    assert!(cpp_abi.contains("void test_empty_wire_codec_omits_native_padding()"));
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    assert_eq!(selfdesc["message_abi"][0]["type_name"], "Empty");
+    assert_eq!(selfdesc["message_abi"][0]["size_bytes"], 0);
+    assert_eq!(selfdesc["message_abi"][0]["empty"], true);
+    assert_eq!(selfdesc["message_abi"][0]["fields"], serde_json::json!([]));
+}

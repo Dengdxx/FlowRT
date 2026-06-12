@@ -54,6 +54,7 @@ pub(super) fn normalize_types(
                 name: symbol.name,
                 qualified_name: symbol.qualified_name,
                 generated_name: symbol.generated_name,
+                empty: raw.empty,
                 fields: raw
                     .fields
                     .iter()

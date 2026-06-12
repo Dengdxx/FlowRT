@@ -149,7 +149,8 @@ flowrt pub sample_in \
 flowrt echo result_out --image examples/island_demo/flowrt/selfdesc/selfdesc.json
 ```
 
-`echo` 会把 fixed Message ABI payload 格式化成字段，例如 `seq=7` 和 `doubled=42`。
+`echo` 会按 self-description 把 canonical payload 格式化成字段，例如 `seq=7` 和
+`doubled=42`。fixed ABI、canonical frame 和显式空消息都走同一条 boundary 观测路径。
 如果要留下对比证据，可以把输出录成 MCAP：
 
 ```bash

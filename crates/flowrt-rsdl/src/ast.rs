@@ -108,6 +108,7 @@ pub struct RawModule {
 /// `[type.<Name>]` 表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawType {
+    pub empty: bool,
     pub fields: Vec<RawField>,
 }
 

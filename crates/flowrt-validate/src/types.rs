@@ -25,7 +25,13 @@ pub(crate) fn validate_message_types(
     errors: &mut Vec<ValidationError>,
 ) {
     for ty in &ir.types {
-        if ty.fields.is_empty() {
+        if ty.empty && !ty.fields.is_empty() {
+            errors.push(ValidationError::new(format!(
+                "type `{}` declares `empty = true` and fields at the same time",
+                ty.name
+            )));
+        }
+        if !ty.empty && ty.fields.is_empty() {
             errors.push(ValidationError::new(format!(
                 "type `{}` must declare at least one field",
                 ty.name

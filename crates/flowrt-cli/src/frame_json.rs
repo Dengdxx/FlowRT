@@ -351,7 +351,8 @@ pub(crate) fn encode_fixed_message_json(
     value: &Value,
 ) -> Result<Vec<u8>> {
     if message.fields.is_empty() {
-        if message.size_bytes == 0
+        if message.empty
+            && message.size_bytes == 0
             && (value.is_null() || value.as_object().is_some_and(|object| object.is_empty()))
         {
             return Ok(Vec::new());

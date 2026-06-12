@@ -727,11 +727,12 @@ flowrt pub sample_in --json '{"seq": 7, "value": 21}' --image examples/island_de
 `boundary input` 的 endpoint。它不会向普通生产 channel 注入数据，也不会回读 RSDL 原文判断
 拓扑。strict 生成物、未知 endpoint、boundary output 或类型不匹配都会报错。
 
-CLI 用 self-description 中的 fixed-size Message ABI 把 `--json` 编码为 canonical payload，
+CLI 用 self-description 中的 message ABI metadata 把 `--json` 编码为 canonical payload，
 再通过 runtime introspection socket 发送 `boundary_publish` 请求；最终写入由 runtime 中已注册
-的 `BoundaryInput<T>` 执行。当前 `pub` 只支持 fixed Message ABI 的 primitive 和固定数组；使用
-canonical variable frame 的 `bytes`、`string` 或 `sequence<T>` 会明确报错，后续应走专门的
-frame 编码路径。
+的 `BoundaryInput<T>` 执行。fixed-size Message ABI 支持整数、浮点、布尔、固定数组和嵌套
+fixed struct；canonical frame 支持自然 JSON 形式的 `bytes`、`string`、
+`sequence<primitive>`、`sequence<fixed struct>` 和嵌套 fixed struct header 字段。显式
+`empty = true` 的空消息可以用 `{}` 或 `null` 注入，payload 长度为 0。
 
 输出是单行摘要：
 

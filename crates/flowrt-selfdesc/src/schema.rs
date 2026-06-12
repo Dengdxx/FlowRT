@@ -522,6 +522,8 @@ pub struct SelfDescriptionMessageAbi {
     #[serde(default)]
     pub align_bytes: usize,
     #[serde(default)]
+    pub empty: bool,
+    #[serde(default)]
     pub fields: Vec<SelfDescriptionFieldAbi>,
 }
 

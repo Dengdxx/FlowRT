@@ -174,3 +174,42 @@ rsdl_version = "0.1"
             .contains("type `Empty` must declare at least one field")
     }));
 }
+
+#[test]
+fn accepts_explicit_empty_message_types() {
+    let source = r#"
+[package]
+name = "empty_ok"
+rsdl_version = "0.1"
+
+[type.Empty]
+empty = true
+"#;
+
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).expect("explicit empty message should validate");
+}
+
+#[test]
+fn rejects_empty_message_flag_with_fields() {
+    let source = r#"
+[package]
+name = "bad"
+rsdl_version = "0.1"
+
+[type.Empty]
+empty = true
+value = "u8"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("empty message with fields should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("type `Empty` declares `empty = true` and fields at the same time")
+    }));
+}

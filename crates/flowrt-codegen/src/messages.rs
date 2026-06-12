@@ -639,39 +639,49 @@ pub(crate) fn emit_cpp_message_abi_tests(
             "    static_assert(std::is_trivially_copyable_v<{}>);\n",
             ty
         ));
-        output.push_str(&format!(
-            "    static_assert(sizeof({}) == {});\n",
-            ty, expectation.size_bytes
-        ));
-        output.push_str(&format!(
-            "    static_assert(alignof({}) == {});\n",
-            ty, expectation.align_bytes
-        ));
-        output.push_str(&format!("    assert_default_bytes_zero<{}>();\n", ty));
-        for field in &expectation.fields {
+        if expectation.size_bytes == 0 && expectation.fields.is_empty() {
+            output.push_str(&format!("    static_assert({}::wire_size() == 0);\n", ty));
             output.push_str(&format!(
-                "    static_assert(offsetof({}, {}) == {});\n",
-                ty, field.name, field.offset_bytes
+                "    write_fixture(\"{}.bin\", {});\n",
+                snake_identifier(&expectation.type_name),
+                expected_bytes_const_name(&expectation.type_name)
+            ));
+        } else {
+            output.push_str(&format!(
+                "    static_assert(sizeof({}) == {});\n",
+                ty, expectation.size_bytes
+            ));
+            output.push_str(&format!(
+                "    static_assert(alignof({}) == {});\n",
+                ty, expectation.align_bytes
+            ));
+            output.push_str(&format!("    assert_default_bytes_zero<{}>();\n", ty));
+            for field in &expectation.fields {
+                output.push_str(&format!(
+                    "    static_assert(offsetof({}, {}) == {});\n",
+                    ty, field.name, field.offset_bytes
+                ));
+            }
+            output.push_str(&format!(
+                "    assert_byte_roundtrip({}());\n",
+                sample_function_name(&expectation.type_name)
+            ));
+            output.push_str(&format!(
+                "    assert_sample_bytes({}(), {});\n",
+                sample_function_name(&expectation.type_name),
+                expected_bytes_const_name(&expectation.type_name)
+            ));
+            output.push_str(&format!(
+                "    write_fixture(\"{}.bin\", bytes_of({}()));\n",
+                snake_identifier(&expectation.type_name),
+                sample_function_name(&expectation.type_name)
             ));
         }
-        output.push_str(&format!(
-            "    assert_byte_roundtrip({}());\n",
-            sample_function_name(&expectation.type_name)
-        ));
-        output.push_str(&format!(
-            "    assert_sample_bytes({}(), {});\n",
-            sample_function_name(&expectation.type_name),
-            expected_bytes_const_name(&expectation.type_name)
-        ));
-        output.push_str(&format!(
-            "    write_fixture(\"{}.bin\", bytes_of({}()));\n",
-            snake_identifier(&expectation.type_name),
-            sample_function_name(&expectation.type_name)
-        ));
         output.push_str("}\n\n");
         if needs_wire_codec {
             let message = type_by_name(contract, &expectation.type_name);
             let wire_bytes = message_wire_sample_bytes(contract, message);
+            let empty_wire_message = wire_bytes.is_empty();
             output.push_str(&format!(
                 "void test_{}_wire_codec_omits_native_padding() {{\n",
                 snake_identifier(&expectation.type_name)
@@ -695,7 +705,15 @@ pub(crate) fn emit_cpp_message_abi_tests(
                 "    const auto decoded = flowrt_app::{}::decode_wire(wire);\n",
                 expectation.type_name
             ));
-            output.push_str("    assert(bytes_of(decoded) == bytes_of(value));\n");
+            if empty_wire_message {
+                output.push_str("    std::array<std::uint8_t, flowrt_app::");
+                output.push_str(&expectation.type_name);
+                output.push_str(
+                    "::wire_size()> decoded_wire{};\n    decoded.encode_wire(decoded_wire);\n    assert(decoded_wire == expected_wire);\n",
+                );
+            } else {
+                output.push_str("    assert(bytes_of(decoded) == bytes_of(value));\n");
+            }
             output.push_str("}\n\n");
         }
     }

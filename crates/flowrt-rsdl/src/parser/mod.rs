@@ -386,6 +386,44 @@ output = ["slow"]
     }
 
     #[test]
+    fn parses_explicit_empty_message_type() {
+        let source = r#"
+[package]
+name = "empty_demo"
+rsdl_version = "0.1"
+
+[type.Empty]
+empty = true
+"#;
+
+        let document = parse_str(source).expect("explicit empty message should parse");
+        let ty = &document.types["Empty"];
+
+        assert!(ty.empty);
+        assert!(ty.fields.is_empty());
+    }
+
+    #[test]
+    fn parses_string_field_named_empty_as_regular_field() {
+        let source = r#"
+[package]
+name = "empty_field_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+empty = "bool"
+"#;
+
+        let document = parse_str(source).expect("field named empty should remain legal");
+        let ty = &document.types["Sample"];
+
+        assert!(!ty.empty);
+        assert_eq!(ty.fields.len(), 1);
+        assert_eq!(ty.fields[0].name, "empty");
+        assert_eq!(ty.fields[0].ty, "bool");
+    }
+
+    #[test]
     fn parses_external_process_declarations() {
         let source = r#"
 [package]

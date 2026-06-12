@@ -684,6 +684,7 @@ mod tests {
             name: name.to_string(),
             qualified_name: name.to_string(),
             generated_name: name.to_string(),
+            empty: false,
             fields,
         }
     }

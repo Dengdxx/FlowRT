@@ -151,6 +151,130 @@ fn pub_injects_json_into_boundary_input() {
 }
 
 #[test]
+fn pub_injects_empty_message_from_null_and_empty_object() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "empty_in",
+      "canonical_id": "boundary_empty_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.empty",
+      "instance": "consumer",
+      "port": "empty",
+      "message_type": "Empty"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Empty",
+    "size_bytes": 0,
+    "align_bytes": 1,
+    "empty": true,
+    "fields": []
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-boundary-empty");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 81,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+    let captures_for_handler = captures.clone();
+    state.register_boundary_input_handler("empty_in", "Empty", move |payload, _| {
+        captures_for_handler.lock().unwrap().push(payload.to_vec());
+        Ok(1)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    boundary_publish("empty_in", "null", Some(&selfdesc), Some(&socket), None).unwrap();
+    boundary_publish("empty_in", "{}", Some(&selfdesc), Some(&socket), None).unwrap();
+
+    let captures = captures.lock().unwrap();
+    assert_eq!(captures.len(), 2);
+    assert!(captures.iter().all(|payload| payload.is_empty()));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn pub_rejects_zero_sized_message_without_empty_flag() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "bad_empty_in",
+      "canonical_id": "boundary_empty_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.empty",
+      "instance": "consumer",
+      "port": "empty",
+      "message_type": "Empty"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Empty",
+    "size_bytes": 0,
+    "align_bytes": 1,
+    "fields": []
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-boundary-implicit-empty");
+    let selfdesc = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let err = boundary_publish("bad_empty_in", "{}", Some(&selfdesc), None, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("JSON encoding requires field metadata"),
+        "{err:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn pub_encodes_nested_fixed_message_json() {
     let source = r#"
 {

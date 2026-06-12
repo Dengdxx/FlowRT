@@ -20,8 +20,9 @@ revision、stale policy 和 scheduler waiter 唤醒；boundary output 使用 sin
 回收临时观测。Rust/C++ generated runtime shell 已接入 boundary primitive：island
 boundary input 会参与 `on_message` revision/wake 和 task 输入读取，boundary output 会在
 用户输出后发布到显式 sink，strict 生成物不携带 boundary 字段。CLI `flowrt pub` 已接入
-fixed Message ABI JSON 注入，只允许写 boundary input；`flowrt echo`、`flowrt status` 和
-`flowrt record` 已能围绕 boundary output 做观测/录制；`flowrt bundle` / `flowrt deploy`
+fixed Message ABI 和 canonical frame JSON 注入，只允许写 boundary input；显式
+`empty = true` 空消息使用零长度 wire payload，可通过 `{}` 或 `null` 注入；`flowrt echo`、
+`flowrt status` 和 `flowrt record` 已能围绕 boundary output 做观测/录制；`flowrt bundle` / `flowrt deploy`
 默认拒绝 island 脚手架产物，只有显式 `--allow-island` 才允许。ROS2/zenoh boundary
 adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instance.port`，也可以
 在 island profile 下引用 `boundary.input` / `boundary.output` 名称；Contract IR 会保留

@@ -91,7 +91,13 @@ pub struct TypeIr {
     pub name: String,
     pub qualified_name: String,
     pub generated_name: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub empty: bool,
     pub fields: Vec<FieldIr>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 消息字段声明。

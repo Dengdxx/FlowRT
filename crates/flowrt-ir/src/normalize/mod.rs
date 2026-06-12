@@ -1909,6 +1909,26 @@ type = "Scan""#,
     }
 
     #[test]
+    fn normalizes_explicit_empty_message_flag() {
+        let source = r#"
+[package]
+name = "empty_demo"
+rsdl_version = "0.1"
+
+[type.Empty]
+empty = true
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.types[0].name, "Empty");
+        assert!(ir.types[0].empty);
+        assert!(ir.types[0].fields.is_empty());
+        assert!(ir.to_canonical_json().unwrap().contains("\"empty\": true"));
+    }
+
+    #[test]
     fn canonicalizes_bind_order_independent_of_source_order() {
         let source_a = r#"
 [package]

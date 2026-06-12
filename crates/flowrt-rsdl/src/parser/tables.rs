@@ -92,14 +92,21 @@ pub(super) fn parse_module(table: &Table) -> Result<RawModule> {
 
 pub(super) fn parse_type(name: &str, table: &Table) -> Result<RawType> {
     let mut fields = Vec::with_capacity(table.len());
+    let mut empty = false;
     for (field_name, value) in table {
+        if field_name == "empty" {
+            if let Some(flag) = value.as_bool() {
+                empty = flag;
+                continue;
+            }
+        }
         let ty = expect_string(&format!("type.{name}"), field_name, value)?;
         fields.push(RawField {
             name: field_name.clone(),
             ty,
         });
     }
-    Ok(RawType { fields })
+    Ok(RawType { empty, fields })
 }
 
 pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent> {

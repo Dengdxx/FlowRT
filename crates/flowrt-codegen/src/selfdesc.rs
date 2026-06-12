@@ -698,10 +698,17 @@ fn self_description_message_abi(
     contract: &ContractIr,
     expectation: MessageAbiExpectation,
 ) -> SelfDescriptionMessageAbi {
-    let type_fields = contract
+    let ir_type = contract
         .types
         .iter()
-        .find(|ty| ty.name == expectation.type_name)
+        .find(|ty| ty.generated_name == expectation.type_name)
+        .or_else(|| {
+            contract
+                .types
+                .iter()
+                .find(|ty| ty.qualified_name == expectation.type_name)
+        });
+    let type_fields = ir_type
         .map(|ty| {
             ty.fields
                 .iter()
@@ -713,6 +720,7 @@ fn self_description_message_abi(
         type_name: expectation.type_name,
         size_bytes: expectation.size_bytes,
         align_bytes: expectation.align_bytes,
+        empty: ir_type.is_some_and(|ty| ty.empty),
         fields: expectation
             .fields
             .into_iter()
