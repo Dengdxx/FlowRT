@@ -464,7 +464,7 @@ output = ["slow"]
 }
 
 #[test]
-fn rust_shell_uses_parallel_dispatch_and_preserves_exclusive_instance_lane() {
+fn concurrency_rust_shell_uses_parallel_dispatch_and_preserves_exclusive_instance_lane() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -529,7 +529,7 @@ worker_threads = 4
 }
 
 #[test]
-fn rust_parallel_component_uses_sync_trait_and_explicit_lanes() {
+fn concurrency_rust_parallel_component_uses_sync_trait_and_explicit_lanes() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -674,7 +674,7 @@ output = ["slow"]
 }
 
 #[test]
-fn cpp_shell_parallel_tasks_keep_explicit_lanes_and_emit_parallel_metadata() {
+fn concurrency_cpp_shell_parallel_tasks_keep_explicit_lanes_and_emit_parallel_metadata() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -750,7 +750,8 @@ worker_threads = 2
 }
 
 #[test]
-fn cpp_shell_parallel_declaration_with_single_worker_thread_still_generates_valid_shell() {
+fn concurrency_cpp_shell_parallel_declaration_with_single_worker_thread_still_generates_valid_shell()
+ {
     let ir = contract_from_source(
         r#"
 [package]
@@ -945,7 +946,7 @@ period_ms = 5
 }
 
 #[test]
-fn rust_shell_enforces_task_deadline_before_publishing_outputs() {
+fn concurrency_rust_shell_enforces_task_deadline_before_publishing_outputs() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -1006,7 +1007,7 @@ channel = "latest"
 }
 
 #[test]
-fn cpp_shell_enforces_task_deadline_before_publishing_outputs() {
+fn concurrency_cpp_shell_enforces_task_deadline_before_publishing_outputs() {
     let ir = contract_from_source(
         r#"
 [package]

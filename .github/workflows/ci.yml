@@ -550,6 +550,52 @@ jobs:
           export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
           scripts/test-v092-island-replay-demo.sh
 
+  v0102-concurrency-smoke:
+    name: v0.10.2 Concurrency Hardening Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    container:
+      image: ros:jazzy-ros-base-noble
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装系统构建工具
+        run: |
+          apt-get update
+          apt-get install -y cmake ninja-build g++
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: flowrt-${{ matrix.arch }}
+          shared-key: ${{ github.job }}
+          cache-on-failure: true
+
+      - name: 缓存 FlowRT v0.10.2 concurrency deps
+        uses: actions/cache@v4
+        with:
+          path: .flowrt-cache/v0102-concurrency-${{ matrix.arch }}
+          key: flowrt-v0102-concurrency-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'runtime/cpp/**', 'crates/flowrt-codegen/src/tests/tasks.rs', 'scripts/test-v0102-concurrency-smoke.sh') }}
+
+      - name: v0.10.2 concurrency smoke
+        run: |
+          export CARGO_BUILD_JOBS=1
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0102-concurrency-${{ matrix.arch }}"
+          export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
+          FLOWRT_BUILD_JOBS=1 scripts/test-v0102-concurrency-smoke.sh
+
   v083-toolchain-smoke:
     name: v0.8.3 Cross Toolchain Smoke
     runs-on: ubuntu-latest
@@ -679,6 +725,7 @@ jobs:
       - v090-island-smoke
       - v091-island-tooling-smoke
       - v092-island-offline-validation-smoke
+      - v0102-concurrency-smoke
       - v083-toolchain-smoke
 
     steps:
@@ -1155,6 +1202,7 @@ jobs:
       - v090-island-smoke
       - v091-island-tooling-smoke
       - v092-island-offline-validation-smoke
+      - v0102-concurrency-smoke
       - v083-toolchain-smoke
       - cpp-zenoh-runtime
       - package
