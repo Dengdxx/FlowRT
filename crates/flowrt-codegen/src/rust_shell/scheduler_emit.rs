@@ -2,6 +2,7 @@ use flowrt_ir::{ContractIr, GraphIr, InstanceIr, TaskIr, TriggerKind};
 
 use crate::runtime_plan::{
     BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    bind_backend,
 };
 use crate::{scheduler_tasks_for_order, selected_profile_worker_threads};
 
@@ -135,12 +136,15 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let tasks = scheduler_tasks_for_order(graph, order);
     let mut output = String::new();
     let worker_threads = selected_profile_worker_threads(contract);
+    let uses_thread_affine_backend = rust_scheduler_uses_thread_affine_backend(binds);
     output.push_str(&format!(
         "        let mut scheduler = flowrt::DeterministicExecutor::new({worker_threads});\n",
     ));
-    output.push_str(&format!(
-        "        let worker_pool = flowrt::WorkerPool::new({worker_threads});\n"
-    ));
+    if !uses_thread_affine_backend {
+        output.push_str(&format!(
+            "        let worker_pool = flowrt::WorkerPool::new({worker_threads});\n"
+        ));
+    }
 
     let mut lane_ids = scheduler_lane_ids(&tasks);
     for (lane, lane_id) in &lane_ids {
@@ -235,7 +239,19 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         ));
     }
     output.push_str(
-        "                let batch_health_map = std::sync::Arc::new(std::sync::Mutex::new(health_map.clone()));\n                let batch_health_map_for_tasks = batch_health_map.clone();\n                let ready_batch = scheduler.take_ready_batch();\n                let app_for_batch = self.clone();\n                let introspection_state_for_batch = introspection_state.clone();\n                let scheduler_events_for_batch = scheduler_events.clone();\n                let task_statuses = ready_batch.run_collect(&worker_pool, move |task| {\n                    let app = app_for_batch.clone();\n                    let introspection_state = introspection_state_for_batch.clone();\n                    let scheduler_events = scheduler_events_for_batch.clone();\n                    let mut local_context = flowrt::Context::default();\n                    let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n                    let task_outcome: flowrt::TaskRunOutcome<Vec<FlowrtOutputCommit>> = match task {\n",
+        "                let batch_health_map = std::sync::Arc::new(std::sync::Mutex::new(health_map.clone()));\n                let batch_health_map_for_tasks = batch_health_map.clone();\n                let ready_batch = scheduler.take_ready_batch();\n                let app_for_batch = self.clone();\n                let introspection_state_for_batch = introspection_state.clone();\n                let scheduler_events_for_batch = scheduler_events.clone();\n",
+    );
+    if uses_thread_affine_backend {
+        output.push_str(
+            "                let task_statuses = ready_batch.run_local_collect(|task| {\n",
+        );
+    } else {
+        output.push_str(
+            "                let task_statuses = ready_batch.run_collect(&worker_pool, move |task| {\n",
+        );
+    }
+    output.push_str(
+        "                    let app = app_for_batch.clone();\n                    let introspection_state = introspection_state_for_batch.clone();\n                    let scheduler_events = scheduler_events_for_batch.clone();\n                    let mut local_context = flowrt::Context::default();\n                    let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n                    let task_outcome: flowrt::TaskRunOutcome<Vec<FlowrtOutputCommit>> = match task {\n",
     );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
@@ -278,6 +294,10 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     ));
     let _ = operation_task_end;
     output
+}
+
+fn rust_scheduler_uses_thread_affine_backend(binds: &[BindRuntimePlan]) -> bool {
+    binds.iter().any(|bind| bind_backend(bind) == "iox2")
 }
 
 pub(super) fn emit_rust_scheduler_event_registration(

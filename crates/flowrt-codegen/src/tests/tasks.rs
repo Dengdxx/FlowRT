@@ -230,8 +230,9 @@ worker_threads = 4
 
     assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
     assert!(rust_shell.contains("let mut scheduler = flowrt::DeterministicExecutor::new(4);"));
-    assert!(rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
-    assert!(rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
+    assert!(!rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
+    assert!(rust_shell.contains("ready_batch.run_local_collect(|task|"));
+    assert!(!rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
     assert!(rust_shell.contains("type FlowrtOutputCommit = Box<dyn FnOnce(&App"));
     assert!(rust_shell.contains(
         "__flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events,"
