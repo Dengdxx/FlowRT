@@ -215,8 +215,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.9.1` | Island 迁移验证工具补强：canonical frame JSON 注入、批量参数、文件流 pub、多 channel echo 和显式空消息。 |
 | `v0.9.2` | Island offline validation：replay/bag 播放、临时 island overlay、fixture 工作流和 strict/island 诊断收口。 |
 | `v0.10.2` | 真并发收口：backend thread-affinity、two-phase output commit、scheduler-local transport commit 和并发验收 gate。 |
-| `v1.0.0` | C/Python API、SDK 化和生态互操作扩展。 |
-| `v1.1.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
+| `v0.10.3` | 标准 app/ 用户代码布局：废弃旧 `src/` 用户路径，用户实现统一进入 `app/`。 |
+| `v0.11.0` | FlowRT App SDK 化与 C ABI v0：项目脚手架、用户 API 可发现性、C component 最小可运行路径。 |
+| `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
 
@@ -262,9 +263,22 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   test-only island projection，并在 self-description、manifest、status 和 artifact
   metadata 中明确标记。初始实现应要求用户显式声明 boundary mapping；自动把所有缺失
   input 变成 boundary 只能作为后续便利功能，且必须打印完整映射并保持 test-only 标记。
-- 原 `v0.9.0` 的 C/Python API 和可选生态互操作顺延到 `v1.0.0`，仍以 FlowRT 自身
-  语义为中心，不把 Python 放进实时热路径。
-- 原 `v1.0.0` 的 ABI/schema 冻结、兼容策略、故障注入和性能矩阵顺延到 `v1.1.0`。
+- `v0.10.3` 把用户代码目录模型一次性切到长期形态：`app/` 是唯一用户业务代码根，
+  `app/rust/mod.rs` 是 Rust 用户入口，`app/cpp/**` 和 `app/c/**` 是 C/C++ 用户实现与
+  同目录头文件位置；`flowrt/` 仍只放可删除生成物。旧 `src/rust` / `src/cpp` 不再作为
+  FlowRT 用户结构存在，不保留兼容、fallback、迁移提示或 legacy 开关。
+- `v0.11.0` 应把 FlowRT 从“可生成可运行”推进到“可作为 app SDK 顺手使用”：`flowrt init`
+  创建现代项目骨架，`flowrt add component/module/message` 生成可填空用户实现骨架，
+  `flowrt check` / `flowrt explain` 展示 component/task 用户 API、参数、输入输出、
+  service/operation handle、trigger、lane 和 concurrency。结构诊断只面向现代
+  `app/` 布局，不为旧 `src/` 历史形态提供迁移层或提示。
+- `v0.11.0` 同时落地 C ABI v0 基础：C 侧事实源继续放
+  `runtime/cpp/include/flowrt/abi.h`，只暴露 POD、固定宽度整数、borrowed
+  string/bytes/frame view、状态码、错误码和 callback table；不暴露 C++/Rust 对象、
+  backend SDK handle、动态插件 ABI 或所有权语义。C component 先编进 app binary，
+  形成最小可运行 demo；Python binding 不进入本版本，后续只能建立在该 C ABI 边界上。
+- `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
+  长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 
 `v0.4.0` 的 Service runtime 目标是：生成 Rust/C++ service client/server 用户 API；
 Service transport 支持 `inproc` 与 `zenoh`；`iox2` 暂不作为 Service transport，
