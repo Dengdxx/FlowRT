@@ -17,7 +17,7 @@ User code controls algorithms.
 本文主要面向 **基于 FlowRT 开发机器人应用的人**。你通常只需要关心：
 
 - 在 `rsdl/` 中声明系统契约。
-- 在 `src/` 中实现组件算法。
+- 在 `app/` 中实现组件算法。
 - 用 `flowrt deps` 补全底层依赖缓存，用 `flowrt build` 生成并构建应用。
 - 用 `flowrt run` 或 `flowrt launch` 运行应用。
 - 用 `flowrt status`、`flowrt echo`、`flowrt hz`、`flowrt params`、`flowrt op` 和
@@ -125,6 +125,8 @@ my_robot/
   rsdl/
     robot.rsdl
   app/
+    c/
+      controller.c
     cpp/
       components.cpp
     rust/
@@ -140,7 +142,8 @@ my_robot/
 
 - `flowrt.toml` 放项目入口，例如 `[project] main = "rsdl/robot.rsdl"`。
 - `rsdl/` 放系统契约。
-- `app/` 放用户业务算法。
+- `app/` 放用户业务算法；C v0 用户实现放 `app/c/**`，通过 callback table 接入
+  generated C++ runtime shell。
 - `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑。
 - `external/` 可放本项目随包携带的 external package；系统级 external package 也可安装到 `/opt/flowrt/external/<package>`。
 
@@ -149,7 +152,10 @@ my_robot/
 
 ## 最小 RSDL
 
-RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例：
+RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例。C component v0 使用
+同样的 RSDL 结构，只是 `language = "c"` 且用户代码放在 `app/c/**`，通过
+`FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0` callback table 接入；当前 C v0 只覆盖
+native component 和 fixed-size message，不是完整 C runtime：
 
 ```toml
 [package]
@@ -371,8 +377,9 @@ FlowRT 以 C ABI 作为后续 C、Python 和更多语言接入的共同边界。
 runtime header 已包含 `flowrt/abi.h`，Rust runtime 也提供对应的 `repr(C)` 镜像类型，
 用于稳定 status、backend health、重连策略和 borrowed string/bytes view 等基础形状。
 
-这只是 ABI 边界准备，不表示已经提供 Python binding 或 C runtime wrapper。用户组件
-当前仍以 C++ 和 Rust 生成接口为主。
+当前 C component v0 已能通过 callback table 编进 generated C++ runtime shell，适用于
+fixed-size message 的 native component 最小切片。这不表示已经提供 Python binding、
+动态加载或完整 C runtime wrapper；超出 C v0 的能力仍会被 validator 拒绝。
 
 ## 参数
 

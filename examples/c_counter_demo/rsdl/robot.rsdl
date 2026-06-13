@@ -1,0 +1,50 @@
+[package]
+name = "c_counter_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.Count]
+value = "u32"
+
+[component.counter_source]
+language = "c"
+output = ["count:Count"]
+
+[component.counter_sink]
+language = "c"
+input = ["count:Count"]
+
+[instance.counter_source]
+component = "counter_source"
+process = "control"
+target = "linux"
+
+[instance.counter_source.task]
+trigger = "periodic"
+period_ms = 10
+output = ["count"]
+
+[instance.counter_sink]
+component = "counter_sink"
+process = "control"
+target = "linux"
+
+[instance.counter_sink.task]
+trigger = "on_message"
+input = ["count"]
+
+[[bind.dataflow]]
+from = "counter_source.count"
+to = "counter_sink.count"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 50
+
+[target.linux]
+platform = "linux-amd64"
+runtime = ["c"]
+backends = ["inproc"]

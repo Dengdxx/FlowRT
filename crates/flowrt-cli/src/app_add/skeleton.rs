@@ -187,6 +187,113 @@ flowrt_app::App build_app() {
     fs::write(&path, updated).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
+pub(super) fn merge_c_component_skeleton(
+    app_root: &Path,
+    component_name: &str,
+    inputs: &[PortSpec],
+    outputs: &[PortSpec],
+) -> Result<()> {
+    let path = app_root.join("app/c").join(format!("{component_name}.c"));
+    if path.exists() {
+        anyhow::bail!("refusing to overwrite existing file `{}`", path.display());
+    }
+    let content = c_component_skeleton(component_name, inputs, outputs);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    write_new_file(&path, &content)
+}
+
+fn c_component_skeleton(
+    component_name: &str,
+    _inputs: &[PortSpec],
+    outputs: &[PortSpec],
+) -> String {
+    let run_periodic = format!("{component_name}_run_periodic");
+    let callback_factory = format!("flowrt_app_{component_name}_callbacks");
+    let inputs_line = "    (void)inputs;\n";
+    let output_body = if outputs.is_empty() {
+        "    (void)outputs;\n".to_string()
+    } else {
+        r#"    if (outputs == NULL || (outputs->len > 0U && outputs->data == NULL)) {
+        return FLOWRT_STATUS_ERROR;
+    }
+    for (size_t index = 0U; index < outputs->len; ++index) {
+        flowrt_c_output_slot_t *slot = &outputs->data[index];
+        if (slot->data == NULL || slot->capacity < slot->size_bytes) {
+            return FLOWRT_STATUS_ERROR;
+        }
+        memset(slot->data, 0, slot->size_bytes);
+        slot->written_len = slot->size_bytes;
+        slot->status = FLOWRT_C_OUTPUT_WRITTEN;
+    }
+"#
+        .to_string()
+    };
+
+    format!(
+        r#"#include "flowrt_app/c_components.h"
+
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#ifndef FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0
+#error "FlowRT C component callback ABI v0 is required"
+#endif
+
+static flowrt_status_t {run_periodic}(void *user_data,
+                                      const flowrt_c_component_context_t *context,
+                                      const flowrt_c_input_array_view_t *inputs,
+                                      flowrt_c_output_array_view_t *outputs) {{
+    (void)user_data;
+    (void)context;
+{inputs_line}{output_body}    return FLOWRT_STATUS_OK;
+}}
+
+const flowrt_c_component_callback_table_t *{callback_factory}(void) {{
+    static const flowrt_c_component_callback_table_t callbacks = {{
+        .size = (uint32_t)sizeof(flowrt_c_component_callback_table_t),
+        .version_major = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR,
+        .version_minor = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR,
+        .reserved0 = 0U,
+        .feature_flags = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0,
+        .user_data = NULL,
+        .on_init = NULL,
+        .on_start = NULL,
+        .on_stop = NULL,
+        .on_shutdown = NULL,
+        .run_periodic = {run_periodic},
+        .run_on_message = NULL,
+        .run_startup = NULL,
+        .run_shutdown = NULL,
+        .reserved = {{0U}},
+    }};
+    return &callbacks;
+}}
+"#
+    )
+}
+
+fn write_new_file(path: &Path, content: &str) -> Result<()> {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(content.as_bytes())
+                .with_context(|| format!("failed to write `{}`", path.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("refusing to overwrite existing file `{}`", path.display())
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to create `{}`", path.display())),
+    }
+}
+
 fn insert_before_namespace_close(content: &str, marker: &str, insertion: &str) -> Result<String> {
     let Some(index) = content.find(marker) else {
         anyhow::bail!("user C++ file has no anonymous namespace close marker to merge safely");

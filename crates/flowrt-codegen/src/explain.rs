@@ -244,7 +244,7 @@ fn component_explain_report(
         name: component.name.clone(),
         language: language_name(component.language).to_string(),
         kind: component_kind_name(component.kind).to_string(),
-        user_file_path: user_file_path(component.language).to_string(),
+        user_file_path: user_file_path(component).to_string(),
         tasks: component_tasks(graph, component),
         handlers: ExplainHandlers {
             on_tick: on_tick_signature(component, service_plans, operation_plans),
@@ -715,12 +715,12 @@ fn push_operation_servers_text(output: &mut String, servers: &[ExplainOperationS
     );
 }
 
-fn user_file_path(language: LanguageKind) -> &'static str {
-    match language {
-        LanguageKind::Rust => "app/rust/mod.rs",
-        LanguageKind::Cpp => "app/cpp/**",
-        LanguageKind::C => "app/c/**",
-        LanguageKind::External => "external package",
+fn user_file_path(component: &ComponentIr) -> String {
+    match component.language {
+        LanguageKind::Rust => "app/rust/mod.rs".to_string(),
+        LanguageKind::Cpp => "app/cpp/**".to_string(),
+        LanguageKind::C => format!("app/c/{}.c", component.name),
+        LanguageKind::External => "external package".to_string(),
     }
 }
 

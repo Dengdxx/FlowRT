@@ -108,11 +108,16 @@ fn cli_parses_init_command_with_default_rust_language() {
 }
 
 #[test]
-fn cli_rejects_c_init_language_until_c_component_entry_is_ready() {
-    let error = Cli::try_parse_from(["flowrt", "init", "demo_bot", "--lang", "c"])
-        .expect_err("flowrt init must not expose C app skeletons yet");
+fn cli_parses_init_command_with_c_language() {
+    let cli = Cli::try_parse_from(["flowrt", "init", "demo_bot", "--lang", "c"])
+        .expect("flowrt init should expose C app skeletons");
 
-    assert!(error.to_string().contains("invalid value 'c'"));
+    let Command::Init { path, language } = cli.command else {
+        panic!("init command should parse into Command::Init")
+    };
+
+    assert_eq!(path, PathBuf::from("demo_bot"));
+    assert_eq!(language, AppInitLanguage::C);
 }
 
 #[test]
@@ -174,11 +179,19 @@ fn cli_parses_add_message_module_and_component_commands() {
 }
 
 #[test]
-fn cli_rejects_c_add_component_language_until_c_adapter_is_ready() {
-    let error = Cli::try_parse_from(["flowrt", "add", "component", "Sensor", "--lang", "c"])
-        .expect_err("flowrt add component must not expose C skeletons yet");
+fn cli_parses_c_add_component_language() {
+    let cli = Cli::try_parse_from(["flowrt", "add", "component", "Sensor", "--lang", "c"])
+        .expect("flowrt add component should expose C skeletons");
 
-    assert!(error.to_string().contains("invalid value 'c'"));
+    let Command::Add {
+        command: AddCommand::Component { name, language, .. },
+    } = cli.command
+    else {
+        panic!("add component should parse into Command::Add")
+    };
+
+    assert_eq!(name, "Sensor");
+    assert_eq!(language, AppAddLanguage::C);
 }
 
 #[test]
@@ -240,6 +253,31 @@ fn init_app_project_writes_cpp_modern_app_layout() {
     assert_eq!(contract.types.len(), 1);
     assert_eq!(contract.components[0].language, LanguageKind::Cpp);
     assert_eq!(contract.targets[0].runtime, vec![LanguageKind::Cpp]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn init_app_project_writes_c_modern_app_layout() {
+    let root = temp_test_dir("init-c").join("demo-bot");
+
+    let output = init_app_project(&root, AppInitLanguage::C).unwrap();
+
+    assert!(output.contains("language=c"));
+    assert!(root.join("flowrt.toml").is_file());
+    assert!(root.join("rsdl/robot.rsdl").is_file());
+    assert!(!root.join("app/rust").exists());
+    assert!(!root.join("app/cpp").exists());
+    let app = std::fs::read_to_string(root.join("app/c/controller.c")).unwrap();
+    assert!(app.contains("#include \"flowrt_app/c_components.h\""));
+    assert!(app.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0"));
+    assert!(app.contains("flowrt_app_controller_callbacks"));
+
+    let contract = load_contract_from_rsdl(&root.join("rsdl/robot.rsdl")).unwrap();
+    assert_eq!(contract.package.name, "demo_bot");
+    assert_eq!(contract.types.len(), 1);
+    assert_eq!(contract.components[0].language, LanguageKind::C);
+    assert_eq!(contract.targets[0].runtime, vec![LanguageKind::C]);
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -411,6 +449,43 @@ fn add_component_cpp_appends_contract_and_modern_skeleton() {
     assert!(app.contains("class Source final : public flowrt_app::SourceInterface"));
     assert!(app.contains("sample.write(flowrt_app::Sample{});"));
     assert!(app.contains("std::make_unique<Source>()"));
+    let contract = load_contract_from_rsdl(&rsdl).unwrap();
+    assert!(
+        contract
+            .components
+            .iter()
+            .any(|component| component.name == "source")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_component_c_appends_contract_and_callback_skeleton() {
+    let root = temp_test_dir("add-component-c").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::C).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+    add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+
+    add_component_to_rsdl(
+        &rsdl,
+        AddComponentSpec {
+            name: "Source".to_string(),
+            language: AppAddLanguage::C,
+            inputs: Vec::new(),
+            outputs: vec!["sample:Sample".to_string()],
+        },
+    )
+    .unwrap();
+
+    let source = std::fs::read_to_string(&rsdl).unwrap();
+    assert!(source.contains("[component.source]"));
+    assert!(source.contains("language = \"c\""));
+    assert!(source.contains("output = [\"sample:Sample\"]"));
+    let app = std::fs::read_to_string(root.join("app/c/source.c")).unwrap();
+    assert!(app.contains("#include \"flowrt_app/c_components.h\""));
+    assert!(app.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0"));
+    assert!(app.contains("flowrt_app_source_callbacks"));
+    assert!(app.contains("FLOWRT_C_OUTPUT_WRITTEN"));
     let contract = load_contract_from_rsdl(&rsdl).unwrap();
     assert!(
         contract

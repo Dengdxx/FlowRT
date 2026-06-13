@@ -174,7 +174,7 @@ period_ms = 10
     let report = explain_report(&ir);
     let text = format_explain_report_text(&report);
 
-    assert!(text.contains("component driver language=c kind=native user_file=app/c/**"));
+    assert!(text.contains("component driver language=c kind=native user_file=app/c/driver.c"));
     assert!(
         text.contains("on_tick: C callback table adapter declared in flowrt_app/c_components.h")
     );

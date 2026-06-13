@@ -51,20 +51,23 @@ flowrt deps
 flowrt build
 ```
 
-默认骨架使用 Rust 用户组件入口 `app/rust/mod.rs`。C++ 项目使用：
+默认骨架使用 Rust 用户组件入口 `app/rust/mod.rs`。C++ 和 C 项目使用：
 
 ```bash
 flowrt init my_cpp_robot --lang cpp
+flowrt init my_c_robot --lang c
 ```
 
-`flowrt init` 当前只开放 Rust 和 C++，不开放 C app 用户入口；C component 要等 C ABI v0
-后续切片跑通后再作为用户入口支持。
+`--lang c` 生成 `app/c/controller.c`，通过 C ABI v0 callback table 接入 generated C++
+runtime shell。当前 C component 是 fixed-size message 的最小切片，不是完整 C runtime；
+params、service、operation、variable frame、`io_boundary` 和 `external` 仍由 validator 拒绝。
 
 从空骨架继续追加 message 和 component：
 
 ```bash
 flowrt add message Sample value:u32
 flowrt add component Source --lang rust --output sample:Sample
+flowrt add component CSource --lang c --output sample:Sample
 flowrt check
 ```
 
@@ -73,8 +76,8 @@ flowrt check
 并把用户实现骨架合并到现代 `app/` 用户代码目录。带 `--input name:Type` 的 component
 会先声明 input port，但初始 task 不自动消费 input；需要上游数据时，应补上
 `[[bind.dataflow]]` 或 island boundary 后再把 input 加入 task，避免 `flowrt check` 因缺失
-incoming bind 失败。`flowrt add component --lang c` 当前仍会被拒绝，等待 C ABI adapter
-后续切片开放。
+incoming bind 失败。`flowrt add component --lang c` 会生成 `app/c/<component>.c`，
+骨架只覆盖 C v0 native callback table 和 fixed-size output 默认值。
 
 FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
 
@@ -157,7 +160,8 @@ examples/import_demo/flowrt/
   contract/contract.ir.json
   build/
   launch/launch.json
-  src/
+  rust/
+  cpp/
 ```
 
 `flowrt/` 是 FlowRT 管理目录，可以删除后重新生成。用户算法代码应放在项目自己的 `app/` 目录，不放进生成目录。

@@ -11,6 +11,7 @@
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
 | `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | 验证 workspace / module / composition、跨模块引用和同名 module symbol 的生成命名 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
+| `examples/c_counter_demo` | C callback v0 | `inproc` | `flowrt run examples/c_counter_demo/rsdl/robot.rsdl --run-steps 3` | 验证 C component callback table、fixed-size message input/output 和 CMake app 运行 |
 | `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息、参数 schema 和生成物边界；不伪装为 mixed inproc 可运行 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |
@@ -126,6 +127,34 @@ counter_source.count -> counter_sink.count
 flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
+```
+
+## `c_counter_demo`
+
+入口文件：
+
+```text
+examples/c_counter_demo/rsdl/robot.rsdl
+```
+
+该示例是 C component v0 的最小闭环：
+
+```text
+counter_source.count -> counter_sink.count
+```
+
+用户实现位于 `examples/c_counter_demo/app/c/`。两个 C 文件实现 generated
+`flowrt_app/c_components.h` 声明的 callback table factory，并显式设置
+`FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0`。示例只使用 fixed-size `Count` message、
+native component 和 `inproc` channel，用来验证 C ABI v0 callback table 可以随 generated
+C++ runtime shell 一起 build/run；它不表示 C 已支持 params、service、operation、
+variable frame、`io_boundary`、`external` 或独立 C runtime。
+
+常用命令：
+
+```bash
+flowrt build examples/c_counter_demo/rsdl/robot.rsdl
+flowrt run examples/c_counter_demo/rsdl/robot.rsdl --run-steps 3
 ```
 
 ## `imu_demo`

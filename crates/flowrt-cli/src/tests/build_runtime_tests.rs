@@ -85,6 +85,27 @@ language = "cpp"
 }
 
 #[test]
+fn build_plan_selects_cmake_for_c_contract() {
+    let contract = contract_from_source(
+        r#"
+[package]
+name = "c_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "c"
+"#,
+    );
+
+    assert_eq!(build_steps(&contract, false), vec![BuildStep::CmakeApp]);
+    assert_eq!(
+        build_steps(&contract, true),
+        vec![BuildStep::CmakeApp, BuildStep::CargoSupervisor]
+    );
+    assert!(build_uses_cpp_toolchain(&contract));
+}
+
+#[test]
 fn default_build_plan_does_not_build_launcher() {
     let contract = contract_from_source(
         r#"
@@ -227,6 +248,18 @@ language = "cpp"
 "#,
     );
     assert_eq!(run_mode(&cpp_contract), Some(RunMode::CmakeApp));
+
+    let c_contract = contract_from_source(
+        r#"
+[package]
+name = "c_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "c"
+"#,
+    );
+    assert_eq!(run_mode(&c_contract), Some(RunMode::CmakeApp));
 
     let rust_contract = contract_from_source(
         r#"

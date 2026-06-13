@@ -17,7 +17,9 @@ use rsdl::{
     nested_table_exists, parse_rsdl_value, read_rsdl_source, render_rsdl_value, table_entry_mut,
     write_new_file, write_validated_rsdl_replacement,
 };
-use skeleton::{merge_cpp_component_skeleton, merge_rust_component_skeleton};
+use skeleton::{
+    merge_c_component_skeleton, merge_cpp_component_skeleton, merge_rust_component_skeleton,
+};
 use types::{parse_field_specs, parse_port_specs};
 
 #[derive(Debug, Subcommand)]
@@ -46,12 +48,12 @@ pub(crate) enum AddCommand {
         rsdl: Option<PathBuf>,
     },
 
-    /// 追加 Rust/C++ native component、instance、task 和用户代码骨架。
+    /// 追加 Rust/C++/C native component、instance、task 和用户代码骨架。
     Component {
         /// Component 名称，推荐 PascalCase；RSDL 中会规范化为 snake_case。
         name: String,
 
-        /// 用户组件语言；当前只开放 Rust/C++，C 等后续 C ABI adapter 切片。
+        /// 用户组件语言；C 当前使用 callback table v0 最小切片。
         #[arg(long = "lang", value_enum)]
         language: AppAddLanguage,
 
@@ -72,6 +74,7 @@ pub(crate) enum AddCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum AppAddLanguage {
     Rust,
+    C,
     Cpp,
 }
 
@@ -79,6 +82,7 @@ impl AppAddLanguage {
     pub(super) fn as_rsdl(self) -> &'static str {
         match self {
             Self::Rust => "rust",
+            Self::C => "c",
             Self::Cpp => "cpp",
         }
     }
@@ -203,6 +207,9 @@ pub(crate) fn add_component_to_rsdl(rsdl: &Path, spec: AddComponentSpec) -> Resu
     match spec.language {
         AppAddLanguage::Rust => {
             merge_rust_component_skeleton(&app_root, &component_name, &inputs, &outputs)?
+        }
+        AppAddLanguage::C => {
+            merge_c_component_skeleton(&app_root, &component_name, &inputs, &outputs)?
         }
         AppAddLanguage::Cpp => {
             merge_cpp_component_skeleton(&app_root, &component_name, &inputs, &outputs)?

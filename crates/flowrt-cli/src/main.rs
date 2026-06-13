@@ -86,7 +86,7 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// 用户组件语言；当前只开放 Rust/C++，不开放 C app 入口。
+        /// 用户组件语言；当前开放 Rust/C++ 和 C callback table v0。
         #[arg(long = "lang", value_enum, default_value = "rust")]
         language: AppInitLanguage,
     },
@@ -715,6 +715,7 @@ enum CacheCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum AppInitLanguage {
     Rust,
+    C,
     Cpp,
 }
 
@@ -722,6 +723,7 @@ impl AppInitLanguage {
     fn as_str(self) -> &'static str {
         match self {
             Self::Rust => "rust",
+            Self::C => "c",
             Self::Cpp => "cpp",
         }
     }
@@ -1373,6 +1375,10 @@ fn init_app_project(root: &Path, language: AppInitLanguage) -> Result<String> {
             PathBuf::from("app/rust/mod.rs"),
             app_init_rust_template().to_string(),
         )),
+        AppInitLanguage::C => files.push((
+            PathBuf::from("app/c/controller.c"),
+            app_init_c_template().to_string(),
+        )),
         AppInitLanguage::Cpp => files.push((
             PathBuf::from("app/cpp/components.cpp"),
             app_init_cpp_template().to_string(),
@@ -1548,6 +1554,69 @@ flowrt_app::App build_app() {
 }
 
 }  // namespace flowrt_user
+"#
+}
+
+fn app_init_c_template() -> &'static str {
+    r#"#include "flowrt_app/c_components.h"
+
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#ifndef FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0
+#error "FlowRT C component callback ABI v0 is required"
+#endif
+
+typedef struct ControllerState {
+    uint32_t value;
+} ControllerState;
+
+static flowrt_status_t controller_run_periodic(void *user_data,
+                                               const flowrt_c_component_context_t *context,
+                                               const flowrt_c_input_array_view_t *inputs,
+                                               flowrt_c_output_array_view_t *outputs) {
+    (void)context;
+    (void)inputs;
+    ControllerState *state = (ControllerState *)user_data;
+    if (state == NULL || outputs == NULL || outputs->data == NULL || outputs->len != 1U) {
+        return FLOWRT_STATUS_ERROR;
+    }
+    flowrt_c_output_slot_t *tick = &outputs->data[0];
+    if (tick->data == NULL || tick->capacity < sizeof(uint32_t) ||
+        tick->size_bytes != sizeof(uint32_t)) {
+        return FLOWRT_STATUS_ERROR;
+    }
+    const uint32_t value = state->value++;
+    memset(tick->data, 0, tick->capacity);
+    memcpy(tick->data, &value, sizeof(value));
+    tick->written_len = sizeof(value);
+    tick->status = FLOWRT_C_OUTPUT_WRITTEN;
+    return FLOWRT_STATUS_OK;
+}
+
+static ControllerState controller_state = {0U};
+
+const flowrt_c_component_callback_table_t *flowrt_app_controller_callbacks(void) {
+    static const flowrt_c_component_callback_table_t callbacks = {
+        .size = (uint32_t)sizeof(flowrt_c_component_callback_table_t),
+        .version_major = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR,
+        .version_minor = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR,
+        .reserved0 = 0U,
+        .feature_flags = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0,
+        .user_data = &controller_state,
+        .on_init = NULL,
+        .on_start = NULL,
+        .on_stop = NULL,
+        .on_shutdown = NULL,
+        .run_periodic = controller_run_periodic,
+        .run_on_message = NULL,
+        .run_startup = NULL,
+        .run_shutdown = NULL,
+        .reserved = {0U},
+    };
+    return &callbacks;
+}
 "#
 }
 
@@ -3245,7 +3314,7 @@ fn build_steps(contract: &ContractIr, include_launcher: bool) -> Vec<BuildStep> 
     if has_component_language(contract, LanguageKind::Rust) {
         steps.push(BuildStep::CargoApp);
     }
-    if has_component_language(contract, LanguageKind::Cpp) || has_ros2_bridge(contract) {
+    if has_cmake_app_components(contract) || has_ros2_bridge(contract) {
         steps.push(BuildStep::CmakeApp);
     }
     if include_launcher {
@@ -3257,7 +3326,7 @@ fn build_steps(contract: &ContractIr, include_launcher: bool) -> Vec<BuildStep> 
 fn run_mode(contract: &ContractIr) -> Option<RunMode> {
     match (
         has_component_language(contract, LanguageKind::Rust),
-        has_component_language(contract, LanguageKind::Cpp),
+        has_cmake_app_components(contract),
     ) {
         (true, false) => Some(RunMode::CargoApp),
         (false, true) => Some(RunMode::CmakeApp),
@@ -3335,8 +3404,7 @@ fn has_ros2_bridge(contract: &ContractIr) -> bool {
 }
 
 fn is_mixed_language_contract(contract: &ContractIr) -> bool {
-    has_component_language(contract, LanguageKind::Rust)
-        && has_component_language(contract, LanguageKind::Cpp)
+    has_component_language(contract, LanguageKind::Rust) && has_cmake_app_components(contract)
 }
 
 fn ensure_direct_runtime_supported(contract: &ContractIr, command: &str) -> Result<()> {
@@ -3373,8 +3441,7 @@ struct ProcessRuntimeFlags {
 impl ProcessRuntimeFlags {
     fn add(&mut self, language: LanguageKind) {
         match language {
-            LanguageKind::C => {}
-            LanguageKind::Cpp => self.cpp = true,
+            LanguageKind::C | LanguageKind::Cpp => self.cpp = true,
             LanguageKind::Rust => self.rust = true,
             LanguageKind::External => {}
         }
@@ -5138,7 +5205,7 @@ fn build_success_paths(build_info: &build_model::BuildInfo, out_dir: &Path) -> V
 }
 
 fn build_uses_cpp_toolchain(contract: &ContractIr) -> bool {
-    has_component_language(contract, LanguageKind::Cpp) || has_ros2_bridge(contract)
+    has_cmake_app_components(contract) || has_ros2_bridge(contract)
 }
 
 fn build_pkg_config_modules(contract: &ContractIr, selected_platform: &str) -> Vec<String> {
@@ -5686,13 +5753,18 @@ fn run_cmake_configure_and_build(
     let cpp_app = build_dir.join(cpp_app_executable_name(contract));
     let ros2_bridge = build_dir.join(ros2_bridge_executable_name(contract));
     Ok(CmakeBuildOutputs {
-        cpp_app: has_component_language(contract, LanguageKind::Cpp)
+        cpp_app: has_cmake_app_components(contract)
             .then_some(cpp_app)
             .and_then(existing_executable),
         ros2_bridge: has_ros2_bridge(contract)
             .then_some(ros2_bridge)
             .and_then(existing_executable),
     })
+}
+
+fn has_cmake_app_components(contract: &ContractIr) -> bool {
+    has_component_language(contract, LanguageKind::C)
+        || has_component_language(contract, LanguageKind::Cpp)
 }
 
 fn cmake_build_dir(
