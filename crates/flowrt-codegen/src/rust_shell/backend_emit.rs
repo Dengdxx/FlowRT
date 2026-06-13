@@ -136,16 +136,7 @@ pub(super) fn runtime_channel_commit_with_health(
     bind: &BindRuntimePlan,
     task_health_name: &str,
 ) -> String {
-    let body = runtime_channel_write_inner(bind, Some(task_health_name))
-        .replace("self.", "app.")
-        .replace(
-            "return flowrt::Status::Retry;",
-            "return flowrt::Status::Retry;",
-        )
-        .replace(
-            "return flowrt::Status::Error;",
-            "return flowrt::Status::Error;",
-        );
+    let body = runtime_channel_write_inner(bind, Some(task_health_name)).replace("self.", "app.");
     let health_arg = if body.contains("health_map") {
         "health_map"
     } else {
