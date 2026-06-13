@@ -580,9 +580,10 @@ scripts/
   validator 和 launch manifest 已保留 service 拓扑，但 runtime RPC 调用 API 仍是后续
   切片。
 - C/Python ABI 边界准备：`runtime/cpp/include/flowrt/abi.h` 定义 C ABI 版本、
-  status/backend/health 整数编码、borrowed string/bytes view、reconnect policy 和
-  backend health snapshot；Rust runtime 提供对应 `repr(C)` 镜像类型和转换函数。当前
-  只是稳定跨语言边界，不提供 C runtime wrapper 或 Python binding。
+  status/backend/health 整数编码、borrowed string/bytes view、reconnect policy、
+  backend health snapshot，以及 C component context、fixed input view、output slot 和
+  callback table；Rust runtime 提供对应 `repr(C)` 镜像类型和转换函数。当前只是稳定跨
+  语言边界，不提供 C runtime wrapper、C codegen、C app demo 或 Python binding。
 - C++ only contract 的 CMake app 路径，支持 `flowrt build` / `flowrt run` / `flowrt launch`。
 - language-separated mixed contract over `iox2` 或 `zenoh`，并拒绝同一 process group
   内混合 C++/Rust 以及 mixed `inproc` process boundary。
@@ -695,8 +696,10 @@ error。Rust `IntrospectionState` 会在 mutex poison 后恢复访问。
 
 Runtime 已提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象。C ABI 当前覆盖
 `Status`、backend kind、backend health state、borrowed string/bytes view、
-`ReconnectPolicy` 和 `BackendHealthSnapshot` 的稳定 POD 形状；Rust/C++ runtime 内部
-仍使用各自语言的高层类型，并通过转换函数或 C header 对齐。`iox2` 和 `zenoh`
+`ReconnectPolicy`、`BackendHealthSnapshot`、C component context、fixed input view、
+output slot 和 callback table 的稳定 POD 形状；Rust/C++ runtime 内部仍使用各自语言的
+高层类型，并通过转换函数或 C header 对齐。该 callback table 只表达边界，不表示 C
+codegen、C app demo、动态加载或 Python binding 已开放。`iox2` 和 `zenoh`
 endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地
 publisher/subscriber/session；codec/schema 错误不得触发重连。
 

@@ -18,6 +18,10 @@ extern "C" {
 #define FLOWRT_ABI_VERSION_MAJOR UINT32_C(0)
 #define FLOWRT_ABI_VERSION_MINOR UINT32_C(1)
 
+#define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR UINT32_C(0)
+#define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR UINT32_C(1)
+#define FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 UINT64_C(1)
+
 typedef uint32_t flowrt_status_t;
 #define FLOWRT_STATUS_OK ((flowrt_status_t)0U)
 #define FLOWRT_STATUS_RETRY ((flowrt_status_t)1U)
@@ -94,6 +98,94 @@ typedef struct flowrt_frame_descriptor_t {
     flowrt_string_view_t encoding;
     flowrt_string_view_t metadata_json;
 } flowrt_frame_descriptor_t;
+
+/* ── C component callback ABI ─────────────────────────────────────────────── */
+
+/*
+ * C component callback ABI 只描述 FlowRT runtime shell 与已编入 app binary 的 C
+ * component 之间的调用边界。所有名称和 payload 都是借用视图；callback 不接管
+ * 输入 payload、输出 slot 或 user_data 的所有权。函数指针可以按 C 语言惯例传
+ * NULL；adapter 必须在调用前校验 size、version、feature_flags 和必填 callback。
+ */
+
+typedef uint32_t flowrt_c_output_status_t;
+#define FLOWRT_C_OUTPUT_UNWRITTEN ((flowrt_c_output_status_t)0U)
+#define FLOWRT_C_OUTPUT_WRITTEN ((flowrt_c_output_status_t)1U)
+#define FLOWRT_C_OUTPUT_TRUNCATED ((flowrt_c_output_status_t)2U)
+#define FLOWRT_C_OUTPUT_ERROR ((flowrt_c_output_status_t)3U)
+
+typedef struct flowrt_c_component_context_t {
+    flowrt_string_view_t component_name;
+    flowrt_string_view_t instance_name;
+    flowrt_string_view_t task_name;
+    flowrt_string_view_t lane_name;
+    uint64_t step;
+    uint64_t tick_time_ms;
+    uint64_t deadline_ms;
+    uint8_t has_deadline_ms;
+    uint8_t reserved[7];
+} flowrt_c_component_context_t;
+
+typedef struct flowrt_c_input_view_t {
+    flowrt_string_view_t name;
+    flowrt_string_view_t type_name;
+    uint64_t schema_hash;
+    uint64_t size_bytes;
+    flowrt_bytes_view_t payload;
+    uint64_t source_time_ms;
+    uint64_t revision;
+    uint8_t present;
+    uint8_t stale;
+    uint8_t reserved[6];
+} flowrt_c_input_view_t;
+
+typedef struct flowrt_c_output_slot_t {
+    flowrt_string_view_t name;
+    flowrt_string_view_t type_name;
+    uint64_t schema_hash;
+    uint64_t size_bytes;
+    uint8_t *data;
+    size_t capacity;
+    size_t written_len;
+    flowrt_c_output_status_t status;
+    uint8_t reserved[4];
+} flowrt_c_output_slot_t;
+
+typedef struct flowrt_c_input_array_view_t {
+    const flowrt_c_input_view_t *data;
+    size_t len;
+} flowrt_c_input_array_view_t;
+
+typedef struct flowrt_c_output_array_view_t {
+    flowrt_c_output_slot_t *data;
+    size_t len;
+} flowrt_c_output_array_view_t;
+
+typedef flowrt_status_t (*flowrt_c_lifecycle_callback_t)(
+    void *user_data, const flowrt_c_component_context_t *context);
+
+typedef flowrt_status_t (*flowrt_c_task_callback_t)(void *user_data,
+                                                    const flowrt_c_component_context_t *context,
+                                                    const flowrt_c_input_array_view_t *inputs,
+                                                    flowrt_c_output_array_view_t *outputs);
+
+typedef struct flowrt_c_component_callback_table_t {
+    uint32_t size;
+    uint32_t version_major;
+    uint32_t version_minor;
+    uint32_t reserved0;
+    uint64_t feature_flags;
+    void *user_data;
+    flowrt_c_lifecycle_callback_t on_init;
+    flowrt_c_lifecycle_callback_t on_start;
+    flowrt_c_lifecycle_callback_t on_stop;
+    flowrt_c_lifecycle_callback_t on_shutdown;
+    flowrt_c_task_callback_t run_periodic;
+    flowrt_c_task_callback_t run_on_message;
+    flowrt_c_task_callback_t run_startup;
+    flowrt_c_task_callback_t run_shutdown;
+    uint64_t reserved[8];
+} flowrt_c_component_callback_table_t;
 
 /* ── Service ABI ──────────────────────────────────────────────────────────── */
 

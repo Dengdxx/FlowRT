@@ -73,6 +73,13 @@ int main() {
     static_assert(FLOWRT_FRAME_LEASE_EXPIRED == 3U);
     static_assert(FLOWRT_FRAME_LEASE_GENERATION_MISMATCH == 4U);
     static_assert(FLOWRT_FRAME_LEASE_ERROR == 5U);
+    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR == 0U);
+    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 1U);
+    static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 == 1U);
+    static_assert(FLOWRT_C_OUTPUT_UNWRITTEN == 0U);
+    static_assert(FLOWRT_C_OUTPUT_WRITTEN == 1U);
+    static_assert(FLOWRT_C_OUTPUT_TRUNCATED == 2U);
+    static_assert(FLOWRT_C_OUTPUT_ERROR == 3U);
     static_assert(offsetof(flowrt_string_view_t, data) == 0U);
     static_assert(offsetof(flowrt_string_view_t, len) == sizeof(void *));
     static_assert(sizeof(flowrt_string_view_t) == sizeof(void *) * 2U);
@@ -95,6 +102,58 @@ int main() {
     static_assert(offsetof(flowrt_frame_descriptor_t, resource) == 0U);
     static_assert(offsetof(flowrt_frame_descriptor_t, size_bytes) ==
                   sizeof(flowrt_resource_descriptor_t));
+    static_assert(sizeof(flowrt_c_component_context_t) == 96U);
+    static_assert(offsetof(flowrt_c_component_context_t, component_name) == 0U);
+    static_assert(offsetof(flowrt_c_component_context_t, instance_name) ==
+                  sizeof(flowrt_string_view_t));
+    static_assert(offsetof(flowrt_c_component_context_t, task_name) ==
+                  sizeof(flowrt_string_view_t) * 2U);
+    static_assert(offsetof(flowrt_c_component_context_t, lane_name) ==
+                  sizeof(flowrt_string_view_t) * 3U);
+    static_assert(offsetof(flowrt_c_component_context_t, step) == 64U);
+    static_assert(offsetof(flowrt_c_component_context_t, tick_time_ms) == 72U);
+    static_assert(offsetof(flowrt_c_component_context_t, deadline_ms) == 80U);
+    static_assert(offsetof(flowrt_c_component_context_t, has_deadline_ms) == 88U);
+    static_assert(sizeof(flowrt_c_input_view_t) == 88U);
+    static_assert(offsetof(flowrt_c_input_view_t, name) == 0U);
+    static_assert(offsetof(flowrt_c_input_view_t, type_name) == sizeof(flowrt_string_view_t));
+    static_assert(offsetof(flowrt_c_input_view_t, schema_hash) == 32U);
+    static_assert(offsetof(flowrt_c_input_view_t, size_bytes) == 40U);
+    static_assert(offsetof(flowrt_c_input_view_t, payload) == 48U);
+    static_assert(offsetof(flowrt_c_input_view_t, source_time_ms) == 64U);
+    static_assert(offsetof(flowrt_c_input_view_t, revision) == 72U);
+    static_assert(offsetof(flowrt_c_input_view_t, present) == 80U);
+    static_assert(offsetof(flowrt_c_input_view_t, stale) == 81U);
+    static_assert(sizeof(flowrt_c_output_slot_t) == 80U);
+    static_assert(offsetof(flowrt_c_output_slot_t, name) == 0U);
+    static_assert(offsetof(flowrt_c_output_slot_t, type_name) == sizeof(flowrt_string_view_t));
+    static_assert(offsetof(flowrt_c_output_slot_t, schema_hash) == 32U);
+    static_assert(offsetof(flowrt_c_output_slot_t, size_bytes) == 40U);
+    static_assert(offsetof(flowrt_c_output_slot_t, data) == 48U);
+    static_assert(offsetof(flowrt_c_output_slot_t, capacity) == 56U);
+    static_assert(offsetof(flowrt_c_output_slot_t, written_len) == 64U);
+    static_assert(offsetof(flowrt_c_output_slot_t, status) == 72U);
+    static_assert(sizeof(flowrt_c_input_array_view_t) == sizeof(void *) * 2U);
+    static_assert(offsetof(flowrt_c_input_array_view_t, data) == 0U);
+    static_assert(offsetof(flowrt_c_input_array_view_t, len) == sizeof(void *));
+    static_assert(sizeof(flowrt_c_output_array_view_t) == sizeof(void *) * 2U);
+    static_assert(offsetof(flowrt_c_output_array_view_t, data) == 0U);
+    static_assert(offsetof(flowrt_c_output_array_view_t, len) == sizeof(void *));
+    static_assert(sizeof(flowrt_c_component_callback_table_t) == 160U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, size) == 0U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, version_major) == 4U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, version_minor) == 8U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, feature_flags) == 16U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, user_data) == 24U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, on_init) == 32U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, on_start) == 40U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, on_stop) == 48U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, on_shutdown) == 56U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, run_periodic) == 64U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, run_on_message) == 72U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, run_startup) == 80U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, run_shutdown) == 88U);
+    static_assert(offsetof(flowrt_c_component_callback_table_t, reserved) == 96U);
     static_assert(std::is_same_v<flowrt::UInt128, flowrt_u128_t>);
     static_assert(std::is_same_v<flowrt::Int128, flowrt_i128_t>);
 

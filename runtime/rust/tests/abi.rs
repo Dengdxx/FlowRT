@@ -4,15 +4,20 @@ use flowrt::{
     BackendHealthSnapshot, BackendHealthState, FrameDescriptor, FrameLeaseStatus, FrameMetadata,
     ReconnectPolicy, ResourceDescriptor, Status,
     abi::{
-        FLOWRT_ABI_VERSION_MAJOR, FLOWRT_ABI_VERSION_MINOR, FLOWRT_BACKEND_HEALTH_DEGRADED,
-        FLOWRT_BACKEND_HEALTH_FAILED, FLOWRT_BACKEND_HEALTH_READY,
-        FLOWRT_BACKEND_HEALTH_RECONNECTING, FLOWRT_BACKEND_HEALTH_UNSUPPORTED,
-        FLOWRT_BACKEND_INPROC, FLOWRT_BACKEND_IOX2, FLOWRT_BACKEND_ZENOH,
+        FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0, FLOWRT_ABI_VERSION_MAJOR,
+        FLOWRT_ABI_VERSION_MINOR, FLOWRT_BACKEND_HEALTH_DEGRADED, FLOWRT_BACKEND_HEALTH_FAILED,
+        FLOWRT_BACKEND_HEALTH_READY, FLOWRT_BACKEND_HEALTH_RECONNECTING,
+        FLOWRT_BACKEND_HEALTH_UNSUPPORTED, FLOWRT_BACKEND_INPROC, FLOWRT_BACKEND_IOX2,
+        FLOWRT_BACKEND_ZENOH, FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR,
+        FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, FLOWRT_C_OUTPUT_ERROR,
+        FLOWRT_C_OUTPUT_TRUNCATED, FLOWRT_C_OUTPUT_UNWRITTEN, FLOWRT_C_OUTPUT_WRITTEN,
         FLOWRT_FRAME_LEASE_ACQUIRED, FLOWRT_FRAME_LEASE_ATTACHED, FLOWRT_FRAME_LEASE_ERROR,
         FLOWRT_FRAME_LEASE_EXPIRED, FLOWRT_FRAME_LEASE_GENERATION_MISMATCH,
         FLOWRT_FRAME_LEASE_RELEASED, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
-        FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtFrameDescriptor, FlowrtI128,
-        FlowrtReconnectPolicy, FlowrtResourceDescriptor, FlowrtStringView, FlowrtU128,
+        FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtCComponentCallbackTable,
+        FlowrtCComponentContext, FlowrtCInputArrayView, FlowrtCInputView, FlowrtCLifecycleCallback,
+        FlowrtCOutputArrayView, FlowrtCOutputSlot, FlowrtCTaskCallback, FlowrtFrameDescriptor,
+        FlowrtI128, FlowrtReconnectPolicy, FlowrtResourceDescriptor, FlowrtStringView, FlowrtU128,
         backend_health_snapshot_to_abi, backend_health_state_to_abi, frame_descriptor_to_abi,
         frame_lease_status_to_abi, reconnect_policy_to_abi, status_to_abi,
     },
@@ -181,4 +186,108 @@ fn abi_frame_descriptor_and_lease_status_are_plain_borrowed_views() {
     assert_eq!(abi.format.len, 4);
     assert_eq!(abi.encoding.len, "row_major".len());
     assert_eq!(abi.metadata_json.len, r#"{"width":"640"}"#.len());
+}
+
+#[test]
+fn c_component_callback_abi_constants_are_stable() {
+    assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR, 0);
+    assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, 1);
+    assert_eq!(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0, 1);
+
+    assert_eq!(FLOWRT_C_OUTPUT_UNWRITTEN, 0);
+    assert_eq!(FLOWRT_C_OUTPUT_WRITTEN, 1);
+    assert_eq!(FLOWRT_C_OUTPUT_TRUNCATED, 2);
+    assert_eq!(FLOWRT_C_OUTPUT_ERROR, 3);
+}
+
+#[test]
+fn c_component_context_layout_is_stable() {
+    assert_eq!(size_of::<FlowrtCComponentContext>(), 96);
+    assert_eq!(align_of::<FlowrtCComponentContext>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtCComponentContext, component_name), 0);
+    assert_eq!(
+        offset_of!(FlowrtCComponentContext, instance_name),
+        size_of::<FlowrtStringView>()
+    );
+    assert_eq!(
+        offset_of!(FlowrtCComponentContext, task_name),
+        size_of::<FlowrtStringView>() * 2
+    );
+    assert_eq!(
+        offset_of!(FlowrtCComponentContext, lane_name),
+        size_of::<FlowrtStringView>() * 3
+    );
+    assert_eq!(offset_of!(FlowrtCComponentContext, step), 64);
+    assert_eq!(offset_of!(FlowrtCComponentContext, tick_time_ms), 72);
+    assert_eq!(offset_of!(FlowrtCComponentContext, deadline_ms), 80);
+    assert_eq!(offset_of!(FlowrtCComponentContext, has_deadline_ms), 88);
+}
+
+#[test]
+fn c_component_input_and_output_views_use_borrowed_buffers() {
+    assert_eq!(size_of::<FlowrtCInputView>(), 88);
+    assert_eq!(align_of::<FlowrtCInputView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtCInputView, name), 0);
+    assert_eq!(
+        offset_of!(FlowrtCInputView, type_name),
+        size_of::<FlowrtStringView>()
+    );
+    assert_eq!(offset_of!(FlowrtCInputView, schema_hash), 32);
+    assert_eq!(offset_of!(FlowrtCInputView, size_bytes), 40);
+    assert_eq!(offset_of!(FlowrtCInputView, payload), 48);
+    assert_eq!(offset_of!(FlowrtCInputView, source_time_ms), 64);
+    assert_eq!(offset_of!(FlowrtCInputView, revision), 72);
+    assert_eq!(offset_of!(FlowrtCInputView, present), 80);
+    assert_eq!(offset_of!(FlowrtCInputView, stale), 81);
+
+    assert_eq!(size_of::<FlowrtCOutputSlot>(), 80);
+    assert_eq!(align_of::<FlowrtCOutputSlot>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtCOutputSlot, name), 0);
+    assert_eq!(
+        offset_of!(FlowrtCOutputSlot, type_name),
+        size_of::<FlowrtStringView>()
+    );
+    assert_eq!(offset_of!(FlowrtCOutputSlot, schema_hash), 32);
+    assert_eq!(offset_of!(FlowrtCOutputSlot, size_bytes), 40);
+    assert_eq!(offset_of!(FlowrtCOutputSlot, data), 48);
+    assert_eq!(offset_of!(FlowrtCOutputSlot, capacity), 56);
+    assert_eq!(offset_of!(FlowrtCOutputSlot, written_len), 64);
+    assert_eq!(offset_of!(FlowrtCOutputSlot, status), 72);
+}
+
+#[test]
+fn c_component_callback_table_layout_is_stable() {
+    assert_eq!(size_of::<FlowrtCLifecycleCallback>(), size_of::<usize>());
+    assert_eq!(size_of::<FlowrtCTaskCallback>(), size_of::<usize>());
+
+    assert_eq!(size_of::<FlowrtCInputArrayView>(), size_of::<usize>() * 2);
+    assert_eq!(offset_of!(FlowrtCInputArrayView, data), 0);
+    assert_eq!(offset_of!(FlowrtCInputArrayView, len), size_of::<usize>());
+
+    assert_eq!(size_of::<FlowrtCOutputArrayView>(), size_of::<usize>() * 2);
+    assert_eq!(offset_of!(FlowrtCOutputArrayView, data), 0);
+    assert_eq!(offset_of!(FlowrtCOutputArrayView, len), size_of::<usize>());
+
+    assert_eq!(size_of::<FlowrtCComponentCallbackTable>(), 160);
+    assert_eq!(
+        align_of::<FlowrtCComponentCallbackTable>(),
+        align_of::<usize>()
+    );
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, size), 0);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, version_major), 4);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, version_minor), 8);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, feature_flags), 16);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, user_data), 24);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, on_init), 32);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, on_start), 40);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, on_stop), 48);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, on_shutdown), 56);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, run_periodic), 64);
+    assert_eq!(
+        offset_of!(FlowrtCComponentCallbackTable, run_on_message),
+        72
+    );
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, run_startup), 80);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, run_shutdown), 88);
+    assert_eq!(offset_of!(FlowrtCComponentCallbackTable, reserved), 96);
 }

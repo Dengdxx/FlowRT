@@ -3,7 +3,7 @@
 //! 本模块只提供跨语言边界可共享的 `repr(C)` POD 形状和值编码。它不是 Python
 //! binding，也不暴露 backend SDK 句柄或 Rust/C++ runtime 对象所有权。
 
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
 
 use crate::service::{ServiceError, ServiceFrameHeader};
 use crate::{
@@ -13,6 +13,10 @@ use crate::{
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_ABI_VERSION_MINOR: u32 = 1;
+
+pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR: u32 = 0;
+pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 1;
+pub const FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0: u64 = 1;
 
 pub type FlowrtStatus = u32;
 pub const FLOWRT_STATUS_OK: FlowrtStatus = 0;
@@ -143,6 +147,110 @@ pub struct FlowrtFrameDescriptor {
     pub format: FlowrtStringView,
     pub encoding: FlowrtStringView,
     pub metadata_json: FlowrtStringView,
+}
+
+// ── C component callback ABI ───────────────────────────────────────────────
+
+pub type FlowrtCOutputStatus = u32;
+pub const FLOWRT_C_OUTPUT_UNWRITTEN: FlowrtCOutputStatus = 0;
+pub const FLOWRT_C_OUTPUT_WRITTEN: FlowrtCOutputStatus = 1;
+pub const FLOWRT_C_OUTPUT_TRUNCATED: FlowrtCOutputStatus = 2;
+pub const FLOWRT_C_OUTPUT_ERROR: FlowrtCOutputStatus = 3;
+
+/// C component callback 只读上下文。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCComponentContext {
+    pub component_name: FlowrtStringView,
+    pub instance_name: FlowrtStringView,
+    pub task_name: FlowrtStringView,
+    pub lane_name: FlowrtStringView,
+    pub step: u64,
+    pub tick_time_ms: u64,
+    pub deadline_ms: u64,
+    pub has_deadline_ms: u8,
+    pub reserved: [u8; 7],
+}
+
+/// C component fixed-size input borrowed view.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCInputView {
+    pub name: FlowrtStringView,
+    pub type_name: FlowrtStringView,
+    pub schema_hash: u64,
+    pub size_bytes: u64,
+    pub payload: FlowrtBytesView,
+    pub source_time_ms: u64,
+    pub revision: u64,
+    pub present: u8,
+    pub stale: u8,
+    pub reserved: [u8; 6],
+}
+
+/// C component output borrowed slot.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCOutputSlot {
+    pub name: FlowrtStringView,
+    pub type_name: FlowrtStringView,
+    pub schema_hash: u64,
+    pub size_bytes: u64,
+    pub data: *mut u8,
+    pub capacity: usize,
+    pub written_len: usize,
+    pub status: FlowrtCOutputStatus,
+    pub reserved: [u8; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCInputArrayView {
+    pub data: *const FlowrtCInputView,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCOutputArrayView {
+    pub data: *mut FlowrtCOutputSlot,
+    pub len: usize,
+}
+
+pub type FlowrtCLifecycleCallback =
+    Option<unsafe extern "C" fn(*mut c_void, *const FlowrtCComponentContext) -> FlowrtStatus>;
+
+pub type FlowrtCTaskCallback = Option<
+    unsafe extern "C" fn(
+        *mut c_void,
+        *const FlowrtCComponentContext,
+        *const FlowrtCInputArrayView,
+        *mut FlowrtCOutputArrayView,
+    ) -> FlowrtStatus,
+>;
+
+/// C component callback table。
+///
+/// 函数指针使用 nullable C pointer 表达，便于 adapter 在调用前做显式版本、大小和
+/// 必填 callback 校验；通过校验后再按 runtime 策略提供缺省 no-op 或拒绝启动。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FlowrtCComponentCallbackTable {
+    pub size: u32,
+    pub version_major: u32,
+    pub version_minor: u32,
+    pub reserved0: u32,
+    pub feature_flags: u64,
+    pub user_data: *mut c_void,
+    pub on_init: FlowrtCLifecycleCallback,
+    pub on_start: FlowrtCLifecycleCallback,
+    pub on_stop: FlowrtCLifecycleCallback,
+    pub on_shutdown: FlowrtCLifecycleCallback,
+    pub run_periodic: FlowrtCTaskCallback,
+    pub run_on_message: FlowrtCTaskCallback,
+    pub run_startup: FlowrtCTaskCallback,
+    pub run_shutdown: FlowrtCTaskCallback,
+    pub reserved: [u64; 8],
 }
 
 pub const fn status_to_abi(status: Status) -> FlowrtStatus {
