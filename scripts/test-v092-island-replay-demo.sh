@@ -67,7 +67,7 @@ if [[ "$repo_cli" == "1" ]]; then
 fi
 
 demo_dir="$work_dir/replay_demo"
-mkdir -p "$demo_dir/rsdl" "$demo_dir/src/rust" "$demo_dir/dist"
+mkdir -p "$demo_dir/rsdl" "$demo_dir/app/rust" "$demo_dir/dist"
 
 cat > "$demo_dir/rsdl/check.rsdl" <<EOF_RSDL
 [package]
@@ -225,7 +225,7 @@ runtime = ["rust"]
 backends = ["inproc"]
 EOF_RSDL
 
-cat > "$demo_dir/src/rust/mod.rs" <<'EOF_RUST'
+cat > "$demo_dir/app/rust/mod.rs" <<'EOF_RUST'
 use crate::components::{Validator, ValidatorParams};
 use crate::messages::{MotionFrame, ScanFrame, ValidationSummary};
 

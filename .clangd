@@ -9,7 +9,7 @@ CompileFlags:
     - -pthread
 ---
 If:
-  PathMatch: examples/.*/src/cpp/.*
+  PathMatch: examples/.*/app/cpp/.*
 CompileFlags:
   CompilationDatabase: None
   Add:

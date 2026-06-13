@@ -64,7 +64,7 @@ require_grep '"variable": true' "$mixed_zenoh/flowrt/selfdesc/selfdesc.json" "va
 FLOWRT_TICK_SLEEP_MS=5 "$flowrt" launch --run-steps 20 "$mixed_zenoh/rsdl/robot.rsdl"
 
 io_demo="$work_dir/io_boundary_demo"
-mkdir -p "$io_demo/rsdl" "$io_demo/src/rust"
+mkdir -p "$io_demo/rsdl" "$io_demo/app/rust"
 cat > "$io_demo/rsdl/robot.rsdl" <<EOF
 [package]
 name = "io_boundary_demo"
@@ -125,7 +125,7 @@ runtime = ["rust"]
 backends = ["inproc"]
 EOF
 
-cat > "$io_demo/src/rust/mod.rs" <<'EOF'
+cat > "$io_demo/app/rust/mod.rs" <<'EOF'
 use crate::components::Camera;
 use crate::messages::FrameHandle;
 use flowrt::FrameDescriptorFields;
