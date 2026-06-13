@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, CapabilityAtom, ChannelBackendSource, ChannelEdgeIr, ContractIr, GraphIr,
-    InstanceIr, LanguageKind, PolicyValueSource, PortRef, RouteTopology, backend_capabilities,
-    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
-    is_known_backend, target_capabilities,
+    BackendName, BackendThreadAffinity, CapabilityAtom, ChannelBackendSource, ChannelEdgeIr,
+    ContractIr, GraphIr, InstanceIr, LanguageKind, PolicyValueSource, PortRef, RouteTopology,
+    backend_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities, is_known_backend, target_capabilities,
 };
 
 use crate::ValidationError;
@@ -65,6 +65,17 @@ pub(crate) fn validate_derived_capabilities(ir: &ContractIr, errors: &mut Vec<Va
         let source_types = source_types_by_route(ir, graph);
         let route_topologies = route_topology_by_bind_id(ir, graph);
         for bind in &graph.binds {
+            if let Some(expected_affinity) = BackendThreadAffinity::for_backend(&bind.backend.0) {
+                if bind.thread_affinity != Some(expected_affinity) {
+                    errors.push(ValidationError::new(format!(
+                        "bind `{}.{}` -> `{}.{}` thread affinity metadata is inconsistent with selected backend",
+                        bind.from.instance.name,
+                        bind.from.port,
+                        bind.to.instance.name,
+                        bind.to.port
+                    )));
+                }
+            }
             let Some(source_type) = source_types.get(&bind.id) else {
                 continue;
             };

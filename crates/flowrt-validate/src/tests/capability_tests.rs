@@ -1,7 +1,7 @@
 use super::*;
 use flowrt_ir::{
-    BackendName, ChannelBackendSource, EntityId, LanguageKind, PolicyValueSource, RouteTopology,
-    channel_route_capabilities, graph_required_capabilities,
+    BackendName, BackendThreadAffinity, ChannelBackendSource, EntityId, LanguageKind,
+    PolicyValueSource, RouteTopology, channel_route_capabilities, graph_required_capabilities,
 };
 
 #[test]
@@ -1052,6 +1052,86 @@ fn rejects_inconsistent_channel_backend_source_metadata() {
         report.errors.iter().any(|error| {
             error.message.contains(
                 "bind `producer.sample` -> `consumer.sample` backend source metadata is inconsistent",
+            )
+        }),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn rejects_forged_route_thread_affinity_metadata() {
+    let mut ir = valid_reference_contract();
+    validate_contract(&ir).unwrap();
+    ir.graphs[0].binds[0].thread_affinity = Some(BackendThreadAffinity::SchedulerLocalCommit);
+
+    let report = validate_contract(&ir).expect_err("forged route affinity should fail");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "bind `producer.sample` -> `consumer.sample` thread affinity metadata is inconsistent",
+            )
+        }),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn rejects_unknown_route_backend_without_affinity_swallowing_error() {
+    let source = r#"
+[package]
+name = "unknown_affinity_backend"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u32"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+backend = "typo_backend"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    let report = validate_contract(&ir).expect_err("unknown route backend should fail");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "bind `producer.sample` -> `consumer.sample` selects unknown backend `typo_backend`",
             )
         }),
         "{:?}",

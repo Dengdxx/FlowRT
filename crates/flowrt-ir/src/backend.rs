@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    CapabilityAtom, ChannelBackendSource, ChannelKind, ComponentIr, GraphIr, IrError,
-    OverflowPolicy, PrimitiveType, Result, StalePolicy, TriggerKind, TypeExpr, TypeIr,
+    BackendThreadAffinity, CapabilityAtom, ChannelBackendSource, ChannelKind, ComponentIr, GraphIr,
+    IrError, OverflowPolicy, PrimitiveType, Result, StalePolicy, TriggerKind, TypeExpr, TypeIr,
 };
 
 /// 单条 dataflow route 的拓扑边界。
@@ -210,6 +210,16 @@ impl BackendKind {
                 capabilities: &[&COMMON_BACKEND_CAPABILITIES, ZENOH_BACKEND_CAPABILITIES],
             },
         }
+    }
+}
+
+impl BackendThreadAffinity {
+    /// 按已知 backend catalog 推导 route 线程亲和事实。
+    pub fn for_backend(name: &str) -> Option<Self> {
+        BackendKind::parse(name).map(|backend| match backend {
+            BackendKind::Inproc | BackendKind::Zenoh => Self::SendSafe,
+            BackendKind::Iox2 => Self::SchedulerLocalCommit,
+        })
     }
 }
 
@@ -1009,6 +1019,7 @@ mod tests {
                     backend: crate::BackendName("inproc".to_string()),
                     backend_policy_source: crate::PolicyValueSource::Explicit,
                     backend_source: crate::ChannelBackendSource::Explicit,
+                    thread_affinity: Some(crate::BackendThreadAffinity::SendSafe),
                     channel: ChannelKind::Fifo,
                     depth: Some(2),
                     overflow: OverflowPolicy::Block,
@@ -1024,6 +1035,7 @@ mod tests {
                     backend: crate::BackendName("inproc".to_string()),
                     backend_policy_source: crate::PolicyValueSource::Explicit,
                     backend_source: crate::ChannelBackendSource::Explicit,
+                    thread_affinity: Some(crate::BackendThreadAffinity::SendSafe),
                     channel: ChannelKind::Latest,
                     depth: Some(1),
                     overflow: OverflowPolicy::DropNewest,

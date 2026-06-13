@@ -651,6 +651,8 @@ pub struct ChannelEdgeIr {
     pub backend: BackendName,
     pub backend_policy_source: PolicyValueSource,
     pub backend_source: ChannelBackendSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_affinity: Option<BackendThreadAffinity>,
     pub channel: ChannelKind,
     pub depth: Option<u32>,
     pub overflow: OverflowPolicy,
@@ -667,6 +669,16 @@ pub enum ChannelBackendSource {
     Explicit,
     ProfileDefault,
     AutoFallback,
+}
+
+/// route backend 的线程亲和事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendThreadAffinity {
+    /// backend endpoint 可以由 worker 线程直接持有或调用。
+    SendSafe,
+    /// transport commit 必须留在 scheduler/local owner 线程。
+    SchedulerLocalCommit,
 }
 
 /// channel policy 字段的来源，用于 profile 投影时只重算默认项。

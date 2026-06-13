@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind, ContractIr,
-    ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode, InstanceIr,
-    IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
+    BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind,
+    ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode,
+    InstanceIr, IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
     ResourceKind, ResourceRequirementIr, ServicePortIr, TaskIr,
 };
 
@@ -310,6 +310,7 @@ fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
                 "from": format!("{}.{}", bind.from.instance.name, bind.from.port),
                 "to": format!("{}.{}", bind.to.instance.name, bind.to.port),
                 "backend": backend,
+                "thread_affinity": bind.thread_affinity.map(thread_affinity_name),
                 "service": service,
                 "key_expr": key_expr,
                 "channel": bind.channel,
@@ -320,6 +321,13 @@ fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
             })
         })
         .collect()
+}
+
+fn thread_affinity_name(affinity: BackendThreadAffinity) -> &'static str {
+    match affinity {
+        BackendThreadAffinity::SendSafe => "send_safe",
+        BackendThreadAffinity::SchedulerLocalCommit => "scheduler_local_commit",
+    }
 }
 
 fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {

@@ -5,13 +5,14 @@ use flowrt_rsdl::{
 };
 
 use crate::{
-    BackendName, BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr, ChannelKind,
-    ChannelPolicySourceIr, ComponentIr, DeploymentIr, EntityId, EntityRef, ExternalHealthKind,
-    ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr, IrError, OverflowPolicy,
-    PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr, ProcessReadinessGate,
-    ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result, RtPolicy, StalePolicy,
-    TargetIr, TaskConcurrency, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
-    deployment_capability_decision, graph_required_capabilities, parse_type_expr,
+    BackendName, BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr,
+    ChannelKind, ChannelPolicySourceIr, ComponentIr, DeploymentIr, EntityId, EntityRef,
+    ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr, IrError,
+    OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr,
+    ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result,
+    RtPolicy, StalePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr, channel_capabilities,
+    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
+    parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -462,6 +463,7 @@ pub(super) fn normalize_binds(
                 topology,
                 explicit_backend,
             )?;
+            let thread_affinity = BackendThreadAffinity::for_backend(&resolved_backend.backend);
 
             Ok(ChannelEdgeIr {
                 id: entity_id("bind", &format!("{}->{}", raw.from, raw.to)),
@@ -474,6 +476,7 @@ pub(super) fn normalize_binds(
                     PolicyValueSource::ProfileDefault
                 },
                 backend_source: resolved_backend.source,
+                thread_affinity,
                 channel,
                 depth,
                 overflow,

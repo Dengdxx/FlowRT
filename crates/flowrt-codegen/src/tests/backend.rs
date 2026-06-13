@@ -534,3 +534,113 @@ backends = ["zenoh"]
         "flowrt/robot_demo/default/default/bind_0/source_imu_to_sink_imu"
     );
 }
+
+#[test]
+fn launch_manifest_exposes_route_thread_affinity_metadata() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "affinity_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u32"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let channel = &launch["graphs"][0]["channels"][0];
+
+    assert_eq!(channel["backend"], "iox2");
+    assert_eq!(channel["thread_affinity"], "scheduler_local_commit");
+}
+
+#[test]
+fn self_description_exposes_route_thread_affinity_metadata() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "affinity_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u32"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let sidecar: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let channel = &sidecar["graphs"][0]["channels"][0];
+
+    assert_eq!(channel["backend"], "zenoh");
+    assert_eq!(channel["thread_affinity"], "send_safe");
+}

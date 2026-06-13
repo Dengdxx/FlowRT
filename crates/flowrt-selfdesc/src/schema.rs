@@ -409,6 +409,9 @@ pub struct SelfDescriptionChannel {
     pub message_type: String,
     #[serde(default)]
     pub backend: String,
+    /// route backend 线程亲和：send_safe / scheduler_local_commit。
+    #[serde(default)]
+    pub thread_affinity: String,
     /// v0.4+ service endpoint 名称。
     #[serde(default)]
     pub service: Option<String>,

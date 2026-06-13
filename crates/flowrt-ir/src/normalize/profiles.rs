@@ -1,9 +1,10 @@
 use flowrt_rsdl::{RawDocument, RawGraphMode, RawProfile};
 
 use crate::{
-    BackendName, ContractIr, GraphMode, IrError, OverflowPolicy, PolicyDefaults, PolicyValueSource,
-    ProfileIr, Result, RouteTopology, SchedulerDefaults, StalePolicy, channel_capabilities,
-    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
+    BackendName, BackendThreadAffinity, ContractIr, GraphMode, IrError, OverflowPolicy,
+    PolicyDefaults, PolicyValueSource, ProfileIr, Result, RouteTopology, SchedulerDefaults,
+    StalePolicy, channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities,
 };
 
 use super::backends::{
@@ -145,6 +146,7 @@ fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileI
                 bind.backend = BackendName(resolved.backend);
                 bind.backend_source = resolved.source;
             }
+            bind.thread_affinity = BackendThreadAffinity::for_backend(&bind.backend.0);
             bind.capability_requirements = match source_type {
                 Some(source_type) => channel_route_capabilities(
                     &contract.types,

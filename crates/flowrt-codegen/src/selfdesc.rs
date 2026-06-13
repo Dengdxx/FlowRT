@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
-    BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr, ChannelKind, ComponentIr, ComponentKind,
-    ContractIr, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
-    IoBoundaryShutdown, IoSideEffect, OperationConcurrencyPolicy, OperationFeedbackPolicy,
-    OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ResourceKind,
-    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskReadiness,
-    TriggerKind, TypeExpr, TypeIr,
+    BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr, ChannelKind,
+    ComponentIr, ComponentKind, ContractIr, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth,
+    IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, OperationConcurrencyPolicy,
+    OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy,
+    ResourceKind, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency,
+    TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
@@ -263,6 +263,11 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
                     stale_policy: stale_name(bind.stale).to_string(),
                     max_age_ms: bind.max_age_ms,
                     backend,
+                    thread_affinity: bind
+                        .thread_affinity
+                        .map(thread_affinity_name)
+                        .unwrap_or_default()
+                        .to_string(),
                 }
             })
             .collect(),
@@ -318,6 +323,13 @@ fn boundary_direction_name(direction: BoundaryDirection) -> &'static str {
     match direction {
         BoundaryDirection::Input => "input",
         BoundaryDirection::Output => "output",
+    }
+}
+
+fn thread_affinity_name(affinity: BackendThreadAffinity) -> &'static str {
+    match affinity {
+        BackendThreadAffinity::SendSafe => "send_safe",
+        BackendThreadAffinity::SchedulerLocalCommit => "scheduler_local_commit",
     }
 }
 

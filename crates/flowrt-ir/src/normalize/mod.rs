@@ -198,12 +198,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        BoundaryDirection, CapabilityAtom, ChannelBackendSource, ChannelKind, GraphMode, IrError,
-        OperationBackendSource, OperationConcurrencyPolicy, OperationFeedbackPolicy,
-        OperationPreemptPolicy, OverflowPolicy, ParamType, ParamUpdatePolicy, ParamValue,
-        PolicyValueSource, PrimitiveType, ProcessFailurePropagation, ProcessReadinessGate,
-        ProcessRestartPolicyKind, Ros2BridgeDirection, RouteTopology, RtPolicy,
-        ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness,
+        BackendThreadAffinity, BoundaryDirection, CapabilityAtom, ChannelBackendSource,
+        ChannelKind, GraphMode, IrError, OperationBackendSource, OperationConcurrencyPolicy,
+        OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy, ParamType,
+        ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType, ProcessFailurePropagation,
+        ProcessReadinessGate, ProcessRestartPolicyKind, Ros2BridgeDirection, RouteTopology,
+        RtPolicy, ServiceBackendSource, ServiceOverflowPolicy, StalePolicy, TaskReadiness,
         TemporaryBoundaryMapping, TemporaryIslandOverlay, TypeExpr, apply_temporary_island_overlay,
         channel_route_capabilities, deployment_capability_decision,
     };
@@ -2329,6 +2329,122 @@ backends = ["inproc"]
                 .contains(&CapabilityAtom("abi:int128".to_string()))
         );
         assert!(ir.deployments[0].satisfied);
+    }
+
+    #[test]
+    fn iox2_route_derives_scheduler_local_commit_affinity_metadata() {
+        let source = r#"
+[package]
+name = "affinity_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u32"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(
+            ir.graphs[0].binds[0].thread_affinity,
+            Some(BackendThreadAffinity::SchedulerLocalCommit)
+        );
+        assert!(
+            ir.to_canonical_json()
+                .unwrap()
+                .contains("\"thread_affinity\": \"scheduler_local_commit\"")
+        );
+    }
+
+    #[test]
+    fn inproc_and_zenoh_routes_derive_send_safe_affinity_metadata() {
+        for backend in ["inproc", "zenoh"] {
+            let source = format!(
+                r#"
+[package]
+name = "affinity_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u32"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "{backend}"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["{backend}"]
+"#
+            );
+            let raw = parse_str(&source).unwrap();
+            let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+
+            assert_eq!(
+                ir.graphs[0].binds[0].thread_affinity,
+                Some(BackendThreadAffinity::SendSafe),
+                "{backend} route should be send-safe"
+            );
+        }
     }
 
     #[test]
