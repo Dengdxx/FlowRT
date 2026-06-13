@@ -132,6 +132,30 @@ pub(super) fn runtime_channel_write_with_health(
     runtime_channel_write_inner(bind, Some(task_health_name))
 }
 
+pub(super) fn runtime_channel_commit_with_health(
+    bind: &BindRuntimePlan,
+    task_health_name: &str,
+) -> String {
+    let body = runtime_channel_write_inner(bind, Some(task_health_name))
+        .replace("self.", "app.")
+        .replace(
+            "return flowrt::Status::Retry;",
+            "return flowrt::Status::Retry;",
+        )
+        .replace(
+            "return flowrt::Status::Error;",
+            "return flowrt::Status::Error;",
+        );
+    let health_arg = if body.contains("health_map") {
+        "health_map"
+    } else {
+        "_health_map"
+    };
+    format!(
+        "            let value = value.clone();\n            __flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events, {health_arg}| {{\n{body}                flowrt::Status::Ok\n            }}));\n"
+    )
+}
+
 fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<&str>) -> String {
     let introspection_record = runtime_introspection_publish_record(bind);
     let route_name = crate::rust_string_literal(&runtime_channel_name(bind));
@@ -174,6 +198,15 @@ pub(super) fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String
     let route_name = crate::rust_string_literal(&bridge.name);
     format!(
         "            if let Err(error) = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n",
+        field = bridge.field_name,
+        route_name = route_name,
+    )
+}
+
+pub(super) fn bridge_runtime_channel_commit(bridge: &BridgeRuntimePlan) -> String {
+    let route_name = crate::rust_string_literal(&bridge.name);
+    format!(
+        "            let value = value.clone();\n            __flowrt_output_commits.push(Box::new(move |app, introspection_state, _scheduler_events, _health_map| {{\n                if let Err(error) = app.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                    introspection_state.record_route_error({route_name}, error.to_string());\n                    return flowrt::Status::Error;\n                }}\n                introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                flowrt::Status::Ok\n            }}));\n",
         field = bridge.field_name,
         route_name = route_name,
     )

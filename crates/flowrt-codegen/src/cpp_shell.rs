@@ -341,7 +341,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str(
-        "#include <cstddef>\n#include <memory>\n#include <optional>\n#include <string_view>\n\n",
+        "#include <cstddef>\n#include <functional>\n#include <map>\n#include <memory>\n#include <optional>\n#include <string_view>\n#include <vector>\n\n",
     );
     output.push_str("#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n\n");
     output.push_str(
@@ -352,6 +352,9 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     output.push_str(
+        "class App;\nusing FlowrtOutputCommit = std::function<flowrt::Status(App&, flowrt::IntrospectionState&, flowrt::ScheduleWaiter&, std::map<std::string, flowrt::IntrospectionTaskHealth>&)>;\nusing FlowrtTaskOutcome = flowrt::TaskRunOutcome<std::vector<FlowrtOutputCommit>>;\n\n",
+    );
+    output.push_str(
         "/**\n * @brief Contract IR 驱动的 C++ inproc 应用 shell。\n *\n * `App` 持有用户组件实现和 FlowRT 管理的 channel 状态。用户代码通过 `flowrt_user::build_app()` 构造该对象，runtime shell 负责生命周期、调度和数据流转发。\n */\n",
     );
     output.push_str("class App {\npublic:\n");
@@ -361,7 +364,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     );
     for task in scheduler_tasks_for_order(graph, &order) {
         output.push_str(&format!(
-            "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
+            "    FlowrtTaskOutcome {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
             cpp_task_step_function_name(task)
         ));
     }
@@ -380,7 +383,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         ));
         for task in scheduler_tasks_for_order(graph, &process.instances) {
             output.push_str(&format!(
-                "    flowrt::Status {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
+                "    FlowrtTaskOutcome {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
                 cpp_process_task_step_function_name(process, task)
             ));
         }
@@ -844,8 +847,14 @@ fn emit_cpp_app_step(
     task_filter: Option<&flowrt_ir::TaskIr>,
 ) -> String {
     let mut output = String::new();
+    let collect_outputs = phase == TaskEmissionPhase::Scheduler && task_filter.is_some();
+    let return_type = if collect_outputs {
+        "FlowrtTaskOutcome"
+    } else {
+        "flowrt::Status"
+    };
     output.push_str(&format!(
-        "flowrt::Status App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
+        "{return_type} App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
     ));
     if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str(
@@ -858,7 +867,13 @@ fn emit_cpp_app_step(
     output.push_str("    (void)introspection_state;\n");
     output.push_str("    (void)scheduler_events;\n");
     output.push_str("    (void)health_map;\n");
-    output.push_str(&emit_cpp_ros2_boundary_input_pump(emission, order));
+    output.push_str(&adapt_cpp_status_returns_for_collect(
+        &emit_cpp_ros2_boundary_input_pump(emission, order),
+        collect_outputs,
+    ));
+    if collect_outputs {
+        output.push_str("    std::vector<FlowrtOutputCommit> flowrt_output_commits;\n");
+    }
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -904,11 +919,14 @@ fn emit_cpp_app_step(
                         let bind = &emission.binds[*bind_index];
                         let task_health = cpp_task_health_name(task);
                         output.push_str(&indent_generated_block(
-                            &cpp_runtime_channel_read(
-                                input,
-                                bind,
-                                &input_local,
-                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            &adapt_cpp_status_returns_for_collect(
+                                &cpp_runtime_channel_read(
+                                    input,
+                                    bind,
+                                    &input_local,
+                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                ),
+                                collect_outputs,
                             ),
                             true,
                         ));
@@ -918,7 +936,10 @@ fn emit_cpp_app_step(
                             true,
                         ));
                         output.push_str(&indent_generated_block(
-                            &cpp_runtime_stale_error_guard(&input_local, bind),
+                            &adapt_cpp_status_returns_for_collect(
+                                &cpp_runtime_stale_error_guard(&input_local, bind),
+                                collect_outputs,
+                            ),
                             true,
                         ));
                     } else if let Some(bridge_index) = emission
@@ -927,11 +948,14 @@ fn emit_cpp_app_step(
                     {
                         let bridge = &emission.bridges[*bridge_index];
                         output.push_str(&indent_generated_block(
-                            &cpp_bridge_runtime_channel_read(
-                                input,
-                                bridge,
-                                &input_local,
-                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            &adapt_cpp_status_returns_for_collect(
+                                &cpp_bridge_runtime_channel_read(
+                                    input,
+                                    bridge,
+                                    &input_local,
+                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                ),
+                                collect_outputs,
                             ),
                             true,
                         ));
@@ -1023,11 +1047,19 @@ fn emit_cpp_app_step(
             for port in &component.outputs {
                 call_args.push(cpp_step_local_name(&instance.name, &port.name));
             }
-            output.push_str(&format!(
-                "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({instance}_->on_tick({args})) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return flowrt::Status::Retry;\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return flowrt::Status::Error;\n{body_inner_indent}}}\n{body_indent}}}\n",
-                instance = instance.name,
-                args = call_args.join(", ")
-            ));
+            if collect_outputs {
+                output.push_str(&format!(
+                    "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({instance}_->on_tick({args})) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return FlowrtTaskOutcome::retry(std::vector<FlowrtOutputCommit>{{}});\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}});\n{body_inner_indent}}}\n{body_indent}}}\n",
+                    instance = instance.name,
+                    args = call_args.join(", ")
+                ));
+            } else {
+                output.push_str(&format!(
+                    "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({instance}_->on_tick({args})) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return flowrt::Status::Retry;\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return flowrt::Status::Error;\n{body_inner_indent}}}\n{body_indent}}}\n",
+                    instance = instance.name,
+                    args = call_args.join(", ")
+                ));
+            }
 
             if let Some(deadline_ms) = task.deadline_ms {
                 let task_local = cpp_task_local_name(task);
@@ -1087,22 +1119,37 @@ fn emit_cpp_app_step(
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
                     let task_health = cpp_task_health_name(task);
+                    let write_code = if collect_outputs {
+                        cpp_runtime_channel_commit_with_health(bind, &task_health)
+                    } else {
+                        cpp_runtime_channel_write_with_health(bind, &task_health)
+                    };
                     output.push_str(&indent_generated_block_levels(
-                        &cpp_runtime_channel_write_with_health(bind, &task_health),
+                        &write_code,
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
                 for bridge_index in bridge_outgoing {
                     let bridge = &emission.bridges[bridge_index];
+                    let write_code = if collect_outputs {
+                        cpp_bridge_runtime_channel_commit(bridge)
+                    } else {
+                        cpp_bridge_runtime_channel_write(bridge)
+                    };
                     output.push_str(&indent_generated_block_levels(
-                        &cpp_bridge_runtime_channel_write(bridge),
+                        &write_code,
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
                 for boundary_index in boundary_outgoing {
                     let boundary = &emission.boundaries[boundary_index];
+                    let write_code = if collect_outputs {
+                        cpp_boundary_output_commit(boundary)
+                    } else {
+                        cpp_boundary_output_write(boundary)
+                    };
                     output.push_str(&indent_generated_block_levels(
-                        &cpp_boundary_output_write(boundary),
+                        &write_code,
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
@@ -1119,8 +1166,27 @@ fn emit_cpp_app_step(
         }
     }
 
-    output.push_str("    return flowrt::Status::Ok;\n}\n\n");
+    if collect_outputs {
+        output
+            .push_str("    return FlowrtTaskOutcome::ok(std::move(flowrt_output_commits));\n}\n\n");
+    } else {
+        output.push_str("    return flowrt::Status::Ok;\n}\n\n");
+    }
     output
+}
+
+fn adapt_cpp_status_returns_for_collect(code: &str, collect_outputs: bool) -> String {
+    if !collect_outputs {
+        return code.to_string();
+    }
+    code.replace(
+        "return flowrt::Status::Error;",
+        "return FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{});",
+    )
+    .replace(
+        "return flowrt::Status::Retry;",
+        "return FlowrtTaskOutcome::retry(std::vector<FlowrtOutputCommit>{});",
+    )
 }
 
 fn emit_cpp_app_run_process_dispatch(processes: &[ProcessRuntimePlan<'_>]) -> String {
@@ -1497,7 +1563,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(
-        "            auto batch_health_map = health_map;\n            std::mutex batch_health_mutex;\n            auto ready_batch = scheduler.take_ready_batch();\n            const auto task_statuses = std::move(ready_batch).run(worker_pool, [this, &lifecycle_context, &introspection_state, &scheduler_events, &batch_health_map, &batch_health_mutex, tick_time_ms](flowrt::TaskId task) {\n                auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                auto merge_local_health = [&batch_health_map, &batch_health_mutex](std::map<std::string, flowrt::IntrospectionTaskHealth>&& local_health_map) {\n                    std::lock_guard<std::mutex> lock(batch_health_mutex);\n                    for (auto &[name, health] : local_health_map) {\n                        batch_health_map.insert_or_assign(name, std::move(health));\n                    }\n                };\n                switch (task.value) {\n",
+        "            auto batch_health_map = health_map;\n            std::mutex batch_health_mutex;\n            auto ready_batch = scheduler.take_ready_batch();\n            const auto task_statuses = std::move(ready_batch).run_collect(worker_pool, [this, &lifecycle_context, &introspection_state, &scheduler_events, &batch_health_map, &batch_health_mutex, tick_time_ms](flowrt::TaskId task) {\n                auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                auto merge_local_health = [&batch_health_map, &batch_health_mutex](std::map<std::string, flowrt::IntrospectionTaskHealth>&& local_health_map) {\n                    std::lock_guard<std::mutex> lock(batch_health_mutex);\n                    for (auto &[name, health] : local_health_map) {\n                        batch_health_map.insert_or_assign(name, std::move(health));\n                    }\n                };\n                switch (task.value) {\n",
     );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
@@ -1510,9 +1576,9 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             "                    case {task_id}: {{\n\
                          auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         auto task_status = {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         auto task_outcome = {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
                          merge_local_health(std::move(local_health_map));\n\
-                         return task_status;\n\
+                         return task_outcome;\n\
                      }}\n"
         ));
     }
@@ -1531,7 +1597,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
                          (void)flowrt_lane_guard;\n\
                          auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
                          merge_local_health(std::move(local_health_map));\n\
-                         return task_status;\n\
+                         return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n\
                      }}\n"
         ));
     }
@@ -1548,7 +1614,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
                          (void)flowrt_lane_guard;\n\
                          auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
                          merge_local_health(std::move(local_health_map));\n\
-                         return task_status;\n\
+                         return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n\
                      }}\n"
         ));
     }
@@ -1557,16 +1623,16 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         && operation_plans.iter().all(|p| p.backend.0 == "zenoh")
     {
         output.push_str(&format!(
-            "                    default: {{\n                        auto task_status = {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n                        merge_local_health(std::move(local_health_map));\n                        return task_status;\n                    }}\n",
+            "                    default: {{\n                        auto task_status = {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n                        merge_local_health(std::move(local_health_map));\n                        return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n                    }}\n",
             run.step_function_name
         ));
     } else {
-        output.push_str("                    default: return flowrt::Status::Error;\n");
+        output.push_str("                    default: return FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{});\n");
     }
     let task_result_health_update = emit_cpp_task_result_health_update(&tasks);
     let fairness_check = emit_cpp_fairness_check(&lane_names);
     output.push_str(&format!(
-        "                }}\n            }});\n            health_map = std::move(batch_health_map);\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (const auto &task_result : task_statuses) {{\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
+        "                }}\n            }});\n            health_map = std::move(batch_health_map);\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (auto task_result : task_statuses) {{\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
         task_result_health_update = task_result_health_update,
             next_deadline_expr = cpp_next_periodic_deadline_expr(&tasks)
         )
@@ -2214,6 +2280,26 @@ fn cpp_runtime_channel_write_with_health(bind: &BindRuntimePlan, task_health_nam
     cpp_runtime_channel_write_inner(bind, Some(task_health_name))
 }
 
+fn cpp_runtime_channel_commit_with_health(
+    bind: &BindRuntimePlan,
+    task_health_name: &str,
+) -> String {
+    let body = cpp_runtime_channel_write_inner(bind, Some(task_health_name))
+        .replace(
+            &format!("{}_.", bind.field_name),
+            &format!("app.{}_.", bind.field_name),
+        )
+        .replace("this->", "app.");
+    let health_arg = if body.contains("health_map") {
+        "health_map"
+    } else {
+        "/*health_map*/"
+    };
+    format!(
+        "        auto payload = *value;\n        flowrt_output_commits.emplace_back([payload, tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& {health_arg}) mutable {{\n            const auto* value = &payload;\n{body}            return flowrt::Status::Ok;\n        }});\n"
+    )
+}
+
 fn cpp_runtime_channel_write_inner(
     bind: &BindRuntimePlan,
     task_health_name: Option<&str>,
@@ -2251,6 +2337,13 @@ fn cpp_runtime_channel_write_inner(
 fn cpp_bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
     format!(
         "        if (const auto status = status_from_push_result({field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n            return status;\n        }}\n",
+        field = bridge.field_name
+    )
+}
+
+fn cpp_bridge_runtime_channel_commit(bridge: &BridgeRuntimePlan) -> String {
+    format!(
+        "        auto payload = *value;\n        flowrt_output_commits.emplace_back([payload, tick_time_ms](App& app, flowrt::IntrospectionState& /*introspection_state*/, flowrt::ScheduleWaiter& /*scheduler_events*/, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {{\n            const auto* value = &payload;\n            if (const auto status = status_from_push_result(app.{field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n                return status;\n            }}\n            return flowrt::Status::Ok;\n        }});\n",
         field = bridge.field_name
     )
 }
@@ -2300,6 +2393,13 @@ fn cpp_boundary_input_read(boundary: &BoundaryRuntimePlan, local_name: &str) -> 
 fn cpp_boundary_output_write(boundary: &BoundaryRuntimePlan) -> String {
     format!(
         "        {field}_.publish_at(*value, tick_time_ms);\n",
+        field = boundary.field_name,
+    )
+}
+
+fn cpp_boundary_output_commit(boundary: &BoundaryRuntimePlan) -> String {
+    format!(
+        "        auto payload = *value;\n        flowrt_output_commits.emplace_back([payload, tick_time_ms](App& app, flowrt::IntrospectionState& /*introspection_state*/, flowrt::ScheduleWaiter& /*scheduler_events*/, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {{\n            const auto* value = &payload;\n            app.{field}_.publish_at(*value, tick_time_ms);\n            return flowrt::Status::Ok;\n        }});\n",
         field = boundary.field_name,
     )
 }

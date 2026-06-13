@@ -174,7 +174,8 @@ backends = ["iox2"]
     assert!(cpp_header.contains("std::unique_ptr<SourceInterface> source"));
     assert!(!cpp_shell.contains("return flowrt::ok();"));
     assert!(cpp_shell.contains("flowrt::iox2::Iox2PubSub<std::uint32_t>"));
-    assert!(cpp_shell.contains("bind_0_.publish_at(*value, tick_time_ms)"));
+    assert!(cpp_shell.contains("flowrt_output_commits.emplace_back"));
+    assert!(cpp_shell.contains("app.bind_0_.publish_at(*value, tick_time_ms)"));
 }
 
 #[test]
@@ -229,8 +230,16 @@ worker_threads = 4
 
     assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
     assert!(rust_shell.contains("let mut scheduler = flowrt::DeterministicExecutor::new(4);"));
-    assert!(rust_shell.contains("ready_batch.run_local(|task|"));
-    assert!(!rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
+    assert!(rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
+    assert!(rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
+    assert!(rust_shell.contains("type FlowrtOutputCommit = Box<dyn FnOnce(&App"));
+    assert!(rust_shell.contains(
+        "__flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events,"
+    ));
+    assert!(rust_shell.contains(
+        "commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map)"
+    ));
+    assert!(!rust_shell.contains("ready_batch.run_local(|task|"));
     assert!(!rust_shell.contains("ready_batch.run(&worker_pool, move |task|"));
 }
 
@@ -495,7 +504,7 @@ worker_threads = 4
     assert!(!rust_shell.contains("scheduler.run_ready(|task| match task"));
     assert!(rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
     assert!(rust_shell.contains("let ready_batch = scheduler.take_ready_batch();"));
-    assert!(rust_shell.contains("ready_batch.run(&worker_pool, move |task|"));
+    assert!(rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
     assert!(
         rust_shell.contains("worker: std::sync::Arc<std::sync::Mutex<Box<dyn Worker + Send>>>")
     );
@@ -709,7 +718,7 @@ worker_threads = 2
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
     assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
     assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
-    assert!(cpp_shell.contains("std::move(ready_batch).run(worker_pool"));
+    assert!(cpp_shell.contains("std::move(ready_batch).run_collect(worker_pool"));
     assert!(!cpp_shell.contains(
         "scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"
     ));
@@ -1229,7 +1238,7 @@ worker_threads = 2
     assert!(rust_shell.contains("if app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != bind_0_seen_revision_for_sink_main"));
     assert!(rust_shell.contains("scheduler.wake(flowrt::TaskId("));
     assert!(rust_shell.contains("let ready_batch = scheduler.take_ready_batch();"));
-    assert!(rust_shell.contains("ready_batch.run(&worker_pool, move |task|"));
+    assert!(rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
     assert!(rust_shell.contains("let mut woke_on_message = false;"));
     assert!(rust_shell.contains("woke_on_message = true;"));
     assert!(rust_shell.contains("if !woke_on_message && task_statuses.is_empty()"));
@@ -1431,7 +1440,7 @@ worker_threads = 2
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
     assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
     assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
-    assert!(cpp_shell.contains("std::move(ready_batch).run(worker_pool"));
+    assert!(cpp_shell.contains("std::move(ready_batch).run_collect(worker_pool"));
     assert!(!cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"));
     assert!(cpp_shell.contains("bool woke_on_message = false;"));
     assert!(cpp_shell.contains("woke_on_message = true;"));
@@ -1613,7 +1622,9 @@ overflow = "block"
         .unwrap()..];
 
     assert!(source_step.contains("case flowrt::Status::Retry:"));
-    assert!(source_step.contains("return flowrt::Status::Retry;"));
+    assert!(
+        source_step.contains("return FlowrtTaskOutcome::retry(std::vector<FlowrtOutputCommit>{});")
+    );
     assert!(run_loop.contains("if (task_result.status == flowrt::Status::Error)"));
     assert!(!run_loop.contains("if (task_status != flowrt::Status::Ok)"));
 }

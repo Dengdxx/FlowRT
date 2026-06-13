@@ -37,9 +37,16 @@ pub(super) fn emit_rust_app_step(
     task_filter: Option<&TaskIr>,
 ) -> String {
     let mut output = String::new();
+    let collect_outputs = phase == TaskEmissionPhase::Scheduler && task_filter.is_some();
+    let return_type = if collect_outputs {
+        "flowrt::TaskRunOutcome<Vec<FlowrtOutputCommit>>"
+    } else {
+        "flowrt::Status"
+    };
     output.push_str(&format!(
         "    #[allow(dead_code)]\n    fn {function_name}(\n        &self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n        health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>,\n    ) -> flowrt::Status {{\n",
     ));
+    output = output.replace(") -> flowrt::Status {", &format!(") -> {return_type} {{"));
     output.push_str("        let _ = tick;\n");
     output.push_str("        let _ = introspection_state;\n");
     output.push_str("        let _ = scheduler_events;\n");
@@ -47,7 +54,15 @@ pub(super) fn emit_rust_app_step(
     if runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
-    output.push_str(&emit_rust_ros2_boundary_input_pump(emission, order));
+    output.push_str(&adapt_rust_status_returns_for_collect(
+        &emit_rust_ros2_boundary_input_pump(emission, order),
+        collect_outputs,
+    ));
+    if collect_outputs {
+        output.push_str(
+            "        let mut __flowrt_output_commits: Vec<FlowrtOutputCommit> = Vec::new();\n",
+        );
+    }
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -91,10 +106,13 @@ pub(super) fn emit_rust_app_step(
                         let bind = &emission.binds[*bind_index];
                         let task_health = task_health_name(task);
                         output.push_str(&indent_generated_block(
-                            &super::backend_emit::runtime_channel_read(
-                                input,
-                                bind,
-                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            &adapt_rust_status_returns_for_collect(
+                                &super::backend_emit::runtime_channel_read(
+                                    input,
+                                    bind,
+                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                ),
+                                collect_outputs,
                             ),
                             true,
                         ));
@@ -110,7 +128,10 @@ pub(super) fn emit_rust_app_step(
                             true,
                         ));
                         output.push_str(&indent_generated_block(
-                            &runtime_stale_error_guard(input, bind),
+                            &adapt_rust_status_returns_for_collect(
+                                &runtime_stale_error_guard(input, bind),
+                                collect_outputs,
+                            ),
                             true,
                         ));
                     } else if let Some(bridge_index) = emission
@@ -119,10 +140,13 @@ pub(super) fn emit_rust_app_step(
                     {
                         let bridge = &emission.bridges[*bridge_index];
                         output.push_str(&indent_generated_block(
-                            &super::backend_emit::bridge_runtime_channel_read(
-                                input,
-                                bridge,
-                                task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                            &adapt_rust_status_returns_for_collect(
+                                &super::backend_emit::bridge_runtime_channel_read(
+                                    input,
+                                    bridge,
+                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                ),
+                                collect_outputs,
                             ),
                             true,
                         ));
@@ -227,9 +251,15 @@ pub(super) fn emit_rust_app_step(
                 &instance.name,
                 &format!("on_tick({})", call_args.join(", ")),
             );
-            output.push_str(&format!(
-                "{body_indent}match {on_tick_call} {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::Status::Retry,\n{body_inner_indent}flowrt::Status::Error => return flowrt::Status::Error,\n{body_indent}}}\n",
-            ));
+            if collect_outputs {
+                output.push_str(&format!(
+                    "{body_indent}match {on_tick_call} {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::TaskRunOutcome::retry(Vec::new()),\n{body_inner_indent}flowrt::Status::Error => return flowrt::TaskRunOutcome::error(Vec::new()),\n{body_indent}}}\n",
+                ));
+            } else {
+                output.push_str(&format!(
+                    "{body_indent}match {on_tick_call} {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::Status::Retry,\n{body_inner_indent}flowrt::Status::Error => return flowrt::Status::Error,\n{body_indent}}}\n",
+                ));
+            }
 
             if let Some(deadline_ms) = task.deadline_ms {
                 let task_local = task_local_name(task);
@@ -287,22 +317,37 @@ pub(super) fn emit_rust_app_step(
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
                     let task_health = task_health_name(task);
+                    let write_code = if collect_outputs {
+                        super::backend_emit::runtime_channel_commit_with_health(bind, &task_health)
+                    } else {
+                        super::backend_emit::runtime_channel_write_with_health(bind, &task_health)
+                    };
                     output.push_str(&indent_generated_block_levels(
-                        &super::backend_emit::runtime_channel_write_with_health(bind, &task_health),
+                        &write_code,
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
                 for bridge_index in bridge_outgoing {
                     let bridge = &emission.bridges[bridge_index];
+                    let write_code = if collect_outputs {
+                        super::backend_emit::bridge_runtime_channel_commit(bridge)
+                    } else {
+                        super::backend_emit::bridge_runtime_channel_write(bridge)
+                    };
                     output.push_str(&indent_generated_block_levels(
-                        &super::backend_emit::bridge_runtime_channel_write(bridge),
+                        &write_code,
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
                 for boundary_index in boundary_outgoing {
                     let boundary = &emission.boundaries[boundary_index];
+                    let write_code = if collect_outputs {
+                        rust_boundary_output_commit(boundary)
+                    } else {
+                        rust_boundary_output_write(boundary)
+                    };
                     output.push_str(&indent_generated_block_levels(
-                        &rust_boundary_output_write(boundary),
+                        &write_code,
                         write_indent_levels + if has_deadline { 1 } else { 0 },
                     ));
                 }
@@ -319,8 +364,26 @@ pub(super) fn emit_rust_app_step(
         }
     }
 
-    output.push_str("        flowrt::Status::Ok\n    }\n");
+    if collect_outputs {
+        output.push_str("        flowrt::TaskRunOutcome::ok(__flowrt_output_commits)\n    }\n");
+    } else {
+        output.push_str("        flowrt::Status::Ok\n    }\n");
+    }
     output
+}
+
+fn adapt_rust_status_returns_for_collect(code: &str, collect_outputs: bool) -> String {
+    if !collect_outputs {
+        return code.to_string();
+    }
+    code.replace(
+        "return flowrt::Status::Error;",
+        "return flowrt::TaskRunOutcome::error(Vec::new());",
+    )
+    .replace(
+        "return flowrt::Status::Retry;",
+        "return flowrt::TaskRunOutcome::retry(Vec::new());",
+    )
 }
 
 pub(super) fn runtime_step_uses_tick_time(
@@ -634,6 +697,13 @@ fn rust_boundary_input_read(input: &PortIr, boundary: &BoundaryRuntimePlan) -> S
 fn rust_boundary_output_write(boundary: &BoundaryRuntimePlan) -> String {
     format!(
         "            self.{field}.publish_at(&value, tick_time_ms);\n",
+        field = boundary.field_name,
+    )
+}
+
+fn rust_boundary_output_commit(boundary: &BoundaryRuntimePlan) -> String {
+    format!(
+        "            let value = value.clone();\n            __flowrt_output_commits.push(Box::new(move |app, _introspection_state, _scheduler_events, _health_map| {{\n                app.{field}.publish_at(&value, tick_time_ms);\n                flowrt::Status::Ok\n            }}));\n",
         field = boundary.field_name,
     )
 }

@@ -142,6 +142,9 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         "const PACKAGE_NAME: &str = {};\n\n",
         crate::rust_string_literal(&contract.package.name)
     ));
+    output.push_str(
+        "type FlowrtOutputCommit = Box<dyn FnOnce(&App, &flowrt::IntrospectionState, &flowrt::ScheduleWaiter, &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status + Send>;\n\n",
+    );
     let has_active_rust_channels =
         !crate::runtime_plan::active_binds_for_instances(&bind_plans, &order).is_empty()
             || bridge_plans.iter().any(|bridge| {
