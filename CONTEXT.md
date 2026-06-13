@@ -5,7 +5,11 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.10.2`。RSDL / Contract IR / validator 现已承载 v0.10.0 并发
+当前 workspace 版本为 `0.10.2`。未发布状态下，`dev/v0.10.3` 已把用户代码布局切到
+长期形态：`app/` 是唯一用户业务代码根，Rust 用户入口为 `app/rust/mod.rs`，C/C++
+用户源码从 `app/cpp/**` 与 `app/c/**` 递归发现；旧 `src/rust` / `src/cpp` 不再作为
+FlowRT 用户结构存在，不提供兼容、fallback、迁移提示或 legacy 开关。RSDL / Contract
+IR / validator 现已承载 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized
 `ComponentIr` / `TaskIr` 会同时保留 resolved 值和用户显式来源。validator 当前采用

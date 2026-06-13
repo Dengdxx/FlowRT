@@ -31,7 +31,7 @@ cargo run -p flowrt-cli -- prepare examples/mixed_zenoh_demo/rsdl/robot.rsdl
 cargo run -p flowrt-cli -- prepare examples/ros2_bridge_demo/rsdl/robot.rsdl
 ```
 
-仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让 `examples/*/src/cpp/**` 读取本示例自己的 `flowrt/cpp/include` 生成头。`flowrt/` 和 `examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行对应示例的 `prepare` 或 `build`，再重启 clangd。
+仓库根目录的 `.clangd` 会让 `runtime/cpp/**` 使用 `build/cpp/compile_commands.json`，并让 `examples/*/app/cpp/**` 读取本示例自己的 `flowrt/cpp/include` 生成头。`flowrt/` 和 `examples/*/flowrt/` 仍是可删除、可重建的生成物，不入库；如果清理过这些目录，需要先重新执行对应示例的 `prepare` 或 `build`，再重启 clangd。
 
 FlowRT demo smoke：
 

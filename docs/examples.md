@@ -487,7 +487,7 @@ ros2 topic echo /flowrt/text --once
 
 ```text
 examples/island_demo/rsdl/robot.rsdl
-examples/island_demo/src/rust/mod.rs
+examples/island_demo/app/rust/mod.rs
 ```
 
 该示例只有一个 Rust `processor` 组件：
@@ -550,7 +550,7 @@ output 都会报错。完成单功能单位测试后，删除 boundary endpoint�
 
 ```text
 examples/variable_frame_island_demo/rsdl/robot.rsdl
-examples/variable_frame_island_demo/src/rust/mod.rs
+examples/variable_frame_island_demo/app/rust/mod.rs
 examples/variable_frame_island_demo/samples/scan.jsonl
 ```
 
@@ -623,7 +623,7 @@ flowrt record --output scan-compare.mcap --duration 2s --channel summary_out
 
 ```text
 examples/service_demo/service_demo.rsdl
-examples/service_demo/src/rust/mod.rs
+examples/service_demo/app/rust/mod.rs
 ```
 
 该示例验证 Service request/response 运行时的完整闭环：RSDL 声明、codegen 生成、
@@ -713,7 +713,7 @@ flowrt status
 
 ```text
 examples/operation_demo/rsdl/robot.rsdl
-examples/operation_demo/src/rust/mod.rs
+examples/operation_demo/app/rust/mod.rs
 ```
 
 该示例验证 Operation 的用户主语义：RSDL 声明 typed operation client/server，
