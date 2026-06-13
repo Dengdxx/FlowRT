@@ -3,6 +3,21 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/flowrt-v092-island.XXXXXX")"
+workspace_version="$(
+    awk '
+        $0 == "[workspace.package]" { inside = 1; next }
+        inside && /^\[/ { exit }
+        inside && /^version = "/ {
+            gsub(/"/, "", $3)
+            print $3
+            exit
+        }
+    ' "$repo_root/Cargo.toml"
+)"
+if [[ -z "$workspace_version" ]]; then
+    printf 'failed to read workspace version from Cargo.toml\n' >&2
+    exit 1
+fi
 
 cleanup() {
     if [[ -n "${runtime_pid:-}" ]] && kill -0 "$runtime_pid" 2>/dev/null; then
@@ -369,14 +384,14 @@ kill "$runtime_pid" 2>/dev/null || true
 wait "$runtime_pid" 2>/dev/null || true
 runtime_pid=""
 
-cat > "$demo_dir/dist/bundle.toml" <<'EOF_TOML'
+cat > "$demo_dir/dist/bundle.toml" <<EOF_TOML
 schema_version = 2
-flowrt_version = "0.9.2"
+flowrt_version = "${workspace_version}"
 package = "v092_replay_demo"
 profile = "default"
 artifact_mode = "island"
 target = "linux"
-platform = "linux-amd64"
+platform = "${smoke_target_platform}"
 build_mode = "release"
 created_unix_ms = 0
 entry = "bin/supervisor"
