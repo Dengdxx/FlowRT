@@ -284,6 +284,10 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   string/bytes/frame view、状态码、错误码和 callback table；不暴露 C++/Rust 对象、
   backend SDK handle、动态插件 ABI 或所有权语义。C component 先编进 app binary，
   形成最小可运行 demo；Python binding 不进入本版本，后续只能建立在该 C ABI 边界上。
+  未发布实现状态下，`language = "c"` 已先进入 RSDL/Contract IR/validator 基础层；
+  在 C adapter codegen 落地前，validator 会拒绝 C v0 暂不支持的 params、service、
+  operation、variable frame、`io_boundary` 和 `external` kind，codegen 对 C component
+  明确 fail-fast，不写出半成品生成物。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 

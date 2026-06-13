@@ -487,6 +487,40 @@ backends = ["zenoh"]
     }
 
     #[test]
+    fn normalizes_c_component_language_and_target_runtime() {
+        let source = r#"
+[package]
+name = "c_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "c"
+
+[target.linux]
+runtime = ["rust", "c", "cpp"]
+backends = ["inproc"]
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+        assert_eq!(ir.components[0].language, crate::LanguageKind::C);
+        assert_eq!(
+            ir.targets[0].runtime,
+            vec![
+                crate::LanguageKind::C,
+                crate::LanguageKind::Cpp,
+                crate::LanguageKind::Rust
+            ]
+        );
+        let json = ir.to_canonical_json().unwrap();
+        assert!(json.contains("\"language\": \"c\""));
+        assert!(json.contains(
+            "\"runtime\": [\n        \"c\",\n        \"cpp\",\n        \"rust\"\n      ]"
+        ));
+    }
+
+    #[test]
     fn normalizes_frame_descriptor_resource_schema_with_payload_recording_opt_in() {
         let source = r#"
 [package]

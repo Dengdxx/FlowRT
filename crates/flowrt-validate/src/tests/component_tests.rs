@@ -116,6 +116,117 @@ output = ["sample"]
 }
 
 #[test]
+fn accepts_c_native_component_language_semantics() {
+    let source = r#"
+[package]
+name = "c_native_ok"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.controller]
+language = "c"
+input = ["sample:Sample"]
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "controller.sample"
+channel = "latest"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_c_component_v0_unsupported_surface() {
+    let source = r#"
+[package]
+name = "c_native_rejected_surface"
+rsdl_version = "0.1"
+
+[type.Sample]
+payload = "bytes"
+
+[type.Req]
+value = "u32"
+
+[type.Resp]
+ok = "bool"
+
+[type.Goal]
+target = "u32"
+
+[type.Feedback]
+progress = "u32"
+
+[type.Result]
+ok = "bool"
+
+[component.controller]
+language = "c"
+kind = "io_boundary"
+input = ["sample:Sample"]
+output = ["sample:Sample"]
+service_client = ["plan:Req->Resp"]
+
+[component.controller.build]
+pkg_config = ["vendor_capture"]
+
+[component.controller.params]
+gain = { type = "f32", default = 1.0, update = "startup" }
+
+[component.controller.operation_client.move]
+goal = "Goal"
+feedback = "Feedback"
+result = "Result"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    let report = validate_contract(&ir).expect_err("unsupported C v0 surface must fail");
+
+    for expected in [
+        "component `controller` declares pkg-config dependencies but language is not `cpp`",
+        "component `controller` uses language `c` but C v0 only supports native components",
+        "component `controller` uses language `c` but C v0 does not support params",
+        "component `controller` uses language `c` but C v0 does not support service ports",
+        "component `controller` uses language `c` but C v0 does not support operation ports",
+        "component `controller` port `sample` uses variable frame data but C v0 only supports fixed-size message types",
+    ] {
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.message.contains(expected)),
+            "missing validation error: {expected}; got {:?}",
+            report.errors
+        );
+    }
+}
+
+#[test]
 fn rejects_rust_component_build_pkg_config_dependencies() {
     let source = r#"
 [package]

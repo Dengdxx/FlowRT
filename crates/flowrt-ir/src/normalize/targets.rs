@@ -57,9 +57,10 @@ fn normalize_target_runtime(
         .map(|language| parse_language(&format!("target.{target_name}.runtime"), language))
         .collect::<Result<Vec<_>>>()?;
     runtime.sort_by_key(|language| match language {
-        LanguageKind::Cpp => 0,
-        LanguageKind::Rust => 1,
-        LanguageKind::External => 2,
+        LanguageKind::C => 0,
+        LanguageKind::Cpp => 1,
+        LanguageKind::Rust => 2,
+        LanguageKind::External => 3,
     });
     Ok(runtime)
 }

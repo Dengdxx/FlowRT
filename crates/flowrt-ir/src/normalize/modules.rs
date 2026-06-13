@@ -222,6 +222,7 @@ pub(super) fn normalize_operation_ports(
 
 pub(super) fn parse_language(context: &str, value: &str) -> Result<LanguageKind> {
     match value {
+        "c" => Ok(LanguageKind::C),
         "cpp" => Ok(LanguageKind::Cpp),
         "rust" => Ok(LanguageKind::Rust),
         "external" => Ok(LanguageKind::External),

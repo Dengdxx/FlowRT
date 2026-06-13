@@ -66,6 +66,9 @@ pub enum CodegenError {
     #[error("unsupported generated transport: {message}")]
     UnsupportedGeneratedTransport { message: String },
 
+    #[error("unsupported generated language: {message}")]
+    UnsupportedGeneratedLanguage { message: String },
+
     #[error("failed to derive message ABI expectations: {0}")]
     MessageAbi(#[from] flowrt_conformance::AbiError),
 
@@ -133,6 +136,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             count: contract.graphs.len(),
         });
     }
+    ensure_generated_languages_supported(contract)?;
     ensure_generated_transport_supported(contract)?;
 
     let mut artifacts = Vec::new();
@@ -244,6 +248,22 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     Ok(ArtifactBundle { artifacts })
 }
 
+fn ensure_generated_languages_supported(contract: &ContractIr) -> Result<()> {
+    if let Some(component) = contract
+        .components
+        .iter()
+        .find(|component| component.language == LanguageKind::C)
+    {
+        return Err(CodegenError::UnsupportedGeneratedLanguage {
+            message: format!(
+                "component `{}` uses language `c`, but C app codegen is not implemented yet",
+                component.name
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn ensure_generated_transport_supported(contract: &ContractIr) -> Result<()> {
     for graph in &contract.graphs {
         for service in &graph.services {
@@ -351,6 +371,7 @@ pub(crate) fn contract_has_external_process(contract: &ContractIr) -> bool {
 
 pub(crate) fn language_name(language: LanguageKind) -> &'static str {
     match language {
+        LanguageKind::C => "c",
         LanguageKind::Cpp => "cpp",
         LanguageKind::Rust => "rust",
         LanguageKind::External => "external",

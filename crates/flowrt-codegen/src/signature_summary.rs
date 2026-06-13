@@ -29,6 +29,7 @@ fn component_signature_summary(
     operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
 ) -> String {
     let language = match component.language {
+        LanguageKind::C => "c",
         LanguageKind::Rust => "rust",
         LanguageKind::Cpp => "cpp",
         LanguageKind::External => "external",
@@ -56,6 +57,7 @@ fn on_tick_signature(
     operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
 ) -> String {
     match component.language {
+        LanguageKind::C => "no generated C on_tick handler yet".to_string(),
         LanguageKind::Rust => {
             let args =
                 crate::rust_shell::rust_callback_args(component, service_plans, operation_plans);
@@ -83,6 +85,7 @@ fn on_tick_signature(
 
 fn params_update_signature(component: &ComponentIr) -> String {
     match component.language {
+        LanguageKind::C => "no generated C params handler yet".to_string(),
         LanguageKind::Rust => {
             let name = crate::component_rust_name(component);
             format!(

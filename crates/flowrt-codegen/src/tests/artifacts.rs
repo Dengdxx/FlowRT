@@ -228,6 +228,57 @@ input = ["imu:Imu"]
 }
 
 #[test]
+fn rejects_c_component_artifact_emission_without_generating_app() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "c_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.controller]
+language = "c"
+input = ["sample:Sample"]
+
+[component.source]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "controller.sample"
+channel = "latest"
+"#,
+    );
+
+    let error = emit_artifacts(&ir).expect_err("C app artifact generation must be gated");
+
+    assert!(
+        error.to_string().contains(
+            "component `controller` uses language `c`, but C app codegen is not implemented yet"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
 fn emits_workspace_module_symbols_without_component_name_collisions() {
     let root = unique_temp_dir();
     std::fs::create_dir_all(root.join("modules")).unwrap();

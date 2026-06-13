@@ -130,6 +130,51 @@ pub(crate) fn validate_components(
             }
             validate_param_schema(component, param, errors);
         }
+
+        validate_c_component_v0_surface(component, &types_by_name, errors);
+    }
+}
+
+fn validate_c_component_v0_surface(
+    component: &ComponentIr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+    errors: &mut Vec<ValidationError>,
+) {
+    if component.language != LanguageKind::C {
+        return;
+    }
+
+    if component.kind != ComponentKind::Native {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses language `c` but C v0 only supports native components",
+            component.name
+        )));
+    }
+    if !component.params.is_empty() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses language `c` but C v0 does not support params",
+            component.name
+        )));
+    }
+    if !component.service_clients.is_empty() || !component.service_servers.is_empty() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses language `c` but C v0 does not support service ports",
+            component.name
+        )));
+    }
+    if !component.operation_clients.is_empty() || !component.operation_servers.is_empty() {
+        errors.push(ValidationError::new(format!(
+            "component `{}` uses language `c` but C v0 does not support operation ports",
+            component.name
+        )));
+    }
+    for port in component.inputs.iter().chain(component.outputs.iter()) {
+        if type_expr_contains_variable_data(&port.ty, types_by_name) {
+            errors.push(ValidationError::new(format!(
+                "component `{}` port `{}` uses variable frame data but C v0 only supports fixed-size message types",
+                component.name, port.name
+            )));
+        }
     }
 }
 

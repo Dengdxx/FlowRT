@@ -3069,6 +3069,7 @@ struct ProcessRuntimeFlags {
 impl ProcessRuntimeFlags {
     fn add(&mut self, language: LanguageKind) {
         match language {
+            LanguageKind::C => {}
             LanguageKind::Cpp => self.cpp = true,
             LanguageKind::Rust => self.rust = true,
             LanguageKind::External => {}

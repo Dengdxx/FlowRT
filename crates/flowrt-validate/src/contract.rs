@@ -810,9 +810,10 @@ fn task_canonical_key(task: &flowrt_ir::TaskIr) -> (&str, &str) {
 
 fn target_runtime_rank(language: LanguageKind) -> u8 {
     match language {
-        LanguageKind::Cpp => 0,
-        LanguageKind::Rust => 1,
-        LanguageKind::External => 2,
+        LanguageKind::C => 0,
+        LanguageKind::Cpp => 1,
+        LanguageKind::Rust => 2,
+        LanguageKind::External => 3,
     }
 }
 

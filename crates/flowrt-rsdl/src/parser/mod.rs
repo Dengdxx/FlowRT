@@ -228,6 +228,22 @@ backends = ["inproc"]
     }
 
     #[test]
+    fn parses_c_component_language_as_raw_component_field() {
+        let source = r#"
+[package]
+name = "c_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "c"
+"#;
+
+        let document = parse_str(source).expect("C component language should parse");
+
+        assert_eq!(document.components["controller"].language, "c");
+    }
+
+    #[test]
     fn parses_island_mode_and_boundary_endpoints() {
         let source = r#"
 [package]
