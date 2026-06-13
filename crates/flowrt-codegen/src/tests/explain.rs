@@ -152,7 +152,7 @@ backend = "inproc"
 }
 
 #[test]
-fn explain_report_text_handles_c_components_without_generated_handler() {
+fn explain_report_text_handles_c_component_callback_adapter() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -175,5 +175,7 @@ period_ms = 10
     let text = format_explain_report_text(&report);
 
     assert!(text.contains("component driver language=c kind=native user_file=app/c/**"));
-    assert!(text.contains("on_tick: no generated C on_tick handler yet"));
+    assert!(
+        text.contains("on_tick: C callback table adapter declared in flowrt_app/c_components.h")
+    );
 }

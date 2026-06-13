@@ -27,7 +27,8 @@ mod supervisor;
 use build_files::{emit_cargo_manifest, emit_cmake};
 pub(crate) use cpp_shell::cpp_string_literal;
 use cpp_shell::{
-    emit_cpp_components, emit_cpp_main, emit_cpp_runtime_shell, emit_cpp_runtime_shell_header,
+    emit_c_component_header, emit_cpp_components, emit_cpp_main, emit_cpp_runtime_shell,
+    emit_cpp_runtime_shell_header,
 };
 use launch_manifest::emit_launch_manifest;
 use messages::{
@@ -119,7 +120,7 @@ pub struct CodegenPlan {
 /// 为一个 contract 构建高层生成计划。
 pub fn plan_codegen(contract: &ContractIr) -> CodegenPlan {
     let mut units = Vec::new();
-    if has_language(contract, LanguageKind::Cpp) {
+    if has_language(contract, LanguageKind::Cpp) || has_language(contract, LanguageKind::C) {
         units.push(CodegenUnit {
             language: CodegenLanguage::Cpp,
             artifact_group: "runtime_shell",
@@ -149,8 +150,10 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     let mut artifacts = Vec::new();
     let abi_expectations = fixed_message_abi_expectations(contract)?;
     let has_cpp_components = has_language(contract, LanguageKind::Cpp);
+    let has_c_components = has_language(contract, LanguageKind::C);
+    let has_cpp_shell_components = has_cpp_components || has_c_components;
     let has_ros2_bridge = contract_has_ros2_bridge(contract);
-    let has_cpp = has_cpp_components || has_ros2_bridge;
+    let has_cpp = has_cpp_shell_components || has_ros2_bridge;
     let has_rust = has_language(contract, LanguageKind::Rust);
     let has_supervisor = has_cpp || has_rust || contract_has_external_process(contract);
     let launch_manifest = emit_launch_manifest(contract)?;
@@ -164,11 +167,17 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             "cpp/include/flowrt_app/selfdesc.hpp",
             emit_cpp_selfdesc_header(contract),
         ));
-        if has_cpp_components {
+        if has_cpp_shell_components {
             artifacts.push(artifact(
                 "cpp/include/flowrt_app/components.hpp",
                 emit_cpp_components(contract),
             ));
+            if has_c_components {
+                artifacts.push(artifact(
+                    "cpp/include/flowrt_app/c_components.h",
+                    emit_c_component_header(contract),
+                ));
+            }
             artifacts.push(artifact(
                 "cpp/include/flowrt_app/runtime_shell.hpp",
                 emit_cpp_runtime_shell_header(contract),
@@ -178,7 +187,7 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             "cpp/src/selfdesc.cpp",
             emit_cpp_selfdesc_source(contract),
         ));
-        if has_cpp_components {
+        if has_cpp_shell_components {
             artifacts.push(artifact(
                 "cpp/src/runtime_shell.cpp",
                 emit_cpp_runtime_shell(contract),
@@ -256,17 +265,25 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
 }
 
 fn ensure_generated_languages_supported(contract: &ContractIr) -> Result<()> {
-    if let Some(component) = contract
-        .components
-        .iter()
-        .find(|component| component.language == LanguageKind::C)
-    {
-        return Err(CodegenError::UnsupportedGeneratedLanguage {
-            message: format!(
-                "component `{}` uses language `c`, but C app codegen is not implemented yet",
-                component.name
-            ),
-        });
+    for component in &contract.components {
+        match (component.language, component.kind) {
+            (
+                LanguageKind::Rust | LanguageKind::Cpp,
+                ComponentKind::Native | ComponentKind::IoBoundary,
+            )
+            | (LanguageKind::C, ComponentKind::Native)
+            | (LanguageKind::External, ComponentKind::External) => {}
+            _ => {
+                return Err(CodegenError::UnsupportedGeneratedLanguage {
+                    message: format!(
+                        "component `{}` uses language `{}` with kind `{}`, but generated app codegen only supports Rust/C++ native or io_boundary, C native v0, and external process components",
+                        component.name,
+                        language_name(component.language),
+                        component_kind_name(component.kind)
+                    ),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -345,7 +362,10 @@ fn endpoint_requires_generated_code(
     };
     let component = component_by_name(contract, &instance.component.name);
     component.kind != ComponentKind::External
-        && matches!(component.language, LanguageKind::Cpp | LanguageKind::Rust)
+        && matches!(
+            component.language,
+            LanguageKind::C | LanguageKind::Cpp | LanguageKind::Rust
+        )
 }
 
 fn artifact(path: impl Into<PathBuf>, content: String) -> Artifact {
@@ -382,6 +402,14 @@ pub(crate) fn language_name(language: LanguageKind) -> &'static str {
         LanguageKind::Cpp => "cpp",
         LanguageKind::Rust => "rust",
         LanguageKind::External => "external",
+    }
+}
+
+fn component_kind_name(kind: ComponentKind) -> &'static str {
+    match kind {
+        ComponentKind::Native => "native",
+        ComponentKind::IoBoundary => "io_boundary",
+        ComponentKind::External => "external",
     }
 }
 
@@ -708,10 +736,18 @@ pub(crate) fn topo_order_instances_for_language<'a>(
     graph: &'a GraphIr,
     language: LanguageKind,
 ) -> Vec<&'a InstanceIr> {
+    topo_order_instances_for_languages(contract, graph, &[language])
+}
+
+pub(crate) fn topo_order_instances_for_languages<'a>(
+    contract: &ContractIr,
+    graph: &'a GraphIr,
+    languages: &[LanguageKind],
+) -> Vec<&'a InstanceIr> {
     topo_order_instances(graph)
         .into_iter()
         .filter(|instance| {
-            component_by_name(contract, &instance.component.name).language == language
+            languages.contains(&component_by_name(contract, &instance.component.name).language)
         })
         .collect()
 }

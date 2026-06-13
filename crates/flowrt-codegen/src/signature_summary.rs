@@ -53,7 +53,9 @@ pub(crate) fn on_tick_signature(
     operation_plans: &[OperationRuntimePlan],
 ) -> String {
     match component.language {
-        LanguageKind::C => "no generated C on_tick handler yet".to_string(),
+        LanguageKind::C => {
+            "C callback table adapter declared in flowrt_app/c_components.h".to_string()
+        }
         LanguageKind::Rust => {
             let args =
                 crate::rust_shell::rust_callback_args(component, service_plans, operation_plans);

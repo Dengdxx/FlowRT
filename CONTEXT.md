@@ -15,7 +15,13 @@ CLI 已新增 `flowrt init [path] --lang <rust|cpp>`，生成 `flowrt.toml`、
 省略 RSDL 时从 `flowrt.toml` 找主 RSDL，可追加根 message、当前可解析的
 `rsdl/modules/*.rsdl` workspace module 注册，以及 Rust/C++ native component、同名
 instance、最小 periodic task 和现代 `app/` 用户骨架；写入前会重新解析、归一化并校验
-更新后的 Contract IR，C component 入口仍等后续 C ABI adapter/demo 切片。RSDL / Contract
+更新后的 Contract IR，C component 脚手架入口仍未开放。手写或已有 RSDL 中
+`language = "c"` 的 native component 已可由 codegen 生成 C++ adapter：C 用户文件放
+`app/c/**` 并实现 generated header 声明的静态 callback table factory，generated C++
+runtime shell 通过 C ABI callback table 转发生命周期和 periodic/on_message/startup/shutdown
+task callback；callback table 必须设置 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0`
+且不得设置未知 feature bit；C v0 仍只支持 fixed-size plain data 输入/输出，不支持
+params、service、operation、variable frame、`io_boundary` 或 `external` kind。RSDL / Contract
 IR / validator 现已承载 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized

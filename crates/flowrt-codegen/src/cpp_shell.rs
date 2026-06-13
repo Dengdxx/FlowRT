@@ -22,12 +22,37 @@ use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
     param_json_literal, param_type_name, param_update_name, param_value_for_instance,
     ros2_bridge_key_expr, scheduler_tasks_for_order, selected_backend_name,
-    selected_profile_worker_threads, tasks_for_instance, topo_order_instances_for_language,
+    selected_profile_worker_threads, tasks_for_instance, topo_order_instances_for_languages,
     zenoh_key_expr,
 };
 
 pub(crate) fn component_cpp_name(component: &ComponentIr) -> String {
     component_rust_name(component)
+}
+
+fn component_uses_cpp_shell(component: &ComponentIr) -> bool {
+    matches!(component.language, LanguageKind::C | LanguageKind::Cpp)
+}
+
+fn contract_has_c_components(contract: &ContractIr) -> bool {
+    contract
+        .components
+        .iter()
+        .any(|component| component.language == LanguageKind::C)
+}
+
+fn contract_has_cpp_components(contract: &ContractIr) -> bool {
+    contract
+        .components
+        .iter()
+        .any(|component| component.language == LanguageKind::Cpp)
+}
+
+fn topo_order_instances_for_cpp_shell<'a>(
+    contract: &ContractIr,
+    graph: &'a GraphIr,
+) -> Vec<&'a InstanceIr> {
+    topo_order_instances_for_languages(contract, graph, &[LanguageKind::C, LanguageKind::Cpp])
 }
 
 fn cpp_param_type(ty: ParamType) -> &'static str {
@@ -98,7 +123,7 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     for component in contract
         .components
         .iter()
-        .filter(|component| component.language == LanguageKind::Cpp)
+        .filter(|component| component_uses_cpp_shell(component))
     {
         if !component.params.is_empty() {
             output.push_str(&cpp_params_struct(component));
@@ -139,12 +164,37 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     output
 }
 
+pub(crate) fn emit_c_component_header(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push_str("#pragma once\n\n");
+    output.push_str("#include <flowrt/abi.h>\n\n");
+    output.push_str("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
+
+    let graph = contract
+        .graphs
+        .first()
+        .expect("normalized contract must contain at least one graph");
+    for instance in topo_order_instances_for_cpp_shell(contract, graph) {
+        let component = component_by_name(contract, &instance.component.name);
+        if component.language != LanguageKind::C {
+            continue;
+        }
+        output.push_str(&format!(
+            "const flowrt_c_component_callback_table_t* {}(void);\n",
+            c_callback_factory_symbol(instance)
+        ));
+    }
+
+    output.push_str("\n#ifdef __cplusplus\n}\n#endif\n");
+    output
+}
+
 pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let graph = contract
         .graphs
         .first()
         .expect("normalized contract must contain at least one graph");
-    let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
+    let order = topo_order_instances_for_cpp_shell(contract, graph);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
@@ -159,12 +209,18 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
 
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
+    if contract_has_c_components(contract) {
+        output.push_str("#include \"flowrt_app/c_components.h\"\n\n");
+    }
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <algorithm>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdlib>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <algorithm>\n#include <array>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdlib>\n#include <cstring>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
     );
+    if contract_has_c_components(contract) {
+        output.push_str(&emit_c_adapter_helpers(contract, graph, &order));
+    }
     output.push_str(&emit_cpp_introspection_helpers());
     output.push_str(&emit_cpp_param_constraint_helpers(&order, contract));
     output.push_str("}  // namespace\n\n");
@@ -316,12 +372,17 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         }));
     }
     let backend_factory = cpp_backend_factory(&selected_backend);
+    let app_expr = if contract_has_cpp_components(contract) {
+        "flowrt_user::build_app()"
+    } else {
+        "flowrt_app::App()"
+    };
     output.push_str(
         &format!(
-        "flowrt::Status run(std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run(backend, run_ticks);\n}}\n\n"
+        "flowrt::Status run(std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return {app_expr}.run(backend, run_ticks);\n}}\n\n"
     ));
     output.push_str(&format!(
-        "flowrt::Status run_process(std::string_view process, std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return flowrt_user::build_app().run_process(backend, process, run_ticks);\n}}\n\n"
+        "flowrt::Status run_process(std::string_view process, std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return {app_expr}.run_process(backend, process, run_ticks);\n}}\n\n"
     ));
     output.push_str("}  // namespace flowrt_app\n");
     output
@@ -332,7 +393,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         .graphs
         .first()
         .expect("normalized contract must contain at least one graph");
-    let order = topo_order_instances_for_language(contract, graph, LanguageKind::Cpp);
+    let order = topo_order_instances_for_cpp_shell(contract, graph);
     let process_plans = process_runtime_plans(&order);
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
@@ -505,9 +566,11 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         "/**\n * @brief 运行默认 C++ inproc 应用中的指定 process group。\n *\n * @param process process group 名称。\n * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process, std::optional<std::size_t> run_ticks);\n\n",
     );
     output.push_str("}  // namespace flowrt_app\n");
-    output.push_str(
-        "\nnamespace flowrt_user {\n\n/**\n * @brief 构造用户 C++ 组件实例并交给 FlowRT 管理 shell。\n *\n * 用户项目必须实现该函数。函数体应只装配用户组件对象，不写入 FlowRT 管理产物。\n *\n * @return 已注入用户组件实例的 FlowRT C++ 应用对象。\n */\nflowrt_app::App build_app();\n\n}  // namespace flowrt_user\n",
-    );
+    if contract_has_cpp_components(contract) {
+        output.push_str(
+            "\nnamespace flowrt_user {\n\n/**\n * @brief 构造用户 C++ 组件实例并交给 FlowRT 管理 shell。\n *\n * 用户项目必须实现该函数。函数体应只装配用户组件对象，不写入 FlowRT 管理产物。\n *\n * @return 已注入用户组件实例的 FlowRT C++ 应用对象。\n */\nflowrt_app::App build_app();\n\n}  // namespace flowrt_user\n",
+        );
+    }
     output
 }
 
@@ -515,6 +578,9 @@ fn emit_cpp_app_constructor_declaration(contract: &ContractIr, order: &[&Instanc
     let mut params = Vec::new();
     for instance in order {
         let component = component_by_name(contract, &instance.component.name);
+        if component.language != LanguageKind::Cpp {
+            continue;
+        }
         params.push(format!(
             "std::unique_ptr<{}Interface> {}",
             component_cpp_name(component),
@@ -528,6 +594,10 @@ fn emit_cpp_app_constructor_declaration(contract: &ContractIr, order: &[&Instanc
         output.push_str("     * 该 contract 没有需要注入的 C++ 组件实例。\n");
     } else {
         for instance in order {
+            let component = component_by_name(contract, &instance.component.name);
+            if component.language != LanguageKind::Cpp {
+                continue;
+            }
             output.push_str(&format!(
                 "     * @param {} 用户组件实例所有权；shell 在生命周期内独占持有该对象。\n",
                 instance.name
@@ -567,6 +637,9 @@ fn emit_cpp_app_constructor(
     let mut params = Vec::new();
     for instance in order {
         let component = component_by_name(contract, &instance.component.name);
+        if component.language != LanguageKind::Cpp {
+            continue;
+        }
         params.push(format!(
             "std::unique_ptr<{}Interface> {}",
             component_cpp_name(component),
@@ -577,7 +650,15 @@ fn emit_cpp_app_constructor(
     let mut initializers = Vec::new();
     for instance in order {
         let component = component_by_name(contract, &instance.component.name);
-        initializers.push(format!("{}_(std::move({}))", instance.name, instance.name));
+        if component.language == LanguageKind::C {
+            initializers.push(format!(
+                "{}_(make_c_{}_adapter())",
+                instance.name,
+                crate::snake_identifier(&instance.name)
+            ));
+        } else {
+            initializers.push(format!("{}_(std::move({}))", instance.name, instance.name));
+        }
         if !component.params.is_empty() {
             initializers.push(format!(
                 "{}_params_({})",
@@ -825,6 +906,480 @@ fn cpp_operation_registration_block(plan: &crate::runtime_plan::OperationRuntime
     )
 }
 
+fn emit_c_adapter_helpers(contract: &ContractIr, graph: &GraphIr, order: &[&InstanceIr]) -> String {
+    let mut output = String::new();
+    output.push_str(
+        r#"using namespace flowrt_app;
+
+flowrt_string_view_t c_string_view(std::string_view value) {
+    return flowrt_string_view_t{.data = value.data(), .len = value.size()};
+}
+
+flowrt_bytes_view_t c_bytes_view(const void* data, std::size_t size) {
+    return flowrt_bytes_view_t{.data = reinterpret_cast<const std::uint8_t*>(data), .len = size};
+}
+
+flowrt::Status status_from_c(flowrt_status_t status) {
+    switch (status) {
+        case FLOWRT_STATUS_OK:
+            return flowrt::Status::Ok;
+        case FLOWRT_STATUS_RETRY:
+            return flowrt::Status::Retry;
+        case FLOWRT_STATUS_ERROR:
+            return flowrt::Status::Error;
+        default:
+            return flowrt::Status::Error;
+    }
+}
+
+bool validate_callback_table(const flowrt_c_component_callback_table_t* callbacks,
+                             bool needs_periodic,
+                             bool needs_on_message,
+                             bool needs_startup,
+                             bool needs_shutdown) {
+    if (callbacks == nullptr) {
+        return false;
+    }
+    if (callbacks->size < sizeof(flowrt_c_component_callback_table_t)) {
+        return false;
+    }
+    if (callbacks->version_major != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR) {
+        return false;
+    }
+    if (callbacks->version_minor != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR) {
+        return false;
+    }
+    constexpr std::uint64_t kRequiredFeatures = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0;
+    constexpr std::uint64_t kKnownFeatures = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0;
+    if ((callbacks->feature_flags & kRequiredFeatures) != kRequiredFeatures) {
+        return false;
+    }
+    if ((callbacks->feature_flags & ~kKnownFeatures) != 0U) {
+        return false;
+    }
+    if (needs_periodic && callbacks->run_periodic == nullptr) {
+        return false;
+    }
+    if (needs_on_message && callbacks->run_on_message == nullptr) {
+        return false;
+    }
+    if (needs_startup && callbacks->run_startup == nullptr) {
+        return false;
+    }
+    if (needs_shutdown && callbacks->run_shutdown == nullptr) {
+        return false;
+    }
+    return true;
+}
+
+flowrt_c_component_context_t make_c_component_context(std::string_view component_name,
+                                                      std::string_view instance_name,
+                                                      std::string_view task_name,
+                                                      std::string_view lane_name,
+                                                      std::uint64_t step,
+                                                      std::uint64_t tick_time_ms,
+                                                      std::uint64_t deadline_ms,
+                                                      bool has_deadline_ms) {
+    return flowrt_c_component_context_t{
+        .component_name = c_string_view(component_name),
+        .instance_name = c_string_view(instance_name),
+        .task_name = c_string_view(task_name),
+        .lane_name = c_string_view(lane_name),
+        .step = step,
+        .tick_time_ms = tick_time_ms,
+        .deadline_ms = deadline_ms,
+        .has_deadline_ms = has_deadline_ms ? std::uint8_t{1} : std::uint8_t{0},
+        .reserved = {},
+    };
+}
+
+"#,
+    );
+
+    for instance in order {
+        let component = component_by_name(contract, &instance.component.name);
+        if component.language != LanguageKind::C {
+            continue;
+        }
+        output.push_str(&emit_c_adapter_class(graph, instance, component));
+    }
+
+    output
+}
+
+fn emit_c_adapter_class(graph: &GraphIr, instance: &InstanceIr, component: &ComponentIr) -> String {
+    let class_name = c_adapter_class_name(instance);
+    let factory_name = c_adapter_factory_name(instance);
+    let symbol = c_callback_factory_symbol(instance);
+    let needs_periodic = c_bool_literal(
+        tasks_for_instance(graph, instance)
+            .any(|task| task.trigger == flowrt_ir::TriggerKind::Periodic),
+    );
+    let needs_on_message = c_bool_literal(
+        tasks_for_instance(graph, instance)
+            .any(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage),
+    );
+    let needs_startup = c_bool_literal(
+        tasks_for_instance(graph, instance)
+            .any(|task| task.trigger == flowrt_ir::TriggerKind::Startup),
+    );
+    let needs_shutdown = c_bool_literal(
+        tasks_for_instance(graph, instance)
+            .any(|task| task.trigger == flowrt_ir::TriggerKind::Shutdown),
+    );
+
+    let mut output = String::new();
+    output.push_str(&format!(
+        "class {class_name} final : public flowrt_app::{component}Interface {{\npublic:\n    explicit {class_name}(const flowrt_c_component_callback_table_t* callbacks) : callbacks_(callbacks) {{}}\n\n",
+        component = component_cpp_name(component),
+    ));
+    output.push_str(&emit_c_adapter_lifecycle_method(
+        "on_init",
+        &component.name,
+        &instance.name,
+    ));
+    output.push_str(&emit_c_adapter_lifecycle_method(
+        "on_start",
+        &component.name,
+        &instance.name,
+    ));
+    output.push_str(&emit_c_adapter_lifecycle_method(
+        "on_stop",
+        &component.name,
+        &instance.name,
+    ));
+    output.push_str(&emit_c_adapter_lifecycle_method(
+        "on_shutdown",
+        &component.name,
+        &instance.name,
+    ));
+    output.push_str(&emit_c_adapter_on_tick_override(component));
+    for task in tasks_for_instance(graph, instance) {
+        output.push_str(&emit_c_adapter_task_method(component, instance, task));
+    }
+    output.push_str(&format!(
+        "private:\n    bool callbacks_valid() const noexcept {{\n        return validate_callback_table(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name) {{\n        if (!callbacks_valid()) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, 0U, 0U, 0U, false);\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
+        component = component_cpp_name(component),
+    ));
+    output
+}
+
+fn emit_c_adapter_lifecycle_method(
+    name: &str,
+    component_name: &str,
+    instance_name: &str,
+) -> String {
+    format!(
+        "    flowrt::Status {name}(flowrt::Context& context) override {{\n        (void)context;\n        return call_lifecycle(callbacks_ != nullptr ? callbacks_->{name} : nullptr, {hook}, {component}, {instance});\n    }}\n\n",
+        hook = cpp_string_literal(name),
+        component = cpp_string_literal(component_name),
+        instance = cpp_string_literal(instance_name),
+    )
+}
+
+fn emit_c_adapter_on_tick_override(component: &ComponentIr) -> String {
+    let args = cpp_callback_args(component, &[], &[]);
+    if args.is_empty() {
+        return "    flowrt::Status on_tick() override {\n        return flowrt::Status::Error;\n    }\n\n"
+            .to_string();
+    }
+    let joined = args
+        .iter()
+        .map(|arg| format!("        {arg}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!(
+        "    flowrt::Status on_tick(\n{joined}) override {{\n        return flowrt::Status::Error;\n    }}\n\n"
+    )
+}
+
+fn emit_c_adapter_task_method(
+    component: &ComponentIr,
+    instance: &InstanceIr,
+    task: &flowrt_ir::TaskIr,
+) -> String {
+    let mut args = vec![
+        "std::uint64_t step".to_string(),
+        "std::uint64_t tick_time_ms".to_string(),
+    ];
+    for input in &component.inputs {
+        args.push(format!("std::uint64_t {}_revision", input.name));
+        args.push(format!(
+            "const flowrt::Latest<{}>& {}",
+            cpp_type(&input.ty),
+            input.name
+        ));
+    }
+    for output in &component.outputs {
+        args.push(format!(
+            "flowrt::Output<{}>& {}",
+            cpp_type(&output.ty),
+            output.name
+        ));
+    }
+    let joined = args
+        .iter()
+        .map(|arg| format!("        {arg}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let callback_field = c_task_callback_field(task);
+    let mut output = format!(
+        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid() || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, step, tick_time_ms, {deadline}, {has_deadline});\n",
+        method = c_adapter_task_method_name(task),
+        component_name = cpp_string_literal(&component.name),
+        instance_name = cpp_string_literal(&instance.name),
+        task_name = cpp_string_literal(&task.name),
+        lane_name = cpp_string_literal(&cpp_task_lane_name(task)),
+        deadline = task.deadline_ms.unwrap_or(0),
+        has_deadline = c_bool_literal(task.deadline_ms.is_some()),
+    );
+
+    let task_inputs = task
+        .inputs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let task_outputs = task
+        .outputs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+
+    for input in component
+        .inputs
+        .iter()
+        .filter(|input| task_inputs.contains(input.name.as_str()))
+    {
+        let input_name = crate::snake_identifier(&input.name);
+        output.push_str(&format!(
+            "        const auto* {input_name}_payload = {port}.get();\n        flowrt_c_input_view_t {instance}_{input_name}_input{{\n            .name = c_string_view({port_name}),\n            .type_name = c_string_view({type_name}),\n            .schema_hash = flowrt::fnv1a64({type_name}),\n            .size_bytes = sizeof({ty}),\n            .payload = {input_name}_payload != nullptr ? c_bytes_view({input_name}_payload, sizeof({ty})) : flowrt_bytes_view_t{{}},\n            .source_time_ms = tick_time_ms,\n            .revision = {port}_revision,\n            .present = {port}.present() ? std::uint8_t{{1}} : std::uint8_t{{0}},\n            .stale = {port}.stale() ? std::uint8_t{{1}} : std::uint8_t{{0}},\n            .reserved = {{}},\n        }};\n",
+            instance = crate::snake_identifier(&instance.name),
+            port = input.name,
+            port_name = cpp_string_literal(&input.name),
+            type_name = cpp_string_literal(&input.ty.canonical_syntax()),
+            ty = cpp_type(&input.ty),
+        ));
+    }
+
+    for output_port in component
+        .outputs
+        .iter()
+        .filter(|output_port| task_outputs.contains(output_port.name.as_str()))
+    {
+        let output_name = crate::snake_identifier(&output_port.name);
+        output.push_str(&format!(
+            "        std::array<std::uint8_t, sizeof({ty})> {instance}_{output_name}_storage{{}};\n        flowrt_c_output_slot_t {instance}_{output_name}_output{{\n            .name = c_string_view({port_name}),\n            .type_name = c_string_view({type_name}),\n            .schema_hash = flowrt::fnv1a64({type_name}),\n            .size_bytes = sizeof({ty}),\n            .data = {instance}_{output_name}_storage.data(),\n            .capacity = {instance}_{output_name}_storage.size(),\n            .written_len = 0U,\n            .status = FLOWRT_C_OUTPUT_UNWRITTEN,\n            .reserved = {{}},\n        }};\n",
+            instance = crate::snake_identifier(&instance.name),
+            port_name = cpp_string_literal(&output_port.name),
+            type_name = cpp_string_literal(&output_port.ty.canonical_syntax()),
+            ty = cpp_type(&output_port.ty),
+        ));
+    }
+
+    output.push_str(&emit_c_input_array(instance, component, &task_inputs));
+    output.push_str(&emit_c_output_array(instance, component, &task_outputs));
+    output.push_str(&format!(
+        "        const auto callback_status = status_from_c(callbacks_->{callback_field}(callbacks_->user_data, &context, &inputs, &outputs));\n        if (callback_status != flowrt::Status::Ok) {{\n            return callback_status;\n        }}\n"
+    ));
+    for (index, output_port) in component
+        .outputs
+        .iter()
+        .filter(|output_port| task_outputs.contains(output_port.name.as_str()))
+        .enumerate()
+    {
+        let output_name = crate::snake_identifier(&output_port.name);
+        output.push_str(&format!(
+            "        {instance}_{output_name}_output = output_slots[{index}];\n",
+            instance = crate::snake_identifier(&instance.name),
+        ));
+    }
+    for output_port in component
+        .outputs
+        .iter()
+        .filter(|output_port| task_outputs.contains(output_port.name.as_str()))
+    {
+        let output_name = crate::snake_identifier(&output_port.name);
+        output.push_str(&format!(
+            "        if ({instance}_{output_name}_output.status == FLOWRT_C_OUTPUT_WRITTEN && {instance}_{output_name}_output.written_len == sizeof({ty})) {{\n            {ty} {instance}_{output_name}_value{{}};\n            std::memcpy(&{instance}_{output_name}_value, {instance}_{output_name}_storage.data(), sizeof({ty}));\n            {port}.write({instance}_{output_name}_value);\n        }} else if ({instance}_{output_name}_output.status == FLOWRT_C_OUTPUT_UNWRITTEN) {{\n        }} else {{\n            return flowrt::Status::Error;\n        }}\n",
+            instance = crate::snake_identifier(&instance.name),
+            port = output_port.name,
+            ty = cpp_type(&output_port.ty),
+        ));
+    }
+    output.push_str("        return flowrt::Status::Ok;\n    }\n\n");
+
+    output
+}
+
+fn emit_c_input_array(
+    instance: &InstanceIr,
+    component: &ComponentIr,
+    task_inputs: &BTreeSet<&str>,
+) -> String {
+    let inputs = component
+        .inputs
+        .iter()
+        .filter(|input| task_inputs.contains(input.name.as_str()))
+        .map(|input| {
+            format!(
+                "{}_{}_input",
+                crate::snake_identifier(&instance.name),
+                crate::snake_identifier(&input.name)
+            )
+        })
+        .collect::<Vec<_>>();
+    if inputs.is_empty() {
+        return "        std::array<flowrt_c_input_view_t, 0> input_views{};\n        flowrt_c_input_array_view_t inputs{.data = nullptr, .len = 0U};\n"
+            .to_string();
+    }
+    let body = inputs
+        .iter()
+        .map(|input| format!("            {input},"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "        std::array<flowrt_c_input_view_t, {len}> input_views{{{{\n{body}\n        }}}};\n        flowrt_c_input_array_view_t inputs{{.data = input_views.data(), .len = input_views.size()}};\n",
+        len = inputs.len(),
+    )
+}
+
+fn emit_c_output_array(
+    instance: &InstanceIr,
+    component: &ComponentIr,
+    task_outputs: &BTreeSet<&str>,
+) -> String {
+    let outputs = component
+        .outputs
+        .iter()
+        .filter(|output| task_outputs.contains(output.name.as_str()))
+        .map(|output| {
+            format!(
+                "{}_{}_output",
+                crate::snake_identifier(&instance.name),
+                crate::snake_identifier(&output.name)
+            )
+        })
+        .collect::<Vec<_>>();
+    if outputs.is_empty() {
+        return "        std::array<flowrt_c_output_slot_t, 0> output_slots{};\n        flowrt_c_output_array_view_t outputs{.data = nullptr, .len = 0U};\n"
+            .to_string();
+    }
+    let body = outputs
+        .iter()
+        .map(|output| format!("            {output},"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "        std::array<flowrt_c_output_slot_t, {len}> output_slots{{{{\n{body}\n        }}}};\n        flowrt_c_output_array_view_t outputs{{.data = output_slots.data(), .len = output_slots.size()}};\n",
+        len = outputs.len(),
+    )
+}
+
+fn emit_c_adapter_task_step_call(
+    emission: &CppStepEmission<'_>,
+    instance: &InstanceIr,
+    component: &ComponentIr,
+    task: &flowrt_ir::TaskIr,
+    collect_outputs: bool,
+    body_indent: &str,
+    body_inner_indent: &str,
+) -> String {
+    let mut args = vec![
+        "static_cast<std::uint64_t>(tick)".to_string(),
+        "tick_time_ms".to_string(),
+    ];
+    for input in &component.inputs {
+        args.push(c_input_revision_expr(emission, instance, input));
+        args.push(cpp_step_local_name(&instance.name, &input.name));
+    }
+    for output in &component.outputs {
+        args.push(cpp_step_local_name(&instance.name, &output.name));
+    }
+    let call = format!(
+        "static_cast<{}*>({}_.get())->{}({})",
+        c_adapter_class_name(instance),
+        instance.name,
+        c_adapter_task_method_name(task),
+        args.join(", ")
+    );
+
+    if collect_outputs {
+        format!(
+            "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({call}) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return FlowrtTaskOutcome::retry(std::vector<FlowrtOutputCommit>{{}});\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}});\n{body_inner_indent}}}\n{body_indent}}}\n",
+            instance = instance.name,
+        )
+    } else {
+        format!(
+            "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({call}) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return flowrt::Status::Retry;\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return flowrt::Status::Error;\n{body_inner_indent}}}\n{body_indent}}}\n",
+            instance = instance.name,
+        )
+    }
+}
+
+fn c_input_revision_expr(
+    emission: &CppStepEmission<'_>,
+    instance: &InstanceIr,
+    input: &PortIr,
+) -> String {
+    if let Some(bind_index) = emission
+        .incoming_bind_index
+        .get(&(instance.name.clone(), input.name.clone()))
+    {
+        return format!("{}_.revision()", emission.binds[*bind_index].field_name);
+    }
+    if let Some(bridge_index) = emission
+        .incoming_bridge_index
+        .get(&(instance.name.clone(), input.name.clone()))
+    {
+        return format!("{}_.revision()", emission.bridges[*bridge_index].field_name);
+    }
+    if let Some(boundary_index) = emission
+        .incoming_boundary_index
+        .get(&(instance.name.clone(), input.name.clone()))
+    {
+        return format!(
+            "{}_.revision()",
+            emission.boundaries[*boundary_index].field_name
+        );
+    }
+    "0U".to_string()
+}
+
+fn c_task_callback_field(task: &flowrt_ir::TaskIr) -> &'static str {
+    match task.trigger {
+        flowrt_ir::TriggerKind::Periodic => "run_periodic",
+        flowrt_ir::TriggerKind::OnMessage => "run_on_message",
+        flowrt_ir::TriggerKind::Startup => "run_startup",
+        flowrt_ir::TriggerKind::Shutdown => "run_shutdown",
+    }
+}
+
+fn c_adapter_class_name(instance: &InstanceIr) -> String {
+    format!(
+        "C{}Adapter",
+        crate::pascal_case(&crate::snake_identifier(&instance.name))
+    )
+}
+
+fn c_adapter_factory_name(instance: &InstanceIr) -> String {
+    format!("make_c_{}_adapter", crate::snake_identifier(&instance.name))
+}
+
+fn c_adapter_task_method_name(task: &flowrt_ir::TaskIr) -> String {
+    format!("run_{}", cpp_task_local_name(task))
+}
+
+fn c_callback_factory_symbol(instance: &InstanceIr) -> String {
+    format!(
+        "flowrt_app_{}_callbacks",
+        crate::snake_identifier(&instance.name)
+    )
+}
+
+fn c_bool_literal(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
 struct CppStepEmission<'a> {
     contract: &'a ContractIr,
     graph: &'a GraphIr,
@@ -856,7 +1411,12 @@ fn emit_cpp_app_step(
     output.push_str(&format!(
         "{return_type} App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
     ));
-    if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
+    if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries)
+        || order.iter().any(|instance| {
+            component_by_name(emission.contract, &instance.component.name).language
+                == LanguageKind::C
+        })
+    {
         output.push_str(
             "    const auto tick_time_ms = static_cast<std::uint64_t>(tick);\n    (void)tick_time_ms;\n",
         );
@@ -1047,7 +1607,17 @@ fn emit_cpp_app_step(
             for port in &component.outputs {
                 call_args.push(cpp_step_local_name(&instance.name, &port.name));
             }
-            if collect_outputs {
+            if component.language == LanguageKind::C {
+                output.push_str(&emit_c_adapter_task_step_call(
+                    emission,
+                    instance,
+                    component,
+                    task,
+                    collect_outputs,
+                    body_indent,
+                    body_inner_indent,
+                ));
+            } else if collect_outputs {
                 output.push_str(&format!(
                     "{body_indent}if ({instance}_) {{\n{body_inner_indent}switch ({instance}_->on_tick({args})) {{\n{body_inner_indent}    case flowrt::Status::Ok:\n{body_inner_indent}        break;\n{body_inner_indent}    case flowrt::Status::Retry:\n{body_inner_indent}        return FlowrtTaskOutcome::retry(std::vector<FlowrtOutputCommit>{{}});\n{body_inner_indent}    case flowrt::Status::Error:\n{body_inner_indent}        return FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}});\n{body_inner_indent}}}\n{body_indent}}}\n",
                     instance = instance.name,

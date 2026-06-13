@@ -79,7 +79,7 @@ rsdl_version = "0.1"
 value = "u32"
 
 [component.source]
-language = "rust"
+language = "cpp"
 output = ["sample:Sample"]
 
 [component.sink]
@@ -228,7 +228,7 @@ input = ["imu:Imu"]
 }
 
 #[test]
-fn rejects_c_component_artifact_emission_without_generating_app() {
+fn emits_c_component_adapter_artifacts() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -268,14 +268,103 @@ channel = "latest"
 "#,
     );
 
-    let error = emit_artifacts(&ir).expect_err("C app artifact generation must be gated");
-
+    let plan = plan_codegen(&ir);
     assert!(
-        error.to_string().contains(
-            "component `controller` uses language `c`, but C app codegen is not implemented yet"
-        ),
-        "{error}"
+        plan.units
+            .iter()
+            .any(|unit| unit.language == CodegenLanguage::Cpp)
     );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let paths = bundle
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.relative_path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"cpp/include/flowrt_app/c_components.h".to_string()));
+    assert!(paths.contains(&"cpp/include/flowrt_app/runtime_shell.hpp".to_string()));
+    assert!(paths.contains(&"cpp/src/runtime_shell.cpp".to_string()));
+
+    let c_header = artifact_content(&bundle, "cpp/include/flowrt_app/c_components.h");
+    assert!(c_header.contains("#include <flowrt/abi.h>"));
+    assert!(c_header.contains(
+        "const flowrt_c_component_callback_table_t* flowrt_app_controller_callbacks(void);"
+    ));
+
+    let runtime_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+    assert!(runtime_header.contains("std::unique_ptr<ControllerInterface> controller"));
+
+    let runtime_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    assert!(runtime_shell.contains("#include \"flowrt_app/c_components.h\""));
+    assert!(
+        runtime_shell
+            .contains("class CControllerAdapter final : public flowrt_app::ControllerInterface")
+    );
+    assert!(runtime_shell.contains("validate_callback_table("));
+    assert!(
+        runtime_shell.contains("callbacks->size < sizeof(flowrt_c_component_callback_table_t)")
+    );
+    assert!(
+        runtime_shell
+            .contains("callbacks->version_major != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR")
+    );
+    assert!(
+        runtime_shell
+            .contains("callbacks->version_minor != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR")
+    );
+    assert!(runtime_shell.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0"));
+    assert!(
+        runtime_shell
+            .contains("(callbacks->feature_flags & kRequiredFeatures) != kRequiredFeatures")
+    );
+    assert!(runtime_shell.contains("(callbacks->feature_flags & ~kKnownFeatures) != 0U"));
+    assert!(runtime_shell.contains("callbacks->run_on_message == nullptr"));
+    assert!(runtime_shell.contains("make_c_controller_adapter()"));
+    assert!(runtime_shell.contains("flowrt_app_controller_callbacks()"));
+    assert!(runtime_shell.contains("flowrt_c_input_view_t controller_sample_input"));
+    assert!(runtime_shell.contains("sample.present() ? std::uint8_t{1} : std::uint8_t{0}"));
+    assert!(runtime_shell.contains("sample.stale() ? std::uint8_t{1} : std::uint8_t{0}"));
+
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+    assert!(cmake.contains("\"${FLOWRT_USER_C_ROOT}/*.c\""));
+    assert!(cmake.contains("target_include_directories(c_demo_cpp_user PUBLIC"));
+}
+
+#[test]
+fn emits_c_component_adapter_output_validation() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "c_output_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "u32"
+
+[component.controller]
+language = "c"
+output = ["cmd:Cmd"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "startup"
+output = ["cmd"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let runtime_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+
+    assert!(runtime_shell.contains("flowrt_c_output_slot_t controller_cmd_output"));
+    assert!(runtime_shell.contains("std::array<std::uint8_t, sizeof(Cmd)> controller_cmd_storage"));
+    assert!(runtime_shell.contains("controller_cmd_output.status == FLOWRT_C_OUTPUT_WRITTEN"));
+    assert!(runtime_shell.contains("controller_cmd_output.written_len == sizeof(Cmd)"));
+    assert!(runtime_shell.contains("std::memcpy(&controller_cmd_value"));
+    assert!(runtime_shell.contains("return flowrt::Status::Error;"));
+    assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
 }
 
 #[test]
@@ -514,7 +603,7 @@ channel = "latest"
     );
     assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
     assert!(cmake.contains(
-        "User C/C++ sources from app/cpp and app/c that implement flowrt_user::build_app"
+        "User C/C++ sources from app/cpp and app/c that implement flowrt_user::build_app and C callback factories"
     ));
     assert!(cmake.contains("target_include_directories(robot_demo_cpp_user PUBLIC"));
     assert!(cmake.contains("${FLOWRT_USER_CPP_ROOT}"));

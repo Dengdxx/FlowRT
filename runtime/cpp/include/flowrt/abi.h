@@ -106,6 +106,8 @@ typedef struct flowrt_frame_descriptor_t {
  * component 之间的调用边界。所有名称和 payload 都是借用视图；callback 不接管
  * 输入 payload、输出 slot 或 user_data 的所有权。函数指针可以按 C 语言惯例传
  * NULL；adapter 必须在调用前校验 size、version、feature_flags 和必填 callback。
+ * 当前 callback table 必须设置 FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0，未识别的
+ * feature bit 必须被 adapter 拒绝。
  */
 
 typedef uint32_t flowrt_c_output_status_t;
