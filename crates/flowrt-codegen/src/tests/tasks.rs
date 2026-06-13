@@ -650,7 +650,8 @@ worker_threads = 2
         serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
 
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
-    assert!(cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
     assert!(cpp_shell.contains("std::move(ready_batch).run(worker_pool"));
     assert!(!cpp_shell.contains(
         "scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"
@@ -726,7 +727,8 @@ worker_threads = 1
 
     assert!(cpp_shell.contains("flowrt::DeterministicExecutor scheduler{1};"));
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{1};"));
-    assert!(cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
     assert_eq!(selfdesc["graphs"][0]["scheduler"]["worker_threads"], 1);
     assert_eq!(
         selfdesc["graphs"][0]["scheduler"]["tasks"][0]["concurrency"],
@@ -1370,7 +1372,8 @@ worker_threads = 2
     assert!(cpp_shell.contains("if (bind_0_.revision() != bind_0_seen_revision_for_sink_main)"));
     assert!(cpp_shell.contains("scheduler.wake(flowrt::TaskId{"));
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
-    assert!(cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
+    assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
     assert!(cpp_shell.contains("std::move(ready_batch).run(worker_pool"));
     assert!(!cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"));
     assert!(cpp_shell.contains("bool woke_on_message = false;"));
