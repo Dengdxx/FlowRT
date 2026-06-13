@@ -126,12 +126,22 @@ backends = ["iox2"]
         "sensors process should not register aux channel:\n{sensors_run}"
     );
     let sensor_record = format!(
-        "record_introspection_publish_copy(&introspection_state, {channel}, \"Sample\", &",
+        "record_introspection_publish_copy(&introspection_state, {channel}, \"Sample\", introspection_probe_bind_",
         channel = rust_string_literal(sensor_channel)
     );
     assert!(rust_shell.contains(&sensor_record));
+    assert!(
+        rust_shell.contains(
+            "introspection_probe_bind_0: std::sync::OnceLock<flowrt::IntrospectionChannelProbe>"
+        ),
+        "Rust shell should store channel probes in OnceLock, not Arc<Mutex>:\n{rust_shell}"
+    );
+    assert!(
+        !rust_shell.contains("std::sync::Mutex<flowrt::IntrospectionChannelProbe>"),
+        "Rust shell must not wrap IntrospectionChannelProbe in an outer Mutex:\n{rust_shell}"
+    );
     assert!(rust_shell.contains("let introspection_probe_bind_"));
-    assert!(rust_shell.contains("_guard, &value, tick_time_ms);"));
+    assert!(rust_shell.contains("_probe, &value, tick_time_ms);"));
     assert!(rust_shell.contains(
         "if !probe.enabled() && !state.recorder_enabled_for_channel(name) {\n        return;\n    }"
     ));

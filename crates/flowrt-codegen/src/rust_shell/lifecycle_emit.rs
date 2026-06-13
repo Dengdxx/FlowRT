@@ -94,7 +94,7 @@ pub(super) fn emit_rust_app_new(
             backend_emit::runtime_channel_initializer(contract, graph, bind)
         ));
         output.push_str(&format!(
-            "            {}: std::sync::Arc::new(std::sync::Mutex::new(flowrt::IntrospectionChannelProbe::default())),\n",
+            "            {}: std::sync::OnceLock::new(),\n",
             bind.probe_field_name
         ));
     }

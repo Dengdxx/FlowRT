@@ -329,7 +329,7 @@ fn runtime_introspection_publish_record(bind: &BindRuntimePlan) -> String {
         "record_introspection_publish_copy"
     };
     format!(
-        "            let {probe}_guard = self.{probe}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n            {helper}(&introspection_state, {channel}, {message_type}, &{probe}_guard, &value, tick_time_ms);\n",
+        "            if let Some({probe}_probe) = self.{probe}.get() {{\n                {helper}(&introspection_state, {channel}, {message_type}, {probe}_probe, &value, tick_time_ms);\n            }}\n",
         channel = crate::rust_string_literal(&runtime_channel_name(bind)),
         message_type = crate::rust_string_literal(&runtime_channel_message_type(bind)),
         probe = bind.probe_field_name
