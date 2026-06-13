@@ -5,7 +5,7 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.10.1`。RSDL / Contract IR / validator 现已承载 v0.10.0 并发
+当前 workspace 版本为 `0.10.2`。RSDL / Contract IR / validator 现已承载 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized
 `ComponentIr` / `TaskIr` 会同时保留 resolved 值和用户显式来源。validator 当前采用
