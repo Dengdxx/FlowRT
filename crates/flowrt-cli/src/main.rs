@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
-use flowrt_codegen::{ArtifactBundle, emit_artifacts, handler_signature_summary};
+use flowrt_codegen::{
+    ArtifactBundle, emit_artifacts, explain_report, format_explain_report_text,
+    handler_signature_summary,
+};
 use flowrt_ir::{
     ContractIr, GraphMode, LanguageKind, TargetPlatform, TemporaryBoundaryMapping,
     TemporaryIslandOverlay, apply_temporary_island_overlay, hash_source, normalize_loaded_document,
@@ -85,6 +88,16 @@ enum Command {
     Check {
         /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
         rsdl: Option<PathBuf>,
+    },
+
+    /// 展示组件实现 API、task 和 handle 详情。
+    Explain {
+        /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
+        rsdl: Option<PathBuf>,
+
+        /// 输出格式。
+        #[arg(long, default_value_t, value_enum)]
+        format: ExplainFormat,
     },
 
     /// 准备 FlowRT 管理的应用产物。
@@ -709,6 +722,13 @@ enum DepsBackend {
     All,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+enum ExplainFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 fn resolve_required_cli_rsdl(rsdl: Option<PathBuf>) -> Result<PathBuf> {
     let cwd = env::current_dir().context("读取当前目录失败")?;
     project_manifest::resolve_rsdl_arg(rsdl, &cwd)
@@ -730,6 +750,21 @@ fn main() -> Result<()> {
             let contract = load_contract_from_rsdl(&rsdl)?;
             println!("OK {}", summary(&contract));
             println!("{}", handler_signature_summary(&contract));
+        }
+        Command::Explain { rsdl, format } => {
+            let rsdl = resolve_required_cli_rsdl(rsdl)?;
+            let contract = load_contract_from_rsdl(&rsdl)?;
+            let report = explain_report(&contract);
+            match format {
+                ExplainFormat::Text => println!("{}", format_explain_report_text(&report)),
+                ExplainFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report)
+                            .context("序列化 explain JSON 失败")?
+                    );
+                }
+            }
         }
         Command::Prepare {
             rsdl,

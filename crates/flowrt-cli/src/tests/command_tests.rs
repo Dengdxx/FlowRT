@@ -76,12 +76,15 @@ fn command_build_parses_target_platform() {
 
 #[test]
 fn cli_parses_project_commands_without_explicit_rsdl_path() {
-    for command in ["check", "prepare", "build", "run", "deps", "doctor"] {
+    for command in [
+        "check", "explain", "prepare", "build", "run", "deps", "doctor",
+    ] {
         let cli = Cli::try_parse_from(["flowrt", command])
             .unwrap_or_else(|error| panic!("{command} should accept omitted RSDL: {error}"));
 
         match (command, cli.command) {
             ("check", Command::Check { .. })
+            | ("explain", Command::Explain { .. })
             | ("prepare", Command::Prepare { .. })
             | ("build", Command::Build { .. })
             | ("run", Command::Run { .. })
@@ -187,6 +190,19 @@ fn init_app_project_refuses_to_overwrite_existing_files() {
     assert!(error.to_string().contains("refusing to overwrite"));
     assert_eq!(std::fs::read_to_string(&rsdl).unwrap(), "user-owned\n");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cli_parses_explain_format() {
+    let cli =
+        Cli::try_parse_from(["flowrt", "explain", "rsdl/robot.rsdl", "--format", "json"]).unwrap();
+
+    let Command::Explain { rsdl, format } = cli.command else {
+        panic!("explain command should parse into Command::Explain")
+    };
+
+    assert_eq!(rsdl, Some(PathBuf::from("rsdl/robot.rsdl")));
+    assert_eq!(format, ExplainFormat::Json);
 }
 
 #[test]

@@ -7,6 +7,7 @@
 ```bash
 flowrt init [path/to/app-root] [--lang <rust|cpp>]
 flowrt check [path/to/robot.rsdl]
+flowrt explain [path/to/robot.rsdl] [--format <text|json>]
 flowrt prepare [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
 flowrt cache status
@@ -88,10 +89,11 @@ main = "rsdl/robot.rsdl"
 仍是系统结构与语义事实源。`main` 不能是绝对路径，不能为空，不能包含 `..`，并且必须
 指向 `.rsdl` 文件。
 
-`check`、`prepare`、`build`、`run`、`deps` 和 `doctor` 支持省略 RSDL 路径。CLI 会从当前
-目录向上查找最近的 `flowrt.toml`，找到后使用 `project.main`。显式传入 RSDL 路径时，
-显式路径优先，保持原有行为。`check`、`prepare`、`build` 和 `run` 在省略路径且找不到
-manifest 时会报错，提示传入 RSDL 或在项目根创建 `flowrt.toml`。
+`check`、`explain`、`prepare`、`build`、`run`、`deps` 和 `doctor` 支持省略 RSDL 路径。
+CLI 会从当前目录向上查找最近的 `flowrt.toml`，找到后使用 `project.main`。显式传入
+RSDL 路径时，显式路径优先，保持原有行为。`check`、`explain`、`prepare`、`build` 和
+`run` 在省略路径且找不到 manifest 时会报错，提示传入 RSDL 或在项目根创建
+`flowrt.toml`。
 
 `deps` 和 `doctor` 仍保留无契约模式：如果当前目录没有 `flowrt.toml` 且未传入 RSDL，
 `flowrt deps --backend all` 这类全量预热和 `flowrt doctor --target <platform>` 基础环境
@@ -117,11 +119,57 @@ graph default
 
 带 `params` 的 component 会在 `on_tick` 中收到 typed params 快照；带 input、output、service
 client 或 operation client 的 component 也会在摘要中看到对应 generated 参数。该摘要只
-描述生成接口形状，不写生成文件，也不替代 `prepare` / `build`。
+描述生成接口形状，不写生成文件，也不替代 `prepare` / `build`。如果需要完整查看
+component 实现入口、task、lane、concurrency、params 和 service / operation handle，请使用
+`flowrt explain`。
 
 Message ABI v0.1 仍以 fixed-size plain data 作为 native ABI 基线，但 RSDL type expression 现在也可以解析 `bytes`、`string` 和 `sequence<u32>` 这类无界 variable 字段。选中 backend 具备 `abi:variable_payload_frame` 时，`prepare` 和 `build` 生成的产物会输出 canonical frame codec。`iox2` 只承载 fixed-size plain data；当 profile 默认 backend 为 `iox2` 且某条 route 使用 variable frame 时，该 route 会自动选择支持变长消息的 backend（当前为 `zenoh`），其他 fixed-size route 仍继续走 `iox2`。
 
 `u128` 和 `i128` 属于 fixed-size primitive，但它们需要额外的 `abi:int128` capability。当前 `inproc`、`iox2` 和 `zenoh` backend 不提供该能力，因此把这些类型用于 channel route 的 contract 会在 route backend capability 校验阶段被判定为不满足。
+
+## `explain`
+
+```bash
+cd examples/import_demo
+flowrt explain
+flowrt explain --format json
+```
+
+`explain` 解析、归一化并校验 RSDL，但不写入 `flowrt/` 目录，也不构建应用。它面向用户和
+agent 输出比 `check` 更完整的实现说明：
+
+- package、graph、profile mode、backend 和 worker 数。
+- 每个 graph 内实际使用的 component language、kind 和建议用户实现路径：Rust 为
+  `app/rust/mod.rs`，C++ 为 `app/cpp/**`，C 为 `app/c/**`。
+- task name、trigger、period、readiness、lane、concurrency 和所属 instance。
+- `on_tick` / `on_params_update` generated 签名。
+- input source、output target、params 默认值与更新策略、service / operation client handle
+  和 server 绑定。
+
+text 是默认格式，适合终端阅读；JSON 由结构体序列化生成，适合 agent 或工具消费：
+
+```text
+flowrt explain:
+package import_demo rsdl_version=0.1
+graph default
+  profile default mode=strict backend=inproc worker_threads=1
+  component controller language=cpp kind=native user_file=app/cpp/**
+    tasks:
+      task controller trigger=periodic period=5ms readiness=any_ready lane=controller_serial concurrency=exclusive instance=controller
+    handlers:
+      on_tick: flowrt::Status on_tick(const ControllerParams& params, flowrt::Output<Cmd>& cmd)
+      on_params_update: flowrt::Status on_params_update(const ControllerParams& old_params, const ControllerParams& new_params, flowrt::Context& context)
+    inputs: none
+    outputs: cmd:Cmd targets=none
+    params: kp:f32 update=on_tick default=1.0
+    service clients: none
+    service servers: none
+    operation clients: none
+    operation servers: none
+```
+
+`language = "c"` component 当前只进入 C ABI v0 前置语义；`explain` 会展示建议路径和
+`no generated C on_tick handler yet`，不会 panic，也不会暗示 C handler 已生成。
 
 ## `prepare`
 

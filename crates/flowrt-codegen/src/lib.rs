@@ -14,6 +14,7 @@ use flowrt_validate::validate_contract;
 
 mod build_files;
 mod cpp_shell;
+mod explain;
 mod launch_manifest;
 mod messages;
 mod ros2_bridge;
@@ -40,6 +41,12 @@ use selfdesc::{
 };
 use supervisor::{emit_rust_supervisor, emit_rust_supervisor_main};
 
+pub use explain::{
+    ExplainComponent, ExplainGraph, ExplainHandlers, ExplainInput, ExplainOperationClient,
+    ExplainOperationServer, ExplainOutput, ExplainPackage, ExplainParam, ExplainProfile,
+    ExplainReport, ExplainServiceClient, ExplainServiceServer, ExplainTask, explain_report,
+    format_explain_report_text,
+};
 pub use signature_summary::handler_signature_summary;
 
 // Re-export functions moved to rust_shell that other modules depend on.

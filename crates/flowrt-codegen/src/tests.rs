@@ -6,6 +6,7 @@ use super::*;
 mod artifacts;
 mod backend;
 mod channels;
+mod explain;
 mod introspection;
 mod launch;
 mod messages;

@@ -1,6 +1,8 @@
 use flowrt_ir::{ComponentIr, ComponentKind, ContractIr, LanguageKind};
 
-use crate::runtime_plan::{operation_runtime_plans, service_runtime_plans};
+use crate::runtime_plan::{
+    OperationRuntimePlan, ServiceRuntimePlan, operation_runtime_plans, service_runtime_plans,
+};
 
 /// 生成用户实现入口的只读摘要。
 ///
@@ -25,19 +27,13 @@ pub fn handler_signature_summary(contract: &ContractIr) -> String {
 
 fn component_signature_summary(
     component: &ComponentIr,
-    service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
-    operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
+    service_plans: &[ServiceRuntimePlan],
+    operation_plans: &[OperationRuntimePlan],
 ) -> String {
-    let language = match component.language {
-        LanguageKind::C => "c",
-        LanguageKind::Rust => "rust",
-        LanguageKind::Cpp => "cpp",
-        LanguageKind::External => "external",
-    };
     let mut output = format!(
         "\n  component {} language={} kind={}",
         component.name,
-        language,
+        language_name(component.language),
         component_kind_name(component.kind)
     );
     output.push_str("\n    user handlers:");
@@ -51,10 +47,10 @@ fn component_signature_summary(
     output
 }
 
-fn on_tick_signature(
+pub(crate) fn on_tick_signature(
     component: &ComponentIr,
-    service_plans: &[crate::runtime_plan::ServiceRuntimePlan],
-    operation_plans: &[crate::runtime_plan::OperationRuntimePlan],
+    service_plans: &[ServiceRuntimePlan],
+    operation_plans: &[OperationRuntimePlan],
 ) -> String {
     match component.language {
         LanguageKind::C => "no generated C on_tick handler yet".to_string(),
@@ -83,7 +79,7 @@ fn on_tick_signature(
     }
 }
 
-fn params_update_signature(component: &ComponentIr) -> String {
+pub(crate) fn params_update_signature(component: &ComponentIr) -> String {
     match component.language {
         LanguageKind::C => "no generated C params handler yet".to_string(),
         LanguageKind::Rust => {
@@ -102,10 +98,19 @@ fn params_update_signature(component: &ComponentIr) -> String {
     }
 }
 
-fn component_kind_name(kind: ComponentKind) -> &'static str {
+pub(crate) fn component_kind_name(kind: ComponentKind) -> &'static str {
     match kind {
         ComponentKind::Native => "native",
         ComponentKind::IoBoundary => "io_boundary",
         ComponentKind::External => "external",
+    }
+}
+
+pub(crate) fn language_name(language: LanguageKind) -> &'static str {
+    match language {
+        LanguageKind::C => "c",
+        LanguageKind::Rust => "rust",
+        LanguageKind::Cpp => "cpp",
+        LanguageKind::External => "external",
     }
 }
