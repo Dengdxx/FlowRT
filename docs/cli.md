@@ -6,6 +6,9 @@
 
 ```bash
 flowrt init [path/to/app-root] [--lang <rust|cpp>]
+flowrt add message <Name> field:type ...
+flowrt add module <Name>
+flowrt add component <Name> --lang <rust|cpp> [--input name:Type]... [--output name:Type]...
 flowrt check [path/to/robot.rsdl]
 flowrt explain [path/to/robot.rsdl] [--format <text|json>]
 flowrt prepare [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
@@ -75,6 +78,59 @@ app/cpp/components.cpp # --lang cpp
 当前 `flowrt init` 只开放 Rust 和 C++。`language = "c"` 已进入 RSDL / Contract IR 基础
 语义，但 C component 用户入口要等 C ABI v0 后续切片完成后再开放，因此
 `flowrt init --lang c` 会被 CLI 拒绝。
+
+## `add`
+
+```bash
+flowrt add message Sample value:u32
+flowrt add component Source --lang rust --output sample:Sample
+flowrt add module perception
+flowrt check
+```
+
+`add` 面向现代 FlowRT app 项目追加小块骨架。省略 RSDL 路径时，命令会和 `check` 一样
+从当前目录向上发现 `flowrt.toml`，使用 `[project].main` 作为主 RSDL；也可以用
+`--rsdl <path>` 显式指定主 RSDL。命令写入前会先把更新后的 RSDL 解析、归一化和校验，
+校验失败时不替换主 RSDL；已存在的 type、component、module 文件或无法安全合并的用户
+代码文件会被拒绝，不覆盖用户代码。
+
+`add message` 追加根 package 的 `[type.<Name>]`：
+
+```bash
+flowrt add message Imu timestamp:u64 ax:f32 ay:f32
+```
+
+message 名称必须是 `PascalCase`；字段必须使用 `field:type`，字段名必须是
+`snake_case`，类型表达式必须能被当前 RSDL parser 解析。已存在同名 type 时命令拒绝。
+
+`add component` 追加根 package 的 native component、同名 instance 和一个最小 periodic
+task，同时把 Rust 骨架合并到 `app/rust/mod.rs`，或把 C++ 骨架合并到
+`app/cpp/components.cpp`：
+
+```bash
+flowrt add component Source --lang rust --output sample:Sample
+flowrt add component Sink --lang cpp --input sample:Sample
+```
+
+CLI 输入的 component 名可以写成 `Source` 这类用户可读名称，RSDL 中会规范化为
+`snake_case`（例如 `source`）。`--input` 和 `--output` 可重复；初始 task 只激活 output，
+不把 input 自动接入 task，因为缺少上游 dataflow bind 的 active input 会被 validator 拒绝。
+需要消费 input 时，应由用户补充 `[[bind.dataflow]]`、island boundary 或 task 输入语义后再
+`flowrt check`。无 input/output 的 component 会生成空参数 `on_tick` 骨架，可直接校验。
+
+`add module` 创建 `rsdl/modules/<name>.rsdl`，并在主 RSDL 的 `[workspace]` 中确保存在当前
+可解析的最小注册方式：
+
+```toml
+[workspace]
+modules = ["modules/*.rsdl"]
+```
+
+module 文件只写 `[module]` 元数据；当前命令不自动把 component 移入 module，也不生成
+composition 文件。已有 module 文件时拒绝，不覆盖。
+
+当前 `flowrt add component --lang c` 会被 CLI 拒绝。C component 用户入口要等后续 C ABI
+adapter 和 demo 切片完成后再开放；本命令不会生成 `app/c`。
 
 ## 项目入口 `flowrt.toml`
 

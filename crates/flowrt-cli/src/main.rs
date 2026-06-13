@@ -23,6 +23,7 @@ use flowrt_validate::validate_contract;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod app_add;
 mod boundary_pub;
 mod build_model;
 mod cache;
@@ -33,6 +34,9 @@ mod record;
 mod replay;
 mod toolchain;
 
+use app_add::{
+    AddCommand, AddComponentSpec, add_component_to_rsdl, add_message_to_rsdl, add_module_to_rsdl,
+};
 use boundary_pub::{boundary_publish, boundary_publish_from_file};
 use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, default_cache_root};
 use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd};
@@ -50,6 +54,9 @@ use toolchain::{
     generate_toolchain_init_toml, resolve_toolchain_profile,
     resolve_toolchain_profile_with_field_sources,
 };
+
+#[cfg(test)]
+use app_add::AppAddLanguage;
 
 #[cfg(test)]
 use flowrt_selfdesc::SelfDescription;
@@ -82,6 +89,12 @@ enum Command {
         /// 用户组件语言；当前只开放 Rust/C++，不开放 C app 入口。
         #[arg(long = "lang", value_enum, default_value = "rust")]
         language: AppInitLanguage,
+    },
+
+    /// 向当前 FlowRT app 追加 message、module 或 component 骨架。
+    Add {
+        #[command(subcommand)]
+        command: AddCommand,
     },
 
     /// 解析、归一化并校验一个 RSDL 文件。
@@ -745,6 +758,37 @@ fn main() -> Result<()> {
         Command::Init { path, language } => {
             println!("{}", init_app_project(&path, language)?);
         }
+        Command::Add { command } => match command {
+            AddCommand::Message { name, fields, rsdl } => {
+                let rsdl = resolve_required_cli_rsdl(rsdl)?;
+                println!("{}", add_message_to_rsdl(&rsdl, &name, &fields)?);
+            }
+            AddCommand::Module { name, rsdl } => {
+                let rsdl = resolve_required_cli_rsdl(rsdl)?;
+                println!("{}", add_module_to_rsdl(&rsdl, &name)?);
+            }
+            AddCommand::Component {
+                name,
+                language,
+                inputs,
+                outputs,
+                rsdl,
+            } => {
+                let rsdl = resolve_required_cli_rsdl(rsdl)?;
+                println!(
+                    "{}",
+                    add_component_to_rsdl(
+                        &rsdl,
+                        AddComponentSpec {
+                            name,
+                            language,
+                            inputs,
+                            outputs,
+                        },
+                    )?
+                );
+            }
+        },
         Command::Check { rsdl } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let contract = load_contract_from_rsdl(&rsdl)?;

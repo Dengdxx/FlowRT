@@ -60,6 +60,22 @@ flowrt init my_cpp_robot --lang cpp
 `flowrt init` 当前只开放 Rust 和 C++，不开放 C app 用户入口；C component 要等 C ABI v0
 后续切片跑通后再作为用户入口支持。
 
+从空骨架继续追加 message 和 component：
+
+```bash
+flowrt add message Sample value:u32
+flowrt add component Source --lang rust --output sample:Sample
+flowrt check
+```
+
+`add` 默认使用当前项目 `flowrt.toml` 指向的主 RSDL。`add message` 会追加
+`[type.Sample]`；`add component` 会追加同名 component、instance、最小 periodic task，
+并把用户实现骨架合并到现代 `app/` 用户代码目录。带 `--input name:Type` 的 component
+会先声明 input port，但初始 task 不自动消费 input；需要上游数据时，应补上
+`[[bind.dataflow]]` 或 island boundary 后再把 input 加入 task，避免 `flowrt check` 因缺失
+incoming bind 失败。`flowrt add component --lang c` 当前仍会被拒绝，等待 C ABI adapter
+后续切片开放。
+
 FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
 
 ```toml

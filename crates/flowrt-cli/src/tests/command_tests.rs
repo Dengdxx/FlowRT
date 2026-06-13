@@ -116,6 +116,72 @@ fn cli_rejects_c_init_language_until_c_component_entry_is_ready() {
 }
 
 #[test]
+fn cli_parses_add_message_module_and_component_commands() {
+    let message = Cli::try_parse_from(["flowrt", "add", "message", "Sample", "value:u32"])
+        .expect("add message should parse");
+    let Command::Add {
+        command: AddCommand::Message { name, fields, rsdl },
+    } = message.command
+    else {
+        panic!("add message should parse into Command::Add")
+    };
+    assert_eq!(name, "Sample");
+    assert_eq!(fields, vec!["value:u32"]);
+    assert_eq!(rsdl, None);
+
+    let module =
+        Cli::try_parse_from(["flowrt", "add", "module", "perception"]).expect("module parses");
+    let Command::Add {
+        command: AddCommand::Module { name, rsdl },
+    } = module.command
+    else {
+        panic!("add module should parse into Command::Add")
+    };
+    assert_eq!(name, "perception");
+    assert_eq!(rsdl, None);
+
+    let component = Cli::try_parse_from([
+        "flowrt",
+        "add",
+        "component",
+        "Source",
+        "--lang",
+        "rust",
+        "--input",
+        "scan:Sample",
+        "--output",
+        "sample:Sample",
+    ])
+    .expect("add component should parse");
+    let Command::Add {
+        command:
+            AddCommand::Component {
+                name,
+                language,
+                inputs,
+                outputs,
+                rsdl,
+            },
+    } = component.command
+    else {
+        panic!("add component should parse into Command::Add")
+    };
+    assert_eq!(name, "Source");
+    assert_eq!(language, AppAddLanguage::Rust);
+    assert_eq!(inputs, vec!["scan:Sample"]);
+    assert_eq!(outputs, vec!["sample:Sample"]);
+    assert_eq!(rsdl, None);
+}
+
+#[test]
+fn cli_rejects_c_add_component_language_until_c_adapter_is_ready() {
+    let error = Cli::try_parse_from(["flowrt", "add", "component", "Sensor", "--lang", "c"])
+        .expect_err("flowrt add component must not expose C skeletons yet");
+
+    assert!(error.to_string().contains("invalid value 'c'"));
+}
+
+#[test]
 fn cli_rejects_legacy_init_language_flag() {
     let error = Cli::try_parse_from(["flowrt", "init", "demo_bot", "--language", "cpp"])
         .expect_err("flowrt init exposes --lang, not a legacy --language alias");
@@ -189,6 +255,227 @@ fn init_app_project_refuses_to_overwrite_existing_files() {
 
     assert!(error.to_string().contains("refusing to overwrite"));
     assert_eq!(std::fs::read_to_string(&rsdl).unwrap(), "user-owned\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_message_appends_type_and_keeps_contract_checkable() {
+    let root = temp_test_dir("add-message").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+
+    let output = add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+
+    assert!(output.contains("added message `Sample`"));
+    let source = std::fs::read_to_string(&rsdl).unwrap();
+    assert!(source.contains("[type.Sample]"));
+    assert!(source.contains("value = \"u32\""));
+    let contract = load_contract_from_rsdl(&rsdl).unwrap();
+    assert!(contract.types.iter().any(|ty| ty.name == "Sample"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_message_rejects_duplicate_and_rolls_back_invalid_contract() {
+    let root = temp_test_dir("add-message-rollback").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+
+    let duplicate = add_message_to_rsdl(&rsdl, "Tick", &["value:u32".to_string()]).unwrap_err();
+    assert!(duplicate.to_string().contains("type `Tick` already exists"));
+
+    let before = std::fs::read_to_string(&rsdl).unwrap();
+    let invalid =
+        add_message_to_rsdl(&rsdl, "Bad", &["value:MissingType".to_string()]).unwrap_err();
+    assert!(invalid.to_string().contains("contract validation failed"));
+    assert_eq!(std::fs::read_to_string(&rsdl).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_message_rejects_invalid_field_format() {
+    let root = temp_test_dir("add-message-field-format").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+
+    let error = add_message_to_rsdl(&rsdl, "Sample", &["value".to_string()]).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("field spec must use `field:type`")
+    );
+    assert!(
+        !std::fs::read_to_string(&rsdl)
+            .unwrap()
+            .contains("[type.Sample]")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_module_creates_workspace_module_without_overwriting() {
+    let root = temp_test_dir("add-module").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+
+    let output = add_module_to_rsdl(&rsdl, "perception").unwrap();
+
+    assert!(output.contains("added module `perception`"));
+    let module = root.join("rsdl/modules/perception.rsdl");
+    assert_eq!(
+        std::fs::read_to_string(&module).unwrap(),
+        "[module]\nname = \"perception\"\n"
+    );
+    let source = std::fs::read_to_string(&rsdl).unwrap();
+    assert!(source.contains("[workspace]"));
+    assert!(source.contains("modules = [\"modules/*.rsdl\"]"));
+    let contract = load_contract_from_rsdl(&rsdl).unwrap();
+    assert!(
+        contract
+            .modules
+            .iter()
+            .any(|module| module.name == "perception")
+    );
+
+    let error = add_module_to_rsdl(&rsdl, "perception").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("refusing to overwrite existing file")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_component_rust_appends_contract_and_modern_skeleton() {
+    let root = temp_test_dir("add-component-rust").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+    add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+
+    let output = add_component_to_rsdl(
+        &rsdl,
+        AddComponentSpec {
+            name: "Source".to_string(),
+            language: AppAddLanguage::Rust,
+            inputs: Vec::new(),
+            outputs: vec!["sample:Sample".to_string()],
+        },
+    )
+    .unwrap();
+
+    assert!(output.contains("added component `source`"));
+    let source = std::fs::read_to_string(&rsdl).unwrap();
+    assert!(source.contains("[component.source]"));
+    assert!(source.contains("language = \"rust\""));
+    assert!(source.contains("output = [\"sample:Sample\"]"));
+    assert!(source.contains("[instance.source]"));
+    assert!(source.contains("[instance.source.task]"));
+    let app = std::fs::read_to_string(root.join("app/rust/mod.rs")).unwrap();
+    assert!(app.contains("use crate::components::Source;"));
+    assert!(app.contains("use crate::messages::Sample;"));
+    assert!(app.contains("pub struct SourceImpl;"));
+    assert!(app.contains("impl Source for SourceImpl"));
+    assert!(app.contains("sample.write(Sample::default());"));
+    assert!(app.contains("Box::new(SourceImpl::default())"));
+    let contract = load_contract_from_rsdl(&rsdl).unwrap();
+    assert!(
+        contract
+            .components
+            .iter()
+            .any(|component| component.name == "source")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_component_cpp_appends_contract_and_modern_skeleton() {
+    let root = temp_test_dir("add-component-cpp").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Cpp).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+    add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+
+    add_component_to_rsdl(
+        &rsdl,
+        AddComponentSpec {
+            name: "Source".to_string(),
+            language: AppAddLanguage::Cpp,
+            inputs: Vec::new(),
+            outputs: vec!["sample:Sample".to_string()],
+        },
+    )
+    .unwrap();
+
+    let app = std::fs::read_to_string(root.join("app/cpp/components.cpp")).unwrap();
+    assert!(app.contains("class Source final : public flowrt_app::SourceInterface"));
+    assert!(app.contains("sample.write(flowrt_app::Sample{});"));
+    assert!(app.contains("std::make_unique<Source>()"));
+    let contract = load_contract_from_rsdl(&rsdl).unwrap();
+    assert!(
+        contract
+            .components
+            .iter()
+            .any(|component| component.name == "source")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_component_rejects_existing_component_without_touching_user_file() {
+    let root = temp_test_dir("add-component-existing").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+    let app_path = root.join("app/rust/mod.rs");
+    let before = std::fs::read_to_string(&app_path).unwrap();
+
+    let error = add_component_to_rsdl(
+        &rsdl,
+        AddComponentSpec {
+            name: "controller".to_string(),
+            language: AppAddLanguage::Rust,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("component `controller` already exists")
+    );
+    assert_eq!(std::fs::read_to_string(app_path).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn add_component_rejects_custom_user_file_without_touching_rsdl() {
+    let root = temp_test_dir("add-component-custom-user-file").join("demo-bot");
+    init_app_project(&root, AppInitLanguage::Rust).unwrap();
+    let rsdl = root.join("rsdl/robot.rsdl");
+    add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+    let app_path = root.join("app/rust/mod.rs");
+    std::fs::write(&app_path, "pub fn custom_user_code() {}\n").unwrap();
+    let before_rsdl = std::fs::read_to_string(&rsdl).unwrap();
+
+    let error = add_component_to_rsdl(
+        &rsdl,
+        AddComponentSpec {
+            name: "Source".to_string(),
+            language: AppAddLanguage::Rust,
+            inputs: Vec::new(),
+            outputs: vec!["sample:Sample".to_string()],
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("no `crate::App::new(...)` call"));
+    assert_eq!(std::fs::read_to_string(&rsdl).unwrap(), before_rsdl);
+    assert_eq!(
+        std::fs::read_to_string(app_path).unwrap(),
+        "pub fn custom_user_code() {}\n"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

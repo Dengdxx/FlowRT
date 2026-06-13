@@ -11,7 +11,11 @@
 FlowRT 用户结构存在，不提供兼容、fallback、迁移提示或 legacy 开关。未发布状态下
 CLI 已新增 `flowrt init [path] --lang <rust|cpp>`，生成 `flowrt.toml`、
 `rsdl/robot.rsdl` 和现代 `app/` 用户代码骨架；默认 Rust，可显式生成 C++，但当前
-不开放 C app 用户入口。RSDL / Contract
+不开放 C app 用户入口。未发布状态下也新增 `flowrt add message/module/component`：
+省略 RSDL 时从 `flowrt.toml` 找主 RSDL，可追加根 message、当前可解析的
+`rsdl/modules/*.rsdl` workspace module 注册，以及 Rust/C++ native component、同名
+instance、最小 periodic task 和现代 `app/` 用户骨架；写入前会重新解析、归一化并校验
+更新后的 Contract IR，C component 入口仍等后续 C ABI adapter/demo 切片。RSDL / Contract
 IR / validator 现已承载 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized
@@ -288,9 +292,10 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   `flowrt check` / `flowrt explain` 展示 component/task 用户 API、参数、输入输出、
   service/operation handle、trigger、lane 和 concurrency。结构诊断只面向现代
   `app/` 布局，不为旧 `src/` 历史形态提供迁移层或提示。未发布状态下已新增
-  `flowrt.toml` 项目入口 manifest：`[project].main` 只记录默认 RSDL 入口，
-  `check`、`prepare`、`build`、`run`、`deps` 和 `doctor` 省略路径时会从当前目录向上
-  发现 manifest；RSDL 和 Contract IR 仍是语义事实源。
+  `flowrt.toml` 项目入口 manifest 和 `flowrt add message/module/component` 切片：
+  `[project].main` 只记录默认 RSDL 入口，`add`、`check`、`prepare`、`build`、`run`、
+  `deps` 和 `doctor` 省略路径时会从当前目录向上发现 manifest；RSDL 和 Contract IR
+  仍是语义事实源。
 - `v0.11.0` 同时落地 C ABI v0 基础：C 侧事实源继续放
   `runtime/cpp/include/flowrt/abi.h`，只暴露 POD、固定宽度整数、borrowed
   string/bytes/frame view、状态码、错误码和 callback table；不暴露 C++/Rust 对象、
