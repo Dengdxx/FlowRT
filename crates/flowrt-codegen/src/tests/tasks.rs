@@ -178,6 +178,63 @@ backends = ["iox2"]
 }
 
 #[test]
+fn rust_iox2_shell_uses_local_scheduler_affinity() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "iox2_affinity_demo"
+rsdl_version = "0.1"
+
+[type.FrameHandle]
+resource_id_hash = "u64"
+slot = "u32"
+generation = "u64"
+size_bytes = "u64"
+
+[component.camera]
+language = "rust"
+output = ["frame:FrameHandle"]
+
+[component.processor]
+language = "rust"
+input = ["frame:FrameHandle"]
+
+[instance.camera]
+component = "camera"
+
+[instance.camera.task]
+trigger = "periodic"
+period_ms = 20
+output = ["frame"]
+
+[instance.processor]
+component = "processor"
+
+[instance.processor.task]
+trigger = "on_message"
+input = ["frame"]
+
+[[bind.dataflow]]
+from = "camera.frame"
+to = "processor.frame"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+worker_threads = 4
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
+    assert!(rust_shell.contains("let mut scheduler = flowrt::DeterministicExecutor::new(4);"));
+    assert!(rust_shell.contains("ready_batch.run_local(|task|"));
+    assert!(!rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
+    assert!(!rust_shell.contains("ready_batch.run(&worker_pool, move |task|"));
+}
+
+#[test]
 fn rust_shell_accepts_multiple_binds_between_same_instance_pair() {
     let ir = contract_from_source(
         r#"

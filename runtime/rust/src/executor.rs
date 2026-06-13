@@ -607,6 +607,23 @@ impl ReadyBatch {
             .map(|result| result.expect("ready batch result should be recorded"))
             .collect()
     }
+
+    /// 在当前 scheduler 线程内执行 ready batch。
+    ///
+    /// Rust 侧部分 backend（目前主要是 iox2）持有 thread-affine SDK handle，
+    /// 不能被安全移动到 worker 线程。generated shell 在发现 App 状态包含这类
+    /// backend 时应选择该路径；纯 `Send + Sync` graph 仍可使用 `run` 进入
+    /// `WorkerPool`。
+    pub fn run_local(self, mut run: impl FnMut(TaskId) -> Status) -> Vec<TaskRunResult> {
+        self.tasks
+            .into_iter()
+            .map(|task| {
+                let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
+                    .unwrap_or(Status::Error);
+                TaskRunResult { task, status }
+            })
+            .collect()
+    }
 }
 
 type BoxedStatusFuture = Pin<Box<dyn Future<Output = Status> + Send + 'static>>;
@@ -941,6 +958,46 @@ mod tests {
         );
         assert!(max_active.load(Ordering::SeqCst) >= 2);
         assert_eq!(worker_pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
+    fn local_ready_batch_runs_without_worker_send_bounds() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let mut seen = Vec::new();
+        let results = executor.take_ready_batch().run_local(|task| {
+            seen.push(task);
+            Status::Ok
+        });
+
+        assert_eq!(seen, vec![TaskId(1), TaskId(2)]);
+        assert_eq!(
+            results,
+            vec![
+                TaskRunResult {
+                    task: TaskId(1),
+                    status: Status::Ok,
+                },
+                TaskRunResult {
+                    task: TaskId(2),
+                    status: Status::Ok,
+                }
+            ]
+        );
     }
 
     #[test]
