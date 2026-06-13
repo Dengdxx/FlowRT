@@ -256,7 +256,7 @@ contract 可以通过 CLI 一次性投影成 test-only island 进行多 boundary
 发布前检查：
 
 ```bash
-version=0.10.0
+version=0.10.1
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -272,8 +272,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.10.0 -m "v0.10.0"
-git push origin v0.10.0
+git tag -a v0.10.1 -m "v0.10.1"
+git push origin v0.10.1
 ```
 
 ## 提交规则
