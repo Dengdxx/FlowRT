@@ -3642,6 +3642,15 @@ fn doctor_pkg_config_env(
 ) -> Result<BTreeMap<&'static str, OsString>> {
     let mut values = BTreeMap::new();
     let search_paths = pkg_config_search_paths(Some(profile), target_sdk);
+    if native_pkg_config_should_extend_system(profile) && target_sdk.is_none() {
+        if !search_paths.is_empty() {
+            values.insert(
+                "PKG_CONFIG_PATH",
+                prepend_env_paths("PKG_CONFIG_PATH", &search_paths)?,
+            );
+        }
+        return Ok(values);
+    }
     let joined = if search_paths.is_empty() {
         OsString::new()
     } else {
@@ -3659,6 +3668,10 @@ fn doctor_pkg_config_env(
         values.insert("PKG_CONFIG_SYSROOT_DIR", sysroot.as_os_str().to_os_string());
     }
     Ok(values)
+}
+
+fn native_pkg_config_should_extend_system(profile: &ToolchainProfile) -> bool {
+    host_flowrt_platform().is_some_and(|platform| profile.platform == platform)
 }
 
 fn find_pkg_config_pc_path(
@@ -3973,7 +3986,8 @@ fn resolve_build_toolchain_profile(
 ) -> Result<Option<BuildToolchainProfile>> {
     let platform = explicit_target
         .map(str::to_string)
-        .or_else(|| contract_target_platform(contract));
+        .or_else(|| contract_target_platform(contract))
+        .or_else(|| host_flowrt_platform().map(str::to_string));
     resolve_optional_toolchain_profile(
         platform.as_deref(),
         explicit_target.is_some(),
@@ -4830,6 +4844,8 @@ fn ensure_cmake_build_diagnostics_ready(
         return Ok(());
     }
     let doctor_hint = build_doctor_hint(&target_profile.profile.platform);
+    let pkg_config_path =
+        current_pkg_config_env_value(&target_profile.profile, target_sdk, "PKG_CONFIG_PATH");
     let pkg_config_libdir = current_pkg_config_libdir(&target_profile.profile, target_sdk);
     if !command_available("pkg-config") {
         let missing_modules = requirements
@@ -4837,8 +4853,9 @@ fn ensure_cmake_build_diagnostics_ready(
             .map(|requirement| format!("{}:{}", requirement.component, requirement.module))
             .collect::<Vec<_>>();
         anyhow::bail!(
-            "build diagnostics: target={} PKG_CONFIG_LIBDIR={} missing_modules={} sdk_overlays={} reason=`pkg-config` not found in PATH; run `{}` before retrying",
+            "build diagnostics: target={} PKG_CONFIG_PATH={} PKG_CONFIG_LIBDIR={} missing_modules={} sdk_overlays={} reason=`pkg-config` not found in PATH; run `{}` before retrying",
             target_profile.profile.platform,
+            pkg_config_path,
             pkg_config_libdir,
             missing_modules.join(", "),
             format_path_list(&target_profile.profile.sdk_overlays),
@@ -4867,8 +4884,9 @@ fn ensure_cmake_build_diagnostics_ready(
         return Ok(());
     }
     anyhow::bail!(
-        "build diagnostics: target={} PKG_CONFIG_LIBDIR={} missing_modules={} sdk_overlays={} hint=run `{}` before retrying",
+        "build diagnostics: target={} PKG_CONFIG_PATH={} PKG_CONFIG_LIBDIR={} missing_modules={} sdk_overlays={} hint=run `{}` before retrying",
         target_profile.profile.platform,
+        pkg_config_path,
         pkg_config_libdir,
         missing_modules.join(", "),
         format_path_list(&target_profile.profile.sdk_overlays),
@@ -4884,20 +4902,33 @@ fn current_pkg_config_libdir(
     profile: &ToolchainProfile,
     target_sdk: Option<&CppTargetSdk>,
 ) -> String {
+    current_pkg_config_env_value(profile, target_sdk, "PKG_CONFIG_LIBDIR")
+}
+
+fn current_pkg_config_env_value(
+    profile: &ToolchainProfile,
+    target_sdk: Option<&CppTargetSdk>,
+    key: &'static str,
+) -> String {
     match doctor_pkg_config_env(profile, target_sdk) {
-        Ok(mut env) => env
-            .remove("PKG_CONFIG_LIBDIR")
-            .map(|value| {
-                let text = value.to_string_lossy().into_owned();
-                if text.is_empty() {
-                    "<empty>".to_string()
-                } else {
-                    text
-                }
-            })
-            .unwrap_or_else(|| "<empty>".to_string()),
+        Ok(mut env) => {
+            format_pkg_config_env_value(env.remove(key).or_else(|| std::env::var_os(key)))
+        }
         Err(error) => format!("<invalid: {error}>"),
     }
+}
+
+fn format_pkg_config_env_value(value: Option<OsString>) -> String {
+    value
+        .map(|value| {
+            let text = value.to_string_lossy().into_owned();
+            if text.is_empty() {
+                "<empty>".to_string()
+            } else {
+                text
+            }
+        })
+        .unwrap_or_else(|| "<unset>".to_string())
 }
 
 fn run_workspace(
@@ -5271,9 +5302,7 @@ fn run_cmake_configure_and_build(
     build_mode: BuildMode,
     target_profile: Option<&BuildToolchainProfile>,
 ) -> Result<CmakeBuildOutputs> {
-    let toolchain_profile = target_profile
-        .filter(|profile| profile.cargo_target_triple.is_some())
-        .map(|profile| &profile.profile);
+    let toolchain_profile = target_profile.map(|profile| &profile.profile);
     let cmake_cross_compiling = target_profile
         .map(|profile| profile.is_cross)
         .unwrap_or(false);
@@ -5286,6 +5315,7 @@ fn run_cmake_configure_and_build(
         .map(toolchain_profile_cmake_prefix_paths)
         .unwrap_or_default();
     let target_sdk = toolchain_profile
+        .filter(|_| cmake_cross_compiling)
         .map(|profile| resolve_cpp_target_sdk_for_build(runtime_dir.as_deref(), profile))
         .transpose()?;
     let cmake_runtime_dir = target_sdk
@@ -5492,7 +5522,16 @@ fn cmake_configure_env(
                 format_path_list(&pkg_config_paths)
             )
         })?;
-        values.insert("PKG_CONFIG_LIBDIR", joined);
+        if toolchain_profile.is_some_and(native_pkg_config_should_extend_system)
+            && target_sdk.is_none()
+        {
+            values.insert(
+                "PKG_CONFIG_PATH",
+                prepend_env_paths("PKG_CONFIG_PATH", &pkg_config_paths)?,
+            );
+        } else {
+            values.insert("PKG_CONFIG_LIBDIR", joined);
+        }
     }
     Ok(values)
 }
@@ -5608,8 +5647,9 @@ fn resolve_cpp_target_sdk_for_build(
         .unwrap_or_default();
     resolve_cpp_target_sdk_root(runtime_dir, &profile.platform).map_err(|error| {
         anyhow::anyhow!(
-            "build diagnostics: target={} PKG_CONFIG_LIBDIR={} target_sdk_candidates={} sdk_overlays={} hint=run `{}` before retrying: {}",
+            "build diagnostics: target={} PKG_CONFIG_PATH={} PKG_CONFIG_LIBDIR={} target_sdk_candidates={} sdk_overlays={} hint=run `{}` before retrying: {}",
             profile.platform,
+            current_pkg_config_env_value(profile, None, "PKG_CONFIG_PATH"),
             current_pkg_config_libdir(profile, None),
             format_path_list(&target_sdk_candidates),
             format_path_list(&profile.sdk_overlays),
@@ -5649,12 +5689,17 @@ fn format_cmake_build_error(
         .unwrap_or_default();
     let pkg_config_libdir = target_profile
         .map(|profile| current_pkg_config_libdir(&profile.profile, target_sdk))
-        .unwrap_or_else(|| "<empty>".to_string());
+        .unwrap_or_else(|| "<unset>".to_string());
+    let pkg_config_path = target_profile
+        .map(|profile| {
+            current_pkg_config_env_value(&profile.profile, target_sdk, "PKG_CONFIG_PATH")
+        })
+        .unwrap_or_else(|| "<unset>".to_string());
     let sdk_overlays = target_profile
         .map(|profile| format_path_list(&profile.profile.sdk_overlays))
         .unwrap_or_else(|| "<none>".to_string());
     anyhow::anyhow!(
-        "{step} failed for target={target} mode={build_mode}{toolchain_line} PKG_CONFIG_LIBDIR={pkg_config_libdir} sdk_overlays={sdk_overlays} pkg-config={} hint=run `{doctor_hint}` before retrying: {error}",
+        "{step} failed for target={target} mode={build_mode}{toolchain_line} PKG_CONFIG_PATH={pkg_config_path} PKG_CONFIG_LIBDIR={pkg_config_libdir} sdk_overlays={sdk_overlays} pkg-config={} hint=run `{doctor_hint}` before retrying: {error}",
         format_string_list(&pkg_config_modules),
     )
 }

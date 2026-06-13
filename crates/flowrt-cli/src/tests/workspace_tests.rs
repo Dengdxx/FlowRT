@@ -2528,6 +2528,40 @@ fn cmake_configure_args_pass_toolchain_cpp_options() {
 }
 
 #[test]
+fn native_cmake_configure_args_pass_toolchain_cpp_options() {
+    let _lock = REPO_RUNTIME_FALLBACK_ENV_LOCK
+        .lock()
+        .expect("repo runtime fallback env lock should not be poisoned");
+    let _env = EnvOverride::repo_runtime_fallback(None);
+    let (_, host_target) = rustc_toolchain_identity().unwrap();
+    let Some(platform) = host_flowrt_platform() else {
+        return;
+    };
+    let source_dir = Path::new("/tmp/flowrt/build");
+    let build_dir = Path::new("/tmp/flowrt/build/cmake");
+    let mut profile = linux_arm64_toolchain_profile();
+    profile.platform = platform.to_string();
+    profile.rust_target = host_target;
+    profile.cpp_compile_args = vec!["-I/opt/eigen/include/eigen3".to_string()];
+
+    let args = cmake_configure_args(
+        source_dir,
+        build_dir,
+        None,
+        &[],
+        BuildMode::Release,
+        Some(&profile),
+        false,
+    );
+
+    assert!(args.contains(&"-DFLOWRT_CXX_COMPILE_OPTIONS=-I/opt/eigen/include/eigen3".to_string()));
+    assert!(
+        args.iter()
+            .all(|arg| !arg.starts_with("-DCMAKE_SYSTEM_NAME="))
+    );
+}
+
+#[test]
 fn cmake_configure_env_sets_pkg_config_libdir_for_target_sdk() {
     let root = temp_test_dir("cmake-target-sdk-pkgconfig");
     let private_prefix = root.join("opt/flowrt/0.8.4");
@@ -2552,6 +2586,49 @@ fn cmake_configure_env_sets_pkg_config_libdir_for_target_sdk() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn native_cmake_configure_env_preserves_system_pkg_config_when_no_profile_paths() {
+    let (_, host_target) = rustc_toolchain_identity().unwrap();
+    let Some(platform) = host_flowrt_platform() else {
+        return;
+    };
+    let mut profile = linux_arm64_toolchain_profile();
+    profile.platform = platform.to_string();
+    profile.rust_target = host_target;
+    profile.pkg_config_libdir = None;
+    profile.pkg_config_libdirs.clear();
+    profile.sdk_overlays.clear();
+
+    let env = cmake_configure_env(Some(&profile), None).unwrap();
+
+    assert!(
+        !env.contains_key("PKG_CONFIG_LIBDIR"),
+        "native builds without explicit pkg-config paths must not isolate system pkg-config"
+    );
+}
+
+#[test]
+fn native_cmake_configure_env_extends_pkg_config_path_for_profile_paths() {
+    let (_, host_target) = rustc_toolchain_identity().unwrap();
+    let Some(platform) = host_flowrt_platform() else {
+        return;
+    };
+    let mut profile = linux_arm64_toolchain_profile();
+    profile.platform = platform.to_string();
+    profile.rust_target = host_target;
+    profile.pkg_config_libdir = None;
+    profile.pkg_config_libdirs = vec![PathBuf::from("/opt/native/pkgconfig")];
+    profile.sdk_overlays.clear();
+
+    let env = cmake_configure_env(Some(&profile), None).unwrap();
+
+    assert!(!env.contains_key("PKG_CONFIG_LIBDIR"));
+    assert_eq!(
+        env.get("PKG_CONFIG_PATH").unwrap(),
+        &std::ffi::OsString::from("/opt/native/pkgconfig")
+    );
 }
 
 #[test]

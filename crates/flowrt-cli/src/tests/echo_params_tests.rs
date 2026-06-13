@@ -185,6 +185,114 @@ fn pub_injects_json_into_boundary_input() {
 }
 
 #[test]
+fn pub_prefers_canonical_frame_for_fixed_message_with_native_padding() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_0123456789abcdef",
+      "direction": "input",
+      "endpoint": "consumer.sample",
+      "instance": "consumer",
+      "port": "sample",
+      "message_type": "Padded"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Padded",
+    "size_bytes": 8,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "flag",
+      "type": "u8",
+      "offset_bytes": 0,
+      "size_bytes": 1,
+      "align_bytes": 1
+    }, {
+      "name": "value",
+      "type": "f32",
+      "offset_bytes": 4,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }],
+  "message_frames": [{
+    "type_name": "Padded",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 5,
+    "max_size_bytes": 5,
+    "variable": false,
+    "fields": [{
+      "name": "flag",
+      "type": "u8",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 1,
+      "tail_max_bytes": null
+    }, {
+      "name": "value",
+      "type": "f32",
+      "header_offset_bytes": 1,
+      "header_size_bytes": 4,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("pub-fixed-frame-padding");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 81,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let captured_for_handler = captured.clone();
+    state.register_boundary_input_handler("sample_in", "Padded", move |payload, _| {
+        *captured_for_handler.lock().unwrap() = payload.to_vec();
+        Ok(1)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    boundary_publish(
+        "sample_in",
+        r#"{"flag": 7, "value": 1.5}"#,
+        Some(&selfdesc),
+        Some(&socket),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(*captured.lock().unwrap(), vec![7, 0, 0, 0xc0, 0x3f]);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn pub_injects_empty_message_from_null_and_empty_object() {
     let source = r#"
 {
@@ -2509,6 +2617,204 @@ fn echo_auto_socket_requires_explicit_socket_for_multiple_matches() {
 }
 
 #[test]
+fn echo_prefers_canonical_frame_for_fixed_message_with_native_padding() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.packet",
+      "to": "sink.packet",
+      "message_type": "Padded",
+      "backend": "zenoh"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Padded",
+    "size_bytes": 8,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "flag",
+      "type": "u8",
+      "offset_bytes": 0,
+      "size_bytes": 1,
+      "align_bytes": 1
+    }, {
+      "name": "value",
+      "type": "f32",
+      "offset_bytes": 4,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }],
+  "message_frames": [{
+    "type_name": "Padded",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 5,
+    "max_size_bytes": 5,
+    "variable": false,
+    "fields": [{
+      "name": "flag",
+      "type": "u8",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 1,
+      "tail_max_bytes": null
+    }, {
+      "name": "value",
+      "type": "f32",
+      "header_offset_bytes": 1,
+      "header_size_bytes": 4,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-fixed-frame-padding");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 83,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes(
+        "source.packet_to_sink.packet",
+        "Padded",
+        vec![7, 0, 0, 0xc0, 0x3f],
+        Some(123),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channel_from_image(&selfdesc, "source.packet", Some(&socket)).unwrap();
+
+    assert!(output.contains("frame_max_size=5 variable=false"));
+    assert!(output.contains("payload_len=5"));
+    assert!(output.contains("fields={flag=7,value=1.5}"));
+    assert!(output.contains("raw=070000c03f"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn echo_keeps_native_abi_for_inproc_fixed_message_with_padding() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.packet",
+      "to": "sink.packet",
+      "message_type": "Padded",
+      "backend": "inproc"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Padded",
+    "size_bytes": 8,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "flag",
+      "type": "u8",
+      "offset_bytes": 0,
+      "size_bytes": 1,
+      "align_bytes": 1
+    }, {
+      "name": "value",
+      "type": "f32",
+      "offset_bytes": 4,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }],
+  "message_frames": [{
+    "type_name": "Padded",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 5,
+    "max_size_bytes": 5,
+    "variable": false,
+    "fields": [{
+      "name": "flag",
+      "type": "u8",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 1,
+      "tail_max_bytes": null
+    }, {
+      "name": "value",
+      "type": "f32",
+      "header_offset_bytes": 1,
+      "header_size_bytes": 4,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-inproc-fixed-padding");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 83,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes(
+        "source.packet_to_sink.packet",
+        "Padded",
+        vec![7, 0, 0, 0, 0, 0, 0xc0, 0x3f],
+        Some(123),
+    );
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = echo_channel_from_image(&selfdesc, "source.packet", Some(&socket)).unwrap();
+
+    assert!(output.contains("abi_size=8"));
+    assert!(output.contains("payload_len=8"));
+    assert!(output.contains("fields={flag=7,value=1.5}"));
+    assert!(output.contains("raw=070000000000c03f"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn auto_socket_discovery_removes_stale_runtime_socket_candidates() {
     let _lock = XDG_RUNTIME_DIR_ENV_LOCK
         .lock()
@@ -2548,6 +2854,117 @@ fn auto_socket_discovery_removes_stale_runtime_socket_candidates() {
     );
 
     drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn auto_socket_discovery_removes_stale_unix_socket_candidates() {
+    let _lock = XDG_RUNTIME_DIR_ENV_LOCK
+        .lock()
+        .expect("runtime dir env lock should not be poisoned");
+    let root = temp_test_dir("e-stale-unix");
+    let runtime_root = root.join("xdg-runtime");
+    let _env = EnvOverride::set("XDG_RUNTIME_DIR", Some(runtime_root.as_os_str()));
+    let socket_dir = flowrt::runtime_socket_dir();
+    std::fs::create_dir_all(&socket_dir).unwrap();
+
+    let stale_socket = socket_dir.join("999999.sock");
+    {
+        let listener = std::os::unix::net::UnixListener::bind(&stale_socket)
+            .expect("test should create unix socket file");
+        drop(listener);
+    }
+
+    let live_socket = socket_dir.join("1000.sock");
+    let self_description_hash = "feedface".to_string();
+    let server = flowrt::spawn_status_server_at(
+        live_socket.clone(),
+        flowrt::IntrospectionHandshake {
+            protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+            pid: 1000,
+            started_at_unix_ms: 1,
+            self_description_hash: self_description_hash.clone(),
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime: "rust".to_string(),
+        },
+        flowrt::IntrospectionState::new(),
+    )
+    .expect("status server should start");
+
+    let selected = select_echo_socket(None, &self_description_hash).unwrap();
+
+    assert_eq!(selected, live_socket);
+    assert!(
+        !stale_socket.exists(),
+        "stale unix socket candidate should be removed"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn explicit_discoverable_socket_removes_stale_unix_socket_and_reports_it() {
+    let _lock = XDG_RUNTIME_DIR_ENV_LOCK
+        .lock()
+        .expect("runtime dir env lock should not be poisoned");
+    let root = temp_test_dir("e-exp-stale");
+    let runtime_root = root.join("xdg-runtime");
+    let _env = EnvOverride::set("XDG_RUNTIME_DIR", Some(runtime_root.as_os_str()));
+    let socket_dir = flowrt::runtime_socket_dir();
+    std::fs::create_dir_all(&socket_dir).unwrap();
+
+    let stale_socket = socket_dir.join("999999.sock");
+    {
+        let listener = std::os::unix::net::UnixListener::bind(&stale_socket)
+            .expect("test should create unix socket file");
+        drop(listener);
+    }
+
+    let error = select_echo_socket(Some(&stale_socket), "feedface")
+        .expect_err("stale explicit socket should fail with cleanup hint");
+    let message = error.to_string();
+
+    assert!(message.contains("stale FlowRT runtime socket"));
+    assert!(message.contains(&stale_socket.display().to_string()));
+    assert!(
+        !stale_socket.exists(),
+        "stale explicit socket should be removed"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_selfdesc_explicit_socket_removes_stale_unix_socket_and_reports_it() {
+    let _lock = XDG_RUNTIME_DIR_ENV_LOCK
+        .lock()
+        .expect("runtime dir env lock should not be poisoned");
+    let root = temp_test_dir("e-live-exp-stale");
+    let runtime_root = root.join("xdg-runtime");
+    let _env = EnvOverride::set("XDG_RUNTIME_DIR", Some(runtime_root.as_os_str()));
+    let socket_dir = flowrt::runtime_socket_dir();
+    std::fs::create_dir_all(&socket_dir).unwrap();
+
+    let stale_socket = socket_dir.join("999999.sock");
+    {
+        let listener = std::os::unix::net::UnixListener::bind(&stale_socket)
+            .expect("test should create unix socket file");
+        drop(listener);
+    }
+
+    let error = introspection::load_echo_context_from_live_socket(Some(&stale_socket))
+        .expect_err("stale explicit socket should fail with cleanup hint");
+    let message = error.to_string();
+
+    assert!(message.contains("stale FlowRT runtime socket"));
+    assert!(message.contains(&stale_socket.display().to_string()));
+    assert!(
+        !stale_socket.exists(),
+        "stale explicit socket should be removed"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
 }
 

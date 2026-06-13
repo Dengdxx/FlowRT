@@ -36,6 +36,20 @@ fn cleanup_stale_runtime_socket(socket: &Path) -> bool {
     }
 }
 
+fn remove_discoverable_stale_runtime_socket<T>(
+    socket: &Path,
+    action: &str,
+    error: anyhow::Error,
+) -> Result<T> {
+    if runtime_socket_is_discoverable(socket) && std::fs::remove_file(socket).is_ok() {
+        anyhow::bail!(
+            "stale FlowRT runtime socket `{}` was removed after {action} failed: {error}",
+            socket.display()
+        );
+    }
+    Err(error).with_context(|| format!("failed to {action} via `{}`", socket.display()))
+}
+
 fn runtime_socket_is_discoverable(socket: &Path) -> bool {
     let Ok(socket) = socket.canonicalize().or_else(|_| {
         let parent = socket
@@ -622,13 +636,16 @@ pub(crate) fn load_echo_context_from_live_socket(
 ) -> Result<(SelfDescription, String, PathBuf)> {
     let socket = select_live_self_description_socket(socket)?;
     let response =
-        flowrt::request_self_description_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT)
-            .with_context(|| {
-                format!(
-                    "failed to request FlowRT self-description from `{}`",
-                    socket.display()
-                )
-            })?;
+        match flowrt::request_self_description_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
+            Ok(response) => response,
+            Err(error) => {
+                return remove_discoverable_stale_runtime_socket(
+                    &socket,
+                    "request FlowRT self-description",
+                    error.into(),
+                );
+            }
+        };
     let (handshake, json) = match response {
         flowrt::IntrospectionResponse::SelfDescription { handshake, json } => (handshake, json),
         flowrt::IntrospectionResponse::Error { message, .. } => {
@@ -955,8 +972,16 @@ fn ensure_socket_matches_self_description_hash(
     socket: &Path,
     self_description_hash: &str,
 ) -> Result<()> {
-    let response = flowrt::request_status_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
-        .with_context(|| format!("failed to request status from `{}`", socket.display()))?;
+    let response = match flowrt::request_status_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT) {
+        Ok(response) => response,
+        Err(error) => {
+            return remove_discoverable_stale_runtime_socket(
+                socket,
+                "request status",
+                error.into(),
+            );
+        }
+    };
     let flowrt::IntrospectionResponse::Status { handshake, .. } = response else {
         anyhow::bail!(
             "runtime socket `{}` returned an unexpected introspection response",
@@ -983,6 +1008,7 @@ pub(crate) fn find_echo_channel(
         for channel in &graph.channels {
             let name = echo_channel_name(channel);
             if name == channel_name || channel.from == channel_name || channel.to == channel_name {
+                let prefer_frame = channel.backend == "zenoh";
                 matches.push(EchoChannelSpec {
                     name,
                     message_type: channel.message_type.clone(),
@@ -990,6 +1016,7 @@ pub(crate) fn find_echo_channel(
                         &self_description.message_abi,
                         &self_description.message_frames,
                         &channel.message_type,
+                        prefer_frame,
                     )?,
                 });
             }
@@ -1005,6 +1032,7 @@ pub(crate) fn find_echo_channel(
                         &self_description.message_abi,
                         &self_description.message_frames,
                         &boundary.message_type,
+                        true,
                     )?,
                 });
             }
@@ -1043,7 +1071,18 @@ fn echo_payload_shape(
     messages: &[SelfDescriptionMessageAbi],
     frames: &[SelfDescriptionMessageFrame],
     message_type: &str,
+    prefer_frame: bool,
 ) -> Result<EchoPayloadShape> {
+    if prefer_frame
+        && let Some(frame) = crate::frame_json::message_frame_layout(frames, message_type)?
+    {
+        return Ok(EchoPayloadShape::CanonicalFrame {
+            header_size_bytes: frame.header_size_bytes,
+            max_size_bytes: frame.max_size_bytes,
+            variable: frame.variable,
+            fields: frame.fields.clone(),
+        });
+    }
     if let Some(message) = message_abi_layout(messages, message_type)? {
         return Ok(EchoPayloadShape::FixedAbi {
             size_bytes: message.size_bytes,
@@ -1051,27 +1090,17 @@ fn echo_payload_shape(
             descriptor: is_standard_frame_descriptor_layout(message),
         });
     }
-    let mut frame_matches = frames
-        .iter()
-        .filter(|message| message.type_name == message_type)
-        .collect::<Vec<_>>();
-    match frame_matches.len() {
-        0 => anyhow::bail!(
-            "FlowRT self-description does not contain Message ABI or frame layout for `{message_type}`"
-        ),
-        1 => {
-            let frame = frame_matches.remove(0);
-            Ok(EchoPayloadShape::CanonicalFrame {
-                header_size_bytes: frame.header_size_bytes,
-                max_size_bytes: frame.max_size_bytes,
-                variable: frame.variable,
-                fields: frame.fields.clone(),
-            })
-        }
-        _ => anyhow::bail!(
-            "FlowRT self-description contains multiple Message frame layouts for `{message_type}`"
-        ),
+    if let Some(frame) = crate::frame_json::message_frame_layout(frames, message_type)? {
+        return Ok(EchoPayloadShape::CanonicalFrame {
+            header_size_bytes: frame.header_size_bytes,
+            max_size_bytes: frame.max_size_bytes,
+            variable: frame.variable,
+            fields: frame.fields.clone(),
+        });
     }
+    anyhow::bail!(
+        "FlowRT self-description does not contain Message ABI or frame layout for `{message_type}`"
+    )
 }
 
 pub(crate) fn message_abi_layout<'a>(

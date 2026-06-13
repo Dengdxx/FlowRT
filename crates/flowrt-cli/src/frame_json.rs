@@ -18,6 +18,14 @@ pub(crate) fn encode_boundary_json(
     let value = serde_json::from_str::<Value>(raw_json)
         .with_context(|| format!("flowrt pub --json must be valid JSON; got `{raw_json}`"))?;
 
+    if let Some(frame) = message_frame_layout(&self_description.message_frames, message_type)? {
+        return encode_frame_message_json(self_description, frame, &value).map_err(|err| {
+            anyhow::anyhow!(
+                "failed to encode boundary input `{endpoint_name}` as `{message_type}`: {err}"
+            )
+        });
+    }
+
     if let Some(message) = message_abi_layout(&self_description.message_abi, message_type)? {
         return encode_fixed_message_json(&self_description.message_abi, message, &value).map_err(
             |err| {
@@ -28,20 +36,12 @@ pub(crate) fn encode_boundary_json(
         );
     }
 
-    if let Some(frame) = message_frame_layout(&self_description.message_frames, message_type)? {
-        return encode_frame_message_json(self_description, frame, &value).map_err(|err| {
-            anyhow::anyhow!(
-                "failed to encode boundary input `{endpoint_name}` as `{message_type}`: {err}"
-            )
-        });
-    }
-
     anyhow::bail!(
         "FlowRT self-description does not contain Message ABI or frame layout for boundary input `{endpoint_name}` type `{message_type}`"
     );
 }
 
-fn message_frame_layout<'a>(
+pub(crate) fn message_frame_layout<'a>(
     frames: &'a [SelfDescriptionMessageFrame],
     message_type: &str,
 ) -> Result<Option<&'a SelfDescriptionMessageFrame>> {
@@ -199,6 +199,20 @@ fn encode_frame_field_value(
             );
         }
         return encode_primitive_value(ty, value, &field.name);
+    }
+
+    if let Some(nested_frame) = message_frame_layout(&self_description.message_frames, ty)? {
+        if nested_frame.header_size_bytes != field.header_size_bytes {
+            anyhow::bail!(
+                "field `{}` type `{}` expects {} header bytes but self-description declares {} bytes",
+                field.name,
+                ty,
+                nested_frame.header_size_bytes,
+                field.header_size_bytes
+            );
+        }
+        return encode_frame_message_json(self_description, nested_frame, value)
+            .with_context(|| format!("field `{}` expects nested `{ty}` object", field.name));
     }
 
     if let Some(nested) = message_abi_layout(&self_description.message_abi, ty)? {

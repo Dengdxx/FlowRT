@@ -183,8 +183,23 @@ backends = ["inproc"]
 }
 
 #[test]
-fn toolchain_build_profile_uses_native_when_platform_is_absent() {
+fn toolchain_build_profile_uses_host_profile_when_platform_is_absent() {
+    let (_, host_target) = rustc_toolchain_identity().unwrap();
+    let Some(platform) = host_toolchain_platform_for_test(&host_target) else {
+        return;
+    };
     let root = temp_test_dir("toolchain-build-native");
+    let workspace = root.join(".flowrt/toolchains.toml");
+    write_toolchains(
+        &workspace,
+        &format!(
+            r#"
+[toolchain.{platform}]
+cpp_compile_args = ["-DFLOWRT_NATIVE_VENDOR=1"]
+pkg_config_libdirs = ["/opt/native/pkgconfig"]
+"#
+        ),
+    );
     let contract = contract_from_source(
         r#"
 [package]
@@ -197,9 +212,16 @@ language = "rust"
     );
 
     let profile = resolve_build_toolchain_profile(&contract, None, &root).unwrap();
+    let profile = profile.expect("host platform should resolve a native toolchain profile");
 
-    assert!(profile.is_none());
-    assert!(cargo_target_args(None).is_empty());
+    assert_eq!(profile.profile.platform, platform);
+    assert_eq!(profile.profile.rust_target, host_target);
+    assert_eq!(
+        profile.profile.cpp_compile_args,
+        vec!["-DFLOWRT_NATIVE_VENDOR=1"]
+    );
+    assert!(profile.cargo_target_triple.is_none());
+    assert!(cargo_target_args(profile.cargo_target_triple.as_deref()).is_empty());
 }
 
 fn host_toolchain_platform_for_test(host_target: &str) -> Option<&'static str> {
