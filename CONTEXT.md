@@ -26,7 +26,12 @@ runtime shell 通过 C ABI callback table 转发生命周期和 periodic/on_mess
 task callback；callback table 必须设置 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0`
 且不得设置未知 feature bit。`examples/c_counter_demo` 覆盖 fixed-size `Count` message、
 两个 C native component、CMake app build/run 和 supervisor launch；generated supervisor
-已将 launch manifest 中的 `runtime_kind = "c"` 显式映射到 CMake app binary。C v0
+已将 launch manifest 中的 `runtime_kind = "c"` 显式映射到 CMake app binary。CI 已新增
+amd64/arm64 `v0.11.0 App SDK Smoke`：在临时项目中覆盖 `flowrt init` Rust/C++/C、
+`flowrt add message/component`、`flowrt explain --format text/json`，并在临时
+`examples/c_counter_demo` 副本上按 runner 架构运行普通 build/run 与 launcher build/launch；
+package/release 依赖链会等待该 gate，`scripts/check-release-readiness.sh` 也会检查该 gate、
+`CHANGELOG.md` 未发布段和 release notes 事实源。C v0
 仍只支持 native component、fixed-size plain data 输入/输出和 inproc demo，不支持
 params、service、operation、variable frame、`io_boundary`、`external`、`pkg_config`、
 动态加载、独立 C runtime 或 Python binding。RSDL / Contract IR / validator 现已承载

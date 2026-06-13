@@ -195,7 +195,8 @@ amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integratio
 focused smoke、amd64/arm64 v0.8.1 FrameDescriptor focused smoke、v0.8.3 交叉编译
 focused smoke、amd64/arm64 v0.9.0 island focused smoke、amd64/arm64 v0.9.1 island
 tooling focused smoke、amd64/arm64 v0.9.2 island offline validation focused smoke、
-amd64/arm64 v0.10.2 concurrency focused smoke、amd64/arm64 C++ zenoh runtime、
+amd64/arm64 v0.10.2 concurrency focused smoke、amd64/arm64 v0.11.0 App SDK
+focused smoke、amd64/arm64 C++ zenoh runtime、
 amd64/arm64 deb package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64
 demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge
 smoke 全部通过，再创建 GitHub Release，并上传
@@ -266,6 +267,14 @@ focused tests、Rust iox2 generated shell、backend route、Rust/C++ runtime exe
 并用临时复制的 `import_demo` 和 `cpp_counter_demo` 验证 generated Rust/C++ shell 可构建。
 该 gate 保证 worker 只执行用户 task、scheduler 按 canonical ready order 提交 output，
 以及 iox2 scheduler-local transport commit 不再把整批 task 串行化。
+
+`v0.11.0 App SDK Smoke` 在 amd64 与 arm64 runner 上覆盖 `flowrt init` Rust/C++/C、
+项目内 `flowrt add message/component`、`flowrt explain --format text/json`，并在临时
+`examples/c_counter_demo` 副本上按 runner 架构改写 target platform 后运行普通
+`flowrt build` / `flowrt run` 和 `flowrt build --launcher` / `flowrt launch`。CI 容器
+会安装 CMake、Ninja 和 g++，因此 C callback v0 launcher 路径在 release gate 中真实
+执行，不跳过；低资源本地机器可用 `FLOWRT_V0110_SMOKE_DRY_RUN=1`
+只验证脚本入口，但 package/release gate 不使用 dry-run。
 
 发布前检查：
 
