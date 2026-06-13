@@ -133,7 +133,9 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - C++ only 和 C callback v0 contract 的普通 `flowrt build` / `flowrt run` 走 CMake app
   路径，不依赖 Cargo app；C component 由 generated C++ runtime shell 通过 callback table
   adapter 调用。
-- C++ only contract 的 `flowrt build --launcher` 会生成并构建 supervisor-only Rust crate；该 crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
+- C++ only 和 C callback v0 contract 的 `flowrt build --launcher` 会生成并构建
+  supervisor-only Rust crate；该 crate 只负责编排 CMake app，不生成 Rust runtime shell
+  或 Rust app binary。
 - `[[bridge.ros2]]` 会生成 FlowRT 管理的 C++ ROS2 adapter process；CLI `build` 必须构建 CMake bridge target，即使 contract 没有 C++ 用户 component。FlowRT 与 ROS2 的唯一 bridge backend 是 `zenoh`，ROS2 侧必须使用 `rmw_zenoh_cpp`，不得添加 DDS fallback。
 - `flowrt run` 和 `flowrt launch` 只读取已生成产物，不执行 prepare/build，不写 `flowrt/` 输出目录。
 - 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有 OS advisory lock；`.flowrt.lock` 文件可以残留，PID 只作为诊断内容，真实占用状态必须由锁判断。`check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`echo` 和 `params` 不写生成物，不应获取该锁。

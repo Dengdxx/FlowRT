@@ -676,9 +676,9 @@ backend 为 `inproc`。
   仍保留 stale socket 诊断行。
 - `flowrt run --process <name>` 运行生成应用中的单个 RSDL process group；mixed
   contract 必须选择一个单语言 process group。
-- `launch` 运行 FlowRT 管理的 Rust supervisor。C++ only contract 会生成
+- `launch` 运行 FlowRT 管理的 Rust supervisor。C++ only 和 C callback v0 contract 会生成
   supervisor-only Rust crate，launch 先构建 CMake app 再运行 supervisor；C callback v0
-  当前验收范围是普通 build/run，supervisor runtime_kind 接入留作后续切片。
+  process 的 `runtime_kind = "c"` 由 supervisor 显式映射到 CMake app binary。
 - `inproc` 是单进程 backend；launch 和单独 process run 必须拒绝 inproc dataflow
   跨 RSDL process group。
 - `build` 默认 release。Rust app、generated supervisor、C++ app 和 ROS2 bridge

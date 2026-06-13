@@ -580,9 +580,9 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
 ```
 
-`launch` 只运行已构建的 generated supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable、C++ app executable 或 ROS2 bridge adapter。首次 launch 或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build --launcher`。
+`launch` 只运行已构建的 generated supervisor。supervisor 读取 `flowrt/launch/launch.json`，遍历 graph 中的 process group，并按 `runtime_kind` 启动 Rust app executable、C++/C app executable 或 ROS2 bridge adapter。首次 launch 或修改 RSDL、profile、生成模板、用户代码后，应先执行匹配 profile 的 `flowrt build --launcher`。
 
-含 C++ component 的 contract 需要先通过 `flowrt build --launcher` 显式构建 CMake app 和 generated supervisor；C++ only contract 的 supervisor-only Rust crate 只负责编排 C++ app，不生成 Rust runtime shell 或 Rust app binary。
+含 C++ 或 C component 的 contract 需要先通过 `flowrt build --launcher` 显式构建 CMake app 和 generated supervisor；C++ only / C callback v0 contract 的 supervisor-only Rust crate 只负责编排 CMake app，不生成 Rust runtime shell 或 Rust app binary。
 
 含 external component 的 contract 也会生成 supervisor-only Rust crate。supervisor 按以下顺序解析 external package：
 

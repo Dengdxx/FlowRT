@@ -476,6 +476,46 @@ backends = ["inproc"]
 }
 
 #[test]
+fn launch_manifest_marks_c_process_runtime_kind() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "c_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "c"
+output = ["value:u32"]
+
+[instance.source]
+component = "source"
+process = "main"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["value"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["c"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let process = &launch["graphs"][0]["processes"][0];
+
+    assert_eq!(process["name"], "main");
+    assert_eq!(process["runtimes"], serde_json::json!(["c"]));
+    assert_eq!(process["runtime_kind"], "c");
+}
+
+#[test]
 fn launch_manifest_exposes_external_process_package_metadata() {
     let ir = contract_from_source(
         r#"

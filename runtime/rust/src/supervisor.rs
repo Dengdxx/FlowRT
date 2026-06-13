@@ -877,6 +877,7 @@ pub fn app_executable_for_runtime(
     match runtime_kind {
         "rust" => rust_app_executable(current_exe, rust_stem),
         "cpp" => cpp_app_executable(current_exe, cpp_stem),
+        "c" => cpp_app_executable(current_exe, cpp_stem),
         "ros2_bridge" => ros2_bridge_executable(current_exe, ros2_bridge_stem),
         "mixed" => Err("FlowRT mixed process groups are not launchable yet".to_string()),
         other => Err(format!("unknown FlowRT process runtime_kind `{other}`")),
@@ -2514,6 +2515,24 @@ mod tests {
 
         let resolved =
             app_executable_for_runtime(&supervisor, "cpp", "robot-flowrt-app", "robot_cpp_app", "")
+                .unwrap();
+
+        assert_eq!(resolved, cpp_app);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn c_runtime_executable_uses_cmake_app_binary() {
+        let root = temp_test_dir("c-runtime-sibling");
+        let bin_dir = root.join("flowrt/build/bin/release");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let supervisor = bin_dir.join(binary_name("robot-flowrt-supervisor"));
+        let cpp_app = bin_dir.join(binary_name("robot_cpp_app"));
+        std::fs::write(&supervisor, "").unwrap();
+        std::fs::write(&cpp_app, "").unwrap();
+
+        let resolved =
+            app_executable_for_runtime(&supervisor, "c", "robot-flowrt-app", "robot_cpp_app", "")
                 .unwrap();
 
         assert_eq!(resolved, cpp_app);
