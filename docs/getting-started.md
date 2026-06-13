@@ -1,6 +1,7 @@
 # 快速开始
 
-本文从单包 Debian 包安装 `flowrt`，并跑通当前仓库中最小的 Rust-only 和 C++ only 示例。
+本文从单包 Debian 包安装 `flowrt`，并跑通现代 app 骨架、Rust-only、C++ only 和 C
+callback v0 示例。
 
 ## 前置条件
 
@@ -273,6 +274,31 @@ flowrt launch rsdl/robot.rsdl
 ```
 
 C++ only contract 的普通 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。需要 `launch` 时，先用 `build --launcher` 显式构建 generated supervisor，再由 `launch` 执行已有 supervisor。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。
+
+## 运行 C callback v0 示例
+
+`examples/c_counter_demo` 是 C component v0 的最小闭环。它只使用 fixed-size `Count`
+message、两个 C native component 和 `inproc` channel；用户代码位于
+`examples/c_counter_demo/app/c/`，实现 generated `flowrt_app/c_components.h` 声明的
+callback table factory。
+
+普通 app 运行先构建 CMake app，再运行已构建产物：
+
+```bash
+flowrt build examples/c_counter_demo/rsdl/robot.rsdl
+flowrt run examples/c_counter_demo/rsdl/robot.rsdl --run-steps 3
+```
+
+supervisor 路径需要先构建 launcher，再 launch：
+
+```bash
+flowrt build --launcher examples/c_counter_demo/rsdl/robot.rsdl
+flowrt launch examples/c_counter_demo/rsdl/robot.rsdl --run-steps 3
+```
+
+C v0 通过 C ABI callback table 静态编进 generated C++ runtime shell，不是完整 C
+runtime；params、service、operation、variable frame、`io_boundary`、`external`、
+动态加载和 Python binding 均不在当前支持范围。
 
 ## 运行 external package 示例
 

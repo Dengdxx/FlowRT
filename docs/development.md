@@ -43,6 +43,10 @@ flowrt --version
 flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
 flowrt run --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl --process control
 flowrt launch --run-steps 5 examples/cpp_counter_demo/rsdl/robot.rsdl
+flowrt build examples/c_counter_demo/rsdl/robot.rsdl
+flowrt run --run-steps 3 examples/c_counter_demo/rsdl/robot.rsdl
+flowrt build --launcher examples/c_counter_demo/rsdl/robot.rsdl
+flowrt launch --run-steps 3 examples/c_counter_demo/rsdl/robot.rsdl
 flowrt build examples/imu_demo/rsdl/robot.rsdl
 flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
 flowrt run --run-steps 5 examples/import_demo/rsdl/robot.rsdl --process main
@@ -101,7 +105,6 @@ tracked=$(
     docs/backend-contract.md \
     docs/contract-ir-v0.1.md \
     docs/message-abi-v0.1.md \
-    docs/project-layout.md \
     docs/rsdl-v0.1.md \
     'flowrt/**' \
     'examples/*/flowrt/**'
@@ -161,6 +164,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - `AGENTS.md`
 - `docs/README.md`
 - `docs/getting-started.md`
+- `docs/project-layout.md`
 - `docs/cli.md`
 - `docs/examples.md`
 - `docs/development.md`
@@ -173,7 +177,6 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - `docs/contract-ir-v0.1.md`
 - `docs/message-abi-v0.1.md`
 - `docs/backend-contract.md`
-- `docs/project-layout.md`
 
 判断规则：
 

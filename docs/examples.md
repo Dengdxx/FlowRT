@@ -11,7 +11,7 @@
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | 验证 `[package.imports]`、Rust codegen、inproc run 和 launch manifest |
 | `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | 验证 workspace / module / composition、跨模块引用和同名 module symbol 的生成命名 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | 验证 C++ only CMake app 路径、用户工厂、C++ runtime shell 和 supervisor 启动 |
-| `examples/c_counter_demo` | C callback v0 | `inproc` | `flowrt build --launcher examples/c_counter_demo/rsdl/robot.rsdl` | 验证 C component callback table、fixed-size message input/output、CMake app 运行和 supervisor 启动 |
+| `examples/c_counter_demo` | C callback v0 | `inproc` | `flowrt build examples/c_counter_demo/rsdl/robot.rsdl`；再按需 `flowrt build --launcher examples/c_counter_demo/rsdl/robot.rsdl` | 验证 C component callback table、fixed-size message input/output、CMake app build/run 和 supervisor launch |
 | `examples/imu_demo` | Rust + C++ | `inproc` 声明用于 build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | 验证 mixed contract 的接口、消息、参数 schema 和生成物边界；不伪装为 mixed inproc 可运行 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | 验证同一份 RSDL 通过 profile 切换 backend |
 | `examples/mixed_iox2_demo` | Rust + C++ | `iox2` | `flowrt check examples/mixed_iox2_demo/rsdl/robot.rsdl` | 验证 Rust source 与 C++ sink 通过 iox2 分进程连接的 contract |

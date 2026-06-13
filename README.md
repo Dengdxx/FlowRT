@@ -1,6 +1,6 @@
 # FlowRT
 
-FlowRT 是一个数据流编译型机器人运行时。应用开发者用 `.rsdl` 声明系统结构：消息、组件端口、实例、任务、数据流连接、部署目标和通信 backend；FlowRT 把这些声明编译成 Contract IR，校验后生成 C++/Rust 的薄 runtime shell、消息类型、启动配置和构建文件。
+FlowRT 是一个数据流编译型机器人运行时。应用开发者用 `.rsdl` 声明系统结构：消息、组件端口、实例、任务、数据流连接、部署目标和通信 backend；FlowRT 把这些声明编译成 Contract IR，校验后生成 C++/Rust 的薄 runtime shell、C callback adapter、消息类型、启动配置和构建文件。
 
 FlowRT 的边界：
 
@@ -24,6 +24,37 @@ User code controls algorithms.
   `flowrt record` 观察运行状态。
 
 FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/development.md)。
+
+## 创建应用
+
+安装后的主路径是从一个 FlowRT app 项目开始：
+
+```bash
+flowrt init my_robot
+cd my_robot
+flowrt check
+flowrt deps
+flowrt build
+flowrt run --process main
+```
+
+`flowrt init` 会生成 `flowrt.toml`、`rsdl/robot.rsdl` 和 `app/` 用户代码骨架。
+在项目根或子目录中，`check`、`explain`、`deps`、`prepare`、`build`、`run` 和
+`doctor` 可以省略 RSDL 路径；CLI 会向上发现最近的 `flowrt.toml` 并使用
+`[project].main`。显式传入 RSDL 路径时，显式路径优先。
+
+可按语言选择初始骨架：
+
+```bash
+flowrt init my_cpp_robot --lang cpp
+flowrt init my_c_robot --lang c
+```
+
+C 入口当前是 C ABI v0 callback table 最小切片：用户代码写在 `app/c/**`，随 generated
+C++ runtime shell 静态编入 CMake app，支持 native component、fixed-size plain data
+message、普通 `build/run` 和 `build --launcher` 后的 `launch`。它不是完整 C runtime，
+也不包含 params、service、operation、variable frame、`io_boundary`、`external`、
+动态加载或 Python binding。
 
 ## 安装
 
@@ -773,6 +804,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | `examples/import_demo` | Rust | `inproc` | `flowrt build --launcher examples/import_demo/rsdl/robot.rsdl` | RSDL imports、Rust codegen、inproc run 和 launch。 |
 | `examples/workspace_demo` | Rust | `inproc` | `flowrt build --launcher examples/workspace_demo/rsdl/robot.rsdl` | workspace / module / composition、跨模块引用。 |
 | `examples/cpp_counter_demo` | C++ | `inproc` | `flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl` | C++ only CMake app 路径。 |
+| `examples/c_counter_demo` | C callback v0 | `inproc` | `flowrt build examples/c_counter_demo/rsdl/robot.rsdl` | C callback table、fixed-size message、CMake app run 和 supervisor launch。 |
 | `examples/imu_demo` | Rust + C++ | `inproc` build smoke | `flowrt build examples/imu_demo/rsdl/robot.rsdl` | mixed contract 的接口和生成物边界。 |
 | `examples/imu_demo_iox2` | Rust + C++ | `iox2` | `flowrt check examples/imu_demo_iox2/rsdl/robot.rsdl` | mixed iox2 分进程、Rust/C++ 参数接口。 |
 | `examples/profile_switch_demo` | Rust | `inproc` / `iox2` | `flowrt build --profile iox2 examples/profile_switch_demo/rsdl/robot.rsdl` | profile 驱动 backend 切换。 |
@@ -791,6 +823,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 
 - [文档索引](docs/README.md)
 - [快速开始](docs/getting-started.md)
+- [项目布局](docs/project-layout.md)
 - [CLI 参考](docs/cli.md)
 - [示例矩阵](docs/examples.md)
 - [开发维护](docs/development.md)
