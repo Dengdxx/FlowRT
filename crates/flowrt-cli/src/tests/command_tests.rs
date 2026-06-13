@@ -93,6 +93,103 @@ fn cli_parses_project_commands_without_explicit_rsdl_path() {
 }
 
 #[test]
+fn cli_parses_init_command_with_default_rust_language() {
+    let cli = Cli::try_parse_from(["flowrt", "init", "demo_bot"]).unwrap();
+
+    let Command::Init { path, language } = cli.command else {
+        panic!("init command should parse into Command::Init")
+    };
+
+    assert_eq!(path, PathBuf::from("demo_bot"));
+    assert_eq!(language, AppInitLanguage::Rust);
+}
+
+#[test]
+fn cli_rejects_c_init_language_until_c_component_entry_is_ready() {
+    let error = Cli::try_parse_from(["flowrt", "init", "demo_bot", "--lang", "c"])
+        .expect_err("flowrt init must not expose C app skeletons yet");
+
+    assert!(error.to_string().contains("invalid value 'c'"));
+}
+
+#[test]
+fn cli_rejects_legacy_init_language_flag() {
+    let error = Cli::try_parse_from(["flowrt", "init", "demo_bot", "--language", "cpp"])
+        .expect_err("flowrt init exposes --lang, not a legacy --language alias");
+
+    assert!(
+        error
+            .to_string()
+            .contains("unexpected argument '--language'")
+    );
+}
+
+#[test]
+fn init_app_project_writes_rust_modern_app_layout() {
+    let root = temp_test_dir("init-rust").join("demo-bot");
+
+    let output = init_app_project(&root, AppInitLanguage::Rust).unwrap();
+
+    assert!(output.contains("language=rust"));
+    assert_eq!(
+        project_manifest::load_manifest_rsdl(&root.join("flowrt.toml")).unwrap(),
+        root.join("rsdl/robot.rsdl")
+    );
+    assert!(!root.join("app/cpp").exists());
+    let app = std::fs::read_to_string(root.join("app/rust/mod.rs")).unwrap();
+    assert!(app.contains("use crate::messages::Tick;"));
+    assert!(app.contains("impl Controller for ControllerImpl"));
+    assert!(app.contains("tick: &mut flowrt::Output<Tick>"));
+    assert!(app.contains("pub fn build_app() -> crate::App"));
+
+    let contract = load_contract_from_rsdl(&root.join("rsdl/robot.rsdl")).unwrap();
+    assert_eq!(contract.package.name, "demo_bot");
+    assert_eq!(contract.types.len(), 1);
+    assert_eq!(contract.components[0].language, LanguageKind::Rust);
+    assert_eq!(contract.targets[0].runtime, vec![LanguageKind::Rust]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn init_app_project_writes_cpp_modern_app_layout() {
+    let root = temp_test_dir("init-cpp").join("demo-bot");
+
+    let output = init_app_project(&root, AppInitLanguage::Cpp).unwrap();
+
+    assert!(output.contains("language=cpp"));
+    assert!(root.join("flowrt.toml").is_file());
+    assert!(root.join("rsdl/robot.rsdl").is_file());
+    assert!(!root.join("app/rust").exists());
+    let app = std::fs::read_to_string(root.join("app/cpp/components.cpp")).unwrap();
+    assert!(app.contains("class Controller final"));
+    assert!(app.contains("flowrt::Output<flowrt_app::Tick>& tick"));
+    assert!(app.contains("flowrt_user"));
+
+    let contract = load_contract_from_rsdl(&root.join("rsdl/robot.rsdl")).unwrap();
+    assert_eq!(contract.package.name, "demo_bot");
+    assert_eq!(contract.types.len(), 1);
+    assert_eq!(contract.components[0].language, LanguageKind::Cpp);
+    assert_eq!(contract.targets[0].runtime, vec![LanguageKind::Cpp]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn init_app_project_refuses_to_overwrite_existing_files() {
+    let root = temp_test_dir("init-no-overwrite");
+    let rsdl = root.join("rsdl/robot.rsdl");
+    std::fs::create_dir_all(rsdl.parent().unwrap()).unwrap();
+    std::fs::write(&rsdl, "user-owned\n").unwrap();
+
+    let error = init_app_project(&root, AppInitLanguage::Rust).unwrap_err();
+
+    assert!(error.to_string().contains("refusing to overwrite"));
+    assert_eq!(std::fs::read_to_string(&rsdl).unwrap(), "user-owned\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn cli_parses_temporary_island_overlay_flags() {
     let cli = Cli::try_parse_from([
         "flowrt",

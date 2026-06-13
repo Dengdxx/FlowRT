@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
@@ -70,6 +70,17 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// 初始化现代 FlowRT app 项目骨架。
+    Init {
+        /// 项目根目录；省略时初始化当前目录。
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// 用户组件语言；当前只开放 Rust/C++，不开放 C app 入口。
+        #[arg(long = "lang", value_enum, default_value = "rust")]
+        language: AppInitLanguage,
+    },
+
     /// 解析、归一化并校验一个 RSDL 文件。
     Check {
         /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
@@ -676,6 +687,21 @@ enum CacheCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum AppInitLanguage {
+    Rust,
+    Cpp,
+}
+
+impl AppInitLanguage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Cpp => "cpp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum DepsBackend {
     Inproc,
     Iox2,
@@ -696,6 +722,9 @@ fn resolve_optional_cli_rsdl(rsdl: Option<PathBuf>) -> Result<Option<PathBuf>> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Init { path, language } => {
+            println!("{}", init_app_project(&path, language)?);
+        }
         Command::Check { rsdl } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let contract = load_contract_from_rsdl(&rsdl)?;
@@ -1245,6 +1274,202 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn init_app_project(root: &Path, language: AppInitLanguage) -> Result<String> {
+    let package_name = app_init_package_name(root);
+    let rsdl_main = Path::new("rsdl/robot.rsdl");
+    let mut files = vec![
+        (
+            PathBuf::from(project_manifest::MANIFEST_FILE_NAME),
+            project_manifest::render_project_manifest(rsdl_main)?,
+        ),
+        (
+            rsdl_main.to_path_buf(),
+            app_init_rsdl_template(&package_name, language),
+        ),
+    ];
+    match language {
+        AppInitLanguage::Rust => files.push((
+            PathBuf::from("app/rust/mod.rs"),
+            app_init_rust_template().to_string(),
+        )),
+        AppInitLanguage::Cpp => files.push((
+            PathBuf::from("app/cpp/components.cpp"),
+            app_init_cpp_template().to_string(),
+        )),
+    }
+
+    for (relative, _) in &files {
+        let target = root.join(relative);
+        if target.exists() {
+            anyhow::bail!("refusing to overwrite existing file `{}`", target.display());
+        }
+    }
+
+    for (relative, content) in &files {
+        let target = root.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        write_new_file(&target, content)?;
+    }
+
+    Ok(format!(
+        "initialized FlowRT app: {} language={} main={}",
+        root.display(),
+        language.as_str(),
+        rsdl_main.display()
+    ))
+}
+
+fn write_new_file(path: &Path, content: &str) -> Result<()> {
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("refusing to overwrite existing file `{}`", path.display());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to create `{}`", path.display()));
+        }
+    };
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write `{}`", path.display()))
+}
+
+fn app_init_package_name(root: &Path) -> String {
+    let raw_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty() && *value != ".")
+        .map(str::to_string)
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .and_then(|cwd| cwd.file_name().map(|value| value.to_owned()))
+                .and_then(|value| value.to_str().map(str::to_string))
+        })
+        .unwrap_or_else(|| "flowrt_app".to_string());
+    sanitize_app_init_identifier(&raw_name)
+}
+
+fn sanitize_app_init_identifier(raw: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_underscore = false;
+    for ch in raw.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() { ch } else { '_' };
+        if normalized == '_' {
+            if !previous_was_underscore && !output.is_empty() {
+                output.push('_');
+            }
+            previous_was_underscore = true;
+        } else {
+            output.push(normalized.to_ascii_lowercase());
+            previous_was_underscore = false;
+        }
+    }
+    while output.ends_with('_') {
+        output.pop();
+    }
+    if output.is_empty() {
+        output.push_str("flowrt_app");
+    }
+    if !output
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+    {
+        output.insert_str(0, "app_");
+    }
+    output
+}
+
+fn app_init_rsdl_template(package_name: &str, language: AppInitLanguage) -> String {
+    let language_name = language.as_str();
+    let runtime = language.as_str();
+    format!(
+        r#"[package]
+name = "{package_name}"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.Tick]
+value = "u32"
+
+[component.controller]
+language = "{language_name}"
+output = ["tick:Tick"]
+
+[instance.controller]
+component = "controller"
+process = "main"
+target = "linux"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 100
+output = ["tick"]
+
+[profile.default]
+backend = "inproc"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+max_age_ms = 1000
+
+[target.linux]
+platform = "linux-amd64"
+runtime = ["{runtime}"]
+backends = ["inproc"]
+"#
+    )
+}
+
+fn app_init_rust_template() -> &'static str {
+    r#"use crate::components::Controller;
+use crate::messages::Tick;
+
+#[derive(Default)]
+pub struct ControllerImpl;
+
+impl Controller for ControllerImpl {
+    fn on_tick(&mut self, tick: &mut flowrt::Output<Tick>) -> flowrt::Status {
+        tick.write(Tick { value: 0 });
+        flowrt::Status::Ok
+    }
+}
+
+pub fn build_app() -> crate::App {
+    crate::App::new(Box::new(ControllerImpl))
+}
+"#
+}
+
+fn app_init_cpp_template() -> &'static str {
+    r#"#include "flowrt_app/runtime_shell.hpp"
+
+#include <memory>
+
+namespace {
+
+class Controller final : public flowrt_app::ControllerInterface {
+public:
+    flowrt::Status on_tick(flowrt::Output<flowrt_app::Tick>& tick) override {
+        tick.write(flowrt_app::Tick{0});
+        return flowrt::Status::Ok;
+    }
+};
+
+}  // namespace
+
+namespace flowrt_user {
+
+flowrt_app::App build_app() {
+    return flowrt_app::App(std::make_unique<Controller>());
+}
+
+}  // namespace flowrt_user
+"#
 }
 
 fn parse_positive_usize(raw: &str) -> std::result::Result<usize, String> {

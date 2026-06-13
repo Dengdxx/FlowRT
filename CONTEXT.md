@@ -8,7 +8,10 @@
 当前 workspace 版本为 `0.10.3`。`v0.10.3` 已把用户代码布局切到
 长期形态：`app/` 是唯一用户业务代码根，Rust 用户入口为 `app/rust/mod.rs`，C/C++
 用户源码从 `app/cpp/**` 与 `app/c/**` 递归发现；旧 `src/rust` / `src/cpp` 不再作为
-FlowRT 用户结构存在，不提供兼容、fallback、迁移提示或 legacy 开关。RSDL / Contract
+FlowRT 用户结构存在，不提供兼容、fallback、迁移提示或 legacy 开关。未发布状态下
+CLI 已新增 `flowrt init [path] --lang <rust|cpp>`，生成 `flowrt.toml`、
+`rsdl/robot.rsdl` 和现代 `app/` 用户代码骨架；默认 Rust，可显式生成 C++，但当前
+不开放 C app 用户入口。RSDL / Contract
 IR / validator 现已承载 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized

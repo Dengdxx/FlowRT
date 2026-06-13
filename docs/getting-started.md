@@ -41,6 +41,25 @@ flowrt deps
 
 `flowrt deps` 只编译 FlowRT 底层依赖；`flowrt build` 只编译用户项目和生成 shell。默认构建模式是 release，用户二进制位于项目自己的 `flowrt/build/bin/release/`。
 
+创建新项目时可以直接使用 `flowrt init`：
+
+```bash
+flowrt init my_robot
+cd my_robot
+flowrt check
+flowrt deps
+flowrt build
+```
+
+默认骨架使用 Rust 用户组件入口 `app/rust/mod.rs`。C++ 项目使用：
+
+```bash
+flowrt init my_cpp_robot --lang cpp
+```
+
+`flowrt init` 当前只开放 Rust 和 C++，不开放 C app 用户入口；C component 要等 C ABI v0
+后续切片跑通后再作为用户入口支持。
+
 FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
 
 ```toml

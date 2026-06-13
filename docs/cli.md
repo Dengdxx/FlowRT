@@ -5,6 +5,7 @@
 ## 命令概览
 
 ```bash
+flowrt init [path/to/app-root] [--lang <rust|cpp>]
 flowrt check [path/to/robot.rsdl]
 flowrt prepare [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
@@ -39,6 +40,40 @@ flowrt status [--live-only]
 flowrt hz [channel] [--socket <path>] [--window-ms <ms>]
 flowrt record --output <path/to/run.mcap> [--socket <path>] [--duration <10s|500ms|2m>] [--channel <name>] [--operation <name>] [--all] [--force]
 ```
+
+## `init`
+
+```bash
+flowrt init my_robot
+cd my_robot
+flowrt check
+flowrt deps
+flowrt build
+```
+
+`init` 创建现代 FlowRT app 项目骨架。默认生成 Rust 用户组件项目；传入
+`--lang cpp` 时生成 C++ 用户组件项目：
+
+```bash
+flowrt init my_cpp_robot --lang cpp
+```
+
+生成内容固定采用长期目录边界：
+
+```text
+flowrt.toml
+rsdl/robot.rsdl
+app/rust/mod.rs        # --lang rust
+app/cpp/components.cpp # --lang cpp
+```
+
+`rsdl/robot.rsdl` 包含一个 fixed `Tick` message、一个 native `controller` component、
+一个 periodic task、`inproc` profile 和 `linux-amd64` target。用户算法只写在 `app/`
+下；`flowrt/` 仍由 `prepare` / `build` 生成，可删除重建。`init` 不覆盖已存在的目标文件。
+
+当前 `flowrt init` 只开放 Rust 和 C++。`language = "c"` 已进入 RSDL / Contract IR 基础
+语义，但 C component 用户入口要等 C ABI v0 后续切片完成后再开放，因此
+`flowrt init --lang c` 会被 CLI 拒绝。
 
 ## 项目入口 `flowrt.toml`
 
