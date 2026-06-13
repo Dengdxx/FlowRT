@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -200,12 +201,39 @@ class Latest {
 };
 
 /**
+ * @brief generated shell 在 scheduler 线程提交输出时使用的 typed commit record。
+ *
+ * @tparam T 输出消息类型。
+ *
+ * record 保存 FlowRT task、port、payload 和调度时间上下文。真正写入哪个 backend route
+ * 由 generated shell 根据 `port` 或 route-specific closure 决定。
+ */
+template <typename T>
+struct OutputCommitRecord {
+    TaskId task;
+    std::string task_name;
+    std::string port;
+    T payload;
+    std::uint64_t published_at_ms{};
+    std::uint64_t tick_time_ms{};
+
+    /**
+     * @brief 用 route-specific closure 消费 payload 并提交。
+     */
+    template <typename Fn>
+    decltype(auto) commit_with(Fn &&fn) && {
+        return std::invoke(std::forward<Fn>(fn), std::move(payload), published_at_ms, tick_time_ms);
+    }
+};
+
+/**
  * @brief 组件输出端口的单样本写入句柄。
  *
  * @tparam T 输出消息类型。
  *
- * 用户回调通过 `write()` 设置本次输出。runtime shell 在回调返回后取走该值并发布到对应
- * channel；如果用户没有写入，则该端口本次 tick 不产生输出。
+ * 用户回调通过 `write()` 设置本次输出。generated shell 在回调返回后取走该值，只有
+ * task 返回 `Status::Ok` 时才由 scheduler 线程提交到对应 channel；如果用户没有写入，
+ * 该端口本次 tick 不产生输出。
  */
 template <typename T>
 class Output {
@@ -252,6 +280,32 @@ class Output {
         std::optional<T> value = std::move(value_);
         value_.reset();
         return value;
+    }
+
+    /**
+     * @brief 取走当前输出样本并附加 scheduler commit 所需上下文。
+     *
+     * @param task 产生该输出的 task id。
+     * @param task_name 产生该输出的 task 名称。
+     * @param port 输出端口名称。
+     * @param published_at_ms scheduler 决定发布输出的 runtime 毫秒时间。
+     * @param tick_time_ms 本次 task tick 对应的 runtime 毫秒时间。
+     * @return 样本存在时返回 commit record，否则返回空值。
+     */
+    std::optional<OutputCommitRecord<T>> take_commit_record(TaskId task, std::string task_name,
+                                                            std::string port,
+                                                            std::uint64_t published_at_ms,
+                                                            std::uint64_t tick_time_ms) {
+        auto value = take();
+        if (!value.has_value()) {
+            return std::nullopt;
+        }
+        return OutputCommitRecord<T>{.task = task,
+                                     .task_name = std::move(task_name),
+                                     .port = std::move(port),
+                                     .payload = std::move(*value),
+                                     .published_at_ms = published_at_ms,
+                                     .tick_time_ms = tick_time_ms};
     }
 
    private:

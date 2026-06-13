@@ -44,6 +44,86 @@ pub struct TaskRunResult {
     pub status: Status,
 }
 
+/// 单个 task 回调返回的状态和 task-local 输出集合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRunOutcome<O> {
+    /// 用户回调返回的 FlowRT 状态。
+    pub status: Status,
+    /// 回调结束后由 generated shell 收集的输出集合。
+    pub outputs: O,
+}
+
+impl<O> TaskRunOutcome<O> {
+    /// 构造一个带指定状态的 task 结果。
+    pub fn new(status: Status, outputs: O) -> Self {
+        Self { status, outputs }
+    }
+
+    /// 构造成功结果；scheduler 后续可以提交其中输出。
+    pub fn ok(outputs: O) -> Self {
+        Self::new(Status::Ok, outputs)
+    }
+
+    /// 构造重试结果；runtime 会丢弃其中输出。
+    pub fn retry(outputs: O) -> Self {
+        Self::new(Status::Retry, outputs)
+    }
+
+    /// 构造错误结果；runtime 会丢弃其中输出。
+    pub fn error(outputs: O) -> Self {
+        Self::new(Status::Error, outputs)
+    }
+}
+
+/// scheduler 线程可观察到的 task 执行结果。
+///
+/// `outputs` 只在 `status == Status::Ok` 时保留；非 `Ok` 或 panic 路径统一为 `None`，
+/// 防止 generated shell 误提交失败回调写入的样本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRunOutput<O> {
+    /// 被执行的 task id。
+    pub task: TaskId,
+    /// task 执行状态。
+    pub status: Status,
+    /// 可提交输出集合；只有成功 task 会保留。
+    pub outputs: Option<O>,
+}
+
+impl<O> TaskRunOutput<O> {
+    /// 从用户回调正常返回的结果构造 scheduler 可见结果。
+    pub fn from_outcome(task: TaskId, outcome: TaskRunOutcome<O>) -> Self {
+        let status = outcome.status;
+        let outputs = if status == Status::Ok {
+            Some(outcome.outputs)
+        } else {
+            None
+        };
+        Self {
+            task,
+            status,
+            outputs,
+        }
+    }
+
+    /// 构造不携带输出的结果，用于非 `Ok`、panic 或 worker 异常路径。
+    pub fn without_outputs(task: TaskId, status: Status) -> Self {
+        Self {
+            task,
+            status,
+            outputs: None,
+        }
+    }
+
+    /// 消费结果并返回可提交输出；非成功结果返回 `None`。
+    pub fn into_outputs_if_ok(self) -> Option<O> {
+        if self.status == Status::Ok {
+            self.outputs
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TaskState {
     spec: TaskSpec,
@@ -97,6 +177,11 @@ impl WorkerJob {
 struct TaskBatchState {
     remaining: usize,
     results: Vec<Option<TaskRunResult>>,
+}
+
+struct TaskOutputBatchState<O> {
+    remaining: usize,
+    results: Vec<Option<TaskRunOutput<O>>>,
 }
 
 struct WorkerPoolState {
@@ -527,6 +612,23 @@ impl DeterministicExecutor {
     }
 }
 
+fn record_task_output<O>(
+    state: &Arc<(Mutex<TaskOutputBatchState<O>>, Condvar)>,
+    index: usize,
+    result: TaskRunOutput<O>,
+) {
+    let (mutex, ready) = &**state;
+    let mut state = lock_recover(mutex);
+    if state.results[index].is_some() {
+        return;
+    }
+    state.results[index] = Some(result);
+    state.remaining = state.remaining.saturating_sub(1);
+    if state.remaining == 0 {
+        ready.notify_all();
+    }
+}
+
 impl ReadyBatch {
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty()
@@ -608,6 +710,86 @@ impl ReadyBatch {
             .collect()
     }
 
+    /// 通过 worker pool 执行 ready batch，并收集可提交输出。
+    ///
+    /// 该路径会把输出集合从 worker 线程交还 scheduler 线程，因此要求 `O: Send`。非
+    /// `Ok`、panic 或 worker completion 异常路径会记录状态但丢弃输出。
+    pub fn run_collect<O>(
+        self,
+        worker_pool: &WorkerPool,
+        run: impl Fn(TaskId) -> TaskRunOutcome<O> + Send + Sync + 'static,
+    ) -> Vec<TaskRunOutput<O>>
+    where
+        O: Send + 'static,
+    {
+        if self.tasks.is_empty() {
+            return Vec::new();
+        }
+
+        let task_count = self.tasks.len();
+        let state = Arc::new((
+            Mutex::new(TaskOutputBatchState {
+                remaining: task_count,
+                results: std::iter::repeat_with(|| None).take(task_count).collect(),
+            }),
+            Condvar::new(),
+        ));
+        let run = Arc::new(run);
+        let mut fallback = Vec::new();
+
+        for (index, task) in self.tasks.into_iter().enumerate() {
+            let batch_state = Arc::clone(&state);
+            let completion_state = Arc::clone(&state);
+            let run_fn = Arc::clone(&run);
+            let submitted = worker_pool.spawn_with_completion(
+                move || {
+                    let outcome = run_fn(task);
+                    let status = outcome.status;
+                    record_task_output(
+                        &batch_state,
+                        index,
+                        TaskRunOutput::from_outcome(task, outcome),
+                    );
+                    status
+                },
+                move |status| {
+                    record_task_output(
+                        &completion_state,
+                        index,
+                        TaskRunOutput::without_outputs(task, status),
+                    );
+                },
+            );
+
+            if submitted.is_none() {
+                fallback.push((index, task));
+            }
+        }
+
+        for (index, task) in fallback {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
+                .map(|outcome| TaskRunOutput::from_outcome(task, outcome))
+                .unwrap_or_else(|_| TaskRunOutput::without_outputs(task, Status::Error));
+            record_task_output(&state, index, result);
+        }
+
+        let (mutex, ready) = &*state;
+        let mut batch_state = lock_recover(mutex);
+        while batch_state.remaining != 0 {
+            batch_state = wait_recover(ready, batch_state);
+        }
+
+        batch_state
+            .results
+            .iter_mut()
+            .map(|result| {
+                result
+                    .take()
+                    .expect("ready batch output should be recorded")
+            })
+            .collect()
+    }
+
     /// 在当前 scheduler 线程内执行 ready batch。
     ///
     /// Rust 侧部分 backend（目前主要是 iox2）持有 thread-affine SDK handle，
@@ -621,6 +803,24 @@ impl ReadyBatch {
                 let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
                     .unwrap_or(Status::Error);
                 TaskRunResult { task, status }
+            })
+            .collect()
+    }
+
+    /// 在当前 scheduler 线程内执行 ready batch，并收集可提交输出。
+    ///
+    /// 该路径不要求输出集合实现 `Send`，适用于 thread-affine backend 或只在 scheduler
+    /// 线程内完成 commit 的 generated shell。非 `Ok` 和 panic 路径会丢弃输出。
+    pub fn run_local_collect<O>(
+        self,
+        mut run: impl FnMut(TaskId) -> TaskRunOutcome<O>,
+    ) -> Vec<TaskRunOutput<O>> {
+        self.tasks
+            .into_iter()
+            .map(|task| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
+                    .map(|outcome| TaskRunOutput::from_outcome(task, outcome))
+                    .unwrap_or_else(|_| TaskRunOutput::without_outputs(task, Status::Error))
             })
             .collect()
     }
@@ -769,8 +969,10 @@ fn wait_timeout_recover<'a, T>(
 mod tests {
     use super::*;
     use std::{
+        cell::Cell,
         future::Future,
         pin::Pin,
+        rc::Rc,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -1001,6 +1203,97 @@ mod tests {
     }
 
     #[test]
+    fn local_ready_batch_collects_outputs_without_send_bound_and_discards_non_ok() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let marker = Rc::new(Cell::new(0u32));
+        let results = executor.take_ready_batch().run_local_collect({
+            let marker = Rc::clone(&marker);
+            move |task| {
+                marker.set(marker.get() + 1);
+                if task == TaskId(1) {
+                    TaskRunOutcome::ok(Rc::clone(&marker))
+                } else {
+                    TaskRunOutcome::retry(Rc::clone(&marker))
+                }
+            }
+        });
+
+        assert_eq!(marker.get(), 2);
+        assert_eq!(results[0].task, TaskId(1));
+        assert_eq!(results[0].status, Status::Ok);
+        assert!(results[0].outputs.is_some());
+        assert_eq!(results[1].task, TaskId(2));
+        assert_eq!(results[1].status, Status::Retry);
+        assert!(results[1].outputs.is_none());
+    }
+
+    #[test]
+    fn worker_ready_batch_collects_outputs_and_keeps_result_order() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let worker_pool = WorkerPool::new(2);
+        let results = executor
+            .take_ready_batch()
+            .run_collect(&worker_pool, |task| {
+                let mut output = crate::Output::new();
+                output.write(task.0);
+                let record = output
+                    .take_commit_record(task, format!("task.{}", task.0), "value", 120, 100)
+                    .expect("task wrote output");
+                TaskRunOutcome::ok(vec![record])
+            });
+
+        assert_eq!(results[0].task, TaskId(1));
+        assert_eq!(results[0].status, Status::Ok);
+        assert_eq!(
+            results[0]
+                .outputs
+                .as_ref()
+                .map(|records| records[0].payload),
+            Some(1)
+        );
+        assert_eq!(results[1].task, TaskId(2));
+        assert_eq!(results[1].status, Status::Ok);
+        assert_eq!(
+            results[1]
+                .outputs
+                .as_ref()
+                .map(|records| records[0].payload),
+            Some(2)
+        );
+        assert_eq!(worker_pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
     fn parallel_ready_batch_keeps_same_lane_serial() {
         let mut executor = DeterministicExecutor::new(2);
         executor.add_lane(LaneId(1), LaneKind::Serial);
@@ -1160,6 +1453,54 @@ mod tests {
                     status: Status::Ok,
                 }
             ]
+        );
+        assert_eq!(worker_pool.shutdown(), Status::Error);
+    }
+
+    #[test]
+    fn worker_ready_batch_discards_output_when_task_panics() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        executor.add_task(TaskSpec {
+            id: TaskId(1),
+            lane: LaneId(1),
+            priority: 0,
+        });
+        executor.add_task(TaskSpec {
+            id: TaskId(2),
+            lane: LaneId(2),
+            priority: 0,
+        });
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        let worker_pool = WorkerPool::new(2);
+        let results = executor
+            .take_ready_batch()
+            .run_collect(&worker_pool, |task| {
+                let mut output = crate::Output::new();
+                output.write(task.0);
+                if task == TaskId(1) {
+                    panic!("task panicked after writing output");
+                }
+                let record = output
+                    .take_commit_record(task, format!("task.{}", task.0), "value", 120, 100)
+                    .expect("task wrote output");
+                TaskRunOutcome::ok(vec![record])
+            });
+
+        assert_eq!(results[0].task, TaskId(1));
+        assert_eq!(results[0].status, Status::Error);
+        assert!(results[0].outputs.is_none());
+        assert_eq!(results[1].task, TaskId(2));
+        assert_eq!(results[1].status, Status::Ok);
+        assert_eq!(
+            results[1]
+                .outputs
+                .as_ref()
+                .map(|records| records[0].payload),
+            Some(2)
         );
         assert_eq!(worker_pool.shutdown(), Status::Error);
     }

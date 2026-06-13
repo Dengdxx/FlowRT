@@ -48,7 +48,8 @@ pub use descriptor::{
 };
 pub use executor::{
     DeterministicExecutor, FutureExecutor, FutureHandle, LaneId, LaneKind, PeriodicSpec,
-    ReadyBatch, ScheduleEvent, ScheduleWaiter, TaskId, TaskRunResult, TaskSpec, WorkerPool,
+    ReadyBatch, ScheduleEvent, ScheduleWaiter, TaskId, TaskRunOutcome, TaskRunOutput,
+    TaskRunResult, TaskSpec, WorkerPool,
 };
 pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_tail_block};
 #[cfg(feature = "iox2")]
@@ -328,11 +329,39 @@ impl<'a, T> Latest<'a, T> {
 
 /// 组件输出端口的单样本写入句柄。
 ///
-/// 用户回调通过 `write()` 设置本次输出。runtime shell 在回调返回后取走该值并发布到对应
-/// channel；如果用户没有写入，则该端口本次 tick 不产生输出。
+/// 用户回调通过 `write()` 设置本次输出。generated shell 在回调返回后取走该值，只有
+/// task 返回 `Status::Ok` 时才由 scheduler 线程提交到对应 channel；如果用户没有写入，
+/// 该端口本次 tick 不产生输出。
 #[derive(Debug, Default)]
 pub struct Output<T> {
     value: Option<T>,
+}
+
+/// generated shell 在 scheduler 线程提交输出时使用的 typed commit record。
+///
+/// 该类型只保存 FlowRT 层的 task、port、payload 和调度时间上下文。真正写入哪个 backend
+/// route 由 generated shell 根据 `port` 或外层闭包决定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputCommitRecord<T> {
+    /// 产生该输出的 task id。
+    pub task: TaskId,
+    /// 产生该输出的 task 名称。
+    pub task_name: String,
+    /// 输出端口名称。
+    pub port: String,
+    /// 待发布 payload。
+    pub payload: T,
+    /// scheduler 决定发布输出的 runtime 毫秒时间。
+    pub published_at_ms: u64,
+    /// 本次 task tick 对应的 runtime 毫秒时间。
+    pub tick_time_ms: u64,
+}
+
+impl<T> OutputCommitRecord<T> {
+    /// 用 route-specific closure 消费 payload 并提交。
+    pub fn commit_with<R>(self, commit: impl FnOnce(T, u64, u64) -> R) -> R {
+        commit(self.payload, self.published_at_ms, self.tick_time_ms)
+    }
 }
 
 impl<T> Output<T> {
@@ -349,6 +378,25 @@ impl<T> Output<T> {
     /// 取走当前输出样本并清空句柄。
     pub fn take(&mut self) -> Option<T> {
         self.value.take()
+    }
+
+    /// 取走当前输出样本并附加 scheduler commit 所需上下文。
+    pub fn take_commit_record(
+        &mut self,
+        task: TaskId,
+        task_name: impl Into<String>,
+        port: impl Into<String>,
+        published_at_ms: u64,
+        tick_time_ms: u64,
+    ) -> Option<OutputCommitRecord<T>> {
+        self.take().map(|payload| OutputCommitRecord {
+            task,
+            task_name: task_name.into(),
+            port: port.into(),
+            payload,
+            published_at_ms,
+            tick_time_ms,
+        })
     }
 
     /// 借用当前输出样本。
@@ -382,6 +430,24 @@ mod tests {
         assert_eq!(output.as_ref(), Some(&7));
         assert_eq!(output.take(), Some(7));
         assert!(output.as_ref().is_none());
+    }
+
+    #[test]
+    fn output_can_form_commit_record_without_changing_write_api() {
+        let mut output = Output::new();
+        output.write(7u32);
+
+        let record = output
+            .take_commit_record(TaskId(42), "camera.step", "pose", 100, 90)
+            .expect("written output should form a commit record");
+
+        assert_eq!(record.task, TaskId(42));
+        assert_eq!(record.task_name, "camera.step");
+        assert_eq!(record.port, "pose");
+        assert_eq!(record.payload, 7);
+        assert_eq!(record.published_at_ms, 100);
+        assert_eq!(record.tick_time_ms, 90);
+        assert!(output.take().is_none());
     }
 
     #[test]

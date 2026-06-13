@@ -11,12 +11,13 @@
 #include <future>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
 #include <set>
-#include <memory>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace flowrt {
@@ -58,6 +59,74 @@ struct TaskRunResult {
     friend constexpr bool operator==(const TaskRunResult &, const TaskRunResult &) = default;
 };
 
+/**
+ * @brief 单个 task 回调返回的状态和 task-local 输出集合。
+ *
+ * @tparam Outputs generated shell 收集的输出集合类型。
+ */
+template <typename Outputs>
+struct TaskRunOutcome {
+    using outputs_type = Outputs;
+
+    Status status{Status::Ok};  ///< 用户回调返回的 FlowRT 状态。
+    Outputs outputs;            ///< 回调结束后由 generated shell 收集的输出集合。
+
+    /**
+     * @brief 构造成功结果；scheduler 后续可以提交其中输出。
+     */
+    static TaskRunOutcome ok(Outputs outputs) {
+        return TaskRunOutcome{.status = Status::Ok, .outputs = std::move(outputs)};
+    }
+
+    /**
+     * @brief 构造重试结果；runtime 会丢弃其中输出。
+     */
+    static TaskRunOutcome retry(Outputs outputs) {
+        return TaskRunOutcome{.status = Status::Retry, .outputs = std::move(outputs)};
+    }
+
+    /**
+     * @brief 构造错误结果；runtime 会丢弃其中输出。
+     */
+    static TaskRunOutcome error(Outputs outputs) {
+        return TaskRunOutcome{.status = Status::Error, .outputs = std::move(outputs)};
+    }
+};
+
+/**
+ * @brief scheduler 线程可观察到的 task 执行结果。
+ *
+ * @tparam Outputs generated shell 收集的输出集合类型。
+ *
+ * `outputs` 只在 `status == Status::Ok` 时保留；非 `Ok` 或 exception 路径统一为空，
+ * 防止 generated shell 误提交失败回调写入的样本。
+ */
+template <typename Outputs>
+struct TaskRunOutput {
+    TaskId task;                     ///< 被执行的 task id。
+    Status status{Status::Ok};       ///< task 执行状态。
+    std::optional<Outputs> outputs;  ///< 可提交输出集合；只有成功 task 会保留。
+
+    /**
+     * @brief 从用户回调正常返回的结果构造 scheduler 可见结果。
+     */
+    static TaskRunOutput from_outcome(TaskId task, TaskRunOutcome<Outputs> outcome) {
+        auto status = outcome.status;
+        std::optional<Outputs> outputs;
+        if (status == Status::Ok) {
+            outputs = std::move(outcome.outputs);
+        }
+        return TaskRunOutput{.task = task, .status = status, .outputs = std::move(outputs)};
+    }
+
+    /**
+     * @brief 构造不携带输出的结果，用于非 `Ok` 或 exception 路径。
+     */
+    static TaskRunOutput without_outputs(TaskId task, Status status) {
+        return TaskRunOutput{.task = task, .status = status, .outputs = std::nullopt};
+    }
+};
+
 enum class ScheduleEvent {
     Data,
     Timer,
@@ -79,14 +148,16 @@ class ScheduleWaiter {
         return state_->data_generation;
     }
 
-    [[nodiscard]] ScheduleEvent wait_until(std::optional<std::chrono::steady_clock::time_point> deadline,
-                                           const ShutdownToken &shutdown) {
+    [[nodiscard]] ScheduleEvent wait_until(
+        std::optional<std::chrono::steady_clock::time_point> deadline,
+        const ShutdownToken &shutdown) {
         return wait_until_after(data_generation(), deadline, shutdown);
     }
 
-    [[nodiscard]] ScheduleEvent wait_until_after(std::uint64_t seen_generation,
-                                                 std::optional<std::chrono::steady_clock::time_point> deadline,
-                                                 const ShutdownToken &shutdown) {
+    [[nodiscard]] ScheduleEvent wait_until_after(
+        std::uint64_t seen_generation,
+        std::optional<std::chrono::steady_clock::time_point> deadline,
+        const ShutdownToken &shutdown) {
         std::unique_lock lock(state_->mutex);
         constexpr auto shutdown_poll = std::chrono::milliseconds{50};
         while (true) {
@@ -139,13 +210,41 @@ class ReadyBatch {
     template <typename Fn>
     std::vector<TaskRunResult> run(WorkerPool &worker_pool, Fn &&fn) &&;
 
+    /**
+     * @brief 在当前 scheduler 线程内执行 ready batch。
+     */
+    template <typename Fn>
+    std::vector<TaskRunResult> run_local(Fn &&fn) &&;
+
+    /**
+     * @brief 通过 worker pool 执行 ready batch，并收集可提交输出。
+     *
+     * 输出集合会从 worker 线程交还 scheduler 线程；需要跨线程移动的约束由 generated
+     * shell 通过具体 `Outputs` 类型承担。非 `Ok` 和 exception 路径会丢弃输出。
+     */
+    template <typename Fn>
+    auto run_collect(WorkerPool &worker_pool, Fn &&fn)
+        && -> std::vector<TaskRunOutput<
+               typename std::invoke_result_t<std::decay_t<Fn> &, TaskId>::outputs_type>>;
+
+    /**
+     * @brief 在当前 scheduler 线程内执行 ready batch，并收集可提交输出。
+     *
+     * 该路径不复制 callable，也不要求输出集合满足跨线程移动约束。非 `Ok` 和 exception
+     * 路径会丢弃输出。
+     */
+    template <typename Fn>
+    auto run_local_collect(Fn &&fn)
+        && -> std::vector<TaskRunOutput<typename std::invoke_result_t<Fn &, TaskId>::outputs_type>>;
+
    private:
     std::vector<TaskId> tasks_;
 };
 
 class DeterministicExecutor {
    public:
-    explicit DeterministicExecutor(std::size_t worker_threads) : worker_threads_(std::max<std::size_t>(1, worker_threads)) {}
+    explicit DeterministicExecutor(std::size_t worker_threads)
+        : worker_threads_(std::max<std::size_t>(1, worker_threads)) {}
 
     [[nodiscard]] std::size_t worker_threads() const noexcept { return worker_threads_; }
 
@@ -369,7 +468,9 @@ class ScheduleAwaitable {
 
     [[nodiscard]] bool await_ready() const noexcept { return false; }
 
-    void await_suspend(std::coroutine_handle<> handle) const { executor_.post([handle]() mutable { handle.resume(); }); }
+    void await_suspend(std::coroutine_handle<> handle) const {
+        executor_.post([handle]() mutable { handle.resume(); });
+    }
 
     void await_resume() const noexcept {}
 
@@ -377,7 +478,9 @@ class ScheduleAwaitable {
     ManualExecutor &executor_;
 };
 
-inline ScheduleAwaitable schedule_on(ManualExecutor &executor) { return ScheduleAwaitable{executor}; }
+inline ScheduleAwaitable schedule_on(ManualExecutor &executor) {
+    return ScheduleAwaitable{executor};
+}
 
 class DetachedTask {
    public:
@@ -395,7 +498,8 @@ class WorkerPool {
     using Job = std::function<Status()>;
     using Completion = std::function<void(Status)>;
 
-    explicit WorkerPool(std::size_t worker_threads) : worker_threads_(std::max<std::size_t>(1, worker_threads)) {
+    explicit WorkerPool(std::size_t worker_threads)
+        : worker_threads_(std::max<std::size_t>(1, worker_threads)) {
         workers_.reserve(worker_threads_);
         for (std::size_t index = 0; index < worker_threads_; ++index) {
             workers_.emplace_back([this]() { worker_loop(); });
@@ -573,6 +677,114 @@ std::vector<TaskRunResult> ReadyBatch::run(WorkerPool &worker_pool, Fn &&fn) && 
     results.reserve(state->results.size());
     for (const auto &result : state->results) {
         results.push_back(*result);
+    }
+    return results;
+}
+
+template <typename Fn>
+std::vector<TaskRunResult> ReadyBatch::run_local(Fn &&fn) && {
+    std::vector<TaskRunResult> results;
+    results.reserve(tasks_.size());
+    for (const auto task : tasks_) {
+        Status status = Status::Error;
+        try {
+            status = std::invoke(fn, task);
+        } catch (...) {
+            status = Status::Error;
+        }
+        results.push_back(TaskRunResult{.task = task, .status = status});
+    }
+    return results;
+}
+
+template <typename Fn>
+auto ReadyBatch::run_collect(WorkerPool &worker_pool, Fn &&fn)
+    && -> std::vector<
+           TaskRunOutput<typename std::invoke_result_t<std::decay_t<Fn> &, TaskId>::outputs_type>> {
+    using FnType = std::decay_t<Fn>;
+    using Outcome = std::invoke_result_t<FnType &, TaskId>;
+    using Outputs = typename Outcome::outputs_type;
+
+    if (tasks_.empty()) {
+        return {};
+    }
+
+    struct BatchState {
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::size_t remaining{};
+        std::vector<std::optional<TaskRunOutput<Outputs>>> results;
+    };
+
+    auto state = std::make_shared<BatchState>();
+    state->remaining = tasks_.size();
+    state->results.resize(tasks_.size());
+    auto fn_shared = std::make_shared<FnType>(std::forward<Fn>(fn));
+    auto record_result = [state](std::size_t index, TaskRunOutput<Outputs> result) {
+        std::lock_guard lock(state->mutex);
+        if (state->results[index].has_value()) {
+            return;
+        }
+        state->results[index] = std::move(result);
+        if (state->remaining > 0U) {
+            --state->remaining;
+        }
+        if (state->remaining == 0U) {
+            state->ready.notify_all();
+        }
+    };
+
+    for (std::size_t index = 0; index < tasks_.size(); ++index) {
+        const auto task = tasks_[index];
+        auto submitted = worker_pool.spawn_with_completion(
+            [fn_shared, record_result, index, task]() {
+                auto outcome = std::invoke(*fn_shared, task);
+                const auto status = outcome.status;
+                record_result(index,
+                              TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
+                return status;
+            },
+            [record_result, index, task](Status status) {
+                record_result(index, TaskRunOutput<Outputs>::without_outputs(task, status));
+            });
+        if (submitted) {
+            continue;
+        }
+
+        try {
+            auto outcome = std::invoke(*fn_shared, task);
+            record_result(index, TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
+        } catch (...) {
+            record_result(index, TaskRunOutput<Outputs>::without_outputs(task, Status::Error));
+        }
+    }
+
+    std::unique_lock lock(state->mutex);
+    state->ready.wait(lock, [&state]() { return state->remaining == 0U; });
+
+    std::vector<TaskRunOutput<Outputs>> results;
+    results.reserve(state->results.size());
+    for (auto &result : state->results) {
+        results.push_back(std::move(*result));
+    }
+    return results;
+}
+
+template <typename Fn>
+auto ReadyBatch::run_local_collect(Fn &&fn)
+    && -> std::vector<TaskRunOutput<typename std::invoke_result_t<Fn &, TaskId>::outputs_type>> {
+    using Outcome = std::invoke_result_t<Fn &, TaskId>;
+    using Outputs = typename Outcome::outputs_type;
+
+    std::vector<TaskRunOutput<Outputs>> results;
+    results.reserve(tasks_.size());
+    for (const auto task : tasks_) {
+        try {
+            auto outcome = std::invoke(fn, task);
+            results.push_back(TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
+        } catch (...) {
+            results.push_back(TaskRunOutput<Outputs>::without_outputs(task, Status::Error));
+        }
     }
     return results;
 }
