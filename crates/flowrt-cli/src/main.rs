@@ -25,6 +25,7 @@ mod build_model;
 mod cache;
 mod frame_json;
 mod introspection;
+mod project_manifest;
 mod record;
 mod replay;
 mod toolchain;
@@ -71,14 +72,14 @@ struct Cli {
 enum Command {
     /// 解析、归一化并校验一个 RSDL 文件。
     Check {
-        /// .rsdl 文件路径。
-        rsdl: PathBuf,
+        /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
+        rsdl: Option<PathBuf>,
     },
 
     /// 准备 FlowRT 管理的应用产物。
     Prepare {
-        /// .rsdl 文件路径。
-        rsdl: PathBuf,
+        /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
+        rsdl: Option<PathBuf>,
 
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
@@ -103,8 +104,8 @@ enum Command {
 
     /// 准备并构建 FlowRT 管理的应用产物。
     Build {
-        /// .rsdl 文件路径。
-        rsdl: PathBuf,
+        /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
+        rsdl: Option<PathBuf>,
 
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
@@ -141,7 +142,7 @@ enum Command {
 
     /// 补全并预热 FlowRT 底层依赖缓存。
     Deps {
-        /// 可选 RSDL 文件路径；提供时按选定 profile 推导实际 backend feature。
+        /// 可选 RSDL 文件路径；省略时优先从 flowrt.toml 发现，仍找不到则进入无契约预热模式。
         rsdl: Option<PathBuf>,
 
         /// 显式选择要预热的 backend；省略时有 RSDL 则自动推导，无 RSDL 则预热 all。
@@ -173,7 +174,7 @@ enum Command {
 
     /// 预检 FlowRT 本机或交叉编译环境。
     Doctor {
-        /// 可选 .rsdl 文件路径；提供时会按选定 profile 的 Contract IR 检查 C++ pkg-config 依赖。
+        /// 可选 .rsdl 文件路径；省略时优先从 flowrt.toml 发现，仍找不到则只检查基础环境。
         rsdl: Option<PathBuf>,
 
         /// 目标 platform；例如 linux-arm64。省略时检查 native 基础环境。
@@ -241,8 +242,8 @@ enum Command {
 
     /// 准备并运行 FlowRT 管理的应用 crate。
     Run {
-        /// .rsdl 文件路径。
-        rsdl: PathBuf,
+        /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
+        rsdl: Option<PathBuf>,
 
         /// FlowRT 管理产物输出目录。
         #[arg(long, default_value = "flowrt")]
@@ -682,10 +683,21 @@ enum DepsBackend {
     All,
 }
 
+fn resolve_required_cli_rsdl(rsdl: Option<PathBuf>) -> Result<PathBuf> {
+    let cwd = env::current_dir().context("读取当前目录失败")?;
+    project_manifest::resolve_rsdl_arg(rsdl, &cwd)
+}
+
+fn resolve_optional_cli_rsdl(rsdl: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    let cwd = env::current_dir().context("读取当前目录失败")?;
+    project_manifest::resolve_optional_rsdl_arg(rsdl, &cwd)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { rsdl } => {
+            let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let contract = load_contract_from_rsdl(&rsdl)?;
             println!("OK {}", summary(&contract));
             println!("{}", handler_signature_summary(&contract));
@@ -698,6 +710,7 @@ fn main() -> Result<()> {
             boundary_input,
             boundary_output,
         } => {
+            let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let overlay =
@@ -724,6 +737,7 @@ fn main() -> Result<()> {
             boundary_input,
             boundary_output,
         } => {
+            let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let overlay =
@@ -769,6 +783,7 @@ fn main() -> Result<()> {
             build_mode,
             check,
         } => {
+            let rsdl = resolve_optional_cli_rsdl(rsdl)?;
             let features = deps_runtime_features(rsdl.as_deref(), profile.as_deref(), backend)?;
             let target_profile = resolve_deps_toolchain_profile(
                 rsdl.as_deref(),
@@ -821,6 +836,7 @@ fn main() -> Result<()> {
             }
         },
         Command::Doctor { rsdl, target } => {
+            let rsdl = resolve_optional_cli_rsdl(rsdl)?;
             run_doctor(rsdl.as_deref(), target.as_deref())?;
         }
         Command::External { command } => match command {
@@ -879,6 +895,7 @@ fn main() -> Result<()> {
             boundary_input,
             boundary_output,
         } => {
+            let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let overlay =
                 TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);

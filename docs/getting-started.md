@@ -35,10 +35,23 @@ flowrt deps --backend all
 日常项目内也可以按 RSDL 精确预热：
 
 ```bash
-flowrt deps examples/import_demo/rsdl/robot.rsdl
+cd examples/import_demo
+flowrt deps
 ```
 
 `flowrt deps` 只编译 FlowRT 底层依赖；`flowrt build` 只编译用户项目和生成 shell。默认构建模式是 release，用户二进制位于项目自己的 `flowrt/build/bin/release/`。
+
+FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
+
+```toml
+[project]
+main = "rsdl/robot.rsdl"
+```
+
+在含 `flowrt.toml` 的项目根或子目录中，`flowrt check`、`flowrt deps`、`flowrt prepare`、
+`flowrt build`、`flowrt run` 和 `flowrt doctor` 可以省略 RSDL 路径；CLI 会向上发现最近的
+manifest 并使用 `project.main`。显式传入 RSDL 路径时仍以显式路径为准。`flowrt.toml`
+只记录项目入口，不替代 RSDL 或 Contract IR 的语义事实源。
 
 交叉编译时，用 target platform 选择 toolchain profile：
 
@@ -76,7 +89,8 @@ toolchain profile 的 `sdk_overlays`、`cmake_prefix_paths`、`pkg_config_libdir
 先检查模块化 RSDL 示例：
 
 ```bash
-flowrt check examples/import_demo/rsdl/robot.rsdl
+cd examples/import_demo
+flowrt check
 ```
 
 预期输出类似：
@@ -97,7 +111,8 @@ graph default
 ## 生成产物
 
 ```bash
-flowrt prepare examples/import_demo/rsdl/robot.rsdl
+cd examples/import_demo
+flowrt prepare
 ```
 
 生成物写入示例项目下的 `flowrt/`：
@@ -110,7 +125,7 @@ examples/import_demo/flowrt/
   src/
 ```
 
-`flowrt/` 是 FlowRT 管理目录，可以删除后重新生成。用户算法代码应放在项目自己的 `src/` 目录，不放进生成目录。
+`flowrt/` 是 FlowRT 管理目录，可以删除后重新生成。用户算法代码应放在项目自己的 `app/` 目录，不放进生成目录。
 
 查看已落盘的 Contract IR 摘要：
 
@@ -121,15 +136,16 @@ flowrt inspect examples/import_demo/flowrt/contract/contract.ir.json
 ## 运行 Rust-only 示例
 
 ```bash
-flowrt deps examples/import_demo/rsdl/robot.rsdl
-flowrt build --launcher examples/import_demo/rsdl/robot.rsdl
-flowrt run examples/import_demo/rsdl/robot.rsdl --process main
+cd examples/import_demo
+flowrt deps
+flowrt build --launcher
+flowrt run --process main
 ```
 
 也可以通过生成的 supervisor 启动全部 process group：
 
 ```bash
-flowrt launch examples/import_demo/rsdl/robot.rsdl
+flowrt launch rsdl/robot.rsdl
 ```
 
 当前 `import_demo` 是 Rust-only inproc 示例，适合验证 RSDL import、Contract IR、Rust codegen 和 launch manifest 的基础闭环。
@@ -141,9 +157,10 @@ flowrt launch examples/import_demo/rsdl/robot.rsdl
 暴露可对比输出，因此不需要先搭完整 graph 也能测试组件 IO。
 
 ```bash
-flowrt deps examples/island_demo/rsdl/robot.rsdl --backend inproc
-flowrt build --launcher examples/island_demo/rsdl/robot.rsdl
-flowrt run examples/island_demo/rsdl/robot.rsdl --process main
+cd examples/island_demo
+flowrt deps --backend inproc
+flowrt build --launcher
+flowrt run --process main
 ```
 
 另开一个终端注入输入并观察输出：
@@ -151,9 +168,9 @@ flowrt run examples/island_demo/rsdl/robot.rsdl --process main
 ```bash
 flowrt pub sample_in \
   --json '{"seq": 7, "value": 21}' \
-  --image examples/island_demo/flowrt/selfdesc/selfdesc.json \
+  --image flowrt/selfdesc/selfdesc.json \
   --published-at-ms 1000
-flowrt echo result_out --image examples/island_demo/flowrt/selfdesc/selfdesc.json
+flowrt echo result_out --image flowrt/selfdesc/selfdesc.json
 ```
 
 `echo` 会按 self-description 把 canonical payload 格式化成字段，例如 `seq=7` 和
@@ -209,10 +226,11 @@ flowrt echo summary_out --image flowrt/selfdesc/selfdesc.json
 ## 运行 C++ only 示例
 
 ```bash
-flowrt deps examples/cpp_counter_demo/rsdl/robot.rsdl
-flowrt build --launcher examples/cpp_counter_demo/rsdl/robot.rsdl
-flowrt run examples/cpp_counter_demo/rsdl/robot.rsdl --process control
-flowrt launch examples/cpp_counter_demo/rsdl/robot.rsdl
+cd examples/cpp_counter_demo
+flowrt deps
+flowrt build --launcher
+flowrt run --process control
+flowrt launch rsdl/robot.rsdl
 ```
 
 C++ only contract 的普通 `build` / `run` 走 CMake app 路径，不依赖 Cargo app。需要 `launch` 时，先用 `build --launcher` 显式构建 generated supervisor，再由 `launch` 执行已有 supervisor。用户 C++ 组件通过生成接口和 `flowrt_user::build_app()` 注入。

@@ -75,6 +75,24 @@ fn command_build_parses_target_platform() {
 }
 
 #[test]
+fn cli_parses_project_commands_without_explicit_rsdl_path() {
+    for command in ["check", "prepare", "build", "run", "deps", "doctor"] {
+        let cli = Cli::try_parse_from(["flowrt", command])
+            .unwrap_or_else(|error| panic!("{command} should accept omitted RSDL: {error}"));
+
+        match (command, cli.command) {
+            ("check", Command::Check { .. })
+            | ("prepare", Command::Prepare { .. })
+            | ("build", Command::Build { .. })
+            | ("run", Command::Run { .. })
+            | ("deps", Command::Deps { .. })
+            | ("doctor", Command::Doctor { .. }) => {}
+            _ => panic!("{command} parsed into unexpected command"),
+        }
+    }
+}
+
+#[test]
 fn cli_parses_temporary_island_overlay_flags() {
     let cli = Cli::try_parse_from([
         "flowrt",

@@ -275,7 +275,10 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   创建现代项目骨架，`flowrt add component/module/message` 生成可填空用户实现骨架，
   `flowrt check` / `flowrt explain` 展示 component/task 用户 API、参数、输入输出、
   service/operation handle、trigger、lane 和 concurrency。结构诊断只面向现代
-  `app/` 布局，不为旧 `src/` 历史形态提供迁移层或提示。
+  `app/` 布局，不为旧 `src/` 历史形态提供迁移层或提示。未发布状态下已新增
+  `flowrt.toml` 项目入口 manifest：`[project].main` 只记录默认 RSDL 入口，
+  `check`、`prepare`、`build`、`run`、`deps` 和 `doctor` 省略路径时会从当前目录向上
+  发现 manifest；RSDL 和 Contract IR 仍是语义事实源。
 - `v0.11.0` 同时落地 C ABI v0 基础：C 侧事实源继续放
   `runtime/cpp/include/flowrt/abi.h`，只暴露 POD、固定宽度整数、borrowed
   string/bytes/frame view、状态码、错误码和 callback table；不暴露 C++/Rust 对象、
@@ -584,17 +587,17 @@ scripts/
 当前已实现的用户入口：
 
 ```bash
-flowrt check path/to/robot.rsdl
-flowrt prepare path/to/robot.rsdl
+flowrt check [path/to/robot.rsdl]
+flowrt prepare [path/to/robot.rsdl]
 flowrt deps [path/to/robot.rsdl]
 flowrt deps --backend all
 flowrt deps [path/to/robot.rsdl] --target linux-arm64
 flowrt doctor --target linux-arm64
-flowrt build path/to/robot.rsdl
-flowrt build path/to/robot.rsdl --target linux-arm64
-flowrt run path/to/robot.rsdl
-flowrt run path/to/robot.rsdl --process main
-flowrt run path/to/robot.rsdl --run-steps 5 --process main
+flowrt build [path/to/robot.rsdl]
+flowrt build [path/to/robot.rsdl] --target linux-arm64
+flowrt run [path/to/robot.rsdl]
+flowrt run [path/to/robot.rsdl] --process main
+flowrt run [path/to/robot.rsdl] --run-steps 5 --process main
 flowrt launch path/to/robot.rsdl
 flowrt list path/to/generated-app
 flowrt nodes path/to/generated-app
@@ -607,6 +610,10 @@ flowrt params get <instance.param> --image path/to/generated-app-or-selfdesc.jso
 flowrt params set <instance.param> <json-value> --image path/to/generated-app-or-selfdesc.json
 flowrt inspect flowrt/contract/contract.ir.json
 ```
+
+含 `flowrt.toml` 的项目中，`check`、`prepare`、`build`、`run`、`deps` 和 `doctor`
+可以省略 RSDL 路径。CLI 会使用最近父目录中的 `[project].main`；显式 RSDL 路径优先。
+`deps` 和 `doctor` 找不到 manifest 时仍保留无契约预热或基础环境预检模式。
 
 `prepare` / `build` / `run` / `launch` 支持 `--profile <name>`，用于显式选择 profile
 并按该 profile 生成或校验产物。省略参数时会先投影到 `default` profile 或首个

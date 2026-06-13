@@ -121,9 +121,10 @@ boundary endpoint，改回普通 `[[bind.dataflow]]`，并把 profile 切回 `st
 
 ```text
 my_robot/
+  flowrt.toml
   rsdl/
     robot.rsdl
-  src/
+  app/
     cpp/
       components.cpp
     rust/
@@ -137,11 +138,13 @@ my_robot/
 
 约定：
 
+- `flowrt.toml` 放项目入口，例如 `[project] main = "rsdl/robot.rsdl"`。
 - `rsdl/` 放系统契约。
-- `src/` 放用户业务算法。
+- `app/` 放用户业务算法。
 - `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑。
 - `external/` 可放本项目随包携带的 external package；系统级 external package 也可安装到 `/opt/flowrt/external/<package>`。
 
+`flowrt.toml` 只记录默认 RSDL 入口，不替代 RSDL 或 Contract IR 的语义事实源。
 `flowrt/` 删除后可以通过 `flowrt build` 重新生成。构建出的用户项目二进制位于当前项目自己的 `flowrt/build/bin/release/`；全局 cache 只用于复用底层依赖编译产物，不是应用部署事实源。
 
 ## 最小 RSDL
@@ -238,14 +241,14 @@ output = ["health"]
 检查契约：
 
 ```bash
-flowrt check rsdl/robot.rsdl
+flowrt check
 ```
 
 生成并构建应用：
 
 ```bash
-flowrt deps rsdl/robot.rsdl
-flowrt build --launcher rsdl/robot.rsdl
+flowrt deps
+flowrt build --launcher
 ```
 
 `flowrt deps` 负责补全并预热 FlowRT 底层依赖缓存。项目只使用单一 backend 时通常不需要显式指定；要一次性补全所有内置 backend，可以运行 `flowrt deps --backend all`。`flowrt build` 默认使用 release 构建，只编译用户项目和生成 shell，并把二进制写入 `flowrt/build/bin/release/`。
@@ -253,7 +256,7 @@ flowrt build --launcher rsdl/robot.rsdl
 运行单个 process group：
 
 ```bash
-flowrt run rsdl/robot.rsdl --process control
+flowrt run --process control
 ```
 
 由 generated supervisor 启动全部 process group：
