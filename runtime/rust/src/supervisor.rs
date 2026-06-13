@@ -67,11 +67,35 @@ impl Default for ReadinessConfig {
 pub struct LaunchManifest {
     pub package: String,
     pub ir_version: String,
+    #[serde(default)]
+    pub artifact: LaunchArtifact,
     pub profiles: Vec<String>,
     #[serde(default)]
     pub profile_modes: Vec<LaunchProfileMode>,
     pub targets: Vec<String>,
     pub graphs: Vec<LaunchGraph>,
+}
+
+/// manifest 中当前生成物的安全模式摘要。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchArtifact {
+    #[serde(default = "default_graph_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub temporary_island: bool,
+    #[serde(default)]
+    pub test_only: bool,
+}
+
+impl Default for LaunchArtifact {
+    fn default() -> Self {
+        Self {
+            mode: default_graph_mode(),
+            temporary_island: false,
+            test_only: false,
+        }
+    }
 }
 
 /// manifest 中 profile 的 graph 完整性模式摘要。
@@ -3032,6 +3056,37 @@ mod tests {
         let error = parse_launch_manifest(json).expect_err("unknown manifest fields must fail");
 
         assert!(error.contains("unknown field"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_launch_artifact_metadata() {
+        let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "artifact": {
+                "mode": "island",
+                "temporary_island": true,
+                "test_only": true
+            },
+            "profiles": ["dev"],
+            "targets": ["default"],
+            "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": []
+            }]
+        }"#;
+
+        let manifest = parse_launch_manifest(json).unwrap();
+
+        assert_eq!(manifest.artifact.mode, "island");
+        assert!(manifest.artifact.temporary_island);
+        assert!(manifest.artifact.test_only);
     }
 
     #[test]
