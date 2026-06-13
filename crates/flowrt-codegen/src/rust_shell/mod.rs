@@ -268,7 +268,7 @@ pub(crate) fn emit_rust_lib(include_runtime_shell: bool) -> String {
     let mut output = managed_header();
     if include_runtime_shell {
         output.push_str(
-            "\npub(crate) mod selfdesc;\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../src/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
+            "\npub(crate) mod selfdesc;\npub mod components;\npub mod messages;\npub mod runtime_shell;\npub mod supervisor;\n#[path = \"../../../app/rust/mod.rs\"]\npub mod user;\n\npub use runtime_shell::{run, run_process, App};\n",
         );
     } else {
         output.push_str("\npub(crate) mod selfdesc;\npub mod supervisor;\n");

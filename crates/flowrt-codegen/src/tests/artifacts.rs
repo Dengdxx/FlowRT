@@ -175,6 +175,11 @@ input = ["imu:Imu"]
     assert!(!rust_components.contains("pub trait Controller"));
     assert!(rust_components.contains("imu: flowrt::Latest<'_, Imu>"));
 
+    let rust_lib = artifact_content(&bundle, "rust/src/lib.rs");
+    assert!(rust_lib.contains("#[path = \"../../../app/rust/mod.rs\"]"));
+    let legacy_rust_user_module = ["../../../", "src", "/rust/mod.rs"].concat();
+    assert!(!rust_lib.contains(&legacy_rust_user_module));
+
     let rust_messages = artifact_content(&bundle, "rust/src/messages.rs");
     assert!(rust_messages.contains("impl Default for Imu"));
     assert!(rust_messages.contains("std::mem::zeroed()"));
@@ -445,7 +450,26 @@ channel = "latest"
     assert!(
         cmake.contains("target_link_libraries(robot_demo_cpp_shell PUBLIC robot_demo_flowrt_app)")
     );
+    assert!(cmake.contains("project(robot_demo_flowrt_app LANGUAGES C CXX)"));
+    assert!(cmake.contains("set(FLOWRT_USER_CPP_ROOT"));
+    assert!(cmake.contains("set(FLOWRT_USER_C_ROOT"));
+    assert!(cmake.contains("file(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS"));
+    assert!(
+        cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.cpp")
+            && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.cc")
+            && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.cxx")
+            && cmake.contains("${FLOWRT_USER_CPP_ROOT}/*.c")
+            && cmake.contains("${FLOWRT_USER_C_ROOT}/*.c")
+    );
     assert!(cmake.contains("FLOWRT_USER_CPP_SOURCES"));
+    assert!(cmake.contains(
+        "User C/C++ sources from app/cpp and app/c that implement flowrt_user::build_app"
+    ));
+    assert!(cmake.contains("target_include_directories(robot_demo_cpp_user PUBLIC"));
+    assert!(cmake.contains("${FLOWRT_USER_CPP_ROOT}"));
+    assert!(cmake.contains("${FLOWRT_USER_C_ROOT}"));
+    let legacy_cpp_user_root = ["../../", "src", "/cpp"].concat();
+    assert!(!cmake.contains(&legacy_cpp_user_root));
     assert!(cmake.contains("add_library(robot_demo_cpp_user STATIC"));
     assert!(cmake.contains("add_executable(robot_demo_cpp_app ../cpp/src/main.cpp)"));
 }

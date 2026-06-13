@@ -21,7 +21,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
     let has_ros2_bridge = contract_has_ros2_bridge(contract);
     let has_cpp_runtime = has_cpp_components || has_ros2_bridge;
     let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.22)\nproject({}_flowrt_app LANGUAGES CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
+        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.22)\nproject({}_flowrt_app LANGUAGES C CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
         package_name, package_name, package_name, package_name
     );
 
@@ -81,12 +81,15 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
                 "target_link_libraries({shell_target} PUBLIC {package_name}_flowrt_app)\n"
             ));
             output.push_str(
-                "\nfile(GLOB FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS \"${CMAKE_CURRENT_LIST_DIR}/../../src/cpp/*.cpp\")\nset(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING \"User C++ sources that implement flowrt_user::build_app\")\n",
+                "\nset(FLOWRT_USER_CPP_ROOT \"${CMAKE_CURRENT_LIST_DIR}/../../app/cpp\")\nset(FLOWRT_USER_C_ROOT \"${CMAKE_CURRENT_LIST_DIR}/../../app/c\")\nfile(GLOB_RECURSE FLOWRT_DEFAULT_USER_CPP_SOURCES CONFIGURE_DEPENDS\n    \"${FLOWRT_USER_CPP_ROOT}/*.cpp\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.cc\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.cxx\"\n    \"${FLOWRT_USER_CPP_ROOT}/*.c\"\n    \"${FLOWRT_USER_C_ROOT}/*.c\"\n)\nset(FLOWRT_USER_CPP_SOURCES ${FLOWRT_DEFAULT_USER_CPP_SOURCES} CACHE STRING \"User C/C++ sources from app/cpp and app/c that implement flowrt_user::build_app\")\n",
             );
             output.push_str("if(FLOWRT_USER_CPP_SOURCES)\n");
             let user_target = format!("{}_cpp_user", package_name.replace('-', "_"));
             output.push_str(&format!(
                 "    add_library({user_target} STATIC ${{FLOWRT_USER_CPP_SOURCES}})\n"
+            ));
+            output.push_str(&format!(
+                "    target_include_directories({user_target} PUBLIC ${{FLOWRT_USER_CPP_ROOT}} ${{FLOWRT_USER_C_ROOT}})\n"
             ));
             output.push_str(&format!(
                 "    if(FLOWRT_CXX_COMPILE_OPTIONS)\n        target_compile_options({user_target} PRIVATE ${{FLOWRT_CXX_COMPILE_OPTIONS}})\n    endif()\n"
