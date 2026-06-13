@@ -279,6 +279,9 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         "\n    channel {} -> {} type={} backend={}",
                         channel.from, channel.to, channel.message_type, channel.backend
                     ));
+                    if !channel.thread_affinity.is_empty() {
+                        output.push_str(&format!(" thread_affinity={}", channel.thread_affinity));
+                    }
                     if !channel.channel.is_empty() {
                         output.push_str(&format!(" kind={}", channel.channel));
                     }
@@ -2067,13 +2070,19 @@ pub(crate) fn live_status_summary_for_sockets(
                     ));
                 }
                 for route in &status.routes {
+                    let thread_affinity = enrichment
+                        .route_thread_affinity
+                        .get(&route_affinity_key(&route.from, &route.to))
+                        .map(String::as_str)
+                        .unwrap_or("none");
                     lines.push(format!(
-                        "route={} from={} to={} type={} backend={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} socket={}",
+                        "route={} from={} to={} type={} backend={} thread_affinity={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} socket={}",
                         route.name,
                         route.from,
                         route.to,
                         route.message_type,
                         route.backend,
+                        thread_affinity,
                         empty_as_none(&route.selected_reason),
                         route.published_count,
                         route.dropped_samples,
@@ -2346,6 +2355,7 @@ struct StatusEnrichment {
     artifact: flowrt_selfdesc::SelfDescriptionArtifact,
     graphs: Vec<GraphModeAssoc>,
     boundary_endpoints: Vec<BoundaryEndpointAssoc>,
+    route_thread_affinity: BTreeMap<String, String>,
     service_endpoints: BTreeMap<String, ServiceEndpointAssoc>,
     resource_descriptors: BTreeMap<String, SelfDescriptionResourceDescriptor>,
 }
@@ -2390,6 +2400,15 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
                 message_type: boundary.message_type.clone(),
             });
         }
+        for channel in &graph.channels {
+            if channel.thread_affinity.is_empty() {
+                continue;
+            }
+            enrichment.route_thread_affinity.insert(
+                route_affinity_key(&channel.from, &channel.to),
+                channel.thread_affinity.clone(),
+            );
+        }
         for ep in &graph.services {
             if !ep.client_instance.is_empty() && !ep.server_instance.is_empty() {
                 enrichment.service_endpoints.insert(
@@ -2427,6 +2446,10 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
         }
     }
     enrichment
+}
+
+fn route_affinity_key(from: &str, to: &str) -> String {
+    format!("{from}->{to}")
 }
 
 fn resource_descriptor_key(boundary: &str, resource: &str) -> String {

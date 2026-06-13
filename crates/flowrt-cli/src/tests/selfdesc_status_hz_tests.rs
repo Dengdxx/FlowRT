@@ -58,7 +58,9 @@ fn self_description_sidecar_drives_list_and_nodes_output() {
     "channels": [{
       "from": "source.imu",
       "to": "sink.imu",
-      "message_type": "Imu"
+      "message_type": "Imu",
+      "backend": "iox2",
+      "thread_affinity": "scheduler_local_commit"
     }]
   }],
   "message_abi": [{ "type_name": "Imu", "size_bytes": 8 }]
@@ -75,6 +77,7 @@ fn self_description_sidecar_drives_list_and_nodes_output() {
 
     assert!(list.contains("package=robot_demo"));
     assert!(list.contains("channel source.imu -> sink.imu type=Imu"));
+    assert!(list.contains("backend=iox2 thread_affinity=scheduler_local_commit"));
     assert!(list.contains("message Imu size=8"));
     assert!(nodes.contains("source process=main runtime=rust component=imu_sim"));
 
@@ -226,16 +229,38 @@ fn live_status_summary_reads_runtime_socket_handshake() {
 fn live_status_summary_displays_channel_input_and_route_diagnostics() {
     let root = temp_test_dir("live-status-runtime-diagnostics");
     let socket = root.join("main.sock");
+    let selfdesc_json = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "artifact": { "mode": "strict", "temporary_island": false, "test_only": false },
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "graphs": [{
+    "name": "default",
+    "mode": "strict",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.packet",
+      "to": "sink.packet",
+      "message_type": "Packet",
+      "backend": "zenoh",
+      "thread_affinity": "send_safe"
+    }]
+  }]
+}
+"#;
     let handshake = flowrt::IntrospectionHandshake {
         protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
         pid: 78,
         started_at_unix_ms: 1234,
-        self_description_hash: "feedface".to_string(),
+        self_description_hash: self_description_hash(selfdesc_json.as_bytes()),
         package: "robot_demo".to_string(),
         process: "main".to_string(),
         runtime: "rust".to_string(),
     };
     let state = flowrt::IntrospectionState::new();
+    state.set_self_description_json(selfdesc_json);
     state.register_route(flowrt::IntrospectionRouteStatus {
         name: "source.packet_to_sink.packet".to_string(),
         from: "source.packet".to_string(),
@@ -273,6 +298,7 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
     assert!(output.contains("type=Packet"));
     assert!(output.contains("route=source.packet_to_sink.packet"));
     assert!(output.contains("backend=zenoh"));
+    assert!(output.contains("thread_affinity=send_safe"));
     assert!(output.contains("selected_reason=variable_frame_auto_fallback"));
     assert!(output.contains("dropped_samples=1"));
     assert!(output.contains("backpressure=2"));

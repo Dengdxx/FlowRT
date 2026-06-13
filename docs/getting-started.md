@@ -321,6 +321,10 @@ flowrt params set --image examples/imu_demo_iox2/flowrt/selfdesc/selfdesc.json e
 
 ## 查看调度健康
 
+多 task app 可以用 `concurrency = "parallel"` 和显式 `lane` 表达可并发执行的任务。
+lane 是串行调度队列，不是线程；不同 lane 的 ready task 才可能被 worker 并发执行。
+输出提交采用 two-phase 模型：task 返回 `Ok` 后由 scheduler 提交，非 `Ok` 本次输出丢弃。
+
 `flowrt status` 在展示进程状态的同时，还会输出 task 级和 lane 级调度健康指标：
 
 ```bash

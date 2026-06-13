@@ -969,6 +969,14 @@ supervisor_process=control state=running pid=12345 restarts=0 ticks=1000 last_se
 
 runtime 启动时可以预注册 service endpoint，`status` 会输出每个 service 的运行态健康行，并通过 self-description 关联 client/server instance：
 
+dataflow route 行会展示 backend 选择、thread-affinity 和传输计数：
+
+```text
+route=source.packet_to_sink.packet from=source.packet to=sink.packet type=Packet backend=zenoh thread_affinity=send_safe selected_reason=profile_default published_count=100 dropped_samples=0 backpressure=0 overflow=0 last_publish_ms=1717800000000 last_error=none socket=/run/user/1000/flowrt/12345.sock
+```
+
+`thread_affinity=scheduler_local_commit` 表示 route 的 transport commit 留在 scheduler/local owner 线程执行；这不表示用户 task 被禁止并发。`status` 会优先从同一 runtime socket 的 self-description 补齐该字段，旧 runtime 或自描述不可用时显示 `thread_affinity=none`。
+
 ```text
 service=planner.plan_to_executor.execute client_instance=planner server_instance=executor ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock
 ```
@@ -1137,6 +1145,38 @@ output = ["slow"]
 ```
 
 多 task 共享同一个 component 实例。生成 shell 会按 task 的 `input` / `output` 子集分别调度同一个用户组件接口，并在 self-description 和 launch manifest 中保留 task name。
+
+### 并发、lane 和 worker
+
+component 和 task 的并发意图由 RSDL 明确声明：
+
+```toml
+[component.worker]
+language = "rust"
+concurrency = "parallel"
+
+[[instance.worker.task]]
+name = "fast_loop"
+trigger = "periodic"
+period_ms = 5
+lane = "fast_lane"
+concurrency = "parallel"
+
+[[instance.worker.task]]
+name = "slow_loop"
+trigger = "periodic"
+period_ms = 100
+lane = "slow_lane"
+concurrency = "parallel"
+```
+
+`exclusive` 是默认值，同一 instance 的 task 会落在该 instance 的串行 lane 上，保护同一个用户对象不被并发访问。只有 component 先声明 `concurrency = "parallel"`，task 才能声明或继承 `parallel`；Rust 生成接口会要求用户实现 `Send + Sync`，C++ 用户代码需要自行保证线程安全。
+
+lane 是调度串行队列，不是线程。不同 lane 的 ready task 可以被 worker 并行执行；同一 lane 一次只会 dispatch 一个 task。`worker_threads = 1` 时，`parallel` 声明仍合法，但运行时自然退化为串行执行。
+
+generated shell 使用 two-phase output commit：worker 只执行用户 task，并把 `Output<T>::write(...)` 写入 task-local buffer；scheduler 线程只在 task 返回 `Ok` 后按 ready batch canonical order 提交 output。`Retry`、`Error`、panic 或 C++ exception 都会丢弃本次 task output。
+
+backend thread-affinity 是 FlowRT 派生的 route metadata，不是用户配置。`iox2` route 标记为 `scheduler_local_commit`，表示 backend endpoint 留在 scheduler/local owner 线程提交；用户 task 仍可在不同 worker 上并发执行。`inproc` 和 `zenoh` 当前标记为 `send_safe`。
 
 ## 生成物边界
 

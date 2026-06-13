@@ -672,6 +672,15 @@ channel sample 隐式复制。
 
 ### 调度健康
 
+FlowRT 支持 component/task 级 `concurrency = "exclusive" | "parallel"`。默认
+`exclusive` 保护同一 instance 用户对象串行访问；显式 `parallel` 时，不同 lane 的 ready
+task 可以跨 worker 并发执行。同一 lane 仍是串行队列，lane 不是线程。
+
+generated shell 使用 two-phase output commit：worker 执行用户 task，scheduler 只在
+`Ok` 后按 deterministic ready order 提交 output。`Retry`、`Error`、panic 或 C++ exception
+不会发布本次 output。`iox2` route 的 transport commit 留在 scheduler/local owner 线程，
+用户 task 本身仍可并发运行。
+
 `flowrt status` 会展示 task 级和 lane 级调度健康指标：
 
 ```text
