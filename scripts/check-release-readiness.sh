@@ -35,7 +35,8 @@
 #       task timing context、status timing 和 C ABI layout
 #   19. README 安装示例版本是否与发布版本一致
 #   20. CONTEXT 当前 workspace 版本是否与发布版本一致
-#   21. tag 状态提示
+#   21. release candidate 门禁是否可触发且 tag release 是否强制检查同 SHA RC
+#   22. tag 状态提示
 #
 # 任何检查失败都会给出清晰错误信息并以非零状态退出。
 
@@ -146,7 +147,7 @@ printf '%s\n' '─────────────────────�
 
 # ── 1. 版本来源一致性 ────────────────────────────────────────
 
-printf '\n[1/21] 版本来源一致性\n'
+printf '\n[1/22] 版本来源一致性\n'
 
 check_version_in_file() {
     local label="$1"
@@ -213,7 +214,7 @@ fi
 
 # ── 2. CHANGELOG 版本段格式 ──────────────────────────────────
 
-printf '\n[2/21] CHANGELOG.md 版本段格式\n'
+printf '\n[2/22] CHANGELOG.md 版本段格式\n'
 
 changelog_heading="## ${expected_tag} -"
 if grep -qF "$changelog_heading" "$repo_root/CHANGELOG.md"; then
@@ -249,7 +250,7 @@ fi
 
 # ── 3. Release notes 抽取 ────────────────────────────────────
 
-printf '\n[3/21] Release notes 抽取\n'
+printf '\n[3/22] Release notes 抽取\n'
 
 extract_script="$repo_root/scripts/extract-release-notes.sh"
 if [[ ! -x "$extract_script" ]]; then
@@ -268,7 +269,7 @@ fi
 
 # ── 4. CI release job 版本校验覆盖 ───────────────────────────
 
-printf '\n[4/21] CI release job 版本校验覆盖\n'
+printf '\n[4/22] CI release job 版本校验覆盖\n'
 
 ci_file="$repo_root/.github/workflows/ci.yml"
 if [[ ! -f "$ci_file" ]]; then
@@ -310,7 +311,7 @@ fi
 
 # ── 5. v0.5.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[5/21] v0.5.0 focused CI gate 覆盖\n'
+printf '\n[5/22] v0.5.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.5.0 focused gate"
@@ -339,7 +340,7 @@ fi
 
 # ── 6. v0.6.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[6/21] v0.6.0 focused CI gate 覆盖\n'
+printf '\n[6/22] v0.6.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.6.0 focused gate"
@@ -374,7 +375,7 @@ fi
 
 # ── 7. v0.7.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[7/21] v0.7.0 focused CI gate 覆盖\n'
+printf '\n[7/22] v0.7.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.7.0 focused gate"
@@ -403,7 +404,7 @@ fi
 
 # ── 8. v0.8.0 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[8/21] v0.8.0 focused CI gate 覆盖\n'
+printf '\n[8/22] v0.8.0 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.0 focused gate"
@@ -452,7 +453,7 @@ fi
 
 # ── 9. v0.8.1 focused CI gate 覆盖 ───────────────────────────
 
-printf '\n[9/21] v0.8.1 focused CI gate 覆盖\n'
+printf '\n[9/22] v0.8.1 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.1 focused gate"
@@ -491,7 +492,7 @@ fi
 
 # ── 10. v0.8.3 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[10/21] v0.8.3 交叉编译 focused CI gate 覆盖\n'
+printf '\n[10/22] v0.8.3 交叉编译 focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.3 focused gate"
@@ -550,7 +551,7 @@ fi
 
 # ── 11. v0.8.6 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[11/21] v0.8.6 交叉 UX focused CI gate 覆盖\n'
+printf '\n[11/22] v0.8.6 交叉 UX focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.8.6 focused gate"
@@ -603,7 +604,7 @@ fi
 
 # ── 12. v0.9.0 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[12/21] v0.9.0 Island focused CI gate 覆盖\n'
+printf '\n[12/22] v0.9.0 Island focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.9.0 focused gate"
@@ -645,7 +646,7 @@ fi
 
 # ── 13. v0.9.1 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[13/21] v0.9.1 Island tooling focused CI gate 覆盖\n'
+printf '\n[13/22] v0.9.1 Island tooling focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.9.1 focused gate"
@@ -695,7 +696,7 @@ fi
 
 # ── 14. v0.9.2 focused CI gate 覆盖 ──────────────────────────
 
-printf '\n[14/21] v0.9.2 Island offline validation focused CI gate 覆盖\n'
+printf '\n[14/22] v0.9.2 Island offline validation focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.9.2 focused gate"
@@ -755,7 +756,7 @@ fi
 
 # ── 15. v0.10.2 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[15/21] v0.10.2 Concurrency focused CI gate 覆盖\n'
+printf '\n[15/22] v0.10.2 Concurrency focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.10.2 focused gate"
@@ -799,7 +800,7 @@ fi
 
 # ── 16. v0.12.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[16/21] v0.12.0 Authoring focused CI gate 覆盖\n'
+printf '\n[16/22] v0.12.0 Authoring focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.12.0 focused gate"
@@ -908,7 +909,7 @@ fi
 
 # ── 17. v0.13.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[17/21] v0.13.0 Robot Runtime Completion focused CI gate 覆盖\n'
+printf '\n[17/22] v0.13.0 Robot Runtime Completion focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.13.0 focused gate"
@@ -1019,7 +1020,7 @@ fi
 
 # ── 18. v0.14.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[18/21] v0.14.0 Realtime Scheduler focused CI gate 覆盖\n'
+printf '\n[18/22] v0.14.0 Realtime Scheduler focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在，无法检查 v0.14.0 focused gate"
@@ -1114,7 +1115,7 @@ fi
 
 # ── 19. README 安装示例版本 ──────────────────────────────────
 
-printf '\n[19/21] README.md 安装示例\n'
+printf '\n[19/22] README.md 安装示例\n'
 
 readme_file="$repo_root/README.md"
 if [[ -f "$readme_file" ]]; then
@@ -1137,7 +1138,7 @@ fi
 
 # ── 20. CONTEXT 当前状态版本 ────────────────────────────────
 
-printf '\n[20/21] CONTEXT.md 当前状态版本\n'
+printf '\n[20/22] CONTEXT.md 当前状态版本\n'
 
 context_file="$repo_root/CONTEXT.md"
 if [[ -f "$context_file" ]]; then
@@ -1153,9 +1154,45 @@ else
     fail "CONTEXT.md 不存在"
 fi
 
-# ── 21. Tag 与版本匹配（运行时检测） ────────────────────────
+# ── 21. Release candidate 门禁覆盖 ─────────────────────────
 
-printf '\n[21/21] Git tag 检查\n'
+printf '\n[21/22] Release candidate 门禁覆盖\n'
+
+release_candidate_script="$repo_root/scripts/check-release-candidate.sh"
+if [[ -x "$release_candidate_script" ]]; then
+    pass "release candidate 本地脚本存在且可执行"
+    require_file_text "release candidate 脚本支持触发远端 CI" \
+        "gh workflow run ci.yml" "$release_candidate_script"
+    require_file_text "release candidate 脚本支持等待远端 CI" \
+        "gh run watch" "$release_candidate_script"
+    require_file_text "release candidate 脚本校验远端分支 SHA" \
+        "远端分支尚未指向当前提交" "$release_candidate_script"
+else
+    fail "release candidate 本地脚本不存在或不可执行: $release_candidate_script"
+fi
+
+if [[ ! -f "$ci_file" ]]; then
+    fail "CI 配置不存在，无法检查 release candidate 门禁"
+else
+    require_ci_text "CI 支持 workflow_dispatch" \
+        "workflow_dispatch:" "$ci_file"
+    require_ci_text "CI 支持 release_candidate 输入" \
+        "release_candidate:" "$ci_file"
+    require_ci_text "CI 包含 Release Candidate Gate job" \
+        "release-candidate:" "$ci_file"
+    require_ci_text "Release Candidate Gate 不创建 GitHub Release" \
+        "release candidate passed" "$ci_file"
+    require_ci_text "tag release 校验同 SHA release candidate" \
+        "校验同 SHA release candidate" "$ci_file"
+    require_ci_text "tag release 查找 workflow_dispatch 成功 run" \
+        "event=workflow_dispatch&head_sha=\${GITHUB_SHA}&status=success" "$ci_file"
+    require_ci_text "tag release 要求 Release Candidate Gate job 成功" \
+        "Release Candidate Gate\" and .conclusion == \"success\"" "$ci_file"
+fi
+
+# ── 22. Tag 与版本匹配（运行时检测） ────────────────────────
+
+printf '\n[22/22] Git tag 检查\n'
 
 if git -C "$repo_root" tag -l "$expected_tag" | grep -q .; then
     info "tag $expected_tag 已存在"

@@ -3,6 +3,16 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: "运行 tag 前 release candidate gate，不创建 GitHub Release"
+        required: false
+        default: "false"
+      version:
+        description: "期望发布版本，例如 0.14.0"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -1323,6 +1333,116 @@ jobs:
           export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/ros2-lyrical-${{ matrix.deb_arch }}}"
           scripts/test-ros2-bridge-installed.sh --distro lyrical
 
+  release-candidate:
+    name: Release Candidate Gate
+    runs-on: ubuntu-latest
+    needs:
+      - guard-generated
+      - rust-fmt
+      - rust-test
+      - rust-clippy
+      - cpp-runtime
+      - v050-runtime-smoke
+      - v060-runtime-smoke
+      - v070-runtime-smoke
+      - v080-runtime-smoke
+      - v081-runtime-smoke
+      - v090-island-smoke
+      - v091-island-tooling-smoke
+      - v092-island-offline-validation-smoke
+      - v0102-concurrency-smoke
+      - v0120-authoring-smoke
+      - v0130-runtime-completion-smoke
+      - v0140-realtime-scheduler-smoke
+      - v083-toolchain-smoke
+      - cpp-zenoh-runtime
+      - package
+      - v083-cross-compile-smoke
+      - v086-cross-sdk-smoke
+      - demo-smoke
+      - ros2-jazzy-bridge
+      - ros2-lyrical-bridge
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_candidate == 'true'
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 下载 amd64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-amd64-deb
+          path: dist
+
+      - name: 下载 arm64 deb artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: flowrt-linux-arm64-deb
+          path: dist
+
+      - name: 校验 release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ github.event.inputs.version }}"
+          if [[ -z "$version" ]]; then
+            printf 'workflow_dispatch input version is required for release candidate\n' >&2
+            exit 1
+          fi
+          version="${version#v}"
+          tag="v${version}"
+
+          scripts/check-release-readiness.sh "$version"
+          scripts/extract-release-notes.sh "$tag" CHANGELOG.md > dist/release-notes.md
+          if [[ ! -s dist/release-notes.md ]]; then
+            printf 'release notes for %s are empty\n' "$tag" >&2
+            exit 1
+          fi
+
+          mapfile -t debs < <(find dist -maxdepth 1 -type f -name 'flowrt_*_*.deb' | sort)
+          if [[ "${#debs[@]}" -ne 2 ]]; then
+            printf 'release candidate expected 2 deb artifacts, found %s\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+
+          found_amd64=0
+          found_arm64=0
+          for deb in "${debs[@]}"; do
+            deb_version="$(dpkg-deb -f "$deb" Version)"
+            deb_arch="$(dpkg-deb -f "$deb" Architecture)"
+            if [[ "$deb_version" != "$version" ]]; then
+              printf '%s version %s does not match expected %s\n' "$deb" "$deb_version" "$version" >&2
+              exit 1
+            fi
+            case "$deb_arch" in
+              amd64) found_amd64=1 ;;
+              arm64) found_arm64=1 ;;
+              *)
+                printf '%s has unexpected architecture %s\n' "$deb" "$deb_arch" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if [[ "$found_amd64" -ne 1 || "$found_arm64" -ne 1 ]]; then
+            printf 'release candidate artifacts must include amd64 and arm64 deb packages\n' >&2
+            exit 1
+          fi
+
+          (cd dist && sha256sum flowrt_*_*.deb > SHA256SUMS)
+          if [[ ! -s dist/SHA256SUMS ]]; then
+            printf 'SHA256SUMS is empty\n' >&2
+            exit 1
+          fi
+
+          printf 'release candidate passed: version=%s sha=%s run_id=%s\n' \
+            "$version" "$GITHUB_SHA" "$GITHUB_RUN_ID"
+
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
@@ -1360,6 +1480,41 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v6
+
+      - name: 校验同 SHA release candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          mapfile -t run_ids < <(
+            gh api \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&head_sha=${GITHUB_SHA}&status=success&per_page=100" \
+              --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id'
+          )
+
+          for run_id in "${run_ids[@]}"; do
+            job_url="$(
+              gh api \
+                "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+                --paginate \
+                --jq '.jobs[] | select(.name == "Release Candidate Gate" and .conclusion == "success") | .html_url' |
+                sed -n '1p'
+            )"
+            if [[ -n "$job_url" ]]; then
+              printf 'found successful release candidate for sha=%s: %s\n' "$GITHUB_SHA" "$job_url"
+              exit 0
+            fi
+          done
+
+          printf 'missing successful release candidate for tag %s at sha %s\n' \
+            "$GITHUB_REF_NAME" "$GITHUB_SHA" >&2
+          printf 'run this before pushing the tag:\n' >&2
+          printf '  scripts/check-release-candidate.sh %s --dispatch --wait --ref <release-branch>\n' \
+            "$version" >&2
+          exit 1
 
       - name: 下载 amd64 deb artifact
         uses: actions/download-artifact@v7

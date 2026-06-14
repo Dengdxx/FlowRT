@@ -963,10 +963,14 @@ amd64 deb，安装后运行 `flowrt doctor --target linux-arm64` 和真实
 `flowrt build --target linux-arm64` C++ demo，并用 ELF header 验证输出为 AArch64。
 package job 分别上传 `flowrt-linux-amd64-deb` 和 `flowrt-linux-arm64-deb` artifact。
 demo smoke 先安装同架构 deb，再用安装后的 `flowrt deps` 预热依赖，然后用
-`flowrt ...` 跑示例。推送 `v*` tag 且全部 gate 成功后，release job 会下载两种架构
-deb artifact，从 `CHANGELOG.md` 对应版本段抽取 release notes，并创建 GitHub Release
-上传 `flowrt_*_amd64.deb`、`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。tag 版本必须
-匹配根 `Cargo.toml` 的 workspace version。
+`flowrt ...` 跑示例。正式推送 `v*` tag 前必须先通过 `workflow_dispatch` 运行
+release candidate gate：它复用完整发布同款 CI 和 deb artifact，校验版本、
+release notes 与 `SHA256SUMS`，但不创建 GitHub Release。tag release job 会查询同一
+`GITHUB_SHA` 是否已有成功的 `Release Candidate Gate`，没有则拒绝发布。推送 `v*`
+tag 且全部 gate 成功后，release job 会下载两种架构 deb artifact，从 `CHANGELOG.md`
+对应版本段抽取 release notes，并创建 GitHub Release 上传 `flowrt_*_amd64.deb`、
+`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。tag 版本必须匹配根 `Cargo.toml` 的
+workspace version。
 
 `v0.5.0 Runtime Smoke` focused gate 使用 `-j1` 聚焦 supervisor readiness/resource、
 远程参数控制面、status/hz 健康展示、scheduler health 和 runtime introspection 相关
@@ -989,14 +993,17 @@ Operation lifecycle、diagnostics/status/record、bundle/deploy/doctor/cross 和
 generated scheduler 非阻塞主路径、status/introspection timing 字段和 C ABI task
 timing layout。
 发布前应运行
-`scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
-release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 /
-v0.9.x / v0.10.2 / v0.12.0 / v0.13.0 / v0.14.0 focused gate 覆盖状态。
+`scripts/check-release-readiness.sh <version>` 和
+`scripts/check-release-candidate.sh <version> --dispatch --wait --ref <release-branch>`；
+脚本会汇总版本来源、CHANGELOG 段、release notes 抽取、release candidate 门禁和
+v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 / v0.9.x / v0.10.2 /
+v0.12.0 / v0.13.0 / v0.14.0 focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、
 C ABI layout、C codegen adapter、C reference stub、C v0 fail-fast，以及
 `import_demo`、`cpp_counter_demo` 和 `c_counter_demo` 的普通 build/run 路径都有验证入口。
-当前发布由推送对应 `vX.Y.Z` tag 触发 GitHub Release。
+当前发布先由 release candidate 验证分支 HEAD，再由推送对应 `vX.Y.Z` tag 触发 GitHub
+Release。
 
 workflow 对 Rust 构建产物、FlowRT deps cache 和必要的公开 SDK overlay 做分层缓存；
 release artifact、release notes 和 deb 成品仍每次从源码重建。多架构 CI 的首要目标是保证发布包能在 amd64 与 arm64 原生

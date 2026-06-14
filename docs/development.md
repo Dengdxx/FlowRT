@@ -230,7 +230,13 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 
 ## 发布流程
 
-FlowRT 的 release notes 来自 `CHANGELOG.md`。推送 `v*` tag 后，CI 会等待
+FlowRT 的 release notes 来自 `CHANGELOG.md`。正式推送 `v*` tag 前，必须先对待发布
+分支 HEAD 运行 release candidate gate：该 gate 通过 `workflow_dispatch` 跑完整发布同款
+CI、下载 amd64/arm64 deb artifact、校验版本、release notes 和校验和，但不创建 GitHub
+Release。tag release job 会查询同一 `GITHUB_SHA` 是否已有成功的 `Release Candidate
+Gate`，没有则拒绝发布。
+
+推送 `v*` tag 后，CI 会等待
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
 amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused smoke、
 amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integration
@@ -343,16 +349,19 @@ version=X.Y.Z
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
+scripts/check-release-candidate.sh "$version" --dispatch --wait --ref <release-branch>
 ```
 
 要求：
 
 - `CHANGELOG.md` 必须包含对应二级标题，格式为 `## vX.Y.Z - YYYY-MM-DD`。
 - tag 名必须是 `vX.Y.Z`，且版本号必须与根 `Cargo.toml` 的 workspace version 一致。
+- tag 只能指向已经通过同 SHA release candidate 的提交；不要绕过
+  `scripts/check-release-candidate.sh ... --dispatch --wait` 直接推 tag。
 - 对应版本段不能为空；CI 会把该段原样作为 GitHub Release 说明。
 - `## 未发布` 只放尚未发布的后续变化；正式发版前把本次条目移入版本段。
 
-创建并推送 tag：
+release candidate 通过后，创建并推送 tag：
 
 ```bash
 git tag -a "$tag" -m "$tag"
