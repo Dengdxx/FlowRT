@@ -475,39 +475,6 @@ pub(crate) fn emit_rust_service_scheduler_registration(
     (lane_output, task_output, task_id)
 }
 
-/// 生成 scheduler dispatch 中的 service task case。
-pub(crate) fn rust_service_dispatch_cases(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    task_id_offset: usize,
-    lane_ids: &BTreeMap<String, usize>,
-) -> (String, usize) {
-    let plans = service_runtime_plans(contract, graph);
-    if plans.is_empty() {
-        return (String::new(), task_id_offset);
-    }
-
-    let mut output = String::new();
-    let mut task_id = task_id_offset;
-
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        task_id += 1;
-        let fn_name = service_step_fn_name(plan);
-        let lane_id = lane_ids[&service_server_lane(plan)];
-        output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => {{\n\
-                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
-                 flowrt::TaskRunOutcome::new(app.{fn_name}(&introspection_state, &mut local_health_map), Vec::new())\n\
-             }},\n"
-        ));
-    }
-
-    (output, task_id)
-}
-
 /// 生成 service request arrival wake 检查代码。
 pub(crate) fn emit_rust_service_wake_checks(
     contract: &ContractIr,

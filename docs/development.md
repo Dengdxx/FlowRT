@@ -175,7 +175,10 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 - `v0.14.0` 的 scheduler 改造必须把 admission 和 task completion 解耦：scheduler 线程负责
   ready 判定、admission、backend commit、introspection 和 deterministic output commit；
   worker 只运行用户 task，并通过 completion queue 或等价通知交还结果。不得因为保持
-  deterministic commit order 而同步等待长任务完成，也不得回退成临时 polling。Rust/C++
+  deterministic commit order 而同步等待长任务完成，也不得回退成临时 polling。Rust
+  generated scheduler 进入 worker 前必须先在 scheduler 线程读取输入 owned snapshot，
+  worker closure 只捕获用户组件 handle、参数/输入快照和上下文元数据，不捕获整个
+  `App` 或 backend endpoint；iox2 endpoint 必须保持 scheduler-local。Rust/C++
   runtime、generated shell、status、record 和 `flowrt::Context` 必须使用同一套 runtime
   scheduling time 字段：`scheduled_time_ms`、`observed_time_ms`、`lateness_ms`、
   `missed_periods`、`overrun` 和相邻运行 `dt`。这些字段只表达 runtime 观察到的调度

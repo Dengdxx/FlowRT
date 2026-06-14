@@ -183,10 +183,11 @@ fn rust_scheduler_dispatches_service_tasks() {
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     assert!(
         shell.contains(
-            "app.step_service_plan_svc_plan(&introspection_state, &mut local_health_map)"
-        ),
+            "let __flowrt_service_server_plan_svc_plan = app.service_server_plan_svc_plan.clone();"
+        ) && shell.contains("__flowrt_service_server_plan_svc_plan.process_pending_requests();"),
         "scheduler must dispatch service task.\n\n{shell}"
     );
+    assert!(!shell.contains("app.step_service_plan_svc_plan(&introspection_state"));
     assert!(
         shell.contains("let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId("),
         "scheduler dispatch must mark the active lane for same-lane service deadlock detection.\n\n{shell}"

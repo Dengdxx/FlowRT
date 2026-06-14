@@ -29,6 +29,110 @@ pub(super) struct RustStepEmission<'a> {
     pub outgoing_boundary_indices: &'a BTreeMap<(String, String), Vec<usize>>,
 }
 
+pub(super) fn rust_task_component_capture_name(instance: &InstanceIr) -> String {
+    format!(
+        "__flowrt_component_{}",
+        crate::snake_identifier(&instance.name)
+    )
+}
+
+pub(super) fn rust_task_params_capture_name(instance: &InstanceIr) -> String {
+    format!(
+        "__flowrt_params_{}",
+        crate::snake_identifier(&instance.name)
+    )
+}
+
+pub(super) fn rust_task_input_value_name(input: &str) -> String {
+    format!("__flowrt_input_{}_value", crate::snake_identifier(input))
+}
+
+pub(super) fn rust_task_input_stale_name(input: &str) -> String {
+    format!("__flowrt_input_{}_stale", crate::snake_identifier(input))
+}
+
+pub(super) fn rust_task_input_revision_name(input: &str) -> String {
+    format!("__flowrt_input_{}_revision", crate::snake_identifier(input))
+}
+
+pub(super) fn rust_task_service_client_capture_name(
+    plan: &crate::runtime_plan::ServiceRuntimePlan,
+) -> String {
+    format!(
+        "__flowrt_{}",
+        crate::snake_identifier(&service_emit::client_field_name(plan))
+    )
+}
+
+pub(super) fn rust_task_operation_client_capture_name(
+    plan: &crate::runtime_plan::OperationRuntimePlan,
+) -> String {
+    format!(
+        "__flowrt_{}",
+        crate::snake_identifier(&operation_emit::operation_client_field_name(plan))
+    )
+}
+
+fn rust_collect_task_parameters(emission: &RustStepEmission<'_>, task: &TaskIr) -> Vec<String> {
+    let instance = crate::instance_by_name(emission.graph, &task.instance.name);
+    let component = component_by_name(emission.contract, &instance.component.name);
+    let mut params = Vec::new();
+    params.push(format!(
+        "{}: {}",
+        rust_task_component_capture_name(instance),
+        super::rust_component_storage_type(component)
+    ));
+
+    let service_plans =
+        crate::runtime_plan::service_runtime_plans(emission.contract, emission.graph);
+    for plan in crate::runtime_plan::client_service_plans(&service_plans, &instance.name) {
+        params.push(format!(
+            "{}: {}",
+            rust_task_service_client_capture_name(plan),
+            service_emit::client_handle_name(plan)
+        ));
+    }
+    let operation_plans =
+        crate::runtime_plan::operation_runtime_plans(emission.contract, emission.graph);
+    for plan in crate::runtime_plan::client_operation_plans(&operation_plans, &instance.name) {
+        params.push(format!(
+            "{}: {}",
+            rust_task_operation_client_capture_name(plan),
+            operation_emit::operation_client_handle_name(plan)
+        ));
+    }
+    if !component.params.is_empty() {
+        params.push(format!(
+            "{}: std::sync::Arc<std::sync::Mutex<{}Params>>",
+            rust_task_params_capture_name(instance),
+            crate::component_rust_name(component)
+        ));
+    }
+
+    let task_inputs = task
+        .inputs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for input in &component.inputs {
+        if !task_inputs.contains(input.name.as_str()) {
+            continue;
+        }
+        let ty = rust_type(&input.ty);
+        params.push(format!(
+            "{}: Option<{ty}>",
+            rust_task_input_value_name(&input.name)
+        ));
+        params.push(format!("{}: bool", rust_task_input_stale_name(&input.name)));
+        params.push(format!(
+            "{}: u64",
+            rust_task_input_revision_name(&input.name)
+        ));
+    }
+
+    params
+}
+
 pub(super) fn emit_rust_app_step(
     emission: &RustStepEmission<'_>,
     order: &[&InstanceIr],
@@ -43,10 +147,18 @@ pub(super) fn emit_rust_app_step(
     } else {
         "flowrt::Status"
     };
+    output.push_str("    #[allow(dead_code)]\n");
+    output.push_str(&format!("    fn {function_name}(\n"));
+    if collect_outputs {
+        for param in rust_collect_task_parameters(emission, task_filter.expect("task exists")) {
+            output.push_str(&format!("        {param},\n"));
+        }
+    } else {
+        output.push_str("        &self,\n");
+    }
     output.push_str(&format!(
-        "    #[allow(dead_code)]\n    fn {function_name}(\n        &self,\n        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n        health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>,\n    ) -> flowrt::Status {{\n",
+        "        tick: usize,\n        _tick_context: &mut flowrt::Context,\n        introspection_state: &flowrt::IntrospectionState,\n        scheduler_events: &flowrt::ScheduleWaiter,\n        health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>,\n    ) -> {return_type} {{\n",
     ));
-    output = output.replace(") -> flowrt::Status {", &format!(") -> {return_type} {{"));
     output.push_str("        let _ = tick;\n");
     output.push_str("        let _ = introspection_state;\n");
     output.push_str("        let _ = scheduler_events;\n");
@@ -54,10 +166,9 @@ pub(super) fn emit_rust_app_step(
     if runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
     }
-    output.push_str(&adapt_rust_status_returns_for_collect(
-        &emit_rust_ros2_boundary_input_pump(emission, order),
-        collect_outputs,
-    ));
+    if !collect_outputs {
+        output.push_str(&emit_rust_ros2_boundary_input_pump(emission, order));
+    }
     if collect_outputs {
         output.push_str(
             "        let mut __flowrt_output_commits: Vec<FlowrtOutputCommit> = Vec::new();\n",
@@ -105,17 +216,21 @@ pub(super) fn emit_rust_app_step(
                     {
                         let bind = &emission.binds[*bind_index];
                         let task_health = task_health_name(task);
-                        output.push_str(&indent_generated_block(
-                            &adapt_rust_status_returns_for_collect(
+                        if collect_outputs {
+                            output.push_str(&indent_generated_block(
+                                &rust_input_from_snapshot(input),
+                                true,
+                            ));
+                        } else {
+                            output.push_str(&indent_generated_block(
                                 &super::backend_emit::runtime_channel_read(
                                     input,
                                     bind,
                                     task.trigger == flowrt_ir::TriggerKind::OnMessage,
                                 ),
-                                collect_outputs,
-                            ),
-                            true,
-                        ));
+                                true,
+                            ));
+                        }
                         output.push_str(&indent_generated_block(
                             &super::introspection_emit::rust_input_read_record_for_bind(
                                 task, input, bind,
@@ -139,17 +254,21 @@ pub(super) fn emit_rust_app_step(
                         .get(&(instance.name.clone(), input.name.clone()))
                     {
                         let bridge = &emission.bridges[*bridge_index];
-                        output.push_str(&indent_generated_block(
-                            &adapt_rust_status_returns_for_collect(
+                        if collect_outputs {
+                            output.push_str(&indent_generated_block(
+                                &rust_input_from_snapshot(input),
+                                true,
+                            ));
+                        } else {
+                            output.push_str(&indent_generated_block(
                                 &super::backend_emit::bridge_runtime_channel_read(
                                     input,
                                     bridge,
                                     task.trigger == flowrt_ir::TriggerKind::OnMessage,
                                 ),
-                                collect_outputs,
-                            ),
-                            true,
-                        ));
+                                true,
+                            ));
+                        }
                         output.push_str(&indent_generated_block(
                             &super::introspection_emit::rust_input_read_record_for_bridge(
                                 task, input, bridge,
@@ -161,10 +280,17 @@ pub(super) fn emit_rust_app_step(
                         .get(&(instance.name.clone(), input.name.clone()))
                     {
                         let boundary = &emission.boundaries[*boundary_index];
-                        output.push_str(&indent_generated_block(
-                            &rust_boundary_input_read(input, boundary),
-                            true,
-                        ));
+                        if collect_outputs {
+                            output.push_str(&indent_generated_block(
+                                &rust_input_from_snapshot(input),
+                                true,
+                            ));
+                        } else {
+                            output.push_str(&indent_generated_block(
+                                &rust_boundary_input_read(input, boundary),
+                                true,
+                            ));
+                        }
                     } else {
                         output.push_str(&format!(
                             "            let {input} = flowrt::Latest::new(None, false);\n",
@@ -222,35 +348,58 @@ pub(super) fn emit_rust_app_step(
             let service_plans =
                 crate::runtime_plan::service_runtime_plans(emission.contract, emission.graph);
             for plan in crate::runtime_plan::client_service_plans(&service_plans, &instance.name) {
-                call_args.push(format!("&self.{}", service_emit::client_field_name(plan)));
+                if collect_outputs {
+                    call_args.push(format!("&{}", rust_task_service_client_capture_name(plan)));
+                } else {
+                    call_args.push(format!("&self.{}", service_emit::client_field_name(plan)));
+                }
             }
             let operation_plans =
                 crate::runtime_plan::operation_runtime_plans(emission.contract, emission.graph);
             for plan in
                 crate::runtime_plan::client_operation_plans(&operation_plans, &instance.name)
             {
-                call_args.push(format!(
-                    "&self.{}",
-                    operation_emit::operation_client_field_name(plan)
-                ));
+                if collect_outputs {
+                    call_args.push(format!(
+                        "&{}",
+                        rust_task_operation_client_capture_name(plan)
+                    ));
+                } else {
+                    call_args.push(format!(
+                        "&self.{}",
+                        operation_emit::operation_client_field_name(plan)
+                    ));
+                }
             }
             for input in &component.inputs {
                 call_args.push(input.name.clone());
             }
             if !component.params.is_empty() {
-                call_args.push(format!(
-                    "&self.{}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner())",
-                    instance.name
-                ));
+                if collect_outputs {
+                    call_args.push(format!(
+                        "&{}.lock().unwrap_or_else(|poisoned| poisoned.into_inner())",
+                        rust_task_params_capture_name(instance)
+                    ));
+                } else {
+                    call_args.push(format!(
+                        "&self.{}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner())",
+                        instance.name
+                    ));
+                }
             }
             for port in &component.outputs {
                 call_args.push(format!("&mut {}", port.name));
             }
-            let on_tick_call = super::rust_component_method_call(
-                component,
-                &instance.name,
-                &format!("on_tick({})", call_args.join(", ")),
-            );
+            let method_call = format!("on_tick({})", call_args.join(", "));
+            let on_tick_call = if collect_outputs {
+                super::rust_component_method_call_for_receiver(
+                    component,
+                    &rust_task_component_capture_name(instance),
+                    &method_call,
+                )
+            } else {
+                super::rust_component_method_call(component, &instance.name, &method_call)
+            };
             if collect_outputs {
                 output.push_str(&format!(
                     "{body_indent}match {on_tick_call} {{\n{body_inner_indent}flowrt::Status::Ok => {{}}\n{body_inner_indent}flowrt::Status::Retry => return flowrt::TaskRunOutcome::retry(Vec::new()),\n{body_inner_indent}flowrt::Status::Error => return flowrt::TaskRunOutcome::error(Vec::new()),\n{body_indent}}}\n",
@@ -691,6 +840,18 @@ fn rust_boundary_input_read(input: &PortIr, boundary: &BoundaryRuntimePlan) -> S
         input = input.name,
         field = boundary.field_name,
         revision = revision,
+    )
+}
+
+fn rust_input_from_snapshot(input: &PortIr) -> String {
+    let revision = super::backend_emit::input_revision_local(input);
+    format!(
+        "        let {input} = flowrt::Latest::new({value}.as_ref(), {stale});\n        let {revision} = {snapshot_revision};\n",
+        input = input.name,
+        value = rust_task_input_value_name(&input.name),
+        stale = rust_task_input_stale_name(&input.name),
+        revision = revision,
+        snapshot_revision = rust_task_input_revision_name(&input.name),
     )
 }
 

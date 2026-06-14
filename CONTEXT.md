@@ -25,6 +25,10 @@ temporary island 的 simulated clock 仍保持确定性，fixture `at_ms` / `pub
 Rust/C++ live status、结构化 diagnostics 和 recorder event 已接入 task/lane timing，
 会展示 inflight、scheduled/observed time、lateness、missed periods、overrun、
 backpressure、run/success/failure counters 和连续失败计数。
+Rust generated scheduler 不再把整个 `App` 捕获进 worker closure：scheduler 线程先从
+inproc/iox2/zenoh/boundary 输入读取 owned snapshot，再把用户组件 handle、参数快照和
+输入快照送入 worker；output commit 仍回到 scheduler 线程执行。这样 iox2 endpoint
+保持 scheduler-local 线程亲和，不需要 unsafe `Send/Sync` 包装。
 
 `v0.14.0` 明确不承诺硬实时；不实现 sensor timestamp、sensor event-time、clock
 domain、PTP、NTP、跨机器 exact sync 或 approx sync，也不把多传感器同步策略塞进

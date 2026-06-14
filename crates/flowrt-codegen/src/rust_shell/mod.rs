@@ -407,12 +407,22 @@ pub(crate) fn rust_component_method_call(
     instance_name: &str,
     method_call: &str,
 ) -> String {
+    rust_component_method_call_for_receiver(
+        component,
+        &format!("self.{instance_name}"),
+        method_call,
+    )
+}
+
+pub(crate) fn rust_component_method_call_for_receiver(
+    component: &ComponentIr,
+    receiver: &str,
+    method_call: &str,
+) -> String {
     if rust_component_is_parallel(component) {
-        format!("self.{instance_name}.as_ref().as_ref().{method_call}")
+        format!("{receiver}.as_ref().as_ref().{method_call}")
     } else {
-        format!(
-            "self.{instance_name}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_call}"
-        )
+        format!("{receiver}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_call}")
     }
 }
 

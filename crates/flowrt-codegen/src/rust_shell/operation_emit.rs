@@ -488,37 +488,6 @@ pub(crate) fn emit_rust_operation_tick_driver_state(
     output
 }
 
-pub(crate) fn rust_operation_dispatch_cases(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    task_id_offset: usize,
-    lane_ids: &BTreeMap<String, usize>,
-) -> (String, usize) {
-    let plans = operation_runtime_plans(contract, graph);
-    if plans.is_empty() {
-        return (String::new(), task_id_offset);
-    }
-
-    let mut output = String::new();
-    let mut task_id = task_id_offset;
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        task_id += 1;
-        let lane_id = lane_ids[&operation_server_lane(plan)];
-        output.push_str(&format!(
-            "                flowrt::TaskId({task_id}) => {{\n\
-                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n\
-                 flowrt::TaskRunOutcome::new(app.{fn_name}(&introspection_state, &mut local_health_map), Vec::new())\n\
-             }},\n",
-            fn_name = operation_step_fn_name(plan),
-        ));
-    }
-
-    (output, task_id)
-}
-
 pub(crate) fn emit_rust_operation_wake_checks(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -579,7 +548,7 @@ pub(crate) fn operation_client_field_name(plan: &OperationRuntimePlan) -> String
     )
 }
 
-fn operation_start_server_field_name(plan: &OperationRuntimePlan) -> String {
+pub(crate) fn operation_start_server_field_name(plan: &OperationRuntimePlan) -> String {
     format!(
         "operation_start_server_{}_{}",
         crate::snake_identifier(&plan.server_instance),
@@ -587,7 +556,7 @@ fn operation_start_server_field_name(plan: &OperationRuntimePlan) -> String {
     )
 }
 
-fn operation_cancel_server_field_name(plan: &OperationRuntimePlan) -> String {
+pub(crate) fn operation_cancel_server_field_name(plan: &OperationRuntimePlan) -> String {
     format!(
         "operation_cancel_server_{}_{}",
         crate::snake_identifier(&plan.server_instance),
@@ -595,7 +564,7 @@ fn operation_cancel_server_field_name(plan: &OperationRuntimePlan) -> String {
     )
 }
 
-fn operation_status_server_field_name(plan: &OperationRuntimePlan) -> String {
+pub(crate) fn operation_status_server_field_name(plan: &OperationRuntimePlan) -> String {
     format!(
         "operation_status_server_{}_{}",
         crate::snake_identifier(&plan.server_instance),

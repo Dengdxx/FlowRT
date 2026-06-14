@@ -236,6 +236,20 @@ worker_threads = 4
     ));
     assert!(rust_shell.contains("worker_pool.submit_collect(admission.task"));
     assert!(rust_shell.contains("scheduler.complete_task(task_result.task)"));
+    assert!(!rust_shell.contains("let app = self.clone();"));
+    assert!(!rust_shell.contains("let app = app.clone();"));
+    assert!(!rust_shell.contains("app.step_task_camera_main"));
+    assert!(!rust_shell.contains("app.step_task_processor_main"));
+    assert!(rust_shell.contains("let __flowrt_component_camera = app.camera.clone();"));
+    assert!(rust_shell.contains("let __flowrt_component_processor = app.processor.clone();"));
+    assert!(rust_shell.contains(
+        "let (__flowrt_input_frame_value, __flowrt_input_frame_stale, __flowrt_input_frame_revision)"
+    ));
+    assert!(rust_shell.contains("cached_latest_at(tick_time_ms)"));
+    assert!(rust_shell.contains("Self::step_task_camera_main(__flowrt_component_camera"));
+    assert!(rust_shell.contains(
+        "Self::step_task_processor_main(__flowrt_component_processor, __flowrt_input_frame_value"
+    ));
     assert!(rust_shell.contains("flowrt::Context::with_timing(flowrt::TaskTiming"));
     assert!(rust_shell.contains("pending_task_admissions.insert(admission.task, admission);"));
     assert!(rust_shell.contains("pending_task_admissions.remove(&task_result.task)"));
@@ -1355,7 +1369,14 @@ backend = "zenoh"
     assert!(rust_shell.contains("app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).set_schedule_waiter(scheduler_events.clone());"));
     assert!(rust_shell.contains("let _ = app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).receive_latest_at(tick_time_ms);"));
     assert!(
-        sink_step.contains("let sample = __flowrt_bind_0_guard.cached_latest_at(tick_time_ms);")
+        rust_shell.contains(
+            "let __flowrt_sample_snapshot_view = __flowrt_bind_0_snapshot_guard.cached_latest_at(tick_time_ms);"
+        )
+    );
+    assert!(
+        sink_step.contains(
+            "let sample = flowrt::Latest::new(__flowrt_input_sample_value.as_ref(), __flowrt_input_sample_stale);"
+        )
     );
     assert!(!sink_step.contains("receive_latest_at(tick_time_ms)"));
 }
