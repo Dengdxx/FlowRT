@@ -1630,3 +1630,85 @@ overflow = "block"
     assert!(run_loop.contains("if (task_result.status == flowrt::Status::Error)"));
     assert!(!run_loop.contains("if (task_status != flowrt::Status::Ok)"));
 }
+
+#[test]
+fn cpp_output_commits_use_unique_payload_names_for_fanout_targets() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "fanout_demo"
+rsdl_version = "0.1"
+
+[component.source]
+language = "cpp"
+output = ["sample:u32"]
+
+[component.left_sink]
+language = "cpp"
+input = ["sample:u32"]
+
+[component.right_sink]
+language = "cpp"
+input = ["sample:u32"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 1
+output = ["sample"]
+
+[instance.left_sink]
+component = "left_sink"
+
+[instance.left_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.right_sink]
+component = "right_sink"
+
+[instance.right_sink.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "left_sink.sample"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "source.sample"
+to = "right_sink.sample"
+channel = "latest"
+
+[[boundary.output]]
+name = "sample_out"
+port = "source.sample"
+type = "u32"
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    let source_step = generated_function_block(cpp_shell, "App::step_task_source_main");
+
+    assert_eq!(
+        source_step
+            .matches("flowrt_output_commits.emplace_back")
+            .count(),
+        3
+    );
+    assert_eq!(source_step.matches("auto payload = *value;").count(), 0);
+    assert!(source_step.contains("auto flowrt_payload_0 = *value;"));
+    assert!(source_step.contains("auto flowrt_payload_1 = *value;"));
+    assert!(source_step.contains("auto flowrt_payload_2 = *value;"));
+}

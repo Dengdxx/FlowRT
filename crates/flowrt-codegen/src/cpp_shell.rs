@@ -1687,6 +1687,7 @@ fn emit_cpp_app_step(
                 } else {
                     body_indent.to_string()
                 };
+                let mut commit_index = 0usize;
                 output.push_str(&format!(
                     "{publish_indent}if (const auto* value = {local}.as_ref()) {{\n",
                     local = output_local
@@ -1695,7 +1696,9 @@ fn emit_cpp_app_step(
                     let bind = &emission.binds[bind_index];
                     let task_health = cpp_task_health_name(task);
                     let write_code = if collect_outputs {
-                        cpp_runtime_channel_commit_with_health(bind, &task_health)
+                        let payload = format!("flowrt_payload_{commit_index}");
+                        commit_index += 1;
+                        cpp_runtime_channel_commit_with_health(bind, &task_health, &payload)
                     } else {
                         cpp_runtime_channel_write_with_health(bind, &task_health)
                     };
@@ -1707,7 +1710,9 @@ fn emit_cpp_app_step(
                 for bridge_index in bridge_outgoing {
                     let bridge = &emission.bridges[bridge_index];
                     let write_code = if collect_outputs {
-                        cpp_bridge_runtime_channel_commit(bridge)
+                        let payload = format!("flowrt_payload_{commit_index}");
+                        commit_index += 1;
+                        cpp_bridge_runtime_channel_commit(bridge, &payload)
                     } else {
                         cpp_bridge_runtime_channel_write(bridge)
                     };
@@ -1719,7 +1724,9 @@ fn emit_cpp_app_step(
                 for boundary_index in boundary_outgoing {
                     let boundary = &emission.boundaries[boundary_index];
                     let write_code = if collect_outputs {
-                        cpp_boundary_output_commit(boundary)
+                        let payload = format!("flowrt_payload_{commit_index}");
+                        commit_index += 1;
+                        cpp_boundary_output_commit(boundary, &payload)
                     } else {
                         cpp_boundary_output_write(boundary)
                     };
@@ -2858,6 +2865,7 @@ fn cpp_runtime_channel_write_with_health(bind: &BindRuntimePlan, task_health_nam
 fn cpp_runtime_channel_commit_with_health(
     bind: &BindRuntimePlan,
     task_health_name: &str,
+    payload_name: &str,
 ) -> String {
     let body = cpp_runtime_channel_write_inner(bind, Some(task_health_name))
         .replace(
@@ -2871,7 +2879,7 @@ fn cpp_runtime_channel_commit_with_health(
         "/*health_map*/"
     };
     format!(
-        "        auto payload = *value;\n        flowrt_output_commits.emplace_back([payload, tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& {health_arg}) mutable {{\n            const auto* value = &payload;\n{body}            return flowrt::Status::Ok;\n        }});\n"
+        "        auto {payload_name} = *value;\n        flowrt_output_commits.emplace_back([{payload_name} = std::move({payload_name}), tick_time_ms](App& app, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& {health_arg}) mutable {{\n            const auto* value = &{payload_name};\n{body}            return flowrt::Status::Ok;\n        }});\n"
     )
 }
 
@@ -2916,9 +2924,9 @@ fn cpp_bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
     )
 }
 
-fn cpp_bridge_runtime_channel_commit(bridge: &BridgeRuntimePlan) -> String {
+fn cpp_bridge_runtime_channel_commit(bridge: &BridgeRuntimePlan, payload_name: &str) -> String {
     format!(
-        "        auto payload = *value;\n        flowrt_output_commits.emplace_back([payload, tick_time_ms](App& app, flowrt::IntrospectionState& /*introspection_state*/, flowrt::ScheduleWaiter& /*scheduler_events*/, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {{\n            const auto* value = &payload;\n            if (const auto status = status_from_push_result(app.{field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n                return status;\n            }}\n            return flowrt::Status::Ok;\n        }});\n",
+        "        auto {payload_name} = *value;\n        flowrt_output_commits.emplace_back([{payload_name} = std::move({payload_name}), tick_time_ms](App& app, flowrt::IntrospectionState& /*introspection_state*/, flowrt::ScheduleWaiter& /*scheduler_events*/, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {{\n            const auto* value = &{payload_name};\n            if (const auto status = status_from_push_result(app.{field}_.publish_at(*value, tick_time_ms)); status != flowrt::Status::Ok) {{\n                return status;\n            }}\n            return flowrt::Status::Ok;\n        }});\n",
         field = bridge.field_name
     )
 }
@@ -2972,9 +2980,9 @@ fn cpp_boundary_output_write(boundary: &BoundaryRuntimePlan) -> String {
     )
 }
 
-fn cpp_boundary_output_commit(boundary: &BoundaryRuntimePlan) -> String {
+fn cpp_boundary_output_commit(boundary: &BoundaryRuntimePlan, payload_name: &str) -> String {
     format!(
-        "        auto payload = *value;\n        flowrt_output_commits.emplace_back([payload, tick_time_ms](App& app, flowrt::IntrospectionState& /*introspection_state*/, flowrt::ScheduleWaiter& /*scheduler_events*/, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {{\n            const auto* value = &payload;\n            app.{field}_.publish_at(*value, tick_time_ms);\n            return flowrt::Status::Ok;\n        }});\n",
+        "        auto {payload_name} = *value;\n        flowrt_output_commits.emplace_back([{payload_name} = std::move({payload_name}), tick_time_ms](App& app, flowrt::IntrospectionState& /*introspection_state*/, flowrt::ScheduleWaiter& /*scheduler_events*/, std::map<std::string, flowrt::IntrospectionTaskHealth>& /*health_map*/) mutable {{\n            const auto* value = &{payload_name};\n            app.{field}_.publish_at(*value, tick_time_ms);\n            return flowrt::Status::Ok;\n        }});\n",
         field = boundary.field_name,
     )
 }
