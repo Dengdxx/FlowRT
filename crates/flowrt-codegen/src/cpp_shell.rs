@@ -221,7 +221,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     if contract_has_c_components(contract) {
         output.push_str("#include <iostream>\n");
     }
-    output.push_str("#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <deque>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -2064,6 +2064,11 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         output.push_str(&format!(
             "    scheduler.add_task(flowrt::TaskSpec{{.id = flowrt::TaskId{{{task_id}}}, .lane = {lane_id}, .priority = {priority}}});\n"
         ));
+        if let Some(deadline_ms) = task.deadline_ms {
+            output.push_str(&format!(
+                "    scheduler.set_task_deadline_ms(flowrt::TaskId{{{task_id}}}, std::uint64_t{{{deadline_ms}}});\n"
+            ));
+        }
         if task.trigger == flowrt_ir::TriggerKind::Periodic {
             output.push_str(&format!(
                 "    scheduler.add_periodic(flowrt::PeriodicSpec{{.task = flowrt::TaskId{{{task_id}}}, .period = std::chrono::milliseconds{{{}}}}});\n    scheduler.wake(flowrt::TaskId{{{task_id}}});\n",
@@ -2110,6 +2115,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     ));
     let task_health_init = emit_cpp_task_health_init(&tasks);
     let clock_source = cpp_scheduler_clock_source(run.contract);
+    let task_clock_source = cpp_task_clock_source_expr(run.contract);
     output.push_str(
         "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n",
     );
@@ -2117,8 +2123,11 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "    const auto clock_source = std::string_view{{{}}};\n",
         cpp_string_literal(clock_source)
     ));
+    output.push_str(&format!(
+        "    const auto task_clock_source = {task_clock_source};\n    flowrt::WorkerCompletionQueue<std::vector<FlowrtOutputCommit>> task_completion_queue;\n    task_completion_queue.set_wake_callback([&scheduler_events]() {{ scheduler_events.notify_data(); }});\n    std::deque<flowrt::TaskId> pending_task_order;\n    std::map<flowrt::TaskId, flowrt::TaskRunOutput<std::vector<FlowrtOutputCommit>>> pending_task_results;\n    std::mutex task_health_mutex;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> task_health_from_workers;\n    std::map<flowrt::TaskId, std::uint64_t> task_last_scheduled_time_ms;\n    std::map<flowrt::TaskId, std::uint64_t> task_last_observed_time_ms;\n"
+    ));
     output.push_str(
-        "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        if (const auto data_time_ms = scheduler_events.take_data_time_ms()) {\n            scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);\n        }\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
+        "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty())) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        if (const auto data_time_ms = scheduler_events.take_data_time_ms()) {\n            scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);\n        }\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
     );
     output.push_str(&task_health_init);
     output.push_str(&emit_cpp_apply_pending_params_for_order(
@@ -2179,7 +2188,20 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(
-        "            auto batch_health_map = health_map;\n            std::mutex batch_health_mutex;\n            auto ready_batch = scheduler.take_ready_batch();\n            const auto task_statuses = std::move(ready_batch).run_collect(worker_pool, [this, &lifecycle_context, &introspection_state, &scheduler_events, &batch_health_map, &batch_health_mutex, tick_time_ms](flowrt::TaskId task) {\n                auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                auto merge_local_health = [&batch_health_map, &batch_health_mutex](std::map<std::string, flowrt::IntrospectionTaskHealth>&& local_health_map) {\n                    std::lock_guard<std::mutex> lock(batch_health_mutex);\n                    for (auto &[name, health] : local_health_map) {\n                        batch_health_map.insert_or_assign(name, std::move(health));\n                    }\n                };\n                switch (task.value) {\n",
+        "            for (auto task_result : task_completion_queue.drain_completed()) {\n                pending_task_results.insert_or_assign(task_result.task, std::move(task_result));\n            }\n            {\n                std::lock_guard<std::mutex> lock(task_health_mutex);\n                for (auto &[name, health] : task_health_from_workers) {\n                    health_map.insert_or_assign(name, std::move(health));\n                }\n                task_health_from_workers.clear();\n            }\n            auto ready_batch = scheduler.take_ready_batch();\n            const auto submitted_task_count = ready_batch.size();\n            for (const auto admission : ready_batch.admissions()) {\n                const auto scheduled_delta_ms = [&]() -> std::uint64_t {\n                    const auto [it, inserted] = task_last_scheduled_time_ms.insert_or_assign(admission.task, admission.scheduled_time_ms);\n                    return inserted || admission.scheduled_time_ms < it->second ? 0U : admission.scheduled_time_ms - it->second;\n                }();\n                const auto observed_delta_ms = [&]() -> std::uint64_t {\n                    const auto [it, inserted] = task_last_observed_time_ms.insert_or_assign(admission.task, admission.observed_time_ms);\n                    return inserted || admission.observed_time_ms < it->second ? 0U : admission.observed_time_ms - it->second;\n                }();\n                const auto submitted = worker_pool.submit_collect(admission.task, task_completion_queue, [this, &introspection_state, &scheduler_events, &task_health_mutex, &task_health_from_workers, admission, scheduled_delta_ms, observed_delta_ms, task_clock_source, tick_base, tick_time_ms]() {\n                    auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                    const auto [task_name, task_trigger] = [&]() -> std::pair<std::string_view, std::string_view> {\n                        switch (admission.task.value) {\n",
+    );
+    for (index, task) in tasks.iter().enumerate() {
+        let task_id = index + 1;
+        let task_name = cpp_task_timing_name(task);
+        let trigger = cpp_trigger_name(task.trigger);
+        output.push_str(&format!(
+            "                            case {task_id}: return {{{}, {}}};\n",
+            cpp_string_literal(&task_name),
+            cpp_string_literal(trigger)
+        ));
+    }
+    output.push_str(
+        "                            default: return {\"__flowrt_hidden\", \"on_message\"};\n                        }\n                    }();\n                    auto local_context = flowrt::Context::with_timing(flowrt::TaskTiming{\n                        .step = static_cast<std::uint64_t>(tick_base),\n                        .task_name = std::string{task_name},\n                        .trigger = std::string{task_trigger},\n                        .clock_source = task_clock_source,\n                        .scheduled_time_ms = admission.scheduled_time_ms,\n                        .observed_time_ms = admission.observed_time_ms,\n                        .scheduled_delta_ms = scheduled_delta_ms,\n                        .observed_delta_ms = observed_delta_ms,\n                        .period_ms = admission.period_ms,\n                        .deadline_ms = admission.deadline_ms,\n                        .lateness_ms = admission.lateness_ms,\n                        .missed_periods = admission.missed_periods,\n                        .deadline_missed = admission.deadline_ms.has_value() && admission.lateness_ms > *admission.deadline_ms,\n                        .overrun = admission.missed_periods > 0U || (admission.period_ms.has_value() && admission.lateness_ms > *admission.period_ms),\n                    });\n                    auto merge_local_health = [&task_health_mutex, &task_health_from_workers](std::map<std::string, flowrt::IntrospectionTaskHealth>&& local_health_map) {\n                        std::lock_guard<std::mutex> lock(task_health_mutex);\n                        for (auto &[name, health] : local_health_map) {\n                            task_health_from_workers.insert_or_assign(name, std::move(health));\n                        }\n                    };\n                    switch (admission.task.value) {\n",
     );
     for (index, task) in tasks.iter().enumerate() {
         let task_id = index + 1;
@@ -2192,7 +2214,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             "                    case {task_id}: {{\n\
                          auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         auto task_outcome = {function_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         auto task_outcome = {function_name}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map);\n\
                          merge_local_health(std::move(local_health_map));\n\
                          return task_outcome;\n\
                      }}\n"
@@ -2211,7 +2233,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             "                    case {service_task_id}: {{\n\
                          auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map);\n\
                          merge_local_health(std::move(local_health_map));\n\
                          return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n\
                      }}\n"
@@ -2228,7 +2250,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             "                    case {service_task_id}: {{\n\
                          auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n\
+                         auto task_status = {fn_name}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map);\n\
                          merge_local_health(std::move(local_health_map));\n\
                          return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n\
                      }}\n"
@@ -2239,7 +2261,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         && operation_plans.iter().all(|p| p.backend.0 == "zenoh")
     {
         output.push_str(&format!(
-            "                    default: {{\n                        auto task_status = {}(static_cast<std::size_t>(tick_time_ms), lifecycle_context, introspection_state, scheduler_events, local_health_map);\n                        merge_local_health(std::move(local_health_map));\n                        return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n                    }}\n",
+            "                    default: {{\n                        auto task_status = {}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map);\n                        merge_local_health(std::move(local_health_map));\n                        return FlowrtTaskOutcome{{.status = task_status, .outputs = std::vector<FlowrtOutputCommit>{{}}}};\n                    }}\n",
             run.step_function_name
         ));
     } else {
@@ -2248,7 +2270,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     let task_result_health_update = emit_cpp_task_result_health_update(&tasks);
     let fairness_check = emit_cpp_fairness_check(&lane_names);
     output.push_str(&format!(
-        "                }}\n            }});\n            health_map = std::move(batch_health_map);\n            if (!woke_on_message && task_statuses.empty()) {{\n                break;\n            }}\n            for (auto task_result : task_statuses) {{\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
+        "                }});\n                if (submitted.accepted) {{\n                    pending_task_order.push_back(admission.task);\n                }} else {{\n                    (void)scheduler.complete_task(admission.task);\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            std::size_t committed_task_count = 0;\n            while (!pending_task_order.empty()) {{\n                const auto task = pending_task_order.front();\n                const auto result_it = pending_task_results.find(task);\n                if (result_it == pending_task_results.end()) {{\n                    break;\n                }}\n                auto task_result = std::move(result_it->second);\n                pending_task_results.erase(result_it);\n                pending_task_order.pop_front();\n                (void)scheduler.complete_task(task_result.task);\n                ++committed_task_count;\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            if (committed_task_count == 0U || (!woke_on_message && submitted_task_count == 0U)) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value() && pending_task_order.empty()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n        }}\n    }}\n",
         task_result_health_update = task_result_health_update,
             next_deadline_expr = cpp_next_periodic_deadline_expr(&tasks)
         )
@@ -2259,6 +2281,28 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         .replace(
             "next_periodic_deadline_ms->value",
             "static_cast<std::uint64_t>(next_periodic_deadline_ms->count())",
+        )
+        .replace(
+            r#"const auto scheduled_delta_ms = [&]() -> std::uint64_t {
+                    const auto [it, inserted] = task_last_scheduled_time_ms.insert_or_assign(admission.task, admission.scheduled_time_ms);
+                    return inserted || admission.scheduled_time_ms < it->second ? 0U : admission.scheduled_time_ms - it->second;
+                }();
+                const auto observed_delta_ms = [&]() -> std::uint64_t {
+                    const auto [it, inserted] = task_last_observed_time_ms.insert_or_assign(admission.task, admission.observed_time_ms);
+                    return inserted || admission.observed_time_ms < it->second ? 0U : admission.observed_time_ms - it->second;
+                }();"#,
+            r#"const auto scheduled_delta_ms = [&]() -> std::uint64_t {
+                    const auto it = task_last_scheduled_time_ms.find(admission.task);
+                    const auto delta = it == task_last_scheduled_time_ms.end() || admission.scheduled_time_ms < it->second ? 0U : admission.scheduled_time_ms - it->second;
+                    task_last_scheduled_time_ms.insert_or_assign(admission.task, admission.scheduled_time_ms);
+                    return delta;
+                }();
+                const auto observed_delta_ms = [&]() -> std::uint64_t {
+                    const auto it = task_last_observed_time_ms.find(admission.task);
+                    const auto delta = it == task_last_observed_time_ms.end() || admission.observed_time_ms < it->second ? 0U : admission.observed_time_ms - it->second;
+                    task_last_observed_time_ms.insert_or_assign(admission.task, admission.observed_time_ms);
+                    return delta;
+                }();"#,
         ),
     );
     output
@@ -2270,6 +2314,27 @@ fn cpp_scheduler_clock_source(contract: &ContractIr) -> &'static str {
     } else {
         "realtime"
     }
+}
+
+fn cpp_task_clock_source_expr(contract: &ContractIr) -> &'static str {
+    if contract.artifact.temporary_overlay.is_some() {
+        "flowrt::ClockSource::Replay"
+    } else {
+        "flowrt::ClockSource::Runtime"
+    }
+}
+
+fn cpp_trigger_name(trigger: flowrt_ir::TriggerKind) -> &'static str {
+    match trigger {
+        flowrt_ir::TriggerKind::Periodic => "periodic",
+        flowrt_ir::TriggerKind::OnMessage => "on_message",
+        flowrt_ir::TriggerKind::Startup => "startup",
+        flowrt_ir::TriggerKind::Shutdown => "shutdown",
+    }
+}
+
+fn cpp_task_timing_name(task: &flowrt_ir::TaskIr) -> String {
+    format!("{}.{}", task.instance.name, task.name)
 }
 
 fn emit_cpp_scheduler_event_registration(

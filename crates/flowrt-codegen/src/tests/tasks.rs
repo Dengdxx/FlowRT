@@ -230,8 +230,14 @@ worker_threads = 4
 
     assert!(rust_shell.contains("flowrt::iox2::Iox2PubSub<FrameHandle>"));
     assert!(rust_shell.contains("let mut scheduler = flowrt::DeterministicExecutor::new(4);"));
-    assert!(!rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
-    assert!(rust_shell.contains("ready_batch.run_local_collect(|task|"));
+    assert!(rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
+    assert!(rust_shell.contains(
+        "let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();"
+    ));
+    assert!(rust_shell.contains("worker_pool.submit_collect(admission.task"));
+    assert!(rust_shell.contains("scheduler.complete_task(task_result.task)"));
+    assert!(rust_shell.contains("flowrt::Context::with_timing(flowrt::TaskTiming"));
+    assert!(!rust_shell.contains("ready_batch.run_local_collect(|task|"));
     assert!(!rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
     assert!(rust_shell.contains("type FlowrtOutputCommit = Box<dyn FnOnce(&App"));
     assert!(rust_shell.contains(
@@ -505,7 +511,9 @@ worker_threads = 4
     assert!(!rust_shell.contains("scheduler.run_ready(|task| match task"));
     assert!(rust_shell.contains("let worker_pool = flowrt::WorkerPool::new(4);"));
     assert!(rust_shell.contains("let ready_batch = scheduler.take_ready_batch();"));
-    assert!(rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
+    assert!(rust_shell.contains("worker_pool.submit_collect(admission.task"));
+    assert!(rust_shell.contains("pending_task_order.push_back(admission.task)"));
+    assert!(rust_shell.contains("scheduler.complete_task(task_result.task)"));
     assert!(
         rust_shell.contains("worker: std::sync::Arc<std::sync::Mutex<Box<dyn Worker + Send>>>")
     );
@@ -719,7 +727,11 @@ worker_threads = 2
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
     assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
     assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
-    assert!(cpp_shell.contains("std::move(ready_batch).run_collect(worker_pool"));
+    assert!(cpp_shell.contains(
+        "flowrt::WorkerCompletionQueue<std::vector<FlowrtOutputCommit>> task_completion_queue;"
+    ));
+    assert!(cpp_shell.contains("worker_pool.submit_collect(admission.task, task_completion_queue"));
+    assert!(cpp_shell.contains("scheduler.complete_task(task_result.task)"));
     assert!(!cpp_shell.contains(
         "scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"
     ));
@@ -1240,10 +1252,14 @@ worker_threads = 2
     assert!(rust_shell.contains("if app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).revision() != bind_0_seen_revision_for_sink_main"));
     assert!(rust_shell.contains("scheduler.wake(flowrt::TaskId("));
     assert!(rust_shell.contains("let ready_batch = scheduler.take_ready_batch();"));
-    assert!(rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
+    assert!(rust_shell.contains("worker_pool.submit_collect(admission.task"));
+    assert!(rust_shell.contains("task_completion_queue.drain_completed()"));
+    assert!(rust_shell.contains("scheduler.complete_task(task_result.task)"));
     assert!(rust_shell.contains("let mut woke_on_message = false;"));
     assert!(rust_shell.contains("woke_on_message = true;"));
-    assert!(rust_shell.contains("if !woke_on_message && task_statuses.is_empty()"));
+    assert!(rust_shell.contains(
+        "if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0)"
+    ));
     assert!(rust_shell.contains("let mut observed_data_generation: u64;"));
     assert!(rust_shell.contains(
         "loop {\n                observed_data_generation = scheduler_events.data_generation();"
@@ -1448,11 +1464,17 @@ worker_threads = 2
     assert!(cpp_shell.contains("flowrt::WorkerPool worker_pool{2};"));
     assert!(cpp_shell.contains("auto ready_batch = scheduler.take_ready_batch();"));
     assert!(!cpp_shell.contains("const auto ready_batch = scheduler.take_ready_batch();"));
-    assert!(cpp_shell.contains("std::move(ready_batch).run_collect(worker_pool"));
+    assert!(cpp_shell.contains(
+        "flowrt::WorkerCompletionQueue<std::vector<FlowrtOutputCommit>> task_completion_queue;"
+    ));
+    assert!(cpp_shell.contains("worker_pool.submit_collect(admission.task, task_completion_queue"));
+    assert!(cpp_shell.contains("scheduler.complete_task(task_result.task)"));
     assert!(!cpp_shell.contains("scheduler.run_ready([this, &lifecycle_context, &introspection_state, &scheduler_events, &health_map, tick_time_ms](flowrt::TaskId task)"));
     assert!(cpp_shell.contains("bool woke_on_message = false;"));
     assert!(cpp_shell.contains("woke_on_message = true;"));
-    assert!(cpp_shell.contains("if (!woke_on_message && task_statuses.empty())"));
+    assert!(cpp_shell.contains(
+        "if (committed_task_count == 0U || (!woke_on_message && submitted_task_count == 0U))"
+    ));
     assert!(
         cpp_shell.contains(
             "std::uint64_t observed_data_generation = scheduler_events.data_generation();"
