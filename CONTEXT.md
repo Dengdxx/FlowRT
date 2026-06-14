@@ -22,6 +22,9 @@ task 应被调度的时间，`observed_time_ms` 是 scheduler 实际观察并 ad
 路径暴露真实 runtime 观测到的 wall-clock lateness 和相邻运行 `dt`；replay /
 temporary island 的 simulated clock 仍保持确定性，fixture `at_ms` / `published_at_ms`
 驱动 scheduler、record、Operation 和 status 的同一毫秒时间模型。
+Rust/C++ live status、结构化 diagnostics 和 recorder event 已接入 task/lane timing，
+会展示 inflight、scheduled/observed time、lateness、missed periods、overrun、
+backpressure、run/success/failure counters 和连续失败计数。
 
 `v0.14.0` 明确不承诺硬实时；不实现 sensor timestamp、sensor event-time、clock
 domain、PTP、NTP、跨机器 exact sync 或 approx sync，也不把多传感器同步策略塞进
@@ -117,8 +120,8 @@ v0.10.0 并发
 保守规则：task 声明 `parallel` 只有在所属 component 也声明 `parallel` 时才合法，task
 不会隐式提升 component；`worker_threads = 1` 仍允许 parallel 声明，只是运行时行为
 退化为串行。self-description / launch manifest 现已落盘 task `concurrency`、scheduler
-task `lane` / `concurrency` 元数据；Rust/C++ generated runtime shell 已从串行
-`scheduler.run_ready(...)` 主路径切到 `ReadyBatch` / `WorkerPool` admission。默认
+task `lane` / `concurrency` 元数据；Rust/C++ generated runtime shell 已从早期串行
+scheduler 主路径切到 `ReadyBatch` / `WorkerPool` admission。默认
 `exclusive` component 继续保护同一用户对象串行访问；显式 `parallel` component 才生成
 `Send + Sync` 用户 trait / interface，并按显式 lane 让不同 ready task 真正跨 worker
 并行执行。Contract IR 现为 dataflow route 派生 `thread_affinity` metadata：`iox2`

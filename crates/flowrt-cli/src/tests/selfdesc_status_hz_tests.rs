@@ -189,6 +189,7 @@ fn main() {}
         .arg("build")
         .arg("--quiet")
         .current_dir(&root)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .unwrap();
     assert!(status.success());
@@ -368,6 +369,17 @@ fn live_status_json_exposes_machine_readable_diagnostics() {
         last_publish_ms: Some(120),
         last_error: Some("queue overflow".to_string()),
     });
+    state.record_task_health(flowrt::IntrospectionTaskHealth {
+        name: "control.loop".to_string(),
+        lane: "control".to_string(),
+        inflight: false,
+        scheduled_time_ms: Some(1_000),
+        observed_time_ms: Some(1_033),
+        lateness_ms: Some(33),
+        missed_periods: Some(3),
+        overrun: Some(true),
+        ..Default::default()
+    });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
 
@@ -375,6 +387,26 @@ fn live_status_json_exposes_machine_readable_diagnostics() {
     let value: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(value[0]["live"], true);
     assert_eq!(value[0]["status"]["clock"]["source"], "simulated_replay");
+    assert_eq!(
+        value[0]["status"]["tasks"][0]["scheduled_time_ms"],
+        serde_json::json!(1_000)
+    );
+    assert_eq!(
+        value[0]["status"]["tasks"][0]["observed_time_ms"],
+        serde_json::json!(1_033)
+    );
+    assert_eq!(
+        value[0]["status"]["tasks"][0]["lateness_ms"],
+        serde_json::json!(33)
+    );
+    assert_eq!(
+        value[0]["status"]["tasks"][0]["missed_periods"],
+        serde_json::json!(3)
+    );
+    assert_eq!(
+        value[0]["status"]["tasks"][0]["overrun"],
+        serde_json::json!(true)
+    );
     assert!(
         value[0]["status"]["diagnostics"]
             .as_array()
@@ -383,6 +415,15 @@ fn live_status_json_exposes_machine_readable_diagnostics() {
             .any(|diagnostic| diagnostic["category"] == "route"
                 && diagnostic["entity_id"] == "source.packet_to_sink.packet"
                 && diagnostic["reason"] == "queue overflow")
+    );
+    assert!(
+        value[0]["status"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["category"] == "task"
+                && diagnostic["entity_id"] == "control.loop"
+                && diagnostic["reason"] == "runtime observed task timing issue")
     );
 
     drop(server);
@@ -1905,6 +1946,12 @@ fn live_status_summary_displays_task_and_lane_health() {
     state.record_task_health(flowrt::IntrospectionTaskHealth {
         name: "imu_task".to_string(),
         lane: "sensor_lane".to_string(),
+        inflight: true,
+        scheduled_time_ms: Some(1000),
+        observed_time_ms: Some(1012),
+        lateness_ms: Some(12),
+        missed_periods: Some(1),
+        overrun: Some(true),
         deadline_missed: 3,
         stale_input: 1,
         backpressure: 0,
@@ -1935,6 +1982,34 @@ fn live_status_summary_displays_task_and_lane_health() {
     assert!(
         output.contains("lane=sensor_lane"),
         "expected lane=sensor_lane in output: {output}"
+    );
+    assert!(
+        output.contains("inflight=true"),
+        "expected inflight=true in output: {output}"
+    );
+    assert!(
+        output.contains("scheduled_time_ms=1000"),
+        "expected scheduled_time_ms=1000 in output: {output}"
+    );
+    assert!(
+        output.contains("observed_time_ms=1012"),
+        "expected observed_time_ms=1012 in output: {output}"
+    );
+    assert!(
+        output.contains("lateness_ms=12"),
+        "expected lateness_ms=12 in output: {output}"
+    );
+    assert!(
+        output.contains("missed_periods=1"),
+        "expected missed_periods=1 in output: {output}"
+    );
+    assert!(
+        output.contains("overrun=true"),
+        "expected overrun=true in output: {output}"
+    );
+    assert!(
+        output.contains("timing=runtime_observed"),
+        "expected timing=runtime_observed in output: {output}"
     );
     assert!(
         output.contains("deadline_missed=3"),

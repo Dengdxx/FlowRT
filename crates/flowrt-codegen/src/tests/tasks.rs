@@ -237,6 +237,15 @@ worker_threads = 4
     assert!(rust_shell.contains("worker_pool.submit_collect(admission.task"));
     assert!(rust_shell.contains("scheduler.complete_task(task_result.task)"));
     assert!(rust_shell.contains("flowrt::Context::with_timing(flowrt::TaskTiming"));
+    assert!(rust_shell.contains("pending_task_admissions.insert(admission.task, admission);"));
+    assert!(rust_shell.contains("pending_task_admissions.remove(&task_result.task)"));
+    assert!(rust_shell.contains("health.inflight = true;"));
+    assert!(rust_shell.contains("health.inflight = false;"));
+    assert!(rust_shell.contains("health.scheduled_time_ms = Some(admission.scheduled_time_ms);"));
+    assert!(rust_shell.contains("health.observed_time_ms = Some(admission.observed_time_ms);"));
+    assert!(rust_shell.contains("health.lateness_ms = Some(admission.lateness_ms);"));
+    assert!(rust_shell.contains("health.missed_periods = Some(admission.missed_periods);"));
+    assert!(rust_shell.contains("health.overrun = Some(admission.missed_periods > 0"));
     assert!(!rust_shell.contains("ready_batch.run_local_collect(|task|"));
     assert!(!rust_shell.contains("ready_batch.run_collect(&worker_pool, move |task|"));
     assert!(rust_shell.contains("type FlowrtOutputCommit = Box<dyn FnOnce(&App"));
@@ -648,6 +657,17 @@ output = ["slow"]
     assert!(scheduler_step.contains("flowrt::Output<std::uint32_t> worker_slow;"));
     assert!(cpp_shell.contains("health_map[\"worker.fast_loop\"]"));
     assert!(cpp_shell.contains("health_map[\"worker.slow_loop\"]"));
+    assert!(
+        cpp_shell.contains("pending_task_admissions.insert_or_assign(admission.task, admission);")
+    );
+    assert!(cpp_shell.contains("pending_task_admissions.find(task_result.task)"));
+    assert!(cpp_shell.contains("health.inflight = true;"));
+    assert!(cpp_shell.contains("health.inflight = false;"));
+    assert!(cpp_shell.contains("health.scheduled_time_ms = admission.scheduled_time_ms;"));
+    assert!(cpp_shell.contains("health.observed_time_ms = admission.observed_time_ms;"));
+    assert!(cpp_shell.contains("health.lateness_ms = admission.lateness_ms;"));
+    assert!(cpp_shell.contains("health.missed_periods = admission.missed_periods;"));
+    assert!(cpp_shell.contains("health.overrun = admission.missed_periods > 0U"));
     assert!(!cpp_shell.contains("health_map[\"worker\"].name"));
     assert_eq!(selfdesc["graphs"][0]["tasks"][0]["name"], "fast_loop");
     assert_eq!(selfdesc["graphs"][0]["tasks"][1]["name"], "slow_loop");

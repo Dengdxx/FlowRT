@@ -588,6 +588,24 @@ pub struct IntrospectionTaskHealth {
     /// 所属 lane 名称。
     #[serde(default)]
     pub lane: String,
+    /// 当前 task 是否已 admission 且尚未 completion。
+    #[serde(default)]
+    pub inflight: bool,
+    /// runtime 计划该次 task 应被调度的毫秒时间。
+    #[serde(default)]
+    pub scheduled_time_ms: Option<u64>,
+    /// scheduler 实际观察并 admission 该次 task 的毫秒时间。
+    #[serde(default)]
+    pub observed_time_ms: Option<u64>,
+    /// runtime 观察到的非负迟到毫秒数。
+    #[serde(default)]
+    pub lateness_ms: Option<u64>,
+    /// periodic task 本次 admission 已错过的周期数。
+    #[serde(default)]
+    pub missed_periods: Option<u64>,
+    /// 上一轮执行是否越过本轮周期或调度窗口。
+    #[serde(default)]
+    pub overrun: Option<bool>,
     /// 累计 deadline miss 次数。
     #[serde(default)]
     pub deadline_missed: u64,
@@ -1846,6 +1864,12 @@ impl IntrospectionState {
             "flowrt.scheduler.task_health",
             serde_json::json!({
                 "lane": health.lane,
+                "inflight": health.inflight,
+                "scheduled_time_ms": health.scheduled_time_ms,
+                "observed_time_ms": health.observed_time_ms,
+                "lateness_ms": health.lateness_ms,
+                "missed_periods": health.missed_periods,
+                "overrun": health.overrun,
                 "deadline_missed": health.deadline_missed,
                 "stale_input": health.stale_input,
                 "backpressure": health.backpressure,
@@ -3386,10 +3410,14 @@ fn derive_diagnostics(status: &IntrospectionStatus) -> Vec<IntrospectionDiagnost
 
     for task in &status.tasks {
         let has_failure = task.consecutive_failures > 0;
-        let has_timing_issue = task.deadline_missed > 0
+        let has_runtime_timing_issue = task.lateness_ms.unwrap_or(0) > 0
+            || task.missed_periods.unwrap_or(0) > 0
+            || task.overrun.unwrap_or(false);
+        let has_counter_issue = task.deadline_missed > 0
             || task.stale_input > 0
             || task.backpressure > 0
             || task.overflow > 0;
+        let has_timing_issue = has_runtime_timing_issue || has_counter_issue;
         diagnostics.push(diagnostic(
             "task",
             "task",
@@ -3411,13 +3439,26 @@ fn derive_diagnostics(status: &IntrospectionStatus) -> Vec<IntrospectionDiagnost
             has_failure
                 .then(|| "task has consecutive failures".to_string())
                 .or_else(|| {
-                    has_timing_issue.then(|| "task timing/input counters are non-zero".to_string())
+                    has_runtime_timing_issue
+                        .then(|| "runtime observed task timing issue".to_string())
+                })
+                .or_else(|| {
+                    has_counter_issue.then(|| "task timing/input counters are non-zero".to_string())
                 }),
-            None,
-            task.last_run_ms,
-            task.last_run_ms.or(clock_ms),
+            has_runtime_timing_issue.then(|| {
+                "timing is runtime-observed scheduler time, not a hard realtime guarantee"
+                    .to_string()
+            }),
+            task.last_run_ms.or(task.observed_time_ms),
+            task.observed_time_ms.or(task.last_run_ms).or(clock_ms),
             vec![
                 metric("lane", task.lane.clone()),
+                metric("inflight", task.inflight),
+                metric("scheduled_time_ms", task.scheduled_time_ms),
+                metric("observed_time_ms", task.observed_time_ms),
+                metric("lateness_ms", task.lateness_ms),
+                metric("missed_periods", task.missed_periods),
+                metric("overrun", task.overrun),
                 metric("deadline_missed", task.deadline_missed),
                 metric("stale_input", task.stale_input),
                 metric("backpressure", task.backpressure),
@@ -4484,6 +4525,12 @@ mod tests {
         state.record_task_health(IntrospectionTaskHealth {
             name: "imu_task".to_string(),
             lane: "sensor_lane".to_string(),
+            inflight: true,
+            scheduled_time_ms: Some(1_000),
+            observed_time_ms: Some(1_012),
+            lateness_ms: Some(12),
+            missed_periods: Some(1),
+            overrun: Some(true),
             deadline_missed: 3,
             stale_input: 1,
             backpressure: 0,
@@ -4509,6 +4556,7 @@ mod tests {
             consecutive_failures: 1,
             last_run_ms: Some(2000),
             last_success_ms: Some(1900),
+            ..Default::default()
         });
 
         let status = state.status();
@@ -4517,6 +4565,12 @@ mod tests {
         let imu = state.task_health("imu_task").unwrap();
         assert_eq!(imu.name, "imu_task");
         assert_eq!(imu.deadline_missed, 3);
+        assert!(imu.inflight);
+        assert_eq!(imu.scheduled_time_ms, Some(1_000));
+        assert_eq!(imu.observed_time_ms, Some(1_012));
+        assert_eq!(imu.lateness_ms, Some(12));
+        assert_eq!(imu.missed_periods, Some(1));
+        assert_eq!(imu.overrun, Some(true));
         assert_eq!(imu.run_count, 100);
         assert_eq!(imu.success_count, 97);
         assert_eq!(imu.consecutive_failures, 0);
@@ -5180,13 +5234,18 @@ mod tests {
         state.record_task_health(IntrospectionTaskHealth {
             name: "control_loop".to_string(),
             lane: "control".to_string(),
+            scheduled_time_ms: Some(1_000),
+            observed_time_ms: Some(1_025),
+            lateness_ms: Some(25),
+            missed_periods: Some(2),
+            overrun: Some(true),
             deadline_missed: 1,
             stale_input: 1,
             backpressure: 1,
             overflow: 1,
             run_count: 8,
-            success_count: 7,
-            consecutive_failures: 1,
+            success_count: 8,
+            consecutive_failures: 0,
             ..Default::default()
         });
 
@@ -5230,6 +5289,33 @@ mod tests {
         assert!(route.metrics.iter().any(|metric| {
             metric.name == "latest_age_ms" && metric.value == serde_json::json!(130)
         }));
+        let task = status
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.category == "task")
+            .expect("task diagnostic should exist");
+        assert_eq!(task.state, "degraded");
+        assert_eq!(
+            task.reason.as_deref(),
+            Some("runtime observed task timing issue")
+        );
+        assert!(task.metrics.iter().any(|metric| {
+            metric.name == "scheduled_time_ms" && metric.value == serde_json::json!(1_000)
+        }));
+        assert!(task.metrics.iter().any(|metric| {
+            metric.name == "observed_time_ms" && metric.value == serde_json::json!(1_025)
+        }));
+        assert!(task.metrics.iter().any(|metric| {
+            metric.name == "lateness_ms" && metric.value == serde_json::json!(25)
+        }));
+        assert!(task.metrics.iter().any(|metric| {
+            metric.name == "missed_periods" && metric.value == serde_json::json!(2)
+        }));
+        assert!(
+            task.metrics
+                .iter()
+                .any(|metric| metric.name == "overrun" && metric.value == serde_json::json!(true))
+        );
     }
 
     #[test]
@@ -5245,6 +5331,16 @@ mod tests {
             selfdesc_hash: "abc123".to_string(),
         });
         state.record_route_error("source.packet_to_sink.packet", "queue overflow");
+        state.record_task_health(IntrospectionTaskHealth {
+            name: "controller.loop".to_string(),
+            lane: "control".to_string(),
+            scheduled_time_ms: Some(2_000),
+            observed_time_ms: Some(2_018),
+            lateness_ms: Some(18),
+            missed_periods: Some(1),
+            overrun: Some(true),
+            ..Default::default()
+        });
 
         state.record_current_diagnostics();
 
@@ -5266,6 +5362,21 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&diagnostic.payload).unwrap();
         assert_eq!(payload["category"], "route");
         assert_eq!(payload["reason"], "queue overflow");
+
+        let timing_diagnostic = events
+            .iter()
+            .find(|event| {
+                event.event_kind == flowrt_record::RecordEventKind::DiagnosticsEvent
+                    && event.entity.name == "controller.loop"
+            })
+            .expect("timing diagnostics should record diagnostics event");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&timing_diagnostic.payload).unwrap();
+        assert_eq!(payload["category"], "task");
+        assert_eq!(payload["reason"], "runtime observed task timing issue");
+        assert!(payload["metrics"].as_array().unwrap().iter().any(|metric| {
+            metric["name"] == "lateness_ms" && metric["value"] == serde_json::json!(18)
+        }));
     }
 
     #[test]
@@ -5350,6 +5461,12 @@ mod tests {
             tasks: vec![IntrospectionTaskHealth {
                 name: "t1".to_string(),
                 lane: "l1".to_string(),
+                inflight: true,
+                scheduled_time_ms: Some(1_000),
+                observed_time_ms: Some(1_020),
+                lateness_ms: Some(20),
+                missed_periods: Some(2),
+                overrun: Some(true),
                 deadline_missed: 5,
                 stale_input: 2,
                 backpressure: 1,
@@ -5395,6 +5512,12 @@ mod tests {
         assert_eq!(parsed.io_boundaries[0].name, "camera");
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0].name, "t1");
+        assert!(parsed.tasks[0].inflight);
+        assert_eq!(parsed.tasks[0].scheduled_time_ms, Some(1_000));
+        assert_eq!(parsed.tasks[0].observed_time_ms, Some(1_020));
+        assert_eq!(parsed.tasks[0].lateness_ms, Some(20));
+        assert_eq!(parsed.tasks[0].missed_periods, Some(2));
+        assert_eq!(parsed.tasks[0].overrun, Some(true));
         assert_eq!(parsed.tasks[0].deadline_missed, 5);
         assert_eq!(parsed.lanes.len(), 1);
         assert_eq!(parsed.lanes[0].queue_depth, 3);

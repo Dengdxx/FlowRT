@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -85,6 +86,22 @@ void assert_contains(const std::string &value, const std::string &expected) {
                      value.c_str());
     }
     assert(value.find(expected) != std::string::npos);
+}
+
+std::string byte_array_fragment(std::string_view value) {
+    std::string fragment;
+    for (const char byte : value) {
+        if (!fragment.empty()) {
+            fragment.push_back(',');
+        }
+        fragment.append(
+            std::to_string(static_cast<unsigned int>(static_cast<unsigned char>(byte))));
+    }
+    return fragment;
+}
+
+void assert_payload_contains_text(const std::string &value, std::string_view expected) {
+    assert_contains(value, byte_array_fragment(expected));
 }
 
 }  // namespace
@@ -308,6 +325,12 @@ int main() {
     service_recorder_state.record_task_health(flowrt::IntrospectionTaskHealth{
         .name = "imu_task",
         .lane = "sensor_lane",
+        .inflight = true,
+        .scheduled_time_ms = std::optional<std::uint64_t>{1000U},
+        .observed_time_ms = std::optional<std::uint64_t>{1012U},
+        .lateness_ms = std::optional<std::uint64_t>{12U},
+        .missed_periods = std::optional<std::uint64_t>{1U},
+        .overrun = std::optional<bool>{true},
         .deadline_missed = 3,
         .stale_input = 1,
         .backpressure = 2,
@@ -353,6 +376,12 @@ int main() {
     assert(task_event->payload_schema == "flowrt.scheduler.task_health");
     const auto task_payload = std::string(task_event->payload.begin(), task_event->payload.end());
     assert_contains(task_payload, R"("lane":"sensor_lane")");
+    assert_contains(task_payload, R"("inflight":true)");
+    assert_contains(task_payload, R"("scheduled_time_ms":1000)");
+    assert_contains(task_payload, R"("observed_time_ms":1012)");
+    assert_contains(task_payload, R"("lateness_ms":12)");
+    assert_contains(task_payload, R"("missed_periods":1)");
+    assert_contains(task_payload, R"("overrun":true)");
     assert_contains(task_payload, R"("backpressure":2)");
     assert_contains(task_payload, R"("consecutive_failures":1)");
     const auto lane_event =
@@ -417,6 +446,12 @@ int main() {
     state.record_task_health(flowrt::IntrospectionTaskHealth{
         .name = "imu_task",
         .lane = "sensor_lane",
+        .inflight = true,
+        .scheduled_time_ms = std::optional<std::uint64_t>{1000U},
+        .observed_time_ms = std::optional<std::uint64_t>{1012U},
+        .lateness_ms = std::optional<std::uint64_t>{12U},
+        .missed_periods = std::optional<std::uint64_t>{1U},
+        .overrun = std::optional<bool>{true},
         .deadline_missed = 3,
         .stale_input = 1,
         .backpressure = 0,
@@ -537,6 +572,12 @@ int main() {
         assert_contains(status_response, R"("last_payload_len":3)");
         assert_contains(status_response, R"("name":"imu_task")");
         assert_contains(status_response, R"("lane":"sensor_lane")");
+        assert_contains(status_response, R"("inflight":true)");
+        assert_contains(status_response, R"("scheduled_time_ms":1000)");
+        assert_contains(status_response, R"("observed_time_ms":1012)");
+        assert_contains(status_response, R"("lateness_ms":12)");
+        assert_contains(status_response, R"("missed_periods":1)");
+        assert_contains(status_response, R"("overrun":true)");
         assert_contains(status_response, R"("deadline_missed":3)");
         assert_contains(status_response, R"("stale_input":1)");
         assert_contains(status_response, R"("run_count":100)");
@@ -604,9 +645,14 @@ int main() {
         const auto diagnostics_drain_response =
             request_line(socket_path, R"({"command":"recorder_drain"})");
         assert_contains(diagnostics_drain_response, R"("event_kind":"diagnostics_event")");
-        assert_contains(diagnostics_drain_response, R"("entity":{"kind":"diagnostic")");
+        assert_contains(diagnostics_drain_response,
+                        R"("entity":{"kind":"diagnostic","name":"imu_task")");
+        assert_contains(diagnostics_drain_response, R"("payload_encoding":"json")");
         assert_contains(diagnostics_drain_response,
                         R"("payload_schema":"flowrt.diagnostics.status")");
+        assert_payload_contains_text(diagnostics_drain_response,
+                                     R"("reason":"runtime observed task timing issue")");
+        assert_payload_contains_text(diagnostics_drain_response, R"("name":"lateness_ms")");
         const auto diagnostics_recorder_stop_response =
             request_line(socket_path, R"({"command":"recorder_stop"})");
         assert_contains(diagnostics_recorder_stop_response, R"("enabled":false)");

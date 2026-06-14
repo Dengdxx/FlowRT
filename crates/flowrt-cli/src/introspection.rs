@@ -2442,10 +2442,27 @@ pub(crate) fn live_status_summary_for_sockets(
                     let last_success = task
                         .last_success_ms
                         .map_or_else(|| "none".to_string(), |v| v.to_string());
+                    let timing = if task.scheduled_time_ms.is_some()
+                        || task.observed_time_ms.is_some()
+                        || task.lateness_ms.is_some()
+                        || task.missed_periods.is_some()
+                        || task.overrun.is_some()
+                    {
+                        "runtime_observed"
+                    } else {
+                        "none"
+                    };
                     lines.push(format!(
-                        "task_health={} lane={} deadline_missed={} stale_input={} backpressure={} overflow={} fairness_violations={} runs={} successes={} consecutive_failures={} last_run_ms={} last_success_ms={} socket={}",
+                        "task_health={} lane={} inflight={} scheduled_time_ms={} observed_time_ms={} lateness_ms={} missed_periods={} overrun={} timing={} deadline_missed={} stale_input={} backpressure={} overflow={} fairness_violations={} runs={} successes={} consecutive_failures={} last_run_ms={} last_success_ms={} socket={}",
                         task.name,
                         task.lane,
+                        task.inflight,
+                        option_u64(task.scheduled_time_ms),
+                        option_u64(task.observed_time_ms),
+                        option_u64(task.lateness_ms),
+                        option_u64(task.missed_periods),
+                        option_bool(task.overrun),
+                        timing,
                         task.deadline_missed,
                         task.stale_input,
                         task.backpressure,

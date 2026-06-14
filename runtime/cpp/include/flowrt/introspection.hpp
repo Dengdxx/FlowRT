@@ -361,6 +361,12 @@ struct IntrospectionOperationStatus {
 struct IntrospectionTaskHealth {
     std::string name;
     std::string lane;
+    bool inflight = false;
+    std::optional<std::uint64_t> scheduled_time_ms;
+    std::optional<std::uint64_t> observed_time_ms;
+    std::optional<std::uint64_t> lateness_ms;
+    std::optional<std::uint64_t> missed_periods;
+    std::optional<bool> overrun;
     std::uint64_t deadline_missed = 0;
     std::uint64_t stale_input = 0;
     std::uint64_t backpressure = 0;
@@ -714,6 +720,10 @@ inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) 
     return value ? std::to_string(*value) : "null";
 }
 
+inline std::string optional_bool_json(const std::optional<bool> &value) {
+    return value ? (*value ? "true" : "false") : "null";
+}
+
 inline std::string json_string_array(const std::vector<std::string> &values) {
     std::string output;
     output.push_back('[');
@@ -805,6 +815,18 @@ inline std::string task_health_json(const IntrospectionTaskHealth &task) {
     output.append(json_string(task.name));
     output.append(",\"lane\":");
     output.append(json_string(task.lane));
+    output.append(",\"inflight\":");
+    output.append(task.inflight ? "true" : "false");
+    output.append(",\"scheduled_time_ms\":");
+    output.append(optional_u64_json(task.scheduled_time_ms));
+    output.append(",\"observed_time_ms\":");
+    output.append(optional_u64_json(task.observed_time_ms));
+    output.append(",\"lateness_ms\":");
+    output.append(optional_u64_json(task.lateness_ms));
+    output.append(",\"missed_periods\":");
+    output.append(optional_u64_json(task.missed_periods));
+    output.append(",\"overrun\":");
+    output.append(optional_bool_json(task.overrun));
     output.append(",\"deadline_missed\":");
     output.append(std::to_string(task.deadline_missed));
     output.append(",\"stale_input\":");
@@ -2450,6 +2472,12 @@ class IntrospectionState {
     void record_task_health(IntrospectionTaskHealth health) const {
         const auto payload =
             "{\"lane\":" + detail::json_string(health.lane) +
+            ",\"inflight\":" + std::string(health.inflight ? "true" : "false") +
+            ",\"scheduled_time_ms\":" + detail::optional_u64_json(health.scheduled_time_ms) +
+            ",\"observed_time_ms\":" + detail::optional_u64_json(health.observed_time_ms) +
+            ",\"lateness_ms\":" + detail::optional_u64_json(health.lateness_ms) +
+            ",\"missed_periods\":" + detail::optional_u64_json(health.missed_periods) +
+            ",\"overrun\":" + detail::optional_bool_json(health.overrun) +
             ",\"deadline_missed\":" + std::to_string(health.deadline_missed) +
             ",\"stale_input\":" + std::to_string(health.stale_input) +
             ",\"backpressure\":" + std::to_string(health.backpressure) +
@@ -3170,19 +3198,37 @@ class IntrospectionState {
 
         for (const auto &task : status.tasks) {
             const bool failing = task.consecutive_failures != 0U;
-            const bool timing_issue = task.deadline_missed != 0U || task.stale_input != 0U ||
-                                      task.backpressure != 0U || task.overflow != 0U;
+            const bool runtime_timing_issue = task.lateness_ms.value_or(0U) != 0U ||
+                                              task.missed_periods.value_or(0U) != 0U ||
+                                              task.overrun.value_or(false);
+            const bool counter_issue = task.deadline_missed != 0U || task.stale_input != 0U ||
+                                       task.backpressure != 0U || task.overflow != 0U;
+            const bool timing_issue = runtime_timing_issue || counter_issue;
             diagnostics.push_back(diagnostic(
                 "task", "task", task.name, failing ? "failing" : (timing_issue ? "degraded" : "ok"),
                 failing ? "error" : (timing_issue ? "warn" : "info"),
-                failing
-                    ? std::optional<std::string>{"task has consecutive failures"}
-                    : (timing_issue
-                           ? std::optional<std::string>{"task timing/input counters are non-zero"}
-                           : std::nullopt),
-                std::nullopt, task.last_run_ms,
-                task.last_run_ms ? task.last_run_ms : status.clock.tick_time_ms,
+                failing ? std::optional<std::string>{"task has consecutive failures"}
+                        : (runtime_timing_issue
+                               ? std::optional<std::string>{"runtime observed task timing issue"}
+                               : (counter_issue
+                                      ? std::optional<
+                                            std::string>{"task timing/input counters are non-zero"}
+                                      : std::nullopt)),
+                runtime_timing_issue
+                    ? std::optional<std::string>{"timing is runtime-observed scheduler time, not a "
+                                                 "hard realtime guarantee"}
+                    : std::nullopt,
+                task.last_run_ms ? task.last_run_ms : task.observed_time_ms,
+                task.observed_time_ms
+                    ? task.observed_time_ms
+                    : (task.last_run_ms ? task.last_run_ms : status.clock.tick_time_ms),
                 {metric("lane", detail::json_string(task.lane)),
+                 metric("inflight", bool_metric(task.inflight)),
+                 metric("scheduled_time_ms", optional_u64_metric(task.scheduled_time_ms)),
+                 metric("observed_time_ms", optional_u64_metric(task.observed_time_ms)),
+                 metric("lateness_ms", optional_u64_metric(task.lateness_ms)),
+                 metric("missed_periods", optional_u64_metric(task.missed_periods)),
+                 metric("overrun", task.overrun ? bool_metric(*task.overrun) : std::string{"null"}),
                  metric("deadline_missed", std::to_string(task.deadline_missed)),
                  metric("stale_input", std::to_string(task.stale_input)),
                  metric("backpressure", std::to_string(task.backpressure)),
