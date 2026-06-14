@@ -207,6 +207,20 @@ pkg-config 事实源。RSDL target 描述目标语义，toolchain profile 描述
 交叉编译器、sysroot、CMake toolchain、pkg-config 路径、SDK overlay、C++ compile/link
 args 和 runtime dependency policy 都属于 toolchain/profile 配置，不写入 RSDL 或
 Contract IR。
+部署闭包已进一步收紧：交叉 C++/CMake build 在 bundled runtime dependency policy 下
+把 target SDK manifest 记录进 `build-info.json`，`bundle` 会复制到
+`runtime-deps/<platform>/` 并在 `bundle.toml` 中记录 version、platform、policy、path 和
+sha256。bundle manifest 同时记录 graph resource provider closure；deploy 的 dry-run 和
+真实部署都会校验 schema v2 artifact closure、external package multi-platform artifact
+closure、external scope resource provider closure、runtime dependency closure、platform
+和 hash。temporary overlay / test-only 产物仍默认拒绝；普通 island 产物仍需要显式
+`--allow-island`。真实部署上传前会先检查远端 FlowRT 同一 `major.minor` 版本，再通过远端
+deploy probe 校验 remote platform 和 runtime dependency 指纹；host、remote dir、ssh/scp
+参数继续按参数边界处理，空 host、以 `-` 开头的 host 和不安全 remote dir 会被拒绝。
+`doctor` 对 SDK overlay、pkg-config path 和 CMake toolchain file 输出可执行建议，指向
+`flowrt toolchain init --target <platform> --sdk-overlay <path>`、
+`.flowrt/toolchains.toml` 和 `flowrt doctor <rsdl> --target <platform>`，不引入 apt/sudo
+或隐式联网修复路径。
 
 CI/release 侧使用按架构隔离的 Rust/Cargo cache 和外部 `FLOWRT_CACHE_DIR` 降低重复
 构建成本。`v0.8.6 Cross UX SDK Smoke` 固定在 amd64 host 上安装 package job 产出的

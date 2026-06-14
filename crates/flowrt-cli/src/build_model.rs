@@ -321,6 +321,8 @@ pub struct BuildInfo {
     pub executables: BuildExecutables,
     #[serde(default)]
     pub artifacts: Vec<BuildArtifactInfo>,
+    #[serde(default)]
+    pub runtime_dependencies: Vec<BuildRuntimeDependencyInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -336,6 +338,17 @@ pub struct BuildArtifactInfo {
     pub kind: String,
     pub target: String,
     pub platform: Option<String>,
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildRuntimeDependencyInfo {
+    pub name: String,
+    pub target: String,
+    pub platform: String,
+    pub version: String,
+    pub policy: String,
     pub path: PathBuf,
     pub sha256: String,
 }
@@ -360,6 +373,7 @@ impl BuildInfo {
             deps_target_dir,
             executables: BuildExecutables::default(),
             artifacts: Vec::new(),
+            runtime_dependencies: Vec::new(),
         }
     }
 

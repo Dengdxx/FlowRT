@@ -914,6 +914,40 @@ backends = ["inproc"]
 }
 
 #[test]
+fn doctor_toolchain_path_checks_include_actionable_cross_sdk_hints() {
+    let sdk_overlay = doctor_sdk_overlay_check("linux-arm64", Path::new("/missing/vendor/rknn"));
+    assert_eq!(sdk_overlay.level, DoctorLevel::Error);
+    assert!(sdk_overlay.detail.contains("SDK overlay"));
+    assert!(
+        sdk_overlay.detail.contains(
+            "flowrt toolchain init --target linux-arm64 --sdk-overlay /missing/vendor/rknn"
+        )
+    );
+
+    let pkg_config =
+        doctor_pkg_config_path_check("linux-arm64", Path::new("/missing/vendor/pkgconfig"));
+    assert_eq!(pkg_config.level, DoctorLevel::Warn);
+    assert!(pkg_config.detail.contains("pkg-config"));
+    assert!(pkg_config.detail.contains("prepare the SDK overlay"));
+    assert!(
+        pkg_config
+            .detail
+            .contains("flowrt doctor <rsdl> --target linux-arm64")
+    );
+
+    let cmake_toolchain =
+        doctor_cmake_toolchain_check("linux-arm64", Path::new("/missing/toolchain.cmake"));
+    assert_eq!(cmake_toolchain.level, DoctorLevel::Error);
+    assert!(cmake_toolchain.detail.contains("CMake toolchain"));
+    assert!(cmake_toolchain.detail.contains(".flowrt/toolchains.toml"));
+    assert!(
+        cmake_toolchain
+            .detail
+            .contains("flowrt doctor <rsdl> --target linux-arm64")
+    );
+}
+
+#[test]
 fn doctor_contract_pkg_config_checks_report_ok_when_selected_target_has_no_cpp_pkg_config() {
     let contract = contract_from_source(
         r#"

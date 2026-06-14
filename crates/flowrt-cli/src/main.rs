@@ -278,6 +278,14 @@ enum Command {
         allow_island: bool,
     },
 
+    /// 输出远端部署前置校验指纹；供 `flowrt deploy` 通过 SSH 调用。
+    #[command(hide = true)]
+    DeployProbe {
+        /// 要部署的 canonical target platform。
+        #[arg(long)]
+        target_platform: String,
+    },
+
     /// 准备并运行 FlowRT 管理的应用 crate。
     Run {
         /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
@@ -1005,6 +1013,9 @@ fn main() -> Result<()> {
                 "{}",
                 deploy_bundle(&bundle, &host, &target, &remote_dir, dry_run, allow_island)?
             );
+        }
+        Command::DeployProbe { target_platform } => {
+            println!("{}", deploy_probe(&target_platform)?);
         }
         Command::Run {
             rsdl,
@@ -1811,6 +1822,10 @@ struct BundleManifest {
     #[serde(default)]
     external_processes: Vec<BundleExternalProcess>,
     #[serde(default)]
+    resource_providers: Vec<BundleResourceProvider>,
+    #[serde(default)]
+    runtime_dependencies: Vec<BundleRuntimeDependency>,
+    #[serde(default)]
     artifacts: Vec<BundleArtifact>,
 }
 
@@ -1834,6 +1849,32 @@ struct BundleExternalProcess {
     platform: Option<String>,
     #[serde(default)]
     supported_platforms: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BundleResourceProvider {
+    graph: String,
+    name: String,
+    scope: String,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    process: Option<String>,
+    #[serde(default)]
+    external_package: Option<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BundleRuntimeDependency {
+    name: String,
+    target: String,
+    platform: String,
+    version: String,
+    policy: String,
+    path: PathBuf,
+    sha256: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1969,6 +2010,7 @@ fn bundle_workspace(
 
     let mut executables = Vec::new();
     let mut artifacts = Vec::new();
+    let mut runtime_dependencies = Vec::new();
     let mut strip_stats = BundleStripStats::default();
     for plan in bundle_executable_plans(
         &build_info,
@@ -2001,6 +2043,77 @@ fn bundle_workspace(
         executables.push(BundleExecutable {
             kind: plan.kind,
             path: plan.dest,
+        });
+    }
+    for dependency in &build_info.runtime_dependencies {
+        if dependency.version != env!("CARGO_PKG_VERSION") {
+            anyhow::bail!(
+                "build-info runtime dependency `{}` was recorded for FlowRT {}, but this CLI is {}; run `{}` first",
+                dependency.name,
+                dependency.version,
+                env!("CARGO_PKG_VERSION"),
+                build_launcher_hint(Some(&dependency.platform))
+            );
+        }
+        if dependency.policy != "bundle" {
+            anyhow::bail!(
+                "build-info runtime dependency `{}` uses unsupported bundle policy `{}`; run `{}` first",
+                dependency.name,
+                dependency.policy,
+                build_launcher_hint(Some(&dependency.platform))
+            );
+        }
+        let platform = TargetPlatform::parse_alias(&dependency.platform)
+            .with_context(|| {
+                format!(
+                    "build-info runtime dependency `{}` declares unsupported platform `{}`",
+                    dependency.name, dependency.platform
+                )
+            })?
+            .as_str()
+            .to_string();
+        let source = if dependency.path.is_absolute() {
+            dependency.path.clone()
+        } else {
+            out_dir.join(&dependency.path)
+        };
+        let actual_hash = file_sha256(&source)?;
+        if actual_hash != dependency.sha256 {
+            anyhow::bail!(
+                "build-info runtime dependency `{}` sha256 mismatch before bundle: metadata has {}, actual is {}; run `{}` first",
+                dependency.name,
+                dependency.sha256,
+                actual_hash,
+                build_launcher_hint(Some(&platform))
+            );
+        }
+        let file_name = dependency.path.file_name().with_context(|| {
+            format!(
+                "build-info runtime dependency `{}` path `{}` has no file name",
+                dependency.name,
+                dependency.path.display()
+            )
+        })?;
+        let dest = PathBuf::from("runtime-deps")
+            .join(&platform)
+            .join(file_name);
+        copy_required_file(&source, &output.join(&dest))?;
+        let bundle_hash = file_sha256(&output.join(&dest))?;
+        artifacts.push(BundleArtifact {
+            kind: "runtime_dependency".to_string(),
+            target: dependency.target.clone(),
+            platform: Some(platform.clone()),
+            path: dest.clone(),
+            sha256: bundle_hash.clone(),
+        });
+        runtime_dependencies.push(BundleRuntimeDependency {
+            name: dependency.name.clone(),
+            target: dependency.target.clone(),
+            platform,
+            version: dependency.version.clone(),
+            policy: dependency.policy.clone(),
+            path: dest,
+            sha256: bundle_hash,
         });
     }
 
@@ -2052,6 +2165,7 @@ fn bundle_workspace(
         .find(|executable| executable.kind == "supervisor")
         .map(|executable| executable.path.clone())
         .context("internal error: bundle entry supervisor executable was not copied")?;
+    let resource_providers = bundle_resource_provider_closure(contract);
     let manifest = BundleManifest {
         schema_version: 2,
         flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -2067,6 +2181,8 @@ fn bundle_workspace(
         entry: entry.to_string_lossy().into_owned(),
         executables,
         external_processes,
+        resource_providers,
+        runtime_dependencies,
         artifacts,
     };
     let mut manifest_toml = toml::to_string_pretty(&manifest)?;
@@ -2153,6 +2269,39 @@ fn bundle_executable_plans(
         });
     }
     Ok(plans)
+}
+
+fn bundle_resource_provider_closure(contract: &ContractIr) -> Vec<BundleResourceProvider> {
+    contract
+        .graphs
+        .iter()
+        .flat_map(|graph| {
+            graph
+                .resource_providers
+                .iter()
+                .map(move |provider| BundleResourceProvider {
+                    graph: graph.name.clone(),
+                    name: provider.name.clone(),
+                    scope: resource_provider_scope_name(provider.scope).to_string(),
+                    target: provider.target.as_ref().map(|target| target.name.clone()),
+                    process: provider.process.clone(),
+                    external_package: provider.external_package.clone(),
+                    capabilities: provider
+                        .capabilities
+                        .iter()
+                        .map(|capability| capability.0.clone())
+                        .collect(),
+                })
+        })
+        .collect()
+}
+
+fn resource_provider_scope_name(scope: flowrt_ir::ResourceProviderScope) -> &'static str {
+    match scope {
+        flowrt_ir::ResourceProviderScope::Target => "target",
+        flowrt_ir::ResourceProviderScope::Process => "process",
+        flowrt_ir::ResourceProviderScope::ExternalPackage => "external_package",
+    }
 }
 
 fn bundle_build_artifact_for_executable<'a>(
@@ -2585,6 +2734,7 @@ fn deploy_bundle(
         warnings.push(remote_warning);
     }
     let warning = deploy_warning_suffix(&warnings);
+    validate_remote_deploy_probe(host, &manifest, target, &selected_artifacts.platforms)?;
 
     let remote = format!("{host}:{remote_dir}");
     let upload = ProcessCommand::new("scp")
@@ -2647,33 +2797,250 @@ fn select_deploy_artifacts(
 
     let mut platforms = Vec::new();
     let mut count = 0usize;
+    let mut entry_count = 0usize;
     for artifact in manifest
         .artifacts
         .iter()
         .filter(|artifact| artifact.target == target)
     {
-        validate_bundle_artifact(bundle, manifest, artifact)?;
+        if artifact.kind != "runtime_dependency" {
+            validate_bundle_artifact(bundle, manifest, artifact)?;
+        }
         count += 1;
-        if let Some(platform) = &artifact.platform {
-            let canonical = TargetPlatform::parse_alias(platform)
-                .with_context(|| {
-                    format!(
-                        "bundle artifact `{}` declares unsupported platform `{platform}`",
-                        artifact.path.display()
-                    )
-                })?
-                .as_str()
-                .to_string();
+        if is_deploy_entry_artifact_kind(&artifact.kind) {
+            let canonical = canonical_bundle_artifact_platform(artifact, "bundle entry")?;
             if !platforms.iter().any(|existing| existing == &canonical) {
                 platforms.push(canonical);
             }
+            entry_count += 1;
         }
     }
     if count == 0 {
         anyhow::bail!("bundle does not contain deployable artifacts for target `{target}`");
     }
+    if entry_count == 0 {
+        anyhow::bail!(
+            "bundle does not contain entry supervisor artifact for target `{target}`; run `{}` before bundling again",
+            build_launcher_hint(manifest.platform.as_deref())
+        );
+    }
     platforms.sort();
+    validate_deploy_resource_provider_closure(manifest)?;
+    validate_deploy_external_package_closure(bundle, manifest, target, &platforms)?;
+    validate_deploy_runtime_dependency_closure(bundle, manifest, target, &platforms)?;
     Ok(DeployArtifactSelection { count, platforms })
+}
+
+fn is_deploy_entry_artifact_kind(kind: &str) -> bool {
+    kind == "supervisor"
+}
+
+fn validate_deploy_resource_provider_closure(manifest: &BundleManifest) -> Result<()> {
+    for provider in &manifest.resource_providers {
+        if provider.scope != "external_package" {
+            continue;
+        }
+        let package = provider.external_package.as_deref().with_context(|| {
+            format!(
+                "resource provider `{}` graph `{}` uses external_package scope but does not declare external_package",
+                provider.name, provider.graph
+            )
+        })?;
+        if !manifest
+            .external_processes
+            .iter()
+            .any(|external| external.package == package)
+        {
+            anyhow::bail!(
+                "resource provider `{}` graph `{}` references external package `{package}`, but bundle manifest has no external package closure for it; rebuild the bundle after adding the package artifact",
+                provider.name,
+                provider.graph
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_deploy_external_package_closure(
+    bundle: &Path,
+    manifest: &BundleManifest,
+    target: &str,
+    selected_platforms: &[String],
+) -> Result<()> {
+    if selected_platforms.is_empty() {
+        return Ok(());
+    }
+    for external in &manifest.external_processes {
+        let expected_path = external.path.join(&external.executable);
+        ensure_safe_relative_path(&expected_path)?;
+        let supported_platforms = canonical_external_platforms(&external.supported_platforms);
+        let declared_platform = canonical_optional_platform(external.platform.as_deref())?;
+        let expected_platforms = declared_platform
+            .map(|platform| vec![platform])
+            .unwrap_or_else(|| selected_platforms.to_vec());
+        for expected_platform in expected_platforms {
+            if !selected_platforms
+                .iter()
+                .any(|platform| platform == &expected_platform)
+            {
+                anyhow::bail!(
+                    "external package `{}` executable `{}` platform mismatch: target `{target}` selected platforms [{}], package metadata declares `{expected_platform}`; run `{}` before bundling again",
+                    external.package,
+                    external.executable,
+                    selected_platforms.join(","),
+                    build_launcher_hint(Some(&expected_platform))
+                );
+            }
+            if !supported_platforms.is_empty()
+                && !supported_platforms
+                    .iter()
+                    .any(|platform| platform == &expected_platform)
+            {
+                anyhow::bail!(
+                    "external package `{}` executable `{}` does not support selected platform `{expected_platform}`; rebuild or install a package artifact for that platform",
+                    external.package,
+                    external.executable
+                );
+            }
+            let mut mismatched_platform = None;
+            let mut found = false;
+            for artifact in manifest.artifacts.iter().filter(|artifact| {
+                artifact.target == target
+                    && artifact.kind == "external_process"
+                    && artifact.path == expected_path
+            }) {
+                let artifact_platform =
+                    canonical_bundle_artifact_platform(artifact, "external package")?;
+                if artifact_platform == expected_platform {
+                    validate_bundle_artifact(bundle, manifest, artifact)?;
+                    found = true;
+                } else {
+                    mismatched_platform = Some(artifact_platform);
+                }
+            }
+            if !found {
+                if let Some(actual_platform) = mismatched_platform {
+                    anyhow::bail!(
+                        "external package `{}` executable `{}` platform mismatch: target `{target}` needs `{expected_platform}`, artifact declares `{actual_platform}`; run `{}` before bundling again",
+                        external.package,
+                        external.executable,
+                        build_launcher_hint(Some(&expected_platform))
+                    );
+                }
+                anyhow::bail!(
+                    "external package `{}` executable `{}` missing artifact for target `{target}` platform `{expected_platform}`; run `{}` before bundling again",
+                    external.package,
+                    external.executable,
+                    build_launcher_hint(Some(&expected_platform))
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_deploy_runtime_dependency_closure(
+    bundle: &Path,
+    manifest: &BundleManifest,
+    target: &str,
+    selected_platforms: &[String],
+) -> Result<()> {
+    for dependency in manifest
+        .runtime_dependencies
+        .iter()
+        .filter(|dependency| dependency.target == target)
+    {
+        validate_bundle_runtime_dependency(bundle, manifest, dependency, selected_platforms)?;
+    }
+    Ok(())
+}
+
+fn validate_bundle_runtime_dependency(
+    bundle: &Path,
+    manifest: &BundleManifest,
+    dependency: &BundleRuntimeDependency,
+    selected_platforms: &[String],
+) -> Result<()> {
+    ensure_safe_relative_path(&dependency.path)?;
+    if dependency.policy != "bundle" {
+        anyhow::bail!(
+            "runtime dependency `{}` uses unsupported deploy policy `{}`; configure a bundle runtime dependency or install matching remote runtime dependencies",
+            dependency.name,
+            dependency.policy
+        );
+    }
+    let platform = TargetPlatform::parse_alias(&dependency.platform)
+        .with_context(|| {
+            format!(
+                "runtime dependency `{}` declares unsupported platform `{}`",
+                dependency.name, dependency.platform
+            )
+        })?
+        .as_str()
+        .to_string();
+    if !selected_platforms.is_empty()
+        && !selected_platforms
+            .iter()
+            .any(|selected| selected == &platform)
+    {
+        anyhow::bail!(
+            "runtime dependency `{}` platform mismatch: target `{}` selected platforms [{}], dependency declares `{platform}`; run `{}` before bundling again",
+            dependency.name,
+            dependency.target,
+            selected_platforms.join(","),
+            build_doctor_hint(&platform)
+        );
+    }
+    if dependency.version != manifest.flowrt_version {
+        anyhow::bail!(
+            "runtime dependency `{}` version mismatch: bundle FlowRT version is {}, dependency declares {}; install matching FlowRT target SDK or run `{}` before bundling again",
+            dependency.name,
+            manifest.flowrt_version,
+            dependency.version,
+            build_doctor_hint(&platform)
+        );
+    }
+    let path = bundle.join(&dependency.path);
+    let metadata = fs::symlink_metadata(&path).with_context(|| {
+        format!(
+            "runtime dependency `{}` artifact `{}` does not exist; run `{}` before bundling again",
+            dependency.name,
+            path.display(),
+            build_doctor_hint(&platform)
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!(
+            "runtime dependency `{}` artifact `{}` must be a regular file",
+            dependency.name,
+            dependency.path.display()
+        );
+    }
+    let actual_hash = file_sha256(&path)?;
+    if actual_hash != dependency.sha256 {
+        anyhow::bail!(
+            "runtime dependency `{}` sha256 mismatch: manifest has {}, actual is {}; run `{}` before retrying",
+            dependency.name,
+            dependency.sha256,
+            actual_hash,
+            build_doctor_hint(&platform)
+        );
+    }
+    let has_artifact = manifest.artifacts.iter().any(|artifact| {
+        artifact.kind == "runtime_dependency"
+            && artifact.target == dependency.target
+            && artifact.path == dependency.path
+            && artifact.platform.as_deref() == Some(platform.as_str())
+    });
+    if !has_artifact {
+        anyhow::bail!(
+            "runtime dependency `{}` missing artifact closure for target `{}` platform `{platform}`; run `{}` before bundling again",
+            dependency.name,
+            dependency.target,
+            build_doctor_hint(&platform)
+        );
+    }
+    Ok(())
 }
 
 fn validate_bundle_artifact(
@@ -2743,6 +3110,23 @@ fn validate_bundle_artifact(
         );
     }
     Ok(())
+}
+
+fn canonical_bundle_artifact_platform(artifact: &BundleArtifact, context: &str) -> Result<String> {
+    let platform = artifact.platform.as_deref().with_context(|| {
+        format!(
+            "{context} artifact `{}` is missing platform metadata",
+            artifact.path.display()
+        )
+    })?;
+    TargetPlatform::parse_alias(platform)
+        .map(|platform| platform.as_str().to_string())
+        .with_context(|| {
+            format!(
+                "{context} artifact `{}` declares unsupported platform `{platform}`",
+                artifact.path.display()
+            )
+        })
 }
 
 fn validate_bundle_artifact_path_platform(
@@ -2819,6 +3203,209 @@ fn remote_version_warning(remote_version: &str, bundle_version: &str) -> Result<
     anyhow::bail!(
         "incompatible remote FlowRT version: remote has FlowRT {remote_version}, but bundle was created with FlowRT {bundle_version}"
     );
+}
+
+fn deploy_probe(target_platform: &str) -> Result<String> {
+    let target_platform = TargetPlatform::parse_alias(target_platform)
+        .with_context(|| format!("unsupported target platform `{target_platform}`"))?
+        .as_str()
+        .to_string();
+    let mut lines = vec![format!(
+        "flowrt-deploy-probe platform={}",
+        host_flowrt_platform().unwrap_or("unknown")
+    )];
+    if let Ok(runtime_dir) = cpp_runtime_dir_for_generated_build()
+        && let Ok(sdk) = resolve_cpp_target_sdk_root(runtime_dir.as_deref(), &target_platform)
+    {
+        let manifest = sdk.root.join("flowrt-target-sdk.toml");
+        if manifest.is_file() {
+            lines.push(format!(
+                "runtime_dependency name=flowrt-target-sdk version={} platform={} sha256={}",
+                env!("CARGO_PKG_VERSION"),
+                target_platform,
+                file_sha256(&manifest)?
+            ));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+fn validate_remote_deploy_probe(
+    host: &str,
+    manifest: &BundleManifest,
+    target: &str,
+    platforms: &[String],
+) -> Result<()> {
+    for platform in platforms {
+        let output = ProcessCommand::new("ssh")
+            .arg("--")
+            .arg(host)
+            .arg("flowrt")
+            .arg("deploy-probe")
+            .arg("--target-platform")
+            .arg(platform)
+            .output()
+            .with_context(|| format!("failed to spawn ssh deploy probe for host `{host}`"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            anyhow::bail!(
+                "remote FlowRT deploy probe failed for target platform `{platform}`: {}; install matching FlowRT {} on the remote host, then run `{}` there",
+                if detail.is_empty() {
+                    output.status.to_string()
+                } else {
+                    detail.to_string()
+                },
+                manifest.flowrt_version,
+                build_doctor_hint(platform)
+            );
+        }
+        validate_remote_deploy_probe_output(
+            &String::from_utf8_lossy(&output.stdout),
+            manifest,
+            target,
+            std::slice::from_ref(platform),
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct RemoteDeployProbe {
+    platform: Option<String>,
+    runtime_dependencies: Vec<RemoteRuntimeDependency>,
+}
+
+#[derive(Debug)]
+struct RemoteRuntimeDependency {
+    name: String,
+    version: String,
+    platform: String,
+    sha256: String,
+}
+
+fn validate_remote_deploy_probe_output(
+    output: &str,
+    manifest: &BundleManifest,
+    target: &str,
+    expected_platforms: &[String],
+) -> Result<()> {
+    let probe = parse_remote_deploy_probe_output(output)?;
+    if probe.platform.is_none() {
+        anyhow::bail!(
+            "remote deploy probe output did not include platform; install matching FlowRT {} on the remote host and run `{}` there",
+            manifest.flowrt_version,
+            expected_platforms
+                .first()
+                .map(|platform| build_doctor_hint(platform))
+                .unwrap_or_else(|| "flowrt doctor --target <platform>".to_string())
+        );
+    }
+    if let Some(expected_platform) = expected_platforms.first()
+        && let Some(remote_platform) = &probe.platform
+        && remote_platform != expected_platform
+    {
+        anyhow::bail!(
+            "remote platform mismatch for target `{target}`: expected `{expected_platform}`, remote reports `{remote_platform}`; install the matching FlowRT package or run `{}` on the remote host",
+            build_doctor_hint(expected_platform)
+        );
+    }
+    for dependency in manifest.runtime_dependencies.iter().filter(|dependency| {
+        dependency.target == target
+            && expected_platforms
+                .iter()
+                .any(|platform| platform == &dependency.platform)
+    }) {
+        let Some(remote) = probe.runtime_dependencies.iter().find(|remote| {
+            remote.name == dependency.name && remote.platform == dependency.platform
+        }) else {
+            anyhow::bail!(
+                "remote runtime dependency `{}` for platform `{}` is missing; install matching FlowRT target SDK on the remote host and run `{}` there",
+                dependency.name,
+                dependency.platform,
+                build_doctor_hint(&dependency.platform)
+            );
+        };
+        if remote.version != dependency.version {
+            anyhow::bail!(
+                "remote runtime dependency `{}` version mismatch for platform `{}`: bundle expects {}, remote reports {}; install matching FlowRT target SDK and run `{}` there",
+                dependency.name,
+                dependency.platform,
+                dependency.version,
+                remote.version,
+                build_doctor_hint(&dependency.platform)
+            );
+        }
+        if remote.sha256 != dependency.sha256 {
+            anyhow::bail!(
+                "remote runtime dependency `{}` sha256 mismatch for platform `{}`: bundle expects {}, remote reports {}; install matching FlowRT target SDK and run `{}` there",
+                dependency.name,
+                dependency.platform,
+                dependency.sha256,
+                remote.sha256,
+                build_doctor_hint(&dependency.platform)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn parse_remote_deploy_probe_output(output: &str) -> Result<RemoteDeployProbe> {
+    let mut probe = RemoteDeployProbe::default();
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let values = parse_probe_key_values(line.split_whitespace().skip(1));
+        if line.starts_with("flowrt-deploy-probe ") {
+            if let Some(platform) = values.get("platform") {
+                let platform = TargetPlatform::parse_alias(platform)
+                    .map(|platform| platform.as_str().to_string())
+                    .unwrap_or_else(|| platform.clone());
+                probe.platform = Some(platform);
+            }
+        } else if line.starts_with("runtime_dependency ") {
+            let name = values
+                .get("name")
+                .context("remote runtime_dependency probe line is missing `name`")?
+                .clone();
+            let version = values
+                .get("version")
+                .context("remote runtime_dependency probe line is missing `version`")?
+                .clone();
+            let platform = values
+                .get("platform")
+                .context("remote runtime_dependency probe line is missing `platform`")?;
+            let platform = TargetPlatform::parse_alias(platform)
+                .map(|platform| platform.as_str().to_string())
+                .unwrap_or_else(|| platform.clone());
+            let sha256 = values
+                .get("sha256")
+                .context("remote runtime_dependency probe line is missing `sha256`")?
+                .clone();
+            probe.runtime_dependencies.push(RemoteRuntimeDependency {
+                name,
+                version,
+                platform,
+                sha256,
+            });
+        }
+    }
+    Ok(probe)
+}
+
+fn parse_probe_key_values<'a>(
+    tokens: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    tokens
+        .into_iter()
+        .filter_map(|token| {
+            token
+                .split_once('=')
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 fn validate_deploy_host(host: &str) -> Result<()> {
@@ -3629,7 +4216,10 @@ fn collect_doctor_report(rsdl: Option<&Path>, target: Option<&str>) -> Result<Do
             checks.push(path_check("sysroot", sysroot, true));
         }
         if let Some(cmake_toolchain) = &profile.cmake_toolchain {
-            checks.push(file_check("cmake toolchain", cmake_toolchain, true));
+            checks.push(doctor_cmake_toolchain_check(
+                &profile.platform,
+                cmake_toolchain,
+            ));
         }
         let (target_sdk, target_sdk_check) = target_sdk_check_with_resolved_sdk(&profile.platform);
         checks.push(target_sdk_check);
@@ -3638,13 +4228,13 @@ fn collect_doctor_report(rsdl: Option<&Path>, target: Option<&str>) -> Result<Do
             .iter()
             .chain(profile.pkg_config_libdirs.iter())
         {
-            checks.push(path_check("pkg-config path", path, false));
+            checks.push(doctor_pkg_config_path_check(&profile.platform, path));
         }
         for path in &profile.cmake_prefix_paths {
             checks.push(path_check("cmake prefix", path, false));
         }
         for overlay in &profile.sdk_overlays {
-            checks.push(path_check("sdk overlay", overlay, true));
+            checks.push(doctor_sdk_overlay_check(&profile.platform, overlay));
         }
         if let Some(contract) = &selected_contract {
             checks.extend(doctor_contract_pkg_config_checks(
@@ -4268,13 +4858,49 @@ fn path_check(label: &'static str, path: &Path, required: bool) -> DoctorCheck {
     }
 }
 
-fn file_check(label: &'static str, path: &Path, required: bool) -> DoctorCheck {
-    if path.is_file() {
-        DoctorCheck::ok(label, path.display().to_string())
-    } else if required {
-        DoctorCheck::error(label, format!("missing file `{}`", path.display()))
+fn doctor_sdk_overlay_check(platform: &str, path: &Path) -> DoctorCheck {
+    if path.is_dir() {
+        DoctorCheck::ok("sdk overlay", path.display().to_string())
     } else {
-        DoctorCheck::warn(label, format!("missing file `{}`", path.display()))
+        DoctorCheck::error(
+            "sdk overlay",
+            format!(
+                "missing SDK overlay directory `{}`; prepare or mount the private SDK, then run `flowrt toolchain init --target {platform} --sdk-overlay {}` and retry `{}`",
+                path.display(),
+                path.display(),
+                build_doctor_hint(platform)
+            ),
+        )
+    }
+}
+
+fn doctor_pkg_config_path_check(platform: &str, path: &Path) -> DoctorCheck {
+    if path.is_dir() {
+        DoctorCheck::ok("pkg-config path", path.display().to_string())
+    } else {
+        DoctorCheck::warn(
+            "pkg-config path",
+            format!(
+                "missing pkg-config directory `{}`; prepare the SDK overlay or add the directory to `.flowrt/toolchains.toml`, then retry `{}`",
+                path.display(),
+                build_doctor_hint(platform)
+            ),
+        )
+    }
+}
+
+fn doctor_cmake_toolchain_check(platform: &str, path: &Path) -> DoctorCheck {
+    if path.is_file() {
+        DoctorCheck::ok("cmake toolchain", path.display().to_string())
+    } else {
+        DoctorCheck::error(
+            "cmake toolchain",
+            format!(
+                "missing CMake toolchain file `{}`; create it or update `cmake_toolchain` in `.flowrt/toolchains.toml`, then retry `{}`",
+                path.display(),
+                build_doctor_hint(platform)
+            ),
+        )
     }
 }
 
@@ -4942,8 +5568,8 @@ fn build_workspace(
             .as_ref()
             .map(|_| profile.profile.c_compiler.as_str())
     });
-    for step in steps {
-        match step {
+    for step in &steps {
+        match *step {
             BuildStep::CargoApp => {
                 let cargo_names = cargo_internal_names(contract)?;
                 let manifest = cargo_build_manifest_with_runtime_patch(
@@ -5031,6 +5657,7 @@ fn build_workspace(
             }
         }
     }
+    record_build_runtime_dependencies(&mut build_info, out_dir, target_profile, &steps)?;
     build_info.write(out_dir)?;
     Ok(build_info)
 }
@@ -5362,6 +5989,50 @@ fn record_build_artifact(
         path: relative,
         sha256: file_sha256(local)?,
     });
+    Ok(())
+}
+
+fn record_build_runtime_dependencies(
+    build_info: &mut build_model::BuildInfo,
+    out_dir: &Path,
+    target_profile: Option<&BuildToolchainProfile>,
+    steps: &[BuildStep],
+) -> Result<()> {
+    let Some(target_profile) = target_profile else {
+        return Ok(());
+    };
+    if !target_profile.is_cross
+        || target_profile.profile.runtime_dependency_policy != RuntimeDependencyPolicy::Bundle
+        || !steps.contains(&BuildStep::CmakeApp)
+    {
+        return Ok(());
+    }
+
+    let runtime_dir = cpp_runtime_dir_for_generated_build()?;
+    let sdk = resolve_cpp_target_sdk_for_build(runtime_dir.as_deref(), &target_profile.profile)?;
+    let source = sdk.root.join("flowrt-target-sdk.toml");
+    let dest = out_dir
+        .join("build/runtime-deps")
+        .join(&target_profile.profile.platform)
+        .join("flowrt-target-sdk.toml");
+    copy_required_file(&source, &dest)?;
+    build_info
+        .runtime_dependencies
+        .push(build_model::BuildRuntimeDependencyInfo {
+            name: "flowrt-target-sdk".to_string(),
+            target: build_info
+                .target
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+            platform: target_profile.profile.platform.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            policy: runtime_dependency_policy_name(
+                target_profile.profile.runtime_dependency_policy,
+            )
+            .to_string(),
+            path: relative_to_out_dir(out_dir, &dest)?,
+            sha256: file_sha256(&dest)?,
+        });
     Ok(())
 }
 

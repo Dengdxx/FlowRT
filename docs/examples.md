@@ -268,6 +268,9 @@ flowrt deploy dist/external-driver-demo --host user@host --target edge --remote-
 该示例不访问真实硬件。`bin/driver` 只校验 supervisor 注入的 `FLOWRT_*` 环境变量和
 manifest args，用于证明 external process 可以纳入 FlowRT 的 Contract IR、launch
 manifest、self-description、supervisor 和离线 bundle 主路径。
+bundle / deploy 会把 external package artifact 按 target platform 纳入闭包校验；
+缺少对应 platform 的 executable artifact、artifact platform 不匹配或 hash 不一致时，
+dry-run 也会拒绝，并提示重新执行对应 target 的 `flowrt build --launcher` 后再 bundle。
 
 ## 公开交叉 SDK 示例
 
@@ -336,7 +339,9 @@ flowrt build --target linux-arm64 --launcher rsdl/robot.rsdl
 SDK 和 NEON kernel。它们都不代表 FlowRT 内置硬件 backend，只验证用户项目如何通过
 toolchain overlay 接入外部 SDK。推荐先运行带 RSDL 的 `flowrt doctor`，确认
 `component.build.pkg_config` 模块已经在 selected target 的 overlay / pkg-config 路径中
-可见，再继续 `deps` 和 `build`。
+可见，再继续 `deps` 和 `build`。交叉 C++ 构建使用 bundled runtime dependency policy
+时，`build-info.json` 会记录 target SDK 指纹；后续 bundle / deploy 会校验 target SDK
+version、platform 和 sha256，避免把本机编译出的产物部署到不匹配的目标 runtime。
 
 ## iox2 mixed 示例
 

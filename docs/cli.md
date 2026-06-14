@@ -420,7 +420,10 @@ adapter。native 构建或未使用 Cargo cross target triple 时继续写入兼
 `flowrt/build/bin/linux-arm64/release/`，避免不同 target 的同名二进制互相覆盖。
 `flowrt/build/build-info.json` 记录本次构建的 FlowRT 版本、profile、build mode、
 target 名称、platform、target identity、Rust target triple、host triple、依赖 target
-目录和相对 executable 路径。
+目录和相对 executable 路径。交叉 C++/CMake 构建使用
+`runtime_dependency_policy = "bundle"` 时，还会记录 target SDK runtime dependency
+指纹，包括名称、target、platform、FlowRT 版本、bundle policy、相对路径和 sha256；
+后续 `bundle` / `deploy` 会用这些指纹校验部署闭包。
 
 `--target <platform>` 显式选择构建目标 platform，优先级高于 Contract IR target
 platform；省略时，`build` 使用选定 Contract IR target 的 platform，仍无 platform
@@ -485,8 +488,12 @@ flowrt doctor examples/libjpeg_cross_demo/rsdl/robot.rsdl --target linux-arm64
 
 `doctor` 预检本机或交叉编译环境。指定 `--target` 后，它会解析 toolchain profile，
 检查 Rust target、C/C++ 编译器、pkg-config、完整 target SDK、显式 sysroot、
-CMake toolchain file 和 SDK overlay。缺少 Rust target、交叉编译器、完整 target SDK
-或显式 overlay 时会以非零状态退出，并给出可执行修复提示。
+CMake toolchain file 和 SDK overlay。缺少 Rust target、交叉编译器、完整 target SDK、
+CMake toolchain file 或显式 overlay 时会以非零状态退出，并给出可执行修复提示。
+SDK overlay、pkg-config 目录和 CMake toolchain 诊断会指向
+`flowrt toolchain init --target <platform> --sdk-overlay <path>`、
+`.flowrt/toolchains.toml` 或 `flowrt doctor <rsdl> --target <platform>`，便于用户按
+toolchain/profile 边界修复本机编译环境，而不是把板级 SDK 写进 RSDL。
 
 提供 RSDL 路径时，`doctor` 会走与 `check` / `prepare` 一致的主路径：读取 RSDL、
 归一化并校验 Contract IR、选中默认 profile，然后按 selected target 的 C++ component
@@ -653,12 +660,17 @@ island profile 生成物带有可拆卸测试脚手架，不应误发为生产 b
 
 bundle 输出是目录，包含：
 
-- `bundle.toml`：FlowRT 版本、package、profile、target、platform、build mode、入口 binary、external package 摘要和 `artifacts` 列表；artifact 记录 kind、target、platform、相对路径和 sha256，是后续多目标 deploy 的事实源。
+- `bundle.toml`：FlowRT 版本、package、profile、target、platform、build mode、入口 binary、external package 摘要、resource provider closure、runtime dependency 指纹和 `artifacts` 列表；artifact 记录 kind、target、platform、相对路径和 sha256，是后续多目标 deploy 的事实源。
 - `bin/`：本项目已构建二进制。native 或无 platform 的 bundle 继续使用 `bin/<filename>`；带 target platform 的 bundle 使用 `bin/<platform>/<filename>`，避免不同 target 同名二进制覆盖。复制到 bundle 后会对 ELF 可执行文件 best-effort 运行 `strip --strip-unneeded`；非 ELF 文件跳过，strip 不可用或失败时在命令摘要中累计 `strip_warnings`，不修改用户工作区原始产物。
+- `runtime-deps/<platform>/`：随 bundle 携带的 FlowRT runtime dependency metadata，例如
+  `flowrt-target-sdk.toml`；deploy 会校验 version、platform、path 和 sha256。
 - `flowrt/contract/contract.ir.json`、`flowrt/launch/launch.json`、`flowrt/selfdesc/selfdesc.json` 和 `flowrt/build/build-info.json`。
 - `external/<package>`：随项目携带的 external package 副本。
 
-输出目录必须不存在或为空，避免覆盖已有部署内容。bundle 会按 target platform 校验 external executable 的支持矩阵。bundle 不包含 FlowRT 源码仓库、不包含 Cargo target cache，也不内嵌系统 FlowRT runtime；目标机器应安装同版本 FlowRT deb。
+输出目录必须不存在或为空，避免覆盖已有部署内容。bundle 会按 target platform 校验
+external executable 的支持矩阵，并把 external package artifact、external scope 的
+resource provider 和 runtime dependency 纳入部署闭包。bundle 不包含 FlowRT 源码仓库、
+不包含 Cargo target cache，也不隐式拉取系统依赖；目标机器应安装同版本 FlowRT deb。
 
 ## `deploy`
 
@@ -667,12 +679,16 @@ flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /op
 flowrt deploy dist/external-demo --host user@host --target edge --remote-dir /opt/external-demo --dry-run
 ```
 
-`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性和 sha256；如果 artifact platform、`bin/<platform>/` 路径层级或 hash 不一致，会提示重新执行对应的 `flowrt build --target <platform> --launcher` 后再 bundle。schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
+`deploy` 读取 `bundle.toml`，不回读源码或 RSDL。schema v2 bundle 以 `artifacts` 列表作为部署事实源：dry-run 和真实部署都会按请求 `target` 选择 artifact，并校验 platform、相对路径、文件存在性、sha256、external package artifact closure、external scope resource provider closure，以及 runtime dependency 的 version、platform、path 和 sha256；如果 artifact platform、`bin/<platform>/` 路径层级或 hash 不一致，会提示重新执行对应的 `flowrt build --target <platform> --launcher` 或 `flowrt doctor <rsdl> --target <platform>` 后再 bundle。schema v1 bundle 继续按顶层 `target` 字段兼容。非 dry-run 时通过 `ssh <host> flowrt --version` 检查远端存在同一 `major.minor` 的 FlowRT，再调用远端 FlowRT deploy probe 校验 remote platform 和 runtime dependency 指纹，最后用 `scp -r` 上传 bundle 到 `remote-dir`。它不做交叉编译、不安装系统 deb、不管理远端 supervisor 服务，这些属于后续多目标部署深化。
 
 如果 bundle manifest 标记 `artifact_mode = "island"`、`temporary_overlay = true` 或
 `test_only = true`，`deploy` 默认拒绝部署。需要把 island 脚手架临时部署到测试机器时，
 必须显式传入 `--allow-island`；迁移完成后的普通生产包应删除 boundary endpoint、切回
 `strict` profile 后重新构建和打包。
+
+`deploy` 还会拒绝空 host、以 `-` 开头的 host、空 remote dir 和带 shell 元字符的
+remote dir；CLI 调用 `ssh` / `scp` 时使用参数边界，避免 host、path 或远端参数被解释成
+本地 option。
 
 ## `[[process]]` 编排字段
 
