@@ -138,8 +138,28 @@ class ScheduleWaiter {
     ScheduleWaiter() : state_(std::make_shared<State>()) {}
 
     void notify_data() const {
+        notify_data_with_time(std::nullopt);
+    }
+
+    void notify_data_at_ms(std::uint64_t time_ms) const {
+        notify_data_with_time(time_ms);
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> take_data_time_ms() const {
+        std::lock_guard lock(state_->mutex);
+        auto value = state_->data_time_ms;
+        state_->data_time_ms.reset();
+        return value;
+    }
+
+    void notify_data_with_time(std::optional<std::uint64_t> time_ms) const {
         std::lock_guard lock(state_->mutex);
         ++state_->data_generation;
+        if (time_ms.has_value()) {
+            state_->data_time_ms = state_->data_time_ms.has_value()
+                                     ? std::max(*state_->data_time_ms, *time_ms)
+                                     : time_ms;
+        }
         state_->ready.notify_all();
     }
 
@@ -188,6 +208,7 @@ class ScheduleWaiter {
         std::mutex mutex;
         std::condition_variable ready;
         std::uint64_t data_generation{};
+        std::optional<std::uint64_t> data_time_ms;
     };
 
     std::shared_ptr<State> state_;

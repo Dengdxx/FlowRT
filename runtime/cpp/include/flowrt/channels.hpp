@@ -792,7 +792,11 @@ class BoundaryInput {
             waiter = schedule_waiter_;
         }
         if (waiter.has_value()) {
-            waiter->notify_data();
+            if (published_at_ms.has_value()) {
+                waiter->notify_data_at_ms(*published_at_ms);
+            } else {
+                waiter->notify_data();
+            }
         }
         return revision;
     }

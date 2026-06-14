@@ -145,6 +145,8 @@ pub struct IntrospectionHandshake {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntrospectionStatus {
     pub tick_count: u64,
+    #[serde(default)]
+    pub clock: IntrospectionClockStatus,
     pub channels: Vec<IntrospectionChannelStatus>,
     /// v0.8+ active input latest/presence/stale 运行态状态。
     #[serde(default)]
@@ -172,6 +174,41 @@ pub struct IntrospectionStatus {
     /// v0.6+ recorder 运行态状态。
     #[serde(default)]
     pub recorder: IntrospectionRecorderStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionClockStatus {
+    #[serde(default = "default_clock_source")]
+    pub source: String,
+    #[serde(default)]
+    pub tick_time_ms: Option<u64>,
+    #[serde(default = "default_clock_unit")]
+    pub unit: String,
+    #[serde(default = "default_clock_field")]
+    pub field: String,
+}
+
+impl Default for IntrospectionClockStatus {
+    fn default() -> Self {
+        Self {
+            source: default_clock_source(),
+            tick_time_ms: None,
+            unit: default_clock_unit(),
+            field: default_clock_field(),
+        }
+    }
+}
+
+fn default_clock_source() -> String {
+    "realtime".to_string()
+}
+
+fn default_clock_unit() -> String {
+    "ms".to_string()
+}
+
+fn default_clock_field() -> String {
+    "tick_time_ms".to_string()
 }
 
 /// 单个 channel 的运行态摘要。
@@ -783,6 +820,7 @@ impl std::fmt::Debug for IntrospectionState {
 #[derive(Default)]
 struct IntrospectionStateInner {
     tick_count: u64,
+    clock: IntrospectionClockStatus,
     self_description_json: Option<String>,
     channels: BTreeMap<String, ChannelState>,
     inputs: BTreeMap<String, IntrospectionInputStatus>,
@@ -926,15 +964,33 @@ impl IntrospectionState {
 
     /// 增加 scheduler tick 计数。
     pub fn record_tick(&self) {
+        self.record_tick_at(0, "realtime");
+    }
+
+    /// 按统一 runtime 毫秒时间模型记录 scheduler tick。
+    pub fn record_tick_at(&self, tick_time_ms: u64, time_source: impl Into<String>) {
+        let time_source = time_source.into();
         let mut inner = self.lock_inner();
         inner.tick_count = inner.tick_count.saturating_add(1);
         let tick_count = inner.tick_count;
+        inner.clock = IntrospectionClockStatus {
+            source: time_source.clone(),
+            tick_time_ms: Some(tick_time_ms),
+            unit: "ms".to_string(),
+            field: "tick_time_ms".to_string(),
+        };
         drop(inner);
-        self.recorder.record_runtime_event_json(
+        self.recorder.record_runtime_event_json_at(
             RecordEntityKind::Clock,
             "scheduler_tick",
             "flowrt.clock.tick",
-            serde_json::json!({ "tick_count": tick_count }),
+            serde_json::json!({
+                "tick_count": tick_count,
+                "tick_time_ms": tick_time_ms,
+                "time_source": time_source,
+                "time_unit": "ms",
+            }),
+            Some(tick_time_ms.saturating_mul(1_000_000)),
         );
     }
 
@@ -1132,6 +1188,7 @@ impl IntrospectionState {
         let inner = self.lock_inner();
         IntrospectionStatus {
             tick_count: inner.tick_count,
+            clock: inner.clock.clone(),
             channels: inner
                 .channels
                 .iter()
@@ -1438,7 +1495,7 @@ impl IntrospectionState {
         let mut inner = self.lock_inner();
         inner.operations.insert(status.name.clone(), status);
         drop(inner);
-        self.recorder.record_operation_event_json(
+        self.recorder.record_operation_event_json_at(
             &status_for_record.name,
             "flowrt.operation.status",
             serde_json::json!({
@@ -1459,6 +1516,9 @@ impl IntrospectionState {
                 "last_error": status_for_record.last_error,
                 "last_transition_ms": status_for_record.last_transition_ms,
             }),
+            status_for_record
+                .last_transition_ms
+                .map(|value| value.saturating_mul(1_000_000)),
         );
     }
 
@@ -2896,7 +2956,7 @@ mod tests {
         let state = IntrospectionState::new();
         state.register_channel("source.imu_to_sink.imu", "Imu");
         for _ in 0..7 {
-            state.record_tick();
+            state.record_tick_at(10, "simulated_replay");
         }
         state.record_channel_publish_bytes("source.imu_to_sink.imu", "Imu", vec![1u8; 48], Some(7));
         state.record_channel_publish_bytes("source.imu_to_sink.imu", "Imu", vec![2u8; 48], Some(8));
@@ -2914,6 +2974,9 @@ mod tests {
 
         assert_eq!(response_handshake, handshake);
         assert_eq!(status.tick_count, 7);
+        assert_eq!(status.clock.source, "simulated_replay");
+        assert_eq!(status.clock.tick_time_ms, Some(10));
+        assert_eq!(status.clock.unit, "ms");
         assert_eq!(
             status.channels,
             vec![IntrospectionChannelStatus {
@@ -2926,13 +2989,14 @@ mod tests {
             }]
         );
 
-        state.record_tick();
+        state.record_tick_at(11, "simulated_replay");
         let IntrospectionResponse::Status { status, .. } =
             request_status(server.path()).expect("second status request should succeed")
         else {
             panic!("status request returned wrong response")
         };
         assert_eq!(status.tick_count, 8);
+        assert_eq!(status.clock.tick_time_ms, Some(11));
 
         let IntrospectionResponse::ChannelSnapshot { channel, .. } =
             request_channel_snapshot(server.path(), "source.imu_to_sink.imu")
@@ -4328,6 +4392,32 @@ mod tests {
     }
 
     #[test]
+    fn clock_record_event_uses_scheduler_time_model() {
+        let state = IntrospectionState::new();
+        state.start_recorder(IntrospectionRecorderStart {
+            output: None,
+            filters: vec!["all".to_string()],
+            queue_depth: None,
+            package: String::new(),
+            process: String::new(),
+            runtime_pid: 0,
+            selfdesc_hash: String::new(),
+        });
+
+        state.record_tick_at(25, "simulated_replay");
+
+        let events = state.drain_recorder_events();
+        let clock = events
+            .iter()
+            .find(|event| event.event_kind == flowrt_record::RecordEventKind::ClockEvent)
+            .expect("clock event should be recorded");
+        assert_eq!(clock.monotonic_ns, 25_000_000);
+        let payload: serde_json::Value = serde_json::from_slice(&clock.payload).unwrap();
+        assert_eq!(payload["tick_time_ms"], 25);
+        assert_eq!(payload["time_source"], "simulated_replay");
+    }
+
+    #[test]
     fn input_read_records_presence_and_route_counters() {
         let state = IntrospectionState::new();
         state.register_route(IntrospectionRouteStatus {
@@ -4375,6 +4465,7 @@ mod tests {
     fn health_fields_serialize_roundtrip() {
         let status = IntrospectionStatus {
             tick_count: 42,
+            clock: IntrospectionClockStatus::default(),
             channels: vec![],
             processes: vec![],
             inputs: vec![IntrospectionInputStatus {
@@ -4462,6 +4553,9 @@ mod tests {
 
         let json = serde_json::to_string(&status).unwrap();
         let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.clock.source, "realtime");
+        assert_eq!(parsed.clock.unit, "ms");
+        assert_eq!(parsed.clock.field, "tick_time_ms");
         assert_eq!(parsed.inputs.len(), 1);
         assert_eq!(parsed.inputs[0].task, "sink.main");
         assert!(parsed.inputs[0].present);

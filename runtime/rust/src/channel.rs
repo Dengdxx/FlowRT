@@ -425,7 +425,10 @@ impl<T> BoundaryInput<T> {
             (inner.revision, inner.schedule_waiter.clone())
         };
         if let Some(waiter) = waiter {
-            waiter.notify_data();
+            match published_at_ms {
+                Some(published_at_ms) => waiter.notify_data_at_ms(published_at_ms),
+                None => waiter.notify_data(),
+            }
         }
         revision
     }

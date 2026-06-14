@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     BoundaryDirection, BoundaryEndpointIr, ContractArtifactIr, ContractIr, EntityId, EntityRef,
-    GraphMode, IrError, PortRef, Result, TypeExpr,
+    GraphMode, IrError, PortRef, Result, TemporaryOverlayBoundaryMappingIr,
+    TemporaryOverlayGenerationIr, TemporaryOverlayIr, TypeExpr,
 };
 
 use crate::normalize::entity_id_for_projection;
@@ -22,6 +23,7 @@ pub struct TemporaryBoundaryMapping {
 pub struct TemporaryIslandOverlay {
     pub boundary_inputs: Vec<TemporaryBoundaryMapping>,
     pub boundary_outputs: Vec<TemporaryBoundaryMapping>,
+    pub generated_by: TemporaryOverlayGenerationIr,
 }
 
 /// 将已按 profile 投影的 strict Contract IR 转成 test-only island 产物。
@@ -47,10 +49,32 @@ pub fn apply_temporary_island_overlay(
     }
 
     let mut projected = contract.clone();
+    let original_profile_mode = projected
+        .profiles
+        .first()
+        .map(|profile| profile.mode)
+        .unwrap_or(GraphMode::Strict);
+    let boundary_mappings = overlay
+        .boundary_inputs
+        .iter()
+        .map(|mapping| temporary_overlay_mapping(mapping, BoundaryDirection::Input))
+        .chain(
+            overlay
+                .boundary_outputs
+                .iter()
+                .map(|mapping| temporary_overlay_mapping(mapping, BoundaryDirection::Output)),
+        )
+        .collect();
     projected.artifact = ContractArtifactIr {
         mode: GraphMode::Island,
         temporary_island: true,
         test_only: true,
+        temporary_overlay: Some(TemporaryOverlayIr {
+            kind: "temporary_island".to_string(),
+            original_profile_mode,
+            generated_by: overlay.generated_by.clone(),
+            boundary_mappings,
+        }),
     };
     for profile in &mut projected.profiles {
         profile.mode = GraphMode::Island;
@@ -76,6 +100,22 @@ pub fn apply_temporary_island_overlay(
     }
 
     Ok(projected)
+}
+
+fn temporary_overlay_mapping(
+    mapping: &TemporaryBoundaryMapping,
+    direction: BoundaryDirection,
+) -> TemporaryOverlayBoundaryMappingIr {
+    TemporaryOverlayBoundaryMappingIr {
+        direction,
+        name: mapping.name.clone(),
+        endpoint: mapping.endpoint.clone(),
+        source: match direction {
+            BoundaryDirection::Input => "--boundary-input",
+            BoundaryDirection::Output => "--boundary-output",
+        }
+        .to_string(),
+    }
 }
 
 fn apply_overlay_to_graph(

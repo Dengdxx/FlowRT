@@ -332,6 +332,16 @@ impl RecorderTap {
         payload_schema: &str,
         payload: serde_json::Value,
     ) -> RecorderTapOutcome {
+        self.record_operation_event_json_at(name, payload_schema, payload, None)
+    }
+
+    pub fn record_operation_event_json_at(
+        &self,
+        name: &str,
+        payload_schema: &str,
+        payload: serde_json::Value,
+        monotonic_ns: Option<u64>,
+    ) -> RecorderTapOutcome {
         if !self.enabled_for_operation(name) {
             return RecorderTapOutcome::default();
         }
@@ -356,7 +366,7 @@ impl RecorderTap {
             PayloadEncoding::Json,
             payload_schema,
             &payload,
-            None,
+            monotonic_ns,
         )
     }
 
@@ -436,6 +446,17 @@ impl RecorderTap {
         payload_schema: &str,
         payload: serde_json::Value,
     ) -> RecorderTapOutcome {
+        self.record_runtime_event_json_at(kind, name, payload_schema, payload, None)
+    }
+
+    pub fn record_runtime_event_json_at(
+        &self,
+        kind: RecordEntityKind,
+        name: &str,
+        payload_schema: &str,
+        payload: serde_json::Value,
+        monotonic_ns: Option<u64>,
+    ) -> RecorderTapOutcome {
         if !self.enabled() {
             return RecorderTapOutcome::default();
         }
@@ -465,7 +486,7 @@ impl RecorderTap {
             PayloadEncoding::Json,
             payload_schema,
             &payload,
-            None,
+            monotonic_ns,
         )
     }
 

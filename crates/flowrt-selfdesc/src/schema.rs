@@ -57,6 +57,10 @@ pub struct SelfDescriptionArtifact {
     pub temporary_island: bool,
     #[serde(default)]
     pub test_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary_overlay: Option<SelfDescriptionTemporaryOverlay>,
+    #[serde(default)]
+    pub clock: SelfDescriptionClock,
 }
 
 impl Default for SelfDescriptionArtifact {
@@ -65,8 +69,74 @@ impl Default for SelfDescriptionArtifact {
             mode: default_graph_mode(),
             temporary_island: false,
             test_only: false,
+            temporary_overlay: None,
+            clock: SelfDescriptionClock::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionTemporaryOverlay {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default = "default_graph_mode")]
+    pub original_profile_mode: String,
+    #[serde(default)]
+    pub generated_by: SelfDescriptionTemporaryOverlayGeneration,
+    #[serde(default)]
+    pub boundary_mappings: Vec<SelfDescriptionTemporaryOverlayBoundaryMapping>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SelfDescriptionTemporaryOverlayGeneration {
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionTemporaryOverlayBoundaryMapping {
+    #[serde(default)]
+    pub direction: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionClock {
+    #[serde(default = "default_clock_source")]
+    pub source: String,
+    #[serde(default = "default_clock_unit")]
+    pub unit: String,
+    #[serde(default = "default_clock_field")]
+    pub field: String,
+}
+
+impl Default for SelfDescriptionClock {
+    fn default() -> Self {
+        Self {
+            source: default_clock_source(),
+            unit: default_clock_unit(),
+            field: default_clock_field(),
+        }
+    }
+}
+
+fn default_clock_source() -> String {
+    "realtime".to_string()
+}
+
+fn default_clock_unit() -> String {
+    "ms".to_string()
+}
+
+fn default_clock_field() -> String {
+    "tick_time_ms".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

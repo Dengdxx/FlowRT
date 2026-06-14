@@ -48,6 +48,12 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
             "mode": graph_mode_name(contract_artifact_mode(contract)),
             "temporary_island": contract.artifact.temporary_island,
             "test_only": contract.artifact.test_only,
+            "temporary_overlay": launch_temporary_overlay(contract),
+            "clock": {
+                "source": clock_source_name(contract),
+                "unit": "ms",
+                "field": "tick_time_ms",
+            },
         },
         "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
         "profile_modes": contract.profiles.iter().map(|profile| serde_json::json!({
@@ -163,6 +169,34 @@ fn graph_mode_name(mode: GraphMode) -> &'static str {
         GraphMode::Strict => "strict",
         GraphMode::Island => "island",
     }
+}
+
+fn clock_source_name(contract: &ContractIr) -> &'static str {
+    if contract.artifact.temporary_overlay.is_some() {
+        "simulated_replay"
+    } else {
+        "realtime"
+    }
+}
+
+fn launch_temporary_overlay(contract: &ContractIr) -> serde_json::Value {
+    let Some(overlay) = contract.artifact.temporary_overlay.as_ref() else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "kind": overlay.kind,
+        "original_profile_mode": graph_mode_name(overlay.original_profile_mode),
+        "generated_by": {
+            "command": overlay.generated_by.command,
+            "source": overlay.generated_by.source,
+        },
+        "boundary_mappings": overlay.boundary_mappings.iter().map(|mapping| serde_json::json!({
+            "direction": boundary_direction_name(mapping.direction),
+            "name": mapping.name,
+            "endpoint": mapping.endpoint,
+            "source": mapping.source,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn contract_artifact_mode(contract: &ContractIr) -> GraphMode {

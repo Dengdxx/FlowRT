@@ -1253,6 +1253,12 @@ worker_threads = 2
     ));
     assert!(rust_shell.contains("let scheduler_events = flowrt::ScheduleWaiter::new();"));
     assert!(rust_shell.contains("scheduler_events.notify_data();"));
+    assert!(rust_shell.contains("let clock_source = \"realtime\";"));
+    assert!(rust_shell.contains("introspection_state.record_tick_at(tick_time_ms, clock_source);"));
+    assert!(
+        rust_shell.contains("if let Some(data_time_ms) = scheduler_events.take_data_time_ms()")
+    );
+    assert!(rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(data_time_ms);"));
     assert!(rust_shell.contains(
         "scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown)"
     ));
@@ -1460,6 +1466,12 @@ worker_threads = 2
     ));
     assert!(cpp_shell.contains("flowrt::ScheduleWaiter scheduler_events;"));
     assert!(cpp_shell.contains("scheduler_events.notify_data();"));
+    assert!(cpp_shell.contains("const auto clock_source = std::string_view{\"realtime\"};"));
+    assert!(cpp_shell.contains("introspection_state.record_tick(tick_time_ms, clock_source);"));
+    assert!(
+        cpp_shell.contains("if (const auto data_time_ms = scheduler_events.take_data_time_ms())")
+    );
+    assert!(cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
     assert!(cpp_shell.contains(
         "scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)"
     ));

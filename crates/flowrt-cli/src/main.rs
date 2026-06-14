@@ -1781,6 +1781,10 @@ struct BundleManifest {
     profile: Option<String>,
     #[serde(default = "default_bundle_artifact_mode")]
     artifact_mode: String,
+    #[serde(default)]
+    temporary_overlay: bool,
+    #[serde(default)]
+    test_only: bool,
     target: String,
     platform: Option<String>,
     build_mode: BuildMode,
@@ -1867,7 +1871,26 @@ fn contract_artifact_mode_name(contract: &ContractIr) -> &'static str {
     }
 }
 
-fn ensure_island_artifact_allowed(mode: &str, allow_island: bool, action: &str) -> Result<()> {
+fn ensure_artifact_allowed(
+    mode: &str,
+    temporary_overlay: bool,
+    test_only: bool,
+    allow_island: bool,
+    action: &str,
+) -> Result<()> {
+    if temporary_overlay || test_only {
+        if allow_island {
+            return Ok(());
+        }
+        let reason = if temporary_overlay {
+            "temporary overlay"
+        } else {
+            "test-only"
+        };
+        anyhow::bail!(
+            "refusing to {action} {reason} FlowRT artifact by default; pass `--allow-island` only for development, test, or migration scaffolds"
+        );
+    }
     match mode {
         "strict" => Ok(()),
         "island" if allow_island => Ok(()),
@@ -1887,7 +1910,13 @@ fn bundle_workspace(
     allow_island: bool,
 ) -> Result<String> {
     let artifact_mode = contract_artifact_mode_name(contract);
-    ensure_island_artifact_allowed(artifact_mode, allow_island, "bundle")?;
+    ensure_artifact_allowed(
+        artifact_mode,
+        contract.artifact.temporary_overlay.is_some(),
+        contract.artifact.test_only,
+        allow_island,
+        "bundle",
+    )?;
     let build_info = load_build_info(out_dir, requested_build_mode, true)?;
     let supervisor = executable_from_build_info(
         out_dir,
@@ -2013,6 +2042,8 @@ fn bundle_workspace(
         package: contract.package.name.clone(),
         profile: build_info.rsdl_profile,
         artifact_mode: artifact_mode.to_string(),
+        temporary_overlay: contract.artifact.temporary_overlay.is_some(),
+        test_only: contract.artifact.test_only,
         target: target_name,
         platform: target_platform,
         build_mode: build_info.build_mode,
@@ -2496,7 +2527,13 @@ fn deploy_bundle(
     validate_deploy_remote_dir(remote_dir)?;
     let loaded = load_bundle_manifest(bundle)?;
     let manifest = loaded.manifest;
-    ensure_island_artifact_allowed(&manifest.artifact_mode, allow_island, "deploy")?;
+    ensure_artifact_allowed(
+        &manifest.artifact_mode,
+        manifest.temporary_overlay,
+        manifest.test_only,
+        allow_island,
+        "deploy",
+    )?;
     let selected_artifacts = select_deploy_artifacts(bundle, &manifest, target)?;
     let mut warnings = Vec::new();
     if let Some(version_warning) = loaded.version_warning {
@@ -3062,7 +3099,7 @@ fn prepare_workspace_with_options(
     let mut selected_contract = project_contract_to_profile(&contract, profile)
         .with_context(|| format!("failed to select profile for `{}`", rsdl.display()))?;
     if temporary_island.enabled {
-        let overlay = parse_temporary_island_overlay(temporary_island)?;
+        let overlay = parse_temporary_island_overlay(temporary_island, rsdl)?;
         selected_contract = apply_temporary_island_overlay(&selected_contract, &overlay)
             .context("failed to apply temporary island overlay")?;
     } else if !temporary_island.boundary_inputs.is_empty()
@@ -3083,6 +3120,7 @@ fn prepare_workspace_with_options(
 
 fn parse_temporary_island_overlay(
     options: &TemporaryIslandCliOptions,
+    rsdl: &Path,
 ) -> Result<TemporaryIslandOverlay> {
     Ok(TemporaryIslandOverlay {
         boundary_inputs: options
@@ -3095,6 +3133,10 @@ fn parse_temporary_island_overlay(
             .iter()
             .map(|mapping| parse_temporary_boundary_mapping(mapping, "--boundary-output"))
             .collect::<Result<Vec<_>>>()?,
+        generated_by: flowrt_ir::TemporaryOverlayGenerationIr {
+            command: "flowrt prepare".to_string(),
+            source: rsdl.display().to_string(),
+        },
     })
 }
 
@@ -3132,8 +3174,15 @@ fn overlay_summary(contract: &ContractIr) -> Option<String> {
             })
         })
         .collect::<Vec<_>>();
+    let source = contract
+        .artifact
+        .temporary_overlay
+        .as_ref()
+        .map(|overlay| overlay.generated_by.source.as_str())
+        .unwrap_or("unknown");
     Some(format!(
-        "temporary_island=true test_only=true mappings={}",
+        "temporary_island=true test_only=true source={} mappings={}",
+        source,
         mappings.join(",")
     ))
 }

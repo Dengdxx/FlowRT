@@ -12,16 +12,17 @@ use flowrt_ir::{
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
     SelfDescriptionArtifact, SelfDescriptionBoundaryEndpoint, SelfDescriptionChannel,
-    SelfDescriptionComponentType, SelfDescriptionDeployment, SelfDescriptionExternalProcess,
-    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionGraph,
-    SelfDescriptionInstance, SelfDescriptionIoBoundary, SelfDescriptionMessageAbi,
-    SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
+    SelfDescriptionClock, SelfDescriptionComponentType, SelfDescriptionDeployment,
+    SelfDescriptionExternalProcess, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
+    SelfDescriptionGraph, SelfDescriptionInstance, SelfDescriptionIoBoundary,
+    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
     SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
     SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
     SelfDescriptionProfile, SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
     SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
     SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
-    SelfDescriptionTask,
+    SelfDescriptionTask, SelfDescriptionTemporaryOverlay,
+    SelfDescriptionTemporaryOverlayBoundaryMapping, SelfDescriptionTemporaryOverlayGeneration,
 };
 use sha2::{Digest, Sha256};
 
@@ -109,6 +110,16 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
             mode: graph_mode_name(contract_artifact_mode(contract)).to_string(),
             temporary_island: contract.artifact.temporary_island,
             test_only: contract.artifact.test_only,
+            temporary_overlay: contract
+                .artifact
+                .temporary_overlay
+                .as_ref()
+                .map(self_description_temporary_overlay),
+            clock: SelfDescriptionClock {
+                source: clock_source_name(contract).to_string(),
+                unit: "ms".to_string(),
+                field: "tick_time_ms".to_string(),
+            },
         },
         package: SelfDescriptionPackage {
             name: contract.package.name.clone(),
@@ -303,6 +314,37 @@ fn graph_mode_name(mode: GraphMode) -> &'static str {
     match mode {
         GraphMode::Strict => "strict",
         GraphMode::Island => "island",
+    }
+}
+
+fn clock_source_name(contract: &ContractIr) -> &'static str {
+    if contract.artifact.temporary_overlay.is_some() {
+        "simulated_replay"
+    } else {
+        "realtime"
+    }
+}
+
+fn self_description_temporary_overlay(
+    overlay: &flowrt_ir::TemporaryOverlayIr,
+) -> SelfDescriptionTemporaryOverlay {
+    SelfDescriptionTemporaryOverlay {
+        kind: overlay.kind.clone(),
+        original_profile_mode: graph_mode_name(overlay.original_profile_mode).to_string(),
+        generated_by: SelfDescriptionTemporaryOverlayGeneration {
+            command: overlay.generated_by.command.clone(),
+            source: overlay.generated_by.source.clone(),
+        },
+        boundary_mappings: overlay
+            .boundary_mappings
+            .iter()
+            .map(|mapping| SelfDescriptionTemporaryOverlayBoundaryMapping {
+                direction: boundary_direction_name(mapping.direction).to_string(),
+                name: mapping.name.clone(),
+                endpoint: mapping.endpoint.clone(),
+                source: mapping.source.clone(),
+            })
+            .collect(),
     }
 }
 

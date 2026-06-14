@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::boundary_pub::{BoundaryPublishTarget, ensure_island_boundary_publish_mode};
+use crate::boundary_pub::{
+    BoundaryPublishTarget, ensure_boundary_publish_endpoint, ensure_island_boundary_publish_mode,
+};
 use crate::introspection::load_self_description_with_hash;
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,16 @@ pub(crate) fn replay_fixture(
     }
     let (self_description, _) = load_self_description_with_hash(image)?;
     ensure_island_boundary_publish_mode(&self_description, "flowrt replay")?;
+    for event in &events {
+        ensure_boundary_publish_endpoint(&self_description, &event.boundary, "flowrt replay")
+            .with_context(|| {
+                format!(
+                    "invalid replay boundary `{}` from {}",
+                    event.boundary,
+                    event.source.describe(file)
+                )
+            })?;
+    }
     events.sort_by_key(|event| (event.at_ms, event.order));
 
     let target = BoundaryPublishTarget::open_for_command(image, socket, "flowrt replay")?;

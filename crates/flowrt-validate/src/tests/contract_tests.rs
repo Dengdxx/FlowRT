@@ -86,6 +86,57 @@ rsdl_version = "0.1"
 }
 
 #[test]
+fn rejects_temporary_overlay_artifact_tampered_to_strict() {
+    let source = r#"
+[package]
+name = "temporary_overlay_validate_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    let mut island = flowrt_ir::apply_temporary_island_overlay(
+        &projected,
+        &flowrt_ir::TemporaryIslandOverlay {
+            boundary_inputs: vec![flowrt_ir::TemporaryBoundaryMapping {
+                name: "sample_in".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+            boundary_outputs: vec![],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap();
+    island.artifact.mode = flowrt_ir::GraphMode::Strict;
+
+    let report = validate_contract(&island)
+        .expect_err("tampered temporary overlay artifact mode should fail validation");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("temporary overlay artifact must use island artifact mode")
+    }));
+}
+
+#[test]
 fn rejects_contract_with_multiple_graphs() {
     let source = r#"
 [package]

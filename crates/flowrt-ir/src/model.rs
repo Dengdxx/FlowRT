@@ -55,7 +55,7 @@ impl ContractIr {
 ///
 /// 常规 normalized IR 默认为 strict、非测试产物；temporary island overlay 会把这里标记为
 /// test-only island，让 self-description、launch manifest、bundle/deploy gate 共享同一事实源。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractArtifactIr {
     #[serde(default)]
     pub mode: GraphMode,
@@ -63,12 +63,52 @@ pub struct ContractArtifactIr {
     pub temporary_island: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub test_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary_overlay: Option<TemporaryOverlayIr>,
 }
 
 impl ContractArtifactIr {
     pub fn is_default(&self) -> bool {
-        self.mode == GraphMode::Strict && !self.temporary_island && !self.test_only
+        self.mode == GraphMode::Strict
+            && !self.temporary_island
+            && !self.test_only
+            && self.temporary_overlay.is_none()
     }
+}
+
+/// temporary overlay 产物来源和边界映射元数据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemporaryOverlayIr {
+    pub kind: String,
+    pub original_profile_mode: GraphMode,
+    pub generated_by: TemporaryOverlayGenerationIr,
+    #[serde(default)]
+    pub boundary_mappings: Vec<TemporaryOverlayBoundaryMappingIr>,
+}
+
+/// temporary overlay 生成来源。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemporaryOverlayGenerationIr {
+    pub command: String,
+    pub source: String,
+}
+
+impl Default for TemporaryOverlayGenerationIr {
+    fn default() -> Self {
+        Self {
+            command: "flowrt prepare".to_string(),
+            source: "cli".to_string(),
+        }
+    }
+}
+
+/// temporary overlay 的单条 boundary 映射来源。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemporaryOverlayBoundaryMappingIr {
+    pub direction: BoundaryDirection,
+    pub name: String,
+    pub endpoint: String,
+    pub source: String,
 }
 
 /// 不透明且确定性的实体标识符。

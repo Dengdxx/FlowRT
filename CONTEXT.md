@@ -137,14 +137,21 @@ adapter 已进入窄切片：`[[bridge.ros2]].flowrt` 可以引用普通 `instan
 summary 输出。迁移旧系统或普通单功能单位开发时，外部 live topic、bag 片段或测试
 fixture 应先在 FlowRT 外部转换成 RSDL 字段自然 JSONL 或 JSON array，再通过 island
 boundary input 注入；FlowRT 不做 ROS2 drop-in，不在 core 中实现 ROS2 message 语义，
-也不让用户代码直接读取 rosbag。后续 `flowrt replay` 或 bag 播放能力必须是
-runtime/control-plane 注入：像真实传感器一样把样本灌入 FlowRT 输入，让用户组件只看到
-普通 FlowRT input、`on_message` 和 latest view。replay/bag 注入只属于 island 语义；
-strict 生产模式必须拒绝，避免真实上游和测试输入形成多来源数据竞争。为了避免临时测试
-反复修改 `.rsdl`，后续应支持 CLI 触发的临时 island overlay：基础 RSDL 保持 strict，
-CLI 生成一次性的 test-only island projection、manifest 和 self-description，显式声明
-哪些端口成为 boundary input/output；该产物仍按 island 规则被 `bundle` / `deploy`
-默认拒绝，除非显式允许。CI 已加入 amd64/arm64 的 `v0.9.0 Island Demo Smoke` 和
+也不让用户代码直接读取 rosbag。`flowrt replay` 已作为 FlowRT-native fixture 回放主路径：
+CLI 只向 typed boundary input 注入自然 JSON 样本，像真实传感器一样驱动 graph，让用户
+组件只看到普通 FlowRT input、`on_message` 和 latest view；普通 dataflow channel、
+boundary output、service、operation 或未知 endpoint 都会在选择 live socket 前被拒绝。
+strict 生产 self-description 会拒绝 replay 注入，错误会提示使用 island profile 或
+temporary island overlay。为了避免临时测试反复修改 `.rsdl`，`prepare` / `build` / `run`
+支持 CLI 触发的一次性 temporary island overlay：基础 RSDL 保持 strict，CLI 生成
+test-only island projection、manifest 和 self-description，显式声明哪些端口成为
+boundary input/output；Contract IR、self-description、launch manifest 和 live status 会
+记录 `temporary_overlay`、原 profile mode、生成命令/source、boundary mapping 来源，以及
+`source=simulated_replay`、`unit=ms`、`field=tick_time_ms` 的 clock metadata。replay 注入的
+`at_ms` 作为 `published_at_ms` 进入 runtime，scheduler tick、record clock event、
+Operation event 和 status 使用同一毫秒时间模型。temporary overlay / test-only 产物即使
+被手工篡改成 strict mode，`bundle` / `deploy` 也会默认拒绝，除非显式允许 island。
+CI 已加入 amd64/arm64 的 `v0.9.0 Island Demo Smoke` 和
 `v0.9.1 Island Migration Tooling Smoke`，smoke 会按 CI runner 架构只改写临时 demo
 RSDL 的 target platform，避免 arm64 runner 误按示例默认 `linux-amd64` target 构建；
 发布就绪脚本也会检查该 focused gate。最终集成 hardening 已收掉 generated Rust fixed

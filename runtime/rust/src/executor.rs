@@ -223,6 +223,7 @@ pub enum ScheduleEvent {
 #[derive(Debug, Default)]
 struct ScheduleWaitState {
     data_generation: u64,
+    data_time_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -236,15 +237,35 @@ impl ScheduleWaiter {
     }
 
     pub fn notify_data(&self) {
+        self.notify_data_with_time(None);
+    }
+
+    pub fn notify_data_at_ms(&self, time_ms: u64) {
+        self.notify_data_with_time(Some(time_ms));
+    }
+
+    fn notify_data_with_time(&self, time_ms: Option<u64>) {
         let (mutex, condvar) = &*self.state;
         let mut state = lock_recover(mutex);
         state.data_generation = state.data_generation.saturating_add(1);
+        if let Some(time_ms) = time_ms {
+            state.data_time_ms = Some(
+                state
+                    .data_time_ms
+                    .map_or(time_ms, |known| known.max(time_ms)),
+            );
+        }
         condvar.notify_all();
     }
 
     pub fn data_generation(&self) -> u64 {
         let (mutex, _) = &*self.state;
         lock_recover(mutex).data_generation
+    }
+
+    pub fn take_data_time_ms(&self) -> Option<u64> {
+        let (mutex, _) = &*self.state;
+        lock_recover(mutex).data_time_ms.take()
     }
 
     pub fn wait_until(
@@ -1688,6 +1709,17 @@ mod tests {
         );
 
         assert_eq!(event, ScheduleEvent::Timer);
+    }
+
+    #[test]
+    fn schedule_waiter_carries_latest_data_time_for_replay_clock() {
+        let waiter = ScheduleWaiter::new();
+
+        waiter.notify_data_at_ms(42);
+        waiter.notify_data_at_ms(7);
+
+        assert_eq!(waiter.take_data_time_ms(), Some(42));
+        assert_eq!(waiter.take_data_time_ms(), None);
     }
 
     #[test]

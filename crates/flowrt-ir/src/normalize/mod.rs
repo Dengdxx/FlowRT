@@ -2136,6 +2136,7 @@ backend = "inproc"
                 name: "cmd_out".to_string(),
                 endpoint: "planner.cmd".to_string(),
             }],
+            generated_by: Default::default(),
         };
 
         let island = apply_temporary_island_overlay(&projected, &overlay).unwrap();
@@ -2144,6 +2145,29 @@ backend = "inproc"
         assert_eq!(island.artifact.mode, GraphMode::Island);
         assert!(island.artifact.temporary_island);
         assert!(island.artifact.test_only);
+        let overlay_metadata = island
+            .artifact
+            .temporary_overlay
+            .as_ref()
+            .expect("temporary island artifact must record overlay metadata");
+        assert_eq!(overlay_metadata.kind, "temporary_island");
+        assert_eq!(overlay_metadata.original_profile_mode, GraphMode::Strict);
+        assert_eq!(overlay_metadata.generated_by.command, "flowrt prepare");
+        assert_eq!(overlay_metadata.generated_by.source, "cli");
+        assert_eq!(overlay_metadata.boundary_mappings.len(), 2);
+        assert_eq!(
+            overlay_metadata.boundary_mappings[0].source,
+            "--boundary-input"
+        );
+        assert_eq!(overlay_metadata.boundary_mappings[0].name, "scan_in");
+        assert_eq!(
+            overlay_metadata.boundary_mappings[0].endpoint,
+            "planner.scan"
+        );
+        assert_eq!(
+            overlay_metadata.boundary_mappings[1].source,
+            "--boundary-output"
+        );
         assert_eq!(island.graphs[0].boundary_endpoints.len(), 2);
         assert_eq!(island.graphs[0].boundary_endpoints[0].name, "scan_in");
         assert_eq!(
@@ -2191,6 +2215,7 @@ backend = "inproc"
                 name: "sample".to_string(),
                 endpoint: "consumer.sample".to_string(),
             }],
+            generated_by: Default::default(),
         };
 
         let error = apply_temporary_island_overlay(&projected, &overlay)
@@ -2253,6 +2278,7 @@ backend = "inproc"
                 endpoint: "consumer.sample".to_string(),
             }],
             boundary_outputs: vec![],
+            generated_by: Default::default(),
         };
 
         let error = apply_temporary_island_overlay(&projected, &overlay)

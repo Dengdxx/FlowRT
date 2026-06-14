@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
-    ChannelEdgeIr, ContractIr, EntityId, EntityRef, LanguageKind, OperationEdgeIr, RSDL_VERSION,
-    ResourceSatisfactionIr,
+    ChannelEdgeIr, ContractIr, EntityId, EntityRef, GraphMode, LanguageKind, OperationEdgeIr,
+    RSDL_VERSION, ResourceSatisfactionIr,
 };
 
 use crate::ValidationError;
@@ -40,6 +40,92 @@ pub(crate) fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<Validati
         errors.push(ValidationError::new(
             "Contract IR v0.1 must contain at least one profile; found 0",
         ));
+    }
+}
+
+pub(crate) fn validate_contract_artifact(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let artifact = &ir.artifact;
+    if artifact.temporary_island && !artifact.test_only {
+        errors.push(ValidationError::new(
+            "temporary island artifact must also be test_only",
+        ));
+    }
+    if artifact.test_only && artifact.temporary_overlay.is_none() {
+        errors.push(ValidationError::new(
+            "test_only artifact must identify its temporary_overlay source",
+        ));
+    }
+
+    let Some(overlay) = artifact.temporary_overlay.as_ref() else {
+        return;
+    };
+
+    if artifact.mode != GraphMode::Island {
+        errors.push(ValidationError::new(
+            "temporary overlay artifact must use island artifact mode",
+        ));
+    }
+    if !artifact.temporary_island || !artifact.test_only {
+        errors.push(ValidationError::new(
+            "temporary overlay artifact must be temporary_island and test_only",
+        ));
+    }
+    if overlay.kind != "temporary_island" {
+        errors.push(ValidationError::new(format!(
+            "temporary overlay kind `{}` is not supported",
+            overlay.kind
+        )));
+    }
+    if overlay.generated_by.command.trim().is_empty() {
+        errors.push(ValidationError::new(
+            "temporary overlay generated_by.command must not be empty",
+        ));
+    }
+    if overlay.generated_by.source.trim().is_empty() {
+        errors.push(ValidationError::new(
+            "temporary overlay generated_by.source must not be empty",
+        ));
+    }
+    if overlay.boundary_mappings.is_empty() {
+        errors.push(ValidationError::new(
+            "temporary overlay must record at least one boundary mapping",
+        ));
+    }
+
+    for mapping in &overlay.boundary_mappings {
+        if mapping.name.trim().is_empty() {
+            errors.push(ValidationError::new(
+                "temporary overlay boundary mapping name must not be empty",
+            ));
+        }
+        if mapping.endpoint.trim().is_empty() {
+            errors.push(ValidationError::new(
+                "temporary overlay boundary mapping endpoint must not be empty",
+            ));
+        }
+        let expected_source = match mapping.direction {
+            BoundaryDirection::Input => "--boundary-input",
+            BoundaryDirection::Output => "--boundary-output",
+        };
+        if mapping.source != expected_source {
+            errors.push(ValidationError::new(format!(
+                "temporary overlay boundary mapping `{}` source `{}` does not match direction `{}`",
+                mapping.name, mapping.source, expected_source
+            )));
+        }
+        if !ir.graphs.iter().any(|graph| {
+            graph.boundary_endpoints.iter().any(|endpoint| {
+                endpoint.direction == mapping.direction
+                    && endpoint.name == mapping.name
+                    && format!("{}.{}", endpoint.port.instance.name, endpoint.port.port)
+                        == mapping.endpoint
+            })
+        }) {
+            errors.push(ValidationError::new(format!(
+                "temporary overlay boundary mapping `{}` -> `{}` does not match graph boundary endpoints",
+                mapping.name, mapping.endpoint
+            )));
+        }
     }
 }
 

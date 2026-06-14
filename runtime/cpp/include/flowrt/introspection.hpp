@@ -386,10 +386,21 @@ struct IntrospectionLaneHealth {
 };
 
 /**
+ * @brief runtime 时钟模型状态。
+ */
+struct IntrospectionClockStatus {
+    std::string source = "realtime";
+    std::optional<std::uint64_t> tick_time_ms;
+    std::string unit = "ms";
+    std::string field = "tick_time_ms";
+};
+
+/**
  * @brief 运行态 status 快照。
  */
 struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
+    IntrospectionClockStatus clock;
     std::vector<IntrospectionChannelStatus> channels;
     std::vector<BoundaryStatus> io_boundaries;
     std::vector<IntrospectionServiceStatus> services;
@@ -723,10 +734,26 @@ inline std::string lane_health_json(const IntrospectionLaneHealth &lane) {
     return output;
 }
 
+inline std::string clock_status_json(const IntrospectionClockStatus &clock) {
+    std::string output;
+    output.append("{\"source\":");
+    output.append(json_string(clock.source));
+    output.append(",\"tick_time_ms\":");
+    output.append(optional_u64_json(clock.tick_time_ms));
+    output.append(",\"unit\":");
+    output.append(json_string(clock.unit));
+    output.append(",\"field\":");
+    output.append(json_string(clock.field));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string status_json(const IntrospectionStatus &status) {
     std::string output;
     output.append("{\"tick_count\":");
     output.append(std::to_string(status.tick_count));
+    output.append(",\"clock\":");
+    output.append(clock_status_json(status.clock));
     output.append(",\"recorder\":");
     output.append(recorder_status_json(status.recorder));
     output.append(",\"channels\":[");
@@ -1691,6 +1718,13 @@ class IntrospectionState {
      * @brief 增加 scheduler tick 计数。
      */
     void record_tick() const {
+        record_tick(0U, std::string_view{"realtime"});
+    }
+
+    /**
+     * @brief 按统一 runtime 毫秒时间模型记录 scheduler tick。
+     */
+    void record_tick(std::uint64_t tick_time_ms, std::string_view time_source) const {
         std::uint64_t tick_count = 0;
         {
             std::lock_guard<std::mutex> lock(inner_->mutex);
@@ -1698,9 +1732,19 @@ class IntrospectionState {
                 ++inner_->tick_count;
             }
             tick_count = inner_->tick_count;
+            inner_->clock = IntrospectionClockStatus{
+                .source = std::string{time_source},
+                .tick_time_ms = tick_time_ms,
+                .unit = "ms",
+                .field = "tick_time_ms",
+            };
         }
         record_json_event("runtime", "clock", "flowrt.clock", "clock_event", "clock_tick",
-                          "{\"tick_count\":" + std::to_string(tick_count) + "}", std::nullopt);
+                          "{\"tick_count\":" + std::to_string(tick_count) +
+                              ",\"tick_time_ms\":" + std::to_string(tick_time_ms) +
+                              ",\"time_source\":" + detail::json_string(time_source) +
+                              ",\"time_unit\":\"ms\"}",
+                          tick_time_ms * 1000000U);
     }
 
     /**
@@ -2055,10 +2099,14 @@ class IntrospectionState {
             (status.last_error ? detail::json_string(*status.last_error) : "null") +
             ",\"last_transition_ms\":" + detail::optional_u64_json(status.last_transition_ms) + "}";
         const auto name = status.name;
+        const auto monotonic_ns = status.last_transition_ms.has_value()
+                                      ? std::optional<std::uint64_t>{*status.last_transition_ms *
+                                                                     1000000U}
+                                      : std::nullopt;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->operations.insert_or_assign(status.name, std::move(status));
         record_event_locked("operation", name, "operation_event", "operation", name, "", "json",
-                            "flowrt.operation.status", string_bytes(payload), std::nullopt);
+                            "flowrt.operation.status", string_bytes(payload), monotonic_ns);
     }
 
     /**
@@ -2252,6 +2300,7 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         IntrospectionStatus snapshot;
         snapshot.tick_count = inner_->tick_count;
+        snapshot.clock = inner_->clock;
         snapshot.channels.reserve(inner_->channels.size());
         for (const auto &[name, channel] : inner_->channels) {
             const auto channel_snapshot = channel.probe.snapshot();
@@ -2499,6 +2548,7 @@ class IntrospectionState {
         std::atomic_bool recorder_enabled{false};
         std::mutex mutex;
         std::uint64_t tick_count = 0;
+        IntrospectionClockStatus clock;
         std::optional<std::string> self_description_json;
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;

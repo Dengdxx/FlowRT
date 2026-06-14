@@ -1760,9 +1760,189 @@ fn replay_rejects_unknown_boundary_input() {
 
     let message = format!("{error:#}");
     assert!(message.contains("missing_in"));
-    assert!(message.contains("does not contain boundary endpoint"));
+    assert!(message.contains("unknown FlowRT boundary input"));
+    assert!(message.contains("only writes typed boundary input"));
 
     drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_rejects_dataflow_channel_endpoint_with_boundary_input_error() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "channels": [{
+      "from": "producer.sample",
+      "to": "consumer.sample",
+      "message_type": "Sample",
+      "backend": "inproc",
+      "channel": "latest"
+    }],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_known",
+      "direction": "input",
+      "endpoint": "consumer.boundary",
+      "instance": "consumer",
+      "port": "boundary",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-dataflow-channel-reject");
+    let selfdesc = root.join("selfdesc.json");
+    let fixture = root.join("fixture.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &fixture,
+        r#"[{"boundary":"producer.sample","payload":{"value":1}}]"#,
+    )
+    .unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 912,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let error = replay_fixture(&fixture, &selfdesc, Some(&socket), 1.0, true).unwrap_err();
+    let message = format!("{error:#}");
+
+    assert!(message.contains("producer.sample"));
+    assert!(message.contains("dataflow channel"));
+    assert!(message.contains("only writes typed boundary input"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn replay_rejects_service_and_operation_endpoint_with_boundary_input_error() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "services": [{
+      "name": "controller.plan",
+      "client": "controller.plan",
+      "server": "planner.plan",
+      "request": "Sample",
+      "response": "Sample",
+      "backend": "inproc"
+    }],
+    "operations": [{
+      "name": "controller.navigate",
+      "client_instance": "controller",
+      "client_port": "navigate",
+      "server_instance": "navigator",
+      "server_port": "navigate",
+      "goal_type": "Sample",
+      "feedback_type": "Sample",
+      "result_type": "Sample",
+      "backend": "inproc"
+    }],
+    "boundary_endpoints": [{
+      "name": "sample_in",
+      "canonical_id": "boundary_known",
+      "direction": "input",
+      "endpoint": "sensor.sample",
+      "instance": "sensor",
+      "port": "sample",
+      "message_type": "Sample"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Sample",
+    "size_bytes": 4,
+    "align_bytes": 4,
+    "fields": [{
+      "name": "value",
+      "type": "u32",
+      "offset_bytes": 0,
+      "size_bytes": 4,
+      "align_bytes": 4
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-control-endpoint-reject");
+    let selfdesc = root.join("selfdesc.json");
+    let service_fixture = root.join("service.json");
+    let operation_fixture = root.join("operation.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &service_fixture,
+        r#"[{"boundary":"controller.plan","payload":{"value":1}}]"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &operation_fixture,
+        r#"[{"boundary":"controller.navigate","payload":{"value":1}}]"#,
+    )
+    .unwrap();
+
+    let service_error = replay_fixture(&service_fixture, &selfdesc, None, 1.0, true).unwrap_err();
+    let operation_error =
+        replay_fixture(&operation_fixture, &selfdesc, None, 1.0, true).unwrap_err();
+    let service_message = format!("{service_error:#}");
+    let operation_message = format!("{operation_error:#}");
+
+    assert!(
+        service_message.contains("service endpoint"),
+        "{service_message}"
+    );
+    assert!(
+        service_message.contains("only writes typed boundary input"),
+        "{service_message}"
+    );
+    assert!(
+        operation_message.contains("operation endpoint"),
+        "{operation_message}"
+    );
+    assert!(
+        operation_message.contains("only writes typed boundary input"),
+        "{operation_message}"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
 }
 

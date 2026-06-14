@@ -529,6 +529,8 @@ fn deploy_bundle_rejects_island_artifact_without_escape_hatch() {
         package: "island_demo".into(),
         profile: Some("dev".into()),
         artifact_mode: "island".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -603,6 +605,8 @@ fn deploy_bundle_dry_run_reports_plan() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -651,6 +655,8 @@ fn deploy_bundle_v2_dry_run_selects_target_artifacts() {
         package: "multi_target_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "bundle".into(),
         platform: None,
         build_mode: BuildMode::Release,
@@ -711,6 +717,8 @@ fn deploy_bundle_v2_rejects_unsafe_artifact_path() {
         package: "bad_bundle".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "bundle".into(),
         platform: None,
         build_mode: BuildMode::Release,
@@ -763,6 +771,8 @@ fn deploy_bundle_v2_rejects_missing_artifact_platform() {
         package: "bad_bundle".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "bundle".into(),
         platform: None,
         build_mode: BuildMode::Release,
@@ -815,6 +825,8 @@ fn deploy_bundle_v2_rejects_artifact_platform_mismatch_with_rebuild_hint() {
         package: "bad_bundle".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -871,6 +883,8 @@ fn deploy_bundle_v2_rejects_hash_mismatch_with_rebuild_hint() {
         package: "bad_bundle".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -926,6 +940,8 @@ fn deploy_bundle_rejects_target_mismatch() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -971,6 +987,8 @@ fn deploy_bundle_allows_patch_version_mismatch_with_warning() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -1020,6 +1038,8 @@ fn deploy_bundle_rejects_minor_version_mismatch() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -1064,6 +1084,8 @@ fn deploy_bundle_rejects_option_like_host_even_in_dry_run() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -1108,6 +1130,8 @@ fn deploy_bundle_rejects_empty_host_even_in_dry_run() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -1144,6 +1168,8 @@ fn deploy_bundle_rejects_empty_remote_dir_even_in_dry_run() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -1180,6 +1206,8 @@ fn deploy_bundle_rejects_unsafe_remote_dir_even_in_dry_run() {
         package: "external_demo".into(),
         profile: Some("default".into()),
         artifact_mode: "strict".into(),
+        temporary_overlay: false,
+        test_only: false,
         target: "pi".into(),
         platform: Some("linux-arm64".into()),
         build_mode: BuildMode::Release,
@@ -2992,11 +3020,41 @@ backend = "inproc"
     assert_eq!(prepared_ir.artifact.mode, GraphMode::Island);
     assert!(prepared_ir.artifact.temporary_island);
     assert!(prepared_ir.artifact.test_only);
+    let overlay_metadata = prepared_ir
+        .artifact
+        .temporary_overlay
+        .as_ref()
+        .expect("prepare must persist temporary overlay metadata");
+    assert_eq!(overlay_metadata.original_profile_mode, GraphMode::Strict);
+    assert_eq!(overlay_metadata.generated_by.command, "flowrt prepare");
+    assert_eq!(
+        overlay_metadata.generated_by.source,
+        rsdl_path.display().to_string()
+    );
+    assert_eq!(overlay_metadata.boundary_mappings.len(), 2);
+    assert_eq!(
+        overlay_metadata.boundary_mappings[0].source,
+        "--boundary-input"
+    );
+    assert_eq!(
+        overlay_metadata.boundary_mappings[1].source,
+        "--boundary-output"
+    );
     assert_eq!(prepared_ir.graphs[0].boundary_endpoints.len(), 2);
     assert_eq!(selfdesc["artifact"]["temporary_island"], true);
     assert_eq!(selfdesc["artifact"]["test_only"], true);
+    assert_eq!(
+        selfdesc["artifact"]["temporary_overlay"]["generated_by"]["source"],
+        rsdl_path.display().to_string()
+    );
+    assert_eq!(selfdesc["artifact"]["clock"]["source"], "simulated_replay");
     assert_eq!(launch["artifact"]["temporary_island"], true);
     assert_eq!(launch["artifact"]["test_only"], true);
+    assert_eq!(
+        launch["artifact"]["temporary_overlay"]["generated_by"]["source"],
+        rsdl_path.display().to_string()
+    );
+    assert_eq!(launch["artifact"]["clock"]["source"], "simulated_replay");
 
     let _ = std::fs::remove_dir_all(&rsdl_dir);
 }
@@ -3036,6 +3094,88 @@ backend = "inproc"
     assert_eq!(std::fs::read_to_string(&rsdl_path).unwrap(), source);
 
     let _ = std::fs::remove_dir_all(&rsdl_dir);
+}
+
+#[test]
+fn bundle_workspace_rejects_temporary_overlay_even_if_mode_is_tampered_to_strict() {
+    let mut contract = contract_from_source(
+        r#"
+[package]
+name = "temporary_overlay_bundle_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+"#,
+    );
+    contract.artifact.test_only = true;
+    contract.artifact.temporary_overlay = Some(flowrt_ir::TemporaryOverlayIr {
+        kind: "temporary_island".to_string(),
+        original_profile_mode: GraphMode::Strict,
+        generated_by: flowrt_ir::TemporaryOverlayGenerationIr {
+            command: "flowrt prepare".to_string(),
+            source: "robot.rsdl".to_string(),
+        },
+        boundary_mappings: vec![],
+    });
+    let root = temp_test_dir("bundle-temporary-overlay-reject");
+    let rsdl = root.join("robot.rsdl");
+    let out_dir = root.join("flowrt");
+    let bundle = root.join("dist/temporary");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&rsdl, "").unwrap();
+
+    let error = bundle_workspace(&rsdl, &contract, &out_dir, &bundle, None, false).unwrap_err();
+
+    assert!(error.to_string().contains("temporary overlay"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deploy_bundle_rejects_temporary_overlay_even_if_mode_is_tampered_to_strict() {
+    let root = temp_test_dir("deploy-temporary-overlay-reject");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = BundleManifest {
+        schema_version: 2,
+        flowrt_version: env!("CARGO_PKG_VERSION").to_string(),
+        package: "temporary_overlay_demo".into(),
+        profile: Some("default".into()),
+        artifact_mode: "strict".into(),
+        temporary_overlay: true,
+        test_only: true,
+        target: "pi".into(),
+        platform: Some("linux-arm64".into()),
+        build_mode: BuildMode::Release,
+        created_unix_ms: 0,
+        entry: "bin/supervisor".into(),
+        executables: vec![],
+        external_processes: vec![],
+        artifacts: vec![],
+    };
+    std::fs::write(
+        bundle.join("bundle.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = deploy_bundle(
+        &bundle,
+        "robot@192.0.2.10",
+        "pi",
+        "/tmp/flowrt-demo",
+        true,
+        false,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("temporary overlay"));
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

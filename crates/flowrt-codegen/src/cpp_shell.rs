@@ -2051,8 +2051,16 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         cpp_scheduler_base_period_ms(&tasks)
     ));
     let task_health_init = emit_cpp_task_health_init(&tasks);
+    let clock_source = cpp_scheduler_clock_source(run.contract);
     output.push_str(
-        "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
+        "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n",
+    );
+    output.push_str(&format!(
+        "    const auto clock_source = std::string_view{{{}}};\n",
+        cpp_string_literal(clock_source)
+    ));
+    output.push_str(
+        "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && (!run_ticks.has_value() || tick_base < *run_ticks)) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n        if (const auto data_time_ms = scheduler_events.take_data_time_ms()) {\n            scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);\n        }\n        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
     );
     output.push_str(&task_health_init);
     output.push_str(&emit_cpp_apply_pending_params_for_order(
@@ -2081,7 +2089,7 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "const bool woke_on_message = false;"
     };
     output.push_str(&format!(
-        "        introspection_state.record_tick();\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
+        "        introspection_state.record_tick(tick_time_ms, clock_source);\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
     ));
     output.push_str(&indent_generated_block_levels(
         &emit_cpp_on_message_wake_checks(&tasks, run.binds, run.bridges, run.boundaries),
@@ -2187,11 +2195,23 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             next_deadline_expr = cpp_next_periodic_deadline_expr(&tasks)
         )
         .replace(
+            "case flowrt::ScheduleEvent::Data:\n                    break;",
+            "case flowrt::ScheduleEvent::Data:\n                    if (const auto data_time_ms = scheduler_events.take_data_time_ms()) {\n                        scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);\n                    }\n                    break;",
+        )
+        .replace(
             "next_periodic_deadline_ms->value",
             "static_cast<std::uint64_t>(next_periodic_deadline_ms->count())",
         ),
     );
     output
+}
+
+fn cpp_scheduler_clock_source(contract: &ContractIr) -> &'static str {
+    if contract.artifact.temporary_overlay.is_some() {
+        "simulated_replay"
+    } else {
+        "realtime"
+    }
 }
 
 fn emit_cpp_scheduler_event_registration(

@@ -790,6 +790,12 @@ type = "Sample"
 
     let selfdesc: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert_eq!(launch["artifact"]["clock"]["source"], "realtime");
+    assert_eq!(selfdesc["artifact"]["clock"]["source"], "realtime");
+    assert!(rust_shell.contains("let clock_source = \"realtime\";"));
+    assert!(!rust_shell.contains("let clock_source = \"simulated_replay\";"));
     assert_eq!(selfdesc["profiles"][0]["mode"], "island");
     assert_eq!(
         selfdesc["graphs"][0]["boundary_endpoints"]
@@ -851,6 +857,7 @@ backend = "inproc"
                 endpoint: "consumer.sample".to_string(),
             }],
             boundary_outputs: vec![],
+            generated_by: Default::default(),
         },
     )
     .unwrap();
@@ -859,13 +866,41 @@ backend = "inproc"
         serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
     let selfdesc: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert_eq!(launch["artifact"]["mode"], "island");
     assert_eq!(launch["artifact"]["temporary_island"], true);
     assert_eq!(launch["artifact"]["test_only"], true);
+    assert_eq!(
+        launch["artifact"]["temporary_overlay"]["kind"],
+        "temporary_island"
+    );
+    assert_eq!(
+        launch["artifact"]["temporary_overlay"]["original_profile_mode"],
+        "strict"
+    );
+    assert_eq!(
+        launch["artifact"]["temporary_overlay"]["generated_by"]["command"],
+        "flowrt prepare"
+    );
+    assert_eq!(
+        launch["artifact"]["temporary_overlay"]["boundary_mappings"][0]["source"],
+        "--boundary-input"
+    );
+    assert_eq!(launch["artifact"]["clock"]["source"], "simulated_replay");
+    assert_eq!(launch["artifact"]["clock"]["unit"], "ms");
+    assert_eq!(launch["artifact"]["clock"]["field"], "tick_time_ms");
     assert_eq!(selfdesc["artifact"]["mode"], "island");
     assert_eq!(selfdesc["artifact"]["temporary_island"], true);
     assert_eq!(selfdesc["artifact"]["test_only"], true);
+    assert_eq!(
+        selfdesc["artifact"]["temporary_overlay"]["original_profile_mode"],
+        "strict"
+    );
+    assert_eq!(selfdesc["artifact"]["clock"]["source"], "simulated_replay");
+    assert_eq!(selfdesc["artifact"]["clock"]["unit"], "ms");
+    assert_eq!(selfdesc["artifact"]["clock"]["field"], "tick_time_ms");
+    assert!(rust_shell.contains("let clock_source = \"simulated_replay\";"));
 }
 
 #[test]

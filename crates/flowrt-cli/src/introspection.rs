@@ -111,13 +111,17 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
         .filter(|profile| profile.mode == "island")
         .count();
     let mut output = format!(
-        "package={} selfdesc={} source_hash={} artifact_mode={} temporary_island={} test_only={} profiles={} island_profiles={} graphs={} component_types={} instances={} tasks={} channels={} boundary_endpoints={} services={} operations={} messages={}",
+        "package={} selfdesc={} source_hash={} artifact_mode={} temporary_island={} test_only={} temporary_overlay={} clock_source={} clock_unit={} clock_field={} profiles={} island_profiles={} graphs={} component_types={} instances={} tasks={} channels={} boundary_endpoints={} services={} operations={} messages={}",
         self_description.package.name,
         self_description.self_description_version,
         self_description.source_hash,
         self_description.artifact.mode,
         self_description.artifact.temporary_island,
         self_description.artifact.test_only,
+        self_description.artifact.temporary_overlay.is_some(),
+        self_description.artifact.clock.source,
+        self_description.artifact.clock.unit,
+        self_description.artifact.clock.field,
         self_description.profiles.len(),
         island_profiles,
         self_description.graphs.len(),
@@ -2046,14 +2050,19 @@ pub(crate) fn live_status_summary_for_sockets(
                     .iter()
                     .map(|channel| channel.dropped_samples)
                     .sum::<u64>();
+                let temporary_overlay = enrichment.artifact.temporary_overlay.is_some();
                 lines.push(format!(
-                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} channels={} inputs={} routes={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} socket={}",
+                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} clock_source={} tick_time_ms={} clock_unit={} clock_field={} channels={} inputs={} routes={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} temporary_overlay={} socket={}",
                     handshake.pid,
                     handshake.package,
                     handshake.process,
                     handshake.runtime,
                     handshake.self_description_hash,
                     status.tick_count,
+                    status.clock.source,
+                    option_u64(status.clock.tick_time_ms),
+                    status.clock.unit,
+                    status.clock.field,
                     status.channels.len(),
                     status.inputs.len(),
                     status.routes.len(),
@@ -2062,6 +2071,7 @@ pub(crate) fn live_status_summary_for_sockets(
                     enrichment.artifact.mode,
                     enrichment.artifact.temporary_island,
                     enrichment.artifact.test_only,
+                    temporary_overlay,
                     socket.display()
                 ));
                 for graph in &enrichment.graphs {

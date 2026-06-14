@@ -339,6 +339,14 @@ struct BoundaryPublishSpec {
     message_type: String,
 }
 
+pub(crate) fn ensure_boundary_publish_endpoint(
+    self_description: &SelfDescription,
+    endpoint: &str,
+    command: &str,
+) -> Result<()> {
+    find_boundary_publish_endpoint(self_description, endpoint, command).map(|_| ())
+}
+
 fn find_boundary_publish_endpoint(
     self_description: &SelfDescription,
     endpoint: &str,
@@ -355,7 +363,39 @@ fn find_boundary_publish_endpoint(
     }
     match matches.len() {
         0 => {
-            anyhow::bail!("FlowRT self-description does not contain boundary endpoint `{endpoint}`")
+            if self_description.graphs.iter().any(|graph| {
+                graph
+                    .channels
+                    .iter()
+                    .any(|channel| channel.from == endpoint || channel.to == endpoint)
+            }) {
+                anyhow::bail!(
+                    "FlowRT endpoint `{endpoint}` is a dataflow channel endpoint; {command} only writes typed boundary input"
+                );
+            }
+            if self_description.graphs.iter().any(|graph| {
+                graph
+                    .services
+                    .iter()
+                    .any(|service| service.name == endpoint)
+            }) {
+                anyhow::bail!(
+                    "FlowRT endpoint `{endpoint}` is a service endpoint; {command} only writes typed boundary input"
+                );
+            }
+            if self_description.graphs.iter().any(|graph| {
+                graph
+                    .operations
+                    .iter()
+                    .any(|operation| operation.name == endpoint)
+            }) {
+                anyhow::bail!(
+                    "FlowRT endpoint `{endpoint}` is an operation endpoint; {command} only writes typed boundary input"
+                );
+            }
+            anyhow::bail!(
+                "unknown FlowRT boundary input `{endpoint}`; {command} only writes typed boundary input"
+            )
         }
         1 => {
             let boundary = matches.remove(0);
