@@ -260,6 +260,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.10.3` | 标准 app/ 用户代码布局：废弃旧 `src/` 用户路径，用户实现统一进入 `app/`。 |
 | `v0.11.0` | FlowRT App SDK 化与 C ABI v0：项目脚手架、用户 API 可发现性、C component 最小可运行路径。 |
 | `v0.11.1` | App SDK / C ABI v0 hardening：诊断、失败路径、用户骨架和 release readiness 收口。 |
+| `v0.12.0` | Contract-driven App Authoring：RSDL 先行，`prepare` / `explain` 产出真实用户实现接口。 |
+| `v0.13.0` | Robot Runtime Completion：补齐 package/test/clock/抽象资源契约/trace/deployment/control authority 等核心设施。 |
+| `v0.14.0` | Python 与更多语言入口：建立在稳定 C ABI 与 App API manifest 之上。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -332,6 +335,20 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   失败原因；`flowrt add` 写入前要尽量完成冲突和 Contract IR 校验；用户骨架要把
   callback table size/version/feature bit 和 borrowed view 所有权边界写清；release
   readiness 必须检查 `CONTEXT.md` 当前版本状态，避免发布后状态文档滞后。
+- `v0.12.0` 纠正 FlowRT app 作者主路径：`flowrt add` 只作为 RSDL 编辑助手，不再
+  生成或修改用户 `app/` 代码；`prepare` / codegen 从 validated Contract IR 生成
+  App API manifest、实现清单和 `flowrt/app/stubs/` 参考模板，但只能写 `flowrt/`
+  可重建生成物，不直接创建、追加或覆盖用户 `app/`。
+- `v0.13.0` 的资源模型必须保持抽象。FlowRT core 只建模 component 需要的
+  capability / resource contract、访问模式、必需/可选、readiness gate、health、
+  故障传播和观测字段；target / deployment / external package 声明哪些 provider
+  满足这些抽象需求。FlowRT 不在核心语义里建模串口、TCP、UDP、USB、V4L2、
+  RKNN、CUDA、设备路径或端口号等具体硬件和协议细节；这些映射属于 external
+  package、driver package、target profile 或部署配置。validator 只校验抽象需求能否
+  被目标提供者满足，supervisor 只按抽象 contract 做启动门控、health 汇报和失败传播。
+- `v0.14.0` 才进入 Python 与更多语言入口：Python binding / generator 必须建立在
+  v0.13.0 收口后的 C ABI、App API manifest 和 FlowRT 语义边界上，不能直接暴露
+  iox2、zenoh、C++ runtime 对象或 backend SDK 句柄。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 
