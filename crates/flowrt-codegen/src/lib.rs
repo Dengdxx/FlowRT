@@ -18,6 +18,7 @@ mod cpp_shell;
 mod explain;
 mod launch_manifest;
 mod messages;
+mod resource_names;
 mod ros2_bridge;
 mod runtime_plan;
 mod rust_shell;

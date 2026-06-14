@@ -4,10 +4,14 @@ use flowrt_ir::{
     BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind,
     ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode,
     InstanceIr, IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
-    ResourceProviderIr, ResourceProviderScope, ResourceRequirementIr, ResourceSatisfactionIr,
-    ServicePortIr, TaskIr,
+    ResourceProviderIr, ResourceRequirementIr, ResourceSatisfactionIr, ServicePortIr, TaskIr,
 };
 
+use crate::resource_names::{
+    resource_access_name, resource_descriptor_kind_name, resource_failure_name,
+    resource_health_name, resource_provider_scope_name, resource_readiness_name,
+    resource_satisfaction_status,
+};
 use crate::runtime_plan::bridge_runtime_plans;
 use crate::{
     CodegenError, Result, component_by_name, iox2_service_name_for_edge, language_name,
@@ -622,70 +626,6 @@ fn external_health_name(kind: ExternalHealthKind) -> &'static str {
     match kind {
         ExternalHealthKind::ProcessStarted => "process_started",
         ExternalHealthKind::RuntimeSocket => "runtime_socket",
-    }
-}
-
-fn resource_descriptor_kind_name(kind: flowrt_ir::ResourceDescriptorKind) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceDescriptorKind::Frame => "frame",
-    }
-}
-
-fn resource_access_name(kind: flowrt_ir::ResourceAccess) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceAccess::Read => "read",
-        flowrt_ir::ResourceAccess::Write => "write",
-        flowrt_ir::ResourceAccess::ReadWrite => "read_write",
-        flowrt_ir::ResourceAccess::Exclusive => "exclusive",
-    }
-}
-
-fn resource_readiness_name(kind: flowrt_ir::ResourceReadinessGate) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceReadinessGate::BeforeInit => "before_init",
-        flowrt_ir::ResourceReadinessGate::BeforeStart => "before_start",
-        flowrt_ir::ResourceReadinessGate::Lazy => "lazy",
-    }
-}
-
-fn resource_health_name(kind: flowrt_ir::ResourceHealthPolicy) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceHealthPolicy::Required => "required",
-        flowrt_ir::ResourceHealthPolicy::Optional => "optional",
-        flowrt_ir::ResourceHealthPolicy::Ignored => "ignored",
-    }
-}
-
-fn resource_failure_name(kind: flowrt_ir::ResourceFailurePolicy) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceFailurePolicy::StopProcess => "stop_process",
-        flowrt_ir::ResourceFailurePolicy::RestartProcess => "restart_process",
-        flowrt_ir::ResourceFailurePolicy::Degrade => "degrade",
-        flowrt_ir::ResourceFailurePolicy::StopGraph => "stop_graph",
-    }
-}
-
-fn resource_provider_scope_name(kind: ResourceProviderScope) -> &'static str {
-    match kind {
-        ResourceProviderScope::Target => "target",
-        ResourceProviderScope::Process => "process",
-        ResourceProviderScope::ExternalPackage => "external_package",
-    }
-}
-
-fn resource_satisfaction_status(satisfaction: &ResourceSatisfactionIr) -> &'static str {
-    if satisfaction.satisfied {
-        "satisfied"
-    } else if satisfaction
-        .diagnostic
-        .as_deref()
-        .is_some_and(|diagnostic| diagnostic.contains("conflict"))
-    {
-        "conflict"
-    } else if !satisfaction.required {
-        "optional_unsatisfied"
-    } else {
-        "unsatisfied"
     }
 }
 

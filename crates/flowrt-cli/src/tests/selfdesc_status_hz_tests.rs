@@ -457,6 +457,7 @@ fn live_status_summary_displays_resource_state() {
         owner_process: Some("main".to_string()),
         last_error: Some("provider not reported ready".to_string()),
         updated_unix_ms: Some(4000),
+        ..Default::default()
     });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
@@ -467,6 +468,9 @@ fn live_status_summary_displays_resource_state() {
     assert!(output.contains("capability=perception.lidar.samples"));
     assert!(output.contains("state=pending"));
     assert!(output.contains("required=true"));
+    assert!(output.contains("readiness=none"));
+    assert!(output.contains("on_failure=none"));
+    assert!(output.contains("provider=none"));
     assert!(output.contains("source=contract"));
     assert!(output.contains("owner_process=main"));
     assert!(output.contains("last_error=provider not reported ready"));

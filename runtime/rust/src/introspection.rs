@@ -319,10 +319,34 @@ pub struct IntrospectionResourceStatus {
     pub name: String,
     #[serde(default)]
     pub capability: String,
+    #[serde(default)]
+    pub access: Option<String>,
     #[serde(default = "default_resource_state")]
     pub state: String,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub readiness: Option<String>,
+    #[serde(default)]
+    pub health: Option<String>,
+    #[serde(default)]
+    pub on_failure: Option<String>,
+    #[serde(default)]
+    pub contract_status: Option<String>,
+    #[serde(default)]
+    pub satisfied: Option<bool>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub provider_scope: Option<String>,
+    #[serde(default)]
+    pub provider_readiness_source: Option<String>,
+    #[serde(default)]
+    pub provider_health_source: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+    #[serde(default)]
+    pub suggestion: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -4522,6 +4546,7 @@ mod tests {
                 owner_process: Some("main".to_string()),
                 last_error: Some("provider not reported ready".to_string()),
                 updated_unix_ms: Some(4000),
+                ..Default::default()
             }],
             inputs: vec![IntrospectionInputStatus {
                 task: "sink.main".to_string(),

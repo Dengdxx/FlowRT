@@ -2288,13 +2288,25 @@ pub(crate) fn live_status_summary_for_sockets(
                 }
                 for resource in &status.resources {
                     lines.push(format!(
-                        "resource={} capability={} state={} required={} source={} owner_process={} last_error={} updated_unix_ms={} socket={}",
+                        "resource={} capability={} access={} state={} required={} readiness={} health={} on_failure={} contract_status={} satisfied={} provider={} provider_scope={} provider_readiness_source={} provider_health_source={} source={} owner_process={} diagnostic={} suggestion={} last_error={} updated_unix_ms={} socket={}",
                         resource.name,
                         resource.capability,
+                        option_str(resource.access.as_deref()),
                         resource.state,
                         resource.required,
+                        option_str(resource.readiness.as_deref()),
+                        option_str(resource.health.as_deref()),
+                        option_str(resource.on_failure.as_deref()),
+                        option_str(resource.contract_status.as_deref()),
+                        option_bool(resource.satisfied),
+                        option_str(resource.provider.as_deref()),
+                        option_str(resource.provider_scope.as_deref()),
+                        option_str(resource.provider_readiness_source.as_deref()),
+                        option_str(resource.provider_health_source.as_deref()),
                         option_str(resource.source.as_deref()),
                         option_str(resource.owner_process.as_deref()),
+                        option_str(resource.diagnostic.as_deref()),
+                        option_str(resource.suggestion.as_deref()),
                         option_str(resource.last_error.as_deref()),
                         option_u64(resource.updated_unix_ms),
                         socket.display()
@@ -2618,6 +2630,12 @@ fn option_usize(value: Option<usize>) -> String {
 }
 
 fn option_i32(value: Option<i32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn option_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())

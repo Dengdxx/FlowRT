@@ -9,6 +9,9 @@ use flowrt_ir::{
 use serde::Serialize;
 
 use crate::messages::{cpp_type, rust_type};
+use crate::resource_names::{
+    resource_access_name, resource_failure_name, resource_health_name, resource_readiness_name,
+};
 use crate::runtime_plan::{
     OperationRuntimePlan, ServiceRuntimePlan, operation_runtime_plans, resolved_task_lane_name,
     service_runtime_plans,
@@ -1773,40 +1776,6 @@ fn readiness_name(readiness: TaskReadiness) -> &'static str {
     match readiness {
         TaskReadiness::AnyReady => "any_ready",
         TaskReadiness::AllReady => "all_ready",
-    }
-}
-
-fn resource_access_name(kind: flowrt_ir::ResourceAccess) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceAccess::Read => "read",
-        flowrt_ir::ResourceAccess::Write => "write",
-        flowrt_ir::ResourceAccess::ReadWrite => "read_write",
-        flowrt_ir::ResourceAccess::Exclusive => "exclusive",
-    }
-}
-
-fn resource_readiness_name(kind: flowrt_ir::ResourceReadinessGate) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceReadinessGate::BeforeInit => "before_init",
-        flowrt_ir::ResourceReadinessGate::BeforeStart => "before_start",
-        flowrt_ir::ResourceReadinessGate::Lazy => "lazy",
-    }
-}
-
-fn resource_health_name(kind: flowrt_ir::ResourceHealthPolicy) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceHealthPolicy::Required => "required",
-        flowrt_ir::ResourceHealthPolicy::Optional => "optional",
-        flowrt_ir::ResourceHealthPolicy::Ignored => "ignored",
-    }
-}
-
-fn resource_failure_name(kind: flowrt_ir::ResourceFailurePolicy) -> &'static str {
-    match kind {
-        flowrt_ir::ResourceFailurePolicy::StopProcess => "stop_process",
-        flowrt_ir::ResourceFailurePolicy::RestartProcess => "restart_process",
-        flowrt_ir::ResourceFailurePolicy::Degrade => "degrade",
-        flowrt_ir::ResourceFailurePolicy::StopGraph => "stop_graph",
     }
 }
 

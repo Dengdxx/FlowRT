@@ -8,6 +8,10 @@ use flowrt_ir::{
 };
 
 use crate::messages::cpp_type;
+use crate::resource_names::{
+    resource_access_name, resource_failure_name, resource_health_name, resource_readiness_name,
+    resource_satisfaction_status,
+};
 use crate::runtime_plan::{
     BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
     active_binds_for_instances, active_boundaries_for_instances, bind_backend, bind_runtime_plans,
@@ -1893,14 +1897,35 @@ fn emit_cpp_resource_registration(
         if !instance_names.contains(satisfaction.instance.name.as_str()) {
             continue;
         }
+        let provider = satisfaction.provider.as_ref();
         output.push_str(&format!(
-            "    introspection_state.register_resource(flowrt::IntrospectionResourceStatus{{\n        .name = {},\n        .capability = {},\n        .state = \"unknown\",\n        .required = {},\n        .source = std::optional<std::string>{{\"contract\"}},\n        .owner_process = std::optional<std::string>{{{}}},\n        .last_error = std::nullopt,\n        .updated_unix_ms = std::nullopt,\n    }});\n",
+            "    introspection_state.register_resource(flowrt::IntrospectionResourceStatus{{\n        .name = {},\n        .capability = {},\n        .access = std::optional<std::string>{{{}}},\n        .state = \"unknown\",\n        .required = {},\n        .readiness = std::optional<std::string>{{{}}},\n        .health = std::optional<std::string>{{{}}},\n        .on_failure = std::optional<std::string>{{{}}},\n        .contract_status = std::optional<std::string>{{{}}},\n        .satisfied = std::optional<bool>{{{}}},\n        .provider = {},\n        .provider_scope = std::nullopt,\n        .provider_readiness_source = std::nullopt,\n        .provider_health_source = std::nullopt,\n        .diagnostic = {},\n        .suggestion = std::nullopt,\n        .source = std::optional<std::string>{{\"contract\"}},\n        .owner_process = std::optional<std::string>{{{}}},\n        .last_error = std::nullopt,\n        .updated_unix_ms = std::nullopt,\n    }});\n",
             cpp_string_literal(&format!(
                 "{}.{}",
                 satisfaction.instance.name, satisfaction.resource
             )),
             cpp_string_literal(&satisfaction.capability.0),
+            cpp_string_literal(resource_access_name(satisfaction.access)),
             satisfaction.required,
+            cpp_string_literal(resource_readiness_name(satisfaction.readiness)),
+            cpp_string_literal(resource_health_name(satisfaction.health)),
+            cpp_string_literal(resource_failure_name(satisfaction.on_failure)),
+            cpp_string_literal(resource_satisfaction_status(satisfaction)),
+            satisfaction.satisfied,
+            provider.map_or_else(
+                || "std::nullopt".to_string(),
+                |provider| format!(
+                    "std::optional<std::string>{{{}}}",
+                    cpp_string_literal(&provider.name)
+                )
+            ),
+            satisfaction.diagnostic.as_ref().map_or_else(
+                || "std::nullopt".to_string(),
+                |diagnostic| format!(
+                    "std::optional<std::string>{{{}}}",
+                    cpp_string_literal(diagnostic)
+                )
+            ),
             cpp_string_literal(process_name),
         ));
     }

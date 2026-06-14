@@ -1,5 +1,9 @@
 use flowrt_ir::{ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness};
 
+use crate::resource_names::{
+    resource_access_name, resource_failure_name, resource_health_name, resource_readiness_name,
+    resource_satisfaction_status,
+};
 use crate::runtime_plan::{
     BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan,
     active_boundaries_for_instances, bind_backend,
@@ -436,14 +440,35 @@ fn emit_rust_resource_registration(
         if !instance_names.contains(satisfaction.instance.name.as_str()) {
             continue;
         }
+        let provider = satisfaction.provider.as_ref();
         output.push_str(&format!(
-            "        introspection_state.register_resource(flowrt::IntrospectionResourceStatus {{\n            name: {}.to_string(),\n            capability: {}.to_string(),\n            state: \"unknown\".to_string(),\n            required: {},\n            source: Some(\"contract\".to_string()),\n            owner_process: Some({}.to_string()),\n            last_error: None,\n            updated_unix_ms: None,\n        }});\n",
+            "        introspection_state.register_resource(flowrt::IntrospectionResourceStatus {{\n            name: {}.to_string(),\n            capability: {}.to_string(),\n            access: Some({}.to_string()),\n            state: \"unknown\".to_string(),\n            required: {},\n            readiness: Some({}.to_string()),\n            health: Some({}.to_string()),\n            on_failure: Some({}.to_string()),\n            contract_status: Some({}.to_string()),\n            satisfied: Some({}),\n            provider: {},\n            provider_scope: None,\n            provider_readiness_source: None,\n            provider_health_source: None,\n            diagnostic: {},\n            suggestion: None,\n            source: Some(\"contract\".to_string()),\n            owner_process: Some({}.to_string()),\n            last_error: None,\n            updated_unix_ms: None,\n        }});\n",
             crate::rust_string_literal(&format!(
                 "{}.{}",
                 satisfaction.instance.name, satisfaction.resource
             )),
             crate::rust_string_literal(&satisfaction.capability.0),
+            crate::rust_string_literal(resource_access_name(satisfaction.access)),
             satisfaction.required,
+            crate::rust_string_literal(resource_readiness_name(satisfaction.readiness)),
+            crate::rust_string_literal(resource_health_name(satisfaction.health)),
+            crate::rust_string_literal(resource_failure_name(satisfaction.on_failure)),
+            crate::rust_string_literal(resource_satisfaction_status(satisfaction)),
+            satisfaction.satisfied,
+            provider.map_or_else(
+                || "None".to_string(),
+                |provider| format!(
+                    "Some({}.to_string())",
+                    crate::rust_string_literal(&provider.name)
+                )
+            ),
+            satisfaction.diagnostic.as_ref().map_or_else(
+                || "None".to_string(),
+                |diagnostic| format!(
+                    "Some({}.to_string())",
+                    crate::rust_string_literal(diagnostic)
+                )
+            ),
             crate::rust_string_literal(process_name),
         ));
     }

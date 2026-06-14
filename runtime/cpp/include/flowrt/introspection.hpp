@@ -403,8 +403,20 @@ struct IntrospectionClockStatus {
 struct IntrospectionResourceStatus {
     std::string name;
     std::string capability;
+    std::optional<std::string> access;
     std::string state = "unknown";
     bool required = false;
+    std::optional<std::string> readiness;
+    std::optional<std::string> health;
+    std::optional<std::string> on_failure;
+    std::optional<std::string> contract_status;
+    std::optional<bool> satisfied;
+    std::optional<std::string> provider;
+    std::optional<std::string> provider_scope;
+    std::optional<std::string> provider_readiness_source;
+    std::optional<std::string> provider_health_source;
+    std::optional<std::string> diagnostic;
+    std::optional<std::string> suggestion;
     std::optional<std::string> source;
     std::optional<std::string> owner_process;
     std::optional<std::string> last_error;
@@ -624,10 +636,36 @@ inline std::string resource_status_json(const IntrospectionResourceStatus &resou
     output.append(json_string(resource.name));
     output.append(",\"capability\":");
     output.append(json_string(resource.capability));
+    output.append(",\"access\":");
+    output.append(resource.access ? json_string(*resource.access) : "null");
     output.append(",\"state\":");
     output.append(json_string(resource.state));
     output.append(",\"required\":");
     output.append(resource.required ? "true" : "false");
+    output.append(",\"readiness\":");
+    output.append(resource.readiness ? json_string(*resource.readiness) : "null");
+    output.append(",\"health\":");
+    output.append(resource.health ? json_string(*resource.health) : "null");
+    output.append(",\"on_failure\":");
+    output.append(resource.on_failure ? json_string(*resource.on_failure) : "null");
+    output.append(",\"contract_status\":");
+    output.append(resource.contract_status ? json_string(*resource.contract_status) : "null");
+    output.append(",\"satisfied\":");
+    output.append(resource.satisfied ? (*resource.satisfied ? "true" : "false") : "null");
+    output.append(",\"provider\":");
+    output.append(resource.provider ? json_string(*resource.provider) : "null");
+    output.append(",\"provider_scope\":");
+    output.append(resource.provider_scope ? json_string(*resource.provider_scope) : "null");
+    output.append(",\"provider_readiness_source\":");
+    output.append(resource.provider_readiness_source ? json_string(*resource.provider_readiness_source)
+                                                     : "null");
+    output.append(",\"provider_health_source\":");
+    output.append(resource.provider_health_source ? json_string(*resource.provider_health_source)
+                                                  : "null");
+    output.append(",\"diagnostic\":");
+    output.append(resource.diagnostic ? json_string(*resource.diagnostic) : "null");
+    output.append(",\"suggestion\":");
+    output.append(resource.suggestion ? json_string(*resource.suggestion) : "null");
     output.append(",\"source\":");
     output.append(resource.source ? json_string(*resource.source) : "null");
     output.append(",\"owner_process\":");

@@ -19,7 +19,10 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::introspection::{IntrospectionIdentity, IntrospectionProcessStatus, IntrospectionState};
+use crate::introspection::{
+    IntrospectionIdentity, IntrospectionProcessStatus, IntrospectionResourceStatus,
+    IntrospectionState,
+};
 use crate::shutdown::ShutdownToken;
 
 use self::resource_placement::{ResourceApplied, ResourcePlacement, ResourcePlacementStatus};
@@ -108,7 +111,7 @@ pub struct LaunchProfileMode {
 }
 
 /// manifest 中的 graph 节点。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchGraph {
     pub name: String,
@@ -143,11 +146,11 @@ pub struct LaunchResourceContract {
     #[serde(default = "default_resource_contract_version")]
     pub resource_contract_version: String,
     #[serde(default)]
-    pub requirements: Vec<serde_json::Value>,
+    pub requirements: Vec<LaunchResourceRequirement>,
     #[serde(default)]
-    pub providers: Vec<serde_json::Value>,
+    pub providers: Vec<LaunchResourceProvider>,
     #[serde(default)]
-    pub satisfactions: Vec<serde_json::Value>,
+    pub satisfactions: Vec<LaunchResourceSatisfaction>,
 }
 
 impl Default for LaunchResourceContract {
@@ -165,8 +168,66 @@ fn default_resource_contract_version() -> String {
     SUPPORTED_RESOURCE_CONTRACT_VERSION.to_string()
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchResourceRequirement {
+    pub instance: String,
+    pub component: String,
+    pub name: String,
+    pub capability: String,
+    pub access: String,
+    pub required: bool,
+    pub readiness: String,
+    pub health: String,
+    pub on_failure: String,
+    pub satisfaction: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchResourceProvider {
+    pub name: String,
+    pub scope: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub process: Option<String>,
+    #[serde(default)]
+    pub external_package: Option<String>,
+    #[serde(default)]
+    pub readiness_source: Option<String>,
+    #[serde(default)]
+    pub health_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchResourceSatisfaction {
+    pub instance: String,
+    pub component: String,
+    pub resource: String,
+    pub capability: String,
+    pub access: String,
+    pub required: bool,
+    pub readiness: String,
+    pub health: String,
+    pub on_failure: String,
+    pub status: String,
+    pub satisfied: bool,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+}
+
 /// manifest 中的 island boundary endpoint 静态摘要。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchBoundaryEndpoint {
     pub name: String,
@@ -180,7 +241,7 @@ pub struct LaunchBoundaryEndpoint {
 }
 
 /// manifest 中单个 service bind 描述。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchService {
     pub name: String,
@@ -203,7 +264,7 @@ pub struct LaunchService {
 }
 
 /// manifest 中单个进程描述。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchProcess {
     pub name: String,
@@ -592,6 +653,400 @@ pub fn process_dependencies_satisfied(
             || (process.readiness == ReadinessGate::ProcessStarted
                 && spawned_names.contains(dependency))
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceGatePhase {
+    Startup,
+    Restart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceGateAction {
+    Start,
+    Degrade,
+    WaitRestart,
+    StopProcess,
+    StopGraph,
+}
+
+#[derive(Debug, Clone)]
+struct ResourceGateDecision {
+    action: ResourceGateAction,
+    statuses: Vec<IntrospectionResourceStatus>,
+    blocking: Option<ResourceGateBlock>,
+}
+
+#[derive(Debug, Clone)]
+struct ResourceGateBlock {
+    resource: String,
+    capability: String,
+    readiness: String,
+    on_failure: String,
+    diagnostic: Option<String>,
+}
+
+impl ResourceGateDecision {
+    fn error_message(&self, process_name: &str) -> Option<String> {
+        let block = self.blocking.as_ref()?;
+        let diagnostic = block
+            .diagnostic
+            .as_deref()
+            .unwrap_or("resource is not ready");
+        Some(format!(
+            "FlowRT resource gate blocked process `{process_name}`: resource `{}` capability `{}` readiness={} policy={} diagnostic={diagnostic}",
+            block.resource, block.capability, block.readiness, block.on_failure
+        ))
+    }
+
+    fn wait_label(&self) -> Option<String> {
+        let block = self.blocking.as_ref()?;
+        Some(format!(
+            "resource={} capability={} readiness={} policy={}",
+            block.resource, block.capability, block.readiness, block.on_failure
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProcessResourceGate {
+    resources: Vec<ProcessResourceContract>,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessResourceContract {
+    instance: String,
+    resource: String,
+    capability: String,
+    access: String,
+    required: bool,
+    readiness: String,
+    health: String,
+    on_failure: String,
+    contract_status: String,
+    satisfied: bool,
+    provider: Option<String>,
+    diagnostic: Option<String>,
+    provider_scope: Option<String>,
+    provider_readiness_source: Option<String>,
+    provider_health_source: Option<String>,
+}
+
+fn evaluate_process_resource_gates(
+    graph: &LaunchGraph,
+    process: &LaunchProcess,
+    phase: ResourceGatePhase,
+) -> ResourceGateDecision {
+    let gate = process_resource_gate(graph, process);
+    let mut decision = evaluate_resource_gate(&gate, phase);
+    for status in &mut decision.statuses {
+        status.owner_process = Some(process.name.clone());
+    }
+    decision
+}
+
+fn evaluate_child_resource_gates(
+    supervisor_state: &IntrospectionState,
+    child: &SupervisedChild,
+    phase: ResourceGatePhase,
+) -> ResourceGateDecision {
+    let mut gate = child.resource_gate.clone();
+    apply_latest_resource_statuses(&mut gate, &supervisor_state.status().resources);
+    let mut decision = evaluate_resource_gate(&gate, phase);
+    for status in &mut decision.statuses {
+        status.owner_process = Some(child.name.clone());
+    }
+    decision
+}
+
+fn apply_latest_resource_statuses(
+    gate: &mut ProcessResourceGate,
+    latest: &[IntrospectionResourceStatus],
+) {
+    for resource in &mut gate.resources {
+        let resource_name = format!("{}.{}", resource.instance, resource.resource);
+        let Some(status) = latest.iter().find(|status| status.name == resource_name) else {
+            continue;
+        };
+        let Some(satisfied) = resource_status_satisfied(status) else {
+            continue;
+        };
+        resource.satisfied = satisfied;
+        resource.contract_status = status
+            .contract_status
+            .clone()
+            .unwrap_or_else(|| status.state.clone());
+        resource.diagnostic = status
+            .diagnostic
+            .clone()
+            .or_else(|| status.last_error.clone())
+            .or_else(|| resource.diagnostic.clone());
+        if status.provider.is_some() {
+            resource.provider = status.provider.clone();
+        }
+        if status.provider_scope.is_some() {
+            resource.provider_scope = status.provider_scope.clone();
+        }
+        if status.provider_readiness_source.is_some() {
+            resource.provider_readiness_source = status.provider_readiness_source.clone();
+        }
+        if status.provider_health_source.is_some() {
+            resource.provider_health_source = status.provider_health_source.clone();
+        }
+    }
+}
+
+fn resource_status_satisfied(status: &IntrospectionResourceStatus) -> Option<bool> {
+    status.satisfied.or(match status.state.as_str() {
+        "ready" => Some(true),
+        "pending" | "degraded" | "failed" | "unknown" => Some(false),
+        _ => None,
+    })
+}
+
+fn process_resource_gate(graph: &LaunchGraph, process: &LaunchProcess) -> ProcessResourceGate {
+    let process_instances = process
+        .instances
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let providers = graph
+        .resource_contract
+        .providers
+        .iter()
+        .map(|provider| (provider.name.as_str(), provider))
+        .collect::<BTreeMap<_, _>>();
+    let resources = graph
+        .resource_contract
+        .satisfactions
+        .iter()
+        .filter(|satisfaction| process_instances.contains(satisfaction.instance.as_str()))
+        .map(|satisfaction| {
+            let provider = satisfaction
+                .provider
+                .as_deref()
+                .and_then(|name| providers.get(name).copied());
+            ProcessResourceContract {
+                instance: satisfaction.instance.clone(),
+                resource: satisfaction.resource.clone(),
+                capability: satisfaction.capability.clone(),
+                access: satisfaction.access.clone(),
+                required: satisfaction.required,
+                readiness: satisfaction.readiness.clone(),
+                health: satisfaction.health.clone(),
+                on_failure: satisfaction.on_failure.clone(),
+                contract_status: satisfaction.status.clone(),
+                satisfied: satisfaction.satisfied,
+                provider: satisfaction.provider.clone(),
+                diagnostic: satisfaction.diagnostic.clone(),
+                provider_scope: provider.map(|provider| provider.scope.clone()),
+                provider_readiness_source: provider.and_then(|provider| {
+                    provider
+                        .readiness_source
+                        .clone()
+                        .or_else(|| provider.process.clone())
+                        .or_else(|| provider.target.clone())
+                        .or_else(|| provider.external_package.clone())
+                }),
+                provider_health_source: provider
+                    .and_then(|provider| provider.health_source.clone()),
+            }
+        })
+        .collect();
+    ProcessResourceGate { resources }
+}
+
+fn evaluate_resource_gate(
+    gate: &ProcessResourceGate,
+    phase: ResourceGatePhase,
+) -> ResourceGateDecision {
+    let mut action = ResourceGateAction::Start;
+    let mut blocking = None;
+    let mut statuses = Vec::new();
+
+    for resource in &gate.resources {
+        let (resource_action, state) = resource_gate_resource_action(resource, phase);
+        let status = resource_status_from_contract(resource, &state);
+        if should_replace_action(action, resource_action) {
+            action = resource_action;
+            if matches!(
+                resource_action,
+                ResourceGateAction::StopProcess
+                    | ResourceGateAction::StopGraph
+                    | ResourceGateAction::WaitRestart
+            ) {
+                blocking = Some(ResourceGateBlock {
+                    resource: status.name.clone(),
+                    capability: status.capability.clone(),
+                    readiness: resource.readiness.clone(),
+                    on_failure: resource.on_failure.clone(),
+                    diagnostic: resource.diagnostic.clone(),
+                });
+            }
+        }
+        statuses.push(status);
+    }
+
+    ResourceGateDecision {
+        action,
+        statuses,
+        blocking,
+    }
+}
+
+fn resource_gate_resource_action(
+    resource: &ProcessResourceContract,
+    phase: ResourceGatePhase,
+) -> (ResourceGateAction, String) {
+    if resource.satisfied {
+        return (ResourceGateAction::Start, "ready".to_string());
+    }
+    if resource.readiness == "lazy" {
+        return (ResourceGateAction::Start, "pending".to_string());
+    }
+    if !resource.required || resource.health == "optional" {
+        return (ResourceGateAction::Degrade, "degraded".to_string());
+    }
+    match resource.on_failure.as_str() {
+        "stop_graph" => (ResourceGateAction::StopGraph, "failed".to_string()),
+        "restart_process" if phase == ResourceGatePhase::Restart => {
+            (ResourceGateAction::WaitRestart, "pending".to_string())
+        }
+        "restart_process" => (ResourceGateAction::StopProcess, "pending".to_string()),
+        "degrade" => (ResourceGateAction::Degrade, "degraded".to_string()),
+        _ => (ResourceGateAction::StopProcess, "failed".to_string()),
+    }
+}
+
+fn should_replace_action(current: ResourceGateAction, candidate: ResourceGateAction) -> bool {
+    resource_action_rank(candidate) > resource_action_rank(current)
+}
+
+fn resource_action_rank(action: ResourceGateAction) -> u8 {
+    match action {
+        ResourceGateAction::Start => 0,
+        ResourceGateAction::Degrade => 1,
+        ResourceGateAction::WaitRestart => 2,
+        ResourceGateAction::StopProcess => 3,
+        ResourceGateAction::StopGraph => 4,
+    }
+}
+
+fn resource_status_from_contract(
+    resource: &ProcessResourceContract,
+    state: &str,
+) -> IntrospectionResourceStatus {
+    let last_error = (!resource.satisfied)
+        .then(|| {
+            resource
+                .diagnostic
+                .clone()
+                .unwrap_or_else(|| "resource is not ready".to_string())
+        })
+        .filter(|_| state != "ready");
+    IntrospectionResourceStatus {
+        name: format!("{}.{}", resource.instance, resource.resource),
+        capability: resource.capability.clone(),
+        access: Some(resource.access.clone()),
+        state: state.to_string(),
+        required: resource.required,
+        readiness: Some(resource.readiness.clone()),
+        health: Some(resource.health.clone()),
+        on_failure: Some(resource.on_failure.clone()),
+        contract_status: Some(resource.contract_status.clone()),
+        satisfied: Some(resource.satisfied),
+        provider: resource.provider.clone(),
+        provider_scope: resource.provider_scope.clone(),
+        provider_readiness_source: resource.provider_readiness_source.clone(),
+        provider_health_source: resource.provider_health_source.clone(),
+        diagnostic: resource.diagnostic.clone(),
+        suggestion: resource_gate_suggestion(resource),
+        source: Some("contract".to_string()),
+        owner_process: None,
+        last_error,
+        updated_unix_ms: Some(unix_time_ms()),
+    }
+}
+
+fn resource_gate_suggestion(resource: &ProcessResourceContract) -> Option<String> {
+    if resource.satisfied {
+        return None;
+    }
+    match resource.provider_readiness_source.as_deref() {
+        Some(source) => Some(format!("check provider readiness source `{source}`")),
+        None if resource.required => {
+            Some("configure a provider or relax the requirement".to_string())
+        }
+        None => {
+            Some("configure an optional provider if degraded mode is not acceptable".to_string())
+        }
+    }
+}
+
+fn record_resource_gate_statuses(
+    supervisor_state: &IntrospectionState,
+    statuses: &[IntrospectionResourceStatus],
+) {
+    for status in statuses {
+        supervisor_state.record_resource_status(status.clone());
+    }
+}
+
+fn record_process_resource_gate_status(
+    supervisor_state: &IntrospectionState,
+    process: &LaunchProcess,
+    state: &str,
+    decision: &ResourceGateDecision,
+) {
+    supervisor_state.record_process_health(IntrospectionProcessStatus {
+        name: process.name.clone(),
+        state: state.to_string(),
+        pid: None,
+        restart_count: 0,
+        tick_count: None,
+        last_seen_unix_ms: None,
+        tick_stale: false,
+        exit_code: None,
+        readiness_wait: decision.wait_label(),
+        resource_placement: if resource_placement::has_placement(&process.resource_placement) {
+            Some(ResourcePlacementStatus {
+                desired: process.resource_placement.clone(),
+                applied: ResourceApplied::default(),
+            })
+        } else {
+            None
+        },
+    });
+}
+
+fn apply_startup_resource_gate(
+    supervisor_state: &IntrospectionState,
+    graph: &LaunchGraph,
+    process: &LaunchProcess,
+) -> Result<ResourceGateDecision, String> {
+    let decision = evaluate_process_resource_gates(graph, process, ResourceGatePhase::Startup);
+    record_resource_gate_statuses(supervisor_state, &decision.statuses);
+    match decision.action {
+        ResourceGateAction::Start | ResourceGateAction::Degrade => Ok(decision),
+        ResourceGateAction::StopGraph => {
+            record_process_resource_gate_status(supervisor_state, process, "stopped", &decision);
+            Err(decision.error_message(&process.name).unwrap_or_else(|| {
+                format!(
+                    "FlowRT resource gate stopped graph before process `{}` startup",
+                    process.name
+                )
+            }))
+        }
+        ResourceGateAction::StopProcess | ResourceGateAction::WaitRestart => {
+            record_process_resource_gate_status(supervisor_state, process, "stopped", &decision);
+            Err(decision.error_message(&process.name).unwrap_or_else(|| {
+                format!(
+                    "FlowRT resource gate stopped process `{}` before startup",
+                    process.name
+                )
+            }))
+        }
+    }
 }
 
 /// 等待子进程通过 readiness gate。
@@ -1446,6 +1901,9 @@ struct SupervisedChild {
     readiness: ReadinessGate,
     expected_services: Vec<String>,
     startup_delay_ms: u64,
+    resource_gate: ProcessResourceGate,
+    resource_degraded: bool,
+    resource_wait: Option<String>,
     resource_placement: ResourcePlacement,
     resource_placement_status: ResourcePlacementStatus,
     child: Child,
@@ -1585,6 +2043,8 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             };
             let process = pending.remove(index);
             let expected_services = expected_services_for_process(graph, process);
+            let resource_gate_decision =
+                apply_startup_resource_gate(&supervisor_state, graph, process)?;
             let external_resolution = if process.runtime_kind == "external" {
                 let external = process.external.as_ref().ok_or_else(|| {
                     format!(
@@ -1640,6 +2100,9 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 readiness: effective_readiness(process),
                 expected_services,
                 startup_delay_ms: process.startup_delay_ms,
+                resource_gate: process_resource_gate(graph, process),
+                resource_degraded: resource_gate_decision.action == ResourceGateAction::Degrade,
+                resource_wait: None,
                 resource_placement: process.resource_placement.clone(),
                 resource_placement_status: ResourcePlacementStatus {
                     desired: process.resource_placement.clone(),
@@ -1671,7 +2134,11 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             // readiness 通过后执行错峰启动延迟。
             wait_for_startup_delay(&supervisor_state, &mut child, &shutdown)?;
 
-            child.state = "running".to_string();
+            child.state = if child.resource_degraded {
+                "degraded".to_string()
+            } else {
+                "running".to_string()
+            };
             record_child_health(&supervisor_state, &child, false);
             children.push(child);
         }
@@ -1806,6 +2273,44 @@ fn restart_child(
     run_ticks: Option<usize>,
     shutdown: &ShutdownToken,
 ) -> Result<(), String> {
+    let resource_gate_decision =
+        evaluate_child_resource_gates(supervisor_state, child, ResourceGatePhase::Restart);
+    record_resource_gate_statuses(supervisor_state, &resource_gate_decision.statuses);
+    match resource_gate_decision.action {
+        ResourceGateAction::Start | ResourceGateAction::Degrade => {
+            child.resource_degraded = resource_gate_decision.action == ResourceGateAction::Degrade;
+            child.resource_wait = None;
+        }
+        ResourceGateAction::WaitRestart => {
+            child.state = "waiting_resources".to_string();
+            child.resource_wait = resource_gate_decision.wait_label();
+            child.next_restart_unix_ms =
+                Some(unix_time_ms().saturating_add(HEALTH_POLL_INTERVAL.as_millis() as u64));
+            record_child_health(supervisor_state, child, false);
+            return Ok(());
+        }
+        ResourceGateAction::StopProcess => {
+            child.finished = true;
+            child.state = "stopped".to_string();
+            child.resource_wait = resource_gate_decision.wait_label();
+            record_child_health(supervisor_state, child, false);
+            return Ok(());
+        }
+        ResourceGateAction::StopGraph => {
+            child.finished = true;
+            child.state = "failed".to_string();
+            child.resource_wait = resource_gate_decision.wait_label();
+            record_child_health(supervisor_state, child, false);
+            return Err(resource_gate_decision
+                .error_message(&child.name)
+                .unwrap_or_else(|| {
+                    format!(
+                        "FlowRT resource gate stopped graph before restarting process `{}`",
+                        child.name
+                    )
+                }));
+        }
+    }
     let restart_process = LaunchProcess {
         name: child.name.clone(),
         backend: child.backend.clone(),
@@ -1892,7 +2397,11 @@ fn restart_child(
         shutdown,
     )?;
     wait_for_startup_delay(supervisor_state, child, shutdown)?;
-    child.state = "running".to_string();
+    child.state = if child.resource_degraded {
+        "degraded".to_string()
+    } else {
+        "running".to_string()
+    };
     record_child_health(supervisor_state, child, false);
     Ok(())
 }
@@ -1905,7 +2414,7 @@ fn child_dependency_snapshot(children: &[SupervisedChild]) -> (BTreeSet<String>,
             continue;
         }
         spawned_names.insert(child.name.clone());
-        if matches!(child.state.as_str(), "running" | "stale") {
+        if matches!(child.state.as_str(), "running" | "degraded" | "stale") {
             ready_names.insert(child.name.clone());
         }
     }
@@ -2009,10 +2518,13 @@ fn refresh_child_health(supervisor_state: &IntrospectionState, child: &mut Super
                 child.last_tick_count = Some(status.tick_count);
                 child.last_tick_changed_unix_ms = now;
             }
+            record_child_reported_resource_statuses(supervisor_state, child, &status);
             let tick_stale =
                 now.saturating_sub(child.last_tick_changed_unix_ms) > TICK_STALE_AFTER_MS;
             child.state = if tick_stale {
                 "stale".to_string()
+            } else if child.resource_degraded {
+                "degraded".to_string()
             } else {
                 "running".to_string()
             };
@@ -2029,15 +2541,105 @@ fn refresh_child_health(supervisor_state: &IntrospectionState, child: &mut Super
     }
 }
 
+fn record_child_reported_resource_statuses(
+    supervisor_state: &IntrospectionState,
+    child: &mut SupervisedChild,
+    status: &crate::IntrospectionStatus,
+) {
+    for resource in &status.resources {
+        let mut reported = resource.clone();
+        if reported.owner_process.is_none() {
+            reported.owner_process = Some(child.name.clone());
+        }
+        if reported.source.is_none() {
+            reported.source = Some("runtime".to_string());
+        }
+        if matches!(reported.state.as_str(), "degraded" | "failed") {
+            child.resource_degraded = true;
+            child.resource_wait = Some(format!(
+                "resource={} capability={} state={} policy={}",
+                reported.name,
+                reported.capability,
+                reported.state,
+                reported.on_failure.as_deref().unwrap_or("runtime_reported")
+            ));
+        }
+        supervisor_state.record_resource_status(reported);
+    }
+
+    for boundary in &status.io_boundaries {
+        for resource in &boundary.resources {
+            let full_name = format!("{}.{}", boundary.name, resource.name);
+            let contract = child.resource_gate.resources.iter().find(|contract| {
+                contract.instance == boundary.name && contract.resource == resource.name
+            });
+            let mut state = if resource.ready { "ready" } else { "pending" };
+            if resource.last_error.is_some() {
+                state = if contract.is_some_and(|contract| contract.required) {
+                    "failed"
+                } else {
+                    "degraded"
+                };
+            }
+            let mut reported = contract.map_or_else(
+                || IntrospectionResourceStatus {
+                    name: full_name.clone(),
+                    capability: resource.kind.clone(),
+                    state: state.to_string(),
+                    required: false,
+                    source: Some("io_boundary".to_string()),
+                    owner_process: Some(child.name.clone()),
+                    last_error: resource.last_error.clone(),
+                    updated_unix_ms: resource.updated_unix_ms,
+                    ..Default::default()
+                },
+                |contract| {
+                    let mut status = resource_status_from_contract(contract, state);
+                    status.owner_process = Some(child.name.clone());
+                    status.source = Some("io_boundary".to_string());
+                    status.satisfied = Some(state == "ready");
+                    status.contract_status = Some(if state == "ready" {
+                        "satisfied".to_string()
+                    } else if contract.required {
+                        "unsatisfied".to_string()
+                    } else {
+                        "optional_unsatisfied".to_string()
+                    });
+                    status.last_error = resource.last_error.clone();
+                    status.updated_unix_ms = resource.updated_unix_ms.or(status.updated_unix_ms);
+                    status
+                },
+            );
+            if reported.state == "failed" || reported.state == "degraded" {
+                child.resource_degraded = true;
+                child.resource_wait = Some(format!(
+                    "resource={} capability={} state={} policy={}",
+                    reported.name,
+                    reported.capability,
+                    reported.state,
+                    reported.on_failure.as_deref().unwrap_or("runtime_reported")
+                ));
+            }
+            if reported.diagnostic.is_none() {
+                reported.diagnostic = resource.message.clone();
+            }
+            supervisor_state.record_resource_status(reported);
+        }
+    }
+}
+
 fn record_child_health(
     supervisor_state: &IntrospectionState,
     child: &SupervisedChild,
     tick_stale: bool,
 ) {
-    let readiness_wait = match child.state.as_str() {
-        "waiting_readiness" => Some(readiness_gate_label(child.readiness)),
-        _ => None,
-    };
+    let readiness_wait = child
+        .resource_wait
+        .as_deref()
+        .or(match child.state.as_str() {
+            "waiting_readiness" => Some(readiness_gate_label(child.readiness)),
+            _ => None,
+        });
     let resource_placement = if resource_placement::has_placement(&child.resource_placement) {
         Some(child.resource_placement_status.clone())
     } else {
@@ -2154,6 +2756,109 @@ mod tests {
         }
     }
 
+    fn resource_gate_fixture(
+        readiness: &str,
+        required: bool,
+        health: &str,
+        on_failure: &str,
+        status: &str,
+        satisfied: bool,
+        provider: Option<&str>,
+        diagnostic: Option<&str>,
+    ) -> (LaunchGraph, LaunchProcess) {
+        let manifest = parse_launch_manifest(&resource_gate_manifest_json(
+            readiness, required, health, on_failure, status, satisfied, provider, diagnostic,
+        ))
+        .unwrap();
+        let graph = manifest.graphs.into_iter().next().unwrap();
+        let process = graph.processes[0].clone();
+        (graph, process)
+    }
+
+    fn resource_gate_manifest_json(
+        readiness: &str,
+        required: bool,
+        health: &str,
+        on_failure: &str,
+        status: &str,
+        satisfied: bool,
+        provider: Option<&str>,
+        diagnostic: Option<&str>,
+    ) -> String {
+        let provider_value = provider
+            .map(|name| format!(r#""{name}""#))
+            .unwrap_or_else(|| "null".to_string());
+        let diagnostic_value = diagnostic
+            .map(|message| format!(r#""{message}""#))
+            .unwrap_or_else(|| "null".to_string());
+        format!(
+            r#"{{
+            "package": "demo",
+            "ir_version": "0.1",
+            "profiles": ["default"],
+            "targets": ["edge"],
+            "graphs": [{{
+                "name": "main",
+                "scheduler": {{}},
+                "resource_contract": {{
+                    "resource_contract_version": "0.1",
+                    "providers": [{{
+                        "name": "sensor_provider",
+                        "scope": "process",
+                        "capabilities": ["perception.samples"],
+                        "target": null,
+                        "process": "sensor_proc",
+                        "external_package": null,
+                        "readiness_source": "provider_ready",
+                        "health_source": "provider_health"
+                    }}],
+                    "requirements": [{{
+                        "instance": "sensor",
+                        "component": "sensor",
+                        "name": "samples",
+                        "capability": "perception.samples",
+                        "access": "read_write",
+                        "required": {required},
+                        "readiness": "{readiness}",
+                        "health": "{health}",
+                        "on_failure": "{on_failure}",
+                        "satisfaction": "{status}",
+                        "provider": {provider_value},
+                        "diagnostic": {diagnostic_value}
+                    }}],
+                    "satisfactions": [{{
+                        "instance": "sensor",
+                        "component": "sensor",
+                        "resource": "samples",
+                        "capability": "perception.samples",
+                        "access": "read_write",
+                        "required": {required},
+                        "readiness": "{readiness}",
+                        "health": "{health}",
+                        "on_failure": "{on_failure}",
+                        "status": "{status}",
+                        "satisfied": {satisfied},
+                        "provider": {provider_value},
+                        "diagnostic": {diagnostic_value}
+                    }}]
+                }},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": [{{
+                    "name": "sensor_proc",
+                    "backend": "inproc",
+                    "runtime_kind": "rust",
+                    "instances": ["sensor"],
+                    "tasks": []
+                }}]
+            }}]
+        }}"#
+        )
+    }
+
     fn temp_test_dir(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "flowrt-supervisor-{name}-{}-{}",
@@ -2182,6 +2887,9 @@ mod tests {
             readiness: ReadinessGate::ProcessStarted,
             expected_services: vec![],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child,
@@ -3522,6 +4230,329 @@ mod tests {
     }
 
     #[test]
+    fn manifest_deserialization_parses_resource_contract_fields() {
+        let json = resource_gate_manifest_json(
+            "before_start",
+            true,
+            "required",
+            "stop_process",
+            "satisfied",
+            true,
+            Some("sensor_provider"),
+            None,
+        );
+        let manifest = parse_launch_manifest(&json).unwrap();
+        let contract = &manifest.graphs[0].resource_contract;
+
+        assert_eq!(contract.providers[0].name, "sensor_provider");
+        assert_eq!(contract.providers[0].scope, "process");
+        assert_eq!(
+            contract.providers[0].process.as_deref(),
+            Some("sensor_proc")
+        );
+        assert_eq!(
+            contract.providers[0].readiness_source.as_deref(),
+            Some("provider_ready")
+        );
+        assert_eq!(
+            contract.providers[0].health_source.as_deref(),
+            Some("provider_health")
+        );
+
+        let requirement = &contract.requirements[0];
+        assert_eq!(requirement.name, "samples");
+        assert_eq!(requirement.capability, "perception.samples");
+        assert_eq!(requirement.access, "read_write");
+        assert!(requirement.required);
+        assert_eq!(requirement.readiness, "before_start");
+        assert_eq!(requirement.health, "required");
+        assert_eq!(requirement.on_failure, "stop_process");
+        assert_eq!(requirement.satisfaction, "satisfied");
+
+        let satisfaction = &contract.satisfactions[0];
+        assert_eq!(satisfaction.resource, "samples");
+        assert_eq!(satisfaction.status, "satisfied");
+        assert!(satisfaction.satisfied);
+        assert_eq!(satisfaction.provider.as_deref(), Some("sensor_provider"));
+    }
+
+    #[test]
+    fn resource_gate_allows_required_satisfied_before_start() {
+        let (graph, process) = resource_gate_fixture(
+            "before_start",
+            true,
+            "required",
+            "stop_process",
+            "satisfied",
+            true,
+            Some("sensor_provider"),
+            None,
+        );
+
+        let decision =
+            evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
+
+        assert_eq!(decision.action, ResourceGateAction::Start);
+        assert_eq!(decision.statuses[0].name, "sensor.samples");
+        assert_eq!(decision.statuses[0].state, "ready");
+        assert_eq!(
+            decision.statuses[0].on_failure.as_deref(),
+            Some("stop_process")
+        );
+        assert_eq!(
+            decision.statuses[0].provider.as_deref(),
+            Some("sensor_provider")
+        );
+    }
+
+    #[test]
+    fn resource_gate_keeps_lazy_unsatisfied_pending_without_blocking() {
+        let (graph, process) = resource_gate_fixture(
+            "lazy",
+            true,
+            "required",
+            "stop_process",
+            "unsatisfied",
+            false,
+            None,
+            Some("provider not ready"),
+        );
+
+        let decision =
+            evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
+
+        assert_eq!(decision.action, ResourceGateAction::Start);
+        assert_eq!(decision.statuses[0].state, "pending");
+        assert_eq!(
+            decision.statuses[0].diagnostic.as_deref(),
+            Some("provider not ready")
+        );
+    }
+
+    #[test]
+    fn resource_gate_degrades_optional_unsatisfied_without_blocking() {
+        let (graph, process) = resource_gate_fixture(
+            "before_init",
+            false,
+            "optional",
+            "degrade",
+            "optional_unsatisfied",
+            false,
+            None,
+            Some("optional provider not configured"),
+        );
+
+        let decision =
+            evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
+
+        assert_eq!(decision.action, ResourceGateAction::Degrade);
+        assert_eq!(decision.statuses[0].state, "degraded");
+        assert_eq!(
+            decision.statuses[0].last_error.as_deref(),
+            Some("optional provider not configured")
+        );
+    }
+
+    #[test]
+    fn resource_gate_blocks_required_stop_process_with_diagnostic() {
+        let (graph, process) = resource_gate_fixture(
+            "before_init",
+            true,
+            "required",
+            "stop_process",
+            "unsatisfied",
+            false,
+            None,
+            Some("provider missing"),
+        );
+
+        let decision =
+            evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
+
+        assert_eq!(decision.action, ResourceGateAction::StopProcess);
+        let error = decision.error_message("sensor_proc").unwrap();
+        assert!(error.contains("sensor.samples"));
+        assert!(error.contains("perception.samples"));
+        assert!(error.contains("before_init"));
+        assert!(error.contains("stop_process"));
+    }
+
+    #[test]
+    fn resource_gate_blocks_required_stop_graph_with_diagnostic() {
+        let (graph, process) = resource_gate_fixture(
+            "before_start",
+            true,
+            "required",
+            "stop_graph",
+            "unsatisfied",
+            false,
+            None,
+            Some("target provider missing"),
+        );
+
+        let decision =
+            evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
+
+        assert_eq!(decision.action, ResourceGateAction::StopGraph);
+        let error = decision.error_message("sensor_proc").unwrap();
+        assert!(error.contains("stop_graph"));
+        assert!(error.contains("target provider missing"));
+    }
+
+    #[test]
+    fn restart_process_waits_for_resource_then_allows_restart() {
+        let (graph, process) = resource_gate_fixture(
+            "before_start",
+            true,
+            "required",
+            "restart_process",
+            "unsatisfied",
+            false,
+            None,
+            Some("provider not ready"),
+        );
+
+        let blocked = evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Restart);
+        assert_eq!(blocked.action, ResourceGateAction::WaitRestart);
+        assert_eq!(blocked.statuses[0].state, "pending");
+
+        let (ready_graph, ready_process) = resource_gate_fixture(
+            "before_start",
+            true,
+            "required",
+            "restart_process",
+            "satisfied",
+            true,
+            Some("sensor_provider"),
+            None,
+        );
+        let ready = evaluate_process_resource_gates(
+            &ready_graph,
+            &ready_process,
+            ResourceGatePhase::Restart,
+        );
+        assert_eq!(ready.action, ResourceGateAction::Start);
+    }
+
+    #[test]
+    fn restart_child_resource_gate_uses_live_ready_status() {
+        let (graph, process) = resource_gate_fixture(
+            "before_start",
+            true,
+            "required",
+            "restart_process",
+            "unsatisfied",
+            false,
+            None,
+            Some("provider not ready"),
+        );
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let mut child = supervised_child_for_test("sensor_proc", real_child);
+        child.resource_gate = process_resource_gate(&graph, &process);
+        let supervisor_state = IntrospectionState::new();
+
+        let blocked =
+            evaluate_child_resource_gates(&supervisor_state, &child, ResourceGatePhase::Restart);
+        assert_eq!(blocked.action, ResourceGateAction::WaitRestart);
+
+        supervisor_state.record_resource_status(IntrospectionResourceStatus {
+            name: "sensor.samples".to_string(),
+            capability: "perception.samples".to_string(),
+            state: "ready".to_string(),
+            required: true,
+            satisfied: Some(true),
+            source: Some("runtime".to_string()),
+            owner_process: Some("sensor_proc".to_string()),
+            updated_unix_ms: Some(55),
+            ..Default::default()
+        });
+
+        let ready =
+            evaluate_child_resource_gates(&supervisor_state, &child, ResourceGatePhase::Restart);
+        assert_eq!(ready.action, ResourceGateAction::Start);
+        assert_eq!(ready.statuses[0].state, "ready");
+    }
+
+    #[test]
+    fn runtime_reported_resource_status_is_enriched_with_owner() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let mut child = supervised_child_for_test("sensor_proc", real_child);
+        let supervisor_state = IntrospectionState::new();
+        let status = crate::IntrospectionStatus {
+            resources: vec![crate::IntrospectionResourceStatus {
+                name: "sensor.samples".to_string(),
+                capability: "perception.samples".to_string(),
+                state: "degraded".to_string(),
+                required: true,
+                on_failure: Some("degrade".to_string()),
+                last_error: Some("runtime health failed".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        record_child_reported_resource_statuses(&supervisor_state, &mut child, &status);
+
+        let resource = &supervisor_state.status().resources[0];
+        assert_eq!(resource.owner_process.as_deref(), Some("sensor_proc"));
+        assert_eq!(resource.source.as_deref(), Some("runtime"));
+        assert_eq!(resource.state, "degraded");
+        assert!(child.resource_degraded);
+    }
+
+    #[test]
+    fn io_boundary_resource_error_updates_abstract_resource_status() {
+        let (graph, process) = resource_gate_fixture(
+            "before_start",
+            true,
+            "required",
+            "stop_process",
+            "satisfied",
+            true,
+            Some("sensor_provider"),
+            None,
+        );
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let real_child = cmd.spawn().unwrap();
+        let mut child = supervised_child_for_test("sensor_proc", real_child);
+        child.resource_gate = process_resource_gate(&graph, &process);
+        let supervisor_state = IntrospectionState::new();
+        let status = crate::IntrospectionStatus {
+            io_boundaries: vec![crate::IntrospectionIoBoundaryStatus {
+                name: "sensor".to_string(),
+                component: "sensor".to_string(),
+                ready: false,
+                healthy: false,
+                last_error: Some("boundary unhealthy".to_string()),
+                resources: vec![crate::IntrospectionIoBoundaryResourceStatus {
+                    name: "samples".to_string(),
+                    kind: "perception.samples".to_string(),
+                    ready: false,
+                    message: Some("provider reported failure".to_string()),
+                    last_error: Some("resource failed".to_string()),
+                    updated_unix_ms: Some(55),
+                }],
+                updated_unix_ms: Some(55),
+            }],
+            ..Default::default()
+        };
+
+        record_child_reported_resource_statuses(&supervisor_state, &mut child, &status);
+
+        let resource = &supervisor_state.status().resources[0];
+        assert_eq!(resource.name, "sensor.samples");
+        assert_eq!(resource.state, "failed");
+        assert_eq!(resource.on_failure.as_deref(), Some("stop_process"));
+        assert_eq!(resource.last_error.as_deref(), Some("resource failed"));
+        assert!(child.resource_degraded);
+    }
+
+    #[test]
     fn expected_services_for_process_uses_server_instances() {
         let graph = LaunchGraph {
             name: "main".to_string(),
@@ -3638,6 +4669,9 @@ mod tests {
             readiness: ReadinessGate::RuntimeReady,
             expected_services: vec![],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
@@ -3689,6 +4723,9 @@ mod tests {
             readiness: ReadinessGate::RuntimeReady,
             expected_services: vec![],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
@@ -3747,6 +4784,9 @@ mod tests {
             readiness: ReadinessGate::ServiceReady,
             expected_services: vec!["planner.plan".to_string()],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
@@ -3794,6 +4834,9 @@ mod tests {
             readiness: ReadinessGate::RuntimeReady,
             expected_services: vec![],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
@@ -3852,6 +4895,9 @@ mod tests {
             readiness: ReadinessGate::ProcessStarted,
             expected_services: vec![],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
@@ -3916,6 +4962,9 @@ mod tests {
             readiness: ReadinessGate::ServiceReady,
             expected_services: vec!["planner.plan".to_string()],
             startup_delay_ms: 0,
+            resource_gate: ProcessResourceGate::default(),
+            resource_degraded: false,
+            resource_wait: None,
             resource_placement: ResourcePlacement::default(),
             resource_placement_status: ResourcePlacementStatus::default(),
             child: real_child,
