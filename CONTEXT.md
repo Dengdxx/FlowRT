@@ -761,8 +761,10 @@ error。Rust `IntrospectionState` 会在 mutex poison 后恢复访问。
 
 Runtime 已提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象。C ABI 当前覆盖
 `Status`、backend kind、backend health state、borrowed string/bytes view、
-`ReconnectPolicy`、`BackendHealthSnapshot`、C component context、fixed input view、
-output slot 和 callback table 的稳定 POD 形状；Rust/C++ runtime 内部仍使用各自语言的
+borrowed frame view、`ReconnectPolicy`、`BackendHealthSnapshot`、params view/update
+result、operation status/progress/result summary view、diagnostic view、resource health
+snapshot、C component context、fixed input view、output slot 和 callback table 的稳定
+POD 形状；Rust/C++ runtime 内部仍使用各自语言的
 高层类型，并通过转换函数或 C header 对齐。该 callback table 只表达边界；当前 C v0
 已开放 adapter、`app/c` 用户接入路径和最小 demo，但不表示完整 C runtime、动态加载或 Python
 binding 已开放。`iox2` 和 `zenoh`

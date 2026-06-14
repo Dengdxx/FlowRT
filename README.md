@@ -430,7 +430,8 @@ Rust 组件通过生成 trait 和用户模块接入。
 
 FlowRT 以 C ABI 作为后续 C、Python 和更多语言接入的共同边界。当前安装包中的 C++
 runtime header 已包含 `flowrt/abi.h`，Rust runtime 也提供对应的 `repr(C)` 镜像类型，
-用于稳定 status、backend health、重连策略和 borrowed string/bytes view 等基础形状。
+用于稳定 status、backend health、重连策略、borrowed string/bytes/frame view、params、
+operation、diagnostics 和 resource health 等基础形状。
 
 当前 C component v0 已能通过 callback table 编进 generated C++ runtime shell，适用于
 fixed-size message 的 native component 最小切片。这不表示已经提供 Python binding、

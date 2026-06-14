@@ -2,7 +2,7 @@ use std::mem::{align_of, offset_of, size_of};
 
 use flowrt::{
     BackendHealthSnapshot, BackendHealthState, FrameDescriptor, FrameLeaseStatus, FrameMetadata,
-    ReconnectPolicy, ResourceDescriptor, Status,
+    OperationId, OperationState, ReconnectPolicy, ResourceDescriptor, Status,
     abi::{
         FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0, FLOWRT_ABI_VERSION_MAJOR,
         FLOWRT_ABI_VERSION_MINOR, FLOWRT_BACKEND_HEALTH_DEGRADED, FLOWRT_BACKEND_HEALTH_FAILED,
@@ -11,22 +11,38 @@ use flowrt::{
         FLOWRT_BACKEND_ZENOH, FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR,
         FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, FLOWRT_C_OUTPUT_ERROR,
         FLOWRT_C_OUTPUT_TRUNCATED, FLOWRT_C_OUTPUT_UNWRITTEN, FLOWRT_C_OUTPUT_WRITTEN,
+        FLOWRT_DIAGNOSTIC_ERROR, FLOWRT_DIAGNOSTIC_INFO, FLOWRT_DIAGNOSTIC_WARN,
+        FLOWRT_FRAME_ENCODING_CANONICAL_FRAME_V1, FLOWRT_FRAME_ENCODING_FIXED_PLAIN,
         FLOWRT_FRAME_LEASE_ACQUIRED, FLOWRT_FRAME_LEASE_ATTACHED, FLOWRT_FRAME_LEASE_ERROR,
         FLOWRT_FRAME_LEASE_EXPIRED, FLOWRT_FRAME_LEASE_GENERATION_MISMATCH,
-        FLOWRT_FRAME_LEASE_RELEASED, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
+        FLOWRT_FRAME_LEASE_RELEASED, FLOWRT_OPERATION_STATE_ACCEPTED,
+        FLOWRT_OPERATION_STATE_CANCELED, FLOWRT_OPERATION_STATE_CANCELING,
+        FLOWRT_OPERATION_STATE_FAILED, FLOWRT_OPERATION_STATE_PREEMPTED,
+        FLOWRT_OPERATION_STATE_RUNNING, FLOWRT_OPERATION_STATE_SUCCEEDED,
+        FLOWRT_OPERATION_STATE_TIMEOUT, FLOWRT_PARAMS_UPDATE_ACCEPTED,
+        FLOWRT_PARAMS_UPDATE_APPLIED, FLOWRT_PARAMS_UPDATE_ERROR, FLOWRT_PARAMS_UPDATE_PARTIAL,
+        FLOWRT_PARAMS_UPDATE_REJECTED, FLOWRT_PARAMS_UPDATE_UNSUPPORTED,
+        FLOWRT_RESOURCE_HEALTH_DEGRADED, FLOWRT_RESOURCE_HEALTH_FAILED,
+        FLOWRT_RESOURCE_HEALTH_READY, FLOWRT_RESOURCE_HEALTH_UNAVAILABLE,
+        FLOWRT_RESOURCE_HEALTH_UNKNOWN, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
         FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtCComponentCallbackTable,
         FlowrtCComponentContext, FlowrtCInputArrayView, FlowrtCInputView, FlowrtCLifecycleCallback,
-        FlowrtCOutputArrayView, FlowrtCOutputSlot, FlowrtCTaskCallback, FlowrtFrameDescriptor,
-        FlowrtI128, FlowrtReconnectPolicy, FlowrtResourceDescriptor, FlowrtStringView, FlowrtU128,
-        backend_health_snapshot_to_abi, backend_health_state_to_abi, frame_descriptor_to_abi,
-        frame_lease_status_to_abi, reconnect_policy_to_abi, status_to_abi,
+        FlowrtCOutputArrayView, FlowrtCOutputSlot, FlowrtCTaskCallback, FlowrtDiagnosticArrayView,
+        FlowrtDiagnosticView, FlowrtDiagnosticsSnapshot, FlowrtFrameDescriptor, FlowrtFrameView,
+        FlowrtI128, FlowrtOperationId, FlowrtOperationIdArrayView, FlowrtOperationProgressView,
+        FlowrtOperationResultSummaryView, FlowrtOperationStatusView, FlowrtParamView,
+        FlowrtParamsUpdateResult, FlowrtParamsView, FlowrtReconnectPolicy,
+        FlowrtResourceDescriptor, FlowrtResourceHealthArrayView, FlowrtResourceHealthSnapshot,
+        FlowrtStringView, FlowrtU128, backend_health_snapshot_to_abi, backend_health_state_to_abi,
+        frame_descriptor_to_abi, frame_lease_status_to_abi, operation_id_to_abi,
+        operation_state_to_abi, reconnect_policy_to_abi, status_to_abi,
     },
 };
 
 #[test]
 fn abi_version_and_status_codes_are_stable() {
     assert_eq!(FLOWRT_ABI_VERSION_MAJOR, 0);
-    assert_eq!(FLOWRT_ABI_VERSION_MINOR, 1);
+    assert_eq!(FLOWRT_ABI_VERSION_MINOR, 2);
 
     assert_eq!(FLOWRT_STATUS_OK, 0);
     assert_eq!(FLOWRT_STATUS_RETRY, 1);
@@ -35,6 +51,266 @@ fn abi_version_and_status_codes_are_stable() {
     assert_eq!(status_to_abi(Status::Ok), FLOWRT_STATUS_OK);
     assert_eq!(status_to_abi(Status::Retry), FLOWRT_STATUS_RETRY);
     assert_eq!(status_to_abi(Status::Error), FLOWRT_STATUS_ERROR);
+}
+
+#[test]
+fn c_abi_future_boundary_constants_are_stable() {
+    assert_eq!(FLOWRT_FRAME_ENCODING_FIXED_PLAIN, 0);
+    assert_eq!(FLOWRT_FRAME_ENCODING_CANONICAL_FRAME_V1, 1);
+
+    assert_eq!(FLOWRT_PARAMS_UPDATE_ACCEPTED, 0);
+    assert_eq!(FLOWRT_PARAMS_UPDATE_APPLIED, 1);
+    assert_eq!(FLOWRT_PARAMS_UPDATE_REJECTED, 2);
+    assert_eq!(FLOWRT_PARAMS_UPDATE_PARTIAL, 3);
+    assert_eq!(FLOWRT_PARAMS_UPDATE_UNSUPPORTED, 4);
+    assert_eq!(FLOWRT_PARAMS_UPDATE_ERROR, 5);
+
+    assert_eq!(FLOWRT_OPERATION_STATE_ACCEPTED, 0);
+    assert_eq!(FLOWRT_OPERATION_STATE_RUNNING, 1);
+    assert_eq!(FLOWRT_OPERATION_STATE_CANCELING, 2);
+    assert_eq!(FLOWRT_OPERATION_STATE_SUCCEEDED, 3);
+    assert_eq!(FLOWRT_OPERATION_STATE_FAILED, 4);
+    assert_eq!(FLOWRT_OPERATION_STATE_CANCELED, 5);
+    assert_eq!(FLOWRT_OPERATION_STATE_TIMEOUT, 6);
+    assert_eq!(FLOWRT_OPERATION_STATE_PREEMPTED, 7);
+    assert_eq!(
+        operation_state_to_abi(OperationState::Preempted),
+        FLOWRT_OPERATION_STATE_PREEMPTED
+    );
+    let id = operation_id_to_abi(OperationId::new(10, 20, 30));
+    assert_eq!(id.operation_key, 10);
+    assert_eq!(id.client_id, 20);
+    assert_eq!(id.sequence, 30);
+
+    assert_eq!(FLOWRT_DIAGNOSTIC_INFO, 0);
+    assert_eq!(FLOWRT_DIAGNOSTIC_WARN, 1);
+    assert_eq!(FLOWRT_DIAGNOSTIC_ERROR, 2);
+
+    assert_eq!(FLOWRT_RESOURCE_HEALTH_UNKNOWN, 0);
+    assert_eq!(FLOWRT_RESOURCE_HEALTH_READY, 1);
+    assert_eq!(FLOWRT_RESOURCE_HEALTH_DEGRADED, 2);
+    assert_eq!(FLOWRT_RESOURCE_HEALTH_FAILED, 3);
+    assert_eq!(FLOWRT_RESOURCE_HEALTH_UNAVAILABLE, 4);
+}
+
+#[test]
+fn c_abi_frame_view_layout_is_stable() {
+    assert_eq!(size_of::<FlowrtFrameView>(), 128);
+    assert_eq!(align_of::<FlowrtFrameView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtFrameView, channel_name), 0);
+    assert_eq!(
+        offset_of!(FlowrtFrameView, message_type),
+        size_of::<FlowrtStringView>()
+    );
+    assert_eq!(offset_of!(FlowrtFrameView, schema_hash), 32);
+    assert_eq!(offset_of!(FlowrtFrameView, encoding), 40);
+    assert_eq!(offset_of!(FlowrtFrameView, flags), 44);
+    assert_eq!(offset_of!(FlowrtFrameView, frame), 48);
+    assert_eq!(offset_of!(FlowrtFrameView, header), 64);
+    assert_eq!(offset_of!(FlowrtFrameView, tail), 80);
+    assert_eq!(offset_of!(FlowrtFrameView, source_time_ms), 96);
+    assert_eq!(offset_of!(FlowrtFrameView, published_at_ms), 104);
+    assert_eq!(offset_of!(FlowrtFrameView, revision), 112);
+    assert_eq!(offset_of!(FlowrtFrameView, has_source_time_ms), 120);
+    assert_eq!(offset_of!(FlowrtFrameView, has_published_at_ms), 121);
+    assert_eq!(offset_of!(FlowrtFrameView, has_revision), 122);
+}
+
+#[test]
+fn c_abi_params_views_use_borrowed_json_values() {
+    assert_eq!(size_of::<FlowrtParamView>(), 168);
+    assert_eq!(align_of::<FlowrtParamView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtParamView, instance_name), 0);
+    assert_eq!(offset_of!(FlowrtParamView, param_name), 16);
+    assert_eq!(offset_of!(FlowrtParamView, type_name), 32);
+    assert_eq!(offset_of!(FlowrtParamView, update_policy), 48);
+    assert_eq!(offset_of!(FlowrtParamView, current_json), 64);
+    assert_eq!(offset_of!(FlowrtParamView, pending_json), 80);
+    assert_eq!(offset_of!(FlowrtParamView, min_json), 96);
+    assert_eq!(offset_of!(FlowrtParamView, max_json), 112);
+    assert_eq!(offset_of!(FlowrtParamView, choices_json), 128);
+    assert_eq!(offset_of!(FlowrtParamView, schema_hash), 144);
+    assert_eq!(offset_of!(FlowrtParamView, revision), 152);
+    assert_eq!(offset_of!(FlowrtParamView, mutable_at_runtime), 160);
+    assert_eq!(offset_of!(FlowrtParamView, has_pending), 161);
+    assert_eq!(offset_of!(FlowrtParamView, has_min), 162);
+    assert_eq!(offset_of!(FlowrtParamView, has_max), 163);
+
+    assert_eq!(size_of::<FlowrtParamsView>(), 40);
+    assert_eq!(align_of::<FlowrtParamsView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtParamsView, data), 0);
+    assert_eq!(offset_of!(FlowrtParamsView, len), size_of::<usize>());
+    assert_eq!(offset_of!(FlowrtParamsView, revision), 16);
+    assert_eq!(offset_of!(FlowrtParamsView, applied_unix_ms), 24);
+    assert_eq!(offset_of!(FlowrtParamsView, has_applied_unix_ms), 32);
+
+    assert_eq!(size_of::<FlowrtParamsUpdateResult>(), 56);
+    assert_eq!(align_of::<FlowrtParamsUpdateResult>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, status), 0);
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, applied_count), 4);
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, rejected_count), 8);
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, revision), 16);
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, error_index), 24);
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, has_error_index), 32);
+    assert_eq!(offset_of!(FlowrtParamsUpdateResult, message), 40);
+}
+
+#[test]
+fn c_abi_operation_status_progress_and_result_layouts_are_stable() {
+    assert_eq!(size_of::<FlowrtOperationId>(), 24);
+    assert_eq!(align_of::<FlowrtOperationId>(), 8);
+    assert_eq!(offset_of!(FlowrtOperationId, operation_key), 0);
+    assert_eq!(offset_of!(FlowrtOperationId, client_id), 8);
+    assert_eq!(offset_of!(FlowrtOperationId, sequence), 16);
+
+    assert_eq!(
+        size_of::<FlowrtOperationIdArrayView>(),
+        size_of::<usize>() * 2
+    );
+    assert_eq!(
+        align_of::<FlowrtOperationIdArrayView>(),
+        align_of::<usize>()
+    );
+    assert_eq!(offset_of!(FlowrtOperationIdArrayView, data), 0);
+    assert_eq!(
+        offset_of!(FlowrtOperationIdArrayView, len),
+        size_of::<usize>()
+    );
+
+    assert_eq!(size_of::<FlowrtOperationStatusView>(), 112);
+    assert_eq!(align_of::<FlowrtOperationStatusView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtOperationStatusView, operation_name), 0);
+    assert_eq!(
+        offset_of!(FlowrtOperationStatusView, current_operation_ids),
+        16
+    );
+    assert_eq!(offset_of!(FlowrtOperationStatusView, running), 32);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, queued), 40);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, total_started), 48);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, succeeded_count), 56);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, failed_count), 64);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, canceled_count), 72);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, timeout_count), 80);
+    assert_eq!(offset_of!(FlowrtOperationStatusView, preempted_count), 88);
+    assert_eq!(
+        offset_of!(FlowrtOperationStatusView, last_transition_ms),
+        96
+    );
+    assert_eq!(offset_of!(FlowrtOperationStatusView, ready), 104);
+    assert_eq!(
+        offset_of!(FlowrtOperationStatusView, has_last_transition_ms),
+        105
+    );
+
+    assert_eq!(size_of::<FlowrtOperationProgressView>(), 192);
+    assert_eq!(
+        align_of::<FlowrtOperationProgressView>(),
+        align_of::<usize>()
+    );
+    assert_eq!(offset_of!(FlowrtOperationProgressView, operation_name), 0);
+    assert_eq!(offset_of!(FlowrtOperationProgressView, id), 16);
+    assert_eq!(offset_of!(FlowrtOperationProgressView, sequence), 40);
+    assert_eq!(offset_of!(FlowrtOperationProgressView, progress), 48);
+    assert_eq!(
+        offset_of!(FlowrtOperationProgressView, published_at_ms),
+        176
+    );
+    assert_eq!(
+        offset_of!(FlowrtOperationProgressView, has_published_at_ms),
+        184
+    );
+
+    assert_eq!(size_of::<FlowrtOperationResultSummaryView>(), 200);
+    assert_eq!(
+        align_of::<FlowrtOperationResultSummaryView>(),
+        align_of::<usize>()
+    );
+    assert_eq!(
+        offset_of!(FlowrtOperationResultSummaryView, operation_name),
+        0
+    );
+    assert_eq!(offset_of!(FlowrtOperationResultSummaryView, id), 16);
+    assert_eq!(offset_of!(FlowrtOperationResultSummaryView, state), 40);
+    assert_eq!(offset_of!(FlowrtOperationResultSummaryView, has_result), 44);
+    assert_eq!(
+        offset_of!(FlowrtOperationResultSummaryView, has_error_message),
+        45
+    );
+    assert_eq!(
+        offset_of!(FlowrtOperationResultSummaryView, has_completed_unix_ms),
+        46
+    );
+    assert_eq!(
+        offset_of!(FlowrtOperationResultSummaryView, completed_unix_ms),
+        48
+    );
+    assert_eq!(offset_of!(FlowrtOperationResultSummaryView, result), 56);
+    assert_eq!(
+        offset_of!(FlowrtOperationResultSummaryView, error_message),
+        184
+    );
+}
+
+#[test]
+fn c_abi_diagnostics_and_resource_health_layouts_are_stable() {
+    assert_eq!(size_of::<FlowrtDiagnosticView>(), 72);
+    assert_eq!(align_of::<FlowrtDiagnosticView>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtDiagnosticView, source), 0);
+    assert_eq!(offset_of!(FlowrtDiagnosticView, code), 16);
+    assert_eq!(offset_of!(FlowrtDiagnosticView, message), 32);
+    assert_eq!(offset_of!(FlowrtDiagnosticView, severity), 48);
+    assert_eq!(offset_of!(FlowrtDiagnosticView, timestamp_unix_ms), 56);
+    assert_eq!(offset_of!(FlowrtDiagnosticView, has_timestamp_unix_ms), 64);
+
+    assert_eq!(size_of::<FlowrtResourceHealthSnapshot>(), 88);
+    assert_eq!(
+        align_of::<FlowrtResourceHealthSnapshot>(),
+        align_of::<usize>()
+    );
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, name), 0);
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, capability), 16);
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, state), 32);
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, ready), 36);
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, required), 37);
+    assert_eq!(
+        offset_of!(FlowrtResourceHealthSnapshot, has_updated_unix_ms),
+        38
+    );
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, has_generation), 39);
+    assert_eq!(
+        offset_of!(FlowrtResourceHealthSnapshot, updated_unix_ms),
+        40
+    );
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, generation), 48);
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, message), 56);
+    assert_eq!(offset_of!(FlowrtResourceHealthSnapshot, last_error), 72);
+
+    assert_eq!(
+        size_of::<FlowrtDiagnosticArrayView>(),
+        size_of::<usize>() * 2
+    );
+    assert_eq!(align_of::<FlowrtDiagnosticArrayView>(), align_of::<usize>());
+    assert_eq!(
+        size_of::<FlowrtResourceHealthArrayView>(),
+        size_of::<usize>() * 2
+    );
+    assert_eq!(
+        align_of::<FlowrtResourceHealthArrayView>(),
+        align_of::<usize>()
+    );
+
+    assert_eq!(size_of::<FlowrtDiagnosticsSnapshot>(), 80);
+    assert_eq!(align_of::<FlowrtDiagnosticsSnapshot>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtDiagnosticsSnapshot, package_name), 0);
+    assert_eq!(offset_of!(FlowrtDiagnosticsSnapshot, process_name), 16);
+    assert_eq!(offset_of!(FlowrtDiagnosticsSnapshot, diagnostics), 32);
+    assert_eq!(offset_of!(FlowrtDiagnosticsSnapshot, resources), 48);
+    assert_eq!(offset_of!(FlowrtDiagnosticsSnapshot, generated_unix_ms), 64);
+    assert_eq!(offset_of!(FlowrtDiagnosticsSnapshot, healthy), 72);
+    assert_eq!(
+        offset_of!(FlowrtDiagnosticsSnapshot, has_generated_unix_ms),
+        73
+    );
 }
 
 #[test]

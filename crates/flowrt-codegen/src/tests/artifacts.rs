@@ -228,7 +228,7 @@ input = ["imu:Imu"]
 }
 
 #[test]
-fn emits_c_component_adapter_artifacts() {
+fn c_abi_emits_c_component_adapter_artifacts() {
     let ir = contract_from_source(
         r#"
 [package]

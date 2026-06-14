@@ -8,11 +8,11 @@ use std::ffi::{c_char, c_void};
 use crate::service::{ServiceError, ServiceFrameHeader};
 use crate::{
     BackendHealthSnapshot, BackendHealthState, BackendKind, FrameDescriptor, FrameLeaseStatus,
-    ReconnectPolicy, Status,
+    OperationId, OperationState, ReconnectPolicy, Status,
 };
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
-pub const FLOWRT_ABI_VERSION_MINOR: u32 = 1;
+pub const FLOWRT_ABI_VERSION_MINOR: u32 = 2;
 
 pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 1;
@@ -147,6 +147,227 @@ pub struct FlowrtFrameDescriptor {
     pub format: FlowrtStringView,
     pub encoding: FlowrtStringView,
     pub metadata_json: FlowrtStringView,
+}
+
+// ── 后续语言边界 view ──────────────────────────────────────────────────────
+
+pub type FlowrtFrameEncoding = u32;
+pub const FLOWRT_FRAME_ENCODING_FIXED_PLAIN: FlowrtFrameEncoding = 0;
+pub const FLOWRT_FRAME_ENCODING_CANONICAL_FRAME_V1: FlowrtFrameEncoding = 1;
+
+/// C ABI 借用 message frame view。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtFrameView {
+    pub channel_name: FlowrtStringView,
+    pub message_type: FlowrtStringView,
+    pub schema_hash: u64,
+    pub encoding: FlowrtFrameEncoding,
+    pub flags: u32,
+    pub frame: FlowrtBytesView,
+    pub header: FlowrtBytesView,
+    pub tail: FlowrtBytesView,
+    pub source_time_ms: u64,
+    pub published_at_ms: u64,
+    pub revision: u64,
+    pub has_source_time_ms: u8,
+    pub has_published_at_ms: u8,
+    pub has_revision: u8,
+    pub reserved: [u8; 5],
+}
+
+pub type FlowrtParamsUpdateStatus = u32;
+pub const FLOWRT_PARAMS_UPDATE_ACCEPTED: FlowrtParamsUpdateStatus = 0;
+pub const FLOWRT_PARAMS_UPDATE_APPLIED: FlowrtParamsUpdateStatus = 1;
+pub const FLOWRT_PARAMS_UPDATE_REJECTED: FlowrtParamsUpdateStatus = 2;
+pub const FLOWRT_PARAMS_UPDATE_PARTIAL: FlowrtParamsUpdateStatus = 3;
+pub const FLOWRT_PARAMS_UPDATE_UNSUPPORTED: FlowrtParamsUpdateStatus = 4;
+pub const FLOWRT_PARAMS_UPDATE_ERROR: FlowrtParamsUpdateStatus = 5;
+
+/// C ABI 单个参数借用 view。JSON 字段都是 UTF-8 借用切片。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtParamView {
+    pub instance_name: FlowrtStringView,
+    pub param_name: FlowrtStringView,
+    pub type_name: FlowrtStringView,
+    pub update_policy: FlowrtStringView,
+    pub current_json: FlowrtStringView,
+    pub pending_json: FlowrtStringView,
+    pub min_json: FlowrtStringView,
+    pub max_json: FlowrtStringView,
+    pub choices_json: FlowrtStringView,
+    pub schema_hash: u64,
+    pub revision: u64,
+    pub mutable_at_runtime: u8,
+    pub has_pending: u8,
+    pub has_min: u8,
+    pub has_max: u8,
+    pub reserved: [u8; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtParamsView {
+    pub data: *const FlowrtParamView,
+    pub len: usize,
+    pub revision: u64,
+    pub applied_unix_ms: u64,
+    pub has_applied_unix_ms: u8,
+    pub reserved: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtParamsUpdateResult {
+    pub status: FlowrtParamsUpdateStatus,
+    pub applied_count: u32,
+    pub rejected_count: u32,
+    pub reserved0: u32,
+    pub revision: u64,
+    pub error_index: u64,
+    pub has_error_index: u8,
+    pub reserved: [u8; 7],
+    pub message: FlowrtStringView,
+}
+
+pub type FlowrtOperationState = u32;
+pub const FLOWRT_OPERATION_STATE_ACCEPTED: FlowrtOperationState = 0;
+pub const FLOWRT_OPERATION_STATE_RUNNING: FlowrtOperationState = 1;
+pub const FLOWRT_OPERATION_STATE_CANCELING: FlowrtOperationState = 2;
+pub const FLOWRT_OPERATION_STATE_SUCCEEDED: FlowrtOperationState = 3;
+pub const FLOWRT_OPERATION_STATE_FAILED: FlowrtOperationState = 4;
+pub const FLOWRT_OPERATION_STATE_CANCELED: FlowrtOperationState = 5;
+pub const FLOWRT_OPERATION_STATE_TIMEOUT: FlowrtOperationState = 6;
+pub const FLOWRT_OPERATION_STATE_PREEMPTED: FlowrtOperationState = 7;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowrtOperationId {
+    pub operation_key: u64,
+    pub client_id: u64,
+    pub sequence: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtOperationIdArrayView {
+    pub data: *const FlowrtOperationId,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtOperationStatusView {
+    pub operation_name: FlowrtStringView,
+    pub current_operation_ids: FlowrtOperationIdArrayView,
+    pub running: u64,
+    pub queued: u64,
+    pub total_started: u64,
+    pub succeeded_count: u64,
+    pub failed_count: u64,
+    pub canceled_count: u64,
+    pub timeout_count: u64,
+    pub preempted_count: u64,
+    pub last_transition_ms: u64,
+    pub ready: u8,
+    pub has_last_transition_ms: u8,
+    pub reserved: [u8; 6],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtOperationProgressView {
+    pub operation_name: FlowrtStringView,
+    pub id: FlowrtOperationId,
+    pub sequence: u64,
+    pub progress: FlowrtFrameView,
+    pub published_at_ms: u64,
+    pub has_published_at_ms: u8,
+    pub reserved: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtOperationResultSummaryView {
+    pub operation_name: FlowrtStringView,
+    pub id: FlowrtOperationId,
+    pub state: FlowrtOperationState,
+    pub has_result: u8,
+    pub has_error_message: u8,
+    pub has_completed_unix_ms: u8,
+    pub reserved0: u8,
+    pub completed_unix_ms: u64,
+    pub result: FlowrtFrameView,
+    pub error_message: FlowrtStringView,
+}
+
+pub type FlowrtDiagnosticSeverity = u32;
+pub const FLOWRT_DIAGNOSTIC_INFO: FlowrtDiagnosticSeverity = 0;
+pub const FLOWRT_DIAGNOSTIC_WARN: FlowrtDiagnosticSeverity = 1;
+pub const FLOWRT_DIAGNOSTIC_ERROR: FlowrtDiagnosticSeverity = 2;
+
+pub type FlowrtResourceHealthState = u32;
+pub const FLOWRT_RESOURCE_HEALTH_UNKNOWN: FlowrtResourceHealthState = 0;
+pub const FLOWRT_RESOURCE_HEALTH_READY: FlowrtResourceHealthState = 1;
+pub const FLOWRT_RESOURCE_HEALTH_DEGRADED: FlowrtResourceHealthState = 2;
+pub const FLOWRT_RESOURCE_HEALTH_FAILED: FlowrtResourceHealthState = 3;
+pub const FLOWRT_RESOURCE_HEALTH_UNAVAILABLE: FlowrtResourceHealthState = 4;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtDiagnosticView {
+    pub source: FlowrtStringView,
+    pub code: FlowrtStringView,
+    pub message: FlowrtStringView,
+    pub severity: FlowrtDiagnosticSeverity,
+    pub reserved0: u32,
+    pub timestamp_unix_ms: u64,
+    pub has_timestamp_unix_ms: u8,
+    pub reserved: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtResourceHealthSnapshot {
+    pub name: FlowrtStringView,
+    pub capability: FlowrtStringView,
+    pub state: FlowrtResourceHealthState,
+    pub ready: u8,
+    pub required: u8,
+    pub has_updated_unix_ms: u8,
+    pub has_generation: u8,
+    pub updated_unix_ms: u64,
+    pub generation: u64,
+    pub message: FlowrtStringView,
+    pub last_error: FlowrtStringView,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtDiagnosticArrayView {
+    pub data: *const FlowrtDiagnosticView,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtResourceHealthArrayView {
+    pub data: *const FlowrtResourceHealthSnapshot,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtDiagnosticsSnapshot {
+    pub package_name: FlowrtStringView,
+    pub process_name: FlowrtStringView,
+    pub diagnostics: FlowrtDiagnosticArrayView,
+    pub resources: FlowrtResourceHealthArrayView,
+    pub generated_unix_ms: u64,
+    pub healthy: u8,
+    pub has_generated_unix_ms: u8,
+    pub reserved: [u8; 6],
 }
 
 // ── C component callback ABI ───────────────────────────────────────────────
@@ -347,6 +568,27 @@ pub fn frame_descriptor_to_abi<'a>(
         format: FlowrtStringView::from_utf8(descriptor.format()),
         encoding: FlowrtStringView::from_utf8(descriptor.encoding()),
         metadata_json: FlowrtStringView::from_utf8(metadata_json),
+    }
+}
+
+pub const fn operation_id_to_abi(id: OperationId) -> FlowrtOperationId {
+    FlowrtOperationId {
+        operation_key: id.operation_key,
+        client_id: id.client_id,
+        sequence: id.sequence,
+    }
+}
+
+pub const fn operation_state_to_abi(state: OperationState) -> FlowrtOperationState {
+    match state {
+        OperationState::Accepted => FLOWRT_OPERATION_STATE_ACCEPTED,
+        OperationState::Running => FLOWRT_OPERATION_STATE_RUNNING,
+        OperationState::Canceling => FLOWRT_OPERATION_STATE_CANCELING,
+        OperationState::Succeeded => FLOWRT_OPERATION_STATE_SUCCEEDED,
+        OperationState::Failed => FLOWRT_OPERATION_STATE_FAILED,
+        OperationState::Canceled => FLOWRT_OPERATION_STATE_CANCELED,
+        OperationState::Timeout => FLOWRT_OPERATION_STATE_TIMEOUT,
+        OperationState::Preempted => FLOWRT_OPERATION_STATE_PREEMPTED,
     }
 }
 
