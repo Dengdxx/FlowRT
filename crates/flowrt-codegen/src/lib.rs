@@ -44,12 +44,7 @@ use selfdesc::{
 };
 use supervisor::{emit_rust_supervisor, emit_rust_supervisor_main};
 
-pub use explain::{
-    ExplainComponent, ExplainGraph, ExplainHandlers, ExplainInput, ExplainOperationClient,
-    ExplainOperationServer, ExplainOutput, ExplainPackage, ExplainParam, ExplainProfile,
-    ExplainReport, ExplainServiceClient, ExplainServiceServer, ExplainTask, explain_report,
-    format_explain_report_text,
-};
+pub use explain::{ExplainReport, explain_report, format_explain_report_text};
 pub use signature_summary::handler_signature_summary;
 
 // Re-export functions moved to rust_shell that other modules depend on.

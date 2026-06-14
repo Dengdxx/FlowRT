@@ -21,7 +21,7 @@ use crate::{
 const APP_API_VERSION: &str = "0.1";
 
 #[derive(Debug, Serialize)]
-struct AppApiManifest {
+pub struct AppApiManifest {
     app_api_version: &'static str,
     contract: AppApiContract,
     package: AppApiPackage,
@@ -221,7 +221,7 @@ pub(crate) fn emit_app_api_artifacts(contract: &ContractIr) -> Vec<Artifact> {
     artifacts
 }
 
-fn app_api_manifest(contract: &ContractIr) -> AppApiManifest {
+pub(crate) fn app_api_manifest(contract: &ContractIr) -> AppApiManifest {
     let graph = contract
         .graphs
         .first()
@@ -727,6 +727,266 @@ fn emit_implementation_md(manifest: &AppApiManifest) -> String {
         output.push('\n');
     }
     output
+}
+
+pub(crate) fn format_app_api_manifest_text(manifest: &AppApiManifest) -> String {
+    let mut output = format!(
+        "flowrt explain:\npackage {} rsdl_version={}",
+        manifest.package.name, manifest.package.rsdl_version
+    );
+    if let Some(version) = &manifest.package.version {
+        output.push_str(&format!(" version={version}"));
+    }
+    output.push_str(&format!(
+        "\ngraph {} profile={} mode={} backend={} worker_threads={}",
+        manifest.graph.name,
+        manifest.graph.profile,
+        manifest.graph.mode,
+        manifest.graph.backend,
+        manifest.graph.worker_threads
+    ));
+    for component in &manifest.components {
+        output.push_str(&format!(
+            "\n  component {} language={} kind={} concurrency={} user_file={} reference_stub={}",
+            component.name,
+            component.language,
+            component.kind,
+            component.concurrency,
+            component.user_file_path,
+            stub_path(component.language, &component.name)
+        ));
+        push_app_api_tasks_text(&mut output, &component.tasks);
+        push_app_api_handlers_text(&mut output, &component.handlers);
+        push_app_api_ports_text(&mut output, "inputs", &component.inputs);
+        push_app_api_ports_text(&mut output, "outputs", &component.outputs);
+        push_app_api_params_text(&mut output, &component.params);
+        push_app_api_service_clients_text(&mut output, &component.service_clients);
+        push_app_api_service_servers_text(&mut output, &component.service_servers);
+        push_app_api_operation_clients_text(&mut output, &component.operation_clients);
+        push_app_api_operation_servers_text(&mut output, &component.operation_servers);
+        if let Some(table) = &component.c_callback_table {
+            push_app_api_c_callback_table_text(&mut output, table);
+        }
+    }
+    output
+}
+
+pub(crate) fn format_app_api_signature_summary(manifest: &AppApiManifest) -> String {
+    let mut output = String::from("generated user API summary:");
+    output.push_str(&format!("\ngraph {}", manifest.graph.name));
+    for component in &manifest.components {
+        output.push_str(&format!(
+            "\n  component {} language={} kind={}",
+            component.name, component.language, component.kind
+        ));
+        output.push_str("\n    user handlers:");
+        for handler in &component.handlers {
+            if handler.source == "external_process" {
+                continue;
+            }
+            output.push_str(&format!("\n      {}", handler.signature));
+        }
+    }
+    output
+}
+
+fn push_app_api_tasks_text(output: &mut String, tasks: &[AppApiTask]) {
+    output.push_str("\n    tasks:");
+    if tasks.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for task in tasks {
+        output.push_str(&format!(
+            "\n      task {} instance={} trigger={} period={} readiness={} lane={} concurrency={}",
+            task.name,
+            task.instance,
+            task.trigger,
+            period_text(task.period_ms),
+            task.readiness,
+            task.lane,
+            task.concurrency
+        ));
+        if let Some(deadline_ms) = task.deadline_ms {
+            output.push_str(&format!(" deadline={deadline_ms}ms"));
+        }
+        if !task.inputs.is_empty() {
+            output.push_str(&format!(" inputs={}", task.inputs.join("|")));
+        }
+        if !task.outputs.is_empty() {
+            output.push_str(&format!(" outputs={}", task.outputs.join("|")));
+        }
+    }
+}
+
+fn push_app_api_handlers_text(output: &mut String, handlers: &[AppApiHandler]) {
+    output.push_str("\n    handlers:");
+    if handlers.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for handler in handlers {
+        output.push_str(&format!(
+            "\n      {} source={} required={}: {}",
+            handler.name, handler.source, handler.required, handler.signature
+        ));
+    }
+}
+
+fn push_app_api_ports_text(output: &mut String, label: &str, ports: &[AppApiPortView]) {
+    output.push_str(&format!("\n    {label}:"));
+    if ports.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for port in ports {
+        output.push_str(&format!(
+            "\n      {}:{} arg={}",
+            port.name, port.ty, port.handler_argument
+        ));
+        if let Some(source) = &port.source {
+            output.push_str(&format!(" source={source}"));
+        }
+        if !port.targets.is_empty() {
+            output.push_str(&format!(" targets={}", port.targets.join("|")));
+        }
+    }
+}
+
+fn push_app_api_params_text(output: &mut String, params: &[AppApiParam]) {
+    output.push_str("\n    params:");
+    if params.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for param in params {
+        output.push_str(&format!(
+            "\n      {}:{} update={} default={}",
+            param.name, param.ty, param.update, param.default
+        ));
+    }
+}
+
+fn push_app_api_service_clients_text(output: &mut String, clients: &[AppApiServiceClient]) {
+    output.push_str("\n    service clients:");
+    if clients.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for client in clients {
+        output.push_str(&format!(
+            "\n      {}:{}->{} handle={} arg={} backend={} server={}",
+            client.name,
+            client.request_type,
+            client.response_type,
+            client.handle_type,
+            client.handler_argument,
+            client.backend,
+            client.server
+        ));
+    }
+}
+
+fn push_app_api_service_servers_text(output: &mut String, servers: &[AppApiServiceServer]) {
+    output.push_str("\n    service servers:");
+    if servers.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for server in servers {
+        let clients = if server.clients.is_empty() {
+            "none".to_string()
+        } else {
+            server.clients.join("|")
+        };
+        output.push_str(&format!(
+            "\n      {}:{}->{} handler={} signature={} backend={} clients={}",
+            server.name,
+            server.request_type,
+            server.response_type,
+            server.handler_name,
+            server.handler_signature,
+            server.backend,
+            clients
+        ));
+    }
+}
+
+fn push_app_api_operation_clients_text(output: &mut String, clients: &[AppApiOperationClient]) {
+    output.push_str("\n    operation clients:");
+    if clients.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for client in clients {
+        output.push_str(&format!(
+            "\n      {}:{}->{}->{} handle={} arg={} backend={} server={}",
+            client.name,
+            client.goal_type,
+            client.feedback_type,
+            client.result_type,
+            client.handle_type,
+            client.handler_argument,
+            client.backend,
+            client.server
+        ));
+    }
+}
+
+fn push_app_api_operation_servers_text(output: &mut String, servers: &[AppApiOperationServer]) {
+    output.push_str("\n    operation servers:");
+    if servers.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for server in servers {
+        let clients = if server.clients.is_empty() {
+            "none".to_string()
+        } else {
+            server.clients.join("|")
+        };
+        output.push_str(&format!(
+            "\n      {}:{}->{}->{} handler={} signature={} backend={} clients={}",
+            server.name,
+            server.goal_type,
+            server.feedback_type,
+            server.result_type,
+            server.handler_name,
+            server.handler_signature,
+            server.backend,
+            clients
+        ));
+    }
+}
+
+fn push_app_api_c_callback_table_text(output: &mut String, table: &AppApiCCallbackTable) {
+    output.push_str(&format!(
+        "\n    C callback table: header={} factory={}",
+        table.generated_header, table.factory_symbol
+    ));
+    for entry in &table.entries {
+        output.push_str(&format!(
+            "\n      entry instance={} factory={}",
+            entry.instance, entry.factory_symbol
+        ));
+    }
+    for callback in &table.lifecycle_callbacks {
+        output.push_str(&format!(
+            "\n      lifecycle {} required={}: {}",
+            callback.field, callback.required, callback.signature
+        ));
+    }
+    for callback in &table.task_callbacks {
+        output.push_str(&format!(
+            "\n      task {} instance={} trigger={} field={} required={}: {}",
+            callback.task,
+            callback.instance,
+            callback.trigger,
+            callback.field,
+            callback.required,
+            callback.signature
+        ));
+    }
 }
 
 fn emit_reference_stubs(contract: &ContractIr) -> Vec<Artifact> {
@@ -1279,6 +1539,12 @@ fn pretty_json<T: Serialize>(value: &T) -> String {
         .expect("App API manifest should always serialize as JSON");
     json.push('\n');
     json
+}
+
+fn period_text(period_ms: Option<u64>) -> String {
+    period_ms
+        .map(|period| format!("{period}ms"))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn managed_reference_header(language: &str) -> String {

@@ -30,7 +30,7 @@ progress = "f32"
 done = "bool"
 
 [component.sensor]
-language = "rust"
+language = "cpp"
 output = ["scan:Scan"]
 
 [component.controller]
@@ -125,23 +125,26 @@ backend = "inproc"
 
     assert!(text.contains("package explain_demo"));
     assert!(text.contains("graph default"));
-    assert!(text.contains("profile default mode=strict"));
-    assert!(
-        text.contains("component controller language=rust kind=native user_file=app/rust/mod.rs")
-    );
-    assert!(text.contains("task reactive trigger=on_message period=none readiness=all_ready lane=control_lane concurrency=parallel"));
-    assert!(text.contains("task heartbeat trigger=periodic period=50ms readiness=any_ready lane=control_lane concurrency=parallel"));
-    assert!(text.contains("on_tick: fn on_tick(&mut self, plan: &ServiceClient_controller_plan, navigate: &OperationClient_controller_navigate, scan: flowrt::Latest<'_, Scan>, params: &ControllerParams, cmd: &mut flowrt::Output<Cmd>) -> flowrt::Status"));
-    assert!(text.contains("on_params_update: fn on_params_update(&mut self, old_params: &ControllerParams, new_params: &ControllerParams, context: &mut flowrt::Context) -> flowrt::Status"));
-    assert!(text.contains("inputs: scan:Scan source=sensor.scan"));
-    assert!(text.contains("outputs: cmd:Cmd"));
-    assert!(text.contains("params: gain:f32 update=on_tick default=1.0"));
-    assert!(text.contains("service clients: plan:PlanRequest->PlanResponse handle=ServiceClient_controller_plan backend=inproc server=plan_svc.plan"));
-    assert!(text.contains("operation clients: navigate:PlanGoal->PlanFeedback->PlanResult handle=OperationClient_controller_navigate backend=inproc server=navigator.navigate"));
+    assert!(text.contains("profile=default mode=strict"));
+    assert!(text.contains(
+        "component sensor language=cpp kind=native concurrency=exclusive user_file=app/cpp/components.cpp"
+    ));
+    assert!(text.contains(
+        "component controller language=rust kind=native concurrency=parallel user_file=app/rust/mod.rs"
+    ));
+    assert!(text.contains("task reactive instance=controller trigger=on_message period=none readiness=all_ready lane=control_lane concurrency=parallel inputs=scan outputs=cmd"));
+    assert!(text.contains("task heartbeat instance=controller trigger=periodic period=50ms readiness=any_ready lane=control_lane concurrency=parallel outputs=cmd"));
+    assert!(text.contains("on_tick source=rust_trait required=true: fn on_tick(&self, plan: &ServiceClient_controller_plan, navigate: &OperationClient_controller_navigate, scan: flowrt::Latest<'_, Scan>, params: &ControllerParams, cmd: &mut flowrt::Output<Cmd>) -> flowrt::Status"));
+    assert!(text.contains("on_params_update source=rust_trait required=false: fn on_params_update(&self, old_params: &ControllerParams, new_params: &ControllerParams, context: &mut flowrt::Context) -> flowrt::Status"));
+    assert!(text.contains("scan:Scan arg=scan: flowrt::Latest<'_, Scan> source=sensor.scan"));
+    assert!(text.contains("cmd:Cmd arg=cmd: &mut flowrt::Output<Cmd>"));
+    assert!(text.contains("gain:f32 update=on_tick default=1.0"));
+    assert!(text.contains("plan:PlanRequest->PlanResponse handle=ServiceClient_controller_plan arg=plan: &ServiceClient_controller_plan backend=inproc server=plan_svc.plan"));
+    assert!(text.contains("navigate:PlanGoal->PlanFeedback->PlanResult handle=OperationClient_controller_navigate arg=navigate: &OperationClient_controller_navigate backend=inproc server=navigator.navigate"));
 
     assert_eq!(json["package"]["name"], "explain_demo");
-    assert_eq!(json["graphs"][0]["profiles"][0]["mode"], "strict");
-    let controller = json["graphs"][0]["components"]
+    assert_eq!(json["graph"]["mode"], "strict");
+    let controller = json["components"]
         .as_array()
         .unwrap()
         .iter()
@@ -149,6 +152,90 @@ backend = "inproc"
         .unwrap();
     assert_eq!(controller["user_file_path"], "app/rust/mod.rs");
     assert_eq!(controller["tasks"][0]["lane"], "control_lane");
+    assert_eq!(
+        controller["handlers"][4]["signature"],
+        "fn on_tick(&self, plan: &ServiceClient_controller_plan, navigate: &OperationClient_controller_navigate, scan: flowrt::Latest<'_, Scan>, params: &ControllerParams, cmd: &mut flowrt::Output<Cmd>) -> flowrt::Status"
+    );
+}
+
+#[test]
+fn explain_json_reuses_app_api_manifest_core_fields() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "explain_app_api_demo"
+rsdl_version = "0.1"
+
+[type.Scan]
+range = "f32"
+
+[type.Cmd]
+speed = "f32"
+
+[component.sensor]
+language = "cpp"
+output = ["scan:Scan"]
+
+[component.controller]
+language = "rust"
+input = ["scan:Scan"]
+output = ["cmd:Cmd"]
+
+[component.c_filter]
+language = "c"
+input = ["scan:Scan"]
+output = ["cmd:Cmd"]
+
+[instance.sensor]
+component = "sensor"
+
+[instance.sensor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["scan"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "on_message"
+input = ["scan"]
+output = ["cmd"]
+
+[instance.c_filter]
+component = "c_filter"
+
+[instance.c_filter.task]
+trigger = "on_message"
+input = ["scan"]
+output = ["cmd"]
+
+[[bind.dataflow]]
+from = "sensor.scan"
+to = "controller.scan"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "sensor.scan"
+to = "c_filter.scan"
+channel = "latest"
+"#,
+    );
+
+    let explain_json = serde_json::to_value(explain_report(&ir)).unwrap();
+    let bundle = emit_artifacts(&ir).unwrap();
+    let app_api_json: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "app/app_api.json")).unwrap();
+
+    assert_eq!(
+        explain_json["app_api_version"],
+        app_api_json["app_api_version"]
+    );
+    assert_eq!(explain_json["contract"], app_api_json["contract"]);
+    assert_eq!(explain_json["package"], app_api_json["package"]);
+    assert_eq!(explain_json["graph"], app_api_json["graph"]);
+    assert_eq!(explain_json["components"], app_api_json["components"]);
+    assert_eq!(explain_json["stubs"], app_api_json["stubs"]);
 }
 
 #[test]
@@ -174,8 +261,16 @@ period_ms = 10
     let report = explain_report(&ir);
     let text = format_explain_report_text(&report);
 
-    assert!(text.contains("component driver language=c kind=native user_file=app/c/driver.c"));
+    assert!(text.contains(
+        "component driver language=c kind=native concurrency=exclusive user_file=app/c/driver.c"
+    ));
     assert!(
-        text.contains("on_tick: C callback table adapter declared in flowrt_app/c_components.h")
+        text.contains(
+            "on_tick source=c_callback_table required=false: C task callback table entry"
+        )
     );
+    assert!(text.contains(
+        "C callback table: header=flowrt_app/c_components.h factory=flowrt_app_driver_callbacks"
+    ));
+    assert!(text.contains("trigger=periodic field=run_periodic required=true"));
 }
