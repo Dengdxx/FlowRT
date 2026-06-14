@@ -3,6 +3,7 @@ use flowrt_rsdl::parse_str;
 
 use super::*;
 
+mod app_api;
 mod artifacts;
 mod backend;
 mod channels;

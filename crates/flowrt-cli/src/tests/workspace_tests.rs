@@ -2883,6 +2883,57 @@ backends = ["inproc"]
 }
 
 #[test]
+fn prepare_workspace_writes_app_api_artifacts_without_touching_user_app() {
+    let source = r#"
+[package]
+name = "prepare_app_api_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 10
+"#;
+    let root = temp_test_dir("prepare-app-api");
+    let rsdl_dir = root.join("rsdl");
+    let user_app = root.join("app/rust/mod.rs");
+    let rsdl_path = rsdl_dir.join("robot.rsdl");
+    let out_dir = root.join("flowrt");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    std::fs::create_dir_all(user_app.parent().unwrap()).unwrap();
+    std::fs::write(&rsdl_path, source).unwrap();
+    std::fs::write(&user_app, "pub struct Existing;\n").unwrap();
+
+    let prepared = prepare_workspace(&rsdl_path, &out_dir, None)
+        .expect("prepare should write managed app API artifacts");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("app/app_api.json")).unwrap())
+            .unwrap();
+
+    assert!(prepared.artifact_count > 0);
+    assert_eq!(
+        manifest["components"][0]["user_file_path"],
+        "app/rust/mod.rs"
+    );
+    assert!(out_dir.join("app/implementation.md").exists());
+    assert!(out_dir.join("app/stubs/rust/worker.rs").exists());
+    assert_eq!(
+        std::fs::read_to_string(&user_app).unwrap(),
+        "pub struct Existing;\n"
+    );
+    assert!(!root.join("app/stubs").exists());
+    assert!(!root.join("app/cpp").exists());
+    assert!(!root.join("app/c").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn prepare_workspace_applies_temporary_island_overlay_without_rewriting_source() {
     let source = r#"
 [package]

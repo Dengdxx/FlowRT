@@ -12,6 +12,7 @@ use flowrt_ir::{
 };
 use flowrt_validate::validate_contract;
 
+mod app_api;
 mod build_files;
 mod cpp_shell;
 mod explain;
@@ -24,6 +25,7 @@ mod selfdesc;
 mod signature_summary;
 mod supervisor;
 
+use app_api::emit_app_api_artifacts;
 use build_files::{emit_cargo_manifest, emit_cmake};
 pub(crate) use cpp_shell::cpp_string_literal;
 use cpp_shell::{
@@ -157,6 +159,8 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     let has_rust = has_language(contract, LanguageKind::Rust);
     let has_supervisor = has_cpp || has_rust || contract_has_external_process(contract);
     let launch_manifest = emit_launch_manifest(contract)?;
+
+    artifacts.extend(emit_app_api_artifacts(contract));
 
     if has_cpp {
         artifacts.push(artifact(
