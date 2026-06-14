@@ -3045,15 +3045,18 @@ fn params_commands_use_selfdesc_matched_runtime_socket() {
 
     let get = params_get(&selfdesc, "controller.kp", Some(&socket)).unwrap();
     assert!(get.contains("pending=none"));
+    assert!(get.contains("apply_state=applied"));
     assert!(get.contains("runtime_update=pending-on-tick"));
 
     let startup_get = params_get(&selfdesc, "controller.mode", Some(&socket)).unwrap();
     assert!(startup_get.contains("update=startup"));
+    assert!(startup_get.contains("apply_state=startup-only"));
     assert!(startup_get.contains("runtime_update=startup-only"));
 
     let set = params_set(&selfdesc, "controller.kp", "2.5", Some(&socket)).unwrap();
     assert!(set.contains("current=1.0"));
     assert!(set.contains("pending=2.5"));
+    assert!(set.contains("apply_state=pending"));
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);

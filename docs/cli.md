@@ -1071,7 +1071,22 @@ flowrt params list --image path/to/generated-app --remote --runtime flowrt/param
 
 **远程路径**（`--remote`）：通过 zenoh control-plane 发现远端 runtime。CLI 按 `flowrt/params/{package}/{selfdesc_hash}/{pid}` 格式的 key expression 查询所有远程参数端点，筛选与 `--image` 自描述 hash 匹配的 runtime。多个匹配时要求用户用 `--runtime <key_expr>` 显式选择；无匹配时报错。`--socket` 只表示本机 Unix socket，不能和 `--remote` 同用。`--timeout-ms` 控制发现和请求超时，默认 5000ms。CLI 会在 stderr 输出 `target:` 行，明确告知命令打到了哪个 runtime。
 
-参数不是 dataflow channel。RSDL/Contract IR 声明参数 schema，生成 shell 持有 typed params 快照，并在 scheduler tick 边界把 `on_tick` 参数的 pending 值应用到用户组件。CLI、本机 socket 和远程 zenoh control-plane 在写入 pending 前会按 self-description 做第一层校验；generated Rust/C++ shell 在 apply 边界还会按 typed params 再校验 `min`、`max` 和 `enum` 约束。非法 pending 值不会进入用户 `on_params_update`，也不会覆盖旧的合法 params 快照。用户组件可以实现默认提供的 `on_params_update(old, new, context)` 钩子；该钩子返回 `Ok` 后，新参数才会提交并反映到后续 `on_tick`。
+参数不是 dataflow channel。RSDL/Contract IR 声明参数 schema，生成 shell 持有 typed params
+快照，并在 scheduler tick 边界把 `on_tick` 参数的 pending 值应用到用户组件。CLI、本机
+socket 和远程 zenoh control-plane 在写入 pending 前会按 self-description 做第一层校验；
+generated Rust/C++ shell 在 apply 边界还会按 typed params 再校验 type、`min`、`max` 和
+`enum` 约束。非法 pending 值不会进入用户 `on_params_update`，也不会覆盖旧的合法 params
+快照。用户组件可以实现默认提供的 `on_params_update(old, new, context)` 钩子；该钩子返回
+`Ok` 后，新参数才会提交并反映到后续 `on_tick`。钩子返回非 `Ok` 时，本次 pending 更新被
+拒绝，旧参数继续生效，scheduler 不因参数拒绝而停止。
+
+参数 apply 状态机：
+
+```text
+applied --params set--> pending --scheduler boundary validate + callback Ok--> applied
+pending --validation/callback reject--> applied(old current)
+startup-only --runtime set--> error
+```
 
 `set` 可以走单项模式，也可以用 `--file` 批量导入。两种模式互斥；`--file` 当前只支持 JSON，不额外引入 TOML 解析依赖。文件可写成 object：
 
@@ -1085,16 +1100,20 @@ flowrt params list --image path/to/generated-app --remote --runtime flowrt/param
 [{"name":"controller.kp","value":2.5},{"name":"controller.mode","value":"safe"}]
 ```
 
-单项模式下，值必须是合法 JSON：数字写 `2.5`，布尔写 `true`，字符串需要带 JSON 引号，例如 shell 中常写成 `'"safe"'`。`startup` 参数运行时不可修改；`on_tick` 参数可以提交 pending 值，由生成 shell 在下一个 tick 边界应用。输出中的 `runtime_update=startup-only` 表示该参数只能在进程启动前确定，运行中只能读取当前值。单项模式输出格式是行式摘要：
+单项模式下，值必须是合法 JSON：数字写 `2.5`，布尔写 `true`，字符串需要带 JSON 引号，
+例如 shell 中常写成 `'"safe"'`。`startup` 参数运行时不可修改；`on_tick` 参数可以提交
+pending 值，由生成 shell 在下一个 tick 边界应用。输出中的 `apply_state=pending` 表示已有
+待应用值，`apply_state=applied` 表示当前没有 pending，`apply_state=startup-only` 表示该参数
+只能在进程启动前确定。单项模式输出格式是行式摘要：
 
 ```text
-controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 choices=[] runtime_update=pending-on-tick
+controller.kp type=f32 update=on_tick current=1.0 pending=2.5 apply_state=pending min=0.0 max=5.0 choices=[] runtime_update=pending-on-tick
 ```
 
 批量模式默认逐项 apply，不做 atomic 事务。CLI 会尝试文件中的全部参数，即使中途某一项失败也不会提前停止；最终按每项输出 `ok` / `error` 摘要，并附一行总计。只要任一参数失败，命令整体返回非零退出码。例如：
 
 ```text
-controller.kp: ok: controller.kp type=f32 update=on_tick current=1.0 pending=2.5 min=0.0 max=5.0 choices=[] runtime_update=pending-on-tick
+controller.kp: ok: controller.kp type=f32 update=on_tick current=1.0 pending=2.5 apply_state=pending min=0.0 max=5.0 choices=[] runtime_update=pending-on-tick
 controller.mode: error: failed to set FlowRT parameter `controller.mode` via `/tmp/flowrt.sock`: FlowRT parameter `controller.mode` is startup-only
 summary: ok=1 error=1
 ```

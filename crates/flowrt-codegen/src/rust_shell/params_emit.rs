@@ -113,7 +113,7 @@ pub(super) fn rust_apply_pending_params(
         let pending = format!("{}_{}_pending", instance.name, param.name);
         let next = format!("{}_{}_next_params", instance.name, param.name);
         output.push_str(&format!(
-            "{indent}if let Some({pending}) = introspection_state.take_pending_param({}) {{\n",
+            "{indent}if let Some({pending}) = introspection_state.peek_pending_param({}) {{\n",
             crate::rust_string_literal(&runtime_name)
         ));
         output.push_str(&format!(
@@ -121,21 +121,32 @@ pub(super) fn rust_apply_pending_params(
             instance.name
         ));
         output.push_str(&format!(
-            "{inner_indent}{next}.{field} = match decode_flowrt_param_value::<{}>({pending}.clone()) {{\n{deep_indent}Ok(value) => value,\n{deep_indent}Err(_) => return flowrt::Status::Error,\n{inner_indent}}};\n",
+            "{inner_indent}match decode_flowrt_param_value::<{}>({pending}.clone()) {{\n{deep_indent}Ok(value) => {{\n{deeper_indent}{next}.{field} = value;\n",
             rust_param_type(param.ty),
-            field = param.name
+            field = param.name,
+            deeper_indent = if nested { "                        " } else { "                    " }
         ));
         if param_has_constraints(param) {
             output.push_str(&format!(
-                "{inner_indent}if !{}(&{next}.{field}) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+                "{deeper_indent}if !{}(&{next}.{field}) {{\n{reject_indent}introspection_state.record_param_rejected({}, {pending}, \"constraint_failed\");\n{deeper_indent}}} else {{\n",
                 rust_param_constraint_helper_name(instance, param),
-                field = param.name
+                crate::rust_string_literal(&runtime_name),
+                field = param.name,
+                deeper_indent = if nested { "                        " } else { "                    " },
+                reject_indent = if nested { "                            " } else { "                        " },
             ));
         }
         let current = format!("{}_current_params", instance.name);
         output.push_str(&format!(
-            "{inner_indent}let {current} = self.{instance}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();\n",
+            "{callback_indent}let {current} = self.{instance}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();\n",
             instance = instance.name,
+            callback_indent = if param_has_constraints(param) {
+                if nested { "                            " } else { "                        " }
+            } else if nested {
+                "                        "
+            } else {
+                "                    "
+            },
         ));
         let update_call = super::rust_component_method_call(
             component,
@@ -143,12 +154,56 @@ pub(super) fn rust_apply_pending_params(
             &format!("on_params_update(&{current}, &{next}, {context_name})"),
         );
         output.push_str(&format!(
-            "{inner_indent}if {update_call} != flowrt::Status::Ok {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            "{callback_indent}if {update_call} != flowrt::Status::Ok {{\n{callback_inner_indent}introspection_state.record_param_rejected({}, {pending}, \"callback_rejected\");\n{callback_indent}}} else {{\n",
+            crate::rust_string_literal(&runtime_name),
+            callback_indent = if param_has_constraints(param) {
+                if nested { "                            " } else { "                        " }
+            } else if nested {
+                "                        "
+            } else {
+                "                    "
+            },
+            callback_inner_indent = if param_has_constraints(param) {
+                if nested { "                                " } else { "                            " }
+            } else if nested {
+                "                            "
+            } else {
+                "                        "
+            },
         ));
         output.push_str(&format!(
-            "{inner_indent}*self.{instance}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = {next};\n{inner_indent}introspection_state.record_param_applied({}, {pending});\n",
+            "{apply_indent}*self.{instance}_params.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = {next};\n{apply_indent}introspection_state.record_param_applied({}, {pending});\n{callback_indent}}}\n",
             crate::rust_string_literal(&runtime_name),
-            instance = instance.name
+            instance = instance.name,
+            apply_indent = if param_has_constraints(param) {
+                if nested { "                                " } else { "                            " }
+            } else if nested {
+                "                            "
+            } else {
+                "                        "
+            },
+            callback_indent = if param_has_constraints(param) {
+                if nested { "                            " } else { "                        " }
+            } else if nested {
+                "                        "
+            } else {
+                "                    "
+            },
+        ));
+        if param_has_constraints(param) {
+            output.push_str(&format!(
+                "{constraint_indent}}}\n",
+                constraint_indent = if nested {
+                    "                        "
+                } else {
+                    "                    "
+                }
+            ));
+        }
+        output.push_str(&format!(
+            "{deep_indent}}}\n{deep_indent}Err(_) => {{\n{deeper_indent}introspection_state.record_param_rejected({}, {pending}, \"decode_failed\");\n{deep_indent}}}\n{inner_indent}}}\n",
+            crate::rust_string_literal(&runtime_name),
+            deeper_indent = if nested { "                        " } else { "                    " },
         ));
         output.push_str(&format!("{indent}}}\n"));
     }

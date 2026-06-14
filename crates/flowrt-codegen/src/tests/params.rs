@@ -49,8 +49,9 @@ output = ["cmd"]
     );
     assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
     assert!(shell.contains("name: \"controller.kp\".to_string()"));
-    assert!(shell.contains("take_pending_param(\"controller.kp\")"));
+    assert!(shell.contains("peek_pending_param(\"controller.kp\")"));
     assert!(shell.contains("on_params_update("));
+    assert!(shell.contains("record_param_rejected(\"controller.kp\""));
     assert!(shell.contains("flowrt::params_key_expr(PACKAGE_NAME"));
     assert!(shell.contains("flowrt::ZenohParamsServer::open_from_environment"));
     assert!(shell.contains("let _remote_params_server = match"));
@@ -266,6 +267,22 @@ period_ms = 5
     let hook = shell.find("on_params_update(").expect(shell);
     assert!(gain_guard < hook, "{shell}");
     assert!(
+        shell.contains("peek_pending_param(\"controller.gain\")"),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("record_param_rejected(\"controller.gain\","),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("record_param_rejected(\"controller.mode\","),
+        "{shell}"
+    );
+    assert!(
+        !shell.contains("Err(_) => return flowrt::Status::Error"),
+        "{shell}"
+    );
+    assert!(
         shell.contains("fn flowrt_validate_pending_param_controller_gain(value: &f64) -> bool"),
         "{shell}"
     );
@@ -279,6 +296,77 @@ period_ms = 5
         shell.contains("value == \"normal\" || value == \"safe\""),
         "{shell}"
     );
+}
+
+#[test]
+fn generated_param_apply_stays_outside_per_task_functions_for_multi_task_instance() {
+    let rust_ir = contract_from_source(
+        r#"
+[package]
+name = "multi_task_params"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.params]
+gain = { type = "f64", default = 1.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[[instance.controller.task]]
+name = "fast"
+trigger = "periodic"
+period_ms = 5
+
+[[instance.controller.task]]
+name = "slow"
+trigger = "periodic"
+period_ms = 10
+"#,
+    );
+    let rust_bundle = emit_artifacts(&rust_ir).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("peek_pending_param(\"controller.gain\")"));
+    let fast_step = generated_function_block(rust_shell, "fn step_task_controller_fast");
+    let slow_step = generated_function_block(rust_shell, "fn step_task_controller_slow");
+    assert!(!fast_step.contains("peek_pending_param"), "{fast_step}");
+    assert!(!slow_step.contains("peek_pending_param"), "{slow_step}");
+
+    let cpp_ir = contract_from_source(
+        r#"
+[package]
+name = "multi_task_params"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "cpp"
+
+[component.controller.params]
+gain = { type = "f64", default = 1.0, update = "on_tick" }
+
+[instance.controller]
+component = "controller"
+
+[[instance.controller.task]]
+name = "fast"
+trigger = "periodic"
+period_ms = 5
+
+[[instance.controller.task]]
+name = "slow"
+trigger = "periodic"
+period_ms = 10
+"#,
+    );
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains("peek_pending_param(\"controller.gain\")"));
+    let fast_step = generated_function_block(cpp_shell, "App::step_task_controller_fast");
+    let slow_step = generated_function_block(cpp_shell, "App::step_task_controller_slow");
+    assert!(!fast_step.contains("peek_pending_param"), "{fast_step}");
+    assert!(!slow_step.contains("peek_pending_param"), "{slow_step}");
 }
 
 #[test]
@@ -325,8 +413,9 @@ output = ["cmd"]
     assert!(shell.contains("controller_params_(ControllerParams{"));
     assert!(shell.contains("register_param(flowrt::IntrospectionParamSchema"));
     assert!(shell.contains(".name = \"controller.kp\""));
-    assert!(shell.contains("take_pending_param(\"controller.kp\")"));
+    assert!(shell.contains("peek_pending_param(\"controller.kp\")"));
     assert!(shell.contains("controller_->on_params_update("));
+    assert!(shell.contains("record_param_rejected(\"controller.kp\""));
 }
 
 #[test]
@@ -423,6 +512,22 @@ period_ms = 5
         .expect(shell);
     let hook = shell.find("controller_->on_params_update(").expect(shell);
     assert!(gain_guard < hook, "{shell}");
+    assert!(
+        shell.contains("peek_pending_param(\"controller.gain\")"),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("record_param_rejected(\"controller.gain\","),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("record_param_rejected(\"controller.mode\","),
+        "{shell}"
+    );
+    assert!(
+        !shell.contains("return flowrt::Status::Error;\n    } else if"),
+        "{shell}"
+    );
     assert!(
         shell.contains("bool flowrt_validate_pending_param_controller_gain(const double& value)"),
         "{shell}"

@@ -5,8 +5,15 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.12.0`；`v0.12.0` 完成 Contract-driven App Authoring
-发布收口。当前用户主路径
+当前 workspace 版本为 `0.12.0`；`v0.13.0` 开发线已在参数控制面基础上补齐 runtime
+apply 闭环：RSDL/Contract IR 参数 schema、component default、instance override、live
+pending set 和 scheduler 边界 apply 由同一自描述元数据串联；Rust/C++ generated shell 在
+apply 边界重新校验 type、`min`、`max`、`enum` 与 `on_params_update(old, new, context)`，
+只有回调返回 `Ok` 才提交新快照。回调或边界校验拒绝时旧参数继续生效，pending 被拒绝并
+记录，不会把无效值先写入再回滚；同一 instance 多 task 每个 scheduler step 只在 instance
+边界 apply 一次。`flowrt params get/list/set` 会展示 `apply_state=applied|pending|startup-only`，
+App API manifest 与 self-description 均暴露 params schema、update policy 和回调签名；C v0
+仍 fail-fast 拒绝 params。`v0.12.0` 完成 Contract-driven App Authoring 发布收口。当前用户主路径
 已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
 `flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，
 `rsdl/` 放系统契约，`app/` 放用户算法，`flowrt/` 只放 FlowRT 管理产物。CLI 已新增

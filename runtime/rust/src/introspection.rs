@@ -1567,7 +1567,15 @@ impl IntrospectionState {
         Ok(status)
     }
 
-    /// 读取并清空参数 pending 值，供 generated shell 在 tick 边界应用。
+    /// 读取参数 pending 值但不清空，供 generated shell 在 tick 边界先校验再提交。
+    pub fn peek_pending_param(&self, name: &str) -> Option<serde_json::Value> {
+        self.pending_param(name)
+    }
+
+    /// 读取并清空参数 pending 值。
+    ///
+    /// 新 generated shell 使用 `peek_pending_param` 和 applied/rejected 状态转换；该方法保留给
+    /// 旧生成物和测试辅助。
     pub fn take_pending_param(&self, name: &str) -> Option<serde_json::Value> {
         let mut inner = self.lock_inner();
         inner
@@ -1589,13 +1597,37 @@ impl IntrospectionState {
     pub fn record_param_applied(&self, name: &str, value: serde_json::Value) {
         let mut inner = self.lock_inner();
         if let Some(param) = inner.params.get_mut(name) {
+            if param.pending.as_ref() == Some(&value) {
+                param.pending = None;
+            }
             param.current = value.clone();
-            param.pending = None;
             drop(inner);
             self.recorder.record_param_event_json(
                 name,
                 "flowrt.param.applied",
                 serde_json::json!({ "current": value }),
+            );
+        }
+    }
+
+    /// 记录参数 pending 值被 runtime apply 边界拒绝，保留旧 current。
+    pub fn record_param_rejected(
+        &self,
+        name: &str,
+        value: serde_json::Value,
+        reason: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        let mut inner = self.lock_inner();
+        if let Some(param) = inner.params.get_mut(name) {
+            if param.pending.as_ref() == Some(&value) {
+                param.pending = None;
+            }
+            drop(inner);
+            self.recorder.record_param_event_json(
+                name,
+                "flowrt.param.rejected",
+                serde_json::json!({ "rejected": value, "reason": reason }),
             );
         }
     }
@@ -3410,6 +3442,10 @@ mod tests {
             state.pending_param("controller.kp"),
             Some(serde_json::json!(2.5))
         );
+        assert_eq!(
+            state.peek_pending_param("controller.kp"),
+            Some(serde_json::json!(2.5))
+        );
         state.record_param_applied("controller.kp", serde_json::json!(2.5));
         assert_eq!(state.pending_param("controller.kp"), None);
 
@@ -3434,6 +3470,45 @@ mod tests {
 
         drop(server);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn params_apply_state_preserves_newer_pending_and_rejects_without_current_change() {
+        let state = IntrospectionState::new();
+        state.register_param(IntrospectionParamSchema {
+            name: "controller.kp".to_string(),
+            ty: "f32".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(1.0),
+            min: Some(serde_json::json!(0.0)),
+            max: Some(serde_json::json!(10.0)),
+            choices: Vec::new(),
+        });
+
+        state
+            .set_param_pending("controller.kp", serde_json::json!(2.0))
+            .expect("first pending value should be accepted");
+        let boundary_value = state
+            .peek_pending_param("controller.kp")
+            .expect("scheduler boundary should inspect pending without clearing it");
+        assert_eq!(
+            state.pending_param("controller.kp"),
+            Some(boundary_value.clone())
+        );
+
+        state
+            .set_param_pending("controller.kp", serde_json::json!(3.0))
+            .expect("newer pending value should remain observable");
+        state.record_param_applied("controller.kp", boundary_value);
+        let status = state.param("controller.kp").unwrap();
+        assert_eq!(status.current, serde_json::json!(2.0));
+        assert_eq!(status.pending, Some(serde_json::json!(3.0)));
+
+        let rejected = state.peek_pending_param("controller.kp").unwrap();
+        state.record_param_rejected("controller.kp", rejected, "callback_rejected");
+        let status = state.param("controller.kp").unwrap();
+        assert_eq!(status.current, serde_json::json!(2.0));
+        assert_eq!(status.pending, None);
     }
 
     #[test]

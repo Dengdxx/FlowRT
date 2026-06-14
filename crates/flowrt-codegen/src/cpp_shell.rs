@@ -3106,7 +3106,7 @@ fn cpp_apply_pending_params(
         let pending = format!("{}_{}_pending", instance.name, param.name);
         let next = format!("{}_{}_next_params", instance.name, param.name);
         output.push_str(&format!(
-            "{indent}if (const auto {pending} = introspection_state.take_pending_param({runtime_name}); {pending}.has_value()) {{\n",
+            "{indent}if (const auto {pending} = introspection_state.peek_pending_param({runtime_name}); {pending}.has_value()) {{\n",
             runtime_name = cpp_string_literal(&runtime_name)
         ));
         output.push_str(&format!(
@@ -3114,27 +3114,31 @@ fn cpp_apply_pending_params(
             instance = instance.name
         ));
         output.push_str(&format!(
-            "{inner_indent}if (!decode_flowrt_param_value(*{pending}, {next}.{field})) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            "{inner_indent}if (!decode_flowrt_param_value(*{pending}, {next}.{field})) {{\n{deep_indent}introspection_state.record_param_rejected({runtime_name}, *{pending}, \"decode_failed\");\n",
             field = param.name,
+            runtime_name = cpp_string_literal(&runtime_name),
             deep_indent = if nested { "                " } else { "            " }
         ));
         if param_has_constraints(param) {
             output.push_str(&format!(
-                "{inner_indent}if (!{}({next}.{field})) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+                "{inner_indent}}} else if (!{}({next}.{field})) {{\n{deep_indent}introspection_state.record_param_rejected({runtime_name}, *{pending}, \"constraint_failed\");\n",
                 cpp_param_constraint_helper_name(instance, param),
                 field = param.name,
+                runtime_name = cpp_string_literal(&runtime_name),
                 deep_indent = if nested { "                " } else { "            " }
             ));
         }
         output.push_str(&format!(
-            "{inner_indent}if ({instance}_ && {instance}_->on_params_update({instance}_params_, {next}, {context_name}) != flowrt::Status::Ok) {{\n{deep_indent}return flowrt::Status::Error;\n{inner_indent}}}\n",
+            "{inner_indent}}} else if ({instance}_ && {instance}_->on_params_update({instance}_params_, {next}, {context_name}) != flowrt::Status::Ok) {{\n{deep_indent}introspection_state.record_param_rejected({runtime_name}, *{pending}, \"callback_rejected\");\n",
             instance = instance.name,
+            runtime_name = cpp_string_literal(&runtime_name),
             deep_indent = if nested { "                " } else { "            " }
         ));
         output.push_str(&format!(
-            "{inner_indent}{instance}_params_ = std::move({next});\n{inner_indent}introspection_state.record_param_applied({runtime_name}, *{pending});\n",
+            "{inner_indent}}} else {{\n{deep_indent}{instance}_params_ = std::move({next});\n{deep_indent}introspection_state.record_param_applied({runtime_name}, *{pending});\n{inner_indent}}}\n",
             instance = instance.name,
-            runtime_name = cpp_string_literal(&runtime_name)
+            runtime_name = cpp_string_literal(&runtime_name),
+            deep_indent = if nested { "                " } else { "            " }
         ));
         output.push_str(&format!("{indent}}}\n"));
     }

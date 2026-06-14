@@ -122,6 +122,12 @@ struct AppApiParam {
     ty: &'static str,
     update: &'static str,
     default: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    choices: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -522,6 +528,9 @@ fn param_manifest(param: &ParamIr) -> AppApiParam {
         ty: param_type_name(param.ty),
         update: param_update_name(param.update),
         default: param_value_json(&param.default),
+        min: param.min.as_ref().map(param_value_json),
+        max: param.max.as_ref().map(param_value_json),
+        choices: param.choices.iter().map(param_value_json).collect(),
     }
 }
 

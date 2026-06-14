@@ -471,7 +471,7 @@ fn rejects_incompatible_instance_params() {
 }
 
 #[test]
-fn rejects_invalid_parameter_schema_in_contract_ir() {
+fn rejects_invalid_params_schema_in_contract_ir() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components
@@ -515,7 +515,7 @@ fn rejects_invalid_parameter_schema_in_contract_ir() {
 }
 
 #[test]
-fn rejects_param_values_outside_declared_type_range_in_contract_ir() {
+fn rejects_params_values_outside_declared_type_range_in_contract_ir() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components
@@ -551,7 +551,7 @@ fn rejects_param_values_outside_declared_type_range_in_contract_ir() {
 }
 
 #[test]
-fn rejects_param_enum_choices_outside_declared_constraints_in_contract_ir() {
+fn rejects_params_enum_choices_outside_declared_constraints_in_contract_ir() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components
@@ -591,7 +591,7 @@ fn rejects_param_enum_choices_outside_declared_constraints_in_contract_ir() {
 }
 
 #[test]
-fn rejects_instance_param_override_outside_schema_constraints() {
+fn rejects_instance_params_override_outside_schema_constraints() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components
@@ -636,7 +636,7 @@ fn rejects_instance_param_override_outside_schema_constraints() {
 }
 
 #[test]
-fn rejects_non_finite_param_float_in_contract_ir() {
+fn rejects_non_finite_params_float_in_contract_ir() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components
@@ -672,7 +672,7 @@ fn rejects_non_finite_param_float_in_contract_ir() {
 }
 
 #[test]
-fn rejects_mixed_integer_float_param_bounds_without_precision_loss() {
+fn rejects_mixed_integer_float_params_bounds_without_precision_loss() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components
@@ -708,7 +708,7 @@ fn rejects_mixed_integer_float_param_bounds_without_precision_loss() {
 }
 
 #[test]
-fn rejects_nested_non_finite_param_values_in_contract_ir() {
+fn rejects_nested_non_finite_params_values_in_contract_ir() {
     let mut ir = valid_reference_contract();
     let producer = ir
         .components

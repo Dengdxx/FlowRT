@@ -39,7 +39,7 @@ output = ["cmd:Cmd"]
 service_client = ["plan:PlanRequest->PlanResponse"]
 
 [component.controller.params]
-gain = { type = "f32", default = 1.0, update = "on_tick" }
+gain = { type = "f32", default = 1.0, min = 0.0, max = 10.0, enum = [1.0, 2.0], update = "on_tick" }
 
 [component.controller.operation_client.navigate]
 goal = "NavGoal"
@@ -205,6 +205,12 @@ fn app_api_manifest_exposes_generated_user_contract() {
     assert_eq!(controller["params"][0]["type"], "f32");
     assert_eq!(controller["params"][0]["update"], "on_tick");
     assert_eq!(controller["params"][0]["default"], 1.0);
+    assert_eq!(controller["params"][0]["min"], 0.0);
+    assert_eq!(controller["params"][0]["max"], 10.0);
+    assert_eq!(
+        controller["params"][0]["choices"],
+        serde_json::json!([1.0, 2.0])
+    );
     assert_eq!(controller["params_update_hook"], "on_params_update");
     assert_eq!(controller["service_clients"][0]["name"], "plan");
     assert_eq!(

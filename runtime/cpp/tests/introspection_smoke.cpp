@@ -676,8 +676,26 @@ int main() {
         assert_contains(param_set_response, R"("response":"param_value")");
         assert_contains(param_set_response, R"("pending":2.5)");
         assert(state.pending_param("controller.kp") == std::optional<std::string>{"2.5"});
+        assert(state.peek_pending_param("controller.kp") == std::optional<std::string>{"2.5"});
         state.record_param_applied("controller.kp", "2.5");
         assert(!state.pending_param("controller.kp").has_value());
+
+        assert(std::holds_alternative<flowrt::IntrospectionParamStatus>(
+            state.set_param_pending("controller.kp", "3.5")));
+        const auto boundary_param = state.peek_pending_param("controller.kp");
+        assert(boundary_param == std::optional<std::string>{"3.5"});
+        assert(std::holds_alternative<flowrt::IntrospectionParamStatus>(
+            state.set_param_pending("controller.kp", "4.5")));
+        state.record_param_applied("controller.kp", *boundary_param);
+        const auto applied_after_race = state.param("controller.kp");
+        assert(applied_after_race.has_value());
+        assert(applied_after_race->current == "3.5");
+        assert(applied_after_race->pending == std::optional<std::string>{"4.5"});
+        state.record_param_rejected("controller.kp", "4.5", "callback_rejected");
+        const auto rejected_after_callback = state.param("controller.kp");
+        assert(rejected_after_callback.has_value());
+        assert(rejected_after_callback->current == "3.5");
+        assert(!rejected_after_callback->pending.has_value());
 
         const auto startup_param_set_response = request_line(
             socket_path, R"({"command":"param_set","name":"controller.mode","value":"safe"})");

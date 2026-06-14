@@ -2260,7 +2260,14 @@ class IntrospectionState {
     }
 
     /**
-     * @brief 取出并清空参数 pending 值。
+     * @brief 读取参数 pending 值但不清空，供 generated shell 在 apply 边界先校验再提交。
+     */
+    std::optional<std::string> peek_pending_param(std::string_view name) const {
+        return pending_param(name);
+    }
+
+    /**
+     * @brief 取出并清空参数 pending 值。新 generated shell 使用 peek/apply 状态转换。
      */
     std::optional<std::string> take_pending_param(std::string_view name) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
@@ -2280,12 +2287,34 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         const auto param = inner_->params.find(std::string{name});
         if (param != inner_->params.end()) {
+            const auto clear_pending =
+                param->second.pending.has_value() && *param->second.pending == value;
             param->second.current = std::move(value);
-            param->second.pending = std::nullopt;
+            if (clear_pending) {
+                param->second.pending = std::nullopt;
+            }
         }
         record_event_locked(
             "param", name, "param_event", "param", name, "", "json", "param_applied",
             string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
+    }
+
+    /**
+     * @brief 记录参数 pending 值被 apply 边界拒绝，保留旧 current。
+     */
+    void record_param_rejected(std::string_view name, std::string value,
+                               std::string_view reason) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto param = inner_->params.find(std::string{name});
+        if (param != inner_->params.end() && param->second.pending.has_value() &&
+            *param->second.pending == value) {
+            param->second.pending = std::nullopt;
+        }
+        record_event_locked(
+            "param", name, "param_event", "param", name, "", "json", "param_rejected",
+            string_bytes("{\"name\":" + detail::json_string(name) +
+                         ",\"reason\":" + detail::json_string(reason) + "}"),
+            std::nullopt);
     }
 
    private:

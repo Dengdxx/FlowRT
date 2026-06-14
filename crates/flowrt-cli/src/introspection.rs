@@ -1714,13 +1714,19 @@ fn format_param_status(param: &flowrt::IntrospectionParamStatus) -> String {
         "on_tick" => "pending-on-tick",
         _ => "unknown",
     };
+    let apply_state = match param.update.as_str() {
+        "startup" => "startup-only",
+        _ if param.pending.is_some() => "pending",
+        _ => "applied",
+    };
     format!(
-        "{} type={} update={} current={} pending={} min={} max={} choices={} runtime_update={}",
+        "{} type={} update={} current={} pending={} apply_state={} min={} max={} choices={} runtime_update={}",
         param.name,
         param.ty,
         param.update,
         json_inline(&param.current),
         pending,
+        apply_state,
         min,
         max,
         choices,

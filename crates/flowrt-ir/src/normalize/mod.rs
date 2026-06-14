@@ -2821,7 +2821,7 @@ gain = { type = "u8", default = 1, min = 0, max = 10, enum = [1, 20] }
     }
 
     #[test]
-    fn normalizes_parameter_schema_and_legacy_defaults() {
+    fn normalizes_params_schema_and_legacy_defaults() {
         let source = r#"
 [package]
 name = "robot_demo"
