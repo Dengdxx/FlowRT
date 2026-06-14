@@ -5,7 +5,9 @@
 
 use thiserror::Error;
 
-use crate::schema::{SelfDescriptionFieldAbi, SelfDescriptionFrameField};
+use crate::schema::{
+    SelfDescriptionFieldAbi, SelfDescriptionFrameField, SelfDescriptionMessageAbi,
+};
 
 const DEFAULT_SEQUENCE_SUMMARY_THRESHOLD: usize = 16;
 
@@ -122,6 +124,15 @@ pub fn format_fixed_abi_fields(
     fields: &[SelfDescriptionFieldAbi],
     payload: &[u8],
 ) -> Result<String, FormatError> {
+    format_fixed_abi_fields_with_message_abi(&[], fields, payload)
+}
+
+/// 使用完整 Message ABI metadata 格式化 fixed-size ABI 字段。
+pub fn format_fixed_abi_fields_with_message_abi(
+    messages: &[SelfDescriptionMessageAbi],
+    fields: &[SelfDescriptionFieldAbi],
+    payload: &[u8],
+) -> Result<String, FormatError> {
     let mut formatted = Vec::new();
     for field in fields {
         let start = field.offset_bytes;
@@ -138,7 +149,7 @@ pub fn format_fixed_abi_fields(
         formatted.push(format!(
             "{}={}",
             field.name,
-            format_fixed_abi_value(&field.ty, bytes)?
+            format_fixed_abi_value(messages, &field.ty, bytes)?
         ));
     }
     Ok(formatted.join(","))
@@ -165,6 +176,39 @@ pub fn format_frame_fields_with_options(
     payload: &[u8],
     options: FrameFormatOptions,
 ) -> Result<String, FormatError> {
+    format_frame_fields_with_message_abi_and_options(
+        &[],
+        fields,
+        header_size_bytes,
+        payload,
+        options,
+    )
+}
+
+/// 使用完整 Message ABI metadata 格式化 variable frame 字段。
+pub fn format_frame_fields_with_message_abi(
+    messages: &[SelfDescriptionMessageAbi],
+    fields: &[SelfDescriptionFrameField],
+    header_size_bytes: usize,
+    payload: &[u8],
+) -> Result<String, FormatError> {
+    format_frame_fields_with_message_abi_and_options(
+        messages,
+        fields,
+        header_size_bytes,
+        payload,
+        FrameFormatOptions::default(),
+    )
+}
+
+/// 使用完整 Message ABI metadata 和选项格式化 variable frame 字段。
+pub fn format_frame_fields_with_message_abi_and_options(
+    messages: &[SelfDescriptionMessageAbi],
+    fields: &[SelfDescriptionFrameField],
+    header_size_bytes: usize,
+    payload: &[u8],
+    options: FrameFormatOptions,
+) -> Result<String, FormatError> {
     if payload.len() < header_size_bytes {
         return Err(FormatError::HeaderOverflow {
             header_size: header_size_bytes,
@@ -185,13 +229,14 @@ pub fn format_frame_fields_with_options(
             });
         }
         let bytes = &header[start..end];
-        let value = format_frame_field_value(field, bytes, tail, options)?;
+        let value = format_frame_field_value(messages, field, bytes, tail, options)?;
         formatted.push(format!("{}={value}", field.name));
     }
     Ok(formatted.join(","))
 }
 
 fn format_frame_field_value(
+    messages: &[SelfDescriptionMessageAbi],
     field: &SelfDescriptionFrameField,
     header_bytes: &[u8],
     tail: &[u8],
@@ -214,7 +259,7 @@ fn format_frame_field_value(
         return Ok(format!("0x{}", hex_bytes(block)));
     }
     if let Some(element_ty) = parse_sequence_type(ty)? {
-        let element_size = required_fixed_wire_size(element_ty)?;
+        let element_size = required_fixed_wire_size(messages, element_ty)?;
         let block = frame_tail_block(field, header_bytes, tail)?;
         if block.len() % element_size != 0 {
             return Err(FormatError::SequenceNotDivisible {
@@ -223,12 +268,13 @@ fn format_frame_field_value(
                 element_size,
             });
         }
-        return format_sequence_value(element_ty, block, element_size, options);
+        return format_sequence_value(messages, element_ty, block, element_size, options);
     }
-    format_fixed_abi_value(ty, header_bytes)
+    format_fixed_abi_value(messages, ty, header_bytes)
 }
 
 fn format_sequence_value(
+    messages: &[SelfDescriptionMessageAbi],
     element_ty: &str,
     block: &[u8],
     element_size: usize,
@@ -246,14 +292,14 @@ fn format_sequence_value(
         let last = &block[last_start..last_start + element_size];
         return Ok(format!(
             "sequence_summary(count={element_count},first={},last={})",
-            format_fixed_abi_value(element_ty, first)?,
-            format_fixed_abi_value(element_ty, last)?
+            format_fixed_abi_value(messages, element_ty, first)?,
+            format_fixed_abi_value(messages, element_ty, last)?
         ));
     }
 
     let mut values = Vec::with_capacity(element_count);
     for chunk in block.chunks_exact(element_size) {
-        values.push(format_fixed_abi_value(element_ty, chunk)?);
+        values.push(format_fixed_abi_value(messages, element_ty, chunk)?);
     }
     Ok(format!("[{}]", values.join(",")))
 }
@@ -306,7 +352,7 @@ fn numeric_sequence_supported(element_ty: &str) -> bool {
 }
 
 fn numeric_value_as_f64(ty: &str, bytes: &[u8]) -> Result<f64, FormatError> {
-    let text = format_fixed_abi_value(ty, bytes)?;
+    let text = format_fixed_abi_value(&[], ty, bytes)?;
     text.parse::<f64>()
         .map_err(|_| FormatError::UnsupportedSequenceElement { ty: ty.to_string() })
 }
@@ -362,10 +408,14 @@ fn parse_sequence_type(ty: &str) -> Result<Option<&str>, FormatError> {
     Ok(Some(inner.trim()))
 }
 
-fn format_fixed_abi_value(ty: &str, bytes: &[u8]) -> Result<String, FormatError> {
+fn format_fixed_abi_value(
+    messages: &[SelfDescriptionMessageAbi],
+    ty: &str,
+    bytes: &[u8],
+) -> Result<String, FormatError> {
     let ty = ty.trim();
     if let Some((element, len)) = parse_fixed_array_type(ty)? {
-        let element_size = required_fixed_wire_size(element)?;
+        let element_size = required_fixed_wire_size(messages, element)?;
         if bytes.len() != element_size * len {
             return Err(FormatError::FixedArraySizeMismatch {
                 ty: ty.to_string(),
@@ -377,29 +427,51 @@ fn format_fixed_abi_value(ty: &str, bytes: &[u8]) -> Result<String, FormatError>
         for index in 0..len {
             let start = index * element_size;
             values.push(format_fixed_abi_value(
+                messages,
                 element,
                 &bytes[start..start + element_size],
             )?);
         }
         return Ok(format!("[{}]", values.join(",")));
     }
+    if let Some(message) = messages.iter().find(|message| message.type_name == ty) {
+        if bytes.len() != message.size_bytes {
+            return Err(FormatError::PrimitiveSizeMismatch {
+                ty: ty.to_string(),
+                expected: message.size_bytes,
+                actual: bytes.len(),
+            });
+        }
+        let fields = format_fixed_abi_fields_with_message_abi(messages, &message.fields, bytes)?;
+        return Ok(format!("{{{fields}}}"));
+    }
     format_primitive_value(ty, bytes)
 }
 
-fn required_fixed_wire_size(ty: &str) -> Result<usize, FormatError> {
-    fixed_wire_size(ty)?.ok_or_else(|| FormatError::UnsupportedFixedWireType { ty: ty.to_string() })
+fn required_fixed_wire_size(
+    messages: &[SelfDescriptionMessageAbi],
+    ty: &str,
+) -> Result<usize, FormatError> {
+    fixed_wire_size(messages, ty)?
+        .ok_or_else(|| FormatError::UnsupportedFixedWireType { ty: ty.to_string() })
 }
 
-fn fixed_wire_size(ty: &str) -> Result<Option<usize>, FormatError> {
+fn fixed_wire_size(
+    messages: &[SelfDescriptionMessageAbi],
+    ty: &str,
+) -> Result<Option<usize>, FormatError> {
     let ty = ty.trim();
     if let Some(size) = primitive_size(ty) {
         return Ok(Some(size));
     }
     if let Some((element, len)) = parse_fixed_array_type(ty)? {
-        let Some(element_size) = fixed_wire_size(element)? else {
+        let Some(element_size) = fixed_wire_size(messages, element)? else {
             return Ok(None);
         };
         return Ok(element_size.checked_mul(len));
+    }
+    if let Some(message) = messages.iter().find(|message| message.type_name == ty) {
+        return Ok(Some(message.size_bytes));
     }
     Ok(None)
 }
@@ -661,6 +733,39 @@ mod tests {
         assert_eq!(
             result,
             "points=sequence_summary(count=17,first=[0,100],last=[16,116])"
+        );
+    }
+
+    #[test]
+    fn summarize_long_named_fixed_struct_sequence_with_first_and_last() {
+        let messages = [crate::schema::SelfDescriptionMessageAbi {
+            type_name: "Point".to_string(),
+            size_bytes: 8,
+            align_bytes: 4,
+            empty: false,
+            fields: vec![fixed_field("x", "f32", 0, 4), fixed_field("y", "f32", 4, 4)],
+        }];
+        let fields = [frame_field("points", "sequence<Point>", 0, 8, Some(256))];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&136u32.to_le_bytes());
+        for value in 0..17 {
+            payload.extend_from_slice(&(value as f32).to_le_bytes());
+            payload.extend_from_slice(&((value + 100) as f32).to_le_bytes());
+        }
+
+        let result = format_frame_fields_with_message_abi_and_options(
+            &messages,
+            &fields,
+            8,
+            &payload,
+            FrameFormatOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            "points=sequence_summary(count=17,first={x=0.0,y=100.0},last={x=16.0,y=116.0})"
         );
     }
 

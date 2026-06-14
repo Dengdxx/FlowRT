@@ -190,6 +190,124 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, Default, PartialEq)]
+    struct Point {
+        x: f32,
+        y: f32,
+    }
+
+    impl WireCodec for Point {
+        const WIRE_SIZE: usize = 8;
+
+        fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+            if output.len() != Self::WIRE_SIZE {
+                return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+            }
+            output[0..4].copy_from_slice(&self.x.to_le_bytes());
+            output[4..8].copy_from_slice(&self.y.to_le_bytes());
+            Ok(())
+        }
+
+        fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+            if input.len() != Self::WIRE_SIZE {
+                return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+            }
+            Ok(Self {
+                x: f32::from_le_bytes([input[0], input[1], input[2], input[3]]),
+                y: f32::from_le_bytes([input[4], input[5], input[6], input[7]]),
+            })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct VariableFrame {
+        label: String,
+        payload: Vec<u8>,
+        points: Vec<Point>,
+    }
+
+    impl FrameCodec for VariableFrame {
+        fn encoded_frame_size(&self) -> usize {
+            VAR_SPAN_WIRE_SIZE * 3
+                + self.label.len()
+                + self.payload.len()
+                + self.points.len() * Point::WIRE_SIZE
+        }
+
+        fn encode_frame(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+            let mut tail = Vec::new();
+            let label_span = append_tail_block(&mut tail, self.label.as_bytes())?;
+            let payload_span = append_tail_block(&mut tail, &self.payload)?;
+            let mut points_tail = Vec::with_capacity(self.points.len() * Point::WIRE_SIZE);
+            for point in &self.points {
+                let start = points_tail.len();
+                points_tail.resize(start + Point::WIRE_SIZE, 0);
+                point.encode_wire(&mut points_tail[start..start + Point::WIRE_SIZE])?;
+            }
+            let points_span = append_tail_block(&mut tail, &points_tail)?;
+            if output.len() != self.encoded_frame_size() {
+                return Err(WireCodecError::wrong_size(
+                    self.encoded_frame_size(),
+                    output.len(),
+                ));
+            }
+            label_span.encode(&mut output[0..8])?;
+            payload_span.encode(&mut output[8..16])?;
+            points_span.encode(&mut output[16..24])?;
+            output[24..].copy_from_slice(&tail);
+            Ok(())
+        }
+
+        fn decode_frame(input: &[u8]) -> Result<Self, WireCodecError> {
+            if input.len() < 24 {
+                return Err(WireCodecError::wrong_size(24, input.len()));
+            }
+            let label_span = VarSpan::decode(&input[0..8])?;
+            let payload_span = VarSpan::decode(&input[8..16])?;
+            let points_span = VarSpan::decode(&input[16..24])?;
+            let mut decoder = FrameDecoder::new(&input[24..]);
+            let label = String::from_utf8(decoder.read_block(label_span)?.to_vec())
+                .map_err(|_| WireCodecError::invalid_frame("string field is not valid UTF-8"))?;
+            let payload = decoder.read_block(payload_span)?.to_vec();
+            let points_block = decoder.read_block(points_span)?;
+            if points_block.len() % Point::WIRE_SIZE != 0 {
+                return Err(WireCodecError::invalid_frame(
+                    "sequence byte length is not divisible by element wire size",
+                ));
+            }
+            let mut points = Vec::with_capacity(points_block.len() / Point::WIRE_SIZE);
+            for chunk in points_block.chunks_exact(Point::WIRE_SIZE) {
+                points.push(Point::decode_wire(chunk)?);
+            }
+            decoder.finish()?;
+            Ok(Self {
+                label,
+                payload,
+                points,
+            })
+        }
+    }
+
+    const EXPECTED_VARIABLE_FRAME_BYTES: &[u8] = &[
+        0, 0, 0, 0, 9, 0, 0, 0, 9, 0, 0, 0, 3, 0, 0, 0, 12, 0, 0, 0, 16, 0, 0, 0, 117, 116, 102,
+        56, 45, 206, 188, 45, 50, 3, 4, 5, 0, 0, 128, 64, 0, 0, 144, 64, 0, 0, 160, 64, 0, 0, 176,
+        64,
+    ];
+
+    fn sample_variable_frame() -> VariableFrame {
+        VariableFrame {
+            label: "utf8-\u{03bc}-2".to_string(),
+            payload: vec![3, 4, 5],
+            points: vec![Point { x: 4.0, y: 4.5 }, Point { x: 5.0, y: 5.5 }],
+        }
+    }
+
+    fn corrupt_span(mut frame: Vec<u8>, offset: usize, span_offset: u32, len: u32) -> Vec<u8> {
+        frame[offset..offset + 4].copy_from_slice(&span_offset.to_le_bytes());
+        frame[offset + 4..offset + 8].copy_from_slice(&len.to_le_bytes());
+        frame
+    }
+
     #[test]
     fn fixed_wire_codec_adapts_to_frame_codec() {
         let value = Tiny(0x1234);
@@ -243,5 +361,61 @@ mod tests {
         assert_eq!(decoder.read_block(label_span).unwrap(), b"ok");
         assert!(decoder.read_block(empty_span).unwrap().is_empty());
         decoder.finish().unwrap();
+    }
+
+    #[test]
+    fn variable_frame_codec_roundtrips_utf8_bytes_and_struct_sequence() {
+        let value = sample_variable_frame();
+        let encoded = value.to_frame_vec().unwrap();
+        assert_eq!(encoded, EXPECTED_VARIABLE_FRAME_BYTES);
+        assert_eq!(VariableFrame::decode_frame(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn variable_frame_codec_roundtrips_empty_string_bytes_and_sequence() {
+        let value = VariableFrame {
+            label: String::new(),
+            payload: Vec::new(),
+            points: Vec::new(),
+        };
+        let encoded = value.to_frame_vec().unwrap();
+        assert_eq!(encoded, [0; VAR_SPAN_WIRE_SIZE * 3]);
+        assert_eq!(VariableFrame::decode_frame(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn variable_frame_decode_reports_truncation_offset_and_length_errors() {
+        let expected = EXPECTED_VARIABLE_FRAME_BYTES;
+        let truncated = VariableFrame::decode_frame(&expected[..23]).unwrap_err();
+        assert_eq!(
+            truncated.to_string(),
+            "wire payload size mismatch: expected 24 bytes, got 23 bytes"
+        );
+
+        let offset_overflow = corrupt_span(expected.to_vec(), 0, u32::MAX, 1);
+        assert_eq!(
+            VariableFrame::decode_frame(&offset_overflow)
+                .unwrap_err()
+                .to_string(),
+            "variable tail blocks are not canonical"
+        );
+
+        let length_overflow = corrupt_span(expected.to_vec(), 0, 0, u32::MAX);
+        assert_eq!(
+            VariableFrame::decode_frame(&length_overflow)
+                .unwrap_err()
+                .to_string(),
+            "variable span exceeds frame tail length"
+        );
+    }
+
+    #[test]
+    fn variable_frame_decode_rejects_invalid_utf8_string() {
+        let mut frame = EXPECTED_VARIABLE_FRAME_BYTES.to_vec();
+        frame[24] = 0xff;
+        assert_eq!(
+            VariableFrame::decode_frame(&frame).unwrap_err().to_string(),
+            "string field is not valid UTF-8"
+        );
     }
 }

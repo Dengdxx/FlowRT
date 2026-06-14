@@ -34,9 +34,11 @@ use cpp_shell::{
 };
 use launch_manifest::emit_launch_manifest;
 use messages::{
-    emit_cpp_message_abi_tests, emit_cpp_messages, emit_rust_message_abi_tests, emit_rust_messages,
-    fixed_message_abi_expectations, frame_header_size_for_expr, frame_header_size_for_type,
-    frame_max_size_for_type, rust_wire_size, type_contains_variable_data, variable_tail_max_size,
+    contract_has_variable_messages, emit_cpp_message_abi_tests, emit_cpp_message_frame_tests,
+    emit_cpp_messages, emit_rust_message_abi_tests, emit_rust_message_frame_tests,
+    emit_rust_messages, fixed_message_abi_expectations, frame_header_size_for_expr,
+    frame_header_size_for_type, frame_max_size_for_type, rust_wire_size,
+    type_contains_variable_data, variable_tail_max_size,
 };
 use ros2_bridge::emit_ros2_bridge_adapter;
 use selfdesc::{
@@ -205,6 +207,12 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
                 emit_cpp_message_abi_tests(contract, &abi_expectations),
             ));
         }
+        if contract_has_variable_messages(contract) {
+            artifacts.push(artifact(
+                "cpp/tests/message_frame.cpp",
+                emit_cpp_message_frame_tests(contract),
+            ));
+        }
     }
 
     if has_supervisor {
@@ -232,6 +240,12 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
             artifacts.push(artifact(
                 "rust/tests/message_abi.rs",
                 emit_rust_message_abi_tests(contract, &abi_expectations),
+            ));
+        }
+        if contract_has_variable_messages(contract) {
+            artifacts.push(artifact(
+                "rust/tests/message_frame.rs",
+                emit_rust_message_frame_tests(contract),
             ));
         }
     }

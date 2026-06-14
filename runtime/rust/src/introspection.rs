@@ -3849,7 +3849,7 @@ mod tests {
     }
 
     #[test]
-    fn recorder_marks_channel_frame_payload_encoding() {
+    fn recorder_marks_variable_channel_frame_payload_encoding() {
         let state = IntrospectionState::new();
         state.start_recorder(IntrospectionRecorderStart {
             output: None,

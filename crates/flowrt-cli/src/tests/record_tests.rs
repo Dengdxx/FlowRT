@@ -82,6 +82,47 @@ fn record_writes_mcap_from_fake_runtime() {
 }
 
 #[test]
+fn record_writes_variable_frame_event_from_fake_runtime() {
+    let root = temp_test_dir("record-variable-frame-event");
+    let socket = root.join("main.sock");
+    let output = root.join("run.mcap");
+    let state = flowrt::IntrospectionState::new();
+    state.register_channel("source.path_to_sink.path", "PathFrame");
+    let server =
+        flowrt::spawn_status_server_at(socket.clone(), handshake(420, "main"), state.clone())
+            .expect("status server should start");
+    let producer_state = state.clone();
+    let producer = std::thread::spawn(move || {
+        for _ in 0..200 {
+            if producer_state.status().recorder.enabled {
+                producer_state.try_record_channel_sample_frame_bytes(
+                    "source.path_to_sink.path",
+                    "PathFrame",
+                    &[0, 0, 0, 0, 0, 0, 0, 0],
+                    Some(10),
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    let summary =
+        record::record_runtime_for_sockets(record_options(output.clone(), None), vec![socket])
+            .expect("record should write MCAP");
+
+    producer.join().expect("producer thread should finish");
+    assert!(summary.contains("event_count=1"));
+    assert!(summary.contains("dropped_count=0"));
+    let bytes = std::fs::read(&output).expect("MCAP output should exist");
+    assert!(bytes.starts_with(flowrt_record::MCAP_MAGIC));
+    assert!(!state.status().recorder.enabled);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn record_start_timeout_does_not_leave_output_file() {
     let root = temp_test_dir("record-start-timeout-clean-output");
     let socket = root.join("stalled.sock");

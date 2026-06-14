@@ -432,6 +432,102 @@ backends = ["zenoh"]
 }
 
 #[test]
+fn variable_frame_tests_embed_cross_language_byte_fixtures_and_malformed_decode() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "variable_fixture_demo"
+rsdl_version = "0.1"
+
+[type.Point]
+x = "f32"
+y = "f32"
+
+[type.PathFrame]
+label = "string"
+payload = "bytes"
+points = "sequence<Point>"
+
+[component.source]
+language = "rust"
+output = ["path:PathFrame"]
+
+[component.sink]
+language = "cpp"
+input = ["path:PathFrame"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["path"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["path"]
+
+[[bind.dataflow]]
+from = "source.path"
+to = "sink.path"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust", "cpp"]
+backends = ["zenoh"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+
+    let rust_frame = artifact_content(&bundle, "rust/tests/message_frame.rs");
+    assert!(rust_frame.contains("const EXPECTED_PATH_FRAME_FRAME: &[u8] = &["));
+    assert!(rust_frame.contains("fn assert_cpp_frame_fixture(name: &str, expected: &[u8])"));
+    assert!(
+        rust_frame
+            .contains("assert_cpp_frame_fixture(\"path_frame.frame\", EXPECTED_PATH_FRAME_FRAME);")
+    );
+    assert!(rust_frame.contains("label: \"utf8-\\u{03bc}-2\".to_string()"));
+    assert!(rust_frame.contains("payload: vec![3u8, 4u8, 5u8]"));
+    assert!(rust_frame.contains("points: vec!["));
+    assert!(rust_frame.contains("fn path_frame_empty_variable_fields_frame_codec()"));
+    assert!(rust_frame.contains("fn path_frame_rejects_malformed_frame_decode()"));
+    assert!(rust_frame.contains("offset.to_le_bytes()"));
+    assert!(rust_frame.contains("len.to_le_bytes()"));
+
+    let cpp_frame = artifact_content(&bundle, "cpp/tests/message_frame.cpp");
+    assert!(cpp_frame.contains("constexpr std::array<std::uint8_t, 52> EXPECTED_PATH_FRAME_FRAME"));
+    assert!(cpp_frame.contains("#include <span>"));
+    assert!(cpp_frame.contains("write_fixture(\"path_frame.frame\", frame);"));
+    assert!(cpp_frame.contains("value.label = \"utf8-\\xCE\\xBC-2\";"));
+    assert!(cpp_frame.contains("value.payload = std::vector<std::uint8_t>{std::uint8_t{3}, std::uint8_t{4}, std::uint8_t{5}};"));
+    assert!(cpp_frame.contains("void test_path_frame_rejects_malformed_frame_decode()"));
+
+    let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
+    assert!(
+        cargo_manifest.contains(
+            "[[test]]\nname = \"message_frame\"\npath = \"../rust/tests/message_frame.rs\""
+        )
+    );
+
+    let cmake = artifact_content(&bundle, "build/CMakeLists.txt");
+    assert!(cmake.contains(
+        "add_executable(variable_fixture_demo_message_frame ../cpp/tests/message_frame.cpp)"
+    ));
+    assert!(
+        cmake.contains("add_test(NAME message_frame COMMAND variable_fixture_demo_message_frame)")
+    );
+}
+
+#[test]
 fn message_abi_tests_embed_cross_language_byte_fixtures() {
     let ir = contract_from_source(
         r#"

@@ -99,6 +99,10 @@ pub(crate) fn emit_cpp_messages(contract: &ContractIr) -> String {
                 field.name
             ));
         }
+        output.push_str(&format!(
+            "\n    bool operator==(const {}&) const = default;\n",
+            ty.generated_name
+        ));
         if frame_descriptor_messages.contains(&ty.qualified_name) {
             output.push_str(&cpp_frame_descriptor_fields_methods(ty));
         }
@@ -254,7 +258,7 @@ pub(crate) fn fixed_message_abi_expectations(
     Ok(message_abi_expectations(&fixed_contract)?)
 }
 
-fn contract_has_variable_messages(contract: &ContractIr) -> bool {
+pub(crate) fn contract_has_variable_messages(contract: &ContractIr) -> bool {
     contract.types.iter().any(|ty| {
         type_contains_variable_data(
             contract,
@@ -733,6 +737,469 @@ pub(crate) fn emit_cpp_message_abi_tests(
     }
     output.push_str("    return 0;\n}\n");
     output
+}
+
+pub(crate) fn emit_rust_message_frame_tests(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    let reads_cpp_fixtures = has_language(contract, LanguageKind::Cpp);
+    output.push_str("\nuse flowrt::FrameCodec;\n\n");
+    if reads_cpp_fixtures {
+        output.push_str(
+            "fn assert_cpp_frame_fixture(name: &str, expected: &[u8]) {\n    let path = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"))\n        .join(\"abi-fixtures\")\n        .join(\"cpp\")\n        .join(name);\n    let bytes = std::fs::read(&path).unwrap_or_else(|error| {\n        panic!(\"failed to read C++ frame fixture `{}`: {error}\", path.display())\n    });\n    assert_eq!(bytes, expected);\n}\n\n",
+        );
+    }
+    output.push_str(
+        "fn corrupt_var_span(mut frame: Vec<u8>, header_offset: usize, offset: u32, len: u32) -> Vec<u8> {\n    frame[header_offset..header_offset + 4].copy_from_slice(&offset.to_le_bytes());\n    frame[header_offset + 4..header_offset + 8].copy_from_slice(&len.to_le_bytes());\n    frame\n}\n\n",
+    );
+
+    for ty in variable_message_frame_types(contract) {
+        let expected = variable_frame_sample_bytes(contract, ty, false);
+        let empty = variable_frame_sample_bytes(contract, ty, true);
+        output.push_str(&format!(
+            "const {}: &[u8] = &[{}];\n",
+            expected_frame_const_name(&ty.qualified_name),
+            byte_array_literal(&expected)
+        ));
+        output.push_str(&format!(
+            "const {}: &[u8] = &[{}];\n\n",
+            expected_empty_frame_const_name(&ty.qualified_name),
+            byte_array_literal(&empty)
+        ));
+        output.push_str(&rust_frame_sample_function(contract, ty, false));
+        output.push('\n');
+        output.push_str(&rust_frame_sample_function(contract, ty, true));
+        output.push('\n');
+        output.push_str("#[test]\n");
+        output.push_str(&format!(
+            "fn {}_canonical_frame_codec() {{\n",
+            snake_identifier(&ty.qualified_name)
+        ));
+        output.push_str(&format!(
+            "    let value = {}();\n    let frame = value.to_frame_vec().unwrap();\n    assert_eq!(frame, {});\n    assert_eq!(flowrt_app::messages::{}::decode_frame(&frame).unwrap(), value);\n",
+            frame_sample_function_name(&ty.qualified_name, false),
+            expected_frame_const_name(&ty.qualified_name),
+            ty.generated_name
+        ));
+        if reads_cpp_fixtures {
+            output.push_str(&format!(
+                "    assert_cpp_frame_fixture(\"{}.frame\", {});\n",
+                snake_identifier(&ty.qualified_name),
+                expected_frame_const_name(&ty.qualified_name)
+            ));
+        }
+        output.push_str("}\n\n");
+        output.push_str("#[test]\n");
+        output.push_str(&format!(
+            "fn {}_empty_variable_fields_frame_codec() {{\n",
+            snake_identifier(&ty.qualified_name)
+        ));
+        output.push_str(&format!(
+            "    let value = {}();\n    let frame = value.to_frame_vec().unwrap();\n    assert_eq!(frame, {});\n    assert_eq!(flowrt_app::messages::{}::decode_frame(&frame).unwrap(), value);\n}}\n\n",
+            frame_sample_function_name(&ty.qualified_name, true),
+            expected_empty_frame_const_name(&ty.qualified_name),
+            ty.generated_name
+        ));
+        if let Some((offset, string_payload_offset)) = malformed_frame_offsets(contract, ty) {
+            output.push_str("#[test]\n");
+            output.push_str(&format!(
+                "fn {}_rejects_malformed_frame_decode() {{\n",
+                snake_identifier(&ty.qualified_name)
+            ));
+            output.push_str(&format!(
+                "    let truncated = &{}[..{}];\n    assert!(flowrt_app::messages::{}::decode_frame(truncated).unwrap_err().to_string().contains(\"wire payload size mismatch\"));\n",
+                expected_frame_const_name(&ty.qualified_name),
+                frame_header_size_for_type(contract, ty).saturating_sub(1),
+                ty.generated_name
+            ));
+            output.push_str(&format!(
+                "    let offset_overflow = corrupt_var_span({}.to_vec(), {offset}, u32::MAX, 1);\n    assert!(flowrt_app::messages::{}::decode_frame(&offset_overflow).unwrap_err().to_string().contains(\"variable tail blocks are not canonical\"));\n",
+                expected_frame_const_name(&ty.qualified_name),
+                ty.generated_name
+            ));
+            output.push_str(&format!(
+                "    let length_overflow = corrupt_var_span({}.to_vec(), {offset}, 0, u32::MAX);\n    assert!(flowrt_app::messages::{}::decode_frame(&length_overflow).unwrap_err().to_string().contains(\"variable span exceeds frame tail length\"));\n",
+                expected_frame_const_name(&ty.qualified_name),
+                ty.generated_name
+            ));
+            if let Some(string_payload_offset) = string_payload_offset {
+                output.push_str(&format!(
+                    "    let mut invalid_utf8 = {}.to_vec();\n    invalid_utf8[{}] = 0xff;\n    assert!(flowrt_app::messages::{}::decode_frame(&invalid_utf8).unwrap_err().to_string().contains(\"string field is not valid UTF-8\"));\n",
+                    expected_frame_const_name(&ty.qualified_name),
+                    string_payload_offset,
+                    ty.generated_name
+                ));
+            }
+            output.push_str("}\n\n");
+        }
+    }
+
+    output
+}
+
+pub(crate) fn emit_cpp_message_frame_tests(contract: &ContractIr) -> String {
+    let mut output = managed_header();
+    output.push_str(
+        "\n#include <algorithm>\n#include <array>\n#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <filesystem>\n#include <fstream>\n#include <limits>\n#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <vector>\n\n#include \"flowrt_app/messages.hpp\"\n\nnamespace {\n\ntemplate <typename T>\nstd::vector<std::uint8_t> frame_of(const T& value) {\n    std::vector<std::uint8_t> frame(value.encoded_frame_size());\n    value.encode_frame(frame);\n    return frame;\n}\n\ntemplate <std::size_t N>\nvoid assert_frame_bytes(const std::vector<std::uint8_t>& frame, const std::array<std::uint8_t, N>& expected) {\n    assert(frame.size() == expected.size());\n    assert(std::equal(frame.begin(), frame.end(), expected.begin(), expected.end()));\n}\n\nvoid write_fixture(std::string_view name, const std::vector<std::uint8_t>& bytes) {\n#ifdef FLOWRT_ABI_FIXTURE_DIR\n    std::filesystem::create_directories(FLOWRT_ABI_FIXTURE_DIR);\n    auto path = std::filesystem::path(FLOWRT_ABI_FIXTURE_DIR) / std::string(name);\n    std::ofstream output(path, std::ios::binary);\n    if (!output) {\n        throw std::runtime_error(\"failed to open frame fixture output\");\n    }\n    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));\n    if (!output) {\n        throw std::runtime_error(\"failed to write frame fixture output\");\n    }\n#else\n    (void)name;\n    (void)bytes;\n#endif\n}\n\nvoid write_var_span(std::vector<std::uint8_t>& frame, std::size_t header_offset, std::uint32_t offset, std::uint32_t len) {\n    flowrt::write_wire_le(std::span<std::uint8_t>{frame.data(), frame.size()}, header_offset, offset);\n    flowrt::write_wire_le(std::span<std::uint8_t>{frame.data(), frame.size()}, header_offset + 4U, len);\n}\n\n",
+    );
+
+    for ty in variable_message_frame_types(contract) {
+        let expected = variable_frame_sample_bytes(contract, ty, false);
+        let empty = variable_frame_sample_bytes(contract, ty, true);
+        output.push_str(&format!(
+            "constexpr std::array<std::uint8_t, {}> {}{{{{{}}}}};\n",
+            expected.len(),
+            expected_frame_const_name(&ty.qualified_name),
+            byte_array_literal(&expected)
+        ));
+        output.push_str(&format!(
+            "constexpr std::array<std::uint8_t, {}> {}{{{{{}}}}};\n\n",
+            empty.len(),
+            expected_empty_frame_const_name(&ty.qualified_name),
+            byte_array_literal(&empty)
+        ));
+        output.push_str(&cpp_frame_sample_function(contract, ty, false));
+        output.push('\n');
+        output.push_str(&cpp_frame_sample_function(contract, ty, true));
+        output.push('\n');
+        output.push_str(&format!(
+            "void test_{}_canonical_frame_codec() {{\n",
+            snake_identifier(&ty.qualified_name)
+        ));
+        output.push_str(&format!(
+            "    const auto value = {}();\n    const auto frame = frame_of(value);\n    assert_frame_bytes(frame, {});\n    const auto decoded = flowrt_app::{}::decode_frame(frame);\n    assert(decoded == value);\n    assert_frame_bytes(frame_of(decoded), {});\n    write_fixture(\"{}.frame\", frame);\n}}\n\n",
+            frame_sample_function_name(&ty.qualified_name, false),
+            expected_frame_const_name(&ty.qualified_name),
+            ty.generated_name,
+            expected_frame_const_name(&ty.qualified_name),
+            snake_identifier(&ty.qualified_name)
+        ));
+        output.push_str(&format!(
+            "void test_{}_empty_variable_fields_frame_codec() {{\n",
+            snake_identifier(&ty.qualified_name)
+        ));
+        output.push_str(&format!(
+            "    const auto value = {}();\n    const auto frame = frame_of(value);\n    assert_frame_bytes(frame, {});\n    const auto decoded = flowrt_app::{}::decode_frame(frame);\n    assert(decoded == value);\n    assert_frame_bytes(frame_of(decoded), {});\n}}\n\n",
+            frame_sample_function_name(&ty.qualified_name, true),
+            expected_empty_frame_const_name(&ty.qualified_name),
+            ty.generated_name,
+            expected_empty_frame_const_name(&ty.qualified_name)
+        ));
+        if let Some((offset, string_payload_offset)) = malformed_frame_offsets(contract, ty) {
+            output.push_str(&format!(
+                "void test_{}_rejects_malformed_frame_decode() {{\n",
+                snake_identifier(&ty.qualified_name)
+            ));
+            output.push_str(&format!(
+                "    bool saw_truncation = false;\n    try {{\n        flowrt_app::{}::decode_frame(std::span<const std::uint8_t>{{{}.data(), {}}});\n    }} catch (const flowrt::WireCodecError&) {{\n        saw_truncation = true;\n    }}\n    assert(saw_truncation);\n",
+                ty.generated_name,
+                expected_frame_const_name(&ty.qualified_name),
+                frame_header_size_for_type(contract, ty).saturating_sub(1)
+            ));
+            output.push_str(&format!(
+                "    auto offset_overflow = std::vector<std::uint8_t>({}.begin(), {}.end());\n    write_var_span(offset_overflow, {offset}, std::numeric_limits<std::uint32_t>::max(), 1U);\n    bool saw_offset = false;\n    try {{\n        flowrt_app::{}::decode_frame(offset_overflow);\n    }} catch (const flowrt::WireCodecError&) {{\n        saw_offset = true;\n    }}\n    assert(saw_offset);\n",
+                expected_frame_const_name(&ty.qualified_name),
+                expected_frame_const_name(&ty.qualified_name),
+                ty.generated_name
+            ));
+            output.push_str(&format!(
+                "    auto length_overflow = std::vector<std::uint8_t>({}.begin(), {}.end());\n    write_var_span(length_overflow, {offset}, 0U, std::numeric_limits<std::uint32_t>::max());\n    bool saw_length = false;\n    try {{\n        flowrt_app::{}::decode_frame(length_overflow);\n    }} catch (const flowrt::WireCodecError&) {{\n        saw_length = true;\n    }}\n    assert(saw_length);\n",
+                expected_frame_const_name(&ty.qualified_name),
+                expected_frame_const_name(&ty.qualified_name),
+                ty.generated_name
+            ));
+            if let Some(string_payload_offset) = string_payload_offset {
+                output.push_str(&format!(
+                    "    auto invalid_utf8 = std::vector<std::uint8_t>({}.begin(), {}.end());\n    invalid_utf8[{}] = 0xffU;\n    bool saw_utf8 = false;\n    try {{\n        flowrt_app::{}::decode_frame(invalid_utf8);\n    }} catch (const flowrt::WireCodecError&) {{\n        saw_utf8 = true;\n    }}\n    assert(saw_utf8);\n",
+                    expected_frame_const_name(&ty.qualified_name),
+                    expected_frame_const_name(&ty.qualified_name),
+                    string_payload_offset,
+                    ty.generated_name
+                ));
+            }
+            output.push_str("}\n\n");
+        }
+    }
+
+    output.push_str("}  // namespace\n\nint main() {\n");
+    for ty in variable_message_frame_types(contract) {
+        output.push_str(&format!(
+            "    test_{}_canonical_frame_codec();\n    test_{}_empty_variable_fields_frame_codec();\n",
+            snake_identifier(&ty.qualified_name),
+            snake_identifier(&ty.qualified_name)
+        ));
+        if malformed_frame_offsets(contract, ty).is_some() {
+            output.push_str(&format!(
+                "    test_{}_rejects_malformed_frame_decode();\n",
+                snake_identifier(&ty.qualified_name)
+            ));
+        }
+    }
+    output.push_str("    return 0;\n}\n");
+    output
+}
+
+fn variable_message_frame_types(contract: &ContractIr) -> Vec<&TypeIr> {
+    ordered_types(contract)
+        .into_iter()
+        .filter(|ty| {
+            type_contains_variable_data(
+                contract,
+                &TypeExpr::Named {
+                    name: ty.qualified_name.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn variable_frame_sample_bytes(
+    contract: &ContractIr,
+    ty: &TypeIr,
+    empty_variable: bool,
+) -> Vec<u8> {
+    let mut header = Vec::with_capacity(frame_header_size_for_type(contract, ty));
+    let mut tail = Vec::new();
+    for (index, field) in ty.fields.iter().enumerate() {
+        let seed = index + 2;
+        match &field.ty {
+            TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+                let block = if empty_variable {
+                    Vec::new()
+                } else {
+                    variable_field_sample_bytes(contract, &field.ty, seed)
+                };
+                let (offset, len) = if block.is_empty() {
+                    (0u32, 0u32)
+                } else {
+                    let offset =
+                        u32::try_from(tail.len()).expect("generated fixture tail fits u32");
+                    let len = u32::try_from(block.len()).expect("generated fixture block fits u32");
+                    tail.extend_from_slice(&block);
+                    (offset, len)
+                };
+                header.extend_from_slice(&offset.to_le_bytes());
+                header.extend_from_slice(&len.to_le_bytes());
+            }
+            _ => header.extend_from_slice(&wire_sample_bytes_for_expr(contract, &field.ty, seed)),
+        }
+    }
+    header.extend_from_slice(&tail);
+    header
+}
+
+fn variable_field_sample_bytes(contract: &ContractIr, expr: &TypeExpr, seed: usize) -> Vec<u8> {
+    match expr {
+        TypeExpr::VarBytes => vec![seed as u8, (seed + 1) as u8, (seed + 2) as u8],
+        TypeExpr::VarString { .. } => format!("utf8-\u{03bc}-{seed}").into_bytes(),
+        TypeExpr::VarSequence { element } => {
+            let mut bytes = wire_sample_bytes_for_expr(contract, element, seed);
+            bytes.extend_from_slice(&wire_sample_bytes_for_expr(contract, element, seed + 1));
+            bytes
+        }
+        _ => unreachable!("variable_field_sample_bytes called with fixed expression"),
+    }
+}
+
+fn rust_frame_sample_function(contract: &ContractIr, ty: &TypeIr, empty_variable: bool) -> String {
+    let function = frame_sample_function_name(&ty.qualified_name, empty_variable);
+    let mut output = format!(
+        "fn {function}() -> flowrt_app::messages::{} {{\n    flowrt_app::messages::{} {{\n",
+        ty.generated_name, ty.generated_name
+    );
+    for (index, field) in ty.fields.iter().enumerate() {
+        output.push_str(&format!(
+            "        {}: {},\n",
+            field.name,
+            rust_frame_sample_expr(contract, &field.ty, index + 2, empty_variable)
+        ));
+    }
+    output.push_str("    }\n}\n");
+    output
+}
+
+fn rust_frame_sample_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    seed: usize,
+    empty_variable: bool,
+) -> String {
+    match expr {
+        TypeExpr::Primitive { name } => rust_primitive_sample(*name, seed),
+        TypeExpr::Named { name } => {
+            let ty = type_by_name(contract, name);
+            let fields = ty
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    format!(
+                        "{}: {}",
+                        field.name,
+                        rust_frame_sample_expr(contract, &field.ty, seed + index, false)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("flowrt_app::messages::{} {{ {fields} }}", ty.generated_name)
+        }
+        TypeExpr::Array { element, len } => {
+            format!(
+                "[{}; {len}]",
+                rust_frame_sample_expr(contract, element, seed, false)
+            )
+        }
+        TypeExpr::VarBytes => {
+            if empty_variable {
+                "Vec::new()".to_string()
+            } else {
+                format!("vec![{}u8, {}u8, {}u8]", seed, seed + 1, seed + 2)
+            }
+        }
+        TypeExpr::VarString { .. } => {
+            if empty_variable {
+                "String::new()".to_string()
+            } else {
+                format!("\"utf8-\\u{{03bc}}-{seed}\".to_string()")
+            }
+        }
+        TypeExpr::VarSequence { element } => {
+            if empty_variable {
+                "Vec::new()".to_string()
+            } else {
+                format!(
+                    "vec![{}, {}]",
+                    rust_frame_sample_expr(contract, element, seed, false),
+                    rust_frame_sample_expr(contract, element, seed + 1, false)
+                )
+            }
+        }
+    }
+}
+
+fn cpp_frame_sample_function(contract: &ContractIr, ty: &TypeIr, empty_variable: bool) -> String {
+    let function = frame_sample_function_name(&ty.qualified_name, empty_variable);
+    let mut output = format!(
+        "flowrt_app::{} {function}() {{\n    flowrt_app::{} value{{}};\n",
+        ty.generated_name, ty.generated_name
+    );
+    for (index, field) in ty.fields.iter().enumerate() {
+        output.push_str(&format!(
+            "    value.{} = {};\n",
+            field.name,
+            cpp_frame_sample_expr(contract, &field.ty, index + 2, empty_variable)
+        ));
+    }
+    output.push_str("    return value;\n}\n");
+    output
+}
+
+fn cpp_frame_sample_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    seed: usize,
+    empty_variable: bool,
+) -> String {
+    match expr {
+        TypeExpr::Primitive { name } => cpp_primitive_sample(*name, seed),
+        TypeExpr::Named { name } => {
+            let ty = type_by_name(contract, name);
+            let fields = ty
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    format!(
+                        ".{} = {}",
+                        field.name,
+                        cpp_frame_sample_expr(contract, &field.ty, seed + index, false)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("flowrt_app::{}{{{fields}}}", ty.generated_name)
+        }
+        TypeExpr::Array { element, len: _ } => {
+            let value = cpp_frame_sample_expr(contract, element, seed, false);
+            let array_ty = cpp_type(expr);
+            format!("[] {{ {array_ty} value{{}}; value.fill({value}); return value; }}()")
+        }
+        TypeExpr::VarBytes => {
+            if empty_variable {
+                "std::vector<std::uint8_t>{}".to_string()
+            } else {
+                format!(
+                    "std::vector<std::uint8_t>{{std::uint8_t{{{}}}, std::uint8_t{{{}}}, std::uint8_t{{{}}}}}",
+                    seed,
+                    seed + 1,
+                    seed + 2
+                )
+            }
+        }
+        TypeExpr::VarString { .. } => {
+            if empty_variable {
+                "std::string{}".to_string()
+            } else {
+                format!("\"utf8-\\xCE\\xBC-{seed}\"")
+            }
+        }
+        TypeExpr::VarSequence { element } => {
+            if empty_variable {
+                format!("std::vector<{}>{{}}", cpp_type(element))
+            } else {
+                format!(
+                    "std::vector<{}>{{{}, {}}}",
+                    cpp_type(element),
+                    cpp_frame_sample_expr(contract, element, seed, false),
+                    cpp_frame_sample_expr(contract, element, seed + 1, false)
+                )
+            }
+        }
+    }
+}
+
+fn malformed_frame_offsets(contract: &ContractIr, ty: &TypeIr) -> Option<(usize, Option<usize>)> {
+    let mut cursor = 0usize;
+    let mut first = None;
+    let mut tail_cursor = frame_header_size_for_type(contract, ty);
+    let mut first_string_payload = None;
+    for (index, field) in ty.fields.iter().enumerate() {
+        let size = frame_header_size_for_expr(contract, &field.ty);
+        if matches!(
+            field.ty,
+            TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. }
+        ) {
+            first.get_or_insert(cursor);
+            let block = variable_field_sample_bytes(contract, &field.ty, index + 2);
+            if matches!(field.ty, TypeExpr::VarString { .. }) && !block.is_empty() {
+                first_string_payload.get_or_insert(tail_cursor);
+            }
+            tail_cursor += block.len();
+        }
+        cursor += size;
+    }
+    first.map(|offset| (offset, first_string_payload))
+}
+
+fn expected_frame_const_name(type_name: &str) -> String {
+    format!(
+        "EXPECTED_{}_FRAME",
+        snake_identifier(type_name).to_uppercase()
+    )
+}
+
+fn expected_empty_frame_const_name(type_name: &str) -> String {
+    format!(
+        "EXPECTED_{}_EMPTY_FRAME",
+        snake_identifier(type_name).to_uppercase()
+    )
+}
+
+fn frame_sample_function_name(type_name: &str, empty_variable: bool) -> String {
+    if empty_variable {
+        format!("sample_{}_empty", snake_identifier(type_name))
+    } else {
+        format!("sample_{}", snake_identifier(type_name))
+    }
 }
 
 pub(crate) fn cpp_type(expr: &TypeExpr) -> String {

@@ -5,8 +5,8 @@ use flowrt_ir::{ContractIr, LanguageKind};
 use crate::ros2_bridge::ros2_bridge_stem;
 use crate::runtime_plan::{contract_backend_features, contract_uses_backend};
 use crate::{
-    contract_has_external_process, contract_has_ros2_bridge, fixed_message_abi_expectations,
-    has_language, sanitize_package_name,
+    contract_has_external_process, contract_has_ros2_bridge, contract_has_variable_messages,
+    fixed_message_abi_expectations, has_language, sanitize_package_name,
 };
 
 const FLOWRT_RUNTIME_VERSION_REQ: &str = concat!(
@@ -164,6 +164,34 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
         output.push_str("endif()\n");
     }
 
+    if has_cpp_runtime && contract_has_variable_messages(contract) {
+        let test_target = format!("{}_message_frame", package_name.replace('-', "_"));
+        output.push_str("\ninclude(CTest)\nif(BUILD_TESTING)\n");
+        output.push_str(&format!(
+            "    add_executable({test_target} ../cpp/tests/message_frame.cpp)\n"
+        ));
+        output.push_str(&format!(
+            "    target_link_libraries({test_target} PRIVATE {package_name}_flowrt_app)\n"
+        ));
+        output.push_str(
+            "    set(FLOWRT_FRAME_CPP_FIXTURE_DIR \"${CMAKE_CURRENT_LIST_DIR}/abi-fixtures/cpp\")\n",
+        );
+        output.push_str(&format!(
+            "    target_compile_definitions({test_target} PRIVATE FLOWRT_ABI_FIXTURE_DIR=\"${{FLOWRT_FRAME_CPP_FIXTURE_DIR}}\")\n"
+        ));
+        output.push_str("    if(NOT CMAKE_CROSSCOMPILING)\n");
+        output.push_str(&format!(
+            "        add_custom_command(TARGET {test_target} POST_BUILD\n            COMMAND $<TARGET_FILE:{test_target}>\n            COMMENT \"Generate C++ variable frame cross-language fixtures\")\n"
+        ));
+        output.push_str(&format!(
+            "        add_test(NAME message_frame COMMAND {test_target})\n"
+        ));
+        output.push_str(
+            "    else()\n        message(STATUS \"Skipping C++ variable frame fixture execution while cross compiling\")\n    endif()\n",
+        );
+        output.push_str("endif()\n");
+    }
+
     output
 }
 
@@ -219,6 +247,11 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
     if has_rust && has_fixed_abi_tests {
         output.push_str(
             "\n[[test]]\nname = \"message_abi\"\npath = \"../rust/tests/message_abi.rs\"\n",
+        );
+    }
+    if has_rust && contract_has_variable_messages(contract) {
+        output.push_str(
+            "\n[[test]]\nname = \"message_frame\"\npath = \"../rust/tests/message_frame.rs\"\n",
         );
     }
 

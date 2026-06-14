@@ -435,6 +435,7 @@ pub(crate) struct EchoChannelSpec {
 pub(crate) enum EchoPayloadShape {
     FixedAbi {
         size_bytes: usize,
+        messages: Vec<SelfDescriptionMessageAbi>,
         fields: Vec<SelfDescriptionFieldAbi>,
         descriptor: bool,
     },
@@ -442,6 +443,7 @@ pub(crate) enum EchoPayloadShape {
         header_size_bytes: usize,
         max_size_bytes: Option<usize>,
         variable: bool,
+        messages: Vec<SelfDescriptionMessageAbi>,
         fields: Vec<SelfDescriptionFrameField>,
     },
 }
@@ -1083,12 +1085,14 @@ fn echo_payload_shape(
             header_size_bytes: frame.header_size_bytes,
             max_size_bytes: frame.max_size_bytes,
             variable: frame.variable,
+            messages: messages.to_vec(),
             fields: frame.fields.clone(),
         });
     }
     if let Some(message) = message_abi_layout(messages, message_type)? {
         return Ok(EchoPayloadShape::FixedAbi {
             size_bytes: message.size_bytes,
+            messages: messages.to_vec(),
             fields: message.fields.clone(),
             descriptor: is_standard_frame_descriptor_layout(message),
         });
@@ -1098,6 +1102,7 @@ fn echo_payload_shape(
             header_size_bytes: frame.header_size_bytes,
             max_size_bytes: frame.max_size_bytes,
             variable: frame.variable,
+            messages: messages.to_vec(),
             fields: frame.fields.clone(),
         });
     }
@@ -1288,6 +1293,7 @@ fn format_echo_snapshot(
     match &channel.payload_shape {
         EchoPayloadShape::FixedAbi {
             size_bytes,
+            messages,
             fields,
             descriptor,
         } => {
@@ -1314,7 +1320,9 @@ fn format_echo_snapshot(
                     hex_bytes(payload)
                 ));
             }
-            let fields = flowrt_selfdesc::format_fixed_abi_fields(fields, payload)?;
+            let fields = flowrt_selfdesc::format_fixed_abi_fields_with_message_abi(
+                messages, fields, payload,
+            )?;
             if !fields.is_empty() {
                 return Ok(format!(
                     "channel={} type={} {} published_count={} published_at_ms={} payload_len={} fields={{{}}} raw={}",
@@ -1332,6 +1340,7 @@ fn format_echo_snapshot(
         EchoPayloadShape::CanonicalFrame {
             header_size_bytes,
             max_size_bytes,
+            messages,
             fields,
             ..
         } => {
@@ -1346,7 +1355,8 @@ fn format_echo_snapshot(
                     );
                 }
             }
-            let fields = flowrt_selfdesc::format_frame_fields_with_options(
+            let fields = flowrt_selfdesc::format_frame_fields_with_message_abi_and_options(
+                messages,
                 fields,
                 *header_size_bytes,
                 payload,

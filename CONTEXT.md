@@ -5,15 +5,43 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.12.0`；`v0.13.0` 开发线已在参数控制面基础上补齐 runtime
-apply 闭环：RSDL/Contract IR 参数 schema、component default、instance override、live
-pending set 和 scheduler 边界 apply 由同一自描述元数据串联；Rust/C++ generated shell 在
-apply 边界重新校验 type、`min`、`max`、`enum` 与 `on_params_update(old, new, context)`，
-只有回调返回 `Ok` 才提交新快照。回调或边界校验拒绝时旧参数继续生效，pending 被拒绝并
-记录，不会把无效值先写入再回滚；同一 instance 多 task 每个 scheduler step 只在 instance
-边界 apply 一次。`flowrt params get/list/set` 会展示 `apply_state=applied|pending|startup-only`，
-App API manifest 与 self-description 均暴露 params schema、update policy 和回调签名；C v0
-仍 fail-fast 拒绝 params。`v0.12.0` 完成 Contract-driven App Authoring 发布收口。当前用户主路径
+当前 workspace 版本为 `0.12.0`；`dev/v0.13.0` 工作线定位为机器人 runtime completion，
+正在收口参数运行态 apply、抽象 resource contract 和 variable frame 工程化。参数控制面已
+补齐 runtime apply 闭环：RSDL/Contract IR 参数 schema、component default、instance
+override、live pending set 和 scheduler 边界 apply 由同一自描述元数据串联；Rust/C++
+generated shell 在 apply 边界重新校验 type、`min`、`max`、`enum` 与
+`on_params_update(old, new, context)`，只有回调返回 `Ok` 才提交新快照。回调或边界
+校验拒绝时旧参数继续生效，pending 被拒绝并记录，不会把无效值先写入再回滚；同一
+instance 多 task 每个 scheduler step 只在 instance 边界 apply 一次。`flowrt params
+get/list/set` 会展示 `apply_state=applied|pending|startup-only`，App API manifest 与
+self-description 均暴露 params schema、update policy 和回调签名；C v0 仍 fail-fast
+拒绝 params。
+
+RSDL / Contract IR 已增加抽象 resource requirement 和 provider 语义：component 可声明
+resource `capability`、访问方式、必需性、readiness、health 和失败传播，graph 可声明
+target、process 或 external package 作用域的 provider。Contract IR 会派生 per-instance
+resource satisfaction metadata，optional unsatisfied requirement 保留 diagnostic，validator
+会重新推导并拒绝 required unsatisfied、exclusive 冲突、provider 引用错误、非 canonical
+satisfaction 和 concrete hardware/protocol 词进入 resource capability。FlowRT core 不建模
+串口、TCP、UDP、USB、V4L2、NPU SDK 路径等具体资源字段；这些属于应用、driver package
+或 external package 边界。
+
+variable frame 工程化已进入生成物和运行态观测主路径。Rust/C++ 生成物在含 `bytes`、
+`string` 或 `sequence<T>` 的 message contract 中生成 `message_frame` conformance 测试：
+C++ 测试编码 canonical frame 并写出 byte fixture，Rust 测试读取同一 fixture 并断言字节
+等价，同时覆盖空变长字段、多元素 sequence、`sequence<fixed struct>`、UTF-8 string、
+decode truncation、offset overflow 和 length overflow。Rust/C++ runtime 也保留同一组固定
+header + tail byte fixture，避免 frame header、tail offset、length 和 nested fixed struct
+sequence 的跨语言布局漂移。`flowrt echo` 使用 self-description 中的完整 Message ABI
+metadata 解释 variable frame，可展示 `sequence<Point>` 这类 named fixed struct sequence；
+长 sequence 默认输出结构化摘要，`--raw` 输出完整内容。`flowrt pub` / JSON fixture 注入、
+`flowrt replay` 和 `flowrt record` 已覆盖 variable frame boundary input 与 event 主路径，
+record/replay 继续使用 FlowRT-native 事件格式，不引入 ROS2 schema。backend 能力边界不变：
+`iox2` 只承载 fixed-size plain data，variable frame route 必须通过
+`abi:variable_payload_frame` 和 `allocation:unbounded_dynamic` capability 选择支持变长消息
+的 backend，不生成 iox2 variable envelope。
+
+`v0.12.0` 完成 Contract-driven App Authoring 发布收口。当前用户主路径
 已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
 `flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，
 `rsdl/` 放系统契约，`app/` 放用户算法，`flowrt/` 只放 FlowRT 管理产物。CLI 已新增

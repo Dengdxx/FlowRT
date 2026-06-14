@@ -9,8 +9,9 @@ mod loader;
 mod schema;
 
 pub use format::{
-    FrameFormatOptions, format_fixed_abi_fields, format_frame_fields,
-    format_frame_fields_with_options,
+    FrameFormatOptions, format_fixed_abi_fields, format_fixed_abi_fields_with_message_abi,
+    format_frame_fields, format_frame_fields_with_message_abi,
+    format_frame_fields_with_message_abi_and_options, format_frame_fields_with_options,
 };
 pub use loader::{
     load_self_description, load_self_description_json_bytes, load_self_description_with_hash,

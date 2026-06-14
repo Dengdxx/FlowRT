@@ -510,7 +510,7 @@ fn pub_encodes_nested_fixed_message_json() {
 }
 
 #[test]
-fn pub_injects_canonical_frame_json_into_boundary_input() {
+fn pub_injects_variable_canonical_frame_json_into_boundary_input() {
     let source = r#"
 {
   "self_description_version": "0.1",
@@ -1527,6 +1527,135 @@ fn replay_fixture_drives_multiple_boundary_inputs() {
 }
 
 #[test]
+fn replay_variable_frame_fixture_drives_boundary_input() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "island_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [{ "name": "dev", "backend": "inproc", "mode": "island" }],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "mode": "island",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "boundary_endpoints": [{
+      "name": "path_in",
+      "canonical_id": "boundary_path",
+      "direction": "input",
+      "endpoint": "planner.path",
+      "instance": "planner",
+      "port": "path",
+      "message_type": "PathFrame"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Point",
+    "size_bytes": 8,
+    "align_bytes": 4,
+    "fields": [
+      { "name": "x", "type": "f32", "offset_bytes": 0, "size_bytes": 4, "align_bytes": 4 },
+      { "name": "y", "type": "f32", "offset_bytes": 4, "size_bytes": 4, "align_bytes": 4 }
+    ]
+  }],
+  "message_frames": [{
+    "type_name": "PathFrame",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 24,
+    "max_size_bytes": null,
+    "variable": true,
+    "fields": [{
+      "name": "label",
+      "type": "string",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 8,
+      "tail_max_bytes": null
+    }, {
+      "name": "payload",
+      "type": "bytes",
+      "header_offset_bytes": 8,
+      "header_size_bytes": 8,
+      "tail_max_bytes": null
+    }, {
+      "name": "points",
+      "type": "sequence<Point>",
+      "header_offset_bytes": 16,
+      "header_size_bytes": 8,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("replay-variable-frame-boundary");
+    let selfdesc = root.join("selfdesc.json");
+    let fixture = root.join("fixture.jsonl");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+    std::fs::write(
+        &fixture,
+        r#"{"boundary":"path_in","at_ms":0,"payload":{"label":"","payload":[],"points":[]}}
+{"boundary":"path_in","dt_ms":5,"payload":{"label":"utf8-\u03bc","payload":[1,2,3],"points":[{"x":1.0,"y":2.0},{"x":3.0,"y":4.0}]}}
+"#,
+    )
+    .unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 911,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "island_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(Vec<u8>, Option<u64>)>::new()));
+    let captured_for_handler = captured.clone();
+    state.register_boundary_input_handler("path_in", "PathFrame", move |payload, timestamp| {
+        captured_for_handler
+            .lock()
+            .unwrap()
+            .push((payload.to_vec(), timestamp));
+        Ok(1)
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = replay_fixture(&fixture, &selfdesc, Some(&socket), 1.0, true).unwrap();
+
+    let empty = vec![0u8; 24];
+    let mut expected = vec![0u8; 24];
+    let mut tail = Vec::new();
+    let label_span = flowrt::append_tail_block(&mut tail, "utf8-\u{03bc}".as_bytes()).unwrap();
+    let payload_span = flowrt::append_tail_block(&mut tail, &[1, 2, 3]).unwrap();
+    let mut points_tail = Vec::new();
+    points_tail.extend_from_slice(&1.0f32.to_le_bytes());
+    points_tail.extend_from_slice(&2.0f32.to_le_bytes());
+    points_tail.extend_from_slice(&3.0f32.to_le_bytes());
+    points_tail.extend_from_slice(&4.0f32.to_le_bytes());
+    let points_span = flowrt::append_tail_block(&mut tail, &points_tail).unwrap();
+    label_span.encode(&mut expected[0..8]).unwrap();
+    payload_span.encode(&mut expected[8..16]).unwrap();
+    points_span.encode(&mut expected[16..24]).unwrap();
+    expected.extend_from_slice(&tail);
+
+    assert!(output.contains("events=2"));
+    assert_eq!(
+        *captured.lock().unwrap(),
+        vec![(empty, Some(0)), (expected, Some(5))]
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn replay_rejects_strict_self_description() {
     let source = r#"
 {
@@ -1983,7 +2112,7 @@ fn echo_formats_variable_frame_fields_from_self_description_layout() {
 }
 
 #[test]
-fn echo_summarizes_long_numeric_sequence_by_default_and_raw_keeps_values() {
+fn echo_summarizes_long_variable_numeric_sequence_by_default_and_raw_keeps_values() {
     let source = r#"
 {
   "self_description_version": "0.1",
@@ -2064,6 +2193,93 @@ fn echo_summarizes_long_numeric_sequence_by_default_and_raw_keeps_values() {
     assert!(raw.contains("ranges=[0.0,1.0"));
     assert!(raw.contains(",16.0]"));
     assert!(!raw.contains("sequence_summary"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn echo_summarizes_long_variable_named_fixed_struct_sequence_by_default() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "profiles": [],
+  "targets": [],
+  "deployments": [],
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.path",
+      "to": "sink.path",
+      "message_type": "PathFrame"
+    }]
+  }],
+  "message_abi": [{
+    "type_name": "Point",
+    "size_bytes": 8,
+    "align_bytes": 4,
+    "fields": [
+      { "name": "x", "type": "f32", "offset_bytes": 0, "size_bytes": 4, "align_bytes": 4 },
+      { "name": "y", "type": "f32", "offset_bytes": 4, "size_bytes": 4, "align_bytes": 4 }
+    ]
+  }],
+  "message_frames": [{
+    "type_name": "PathFrame",
+    "encoding": "canonical_frame_v1",
+    "header_size_bytes": 8,
+    "max_size_bytes": null,
+    "variable": true,
+    "fields": [{
+      "name": "points",
+      "type": "sequence<Point>",
+      "header_offset_bytes": 0,
+      "header_size_bytes": 8,
+      "tail_max_bytes": null
+    }]
+  }]
+}
+"#;
+    let root = temp_test_dir("echo-named-struct-sequence-summary");
+    let selfdesc = root.join("selfdesc.json");
+    let socket = root.join("main.sock");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&selfdesc, source).unwrap();
+
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 903,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(source.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&136u32.to_le_bytes());
+    for value in 0..17 {
+        payload.extend_from_slice(&(value as f32).to_le_bytes());
+        payload.extend_from_slice(&((value + 100) as f32).to_le_bytes());
+    }
+
+    let state = flowrt::IntrospectionState::new();
+    state.record_channel_publish_bytes("source.path_to_sink.path", "PathFrame", payload, Some(123));
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let summary = echo_channel_from_image(&selfdesc, "source.path", Some(&socket)).unwrap();
+
+    assert!(
+        summary.contains(
+            "points=sequence_summary(count=17,first={x=0.0,y=100.0},last={x=16.0,y=116.0})"
+        )
+    );
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);

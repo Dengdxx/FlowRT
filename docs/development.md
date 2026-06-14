@@ -96,6 +96,16 @@ flowrt build examples/imu_demo/rsdl/robot.rsdl
 cargo test --manifest-path examples/imu_demo/flowrt/build/Cargo.toml --test message_abi
 ```
 
+含 variable frame message 的 mixed contract 会额外生成 `message_frame` conformance 测试。
+C++ 测试编码 canonical frame 并写出 `flowrt/build/abi-fixtures/cpp/*.frame`，Rust 测试读取
+该 fixture 并比对同一组固定 header + tail bytes，同时覆盖空 string/bytes/sequence、
+多元素 sequence、`sequence<fixed struct>`、UTF-8 string 和 malformed decode：
+
+```bash
+flowrt build path/to/native-mixed-variable-frame/rsdl/robot.rsdl
+cargo test --manifest-path path/to/native-mixed-variable-frame/flowrt/build/Cargo.toml --test message_frame
+```
+
 本地规格与生成物入库防回归：
 
 ```bash

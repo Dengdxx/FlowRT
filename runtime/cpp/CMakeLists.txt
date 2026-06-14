@@ -82,6 +82,11 @@ target_link_libraries(flowrt_frame_descriptor_smoke PRIVATE flowrt_runtime)
 flowrt_keep_asserts_enabled(flowrt_frame_descriptor_smoke)
 add_test(NAME flowrt_frame_descriptor_smoke COMMAND flowrt_frame_descriptor_smoke)
 
+add_executable(flowrt_wire_smoke tests/wire_smoke.cpp)
+target_link_libraries(flowrt_wire_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_wire_smoke)
+add_test(NAME flowrt_wire_smoke COMMAND flowrt_wire_smoke)
+
 add_executable(flowrt_inproc_service_smoke tests/inproc_service_smoke.cpp)
 target_link_libraries(flowrt_inproc_service_smoke PRIVATE flowrt_runtime)
 flowrt_keep_asserts_enabled(flowrt_inproc_service_smoke)

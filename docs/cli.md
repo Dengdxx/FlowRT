@@ -1268,6 +1268,8 @@ flowrt record --output op.mcap --operation controller.plan --force
 ```
 
 `record` 通过 live runtime introspection socket 按需开启 recorder tap，把 FlowRT 事件写入 MCAP 文件。它不需要 RSDL 源文件，也不需要生成应用二进制；事件 schema 使用 FlowRT 自有 `RecordEnvelope` v1，覆盖 channel sample、boundary output sample、参数控制面、Service、Operation、scheduler/time 和 runtime/process metadata。
+fixed-size sample 记录 native Message ABI bytes；variable frame sample 记录 canonical frame
+bytes 和 message type，由 self-description 解释字段 layout，不携带 ROS2 schema。
 
 省略 `--socket` 时，CLI 扫描当前用户 runtime socket 并要求恰好一个 live FlowRT 进程；如果同机有多个 runtime，必须显式传入 `--socket <path>`。`--duration` 省略时持续录制到 SIGINT/SIGTERM；收到信号后 CLI 会请求 runtime 停止 recorder、drain 剩余事件并关闭 MCAP。已有输出文件默认拒绝覆盖，传入 `--force` 后才会截断重写。
 
