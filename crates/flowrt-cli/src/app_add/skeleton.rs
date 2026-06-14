@@ -205,14 +205,18 @@ pub(super) fn merge_c_component_skeleton(
     write_new_file(&path, &content)
 }
 
-fn c_component_skeleton(
-    component_name: &str,
-    _inputs: &[PortSpec],
-    outputs: &[PortSpec],
-) -> String {
+fn c_component_skeleton(component_name: &str, inputs: &[PortSpec], outputs: &[PortSpec]) -> String {
     let run_periodic = format!("{component_name}_run_periodic");
     let callback_factory = format!("flowrt_app_{component_name}_callbacks");
-    let inputs_line = "    (void)inputs;\n";
+    let input_body = if inputs.is_empty() {
+        "    (void)inputs;\n".to_string()
+    } else {
+        r#"    if (inputs == NULL || (inputs->len > 0U && inputs->data == NULL)) {
+        return FLOWRT_STATUS_ERROR;
+    }
+"#
+        .to_string()
+    };
     let output_body = if outputs.is_empty() {
         "    (void)outputs;\n".to_string()
     } else {
@@ -249,7 +253,8 @@ static flowrt_status_t {run_periodic}(void *user_data,
                                       flowrt_c_output_array_view_t *outputs) {{
     (void)user_data;
     (void)context;
-{inputs_line}{output_body}    return FLOWRT_STATUS_OK;
+    /* FlowRT 只在本次 callback 调用期间持有输入和输出缓冲区；如需保存内容，用户代码必须复制。 */
+{input_body}{output_body}    return FLOWRT_STATUS_OK;
 }}
 
 const flowrt_c_component_callback_table_t *{callback_factory}(void) {{

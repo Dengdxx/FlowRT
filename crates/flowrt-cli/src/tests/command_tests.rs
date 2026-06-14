@@ -471,8 +471,8 @@ fn add_component_c_appends_contract_and_callback_skeleton() {
         AddComponentSpec {
             name: "Source".to_string(),
             language: AppAddLanguage::C,
-            inputs: Vec::new(),
-            outputs: vec!["sample:Sample".to_string()],
+            inputs: vec!["sample:Sample".to_string()],
+            outputs: vec!["result:Sample".to_string()],
         },
     )
     .unwrap();
@@ -480,10 +480,15 @@ fn add_component_c_appends_contract_and_callback_skeleton() {
     let source = std::fs::read_to_string(&rsdl).unwrap();
     assert!(source.contains("[component.source]"));
     assert!(source.contains("language = \"c\""));
-    assert!(source.contains("output = [\"sample:Sample\"]"));
+    assert!(source.contains("input = [\"sample:Sample\"]"));
+    assert!(source.contains("output = [\"result:Sample\"]"));
     let app = std::fs::read_to_string(root.join("app/c/source.c")).unwrap();
     assert!(app.contains("#include \"flowrt_app/c_components.h\""));
+    assert!(app.contains("FlowRT 只在本次 callback 调用期间持有输入和输出缓冲区"));
+    assert!(app.contains("inputs->data == NULL"));
     assert!(app.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0"));
+    assert!(app.contains("FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR"));
+    assert!(app.contains("sizeof(flowrt_c_component_callback_table_t)"));
     assert!(app.contains("flowrt_app_source_callbacks"));
     assert!(app.contains("FLOWRT_C_OUTPUT_WRITTEN"));
     let contract = load_contract_from_rsdl(&rsdl).unwrap();
