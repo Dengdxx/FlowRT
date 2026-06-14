@@ -699,12 +699,16 @@ int main() {
         flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
     executor.wake(flowrt::TaskId{1});
     executor.wake(flowrt::TaskId{2});
-    std::vector<flowrt::TaskId> executor_order;
-    executor.run_ready([&executor_order](flowrt::TaskId task) {
-        executor_order.push_back(task);
-        return flowrt::Status::Ok;
-    });
-    assert((executor_order == std::vector<flowrt::TaskId>{flowrt::TaskId{2}, flowrt::TaskId{1}}));
+    auto first_executor_batch = executor.take_ready_batch();
+    assert((first_executor_batch.tasks() == std::vector<flowrt::TaskId>{flowrt::TaskId{2}}));
+    assert(!executor.complete_task(flowrt::TaskId{99}));
+    assert((executor.take_ready_batch().tasks() == std::vector<flowrt::TaskId>{}));
+    assert(executor.complete_task(flowrt::TaskId{2}));
+    auto second_executor_batch = executor.take_ready_batch();
+    assert((second_executor_batch.tasks() == std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    assert(executor.complete_task(flowrt::TaskId{1}));
+    assert(!executor.complete_task(flowrt::TaskId{1}));
+    assert(executor.is_drained());
 
     flowrt::DeterministicExecutor fair_executor{1};
     fair_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
@@ -718,13 +722,14 @@ int main() {
     fair_executor.wake(flowrt::TaskId{1});
     fair_executor.wake(flowrt::TaskId{2});
     fair_executor.wake(flowrt::TaskId{3});
-    std::vector<flowrt::TaskId> fair_order;
-    fair_executor.run_ready([&fair_order](flowrt::TaskId task) {
-        fair_order.push_back(task);
-        return flowrt::Status::Ok;
-    });
-    assert((fair_order ==
-            std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{3}, flowrt::TaskId{2}}));
+    auto fair_first_batch = fair_executor.take_ready_batch();
+    assert((fair_first_batch.tasks() ==
+            std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{3}}));
+    assert(fair_executor.complete_task(flowrt::TaskId{1}));
+    assert(fair_executor.complete_task(flowrt::TaskId{3}));
+    auto fair_second_batch = fair_executor.take_ready_batch();
+    assert((fair_second_batch.tasks() == std::vector<flowrt::TaskId>{flowrt::TaskId{2}}));
+    assert(fair_executor.complete_task(flowrt::TaskId{2}));
 
     flowrt::DeterministicExecutor timer_executor{1};
     timer_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
@@ -732,15 +737,24 @@ int main() {
         flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
     timer_executor.add_periodic(
         flowrt::PeriodicSpec{.task = flowrt::TaskId{1}, .period = std::chrono::milliseconds{10}});
+    timer_executor.set_task_deadline_ms(flowrt::TaskId{1}, 7U);
     timer_executor.advance_to(std::chrono::milliseconds{35});
-    std::vector<flowrt::TaskId> timer_order;
-    timer_executor.run_ready([&timer_order](flowrt::TaskId task) {
-        timer_order.push_back(task);
-        return flowrt::Status::Ok;
-    });
-    assert((timer_order == std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    auto timer_batch = timer_executor.take_ready_batch();
+    assert((timer_batch.tasks() == std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    assert(timer_batch.admissions().size() == 1U);
+    assert(timer_batch.admissions()[0] == (flowrt::TaskAdmission{
+                                              .task = flowrt::TaskId{1},
+                                              .lane = flowrt::LaneId{1},
+                                              .scheduled_time_ms = 30U,
+                                              .observed_time_ms = 35U,
+                                              .period_ms = 10U,
+                                              .deadline_ms = 7U,
+                                              .missed_periods = 2U,
+                                              .lateness_ms = 5U,
+                                          }));
     assert(timer_executor.next_deadline(flowrt::TaskId{1}) == std::chrono::milliseconds{40});
     assert(timer_executor.missed_periods(flowrt::TaskId{1}) == 2U);
+    assert(timer_executor.complete_task(flowrt::TaskId{1}));
 
     flowrt::ManualExecutor coroutine_executor;
     bool coroutine_resumed = false;
@@ -831,179 +845,39 @@ int main() {
     assert(!rejected_submission.submitted());
     assert(rejected_submission.task == flowrt::TaskId{11});
 
-    flowrt::DeterministicExecutor parallel_executor{2};
-    parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    parallel_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
-    parallel_executor.add_task(
+    flowrt::DeterministicExecutor parallel_lane_executor{2};
+    parallel_lane_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Parallel);
+    parallel_lane_executor.add_task(
         flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    parallel_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
-    parallel_executor.wake(flowrt::TaskId{1});
-    parallel_executor.wake(flowrt::TaskId{2});
-    flowrt::WorkerPool parallel_pool{2};
-    std::atomic<std::size_t> parallel_started{0};
-    std::atomic<std::size_t> parallel_active{0};
-    std::atomic<std::size_t> parallel_max_active{0};
-    const auto parallel_results =
-        parallel_executor.run_ready_parallel(parallel_pool, [&](flowrt::TaskId task) {
-            const auto current = parallel_active.fetch_add(1U) + 1U;
-            auto observed = parallel_max_active.load();
-            while (observed < current &&
-                   !parallel_max_active.compare_exchange_weak(observed, current)) {
-            }
-            parallel_started.fetch_add(1U);
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{200};
-            while (parallel_started.load() < 2U) {
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    parallel_active.fetch_sub(1U);
-                    return task == flowrt::TaskId{1} ? flowrt::Status::Error
-                                                     : flowrt::Status::Retry;
-                }
-                std::this_thread::yield();
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-            parallel_active.fetch_sub(1U);
-            return flowrt::Status::Ok;
-        });
-    assert((parallel_results ==
-            std::vector<flowrt::TaskRunResult>{
-                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Ok},
-                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
-    assert(parallel_max_active.load() >= 2U);
-    assert(parallel_pool.shutdown() == flowrt::Status::Ok);
-
-    flowrt::DeterministicExecutor serial_parallel_executor{2};
-    serial_parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    serial_parallel_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    serial_parallel_executor.add_task(
+    parallel_lane_executor.add_task(
         flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{1}, .priority = 1});
-    serial_parallel_executor.wake(flowrt::TaskId{1});
-    serial_parallel_executor.wake(flowrt::TaskId{2});
-    flowrt::WorkerPool serial_parallel_pool{2};
-    std::atomic<std::size_t> serial_parallel_active{0};
-    std::atomic<std::size_t> serial_parallel_max_active{0};
-    std::vector<flowrt::TaskId> serial_parallel_order;
-    std::mutex serial_parallel_mutex;
-    auto serial_parallel_run = [&](flowrt::TaskId task) {
-        const auto current = serial_parallel_active.fetch_add(1U) + 1U;
-        auto observed = serial_parallel_max_active.load();
-        while (observed < current &&
-               !serial_parallel_max_active.compare_exchange_weak(observed, current)) {
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        serial_parallel_active.fetch_sub(1U);
-        {
-            std::lock_guard lock(serial_parallel_mutex);
-            serial_parallel_order.push_back(task);
-        }
-        return flowrt::Status::Ok;
-    };
-    const auto serial_parallel_first =
-        serial_parallel_executor.run_ready_parallel(serial_parallel_pool, serial_parallel_run);
-    const auto serial_parallel_second =
-        serial_parallel_executor.run_ready_parallel(serial_parallel_pool, serial_parallel_run);
-    assert(
-        (serial_parallel_first == std::vector<flowrt::TaskRunResult>{flowrt::TaskRunResult{
-                                      .task = flowrt::TaskId{1}, .status = flowrt::Status::Ok}}));
-    assert(
-        (serial_parallel_second == std::vector<flowrt::TaskRunResult>{flowrt::TaskRunResult{
-                                       .task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
-    assert((serial_parallel_order ==
+    parallel_lane_executor.wake(flowrt::TaskId{1});
+    parallel_lane_executor.wake(flowrt::TaskId{2});
+    auto parallel_lane_batch = parallel_lane_executor.take_ready_batch();
+    assert((parallel_lane_batch.tasks() ==
             std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{2}}));
-    assert(serial_parallel_max_active.load() == 1U);
-    assert(serial_parallel_pool.shutdown() == flowrt::Status::Ok);
+    assert(parallel_lane_executor.complete_task(flowrt::TaskId{1}));
+    assert(parallel_lane_executor.complete_task(flowrt::TaskId{2}));
+    assert(parallel_lane_executor.is_drained());
 
-    flowrt::DeterministicExecutor single_worker_executor{1};
-    single_worker_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    single_worker_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
-    single_worker_executor.add_task(
+    flowrt::DeterministicExecutor coalesced_periodic_executor{1};
+    coalesced_periodic_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    coalesced_periodic_executor.add_task(
         flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    single_worker_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
-    single_worker_executor.wake(flowrt::TaskId{1});
-    single_worker_executor.wake(flowrt::TaskId{2});
-    flowrt::WorkerPool single_worker_pool{1};
-    std::atomic<std::size_t> single_worker_active{0};
-    std::atomic<std::size_t> single_worker_max_active{0};
-    const auto single_worker_results =
-        single_worker_executor.run_ready_parallel(single_worker_pool, [&](flowrt::TaskId task) {
-            const auto current = single_worker_active.fetch_add(1U) + 1U;
-            auto observed = single_worker_max_active.load();
-            while (observed < current &&
-                   !single_worker_max_active.compare_exchange_weak(observed, current)) {
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-            single_worker_active.fetch_sub(1U);
-            return task == flowrt::TaskId{1} ? flowrt::Status::Ok : flowrt::Status::Retry;
-        });
-    assert(
-        (single_worker_results ==
-         std::vector<flowrt::TaskRunResult>{
-             flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Ok},
-             flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Retry}}));
-    assert(single_worker_max_active.load() == 1U);
-    assert(single_worker_pool.shutdown() == flowrt::Status::Ok);
-
-    flowrt::DeterministicExecutor panic_parallel_executor{2};
-    panic_parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    panic_parallel_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
-    panic_parallel_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    panic_parallel_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
-    panic_parallel_executor.wake(flowrt::TaskId{1});
-    panic_parallel_executor.wake(flowrt::TaskId{2});
-    flowrt::WorkerPool panic_parallel_pool{2};
-    const auto panic_parallel_results =
-        panic_parallel_executor.run_ready_parallel(panic_parallel_pool, [](flowrt::TaskId task) {
-            if (task == flowrt::TaskId{1}) {
-                throw std::runtime_error("parallel task failed");
-            }
-            return flowrt::Status::Ok;
-        });
-    assert((panic_parallel_results ==
-            std::vector<flowrt::TaskRunResult>{
-                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Error},
-                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
-    assert(panic_parallel_pool.shutdown() == flowrt::Status::Error);
-
-    auto local_only_results =
-        flowrt::ReadyBatch{std::vector<flowrt::TaskId>{flowrt::TaskId{1}, flowrt::TaskId{2}}}
-            .run_local([token = std::make_unique<int>(0)](flowrt::TaskId) mutable {
-                ++*token;
-                return flowrt::Status::Ok;
-            });
-    assert((local_only_results ==
-            std::vector<flowrt::TaskRunResult>{
-                flowrt::TaskRunResult{.task = flowrt::TaskId{1}, .status = flowrt::Status::Ok},
-                flowrt::TaskRunResult{.task = flowrt::TaskId{2}, .status = flowrt::Status::Ok}}));
-
-    flowrt::DeterministicExecutor local_collect_executor{2};
-    local_collect_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    local_collect_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
-    local_collect_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    local_collect_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
-    local_collect_executor.wake(flowrt::TaskId{1});
-    local_collect_executor.wake(flowrt::TaskId{2});
-    auto local_collect_results = local_collect_executor.take_ready_batch().run_local_collect(
-        [token = std::make_unique<int>(0)](flowrt::TaskId task) mutable {
-            ++*token;
-            if (task == flowrt::TaskId{1}) {
-                return flowrt::TaskRunOutcome<std::unique_ptr<int>>::ok(
-                    std::make_unique<int>(*token));
-            }
-            return flowrt::TaskRunOutcome<std::unique_ptr<int>>::retry(
-                std::make_unique<int>(*token));
-        });
-    assert(local_collect_results[0].task == flowrt::TaskId{1});
-    assert(local_collect_results[0].status == flowrt::Status::Ok);
-    assert(local_collect_results[0].outputs.has_value());
-    assert(local_collect_results[1].task == flowrt::TaskId{2});
-    assert(local_collect_results[1].status == flowrt::Status::Retry);
-    assert(!local_collect_results[1].outputs.has_value());
+    coalesced_periodic_executor.add_periodic(
+        flowrt::PeriodicSpec{.task = flowrt::TaskId{1}, .period = std::chrono::milliseconds{10}});
+    coalesced_periodic_executor.advance_to(std::chrono::milliseconds{10});
+    auto coalesced_first = coalesced_periodic_executor.take_ready_batch();
+    assert((coalesced_first.tasks() == std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    coalesced_periodic_executor.advance_to(std::chrono::milliseconds{35});
+    assert(coalesced_periodic_executor.take_ready_batch().empty());
+    assert(coalesced_periodic_executor.missed_periods(flowrt::TaskId{1}) == 2U);
+    assert(coalesced_periodic_executor.complete_task(flowrt::TaskId{1}));
+    auto coalesced_second = coalesced_periodic_executor.take_ready_batch();
+    assert((coalesced_second.tasks() == std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    assert(coalesced_second.admissions()[0].scheduled_time_ms == 30U);
+    assert(coalesced_second.admissions()[0].missed_periods == 2U);
+    assert(coalesced_periodic_executor.complete_task(flowrt::TaskId{1}));
 
     flowrt::DeterministicExecutor collect_executor{2};
     collect_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
@@ -1014,70 +888,59 @@ int main() {
         flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
     collect_executor.wake(flowrt::TaskId{1});
     collect_executor.wake(flowrt::TaskId{2});
+    auto collect_batch = collect_executor.take_ready_batch();
     flowrt::WorkerPool collect_pool{2};
-    auto collect_results =
-        collect_executor.take_ready_batch().run_collect(collect_pool, [](flowrt::TaskId task) {
-            flowrt::Output<Sample> task_output;
-            task_output.write(Sample{static_cast<std::uint32_t>(task.value)});
-            auto record = task_output.take_commit_record(
-                task, std::string{"task."} + std::to_string(task.value), "value", 120U, 100U);
-            assert(record.has_value());
-            return flowrt::TaskRunOutcome<std::vector<flowrt::OutputCommitRecord<Sample>>>::ok(
-                std::vector<flowrt::OutputCommitRecord<Sample>>{std::move(*record)});
-        });
-    assert(collect_results[0].task == flowrt::TaskId{1});
-    assert(collect_results[0].status == flowrt::Status::Ok);
-    assert(collect_results[0].outputs->front().payload.value == 1U);
-    assert(collect_results[1].task == flowrt::TaskId{2});
-    assert(collect_results[1].status == flowrt::Status::Ok);
-    assert(collect_results[1].outputs->front().payload.value == 2U);
+    flowrt::WorkerCompletionQueue<std::vector<flowrt::OutputCommitRecord<Sample>>> collect_queue;
+    for (const auto &admission : collect_batch.admissions()) {
+        const auto submission =
+            collect_pool.submit_collect(admission.task, collect_queue, [task = admission.task]() {
+                flowrt::Output<Sample> task_output;
+                task_output.write(Sample{static_cast<std::uint32_t>(task.value)});
+                auto record = task_output.take_commit_record(task, "task", "value", 120U, 100U);
+                assert(record.has_value());
+                return flowrt::TaskRunOutcome<std::vector<flowrt::OutputCommitRecord<Sample>>>::ok(
+                    std::vector<flowrt::OutputCommitRecord<Sample>>{std::move(*record)});
+            });
+        assert(submission.submitted());
+    }
+    assert(collect_pool.drain() == flowrt::Status::Ok);
+    auto collect_results = collect_queue.drain_completed();
+    assert(collect_results.size() == 2U);
+    for (auto &result : collect_results) {
+        assert(result.status == flowrt::Status::Ok);
+        assert(result.outputs.has_value());
+        assert(result.outputs->front().payload.value == result.task.value);
+        assert(collect_executor.complete_task(result.task));
+    }
+    assert(collect_executor.is_drained());
     assert(collect_pool.shutdown() == flowrt::Status::Ok);
 
-    flowrt::DeterministicExecutor exception_collect_executor{2};
+    flowrt::DeterministicExecutor exception_collect_executor{1};
     exception_collect_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
-    exception_collect_executor.add_lane(flowrt::LaneId{2}, flowrt::LaneKind::Serial);
     exception_collect_executor.add_task(
         flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
-    exception_collect_executor.add_task(
-        flowrt::TaskSpec{.id = flowrt::TaskId{2}, .lane = flowrt::LaneId{2}, .priority = 0});
     exception_collect_executor.wake(flowrt::TaskId{1});
-    exception_collect_executor.wake(flowrt::TaskId{2});
-    flowrt::WorkerPool exception_collect_pool{2};
-    auto exception_collect_results = exception_collect_executor.take_ready_batch().run_collect(
-        exception_collect_pool, [](flowrt::TaskId task) {
-            flowrt::Output<Sample> task_output;
-            task_output.write(Sample{static_cast<std::uint32_t>(task.value)});
-            if (task == flowrt::TaskId{1}) {
-                throw std::runtime_error("task failed after writing output");
-            }
-            auto record = task_output.take_commit_record(
-                task, std::string{"task."} + std::to_string(task.value), "value", 120U, 100U);
-            assert(record.has_value());
-            return flowrt::TaskRunOutcome<std::vector<flowrt::OutputCommitRecord<Sample>>>::ok(
-                std::vector<flowrt::OutputCommitRecord<Sample>>{std::move(*record)});
-        });
+    auto exception_batch = exception_collect_executor.take_ready_batch();
+    flowrt::WorkerPool exception_collect_pool{1};
+    flowrt::WorkerCompletionQueue<std::vector<flowrt::OutputCommitRecord<Sample>>>
+        exception_collect_queue;
+    assert(exception_collect_pool
+               .submit_collect(
+                   exception_batch.admissions()[0].task, exception_collect_queue,
+                   []() -> flowrt::TaskRunOutcome<std::vector<flowrt::OutputCommitRecord<Sample>>> {
+                       flowrt::Output<Sample> task_output;
+                       task_output.write(Sample{1U});
+                       throw std::runtime_error("task failed after writing output");
+                   })
+               .submitted());
+    assert(exception_collect_pool.drain() == flowrt::Status::Error);
+    auto exception_collect_results = exception_collect_queue.drain_completed();
+    assert(exception_collect_results.size() == 1U);
     assert(exception_collect_results[0].task == flowrt::TaskId{1});
     assert(exception_collect_results[0].status == flowrt::Status::Error);
     assert(!exception_collect_results[0].outputs.has_value());
-    assert(exception_collect_results[1].task == flowrt::TaskId{2});
-    assert(exception_collect_results[1].status == flowrt::Status::Ok);
-    flowrt::LatestChannel<Sample> committed_after_exception;
-    for (auto &result : exception_collect_results) {
-        if (!result.outputs.has_value()) {
-            continue;
-        }
-        for (auto &record : *result.outputs) {
-            std::move(record).commit_with(
-                [&committed_after_exception](Sample payload, std::uint64_t published_at_ms,
-                                             std::uint64_t tick_time_ms) {
-                    assert(published_at_ms == 120U);
-                    assert(tick_time_ms == 100U);
-                    committed_after_exception.publish_at(payload, published_at_ms);
-                });
-        }
-    }
-    assert(committed_after_exception.view().present());
-    assert(committed_after_exception.view().get()->value == 2U);
+    assert(exception_collect_executor.complete_task(flowrt::TaskId{1}));
+    assert(exception_collect_executor.is_drained());
     assert(exception_collect_pool.shutdown() == flowrt::Status::Error);
 
     flowrt::WorkerPool closed_pool{2};

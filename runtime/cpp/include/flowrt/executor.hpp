@@ -9,7 +9,6 @@
 #include <exception>
 #include <flowrt/core.hpp>
 #include <functional>
-#include <future>
 #include <limits>
 #include <map>
 #include <memory>
@@ -51,6 +50,25 @@ struct TaskSpec {
 struct PeriodicSpec {
     TaskId task;
     std::chrono::milliseconds period{1};
+};
+
+/**
+ * @brief 一次 task admission 的调度元数据。
+ *
+ * generated shell 用这些字段构造 `TaskTiming`，并在 worker completion 回来后调用
+ * `DeterministicExecutor::complete_task` 释放 inflight token。
+ */
+struct TaskAdmission {
+    TaskId task;
+    LaneId lane;
+    std::uint64_t scheduled_time_ms{};
+    std::uint64_t observed_time_ms{};
+    std::optional<std::uint64_t> period_ms;
+    std::optional<std::uint64_t> deadline_ms;
+    std::uint64_t missed_periods{};
+    std::uint64_t lateness_ms{};
+
+    friend constexpr bool operator==(const TaskAdmission &, const TaskAdmission &) = default;
 };
 
 struct TaskRunResult {
@@ -131,8 +149,7 @@ struct TaskRunOutput {
 /**
  * @brief worker 完成后由 scheduler 线程回收的 typed completion queue。
  *
- * `drain_completed` 与 `try_drain_completed` 只回收当前已完成结果，空队列立即返回；
- * `wait_completed` 用于同步兼容封装等待下一条 completion，不使用忙等。
+ * `drain_completed` 与 `try_drain_completed` 只回收当前已完成结果，空队列立即返回。
  */
 template <typename Outputs>
 class WorkerCompletionQueue {
@@ -141,9 +158,15 @@ class WorkerCompletionQueue {
      * @brief 写入一条已完成 task 结果。
      */
     void push(TaskRunOutput<Outputs> result) const {
-        std::lock_guard lock(state_->mutex);
-        state_->completed.push_back(std::move(result));
-        state_->ready.notify_all();
+        std::function<void()> wake;
+        {
+            std::lock_guard lock(state_->mutex);
+            state_->completed.push_back(std::move(result));
+            wake = state_->wake;
+        }
+        if (wake) {
+            wake();
+        }
     }
 
     /**
@@ -168,21 +191,21 @@ class WorkerCompletionQueue {
     }
 
     /**
-     * @brief 等待并回收下一条已完成结果。
+     * @brief 设置 completion 入队后的唤醒回调。
+     *
+     * generated scheduler 用它把 worker completion 合并进 scheduler wake 路径；回调不拥有
+     * completion 数据，只负责唤醒调度线程。
      */
-    [[nodiscard]] TaskRunOutput<Outputs> wait_completed() const {
-        std::unique_lock lock(state_->mutex);
-        state_->ready.wait(lock, [this]() { return !state_->completed.empty(); });
-        auto result = std::move(state_->completed.front());
-        state_->completed.pop_front();
-        return result;
+    void set_wake_callback(std::function<void()> wake) const {
+        std::lock_guard lock(state_->mutex);
+        state_->wake = std::move(wake);
     }
 
    private:
     struct State {
         mutable std::mutex mutex;
-        std::condition_variable ready;
         std::deque<TaskRunOutput<Outputs>> completed;
+        std::function<void()> wake;
     };
 
     std::shared_ptr<State> state_{std::make_shared<State>()};
@@ -277,7 +300,14 @@ class ReadyBatch {
    public:
     ReadyBatch() = default;
 
-    explicit ReadyBatch(std::vector<TaskId> tasks) : tasks_(std::move(tasks)) {}
+    static ReadyBatch from_admissions(std::vector<TaskAdmission> admissions) {
+        std::vector<TaskId> tasks;
+        tasks.reserve(admissions.size());
+        for (const auto admission : admissions) {
+            tasks.push_back(admission.task);
+        }
+        return ReadyBatch{std::move(tasks), std::move(admissions)};
+    }
 
     [[nodiscard]] bool empty() const noexcept { return tasks_.empty(); }
 
@@ -285,38 +315,19 @@ class ReadyBatch {
 
     [[nodiscard]] const std::vector<TaskId> &tasks() const noexcept { return tasks_; }
 
-    template <typename Fn>
-    std::vector<TaskRunResult> run(WorkerPool &worker_pool, Fn &&fn) &&;
-
     /**
-     * @brief 在当前 scheduler 线程内执行 ready batch。
+     * @brief 返回 admission metadata；顺序即 generated scheduler 的 canonical commit 顺序。
      */
-    template <typename Fn>
-    std::vector<TaskRunResult> run_local(Fn &&fn) &&;
-
-    /**
-     * @brief 通过 worker pool 执行 ready batch，并收集可提交输出。
-     *
-     * 输出集合会从 worker 线程交还 scheduler 线程；需要跨线程移动的约束由 generated
-     * shell 通过具体 `Outputs` 类型承担。非 `Ok` 和 exception 路径会丢弃输出。
-     */
-    template <typename Fn>
-    auto run_collect(WorkerPool &worker_pool, Fn &&fn)
-        && -> std::vector<TaskRunOutput<
-               typename std::invoke_result_t<std::decay_t<Fn> &, TaskId>::outputs_type>>;
-
-    /**
-     * @brief 在当前 scheduler 线程内执行 ready batch，并收集可提交输出。
-     *
-     * 该路径不复制 callable，也不要求输出集合满足跨线程移动约束。非 `Ok` 和 exception
-     * 路径会丢弃输出。
-     */
-    template <typename Fn>
-    auto run_local_collect(Fn &&fn)
-        && -> std::vector<TaskRunOutput<typename std::invoke_result_t<Fn &, TaskId>::outputs_type>>;
+    [[nodiscard]] const std::vector<TaskAdmission> &admissions() const noexcept {
+        return admissions_;
+    }
 
    private:
+    ReadyBatch(std::vector<TaskId> tasks, std::vector<TaskAdmission> admissions)
+        : tasks_(std::move(tasks)), admissions_(std::move(admissions)) {}
+
     std::vector<TaskId> tasks_;
+    std::vector<TaskAdmission> admissions_;
 };
 
 class DeterministicExecutor {
@@ -328,7 +339,17 @@ class DeterministicExecutor {
 
     void add_lane(LaneId lane, LaneKind kind) { lanes_[lane] = kind; }
 
-    void add_task(TaskSpec spec) { tasks_[spec.id] = spec; }
+    void add_task(TaskSpec spec) { tasks_[spec.id] = TaskState{.spec = spec}; }
+
+    /**
+     * @brief 设置 task 的相对 deadline 元数据，单位为毫秒。
+     */
+    void set_task_deadline_ms(TaskId task, std::optional<std::uint64_t> deadline_ms) {
+        const auto it = tasks_.find(task);
+        if (it != tasks_.end()) {
+            it->second.deadline_ms = deadline_ms;
+        }
+    }
 
     void add_periodic(PeriodicSpec spec) {
         const auto period = std::max(spec.period, std::chrono::milliseconds{1});
@@ -342,28 +363,47 @@ class DeterministicExecutor {
     void wake(TaskId task) {
         if (admission_open_ && tasks_.contains(task)) {
             ready_.insert(task);
+            if (!pending_.contains(task)) {
+                pending_[task] = PendingAdmission{
+                    .scheduled_time_ms = static_cast<std::uint64_t>(now_.count()),
+                };
+            }
         }
     }
 
     void close_admission() noexcept { admission_open_ = false; }
 
-    [[nodiscard]] bool is_drained() const noexcept { return ready_.empty(); }
+    [[nodiscard]] bool is_drained() const noexcept {
+        return ready_.empty() && inflight_tasks_.empty();
+    }
 
     void advance_to(std::chrono::milliseconds now) {
         now_ = now;
-        std::vector<TaskId> due;
+        struct PeriodicDue {
+            TaskId task;
+            std::chrono::milliseconds scheduled_time;
+            std::chrono::milliseconds period;
+            std::uint64_t missed{};
+        };
+        std::vector<PeriodicDue> due;
         for (auto &[task, state] : periodic_) {
             if (now_ < state.next_deadline) {
                 continue;
             }
             const auto elapsed = now_ - state.next_deadline;
             const auto missed = static_cast<std::uint64_t>(elapsed / state.period);
-            state.missed_periods += missed;
-            state.next_deadline += state.period * static_cast<std::int64_t>(missed + 1U);
-            due.push_back(task);
+            const auto scheduled_time =
+                saturated_add(state.next_deadline, saturated_mul(state.period, missed));
+            state.next_deadline = saturated_add(scheduled_time, state.period);
+            due.push_back(PeriodicDue{
+                .task = task,
+                .scheduled_time = scheduled_time,
+                .period = state.period,
+                .missed = missed,
+            });
         }
-        for (const auto task : due) {
-            wake(task);
+        for (const auto event : due) {
+            record_periodic_due(event.task, event.scheduled_time, event.period, event.missed);
         }
     }
 
@@ -383,35 +423,36 @@ class DeterministicExecutor {
         return it->second.missed_periods;
     }
 
-    template <typename Fn>
-    auto run_ready(Fn &&fn) {
-        using Result = std::invoke_result_t<Fn, TaskId>;
-        std::vector<Result> results;
-        const auto ordered = ready_order();
-        for (const auto task : ordered) {
-            ready_.erase(task);
-            if (const auto it = tasks_.find(task); it != tasks_.end()) {
-                lane_last_dispatched_tick_[it->second.lane] = current_tick_;
-            }
-            results.push_back(std::invoke(fn, task));
-        }
-        return results;
-    }
-
+    /**
+     * @brief 准入当前 ready set 中可并行 dispatch 的 task。
+     *
+     * 该方法只修改 scheduler admission 状态，不运行用户回调，也不等待 completion。
+     */
     [[nodiscard]] ReadyBatch take_ready_batch() {
-        auto tasks = ready_parallel_order();
-        for (const auto task : tasks) {
-            ready_.erase(task);
-            if (const auto it = tasks_.find(task); it != tasks_.end()) {
-                lane_last_dispatched_tick_[it->second.lane] = current_tick_;
+        std::vector<TaskAdmission> admissions;
+        for (const auto task : ready_parallel_order()) {
+            auto admission = admit_task(task);
+            if (admission.has_value()) {
+                admissions.push_back(*admission);
             }
         }
-        return ReadyBatch{std::move(tasks)};
+        return ReadyBatch::from_admissions(std::move(admissions));
     }
 
-    template <typename Fn>
-    std::vector<TaskRunResult> run_ready_parallel(WorkerPool &worker_pool, Fn &&fn) {
-        return take_ready_batch().run(worker_pool, std::forward<Fn>(fn));
+    /**
+     * @brief 标记 task completion，并释放它实际持有的 inflight token。
+     *
+     * 返回 `true` 表示本次释放成功；错误或重复 completion 返回 `false` 且不释放其他 lane。
+     */
+    bool complete_task(TaskId task) {
+        if (inflight_tasks_.erase(task) == 0U) {
+            return false;
+        }
+        const auto it = tasks_.find(task);
+        if (it != tasks_.end() && lane_kind(it->second.spec.lane) == LaneKind::Serial) {
+            inflight_serial_lanes_.erase(it->second.spec.lane);
+        }
+        return true;
     }
 
     /**
@@ -438,72 +479,206 @@ class DeterministicExecutor {
     }
 
    private:
+    struct TaskState {
+        TaskSpec spec;
+        std::optional<std::uint64_t> deadline_ms;
+    };
+
     struct PeriodicState {
         std::chrono::milliseconds period{1};
         std::chrono::milliseconds next_deadline{0};
         std::uint64_t missed_periods{};
     };
 
-    [[nodiscard]] std::vector<TaskId> ready_order() const {
+    struct PendingAdmission {
+        std::uint64_t scheduled_time_ms{};
+        std::optional<std::uint64_t> period_ms;
+        std::uint64_t missed_periods{};
+    };
+
+    [[nodiscard]] std::vector<TaskId> ready_parallel_order() const {
         std::map<LaneId, std::vector<TaskId>> by_lane;
         for (const auto task : ready_) {
-            by_lane[tasks_.at(task).lane].push_back(task);
+            if (!can_admit(task)) {
+                continue;
+            }
+            const auto it = tasks_.find(task);
+            if (it != tasks_.end()) {
+                by_lane[it->second.spec.lane].push_back(task);
+            }
         }
         for (auto &[lane, lane_tasks] : by_lane) {
             (void)lane;
             std::sort(lane_tasks.begin(), lane_tasks.end(), [this](TaskId left, TaskId right) {
-                const auto &left_spec = tasks_.at(left);
-                const auto &right_spec = tasks_.at(right);
-                if (left_spec.priority != right_spec.priority) {
-                    return left_spec.priority < right_spec.priority;
-                }
-                return left_spec.id < right_spec.id;
+                return compare_ready_tasks(left, right);
             });
         }
 
         std::vector<TaskId> tasks;
-        tasks.reserve(ready_.size());
-        bool has_ready = true;
-        while (has_ready) {
-            has_ready = false;
-            for (auto &[lane, lane_tasks] : by_lane) {
-                (void)lane;
-                if (!lane_tasks.empty()) {
+        std::set<LaneId> reserved_serial_lanes;
+        for (auto &[lane, lane_tasks] : by_lane) {
+            switch (lane_kind(lane)) {
+                case LaneKind::Serial:
+                    if (inflight_serial_lanes_.contains(lane) ||
+                        reserved_serial_lanes.contains(lane) || lane_tasks.empty()) {
+                        break;
+                    }
+                    reserved_serial_lanes.insert(lane);
                     tasks.push_back(lane_tasks.front());
-                    lane_tasks.erase(lane_tasks.begin());
-                    has_ready = true;
-                }
+                    break;
+                case LaneKind::Parallel:
+                    tasks.insert(tasks.end(), lane_tasks.begin(), lane_tasks.end());
+                    break;
             }
         }
         return tasks;
     }
 
-    [[nodiscard]] std::vector<TaskId> ready_parallel_order() const {
-        std::map<LaneId, std::vector<TaskId>> by_lane;
-        for (const auto task : ready_) {
-            by_lane[tasks_.at(task).lane].push_back(task);
-        }
-        for (auto &[lane, lane_tasks] : by_lane) {
-            (void)lane;
-            std::sort(lane_tasks.begin(), lane_tasks.end(), [this](TaskId left, TaskId right) {
-                const auto &left_spec = tasks_.at(left);
-                const auto &right_spec = tasks_.at(right);
-                if (left_spec.priority != right_spec.priority) {
-                    return left_spec.priority < right_spec.priority;
-                }
-                return left_spec.id < right_spec.id;
-            });
+    void record_periodic_due(TaskId task, std::chrono::milliseconds scheduled_time,
+                             std::chrono::milliseconds period, std::uint64_t missed_from_deadline) {
+        const auto scheduled_time_ms = millis_to_u64(scheduled_time);
+        const auto period_ms = millis_to_u64(period);
+        std::uint64_t counted_pending = 0;
+        const auto pending_it = pending_.find(task);
+        const auto pending_same_period = pending_it != pending_.end() &&
+                                         pending_it->second.period_ms.has_value() &&
+                                         *pending_it->second.period_ms == period_ms;
+        if (pending_same_period) {
+            counted_pending = pending_it->second.missed_periods;
         }
 
-        std::vector<TaskId> tasks;
-        tasks.reserve(by_lane.size());
-        for (auto &[lane, lane_tasks] : by_lane) {
-            (void)lane;
-            if (!lane_tasks.empty()) {
-                tasks.push_back(lane_tasks.front());
-            }
+        auto missed_periods =
+            missed_from_deadline + static_cast<std::uint64_t>(inflight_tasks_.contains(task));
+        if (pending_same_period && scheduled_time_ms >= pending_it->second.scheduled_time_ms) {
+            const auto delta = scheduled_time_ms - pending_it->second.scheduled_time_ms;
+            missed_periods = saturating_add_u64(pending_it->second.missed_periods,
+                                                delta / std::max<std::uint64_t>(1, period_ms));
         }
-        return tasks;
+
+        const auto periodic_it = periodic_.find(task);
+        if (periodic_it != periodic_.end()) {
+            const auto additional_missed =
+                missed_periods > counted_pending ? missed_periods - counted_pending : 0U;
+            periodic_it->second.missed_periods =
+                saturating_add_u64(periodic_it->second.missed_periods, additional_missed);
+        }
+        if (admission_open_ && tasks_.contains(task)) {
+            ready_.insert(task);
+            pending_[task] = PendingAdmission{
+                .scheduled_time_ms = scheduled_time_ms,
+                .period_ms = period_ms,
+                .missed_periods = missed_periods,
+            };
+        }
+    }
+
+    [[nodiscard]] std::optional<TaskAdmission> admit_task(TaskId task) {
+        if (!can_admit(task)) {
+            return std::nullopt;
+        }
+        auto admission = admission_for(task);
+        if (!admission.has_value()) {
+            return std::nullopt;
+        }
+        ready_.erase(task);
+        pending_.erase(task);
+        inflight_tasks_.insert(task);
+        if (lane_kind(admission->lane) == LaneKind::Serial) {
+            inflight_serial_lanes_.insert(admission->lane);
+        }
+        lane_last_dispatched_tick_[admission->lane] = current_tick_;
+        return admission;
+    }
+
+    [[nodiscard]] std::optional<TaskAdmission> admission_for(TaskId task) const {
+        const auto task_it = tasks_.find(task);
+        if (task_it == tasks_.end()) {
+            return std::nullopt;
+        }
+        PendingAdmission pending{.scheduled_time_ms = millis_to_u64(now_)};
+        const auto pending_it = pending_.find(task);
+        if (pending_it != pending_.end()) {
+            pending = pending_it->second;
+        }
+        const auto observed_time_ms = millis_to_u64(now_);
+        return TaskAdmission{
+            .task = task,
+            .lane = task_it->second.spec.lane,
+            .scheduled_time_ms = pending.scheduled_time_ms,
+            .observed_time_ms = observed_time_ms,
+            .period_ms = pending.period_ms,
+            .deadline_ms = task_it->second.deadline_ms,
+            .missed_periods = pending.missed_periods,
+            .lateness_ms = observed_time_ms > pending.scheduled_time_ms
+                               ? observed_time_ms - pending.scheduled_time_ms
+                               : 0U,
+        };
+    }
+
+    [[nodiscard]] bool can_admit(TaskId task) const {
+        if (inflight_tasks_.contains(task)) {
+            return false;
+        }
+        const auto it = tasks_.find(task);
+        if (it == tasks_.end()) {
+            return false;
+        }
+        switch (lane_kind(it->second.spec.lane)) {
+            case LaneKind::Serial:
+                return !inflight_serial_lanes_.contains(it->second.spec.lane);
+            case LaneKind::Parallel:
+                return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] LaneKind lane_kind(LaneId lane) const {
+        const auto it = lanes_.find(lane);
+        return it == lanes_.end() ? LaneKind::Serial : it->second;
+    }
+
+    [[nodiscard]] bool compare_ready_tasks(TaskId left, TaskId right) const {
+        const auto left_it = tasks_.find(left);
+        const auto right_it = tasks_.find(right);
+        if (left_it == tasks_.end() || right_it == tasks_.end()) {
+            return left < right;
+        }
+        if (left_it->second.spec.priority != right_it->second.spec.priority) {
+            return left_it->second.spec.priority < right_it->second.spec.priority;
+        }
+        return left_it->second.spec.id < right_it->second.spec.id;
+    }
+
+    [[nodiscard]] static std::uint64_t saturating_add_u64(std::uint64_t left,
+                                                          std::uint64_t right) noexcept {
+        const auto max = (std::numeric_limits<std::uint64_t>::max)();
+        return max - left < right ? max : left + right;
+    }
+
+    [[nodiscard]] static std::chrono::milliseconds saturated_add(
+        std::chrono::milliseconds left, std::chrono::milliseconds right) noexcept {
+        const auto max = std::chrono::milliseconds::max().count();
+        if (right.count() > 0 && max - left.count() < right.count()) {
+            return std::chrono::milliseconds::max();
+        }
+        return left + right;
+    }
+
+    [[nodiscard]] static std::chrono::milliseconds saturated_mul(std::chrono::milliseconds period,
+                                                                 std::uint64_t count) noexcept {
+        const auto max = std::chrono::milliseconds::max().count();
+        const auto period_count = period.count();
+        if (period_count <= 0 || count == 0U) {
+            return std::chrono::milliseconds{0};
+        }
+        if (static_cast<std::uint64_t>(max / period_count) < count) {
+            return std::chrono::milliseconds::max();
+        }
+        return std::chrono::milliseconds{period_count * static_cast<std::int64_t>(count)};
+    }
+
+    [[nodiscard]] static std::uint64_t millis_to_u64(std::chrono::milliseconds value) noexcept {
+        return value.count() < 0 ? 0U : static_cast<std::uint64_t>(value.count());
     }
 
     std::size_t worker_threads_;
@@ -511,9 +686,12 @@ class DeterministicExecutor {
     std::uint64_t current_tick_{0};
     bool admission_open_{true};
     std::map<LaneId, LaneKind> lanes_;
-    std::map<TaskId, TaskSpec> tasks_;
+    std::map<TaskId, TaskState> tasks_;
     std::set<TaskId> ready_;
+    std::map<TaskId, PendingAdmission> pending_;
     std::map<TaskId, PeriodicState> periodic_;
+    std::set<TaskId> inflight_tasks_;
+    std::set<LaneId> inflight_serial_lanes_;
     std::map<LaneId, std::uint64_t> lane_last_dispatched_tick_;
 };
 
@@ -753,161 +931,5 @@ class WorkerPool {
     Status status_{Status::Ok};
     std::vector<std::thread> workers_;
 };
-
-template <typename Fn>
-std::vector<TaskRunResult> ReadyBatch::run(WorkerPool &worker_pool, Fn &&fn) && {
-    if (tasks_.empty()) {
-        return {};
-    }
-
-    struct BatchState {
-        std::mutex mutex;
-        std::condition_variable ready;
-        std::size_t remaining{};
-        std::vector<std::optional<TaskRunResult>> results;
-    };
-
-    auto state = std::make_shared<BatchState>();
-    state->remaining = tasks_.size();
-    state->results.resize(tasks_.size());
-    auto fn_shared = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
-
-    for (std::size_t index = 0; index < tasks_.size(); ++index) {
-        const auto task = tasks_[index];
-        auto submitted = worker_pool.spawn_with_completion(
-            [fn_shared, task]() { return std::invoke(*fn_shared, task); },
-            [state, index, task](Status status) {
-                std::lock_guard lock(state->mutex);
-                state->results[index] = TaskRunResult{.task = task, .status = status};
-                if (state->remaining > 0U) {
-                    --state->remaining;
-                }
-                if (state->remaining == 0U) {
-                    state->ready.notify_all();
-                }
-            });
-        if (submitted) {
-            continue;
-        }
-
-        Status status = Status::Error;
-        try {
-            status = std::invoke(*fn_shared, task);
-        } catch (...) {
-            status = Status::Error;
-        }
-        std::lock_guard lock(state->mutex);
-        state->results[index] = TaskRunResult{.task = task, .status = status};
-        if (state->remaining > 0U) {
-            --state->remaining;
-        }
-        if (state->remaining == 0U) {
-            state->ready.notify_all();
-        }
-    }
-
-    std::unique_lock lock(state->mutex);
-    state->ready.wait(lock, [&state]() { return state->remaining == 0U; });
-
-    std::vector<TaskRunResult> results;
-    results.reserve(state->results.size());
-    for (const auto &result : state->results) {
-        results.push_back(*result);
-    }
-    return results;
-}
-
-template <typename Fn>
-std::vector<TaskRunResult> ReadyBatch::run_local(Fn &&fn) && {
-    std::vector<TaskRunResult> results;
-    results.reserve(tasks_.size());
-    for (const auto task : tasks_) {
-        Status status = Status::Error;
-        try {
-            status = std::invoke(fn, task);
-        } catch (...) {
-            status = Status::Error;
-        }
-        results.push_back(TaskRunResult{.task = task, .status = status});
-    }
-    return results;
-}
-
-template <typename Fn>
-auto ReadyBatch::run_collect(WorkerPool &worker_pool, Fn &&fn)
-    && -> std::vector<
-           TaskRunOutput<typename std::invoke_result_t<std::decay_t<Fn> &, TaskId>::outputs_type>> {
-    using FnType = std::decay_t<Fn>;
-    using Outcome = std::invoke_result_t<FnType &, TaskId>;
-    using Outputs = typename Outcome::outputs_type;
-
-    if (tasks_.empty()) {
-        return {};
-    }
-
-    WorkerCompletionQueue<Outputs> completions;
-    std::map<TaskId, std::size_t> task_indexes;
-    auto fn_shared = std::make_shared<FnType>(std::forward<Fn>(fn));
-
-    for (std::size_t index = 0; index < tasks_.size(); ++index) {
-        const auto task = tasks_[index];
-        task_indexes[task] = index;
-        auto submitted = worker_pool.submit_collect<Outputs>(
-            task, completions, [fn_shared, task]() { return std::invoke(*fn_shared, task); });
-        if (submitted.submitted()) {
-            continue;
-        }
-
-        try {
-            auto outcome = std::invoke(*fn_shared, task);
-            completions.push(TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
-        } catch (...) {
-            completions.push(TaskRunOutput<Outputs>::without_outputs(task, Status::Error));
-        }
-    }
-
-    std::vector<std::optional<TaskRunOutput<Outputs>>> ordered;
-    ordered.resize(tasks_.size());
-    std::size_t recorded = 0;
-    while (recorded < tasks_.size()) {
-        auto completion = completions.wait_completed();
-        const auto it = task_indexes.find(completion.task);
-        if (it != task_indexes.end() && !ordered[it->second].has_value()) {
-            ordered[it->second] = std::move(completion);
-            ++recorded;
-        }
-    }
-
-    std::vector<TaskRunOutput<Outputs>> results;
-    results.reserve(ordered.size());
-    for (std::size_t index = 0; index < ordered.size(); ++index) {
-        if (ordered[index].has_value()) {
-            results.push_back(std::move(*ordered[index]));
-        } else {
-            results.push_back(
-                TaskRunOutput<Outputs>::without_outputs(tasks_[index], Status::Error));
-        }
-    }
-    return results;
-}
-
-template <typename Fn>
-auto ReadyBatch::run_local_collect(Fn &&fn)
-    && -> std::vector<TaskRunOutput<typename std::invoke_result_t<Fn &, TaskId>::outputs_type>> {
-    using Outcome = std::invoke_result_t<Fn &, TaskId>;
-    using Outputs = typename Outcome::outputs_type;
-
-    std::vector<TaskRunOutput<Outputs>> results;
-    results.reserve(tasks_.size());
-    for (const auto task : tasks_) {
-        try {
-            auto outcome = std::invoke(fn, task);
-            results.push_back(TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
-        } catch (...) {
-            results.push_back(TaskRunOutput<Outputs>::without_outputs(task, Status::Error));
-        }
-    }
-    return results;
-}
 
 }  // namespace flowrt

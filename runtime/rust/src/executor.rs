@@ -35,6 +35,24 @@ pub struct PeriodicSpec {
     pub period_ms: u64,
 }
 
+/// 一次 task admission 的调度元数据。
+///
+/// `scheduled_time_ms` 表示 runtime 计划该次运行的时间，`observed_time_ms` 表示
+/// scheduler 实际准入该 task 的时间。generated shell 应把这些字段转换成
+/// `TaskTiming` 后交给用户 `Context`，并在 completion 回来后显式调用
+/// `DeterministicExecutor::complete_task` 释放 inflight token。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskAdmission {
+    pub task: TaskId,
+    pub lane: LaneId,
+    pub scheduled_time_ms: u64,
+    pub observed_time_ms: u64,
+    pub period_ms: Option<u64>,
+    pub deadline_ms: Option<u64>,
+    pub missed_periods: u64,
+    pub lateness_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FutureHandle(TaskId);
 
@@ -127,12 +145,20 @@ impl<O> TaskRunOutput<O> {
 #[derive(Debug, Clone)]
 struct TaskState {
     spec: TaskSpec,
+    deadline_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 struct PeriodicState {
     period_ms: u64,
     next_deadline_ms: u64,
+    missed_periods: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingAdmission {
+    scheduled_time_ms: u64,
+    period_ms: Option<u64>,
     missed_periods: u64,
 }
 
@@ -145,7 +171,10 @@ pub struct DeterministicExecutor {
     lanes: BTreeMap<LaneId, LaneKind>,
     tasks: BTreeMap<TaskId, TaskState>,
     ready: BTreeSet<TaskId>,
+    pending: BTreeMap<TaskId, PendingAdmission>,
     periodic: BTreeMap<TaskId, PeriodicState>,
+    inflight_tasks: BTreeSet<TaskId>,
+    inflight_serial_lanes: BTreeSet<LaneId>,
     /// 记录每个 lane 最近一次被调度执行的 tick 编号。
     lane_last_dispatched_tick: BTreeMap<LaneId, u64>,
 }
@@ -183,13 +212,12 @@ pub struct WorkerSubmitError {
 
 struct WorkerCompletionQueueInner<O> {
     completed: Mutex<VecDeque<TaskRunOutput<O>>>,
-    ready: Condvar,
+    wake: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// worker 线程完成后交还 scheduler 线程的 typed completion queue。
 ///
-/// `drain_completed` 和 `try_drain_completed` 只取回当前已完成结果，空队列立即返回；
-/// `wait_completed` 供同步兼容封装在不忙等的情况下等待下一条 completion。
+/// `drain_completed` 和 `try_drain_completed` 只取回当前已完成结果，空队列立即返回。
 pub struct WorkerCompletionQueue<O> {
     inner: Arc<WorkerCompletionQueueInner<O>>,
 }
@@ -214,9 +242,20 @@ impl<O> WorkerCompletionQueue<O> {
         Self {
             inner: Arc::new(WorkerCompletionQueueInner {
                 completed: Mutex::new(VecDeque::new()),
-                ready: Condvar::new(),
+                wake: Mutex::new(None),
             }),
         }
+    }
+
+    /// 设置 completion 入队后的唤醒回调。
+    ///
+    /// generated scheduler 用它把 worker completion 合并进 scheduler wake 路径；回调不拥有
+    /// completion 数据，只负责唤醒调度线程。
+    pub fn set_wake_callback<F>(&self, wake: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        *lock_recover(&self.inner.wake) = Some(Box::new(wake));
     }
 
     /// 取回当前所有已完成结果；空队列立即返回空列表。
@@ -230,27 +269,13 @@ impl<O> WorkerCompletionQueue<O> {
         self.drain_completed()
     }
 
-    /// 等待并取回下一条 completion，供同步兼容封装使用。
-    pub fn wait_completed(&self) -> TaskRunOutput<O> {
-        let mut completed = lock_recover(&self.inner.completed);
-        loop {
-            if let Some(result) = completed.pop_front() {
-                return result;
-            }
-            completed = wait_recover(&self.inner.ready, completed);
-        }
-    }
-
     fn push(&self, result: TaskRunOutput<O>) {
         let mut completed = lock_recover(&self.inner.completed);
         completed.push_back(result);
-        self.inner.ready.notify_all();
+        if let Some(wake) = lock_recover(&self.inner.wake).as_ref() {
+            wake();
+        }
     }
-}
-
-struct TaskBatchState {
-    remaining: usize,
-    results: Vec<Option<TaskRunResult>>,
 }
 
 struct WorkerPoolState {
@@ -268,9 +293,8 @@ struct WorkerPoolInner {
 
 /// 面向后续异步/并发 generated shell 的有界 worker 基础。
 ///
-/// 当前 generated shell 仍同步调用用户回调。该 pool 只提供固定 worker 数、关闭准入、
-/// drain/join 和首个错误聚合，用来让 Rust runtime 与 C++ runtime 先共享同一执行边界形状，
-/// 但不把线程模型暴露给普通组件实现。
+/// 该 pool 只提供固定 worker 数、关闭准入、drain/join、completion 回传和首个错误聚合。
+/// scheduler 负责 admission、completion drain 与 backend commit；pool 不等待整批 task 完成。
 pub struct WorkerPool {
     worker_threads: usize,
     inner: Arc<WorkerPoolInner>,
@@ -280,6 +304,7 @@ pub struct WorkerPool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadyBatch {
     tasks: Vec<TaskId>,
+    admissions: Vec<TaskAdmission>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,7 +583,10 @@ impl DeterministicExecutor {
             lanes: BTreeMap::new(),
             tasks: BTreeMap::new(),
             ready: BTreeSet::new(),
+            pending: BTreeMap::new(),
             periodic: BTreeMap::new(),
+            inflight_tasks: BTreeSet::new(),
+            inflight_serial_lanes: BTreeSet::new(),
             lane_last_dispatched_tick: BTreeMap::new(),
         }
     }
@@ -572,7 +600,23 @@ impl DeterministicExecutor {
     }
 
     pub fn add_task(&mut self, spec: TaskSpec) {
-        self.tasks.insert(spec.id, TaskState { spec });
+        self.tasks.insert(
+            spec.id,
+            TaskState {
+                spec,
+                deadline_ms: None,
+            },
+        );
+    }
+
+    /// 设置 task 的相对 deadline 元数据，单位为毫秒。
+    ///
+    /// executor 不在这里判定 deadline 失败；generated scheduler 用 admission metadata 构造
+    /// `TaskTiming`，并由 status/introspection 解释 lateness 与 deadline。
+    pub fn set_task_deadline_ms(&mut self, task: TaskId, deadline_ms: Option<u64>) {
+        if let Some(state) = self.tasks.get_mut(&task) {
+            state.deadline_ms = deadline_ms;
+        }
     }
 
     pub fn add_periodic(&mut self, spec: PeriodicSpec) {
@@ -590,6 +634,11 @@ impl DeterministicExecutor {
     pub fn wake(&mut self, task: TaskId) {
         if self.admission_open && self.tasks.contains_key(&task) {
             self.ready.insert(task);
+            self.pending.entry(task).or_insert(PendingAdmission {
+                scheduled_time_ms: self.now_ms,
+                period_ms: None,
+                missed_periods: 0,
+            });
         }
     }
 
@@ -598,7 +647,7 @@ impl DeterministicExecutor {
     }
 
     pub fn is_drained(&self) -> bool {
-        self.ready.is_empty()
+        self.ready.is_empty() && self.inflight_tasks.is_empty()
     }
 
     pub fn advance_to_ms(&mut self, now_ms: u64) {
@@ -610,14 +659,14 @@ impl DeterministicExecutor {
             }
             let elapsed = now_ms - state.next_deadline_ms;
             let missed = elapsed / state.period_ms;
-            state.missed_periods = state.missed_periods.saturating_add(missed);
-            state.next_deadline_ms = state
+            let scheduled_time_ms = state
                 .next_deadline_ms
-                .saturating_add((missed + 1).saturating_mul(state.period_ms));
-            due.push(*task);
+                .saturating_add(missed.saturating_mul(state.period_ms));
+            state.next_deadline_ms = scheduled_time_ms.saturating_add(state.period_ms);
+            due.push((*task, scheduled_time_ms, state.period_ms, missed));
         }
-        for task in due {
-            self.wake(task);
+        for (task, scheduled_time_ms, period_ms, missed) in due {
+            self.record_periodic_due(task, scheduled_time_ms, period_ms, missed);
         }
     }
 
@@ -632,88 +681,185 @@ impl DeterministicExecutor {
             .unwrap_or(0)
     }
 
-    pub fn run_ready<R>(&mut self, mut run: impl FnMut(TaskId) -> R) -> Vec<R> {
-        let mut output = Vec::new();
-        for task in self.ready_order() {
-            self.ready.remove(&task);
-            if let Some(state) = self.tasks.get(&task) {
-                self.lane_last_dispatched_tick
-                    .insert(state.spec.lane, self.current_tick);
-            }
-            output.push(run(task));
-        }
-        output
-    }
-
+    /// 准入当前 ready set 中可并行 dispatch 的 task。
+    ///
+    /// 该方法只修改 scheduler admission 状态：移除 ready、写入 inflight task/lane token，
+    /// 并返回每个 task 的 timing metadata。它不运行用户回调，也不等待 completion。
     pub fn take_ready_batch(&mut self) -> ReadyBatch {
-        let tasks = self.ready_parallel_order();
-        for task in &tasks {
-            self.ready.remove(task);
-            if let Some(state) = self.tasks.get(task) {
-                self.lane_last_dispatched_tick
-                    .insert(state.spec.lane, self.current_tick);
+        let mut admissions = Vec::new();
+        for task in self.ready_parallel_order() {
+            if let Some(admission) = self.admit_task(task) {
+                admissions.push(admission);
             }
         }
-        ReadyBatch { tasks }
-    }
-
-    pub fn run_ready_parallel(
-        &mut self,
-        worker_pool: &WorkerPool,
-        run: impl Fn(TaskId) -> Status + Send + Sync + 'static,
-    ) -> Vec<TaskRunResult> {
-        self.take_ready_batch().run(worker_pool, run)
-    }
-
-    fn ready_order(&self) -> Vec<TaskId> {
-        let mut by_lane = BTreeMap::<LaneId, Vec<TaskId>>::new();
-        for task in &self.ready {
-            let spec = &self.tasks[task].spec;
-            by_lane.entry(spec.lane).or_default().push(*task);
-        }
-        for lane_tasks in by_lane.values_mut() {
-            lane_tasks.sort_by(|left, right| {
-                let left_spec = &self.tasks[left].spec;
-                let right_spec = &self.tasks[right].spec;
-                left_spec
-                    .priority
-                    .cmp(&right_spec.priority)
-                    .then_with(|| left_spec.id.cmp(&right_spec.id))
-            });
-        }
-
-        let mut tasks = Vec::with_capacity(self.ready.len());
-        while by_lane.values().any(|lane_tasks| !lane_tasks.is_empty()) {
-            for lane_tasks in by_lane.values_mut() {
-                if !lane_tasks.is_empty() {
-                    tasks.push(lane_tasks.remove(0));
-                }
-            }
-        }
-        tasks
+        ReadyBatch::from_admissions(admissions)
     }
 
     fn ready_parallel_order(&self) -> Vec<TaskId> {
         let mut by_lane = BTreeMap::<LaneId, Vec<TaskId>>::new();
         for task in &self.ready {
-            let spec = &self.tasks[task].spec;
-            by_lane.entry(spec.lane).or_default().push(*task);
+            if !self.can_admit(*task) {
+                continue;
+            }
+            if let Some(state) = self.tasks.get(task) {
+                by_lane.entry(state.spec.lane).or_default().push(*task);
+            }
         }
         for lane_tasks in by_lane.values_mut() {
-            lane_tasks.sort_by(|left, right| {
-                let left_spec = &self.tasks[left].spec;
-                let right_spec = &self.tasks[right].spec;
-                left_spec
-                    .priority
-                    .cmp(&right_spec.priority)
-                    .then_with(|| left_spec.id.cmp(&right_spec.id))
-            });
+            lane_tasks.sort_by(|left, right| self.compare_ready_tasks(*left, *right));
         }
 
-        by_lane
-            .into_values()
-            .filter_map(|lane_tasks| lane_tasks.into_iter().next())
-            .collect()
+        let mut tasks = Vec::new();
+        let mut reserved_serial_lanes = BTreeSet::new();
+        for (lane, lane_tasks) in by_lane {
+            match self.lane_kind(lane) {
+                LaneKind::Serial => {
+                    if self.inflight_serial_lanes.contains(&lane)
+                        || reserved_serial_lanes.contains(&lane)
+                    {
+                        continue;
+                    }
+                    if let Some(task) = lane_tasks.into_iter().next() {
+                        reserved_serial_lanes.insert(lane);
+                        tasks.push(task);
+                    }
+                }
+                LaneKind::Parallel => tasks.extend(lane_tasks),
+            }
+        }
+        tasks
+    }
+
+    fn record_periodic_due(
+        &mut self,
+        task: TaskId,
+        scheduled_time_ms: u64,
+        period_ms: u64,
+        missed_from_deadline: u64,
+    ) {
+        let counted_pending = self
+            .pending
+            .get(&task)
+            .filter(|pending| pending.period_ms == Some(period_ms))
+            .map_or(0, |pending| pending.missed_periods);
+        let pending_same_period = self
+            .pending
+            .get(&task)
+            .filter(|pending| pending.period_ms == Some(period_ms));
+        let missed_periods = pending_same_period
+            .and_then(|pending| {
+                scheduled_time_ms
+                    .checked_sub(pending.scheduled_time_ms)
+                    .map(|delta| {
+                        pending
+                            .missed_periods
+                            .saturating_add(delta / period_ms.max(1))
+                    })
+            })
+            .unwrap_or_else(|| {
+                missed_from_deadline.saturating_add(u64::from(self.inflight_tasks.contains(&task)))
+            });
+        if let Some(state) = self.periodic.get_mut(&task) {
+            let additional_missed = missed_periods.saturating_sub(counted_pending);
+            state.missed_periods = state.missed_periods.saturating_add(additional_missed);
+        }
+        if self.admission_open && self.tasks.contains_key(&task) {
+            self.ready.insert(task);
+            self.pending.insert(
+                task,
+                PendingAdmission {
+                    scheduled_time_ms,
+                    period_ms: Some(period_ms),
+                    missed_periods,
+                },
+            );
+        }
+    }
+
+    /// 标记 task completion，并释放它实际持有的 inflight token。
+    ///
+    /// 返回 `true` 表示 task 本次确实处于 inflight 状态且已释放；重复 completion 或错误
+    /// task id 返回 `false`，且不会释放其他 task 持有的 serial lane token。
+    pub fn complete_task(&mut self, task: TaskId) -> bool {
+        if !self.inflight_tasks.remove(&task) {
+            return false;
+        }
+        if let Some(state) = self.tasks.get(&task) {
+            if self.lane_kind(state.spec.lane) == LaneKind::Serial {
+                self.inflight_serial_lanes.remove(&state.spec.lane);
+            }
+        }
+        true
+    }
+
+    fn admit_task(&mut self, task: TaskId) -> Option<TaskAdmission> {
+        if !self.can_admit(task) {
+            return None;
+        }
+        let admission = self.admission_for(task)?;
+        self.ready.remove(&task);
+        self.pending.remove(&task);
+        self.inflight_tasks.insert(task);
+        if self.lane_kind(admission.lane) == LaneKind::Serial {
+            self.inflight_serial_lanes.insert(admission.lane);
+        }
+        self.lane_last_dispatched_tick
+            .insert(admission.lane, self.current_tick);
+        Some(admission)
+    }
+
+    fn admission_for(&self, task: TaskId) -> Option<TaskAdmission> {
+        let state = self.tasks.get(&task)?;
+        let pending = self
+            .pending
+            .get(&task)
+            .copied()
+            .unwrap_or(PendingAdmission {
+                scheduled_time_ms: self.now_ms,
+                period_ms: None,
+                missed_periods: 0,
+            });
+        Some(TaskAdmission {
+            task,
+            lane: state.spec.lane,
+            scheduled_time_ms: pending.scheduled_time_ms,
+            observed_time_ms: self.now_ms,
+            period_ms: pending.period_ms,
+            deadline_ms: state.deadline_ms,
+            missed_periods: pending.missed_periods,
+            lateness_ms: self.now_ms.saturating_sub(pending.scheduled_time_ms),
+        })
+    }
+
+    fn can_admit(&self, task: TaskId) -> bool {
+        if self.inflight_tasks.contains(&task) {
+            return false;
+        }
+        let Some(state) = self.tasks.get(&task) else {
+            return false;
+        };
+        match self.lane_kind(state.spec.lane) {
+            LaneKind::Serial => !self.inflight_serial_lanes.contains(&state.spec.lane),
+            LaneKind::Parallel => true,
+        }
+    }
+
+    fn lane_kind(&self, lane: LaneId) -> LaneKind {
+        self.lanes.get(&lane).copied().unwrap_or(LaneKind::Serial)
+    }
+
+    fn compare_ready_tasks(&self, left: TaskId, right: TaskId) -> std::cmp::Ordering {
+        let Some(left_state) = self.tasks.get(&left) else {
+            return left.cmp(&right);
+        };
+        let Some(right_state) = self.tasks.get(&right) else {
+            return left.cmp(&right);
+        };
+        left_state
+            .spec
+            .priority
+            .cmp(&right_state.spec.priority)
+            .then_with(|| left_state.spec.id.cmp(&right_state.spec.id))
     }
 
     /// 设置当前调度 tick 编号，用于 lane 饥饿检测。
@@ -738,6 +884,14 @@ impl DeterministicExecutor {
 }
 
 impl ReadyBatch {
+    fn from_admissions(admissions: Vec<TaskAdmission>) -> Self {
+        let tasks = admissions
+            .iter()
+            .map(|admission| admission.task)
+            .collect::<Vec<_>>();
+        Self { tasks, admissions }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty()
     }
@@ -750,169 +904,9 @@ impl ReadyBatch {
         &self.tasks
     }
 
-    pub fn run(
-        self,
-        worker_pool: &WorkerPool,
-        run: impl Fn(TaskId) -> Status + Send + Sync + 'static,
-    ) -> Vec<TaskRunResult> {
-        if self.tasks.is_empty() {
-            return Vec::new();
-        }
-
-        let task_count = self.tasks.len();
-        let state = Arc::new((
-            Mutex::new(TaskBatchState {
-                remaining: task_count,
-                results: vec![None; task_count],
-            }),
-            Condvar::new(),
-        ));
-        let run = Arc::new(run);
-        let mut fallback = Vec::new();
-
-        for (index, task) in self.tasks.into_iter().enumerate() {
-            let batch_state = Arc::clone(&state);
-            let run_fn = Arc::clone(&run);
-            let submitted = worker_pool.spawn_with_completion(
-                move || run_fn(task),
-                move |status| {
-                    let (mutex, ready) = &*batch_state;
-                    let mut state = lock_recover(mutex);
-                    state.results[index] = Some(TaskRunResult { task, status });
-                    state.remaining = state.remaining.saturating_sub(1);
-                    if state.remaining == 0 {
-                        ready.notify_all();
-                    }
-                },
-            );
-
-            if submitted.is_none() {
-                fallback.push((index, task));
-            }
-        }
-
-        if !fallback.is_empty() {
-            let (mutex, ready) = &*state;
-            let mut batch_state = lock_recover(mutex);
-            for (index, task) in fallback {
-                let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
-                    .unwrap_or(Status::Error);
-                batch_state.results[index] = Some(TaskRunResult { task, status });
-                batch_state.remaining = batch_state.remaining.saturating_sub(1);
-            }
-            if batch_state.remaining == 0 {
-                ready.notify_all();
-            }
-        }
-
-        let (mutex, ready) = &*state;
-        let mut batch_state = lock_recover(mutex);
-        while batch_state.remaining != 0 {
-            batch_state = wait_recover(ready, batch_state);
-        }
-
-        batch_state
-            .results
-            .iter()
-            .map(|result| result.expect("ready batch result should be recorded"))
-            .collect()
-    }
-
-    /// 通过 worker pool 执行 ready batch，并收集可提交输出。
-    ///
-    /// 该路径会把输出集合从 worker 线程交还 scheduler 线程，因此要求 `O: Send`。非
-    /// `Ok`、panic 或 worker completion 异常路径会记录状态但丢弃输出。
-    pub fn run_collect<O>(
-        self,
-        worker_pool: &WorkerPool,
-        run: impl Fn(TaskId) -> TaskRunOutcome<O> + Send + Sync + 'static,
-    ) -> Vec<TaskRunOutput<O>>
-    where
-        O: Send + 'static,
-    {
-        let tasks = self.tasks;
-        if tasks.is_empty() {
-            return Vec::new();
-        }
-
-        let task_count = tasks.len();
-        let completions = WorkerCompletionQueue::new();
-        let run = Arc::new(run);
-        let mut task_indexes = BTreeMap::new();
-
-        for (index, task) in tasks.iter().copied().enumerate() {
-            task_indexes.insert(task, index);
-            let run_fn = Arc::clone(&run);
-            if worker_pool
-                .submit_collect(task, &completions, move || run_fn(task))
-                .is_ok()
-            {
-                continue;
-            }
-
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
-                .map(|outcome| TaskRunOutput::from_outcome(task, outcome))
-                .unwrap_or_else(|_| TaskRunOutput::without_outputs(task, Status::Error));
-            completions.push(result);
-        }
-
-        let mut ordered = std::iter::repeat_with(|| None)
-            .take(task_count)
-            .collect::<Vec<_>>();
-        let mut recorded = 0;
-        while recorded < task_count {
-            let completion = completions.wait_completed();
-            if let Some(index) = task_indexes.get(&completion.task).copied() {
-                if ordered[index].is_none() {
-                    ordered[index] = Some(completion);
-                    recorded += 1;
-                }
-            }
-        }
-
-        ordered
-            .into_iter()
-            .enumerate()
-            .map(|(index, result)| match result {
-                Some(result) => result,
-                None => TaskRunOutput::without_outputs(tasks[index], Status::Error),
-            })
-            .collect()
-    }
-
-    /// 在当前 scheduler 线程内执行 ready batch。
-    ///
-    /// Rust 侧部分 backend（目前主要是 iox2）持有 thread-affine SDK handle，
-    /// 不能被安全移动到 worker 线程。generated shell 在发现 App 状态包含这类
-    /// backend 时应选择该路径；纯 `Send + Sync` graph 仍可使用 `run` 进入
-    /// `WorkerPool`。
-    pub fn run_local(self, mut run: impl FnMut(TaskId) -> Status) -> Vec<TaskRunResult> {
-        self.tasks
-            .into_iter()
-            .map(|task| {
-                let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
-                    .unwrap_or(Status::Error);
-                TaskRunResult { task, status }
-            })
-            .collect()
-    }
-
-    /// 在当前 scheduler 线程内执行 ready batch，并收集可提交输出。
-    ///
-    /// 该路径不要求输出集合实现 `Send`，适用于 thread-affine backend 或只在 scheduler
-    /// 线程内完成 commit 的 generated shell。非 `Ok` 和 panic 路径会丢弃输出。
-    pub fn run_local_collect<O>(
-        self,
-        mut run: impl FnMut(TaskId) -> TaskRunOutcome<O>,
-    ) -> Vec<TaskRunOutput<O>> {
-        self.tasks
-            .into_iter()
-            .map(|task| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
-                    .map(|outcome| TaskRunOutput::from_outcome(task, outcome))
-                    .unwrap_or_else(|_| TaskRunOutput::without_outputs(task, Status::Error))
-            })
-            .collect()
+    /// 返回本批 admission metadata，顺序即 generated scheduler 应使用的 canonical commit 顺序。
+    pub fn admissions(&self) -> &[TaskAdmission] {
+        &self.admissions
     }
 }
 
@@ -1059,10 +1053,8 @@ fn wait_timeout_recover<'a, T>(
 mod tests {
     use super::*;
     use std::{
-        cell::Cell,
         future::Future,
         pin::Pin,
-        rc::Rc,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -1071,94 +1063,131 @@ mod tests {
         task::{Context, Poll},
     };
 
-    fn update_max(target: &AtomicUsize, value: usize) {
-        let mut observed = target.load(Ordering::SeqCst);
-        while observed < value {
-            match target.compare_exchange(observed, value, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => break,
-                Err(actual) => observed = actual,
-            }
-        }
+    fn add_task(executor: &mut DeterministicExecutor, id: u64, lane: u64, priority: u32) {
+        executor.add_task(TaskSpec {
+            id: TaskId(id),
+            lane: LaneId(lane),
+            priority,
+        });
+    }
+
+    fn admitted_tasks(batch: &ReadyBatch) -> Vec<TaskId> {
+        batch
+            .admissions()
+            .iter()
+            .map(|admission| admission.task)
+            .collect()
     }
 
     #[test]
-    fn serial_lane_runs_one_task_at_a_time_in_priority_order() {
-        let mut executor = DeterministicExecutor::new(1);
+    fn serial_lane_admits_one_task_by_priority_until_completion() {
+        let mut executor = DeterministicExecutor::new(2);
         executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 10,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(1),
-            priority: 1,
-        });
-
+        add_task(&mut executor, 1, 1, 10);
+        add_task(&mut executor, 2, 1, 1);
         executor.wake(TaskId(1));
         executor.wake(TaskId(2));
 
-        assert_eq!(executor.run_ready(|task| task), vec![TaskId(2), TaskId(1)]);
+        let first = executor.take_ready_batch();
+        assert_eq!(admitted_tasks(&first), vec![TaskId(2)]);
+        assert!(!executor.is_drained());
+        assert!(executor.take_ready_batch().is_empty());
+
+        assert!(executor.complete_task(TaskId(2)));
+        let second = executor.take_ready_batch();
+        assert_eq!(admitted_tasks(&second), vec![TaskId(1)]);
+        assert!(executor.complete_task(TaskId(1)));
+        assert!(executor.is_drained());
     }
 
     #[test]
-    fn ready_order_is_fair_across_lanes_then_priority_within_lane() {
-        let mut executor = DeterministicExecutor::new(1);
+    fn wrong_or_duplicate_completion_does_not_release_serial_lane() {
+        let mut executor = DeterministicExecutor::new(2);
         executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(1),
-            priority: 1,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(3),
-            lane: LaneId(2),
-            priority: 99,
-        });
-
+        add_task(&mut executor, 1, 1, 0);
+        add_task(&mut executor, 2, 1, 1);
         executor.wake(TaskId(1));
         executor.wake(TaskId(2));
-        executor.wake(TaskId(3));
 
         assert_eq!(
-            executor.run_ready(|task| task),
-            vec![TaskId(1), TaskId(3), TaskId(2)]
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
+        assert!(!executor.complete_task(TaskId(2)));
+        assert!(executor.take_ready_batch().is_empty());
+        assert!(executor.complete_task(TaskId(1)));
+        assert!(!executor.complete_task(TaskId(1)));
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(2)]
         );
     }
 
     #[test]
-    fn repeated_wake_is_coalesced_until_task_runs() {
-        let mut executor = DeterministicExecutor::new(1);
+    fn serial_lanes_admit_one_task_per_lane_in_same_batch() {
+        let mut executor = DeterministicExecutor::new(2);
         executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
+        executor.add_lane(LaneId(2), LaneKind::Serial);
+        add_task(&mut executor, 1, 1, 0);
+        add_task(&mut executor, 2, 1, 1);
+        add_task(&mut executor, 3, 2, 99);
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+        executor.wake(TaskId(3));
 
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(1));
-
-        assert_eq!(executor.run_ready(|task| task), vec![TaskId(1)]);
+        let batch = executor.take_ready_batch();
+        assert_eq!(admitted_tasks(&batch), vec![TaskId(1), TaskId(3)]);
+        assert!(executor.complete_task(TaskId(1)));
+        assert!(executor.complete_task(TaskId(3)));
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(2)]
+        );
     }
 
     #[test]
-    fn periodic_task_skips_missed_periods_without_catch_up_storm() {
+    fn parallel_lane_admits_all_ready_tasks_from_same_lane() {
+        let mut executor = DeterministicExecutor::new(2);
+        executor.add_lane(LaneId(1), LaneKind::Parallel);
+        add_task(&mut executor, 1, 1, 0);
+        add_task(&mut executor, 2, 1, 1);
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1), TaskId(2)]
+        );
+    }
+
+    #[test]
+    fn repeated_wake_is_coalesced_while_task_is_inflight() {
         let mut executor = DeterministicExecutor::new(1);
         executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
+        add_task(&mut executor, 1, 1, 0);
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(1));
+
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
+        executor.wake(TaskId(1));
+        assert!(executor.take_ready_batch().is_empty());
+        assert!(executor.complete_task(TaskId(1)));
+        executor.wake(TaskId(1));
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
+    }
+
+    #[test]
+    fn periodic_admission_records_scheduled_slot_and_lateness() {
+        let mut executor = DeterministicExecutor::new(1);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        add_task(&mut executor, 1, 1, 0);
+        executor.set_task_deadline_ms(TaskId(1), Some(7));
         executor.add_periodic(PeriodicSpec {
             task: TaskId(1),
             period_ms: 10,
@@ -1166,434 +1195,67 @@ mod tests {
 
         executor.advance_to_ms(35);
 
-        assert_eq!(executor.run_ready(|task| task), vec![TaskId(1)]);
+        let batch = executor.take_ready_batch();
+        assert_eq!(batch.admissions().len(), 1);
+        assert_eq!(
+            batch.admissions()[0],
+            TaskAdmission {
+                task: TaskId(1),
+                lane: LaneId(1),
+                scheduled_time_ms: 30,
+                observed_time_ms: 35,
+                period_ms: Some(10),
+                deadline_ms: Some(7),
+                missed_periods: 2,
+                lateness_ms: 5,
+            }
+        );
         assert_eq!(executor.next_deadline_ms(TaskId(1)), Some(40));
         assert_eq!(executor.missed_periods(TaskId(1)), 2);
     }
 
     #[test]
-    fn shutdown_closes_admission_but_allows_inflight_to_finish() {
+    fn periodic_due_is_coalesced_while_task_is_inflight() {
         let mut executor = DeterministicExecutor::new(1);
         executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
+        add_task(&mut executor, 1, 1, 0);
+        executor.add_periodic(PeriodicSpec {
+            task: TaskId(1),
+            period_ms: 10,
         });
+
+        executor.advance_to_ms(10);
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
+        executor.advance_to_ms(35);
+        assert!(executor.take_ready_batch().is_empty());
+        assert_eq!(executor.missed_periods(TaskId(1)), 2);
+        assert!(executor.complete_task(TaskId(1)));
+
+        let batch = executor.take_ready_batch();
+        assert_eq!(admitted_tasks(&batch), vec![TaskId(1)]);
+        assert_eq!(batch.admissions()[0].scheduled_time_ms, 30);
+        assert_eq!(batch.admissions()[0].missed_periods, 2);
+    }
+
+    #[test]
+    fn shutdown_closes_new_admission_but_keeps_existing_inflight() {
+        let mut executor = DeterministicExecutor::new(1);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        add_task(&mut executor, 1, 1, 0);
         executor.wake(TaskId(1));
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
         executor.close_admission();
         executor.wake(TaskId(1));
 
-        assert_eq!(executor.run_ready(|_| Status::Ok), vec![Status::Ok]);
+        assert!(!executor.is_drained());
+        assert!(executor.complete_task(TaskId(1)));
         assert!(executor.is_drained());
-    }
-
-    #[test]
-    fn parallel_ready_batch_overlaps_across_lanes() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let worker_pool = WorkerPool::new(2);
-        let started = Arc::new(AtomicUsize::new(0));
-        let active = Arc::new(AtomicUsize::new(0));
-        let max_active = Arc::new(AtomicUsize::new(0));
-        let results = executor.run_ready_parallel(&worker_pool, {
-            let started = Arc::clone(&started);
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&max_active);
-            move |task| {
-                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
-                update_max(&max_active, current_active);
-                started.fetch_add(1, Ordering::SeqCst);
-                let deadline = Instant::now() + Duration::from_millis(200);
-                while started.load(Ordering::SeqCst) < 2 {
-                    if Instant::now() >= deadline {
-                        active.fetch_sub(1, Ordering::SeqCst);
-                        return if task == TaskId(1) {
-                            Status::Error
-                        } else {
-                            Status::Retry
-                        };
-                    }
-                    thread::yield_now();
-                }
-                thread::sleep(Duration::from_millis(10));
-                active.fetch_sub(1, Ordering::SeqCst);
-                Status::Ok
-            }
-        });
-
-        assert_eq!(
-            results,
-            vec![
-                TaskRunResult {
-                    task: TaskId(1),
-                    status: Status::Ok,
-                },
-                TaskRunResult {
-                    task: TaskId(2),
-                    status: Status::Ok,
-                }
-            ]
-        );
-        assert!(max_active.load(Ordering::SeqCst) >= 2);
-        assert_eq!(worker_pool.shutdown(), Status::Ok);
-    }
-
-    #[test]
-    fn local_ready_batch_runs_without_worker_send_bounds() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let mut seen = Vec::new();
-        let results = executor.take_ready_batch().run_local(|task| {
-            seen.push(task);
-            Status::Ok
-        });
-
-        assert_eq!(seen, vec![TaskId(1), TaskId(2)]);
-        assert_eq!(
-            results,
-            vec![
-                TaskRunResult {
-                    task: TaskId(1),
-                    status: Status::Ok,
-                },
-                TaskRunResult {
-                    task: TaskId(2),
-                    status: Status::Ok,
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn local_ready_batch_collects_outputs_without_send_bound_and_discards_non_ok() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let marker = Rc::new(Cell::new(0u32));
-        let results = executor.take_ready_batch().run_local_collect({
-            let marker = Rc::clone(&marker);
-            move |task| {
-                marker.set(marker.get() + 1);
-                if task == TaskId(1) {
-                    TaskRunOutcome::ok(Rc::clone(&marker))
-                } else {
-                    TaskRunOutcome::retry(Rc::clone(&marker))
-                }
-            }
-        });
-
-        assert_eq!(marker.get(), 2);
-        assert_eq!(results[0].task, TaskId(1));
-        assert_eq!(results[0].status, Status::Ok);
-        assert!(results[0].outputs.is_some());
-        assert_eq!(results[1].task, TaskId(2));
-        assert_eq!(results[1].status, Status::Retry);
-        assert!(results[1].outputs.is_none());
-    }
-
-    #[test]
-    fn worker_ready_batch_collects_outputs_and_keeps_result_order() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let worker_pool = WorkerPool::new(2);
-        let results = executor
-            .take_ready_batch()
-            .run_collect(&worker_pool, |task| {
-                let mut output = crate::Output::new();
-                output.write(task.0);
-                let record = output
-                    .take_commit_record(task, format!("task.{}", task.0), "value", 120, 100)
-                    .expect("task wrote output");
-                TaskRunOutcome::ok(vec![record])
-            });
-
-        assert_eq!(results[0].task, TaskId(1));
-        assert_eq!(results[0].status, Status::Ok);
-        assert_eq!(
-            results[0]
-                .outputs
-                .as_ref()
-                .map(|records| records[0].payload),
-            Some(1)
-        );
-        assert_eq!(results[1].task, TaskId(2));
-        assert_eq!(results[1].status, Status::Ok);
-        assert_eq!(
-            results[1]
-                .outputs
-                .as_ref()
-                .map(|records| records[0].payload),
-            Some(2)
-        );
-        assert_eq!(worker_pool.shutdown(), Status::Ok);
-    }
-
-    #[test]
-    fn parallel_ready_batch_keeps_same_lane_serial() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(1),
-            priority: 1,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let worker_pool = WorkerPool::new(2);
-        let active = Arc::new(AtomicUsize::new(0));
-        let max_active = Arc::new(AtomicUsize::new(0));
-        let executed = Arc::new(Mutex::new(Vec::new()));
-        let run = {
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&max_active);
-            let executed = Arc::clone(&executed);
-            move |task| {
-                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
-                update_max(&max_active, current_active);
-                thread::sleep(Duration::from_millis(10));
-                active.fetch_sub(1, Ordering::SeqCst);
-                lock_recover(&executed).push(task);
-                Status::Ok
-            }
-        };
-
-        let first = executor.run_ready_parallel(&worker_pool, run);
-        assert_eq!(
-            first,
-            vec![TaskRunResult {
-                task: TaskId(1),
-                status: Status::Ok,
-            }]
-        );
-        let second = executor.run_ready_parallel(&worker_pool, {
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&max_active);
-            let executed = Arc::clone(&executed);
-            move |task| {
-                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
-                update_max(&max_active, current_active);
-                thread::sleep(Duration::from_millis(10));
-                active.fetch_sub(1, Ordering::SeqCst);
-                lock_recover(&executed).push(task);
-                Status::Ok
-            }
-        });
-        assert_eq!(
-            second,
-            vec![TaskRunResult {
-                task: TaskId(2),
-                status: Status::Ok,
-            }]
-        );
-        assert_eq!(*lock_recover(&executed), vec![TaskId(1), TaskId(2)]);
-        assert_eq!(max_active.load(Ordering::SeqCst), 1);
-        assert_eq!(worker_pool.shutdown(), Status::Ok);
-    }
-
-    #[test]
-    fn parallel_ready_batch_degrades_to_serial_with_single_worker() {
-        let mut executor = DeterministicExecutor::new(1);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let worker_pool = WorkerPool::new(1);
-        let active = Arc::new(AtomicUsize::new(0));
-        let max_active = Arc::new(AtomicUsize::new(0));
-        let results = executor.run_ready_parallel(&worker_pool, {
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&max_active);
-            move |task| {
-                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
-                update_max(&max_active, current_active);
-                thread::sleep(Duration::from_millis(10));
-                active.fetch_sub(1, Ordering::SeqCst);
-                if task == TaskId(1) {
-                    Status::Ok
-                } else {
-                    Status::Retry
-                }
-            }
-        });
-
-        assert_eq!(
-            results,
-            vec![
-                TaskRunResult {
-                    task: TaskId(1),
-                    status: Status::Ok,
-                },
-                TaskRunResult {
-                    task: TaskId(2),
-                    status: Status::Retry,
-                }
-            ]
-        );
-        assert_eq!(max_active.load(Ordering::SeqCst), 1);
-        assert_eq!(worker_pool.shutdown(), Status::Ok);
-    }
-
-    #[test]
-    fn parallel_ready_batch_converts_panic_to_error_and_shutdown_still_drains() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let worker_pool = WorkerPool::new(2);
-        let results = executor.run_ready_parallel(&worker_pool, |task| {
-            if task == TaskId(1) {
-                panic!("parallel task panicked");
-            }
-            Status::Ok
-        });
-
-        assert_eq!(
-            results,
-            vec![
-                TaskRunResult {
-                    task: TaskId(1),
-                    status: Status::Error,
-                },
-                TaskRunResult {
-                    task: TaskId(2),
-                    status: Status::Ok,
-                }
-            ]
-        );
-        assert_eq!(worker_pool.shutdown(), Status::Error);
-    }
-
-    #[test]
-    fn worker_ready_batch_discards_output_when_task_panics() {
-        let mut executor = DeterministicExecutor::new(2);
-        executor.add_lane(LaneId(1), LaneKind::Serial);
-        executor.add_lane(LaneId(2), LaneKind::Serial);
-        executor.add_task(TaskSpec {
-            id: TaskId(1),
-            lane: LaneId(1),
-            priority: 0,
-        });
-        executor.add_task(TaskSpec {
-            id: TaskId(2),
-            lane: LaneId(2),
-            priority: 0,
-        });
-        executor.wake(TaskId(1));
-        executor.wake(TaskId(2));
-
-        let worker_pool = WorkerPool::new(2);
-        let results = executor
-            .take_ready_batch()
-            .run_collect(&worker_pool, |task| {
-                let mut output = crate::Output::new();
-                output.write(task.0);
-                if task == TaskId(1) {
-                    panic!("task panicked after writing output");
-                }
-                let record = output
-                    .take_commit_record(task, format!("task.{}", task.0), "value", 120, 100)
-                    .expect("task wrote output");
-                TaskRunOutcome::ok(vec![record])
-            });
-
-        assert_eq!(results[0].task, TaskId(1));
-        assert_eq!(results[0].status, Status::Error);
-        assert!(results[0].outputs.is_none());
-        assert_eq!(results[1].task, TaskId(2));
-        assert_eq!(results[1].status, Status::Ok);
-        assert_eq!(
-            results[1]
-                .outputs
-                .as_ref()
-                .map(|records| records[0].payload),
-            Some(2)
-        );
-        assert_eq!(worker_pool.shutdown(), Status::Error);
     }
 
     struct YieldOnce {
