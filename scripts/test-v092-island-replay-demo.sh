@@ -317,7 +317,7 @@ if run_flowrt bundle "$demo_dir/rsdl/robot.rsdl" \
     printf 'bundle unexpectedly accepted temporary island artifact\n' >&2
     exit 1
 fi
-grep -q 'refusing to bundle island' "$work_dir/bundle.out"
+grep -q 'refusing to bundle temporary overlay' "$work_dir/bundle.out"
 
 run_flowrt run "$demo_dir/rsdl/robot.rsdl" \
     --process main \

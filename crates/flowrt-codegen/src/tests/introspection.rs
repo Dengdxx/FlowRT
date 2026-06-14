@@ -411,7 +411,7 @@ backends = ["inproc"]
     assert!(cpp_shell.contains("flowrt::spawn_status_server("));
     assert!(cpp_shell.contains("flowrt_app::self_description_hash()"));
     assert!(cpp_shell.contains("runtime = \"cpp\""));
-    assert!(cpp_shell.contains("introspection_state.record_tick();"));
+    assert!(cpp_shell.contains("introspection_state.record_tick(tick_time_ms, clock_source);"));
 
     let sensors_run = generated_function_block(cpp_shell, "App::run_process_sensors");
     let sensor_register_marker = format!(

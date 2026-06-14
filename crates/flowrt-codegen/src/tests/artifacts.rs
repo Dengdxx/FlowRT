@@ -193,7 +193,7 @@ input = ["imu:Imu"]
     assert!(rust_shell.contains(
         "introspection_state.set_self_description_json(selfdesc::self_description_json());"
     ));
-    assert!(rust_shell.contains("introspection_state.record_tick();"));
+    assert!(rust_shell.contains("introspection_state.record_tick_at(tick_time_ms, clock_source);"));
     assert!(!rust_shell.contains("flowrt::IntrospectionStatus {"));
     assert!(rust_shell.contains("selfdesc::self_description_hash().to_string()"));
 

@@ -744,7 +744,7 @@ if [[ -x "$installed_v092_smoke" ]]; then
     require_file_text "v0.9.2 smoke 校验 echo --raw" \
         "--raw" "$installed_v092_smoke"
     require_file_text "v0.9.2 smoke 校验 bundle gate" \
-        "refusing to bundle island" "$installed_v092_smoke"
+        "refusing to bundle temporary overlay" "$installed_v092_smoke"
     require_file_text "v0.9.2 smoke 校验 deploy gate" \
         "refusing to deploy island" "$installed_v092_smoke"
 else
