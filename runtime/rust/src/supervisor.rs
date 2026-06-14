@@ -91,6 +91,8 @@ pub struct LaunchArtifact {
     #[serde(default)]
     pub test_only: bool,
     #[serde(default)]
+    pub temporary_overlay: Option<serde_json::Value>,
+    #[serde(default)]
     pub clock: LaunchClock,
 }
 
@@ -100,6 +102,7 @@ impl Default for LaunchArtifact {
             mode: default_graph_mode(),
             temporary_island: false,
             test_only: false,
+            temporary_overlay: None,
             clock: LaunchClock::default(),
         }
     }
@@ -3870,7 +3873,21 @@ mod tests {
             "artifact": {
                 "mode": "island",
                 "temporary_island": true,
-                "test_only": true
+                "test_only": true,
+                "temporary_overlay": {
+                    "kind": "temporary_island",
+                    "original_profile_mode": "strict",
+                    "generated_by": {
+                        "command": "flowrt run --temporary-island",
+                        "source": "cli"
+                    },
+                    "boundary_mappings": [{
+                        "direction": "input",
+                        "name": "sensor_in",
+                        "endpoint": "boundary.sensor_in",
+                        "source": "cli"
+                    }]
+                }
             },
             "profiles": ["dev"],
             "targets": ["default"],
@@ -3891,6 +3908,13 @@ mod tests {
         assert_eq!(manifest.artifact.mode, "island");
         assert!(manifest.artifact.temporary_island);
         assert!(manifest.artifact.test_only);
+        let overlay = manifest
+            .artifact
+            .temporary_overlay
+            .as_ref()
+            .expect("temporary overlay metadata should be accepted");
+        assert_eq!(overlay["kind"], "temporary_island");
+        assert_eq!(overlay["boundary_mappings"][0]["name"], "sensor_in");
         assert_eq!(manifest.artifact.clock.source, "realtime");
         assert_eq!(manifest.artifact.clock.unit, "ms");
         assert_eq!(manifest.artifact.clock.field, "tick_time_ms");
