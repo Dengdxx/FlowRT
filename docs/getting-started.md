@@ -95,6 +95,11 @@ flowrt/app/stubs/
 service、operation 和 C callback table 线索输出到终端或 JSON。用户参考
 `flowrt/app/stubs/` 后，把需要保留的实现手写或复制到项目 `app/`；`prepare` 不直接写
 用户 `app/`。
+同一 App API 模型也会说明 task context timing：已有 `Context` 参数可通过
+`context.timing()` 读取 timing；C callback context 指针可先检查 `context->has_timing`，
+再读取 `context->timing`。handler 签名不因此改变。realtime 运行时这些字段是 runtime
+observed scheduling time；replay / temporary island 使用 fixture 驱动的 deterministic
+timing。生命周期 context 默认不携带 timing，用户代码必须按可选值处理。
 
 FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
 
@@ -467,10 +472,10 @@ lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=
 - `queue_depth`：lane 当前排队任务数。
 - `dispatched_count`：lane 累计调度次数。
 
-这些指标由 runtime 内置的调度健康策略自动采集，Rust 和 C++ 生成 shell 行为一致。task timing
-字段也会通过现有 `flowrt::Context` 提供给用户算法；它们描述的是 FlowRT runtime 的调度
-时间，不是传感器事件时间或跨机器时钟同步。所有健康字段使用 `serde(default)` 保证前向
-兼容，旧版 JSON 不含健康字段时解析为零值。
+这些指标由 runtime 内置的调度健康策略自动采集，Rust 和 C++ 生成 shell 行为一致。task
+timing 字段也会通过现有 `flowrt::Context` 或 C callback context 提供给用户代码；它们
+描述的是 FlowRT runtime 的调度时间，不是传感器事件时间或跨机器时钟同步。所有健康字段
+使用 `serde(default)` 保证前向兼容，旧版 JSON 不含健康字段时解析为零值。
 
 ## 录制运行态事件
 

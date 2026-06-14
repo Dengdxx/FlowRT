@@ -29,6 +29,7 @@ pub struct AppApiManifest {
     contract: AppApiContract,
     package: AppApiPackage,
     graph: AppApiGraph,
+    runtime_context: AppApiRuntimeContext,
     components: Vec<AppApiComponent>,
     stubs: Vec<AppApiStub>,
 }
@@ -56,6 +57,31 @@ struct AppApiGraph {
     profile: String,
     backend: String,
     worker_threads: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct AppApiRuntimeContext {
+    task_timing: AppApiTaskTimingContext,
+}
+
+#[derive(Debug, Serialize)]
+struct AppApiTaskTimingContext {
+    access: AppApiTaskTimingAccess,
+    available_in_task_context: bool,
+    available_in_lifecycle_context: bool,
+    handler_signature_changed: bool,
+    fields: Vec<&'static str>,
+    clock_sources: Vec<&'static str>,
+    realtime_semantics: &'static str,
+    replay_semantics: &'static str,
+    non_goals: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct AppApiTaskTimingAccess {
+    rust: &'static str,
+    cpp: &'static str,
+    c: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -286,9 +312,47 @@ pub(crate) fn app_api_manifest(contract: &ContractIr) -> AppApiManifest {
             backend: profile.backend.0.clone(),
             worker_threads: profile.scheduler.worker_threads,
         },
+        runtime_context: runtime_context_manifest(),
         components,
         stubs,
     }
+}
+
+fn runtime_context_manifest() -> AppApiRuntimeContext {
+    AppApiRuntimeContext {
+        task_timing: AppApiTaskTimingContext {
+            access: AppApiTaskTimingAccess {
+                rust: "context.timing()",
+                cpp: "context.timing()",
+                c: "context->has_timing / context->timing",
+            },
+            available_in_task_context: true,
+            available_in_lifecycle_context: false,
+            handler_signature_changed: false,
+            fields: task_timing_fields(),
+            clock_sources: vec!["runtime", "replay"],
+            realtime_semantics: "realtime 运行时读取 runtime observed scheduling time",
+            replay_semantics: "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+            non_goals: vec![
+                "不承诺硬实时",
+                "不建模 sensor timestamp / event-time",
+                "不建模 clock domain / PTP / NTP / approximate sync",
+            ],
+        },
+    }
+}
+
+fn task_timing_fields() -> Vec<&'static str> {
+    vec![
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun",
+    ]
 }
 
 fn component_manifest(
@@ -740,6 +804,12 @@ fn emit_implementation_md(manifest: &AppApiManifest) -> String {
         manifest.graph.profile,
         manifest.graph.backend
     ));
+    output.push_str(&format!(
+        "## Runtime Context\n\n- task context timing: `{}`\n- C callback context: `{}`\n- 不改变用户 handler 签名；已有 `Context` 或 C callback context 指针用于读取 timing。\n- realtime 运行时读取 runtime observed scheduling time；`observed_delta_ms` 表示相邻 observed 时间差。\n- replay / temporary island 使用 fixture 驱动的 deterministic timing。\n- 生命周期 context 默认不携带 timing；读取前需判断 `Option`、指针或 `has_timing`。\n- fields: `{}`\n- non-goals: 不承诺硬实时，不定义 sensor timestamp / event-time、clock domain、PTP、NTP 或 approximate sync。\n\n",
+        manifest.runtime_context.task_timing.access.rust,
+        manifest.runtime_context.task_timing.access.c,
+        manifest.runtime_context.task_timing.fields.join("`, `")
+    ));
     output.push_str("## Components\n\n");
     for component in &manifest.components {
         output.push_str(&format!(
@@ -801,6 +871,7 @@ pub(crate) fn format_app_api_manifest_text(manifest: &AppApiManifest) -> String 
         manifest.graph.backend,
         manifest.graph.worker_threads
     ));
+    push_app_api_runtime_context_text(&mut output, &manifest.runtime_context);
     for component in &manifest.components {
         output.push_str(&format!(
             "\n  component {} language={} kind={} concurrency={} user_file={} reference_stub={}",
@@ -826,6 +897,24 @@ pub(crate) fn format_app_api_manifest_text(manifest: &AppApiManifest) -> String 
         }
     }
     output
+}
+
+fn push_app_api_runtime_context_text(output: &mut String, runtime_context: &AppApiRuntimeContext) {
+    let timing = &runtime_context.task_timing;
+    output.push_str(&format!(
+        "\n  task timing context: access=rust:{} cpp:{} c:{} available_in_task_context={} available_in_lifecycle_context={} handler_signature_changed={}",
+        timing.access.rust,
+        timing.access.cpp,
+        timing.access.c.replace(" / ", "/"),
+        timing.available_in_task_context,
+        timing.available_in_lifecycle_context,
+        timing.handler_signature_changed
+    ));
+    output.push_str(&format!(
+        "\n  timing fields={} clock_sources={}",
+        timing.fields.join("|"),
+        timing.clock_sources.join("|")
+    ));
 }
 
 pub(crate) fn format_app_api_signature_summary(manifest: &AppApiManifest) -> String {

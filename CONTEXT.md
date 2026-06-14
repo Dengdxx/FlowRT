@@ -30,6 +30,10 @@ backpressure、run/success/failure counters 和连续失败计数。
 domain、PTP、NTP、跨机器 exact sync 或 approx sync，也不把多传感器同步策略塞进
 runtime scheduler。deadline、lateness、missed period 和 overrun 只解释 FlowRT runtime
 看到的调度时序，用于用户算法自适应、status/record 观测和诊断。
+`flowrt explain`、App API manifest 和 generated `flowrt/app/implementation.md` 会展示
+task context timing 能力：已有 `Context` 参数通过 `context.timing()` 读取，C callback
+context 指针通过 `context->has_timing` / `context->timing` 读取；handler 签名不因此改变，
+生命周期 context 默认不携带 timing。
 
 `v0.13.0` 完成机器人 runtime completion 收口，补齐参数运行态 apply、抽象 resource
 contract 和 variable frame 工程化。参数控制面已

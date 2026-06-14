@@ -150,9 +150,23 @@ backend = "inproc"
     assert!(text.contains("gain:f32 update=on_tick default=1.0"));
     assert!(text.contains("plan:PlanRequest->PlanResponse handle=ServiceClient_controller_plan arg=plan: &ServiceClient_controller_plan backend=inproc server=plan_svc.plan"));
     assert!(text.contains("navigate:PlanGoal->PlanFeedback->PlanResult handle=OperationClient_controller_navigate arg=navigate: &OperationClient_controller_navigate backend=inproc server=navigator.navigate"));
+    assert!(text.contains("task timing context: access=rust:context.timing() cpp:context.timing() c:context->has_timing/context->timing available_in_task_context=true available_in_lifecycle_context=false handler_signature_changed=false"));
+    assert!(text.contains("timing fields=scheduled_time_ms|observed_time_ms|scheduled_delta_ms|observed_delta_ms|lateness_ms|missed_periods|deadline_missed|overrun clock_sources=runtime|replay"));
 
     assert_eq!(json["package"]["name"], "explain_demo");
     assert_eq!(json["graph"]["mode"], "strict");
+    assert_eq!(
+        json["runtime_context"]["task_timing"]["access"]["rust"],
+        "context.timing()"
+    );
+    assert_eq!(
+        json["runtime_context"]["task_timing"]["available_in_lifecycle_context"],
+        false
+    );
+    assert_eq!(
+        json["runtime_context"]["task_timing"]["handler_signature_changed"],
+        false
+    );
     let controller = json["components"]
         .as_array()
         .unwrap()

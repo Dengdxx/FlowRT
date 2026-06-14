@@ -7,7 +7,11 @@
 示例中的 `app/` 目录是已经手写好的用户实现，用来验证 runtime 和 codegen 主路径。
 `flowrt prepare` / `flowrt build` 会在示例自己的 `flowrt/app/` 下生成
 `app_api.json`、`implementation.md` 和 `stubs/`，这些是可删除、可重建的 App API 参考
-产物，不会覆盖 `examples/**/app/**`。新项目应按 `flowrt init`、可选 `flowrt add ...`、
+产物，不会覆盖 `examples/**/app/**`。其中 `app_api.json`、`implementation.md` 和
+`flowrt explain` 会展示 task context timing：已有 `Context` 参数使用 `context.timing()`，
+C callback context 指针使用 `context->has_timing` / `context->timing`；生命周期 context
+默认无 timing，realtime 与 replay 的时间来源按 runtime observed scheduling time 和
+deterministic fixture timing 区分。新项目应按 `flowrt init`、可选 `flowrt add ...`、
 `flowrt check`、`flowrt prepare`、`flowrt explain`、在 `app/` 放置实现、`flowrt build`、
 `flowrt run` 的顺序完成 Contract-driven App Authoring。
 

@@ -166,6 +166,47 @@ fn app_api_manifest_exposes_generated_user_contract() {
     assert_eq!(manifest["graph"]["profile"], "default");
     assert_eq!(manifest["graph"]["backend"], "inproc");
     assert_eq!(manifest["graph"]["worker_threads"], 4);
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["access"]["rust"],
+        "context.timing()"
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["access"]["cpp"],
+        "context.timing()"
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["access"]["c"],
+        "context->has_timing / context->timing"
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["available_in_task_context"],
+        true
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["available_in_lifecycle_context"],
+        false
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["handler_signature_changed"],
+        false
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["fields"],
+        serde_json::json!([
+            "scheduled_time_ms",
+            "observed_time_ms",
+            "scheduled_delta_ms",
+            "observed_delta_ms",
+            "lateness_ms",
+            "missed_periods",
+            "deadline_missed",
+            "overrun"
+        ])
+    );
+    assert_eq!(
+        manifest["runtime_context"]["task_timing"]["clock_sources"],
+        serde_json::json!(["runtime", "replay"])
+    );
 
     let components = manifest["components"].as_array().unwrap();
     let controller = components
@@ -324,6 +365,18 @@ fn app_api_artifacts_include_implementation_notes_and_reference_stubs() {
     assert!(implementation.contains("app/stubs/rust/controller.rs"));
     assert!(implementation.contains("flowrt_app/c_components.h"));
     assert!(implementation.contains("resource accel_budget capability=compute.acceleration.inference access=read required=false readiness=lazy health=optional on_failure=degrade"));
+    assert!(implementation.contains("task context timing: `context.timing()`"));
+    assert!(implementation.contains("不改变用户 handler 签名"));
+    assert!(implementation.contains("realtime 运行时读取 runtime observed scheduling time"));
+    assert!(
+        implementation
+            .contains("replay / temporary island 使用 fixture 驱动的 deterministic timing")
+    );
+    assert!(implementation.contains("生命周期 context 默认不携带 timing"));
+    assert!(implementation.contains("observed_delta_ms"));
+    assert!(implementation.contains("lateness_ms"));
+    assert!(implementation.contains("missed_periods"));
+    assert!(implementation.contains("overrun"));
 
     let rust_stub = artifact_content(&bundle, "app/stubs/rust/controller.rs");
     assert!(rust_stub.contains("impl flowrt_app::components::Controller for Controller"));
