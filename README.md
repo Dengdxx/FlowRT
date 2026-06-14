@@ -17,8 +17,10 @@ User code controls algorithms.
 本文主要面向 **基于 FlowRT 开发机器人应用的人**。你通常只需要关心：
 
 - 在 `rsdl/` 中声明系统契约。
-- 在 `app/` 中实现组件算法。
-- 用 `flowrt deps` 补全底层依赖缓存，用 `flowrt build` 生成并构建应用。
+- 可用 `flowrt add ...` 追加 RSDL 契约事实；该命令不写用户代码。
+- 用 `flowrt check` 校验契约，用 `flowrt prepare` / `flowrt explain` 查看真实 App API。
+- 参考 `flowrt/app/stubs/` 后，在 `app/` 中手写或复制实现组件算法。
+- 用 `flowrt deps` 补全底层依赖缓存，用 `flowrt build` 编译应用。
 - 用 `flowrt run` 或 `flowrt launch` 运行应用。
 - 用 `flowrt status`、`flowrt echo`、`flowrt hz`、`flowrt params`、`flowrt op` 和
   `flowrt record` 观察运行状态。
@@ -32,29 +34,44 @@ FlowRT 仓库开发者的验证、发布和维护规则见 [开发维护](docs/d
 ```bash
 flowrt init my_robot
 cd my_robot
+flowrt add message Sample value:u32
+flowrt add component Source --lang rust --output sample:Sample
 flowrt check
+flowrt prepare
+flowrt explain
+# 参考 flowrt/app/stubs/ 后，在 app/ 中手写或复制用户实现
 flowrt deps
 flowrt build
 flowrt run --process main
 ```
 
-`flowrt init` 会生成 `flowrt.toml`、`rsdl/robot.rsdl` 和 `app/` 用户代码骨架。
+`flowrt init` 只生成 `flowrt.toml` 和最小 `rsdl/robot.rsdl`，作为项目入口和 RSDL
+起点；它不生成默认业务实现。`flowrt add message/module/component` 是可选 RSDL
+编辑助手，只修改 RSDL，不创建、追加或覆盖 `app/` 用户代码。
 在项目根或子目录中，`check`、`explain`、`deps`、`prepare`、`build`、`run` 和
 `doctor` 可以省略 RSDL 路径；CLI 会向上发现最近的 `flowrt.toml` 并使用
 `[project].main`。显式传入 RSDL 路径时，显式路径优先。
 
-可按语言选择初始骨架：
+`flowrt prepare` 从已校验 Contract IR 生成可重建的 FlowRT 管理产物，包括
+`flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/`。
+`flowrt explain` 复用同一 App API 模型展示用户实现清单，但不写生成目录。用户参考
+`flowrt/app/stubs/` 后，把需要保留的实现手写或复制到项目 `app/`；`prepare` 不直接写
+用户 `app/`。
+
+可按语言选择初始 target runtime：
 
 ```bash
 flowrt init my_cpp_robot --lang cpp
 flowrt init my_c_robot --lang c
 ```
 
-C 入口当前是 C ABI v0 callback table 最小切片：用户代码写在 `app/c/**`，随 generated
-C++ runtime shell 静态编入 CMake app，支持 native component、fixed-size plain data
-message、普通 `build/run` 和 `build --launcher` 后的 `launch`。它不是完整 C runtime，
-也不包含 params、service、operation、variable frame、`io_boundary`、`external`、
-动态加载或 Python binding。
+C 入口当前是 C ABI v0 callback table 最小切片：声明真实 C component 后，
+`prepare` / `explain` 会展示 `app/c/<component>.c` 和 generated
+`flowrt_app/c_components.h` callback table 接入线索。用户代码仍手写或复制到
+`app/c/**`，随 generated C++ runtime shell 静态编入 CMake app，支持 native component、
+fixed-size plain data message、普通 `build/run` 和 `build --launcher` 后的 `launch`。
+它不是完整 C runtime，也不包含 params、service、operation、variable frame、
+`io_boundary`、`external`、动态加载或 Python binding。
 
 ## 安装
 
@@ -155,7 +172,7 @@ my_robot/
   flowrt.toml
   rsdl/
     robot.rsdl
-  app/
+  app/                # 用户手写或复制进来的业务实现
     c/
       controller.c
     cpp/
@@ -167,6 +184,10 @@ my_robot/
       flowrt-external.toml
       bin/
   flowrt/              # FlowRT 生成目录，可删除、可重建，不放业务代码
+    app/
+      app_api.json
+      implementation.md
+      stubs/
 ```
 
 约定：
@@ -175,7 +196,10 @@ my_robot/
 - `rsdl/` 放系统契约。
 - `app/` 放用户业务算法；C v0 用户实现放 `app/c/**`，通过 callback table 接入
   generated C++ runtime shell。
-- `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑。
+- `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 由
+  `flowrt prepare` 生成，属于可删除、可重建的 App API 参考产物。
+- `flowrt/` 是 FlowRT 管理产物，不手写、不承载业务逻辑；`prepare` 不直接写用户
+  `app/`。
 - `external/` 可放本项目随包携带的 external package；系统级 external package 也可安装到 `/opt/flowrt/external/<package>`。
 
 `flowrt.toml` 只记录默认 RSDL 入口，不替代 RSDL 或 Contract IR 的语义事实源。

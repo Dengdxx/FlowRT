@@ -5,7 +5,8 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.11.0`；`v0.11.0` 已发布并合入 `master`。当前用户主路径
+当前 workspace 版本仍为 `0.11.0`；`v0.11.0` 已发布并合入 `master`，`dev/v0.12.0`
+正在收口 Contract-driven App Authoring，正式发布前再统一 bump 版本号。当前用户主路径
 已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
 `flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，
 `rsdl/` 放系统契约，`app/` 放用户算法，`flowrt/` 只放 FlowRT 管理产物。CLI 已新增
@@ -37,7 +38,7 @@ package/release 依赖链会等待该 gate，`scripts/check-release-readiness.sh
 fixed-size plain data 输入/输出和 inproc demo，不支持 params、service、operation、
 variable frame、`io_boundary`、`external`、`pkg_config`、动态加载、独立 C runtime 或
 Python binding。`v0.11.1` 定位为 App SDK / C ABI v0 hardening：不扩展 C 功能，不引入
-Python，只收紧 `flowrt init/add/explain` 诊断、C callback table 失败原因、用户骨架边界
+Python，只收紧 `flowrt init/add/explain` 诊断、C callback table 失败原因、用户接入边界
 和发布就绪检查。RSDL / Contract IR / validator 现已承载
 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
@@ -145,7 +146,7 @@ CLI 已新增正式 `flowrt explain [rsdl] [--format text|json]`：命令与
 component language/kind、建议用户文件路径、task trigger/readiness/lane/concurrency、
 `on_tick` / `on_params_update` 签名、params、输入输出以及 service / operation handle。
 JSON 输出由结构体序列化生成，供 agent 和工具稳定消费；`language = "c"` component
-会展示 `app/c/<component>.c` skeleton 路径和 `flowrt_app/c_components.h` callback
+会展示 `app/c/<component>.c` 用户文件建议路径和 `flowrt_app/c_components.h` callback
 table 接入线索。
 
 当前仍只承诺 `linux-amd64 -> linux-arm64` 交叉编译，不承诺
@@ -314,15 +315,15 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 - `v0.10.3` 把用户代码目录模型一次性切到长期形态：`app/` 是唯一用户业务代码根，
   `app/rust/mod.rs` 是 Rust 用户入口，`app/cpp/**` 和 `app/c/**` 是 C/C++ 用户实现与
   同目录头文件位置；`flowrt/` 仍只放可删除生成物。
-- `v0.11.0` 把 FlowRT 从“可生成可运行”推进到“可作为 app SDK 顺手使用”：`flowrt init`
-  创建现代项目骨架，`flowrt add component/module/message` 生成可填空用户实现骨架，
-  `flowrt check` / `flowrt explain` 展示 component/task 用户 API、参数、输入输出、
-  service/operation handle、trigger、lane 和 concurrency。当前已新增 `flowrt.toml`
-  项目入口 manifest：`[project].main` 只记录默认 RSDL 入口，`add`、`check`、
-  `explain`、`prepare`、`build`、`run`、`deps` 和 `doctor` 省略路径时会从当前目录
-  向上发现 manifest；显式 RSDL 路径优先；RSDL 和 Contract IR 仍是语义事实源。
-  当前 C v0 用户入口已开放 `flowrt init --lang c` 和 `flowrt add component --lang c`，
-  骨架进入 `app/c/**`。
+- `v0.11.0` 把 FlowRT 从“可生成可运行”推进到“可作为 app SDK 顺手使用”：新增
+  `flowrt.toml` 项目入口、`flowrt init`、`flowrt add`、`flowrt explain` 和 C ABI v0
+  最小 demo。`v0.12.0` 已把 app 作者路径纠正为 RSDL 先行：`init` 只创建入口和最小
+  RSDL，`add` 只作为 RSDL 编辑助手，`prepare` / `explain` 产出 App API manifest、
+  实现清单和参考 stubs；用户再把需要保留的实现放进 `app/`。含 `flowrt.toml` 的项目
+  中，`add`、`check`、`explain`、`prepare`、`build`、`run`、`deps` 和 `doctor`
+  省略路径时会从当前目录向上发现 manifest；显式 RSDL 路径优先；RSDL 和 Contract IR
+  仍是语义事实源。当前 C v0 用户入口通过 `language = "c"` component、App API 参考
+  stubs 和 `flowrt_app/c_components.h` callback table 接入。
 - `v0.11.0` 同时落地 C ABI v0 基础：C 侧事实源继续放
   `runtime/cpp/include/flowrt/abi.h`，只暴露 POD、固定宽度整数、borrowed
   string/bytes/frame view、状态码、错误码和 callback table；不暴露 C++/Rust 对象、
@@ -609,7 +610,7 @@ scripts/
 - `external_driver_demo`：无硬件依赖的 external package、supervisor 和 bundle/deploy
   baseline。
 
-仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI，但面向用户的文档、示例和
+仓库内可以用 `cargo run -p flowrt-cli -- ...` 调试 CLI。README、示例、对外文档和
 最终回复默认使用安装后的 `flowrt ...` 命令。
 
 ## 已实现能力
@@ -637,7 +638,7 @@ scripts/
   status/backend/health 整数编码、borrowed string/bytes view、reconnect policy、
   backend health snapshot，以及 C component context、fixed input view、output slot 和
   callback table；Rust runtime 提供对应 `repr(C)` 镜像类型和转换函数。当前已提供 C
-  component v0 adapter、`app/c` 骨架和最小 demo，但不提供完整 C runtime wrapper、
+  component v0 adapter、`app/c` 用户接入路径和最小 demo，但不提供完整 C runtime wrapper、
   动态加载或 Python binding。
 - C++ only 和 C callback v0 contract 的 CMake app 路径，支持普通 `flowrt build` /
   `flowrt run`，以及 `flowrt build --launcher` 后由 `flowrt launch` 通过 generated
@@ -762,7 +763,7 @@ Runtime 已提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象。C ABI
 `ReconnectPolicy`、`BackendHealthSnapshot`、C component context、fixed input view、
 output slot 和 callback table 的稳定 POD 形状；Rust/C++ runtime 内部仍使用各自语言的
 高层类型，并通过转换函数或 C header 对齐。该 callback table 只表达边界；当前 C v0
-已开放 adapter、`app/c` 骨架和最小 demo，但不表示完整 C runtime、动态加载或 Python
+已开放 adapter、`app/c` 用户接入路径和最小 demo，但不表示完整 C runtime、动态加载或 Python
 binding 已开放。`iox2` 和 `zenoh`
 endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地
 publisher/subscriber/session；codec/schema 错误不得触发重连。
@@ -856,8 +857,8 @@ gate。发布前应运行
 release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 /
 v0.9.x / v0.10.2 focused gate 覆盖状态。
 v0.11.0 当前覆盖通过既有 Rust/CLI 测试和示例 smoke 收口：`init`、`add`、`explain`、
-`flowrt.toml` 发现、显式 RSDL 优先级、C ABI layout、C codegen adapter、C skeleton
-生成、C v0 fail-fast，以及 `examples/c_counter_demo` 的普通 build/run 和
+`flowrt.toml` 发现、显式 RSDL 优先级、C ABI layout、C codegen adapter、C reference
+stub、C v0 fail-fast，以及 `examples/c_counter_demo` 的普通 build/run 和
 `build --launcher` / `launch` 路径都已有验证入口。
 当前发布由推送对应 `vX.Y.Z` tag 触发 GitHub Release。
 

@@ -117,7 +117,7 @@ fi
 printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 ```
 
-仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但完整 smoke、面向用户的 README、文档、示例和最终说明应使用系统安装后的 `flowrt ...`。
+仓库开发可以使用 `cargo run -p flowrt-cli -- ...`，但完整 smoke、README、对外文档、示例和最终说明应使用系统安装后的 `flowrt ...`。
 
 仓库内 `flowrt build` 默认不会回退到源码树 `runtime/cpp`；如果安装包未配置且未设置 `FLOWRT_CPP_RUNTIME_DIR`，CLI 和生成 CMake 都会报错。在 FlowRT 仓库内开发时，设置 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1` 环境变量或 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` CMake 变量即可启用源码树回退，不影响正式用户路径。
 
@@ -125,7 +125,11 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 - `flowrt/` 和 `examples/*/flowrt/` 是生成物目录，不入库。
 - 生成目录可以删除并重新生成。
+- `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 是
+  `prepare` 生成的 App API 事实源、实现清单和参考模板，同样不入库。
 - 用户算法代码应放在示例或项目自己的 `app/` 目录，不写进生成文件。
+- `flowrt init` 只创建项目入口和最小 RSDL；`flowrt add` 只编辑 RSDL，不创建、追加或
+  覆盖用户 `app/`。用户参考 `flowrt/app/stubs/` 后自行手写或复制实现。
 - FlowRT 管理代码只做 glue：消息、接口、runtime shell、backend 绑定、启动配置和构建文件。
 - Codegen 入口必须只消费通过 validator 的 Contract IR；crate public API 也要重新校验传入 IR，避免调用方绕过 CLI 后生成半成品或触发 panic。
 - 静态自描述产物必须来自已验证、已投影的 Contract IR。`flowrt/selfdesc/selfdesc.json` 只作为可读 sidecar 和测试辅助；部署后的事实源是生成应用二进制中的 `.flowrt.selfdesc` section。自描述 JSON 要包含静态拓扑、process、channel、profile/target/deployment 和 Message ABI layout，供后续 CLI 在没有 RSDL 源文件时自查。`flowrt-selfdesc` crate 承载 CLI、codegen 和 runtime 共用的 schema 类型、加载/校验和 ABI 格式化，避免在多处复制结构体导致 drift。
@@ -149,7 +153,7 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 - Task-level execution intent 也必须映射到 runtime 行为：`deadline_ms` 要进入 required capabilities，并由生成 shell 在用户回调和输出发布边界执行检查。
 - 单 instance 多 task 必须由 RSDL parser、Contract IR、validator、launch manifest、self-description 和 Rust/C++ runtime shell 同步支持。旧 `[instance.<name>.task]` 单 task 写法归一化为 `main`，新 `[[instance.<name>.task]]` 必须显式声明唯一 task name。生成 shell 复用同一个用户组件接口，每个 task 只读取/发布自己的端口子集，并为每个 task 建立独立局部 scope；参数 pending apply 仍按 instance 每 Scheduler v2 step 执行一次。`exclusive` task 共享 instance 串行 lane，显式 `parallel` task 可通过不同 lane 进入 worker 并发执行。输出采用 two-phase commit：worker 只运行用户回调并收集 task-local output，scheduler 在线程亲和 owner 上按 deterministic ready order 提交 backend output。
 - Message ABI v0.1 的 native ABI 基线仍是 fixed-size plain data；`bytes`、`string` 和 `sequence<T>` 已作为无界 variable frame 落地。backend 支持必须通过 `abi:variable_payload_frame` 与 `allocation:unbounded_dynamic` capability 明确声明；`iox2` 不承载 variable frame。profile 默认 backend 为 `iox2` 且 route 使用 variable frame 时，normalizer 会把该 route 自动选择到支持变长消息的 backend（当前为 `zenoh`），fixed-size route 仍继续走 `iox2`。
-- iox2/zenoh endpoint 需要保持 peer endpoint 重建后的继续收发回归测试。Runtime 提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象：C header 只包含固定宽度整数编码、borrowed string/bytes view、显式 `has_*` optional 标志和 POD snapshot；Rust 侧必须用 `repr(C)` 镜像类型和转换函数对齐。状态只表达 `ready`、`degraded`、`reconnecting`、`failed`，退避策略使用毫秒和 attempt 数，后续 C、Python 或更多语言 runtime 应复用该稳定形状。C component callback table 只表达已编入 app binary 的 C component 与 runtime shell 之间的边界，覆盖 context、fixed input、output slot、lifecycle callback 和 task callback；当前已开放 C v0 codegen adapter、`app/c` 骨架和最小 demo，但它不表示完整 C runtime、动态加载或 Python binding 已开放。修改 `runtime/cpp/include/flowrt/abi.h` 时必须同步 Rust ABI layout 测试和 C++ runtime smoke。`iox2` 和 `zenoh` endpoint 已接入自动恢复，本地 transport 资源丢失或操作失败会重建本地 publisher/subscriber/session；codec/schema 错误不触发重连。恢复逻辑必须留在 backend endpoint 层，不要在 generated shell 中临时吞掉错误。
+- iox2/zenoh endpoint 需要保持 peer endpoint 重建后的继续收发回归测试。Runtime 提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象：C header 只包含固定宽度整数编码、borrowed string/bytes view、显式 `has_*` optional 标志和 POD snapshot；Rust 侧必须用 `repr(C)` 镜像类型和转换函数对齐。状态只表达 `ready`、`degraded`、`reconnecting`、`failed`，退避策略使用毫秒和 attempt 数，后续 C、Python 或更多语言 runtime 应复用该稳定形状。C component callback table 只表达已编入 app binary 的 C component 与 runtime shell 之间的边界，覆盖 context、fixed input、output slot、lifecycle callback 和 task callback；当前已开放 C v0 codegen adapter、`app/c` 用户接入路径、App API reference stub 和最小 demo，但它不表示完整 C runtime、动态加载或 Python binding 已开放。修改 `runtime/cpp/include/flowrt/abi.h` 时必须同步 Rust ABI layout 测试和 C++ runtime smoke。`iox2` 和 `zenoh` endpoint 已接入自动恢复，本地 transport 资源丢失或操作失败会重建本地 publisher/subscriber/session；codec/schema 错误不触发重连。恢复逻辑必须留在 backend endpoint 层，不要在 generated shell 中临时吞掉错误。
 - Mixed contract 的 Message ABI conformance 不能只依赖同一生成器内嵌的 expected bytes；C++ test 写出的 fixture 和 Rust test 读取后的 typed roundtrip 都应保持可运行。
 - 扩展 backend capability 时，先在 `flowrt-ir` 的 typed capability catalog 中维护全局 canonical 顺序，再由 `backend_capabilities`、`channel_route_capabilities`、`channel_capabilities`、`trigger_capability` 或 message ABI 推导函数输出既有 `CapabilityAtom` 字符串。凡是 backend、target、deployment、route、channel 的 capability 组合，都要先去重再按该 catalog 顺序输出，不能依赖声明顺序或首次出现顺序；新增或重排 catalog 都会改变 canonical IR 顺序，因此必须同步补顺序独立测试。不要在 validator、normalizer 或 codegen 中散落新 capability 字符串。
 - Rust/C++ runtime 的 backend capability 报告顺序也必须跟随同一个 catalog；runtime smoke test 应精确断言顺序，避免自描述、诊断和跨语言对比输出出现漂移。

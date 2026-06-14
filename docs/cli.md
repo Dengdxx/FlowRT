@@ -54,6 +54,7 @@ flowrt add message Sample value:u32
 flowrt add component Source --lang rust --output sample:Sample
 flowrt prepare
 flowrt explain
+# 参考 flowrt/app/stubs/ 后，把实现写入项目 app/
 ```
 
 `init` 创建现代 FlowRT app 项目入口和最小 RSDL。默认初始 target runtime 为 Rust；
@@ -74,8 +75,10 @@ rsdl/robot.rsdl
 `rsdl/robot.rsdl` 是可编辑起点，只包含 package、`inproc` profile、`linux-amd64`
 target 和引导注释；它不声明默认 message、component、instance 或 task。用户应先手写
 RSDL，或通过 `flowrt add message` / `flowrt add component` 追加真实契约，再运行
-`flowrt prepare` 或 `flowrt explain` 查看真实实现接口，最后把算法代码写入 `app/`。
-`flowrt/` 仍由 `prepare` / `build` 生成，可删除重建。`init` 不覆盖已存在的目标文件。
+`flowrt prepare` 或 `flowrt explain` 查看真实实现接口，最后把算法代码放入 `app/`。
+`flowrt/` 仍由 `prepare` / `build` 生成，可删除重建。`prepare` 会生成
+`flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/`，
+但不直接修改用户 `app/`。`init` 不覆盖已存在的目标文件。
 
 `init` 不生成默认 Rust `ControllerImpl`、C++ `build_app()` 或 C callback table 用户文件。
 `--lang c` 只把初始 target runtime 设为 C；声明真实 C component 后，`prepare` /
@@ -93,7 +96,7 @@ flowrt add module perception
 flowrt check
 ```
 
-`add` 面向现代 FlowRT app 项目追加小块骨架。省略 RSDL 路径时，命令会和 `check` 一样
+`add` 面向现代 FlowRT app 项目追加小块 RSDL 契约事实。省略 RSDL 路径时，命令会和 `check` 一样
 从当前目录向上发现 `flowrt.toml`，使用 `[project].main` 作为主 RSDL；也可以用
 `--rsdl <path>` 显式指定主 RSDL。命令写入前会先把更新后的 RSDL 解析、归一化和校验，
 校验失败时不替换主 RSDL；已存在的 type、component 或 module 文件会被拒绝。命令不覆盖
@@ -122,7 +125,8 @@ CLI 输入的 component 名可以写成 `Source` 这类用户可读名称，RSDL
 `snake_case`（例如 `source`）。`--input` 和 `--output` 可重复；初始 task 只激活 output，
 不把 input 自动接入 task，因为缺少上游 dataflow bind 的 active input 会被 validator 拒绝。
 需要消费 input 时，应由用户补充 `[[bind.dataflow]]`、island boundary 或 task 输入语义后再
-`flowrt check`。无 input/output 的 component 会生成空参数 `on_tick` 骨架，可直接校验。
+`flowrt check`。无 input/output 的 component 会在 `prepare` / `explain` 的 App API 中
+显示空参数 `on_tick` 入口，可直接校验。
 
 `add module` 创建 `rsdl/modules/<name>.rsdl`，并在主 RSDL 的 `[workspace]` 中确保存在当前
 可解析的最小注册方式：
@@ -200,8 +204,10 @@ flowrt explain
 flowrt explain --format json
 ```
 
-`explain` 解析、归一化并校验 RSDL，但不写入 `flowrt/` 目录，也不构建应用。它面向用户和
-agent 输出比 `check` 更完整的实现说明：
+`explain` 解析、归一化并校验 RSDL，但不写入 `flowrt/` 目录，也不构建应用。它复用
+`flowrt prepare` 生成的 `flowrt/app/app_api.json` App API 模型，因此终端文本、
+JSON 和落盘 manifest 的用户实现清单来自同一事实源。它面向用户和 agent 输出比
+`check` 更完整的实现说明：
 
 - package、graph、profile mode、backend 和 worker 数。
 - 每个 graph 内实际使用的 component language、kind 和建议用户实现路径：Rust 为
@@ -210,6 +216,7 @@ agent 输出比 `check` 更完整的实现说明：
 - `on_tick` / `on_params_update` generated 签名。
 - input source、output target、params 默认值与更新策略、service / operation client handle
   和 server 绑定。
+- 可参考的 `flowrt/app/stubs/` 路径；用户可手写或复制到项目 `app/`。
 
 text 是默认格式，适合终端阅读；JSON 由结构体序列化生成，适合 agent 或工具消费：
 
@@ -233,9 +240,9 @@ graph default
     operation servers: none
 ```
 
-`language = "c"` component 会显示 C skeleton 路径，并提示 callback table adapter 由
-generated `flowrt_app/c_components.h` 声明。该入口仍是 C ABI v0 最小切片，不表示完整
-C runtime、动态加载或 Python binding 能力。
+`language = "c"` component 会显示 C 用户文件建议路径，并提示 callback table adapter
+由 generated `flowrt_app/c_components.h` 声明。该入口仍是 C ABI v0 最小切片，不表示
+完整 C runtime、动态加载或 Python binding 能力。
 
 ## `prepare`
 
@@ -246,10 +253,18 @@ flowrt prepare
 
 `prepare` 会生成 FlowRT 管理产物，包括：
 
+- `flowrt/app/app_api.json`
+- `flowrt/app/implementation.md`
+- `flowrt/app/stubs/`
 - `flowrt/contract/contract.ir.json`
 - `flowrt/launch/launch.json`
 - `flowrt/rust/` 或 `flowrt/cpp/` 下的生成 runtime shell、接口和消息代码
 - `flowrt/build/` 下的生成构建元数据
+
+`flowrt/app/app_api.json` 是 App API manifest；`flowrt/app/implementation.md` 是从同一
+manifest 渲染的用户实现清单；`flowrt/app/stubs/` 是参考模板。三者都是 FlowRT 管理产物，
+可删除后由 `flowrt prepare` 重建。用户可以参考 `stubs/` 后在项目 `app/` 保留实现；
+`prepare` 不直接创建、追加或覆盖用户 `app/`。
 
 默认输出目录是 RSDL 所在项目根目录下的 `flowrt/`。可以用 `--out-dir <dir>` 改写。
 
@@ -1366,8 +1381,12 @@ backend thread-affinity 是 FlowRT 派生的 route metadata，不是用户配置
 - 可以重新生成。
 - 不应放用户算法代码。
 - 不应手写维护生成 runtime shell。
+- `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/`
+  也是可重建生成物，只作为 App API 事实源、实现清单和参考模板。
 - 不应由多个 `flowrt prepare` / `build` 命令同时写入同一个输出目录；CLI 会通过 `.flowrt.lock` 做 fail-fast 保护。
 
 用户代码应放在项目自己的 `app/` 目录。C++ 用户代码通过生成接口和
 `flowrt_user::build_app()` 接入；Rust 用户代码通过生成 trait 和用户模块接入；C v0
 用户代码通过 `flowrt_app/c_components.h` 声明的 callback table factory 接入。
+`prepare` 不直接创建、追加或覆盖用户 `app/`；用户参考 `flowrt/app/stubs/` 后自行手写或
+复制需要保留的实现。

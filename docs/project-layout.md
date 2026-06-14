@@ -4,18 +4,23 @@
 
 ## 标准布局
 
-`flowrt init` 生成的项目采用固定分层。不同语言只生成对应的 `app/` 子目录：
+FlowRT app 项目采用固定分层。`flowrt init` 只创建项目入口和最小 RSDL；用户实现目录在
+参考 `flowrt/app/stubs/` 后手写或复制：
 
 ```text
 my_robot/
   flowrt.toml
   rsdl/
     robot.rsdl
-  app/
-    rust/mod.rs              # 默认 Rust 骨架
-    cpp/components.cpp       # --lang cpp
-    c/controller.c           # --lang c
+  app/                       # 用户业务代码，按需手写或复制参考 stub
+    rust/mod.rs
+    cpp/
+    c/
   flowrt/
+    app/
+      app_api.json
+      implementation.md
+      stubs/
 ```
 
 - `flowrt.toml` 只记录项目入口，当前格式为：
@@ -28,6 +33,8 @@ my_robot/
   和 target。
 - `app/` 放用户业务算法。Rust 用户入口是 `app/rust/mod.rs`；C++ 用户代码位于
   `app/cpp/**`；C callback v0 用户代码位于 `app/c/**`。
+- `flowrt/app/app_api.json`、`flowrt/app/implementation.md` 和 `flowrt/app/stubs/` 是
+  `flowrt prepare` 生成的 App API manifest、实现清单和参考模板。
 - `flowrt/` 是 FlowRT 管理的生成目录，可删除、可重建，不放用户业务代码。
 
 ## 入口发现
@@ -57,9 +64,14 @@ flowrt launch rsdl/robot.rsdl
 
 ## 用户代码边界
 
-生成器只写 `flowrt/` 管理产物和 `flowrt init` / `flowrt add` 创建的用户骨架。用户在
-`app/` 中实现算法；后续 `prepare`、`build`、`run` 和 `launch` 不会把手写业务逻辑写进
-`flowrt/`。
+`flowrt init` 只创建 `flowrt.toml` 和最小 `rsdl/robot.rsdl`。`flowrt add` 只编辑 RSDL：
+`add message` 追加 type，`add module` 追加 module 文件和 workspace 注册，
+`add component` 追加 component、同名 instance 和最小 task；它们都不创建、追加或覆盖
+用户 `app/`。
+
+`flowrt prepare` 只生成 `flowrt/` 管理产物，其中 `flowrt/app/stubs/` 是参考模板，不会被
+自动复制到用户 `app/`。用户参考后在 `app/` 中手写或复制需要保留的算法实现；后续
+`prepare`、`build`、`run` 和 `launch` 不会把手写业务逻辑写进 `flowrt/`。
 
 Rust component 通过 generated trait 接入。C++ component 通过 generated interface 和
 `flowrt_user::build_app()` 用户工厂接入。C component v0 通过

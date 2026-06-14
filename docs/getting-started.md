@@ -1,7 +1,7 @@
 # 快速开始
 
-本文从单包 Debian 包安装 `flowrt`，并跑通现代 app 骨架、Rust-only、C++ only 和 C
-callback v0 示例。
+本文从单包 Debian 包安装 `flowrt`，并跑通 Contract-driven App Authoring 主路径、
+Rust-only、C++ only 和 C callback v0 示例。
 
 ## 前置条件
 
@@ -48,37 +48,53 @@ flowrt deps
 flowrt init my_robot
 cd my_robot
 flowrt check
-flowrt deps
-flowrt build
 ```
 
-默认骨架使用 Rust 用户组件入口 `app/rust/mod.rs`。C++ 和 C 项目使用：
+`flowrt init` 只创建项目入口 `flowrt.toml` 和最小 `rsdl/robot.rsdl`。它不生成默认
+component，不写 `app/`，也不替用户创建业务实现。`--lang` 只设置初始 target runtime；
+C++ 和 C 项目使用：
 
 ```bash
 flowrt init my_cpp_robot --lang cpp
 flowrt init my_c_robot --lang c
 ```
 
-`--lang c` 生成 `app/c/controller.c`，通过 C ABI v0 callback table 接入 generated C++
-runtime shell。当前 C component 是 fixed-size message 的最小切片，不是完整 C runtime；
-params、service、operation、variable frame、`io_boundary` 和 `external` 仍由 validator 拒绝。
+声明真实 C component 后，`flowrt prepare` / `flowrt explain` 会展示
+`app/c/<component>.c` 和 generated `flowrt_app/c_components.h` callback table 接入线索。
+当前 C component 是 fixed-size message 的最小切片，不是完整 C runtime；params、
+service、operation、variable frame、`io_boundary` 和 `external` 仍由 validator 拒绝。
 
-从空骨架继续追加 message 和 component：
+继续声明 message 和 component。可以手写 RSDL，也可以用 `flowrt add ...` 做小步编辑：
 
 ```bash
 flowrt add message Sample value:u32
 flowrt add component Source --lang rust --output sample:Sample
 flowrt add component CSource --lang c --output sample:Sample
 flowrt check
+flowrt prepare
+flowrt explain
 ```
 
 `add` 默认使用当前项目 `flowrt.toml` 指向的主 RSDL。`add message` 会追加
 `[type.Sample]`；`add component` 会追加同名 component、instance、最小 periodic task，
-并把用户实现骨架合并到现代 `app/` 用户代码目录。带 `--input name:Type` 的 component
-会先声明 input port，但初始 task 不自动消费 input；需要上游数据时，应补上
-`[[bind.dataflow]]` 或 island boundary 后再把 input 加入 task，避免 `flowrt check` 因缺失
-incoming bind 失败。`flowrt add component --lang c` 会生成 `app/c/<component>.c`，
-骨架只覆盖 C v0 native callback table 和 fixed-size output 默认值。
+但不会创建、合并或覆盖 `app/` 用户代码。带 `--input name:Type` 的 component 会先声明
+input port，但初始 task 不自动消费 input；需要上游数据时，应补上 `[[bind.dataflow]]`
+或 island boundary 后再把 input 加入 task，避免 `flowrt check` 因缺失 incoming bind
+失败。`flowrt add component --lang c` 也只编辑 RSDL。
+C 用户文件由用户自行放入 `app/c/`。
+
+`flowrt prepare` 会在 `flowrt/` 下生成可重建的 App API 参考产物：
+
+```text
+flowrt/app/app_api.json
+flowrt/app/implementation.md
+flowrt/app/stubs/
+```
+
+`flowrt explain` 复用同一 App API 模型，把用户需要实现的 component、handler、params、
+service、operation 和 C callback table 线索输出到终端或 JSON。用户参考
+`flowrt/app/stubs/` 后，把需要保留的实现手写或复制到项目 `app/`；`prepare` 不直接写
+用户 `app/`。
 
 FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
 
@@ -87,10 +103,11 @@ FlowRT app 项目根可以放置 `flowrt.toml` 作为入口 manifest：
 main = "rsdl/robot.rsdl"
 ```
 
-在含 `flowrt.toml` 的项目根或子目录中，`flowrt check`、`flowrt deps`、`flowrt prepare`、
-`flowrt build`、`flowrt run` 和 `flowrt doctor` 可以省略 RSDL 路径；CLI 会向上发现最近的
-manifest 并使用 `project.main`。显式传入 RSDL 路径时仍以显式路径为准。`flowrt.toml`
-只记录项目入口，不替代 RSDL 或 Contract IR 的语义事实源。
+在含 `flowrt.toml` 的项目根或子目录中，`flowrt check`、`flowrt explain`、
+`flowrt deps`、`flowrt prepare`、`flowrt build`、`flowrt run` 和 `flowrt doctor` 可以
+省略 RSDL 路径；CLI 会向上发现最近的 manifest 并使用 `project.main`。显式传入 RSDL
+路径时仍以显式路径为准。`flowrt.toml` 只记录项目入口，不替代 RSDL 或 Contract IR
+的语义事实源。
 
 交叉编译时，用 target platform 选择 toolchain profile：
 
@@ -158,6 +175,10 @@ flowrt prepare
 
 ```text
 examples/import_demo/flowrt/
+  app/
+    app_api.json
+    implementation.md
+    stubs/
   contract/contract.ir.json
   build/
   launch/launch.json
@@ -165,7 +186,10 @@ examples/import_demo/flowrt/
   cpp/
 ```
 
-`flowrt/` 是 FlowRT 管理目录，可以删除后重新生成。用户算法代码应放在项目自己的 `app/` 目录，不放进生成目录。
+`flowrt/app/app_api.json` 是 App API manifest，`flowrt/app/implementation.md` 是用户实现
+清单，`flowrt/app/stubs/` 是参考模板。它们和其他 `flowrt/` 内容一样由 FlowRT 管理，
+可以删除后重新生成。用户算法代码应放在项目自己的 `app/` 目录，不放进生成目录；
+`prepare` 不直接修改用户 `app/`。
 
 查看已落盘的 Contract IR 摘要：
 

@@ -4,6 +4,13 @@
 
 首次运行涉及 `flowrt build` 的示例前，先执行 `flowrt deps --backend all`，或对单个示例执行 `flowrt deps <示例 rsdl>`。`flowrt deps` 只预热 FlowRT 底层依赖缓存；示例二进制由 `flowrt build` 写入各自项目的 `flowrt/build/bin/release/`。
 
+示例中的 `app/` 目录是已经手写好的用户实现，用来验证 runtime 和 codegen 主路径。
+`flowrt prepare` / `flowrt build` 会在示例自己的 `flowrt/app/` 下生成
+`app_api.json`、`implementation.md` 和 `stubs/`，这些是可删除、可重建的 App API 参考
+产物，不会覆盖 `examples/**/app/**`。新项目应按 `flowrt init`、可选 `flowrt add ...`、
+`flowrt check`、`flowrt prepare`、`flowrt explain`、在 `app/` 放置实现、`flowrt build`、
+`flowrt run` 的顺序完成 Contract-driven App Authoring。
+
 ## 示例列表
 
 | 示例 | Runtime | Backend | 推荐命令 | 用途 |
