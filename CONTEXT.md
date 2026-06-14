@@ -5,8 +5,8 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.12.0`；`dev/v0.13.0` 工作线定位为机器人 runtime completion，
-正在收口参数运行态 apply、抽象 resource contract 和 variable frame 工程化。参数控制面已
+当前 workspace 版本为 `0.13.0`；`v0.13.0` 完成机器人 runtime completion 收口，
+补齐参数运行态 apply、抽象 resource contract 和 variable frame 工程化。参数控制面已
 补齐 runtime apply 闭环：RSDL/Contract IR 参数 schema、component default、instance
 override、live pending set 和 scheduler 边界 apply 由同一自描述元数据串联；Rust/C++
 generated shell 在 apply 边界重新校验 type、`min`、`max`、`enum` 与
