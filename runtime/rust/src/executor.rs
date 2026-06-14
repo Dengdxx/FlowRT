@@ -174,14 +174,83 @@ impl WorkerJob {
     }
 }
 
+/// worker job 未进入执行队列时返回的提交失败信息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerSubmitError {
+    /// 被拒绝提交的 task id。
+    pub task: TaskId,
+}
+
+struct WorkerCompletionQueueInner<O> {
+    completed: Mutex<VecDeque<TaskRunOutput<O>>>,
+    ready: Condvar,
+}
+
+/// worker 线程完成后交还 scheduler 线程的 typed completion queue。
+///
+/// `drain_completed` 和 `try_drain_completed` 只取回当前已完成结果，空队列立即返回；
+/// `wait_completed` 供同步兼容封装在不忙等的情况下等待下一条 completion。
+pub struct WorkerCompletionQueue<O> {
+    inner: Arc<WorkerCompletionQueueInner<O>>,
+}
+
+impl<O> Clone for WorkerCompletionQueue<O> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<O> Default for WorkerCompletionQueue<O> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<O> WorkerCompletionQueue<O> {
+    /// 创建空 completion queue。
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(WorkerCompletionQueueInner {
+                completed: Mutex::new(VecDeque::new()),
+                ready: Condvar::new(),
+            }),
+        }
+    }
+
+    /// 取回当前所有已完成结果；空队列立即返回空列表。
+    pub fn drain_completed(&self) -> Vec<TaskRunOutput<O>> {
+        let mut completed = lock_recover(&self.inner.completed);
+        completed.drain(..).collect()
+    }
+
+    /// 非阻塞取回当前所有已完成结果。
+    pub fn try_drain_completed(&self) -> Vec<TaskRunOutput<O>> {
+        self.drain_completed()
+    }
+
+    /// 等待并取回下一条 completion，供同步兼容封装使用。
+    pub fn wait_completed(&self) -> TaskRunOutput<O> {
+        let mut completed = lock_recover(&self.inner.completed);
+        loop {
+            if let Some(result) = completed.pop_front() {
+                return result;
+            }
+            completed = wait_recover(&self.inner.ready, completed);
+        }
+    }
+
+    fn push(&self, result: TaskRunOutput<O>) {
+        let mut completed = lock_recover(&self.inner.completed);
+        completed.push_back(result);
+        self.inner.ready.notify_all();
+    }
+}
+
 struct TaskBatchState {
     remaining: usize,
     results: Vec<Option<TaskRunResult>>,
-}
-
-struct TaskOutputBatchState<O> {
-    remaining: usize,
-    results: Vec<Option<TaskRunOutput<O>>>,
 }
 
 struct WorkerPoolState {
@@ -387,6 +456,41 @@ impl WorkerPool {
         ));
         self.inner.ready.notify_one();
         Some(())
+    }
+
+    /// 非阻塞提交带 typed output 的 task job。
+    ///
+    /// 调用成功后立即返回，worker 完成时向 `completions` 写入一条
+    /// `TaskRunOutput`。panic 会转换为 `Status::Error`，且不保留输出。
+    pub fn submit_collect<O, F>(
+        &self,
+        task: TaskId,
+        completions: &WorkerCompletionQueue<O>,
+        job: F,
+    ) -> Result<(), WorkerSubmitError>
+    where
+        O: Send + 'static,
+        F: FnOnce() -> TaskRunOutcome<O> + Send + 'static,
+    {
+        let completion_queue = completions.clone();
+        let output_slot = Arc::new(Mutex::new(None));
+        let job_slot = Arc::clone(&output_slot);
+        let completion_slot = Arc::clone(&output_slot);
+        self.spawn_with_completion(
+            move || {
+                let outcome = job();
+                let status = outcome.status;
+                *lock_recover(&job_slot) = Some(TaskRunOutput::from_outcome(task, outcome));
+                status
+            },
+            move |status| {
+                let result = lock_recover(&completion_slot)
+                    .take()
+                    .unwrap_or_else(|| TaskRunOutput::without_outputs(task, status));
+                completion_queue.push(result);
+            },
+        )
+        .ok_or(WorkerSubmitError { task })
     }
 
     pub fn shutdown(&self) -> Status {
@@ -633,23 +737,6 @@ impl DeterministicExecutor {
     }
 }
 
-fn record_task_output<O>(
-    state: &Arc<(Mutex<TaskOutputBatchState<O>>, Condvar)>,
-    index: usize,
-    result: TaskRunOutput<O>,
-) {
-    let (mutex, ready) = &**state;
-    let mut state = lock_recover(mutex);
-    if state.results[index].is_some() {
-        return;
-    }
-    state.results[index] = Some(result);
-    state.remaining = state.remaining.saturating_sub(1);
-    if state.remaining == 0 {
-        ready.notify_all();
-    }
-}
-
 impl ReadyBatch {
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty()
@@ -743,70 +830,52 @@ impl ReadyBatch {
     where
         O: Send + 'static,
     {
-        if self.tasks.is_empty() {
+        let tasks = self.tasks;
+        if tasks.is_empty() {
             return Vec::new();
         }
 
-        let task_count = self.tasks.len();
-        let state = Arc::new((
-            Mutex::new(TaskOutputBatchState {
-                remaining: task_count,
-                results: std::iter::repeat_with(|| None).take(task_count).collect(),
-            }),
-            Condvar::new(),
-        ));
+        let task_count = tasks.len();
+        let completions = WorkerCompletionQueue::new();
         let run = Arc::new(run);
-        let mut fallback = Vec::new();
+        let mut task_indexes = BTreeMap::new();
 
-        for (index, task) in self.tasks.into_iter().enumerate() {
-            let batch_state = Arc::clone(&state);
-            let completion_state = Arc::clone(&state);
+        for (index, task) in tasks.iter().copied().enumerate() {
+            task_indexes.insert(task, index);
             let run_fn = Arc::clone(&run);
-            let submitted = worker_pool.spawn_with_completion(
-                move || {
-                    let outcome = run_fn(task);
-                    let status = outcome.status;
-                    record_task_output(
-                        &batch_state,
-                        index,
-                        TaskRunOutput::from_outcome(task, outcome),
-                    );
-                    status
-                },
-                move |status| {
-                    record_task_output(
-                        &completion_state,
-                        index,
-                        TaskRunOutput::without_outputs(task, status),
-                    );
-                },
-            );
-
-            if submitted.is_none() {
-                fallback.push((index, task));
+            if worker_pool
+                .submit_collect(task, &completions, move || run_fn(task))
+                .is_ok()
+            {
+                continue;
             }
-        }
 
-        for (index, task) in fallback {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(task)))
                 .map(|outcome| TaskRunOutput::from_outcome(task, outcome))
                 .unwrap_or_else(|_| TaskRunOutput::without_outputs(task, Status::Error));
-            record_task_output(&state, index, result);
+            completions.push(result);
         }
 
-        let (mutex, ready) = &*state;
-        let mut batch_state = lock_recover(mutex);
-        while batch_state.remaining != 0 {
-            batch_state = wait_recover(ready, batch_state);
+        let mut ordered = std::iter::repeat_with(|| None)
+            .take(task_count)
+            .collect::<Vec<_>>();
+        let mut recorded = 0;
+        while recorded < task_count {
+            let completion = completions.wait_completed();
+            if let Some(index) = task_indexes.get(&completion.task).copied() {
+                if ordered[index].is_none() {
+                    ordered[index] = Some(completion);
+                    recorded += 1;
+                }
+            }
         }
 
-        batch_state
-            .results
-            .iter_mut()
-            .map(|result| {
-                result
-                    .take()
-                    .expect("ready batch output should be recorded")
+        ordered
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| match result {
+                Some(result) => result,
+                None => TaskRunOutput::without_outputs(tasks[index], Status::Error),
             })
             .collect()
     }
@@ -997,6 +1066,7 @@ mod tests {
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
+            mpsc,
         },
         task::{Context, Poll},
     };
@@ -1597,6 +1667,87 @@ mod tests {
         let status = pool.shutdown();
 
         assert_eq!(status, Status::Error);
+    }
+
+    #[test]
+    fn worker_pool_submit_collect_returns_before_completion_and_drains_outputs() {
+        let pool = WorkerPool::new(1);
+        let completions = WorkerCompletionQueue::new();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let submitted = pool.submit_collect(TaskId(7), &completions, move || {
+            let _ = entered_tx.send(());
+            match release_rx.recv() {
+                Ok(()) => TaskRunOutcome::ok(vec![7_u64]),
+                Err(_) => TaskRunOutcome::error(Vec::new()),
+            }
+        });
+
+        assert_eq!(submitted, Ok(()));
+        assert_eq!(entered_rx.recv_timeout(Duration::from_millis(200)), Ok(()));
+        assert!(completions.try_drain_completed().is_empty());
+        assert_eq!(release_tx.send(()), Ok(()));
+        assert_eq!(pool.drain(), Status::Ok);
+        assert_eq!(
+            completions.drain_completed(),
+            vec![TaskRunOutput {
+                task: TaskId(7),
+                status: Status::Ok,
+                outputs: Some(vec![7_u64]),
+            }]
+        );
+        assert!(completions.drain_completed().is_empty());
+        assert_eq!(pool.shutdown(), Status::Ok);
+    }
+
+    #[test]
+    fn worker_pool_submit_collect_converts_panic_to_error_without_outputs() {
+        let pool = WorkerPool::new(1);
+        let completions = WorkerCompletionQueue::<Vec<u64>>::new();
+
+        assert_eq!(
+            pool.submit_collect(TaskId(9), &completions, || {
+                std::panic::panic_any("completion job failed");
+            }),
+            Ok(())
+        );
+
+        assert_eq!(pool.drain(), Status::Error);
+        assert_eq!(
+            completions.drain_completed(),
+            vec![TaskRunOutput::<Vec<u64>>::without_outputs(
+                TaskId(9),
+                Status::Error,
+            )]
+        );
+        assert_eq!(pool.shutdown(), Status::Error);
+    }
+
+    #[test]
+    fn worker_pool_shutdown_preserves_completed_queue_and_rejects_submit() {
+        let pool = WorkerPool::new(1);
+        let completions = WorkerCompletionQueue::new();
+
+        assert_eq!(
+            pool.submit_collect(TaskId(10), &completions, || TaskRunOutcome::ok(vec![
+                10_u64
+            ])),
+            Ok(())
+        );
+        assert_eq!(pool.shutdown(), Status::Ok);
+        assert_eq!(
+            completions.drain_completed(),
+            vec![TaskRunOutput {
+                task: TaskId(10),
+                status: Status::Ok,
+                outputs: Some(vec![10_u64]),
+            }]
+        );
+        assert_eq!(
+            pool.submit_collect(TaskId(11), &completions, || TaskRunOutcome::ok(Vec::new())),
+            Err(WorkerSubmitError { task: TaskId(11) })
+        );
     }
 
     #[test]

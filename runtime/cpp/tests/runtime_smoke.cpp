@@ -2,10 +2,12 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <flowrt/abi.h>
 #include <flowrt/runtime.hpp>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -16,6 +18,31 @@
 
 struct Sample {
     std::uint32_t value;
+};
+
+struct CompletionGate {
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool entered{false};
+    bool released{false};
+
+    void enter_and_wait() {
+        std::unique_lock lock(mutex);
+        entered = true;
+        ready.notify_all();
+        ready.wait(lock, [this]() { return released; });
+    }
+
+    void wait_entered() {
+        std::unique_lock lock(mutex);
+        ready.wait(lock, [this]() { return entered; });
+    }
+
+    void release() {
+        std::lock_guard lock(mutex);
+        released = true;
+        ready.notify_all();
+    }
 };
 
 struct TinyWireMessage {
@@ -741,6 +768,68 @@ int main() {
     assert(failing_pool.spawn([]() { return flowrt::Status::Error; }));
     assert(failing_pool.spawn([]() { return flowrt::Status::Ok; }));
     assert(failing_pool.shutdown() == flowrt::Status::Error);
+
+    flowrt::WorkerPool completion_pool{1};
+    flowrt::WorkerCompletionQueue<std::vector<std::uint64_t>> completion_queue;
+    auto completion_gate = std::make_shared<CompletionGate>();
+    const auto completion_submission =
+        completion_pool.submit_collect(flowrt::TaskId{7}, completion_queue, [completion_gate]() {
+            completion_gate->enter_and_wait();
+            return flowrt::TaskRunOutcome<std::vector<std::uint64_t>>::ok(
+                std::vector<std::uint64_t>{7U});
+        });
+    assert(completion_submission.submitted());
+    completion_gate->wait_entered();
+    assert(completion_queue.try_drain_completed().empty());
+    completion_gate->release();
+    assert(completion_pool.drain() == flowrt::Status::Ok);
+    auto completion_results = completion_queue.drain_completed();
+    assert(completion_results.size() == 1U);
+    assert(completion_results[0].task == flowrt::TaskId{7});
+    assert(completion_results[0].status == flowrt::Status::Ok);
+    assert(completion_results[0].outputs.has_value());
+    assert(completion_results[0].outputs->front() == 7U);
+    assert(completion_queue.drain_completed().empty());
+    assert(completion_pool.shutdown() == flowrt::Status::Ok);
+
+    flowrt::WorkerPool exception_submit_pool{1};
+    flowrt::WorkerCompletionQueue<std::vector<std::uint64_t>> exception_submit_queue;
+    const auto exception_submission = exception_submit_pool.submit_collect(
+        flowrt::TaskId{9}, exception_submit_queue,
+        []() -> flowrt::TaskRunOutcome<std::vector<std::uint64_t>> {
+            throw std::runtime_error("completion job failed");
+        });
+    assert(exception_submission.submitted());
+    assert(exception_submit_pool.drain() == flowrt::Status::Error);
+    auto exception_submit_results = exception_submit_queue.drain_completed();
+    assert(exception_submit_results.size() == 1U);
+    assert(exception_submit_results[0].task == flowrt::TaskId{9});
+    assert(exception_submit_results[0].status == flowrt::Status::Error);
+    assert(!exception_submit_results[0].outputs.has_value());
+    assert(exception_submit_pool.shutdown() == flowrt::Status::Error);
+
+    flowrt::WorkerPool shutdown_completion_pool{1};
+    flowrt::WorkerCompletionQueue<std::vector<std::uint64_t>> shutdown_completion_queue;
+    const auto shutdown_submission = shutdown_completion_pool.submit_collect(
+        flowrt::TaskId{10}, shutdown_completion_queue, []() {
+            return flowrt::TaskRunOutcome<std::vector<std::uint64_t>>::ok(
+                std::vector<std::uint64_t>{10U});
+        });
+    assert(shutdown_submission.submitted());
+    assert(shutdown_completion_pool.shutdown() == flowrt::Status::Ok);
+    auto shutdown_completion_results = shutdown_completion_queue.drain_completed();
+    assert(shutdown_completion_results.size() == 1U);
+    assert(shutdown_completion_results[0].task == flowrt::TaskId{10});
+    assert(shutdown_completion_results[0].status == flowrt::Status::Ok);
+    assert(shutdown_completion_results[0].outputs.has_value());
+    assert(shutdown_completion_results[0].outputs->front() == 10U);
+    const auto rejected_submission = shutdown_completion_pool.submit_collect(
+        flowrt::TaskId{11}, shutdown_completion_queue, []() {
+            return flowrt::TaskRunOutcome<std::vector<std::uint64_t>>::ok(
+                std::vector<std::uint64_t>{11U});
+        });
+    assert(!rejected_submission.submitted());
+    assert(rejected_submission.task == flowrt::TaskId{11});
 
     flowrt::DeterministicExecutor parallel_executor{2};
     parallel_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);

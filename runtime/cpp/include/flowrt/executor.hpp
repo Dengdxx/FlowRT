@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <coroutine>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <flowrt/core.hpp>
 #include <functional>
@@ -127,6 +128,66 @@ struct TaskRunOutput {
     }
 };
 
+/**
+ * @brief worker 完成后由 scheduler 线程回收的 typed completion queue。
+ *
+ * `drain_completed` 与 `try_drain_completed` 只回收当前已完成结果，空队列立即返回；
+ * `wait_completed` 用于同步兼容封装等待下一条 completion，不使用忙等。
+ */
+template <typename Outputs>
+class WorkerCompletionQueue {
+   public:
+    /**
+     * @brief 写入一条已完成 task 结果。
+     */
+    void push(TaskRunOutput<Outputs> result) const {
+        std::lock_guard lock(state_->mutex);
+        state_->completed.push_back(std::move(result));
+        state_->ready.notify_all();
+    }
+
+    /**
+     * @brief 非阻塞回收当前所有已完成结果。
+     */
+    [[nodiscard]] std::vector<TaskRunOutput<Outputs>> drain_completed() const {
+        std::lock_guard lock(state_->mutex);
+        std::vector<TaskRunOutput<Outputs>> completed;
+        completed.reserve(state_->completed.size());
+        while (!state_->completed.empty()) {
+            completed.push_back(std::move(state_->completed.front()));
+            state_->completed.pop_front();
+        }
+        return completed;
+    }
+
+    /**
+     * @brief 非阻塞尝试回收当前所有已完成结果。
+     */
+    [[nodiscard]] std::vector<TaskRunOutput<Outputs>> try_drain_completed() const {
+        return drain_completed();
+    }
+
+    /**
+     * @brief 等待并回收下一条已完成结果。
+     */
+    [[nodiscard]] TaskRunOutput<Outputs> wait_completed() const {
+        std::unique_lock lock(state_->mutex);
+        state_->ready.wait(lock, [this]() { return !state_->completed.empty(); });
+        auto result = std::move(state_->completed.front());
+        state_->completed.pop_front();
+        return result;
+    }
+
+   private:
+    struct State {
+        mutable std::mutex mutex;
+        std::condition_variable ready;
+        std::deque<TaskRunOutput<Outputs>> completed;
+    };
+
+    std::shared_ptr<State> state_{std::make_shared<State>()};
+};
+
 enum class ScheduleEvent {
     Data,
     Timer,
@@ -137,13 +198,9 @@ class ScheduleWaiter {
    public:
     ScheduleWaiter() : state_(std::make_shared<State>()) {}
 
-    void notify_data() const {
-        notify_data_with_time(std::nullopt);
-    }
+    void notify_data() const { notify_data_with_time(std::nullopt); }
 
-    void notify_data_at_ms(std::uint64_t time_ms) const {
-        notify_data_with_time(time_ms);
-    }
+    void notify_data_at_ms(std::uint64_t time_ms) const { notify_data_with_time(time_ms); }
 
     [[nodiscard]] std::optional<std::uint64_t> take_data_time_ms() const {
         std::lock_guard lock(state_->mutex);
@@ -157,8 +214,8 @@ class ScheduleWaiter {
         ++state_->data_generation;
         if (time_ms.has_value()) {
             state_->data_time_ms = state_->data_time_ms.has_value()
-                                     ? std::max(*state_->data_time_ms, *time_ms)
-                                     : time_ms;
+                                       ? std::max(*state_->data_time_ms, *time_ms)
+                                       : time_ms;
         }
         state_->ready.notify_all();
     }
@@ -514,6 +571,19 @@ class DetachedTask {
     };
 };
 
+/**
+ * @brief worker job 提交结果。
+ */
+struct WorkerSubmitResult {
+    TaskId task;      ///< 被提交或拒绝的 task id。
+    bool accepted{};  ///< true 表示 job 已进入 worker 队列。
+
+    /**
+     * @brief 返回 job 是否已成功进入 worker 队列。
+     */
+    [[nodiscard]] bool submitted() const noexcept { return accepted; }
+};
+
 class WorkerPool {
    public:
     using Job = std::function<Status()>;
@@ -555,6 +625,51 @@ class WorkerPool {
         jobs_.push(QueuedJob{.job = std::move(job), .completion = std::move(completion)});
         ready_.notify_one();
         return true;
+    }
+
+    /**
+     * @brief 非阻塞提交带 typed output 的 task job。
+     *
+     * 提交成功后立即返回；worker 完成时向 completion queue 写入一条
+     * `TaskRunOutput`。exception 会转换为 `Status::Error`，且不保留输出。
+     */
+    template <typename Outputs, typename Fn>
+    WorkerSubmitResult submit_collect(TaskId task, WorkerCompletionQueue<Outputs> completions,
+                                      Fn &&fn) {
+        using FnType = std::decay_t<Fn>;
+        struct CompletionSlot {
+            std::mutex mutex;
+            std::optional<TaskRunOutput<Outputs>> result;
+        };
+
+        auto slot = std::make_shared<CompletionSlot>();
+        auto fn_shared = std::make_shared<FnType>(std::forward<Fn>(fn));
+        const auto submitted = spawn_with_completion(
+            [task, slot, fn_shared]() {
+                auto outcome = std::invoke(*fn_shared);
+                const auto status = outcome.status;
+                {
+                    std::lock_guard lock(slot->mutex);
+                    slot->result = TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome));
+                }
+                return status;
+            },
+            [task, slot, completions](Status status) {
+                std::optional<TaskRunOutput<Outputs>> result;
+                {
+                    std::lock_guard lock(slot->mutex);
+                    if (slot->result.has_value()) {
+                        result.emplace(std::move(*slot->result));
+                        slot->result.reset();
+                    }
+                }
+                if (result.has_value()) {
+                    completions.push(std::move(*result));
+                } else {
+                    completions.push(TaskRunOutput<Outputs>::without_outputs(task, status));
+                }
+            });
+        return WorkerSubmitResult{.task = task, .accepted = submitted};
     }
 
     void close_admission() noexcept {
@@ -730,63 +845,48 @@ auto ReadyBatch::run_collect(WorkerPool &worker_pool, Fn &&fn)
         return {};
     }
 
-    struct BatchState {
-        std::mutex mutex;
-        std::condition_variable ready;
-        std::size_t remaining{};
-        std::vector<std::optional<TaskRunOutput<Outputs>>> results;
-    };
-
-    auto state = std::make_shared<BatchState>();
-    state->remaining = tasks_.size();
-    state->results.resize(tasks_.size());
+    WorkerCompletionQueue<Outputs> completions;
+    std::map<TaskId, std::size_t> task_indexes;
     auto fn_shared = std::make_shared<FnType>(std::forward<Fn>(fn));
-    auto record_result = [state](std::size_t index, TaskRunOutput<Outputs> result) {
-        std::lock_guard lock(state->mutex);
-        if (state->results[index].has_value()) {
-            return;
-        }
-        state->results[index] = std::move(result);
-        if (state->remaining > 0U) {
-            --state->remaining;
-        }
-        if (state->remaining == 0U) {
-            state->ready.notify_all();
-        }
-    };
 
     for (std::size_t index = 0; index < tasks_.size(); ++index) {
         const auto task = tasks_[index];
-        auto submitted = worker_pool.spawn_with_completion(
-            [fn_shared, record_result, index, task]() {
-                auto outcome = std::invoke(*fn_shared, task);
-                const auto status = outcome.status;
-                record_result(index,
-                              TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
-                return status;
-            },
-            [record_result, index, task](Status status) {
-                record_result(index, TaskRunOutput<Outputs>::without_outputs(task, status));
-            });
-        if (submitted) {
+        task_indexes[task] = index;
+        auto submitted = worker_pool.submit_collect<Outputs>(
+            task, completions, [fn_shared, task]() { return std::invoke(*fn_shared, task); });
+        if (submitted.submitted()) {
             continue;
         }
 
         try {
             auto outcome = std::invoke(*fn_shared, task);
-            record_result(index, TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
+            completions.push(TaskRunOutput<Outputs>::from_outcome(task, std::move(outcome)));
         } catch (...) {
-            record_result(index, TaskRunOutput<Outputs>::without_outputs(task, Status::Error));
+            completions.push(TaskRunOutput<Outputs>::without_outputs(task, Status::Error));
         }
     }
 
-    std::unique_lock lock(state->mutex);
-    state->ready.wait(lock, [&state]() { return state->remaining == 0U; });
+    std::vector<std::optional<TaskRunOutput<Outputs>>> ordered;
+    ordered.resize(tasks_.size());
+    std::size_t recorded = 0;
+    while (recorded < tasks_.size()) {
+        auto completion = completions.wait_completed();
+        const auto it = task_indexes.find(completion.task);
+        if (it != task_indexes.end() && !ordered[it->second].has_value()) {
+            ordered[it->second] = std::move(completion);
+            ++recorded;
+        }
+    }
 
     std::vector<TaskRunOutput<Outputs>> results;
-    results.reserve(state->results.size());
-    for (auto &result : state->results) {
-        results.push_back(std::move(*result));
+    results.reserve(ordered.size());
+    for (std::size_t index = 0; index < ordered.size(); ++index) {
+        if (ordered[index].has_value()) {
+            results.push_back(std::move(*ordered[index]));
+        } else {
+            results.push_back(
+                TaskRunOutput<Outputs>::without_outputs(tasks_[index], Status::Error));
+        }
     }
     return results;
 }
