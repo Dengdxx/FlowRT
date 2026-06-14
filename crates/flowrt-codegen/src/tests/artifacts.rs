@@ -307,6 +307,9 @@ channel = "latest"
     assert!(runtime_shell.contains("FlowRT C component callback table major version mismatch"));
     assert!(runtime_shell.contains("FlowRT C component callback table minor version mismatch"));
     assert!(runtime_shell.contains("FlowRT C component callback table missing v0 feature bit"));
+    assert!(
+        runtime_shell.contains("FlowRT C component callback table missing task timing feature bit")
+    );
     assert!(runtime_shell.contains("FlowRT C component callback table has unknown feature bit"));
     assert!(runtime_shell.contains("FlowRT C component callback table missing run_on_message"));
     assert!(runtime_shell.contains("FlowRT C component callback table invalid for instance `"));
@@ -322,14 +325,47 @@ channel = "latest"
             .contains("callbacks->version_minor != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR")
     );
     assert!(runtime_shell.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0"));
+    assert!(runtime_shell.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1"));
+    assert!(runtime_shell.contains("constexpr std::uint64_t kKnownFeatures = kRequiredFeatures"));
     assert!(
         runtime_shell
-            .contains("(callbacks->feature_flags & kRequiredFeatures) != kRequiredFeatures")
+            .contains("callbacks->feature_flags & FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1")
     );
     assert!(runtime_shell.contains("(callbacks->feature_flags & ~kKnownFeatures) != 0U"));
     assert!(runtime_shell.contains("callbacks->run_on_message == nullptr"));
     assert!(runtime_shell.contains("make_c_controller_adapter()"));
     assert!(runtime_shell.contains("flowrt_app_controller_callbacks()"));
+    assert!(
+        runtime_shell.contains(
+            "flowrt_c_task_timing_t make_c_task_timing(const flowrt::TaskTiming& timing)"
+        )
+    );
+    assert!(runtime_shell.contains("const auto* timing = runtime_context.timing();"));
+    assert!(runtime_shell.contains(".scheduled_time_ms = timing.scheduled_time_ms,"));
+    assert!(runtime_shell.contains(".observed_time_ms = timing.observed_time_ms,"));
+    assert!(runtime_shell.contains(".scheduled_delta_ms = timing.scheduled_delta_ms,"));
+    assert!(runtime_shell.contains(".observed_delta_ms = timing.observed_delta_ms,"));
+    assert!(runtime_shell.contains(".period_ms = timing.period_ms.value_or(0U),"));
+    assert!(runtime_shell.contains(".deadline_ms = timing.deadline_ms.value_or(0U),"));
+    assert!(runtime_shell.contains(".lateness_ms = timing.lateness_ms,"));
+    assert!(runtime_shell.contains(".missed_periods = timing.missed_periods,"));
+    assert!(runtime_shell.contains(".clock_source = c_clock_source(timing.clock_source),"));
+    assert!(
+        runtime_shell.contains(".has_period_ms = timing.period_ms.has_value() ? std::uint8_t{1}")
+    );
+    assert!(
+        runtime_shell
+            .contains(".has_deadline_ms = timing.deadline_ms.has_value() ? std::uint8_t{1}")
+    );
+    assert!(runtime_shell.contains(".deadline_missed = timing.deadline_missed ?"));
+    assert!(runtime_shell.contains(".overrun = timing.overrun ?"));
+    assert!(runtime_shell.contains(".has_timing = timing != nullptr ?"));
+    assert!(
+        runtime_shell.contains(
+            "const auto context = make_c_component_context(\"controller\", \"controller\""
+        )
+    );
+    assert!(runtime_shell.contains("tick_context, step, tick_time_ms, 0, false);"));
     assert!(runtime_shell.contains("flowrt_c_input_view_t controller_sample_input"));
     assert!(runtime_shell.contains("sample.present() ? std::uint8_t{1} : std::uint8_t{0}"));
     assert!(runtime_shell.contains("sample.stale() ? std::uint8_t{1} : std::uint8_t{0}"));

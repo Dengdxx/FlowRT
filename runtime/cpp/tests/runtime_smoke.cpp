@@ -101,8 +101,11 @@ int main() {
     static_assert(FLOWRT_FRAME_LEASE_GENERATION_MISMATCH == 4U);
     static_assert(FLOWRT_FRAME_LEASE_ERROR == 5U);
     static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR == 0U);
-    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 1U);
+    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 2U);
     static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 == 1U);
+    static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1 == 2U);
+    static_assert(FLOWRT_C_CLOCK_SOURCE_RUNTIME == 0U);
+    static_assert(FLOWRT_C_CLOCK_SOURCE_REPLAY == 1U);
     static_assert(FLOWRT_C_OUTPUT_UNWRITTEN == 0U);
     static_assert(FLOWRT_C_OUTPUT_WRITTEN == 1U);
     static_assert(FLOWRT_C_OUTPUT_TRUNCATED == 2U);
@@ -279,7 +282,25 @@ int main() {
     static_assert(offsetof(flowrt_diagnostics_snapshot_t, generated_unix_ms) == 64U);
     static_assert(offsetof(flowrt_diagnostics_snapshot_t, healthy) == 72U);
     static_assert(offsetof(flowrt_diagnostics_snapshot_t, has_generated_unix_ms) == 73U);
-    static_assert(sizeof(flowrt_c_component_context_t) == 96U);
+    static_assert(sizeof(flowrt_c_task_timing_t) == 120U);
+    static_assert(alignof(flowrt_c_task_timing_t) == alignof(void *));
+    static_assert(offsetof(flowrt_c_task_timing_t, step) == 0U);
+    static_assert(offsetof(flowrt_c_task_timing_t, task_name) == 8U);
+    static_assert(offsetof(flowrt_c_task_timing_t, trigger) == 24U);
+    static_assert(offsetof(flowrt_c_task_timing_t, clock_source) == 40U);
+    static_assert(offsetof(flowrt_c_task_timing_t, scheduled_time_ms) == 48U);
+    static_assert(offsetof(flowrt_c_task_timing_t, observed_time_ms) == 56U);
+    static_assert(offsetof(flowrt_c_task_timing_t, scheduled_delta_ms) == 64U);
+    static_assert(offsetof(flowrt_c_task_timing_t, observed_delta_ms) == 72U);
+    static_assert(offsetof(flowrt_c_task_timing_t, period_ms) == 80U);
+    static_assert(offsetof(flowrt_c_task_timing_t, deadline_ms) == 88U);
+    static_assert(offsetof(flowrt_c_task_timing_t, lateness_ms) == 96U);
+    static_assert(offsetof(flowrt_c_task_timing_t, missed_periods) == 104U);
+    static_assert(offsetof(flowrt_c_task_timing_t, has_period_ms) == 112U);
+    static_assert(offsetof(flowrt_c_task_timing_t, has_deadline_ms) == 113U);
+    static_assert(offsetof(flowrt_c_task_timing_t, deadline_missed) == 114U);
+    static_assert(offsetof(flowrt_c_task_timing_t, overrun) == 115U);
+    static_assert(sizeof(flowrt_c_component_context_t) == 216U);
     static_assert(offsetof(flowrt_c_component_context_t, component_name) == 0U);
     static_assert(offsetof(flowrt_c_component_context_t, instance_name) ==
                   sizeof(flowrt_string_view_t));
@@ -291,6 +312,8 @@ int main() {
     static_assert(offsetof(flowrt_c_component_context_t, tick_time_ms) == 72U);
     static_assert(offsetof(flowrt_c_component_context_t, deadline_ms) == 80U);
     static_assert(offsetof(flowrt_c_component_context_t, has_deadline_ms) == 88U);
+    static_assert(offsetof(flowrt_c_component_context_t, has_timing) == 89U);
+    static_assert(offsetof(flowrt_c_component_context_t, timing) == 96U);
     static_assert(sizeof(flowrt_c_input_view_t) == 88U);
     static_assert(offsetof(flowrt_c_input_view_t, name) == 0U);
     static_assert(offsetof(flowrt_c_input_view_t, type_name) == sizeof(flowrt_string_view_t));

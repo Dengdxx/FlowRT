@@ -19,8 +19,9 @@ extern "C" {
 #define FLOWRT_ABI_VERSION_MINOR UINT32_C(2)
 
 #define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR UINT32_C(0)
-#define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR UINT32_C(1)
+#define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR UINT32_C(2)
 #define FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 UINT64_C(1)
+#define FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1 UINT64_C(2)
 
 typedef uint32_t flowrt_status_t;
 #define FLOWRT_STATUS_OK ((flowrt_status_t)0U)
@@ -297,8 +298,8 @@ typedef struct flowrt_diagnostics_snapshot_t {
  * component 之间的调用边界。所有名称和 payload 都是借用视图；callback 不接管
  * 输入 payload、输出 slot 或 user_data 的所有权。函数指针可以按 C 语言惯例传
  * NULL；adapter 必须在调用前校验 size、version、feature_flags 和必填 callback。
- * 当前 callback table 必须设置 FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0，未识别的
- * feature bit 必须被 adapter 拒绝。
+ * 当前 callback table 必须同时设置 FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 和
+ * FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1，未识别的 feature bit 必须被 adapter 拒绝。
  */
 
 typedef uint32_t flowrt_c_output_status_t;
@@ -306,6 +307,31 @@ typedef uint32_t flowrt_c_output_status_t;
 #define FLOWRT_C_OUTPUT_WRITTEN ((flowrt_c_output_status_t)1U)
 #define FLOWRT_C_OUTPUT_TRUNCATED ((flowrt_c_output_status_t)2U)
 #define FLOWRT_C_OUTPUT_ERROR ((flowrt_c_output_status_t)3U)
+
+typedef uint32_t flowrt_c_clock_source_t;
+#define FLOWRT_C_CLOCK_SOURCE_RUNTIME ((flowrt_c_clock_source_t)0U)
+#define FLOWRT_C_CLOCK_SOURCE_REPLAY ((flowrt_c_clock_source_t)1U)
+
+typedef struct flowrt_c_task_timing_t {
+    uint64_t step;
+    flowrt_string_view_t task_name;
+    flowrt_string_view_t trigger;
+    flowrt_c_clock_source_t clock_source;
+    uint32_t reserved0;
+    uint64_t scheduled_time_ms;
+    uint64_t observed_time_ms;
+    uint64_t scheduled_delta_ms;
+    uint64_t observed_delta_ms;
+    uint64_t period_ms;
+    uint64_t deadline_ms;
+    uint64_t lateness_ms;
+    uint64_t missed_periods;
+    uint8_t has_period_ms;
+    uint8_t has_deadline_ms;
+    uint8_t deadline_missed;
+    uint8_t overrun;
+    uint8_t reserved[4];
+} flowrt_c_task_timing_t;
 
 typedef struct flowrt_c_component_context_t {
     flowrt_string_view_t component_name;
@@ -316,7 +342,9 @@ typedef struct flowrt_c_component_context_t {
     uint64_t tick_time_ms;
     uint64_t deadline_ms;
     uint8_t has_deadline_ms;
-    uint8_t reserved[7];
+    uint8_t has_timing;
+    uint8_t reserved[6];
+    flowrt_c_task_timing_t timing;
 } flowrt_c_component_context_t;
 
 typedef struct flowrt_c_input_view_t {

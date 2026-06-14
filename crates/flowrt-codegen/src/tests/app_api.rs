@@ -346,6 +346,8 @@ fn app_api_artifacts_include_implementation_notes_and_reference_stubs() {
     let c_stub = artifact_content(&bundle, "app/stubs/c/c_filter.c");
     assert!(c_stub.contains("#include \"flowrt_app/c_components.h\""));
     assert!(c_stub.contains("static flowrt_status_t c_filter_run_on_message("));
+    assert!(c_stub.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 |"));
+    assert!(c_stub.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1"));
     assert!(c_stub.contains(".run_on_message = c_filter_run_on_message"));
     assert!(c_stub.contains("flowrt_app_c_filter_callbacks(void)"));
 }

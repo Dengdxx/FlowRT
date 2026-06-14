@@ -92,8 +92,11 @@ task、params、service 和 operation 摘要；C component 会展示 `app/c/<com
 `language = "c"` 的 native component 已可由 codegen 生成 C++ adapter：C 用户文件放
 `app/c/**` 并实现 generated header 声明的静态 callback table factory，generated C++
 runtime shell 通过 C ABI callback table 转发生命周期和 periodic/on_message/startup/shutdown
-task callback；callback table 必须设置 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0`
-且不得设置未知 feature bit。`examples/c_counter_demo` 覆盖 fixed-size `Count` message、
+task callback；C task callback context 会用 `flowrt_c_task_timing_t` 暴露 runtime
+scheduling time，生命周期 callback 默认不携带 task timing；callback table 必须同时设置
+`FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0` 和
+`FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1`，且不得设置未知 feature bit。
+`examples/c_counter_demo` 覆盖 fixed-size `Count` message、
 两个 C native component、CMake app build/run 和 supervisor launch；generated supervisor
 已将 launch manifest 中的 `runtime_kind = "c"` 显式映射到 CMake app binary。CI 已切到
 amd64/arm64 `v0.12.0 Authoring Smoke`：在临时项目中覆盖 `flowrt init` Rust/C++/C、
@@ -874,13 +877,14 @@ Runtime 已提供 C ABI 基础边界和 Rust/C++ health/reconnect 抽象。C ABI
 `Status`、backend kind、backend health state、borrowed string/bytes view、
 borrowed frame view、`ReconnectPolicy`、`BackendHealthSnapshot`、params view/update
 result、operation status/progress/result summary view、diagnostic view、resource health
-snapshot、C component context、fixed input view、output slot 和 callback table 的稳定
-POD 形状；Rust/C++ runtime 内部仍使用各自语言的
+snapshot、C component task timing、C component context、fixed input view、output slot
+和 callback table 的稳定 POD 形状；Rust/C++ runtime 内部仍使用各自语言的
 高层类型，并通过转换函数或 C header 对齐。operation state 编码使用当前长期 lifecycle
 常量：`IDLE`、`STARTING`、`RUNNING`、`CANCEL_REQUESTED`、`SUCCEEDED`、`FAILED`、
 `CANCELLED` 和 `TIMED_OUT`，不保留旧 `ACCEPTED` / `CANCELING` / `PREEMPTED`
-别名。该 callback table 只表达边界；当前 C v0
-已开放 adapter、`app/c` 用户接入路径和最小 demo，但不表示完整 C runtime、动态加载或 Python
+别名。C component callback ABI 当前为 `0.2`，callback table 必须设置 v0 callback 和
+task timing 两个 feature bit；该 callback table 只表达边界，当前 C v0 已开放
+adapter、`app/c` 用户接入路径和最小 demo，但不表示完整 C runtime、动态加载或 Python
 binding 已开放。`iox2` 和 `zenoh`
 endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地
 publisher/subscriber/session；codec/schema 错误不得触发重连。

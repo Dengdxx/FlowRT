@@ -896,6 +896,39 @@ flowrt_bytes_view_t c_bytes_view(const void* data, std::size_t size) {
     return flowrt_bytes_view_t{.data = reinterpret_cast<const std::uint8_t*>(data), .len = size};
 }
 
+flowrt_c_clock_source_t c_clock_source(flowrt::ClockSource source) {
+    switch (source) {
+        case flowrt::ClockSource::Runtime:
+            return FLOWRT_C_CLOCK_SOURCE_RUNTIME;
+        case flowrt::ClockSource::Replay:
+            return FLOWRT_C_CLOCK_SOURCE_REPLAY;
+    }
+    return FLOWRT_C_CLOCK_SOURCE_RUNTIME;
+}
+
+flowrt_c_task_timing_t make_c_task_timing(const flowrt::TaskTiming& timing) {
+    return flowrt_c_task_timing_t{
+        .step = timing.step,
+        .task_name = c_string_view(timing.task_name),
+        .trigger = c_string_view(timing.trigger),
+        .clock_source = c_clock_source(timing.clock_source),
+        .reserved0 = 0U,
+        .scheduled_time_ms = timing.scheduled_time_ms,
+        .observed_time_ms = timing.observed_time_ms,
+        .scheduled_delta_ms = timing.scheduled_delta_ms,
+        .observed_delta_ms = timing.observed_delta_ms,
+        .period_ms = timing.period_ms.value_or(0U),
+        .deadline_ms = timing.deadline_ms.value_or(0U),
+        .lateness_ms = timing.lateness_ms,
+        .missed_periods = timing.missed_periods,
+        .has_period_ms = timing.period_ms.has_value() ? std::uint8_t{1} : std::uint8_t{0},
+        .has_deadline_ms = timing.deadline_ms.has_value() ? std::uint8_t{1} : std::uint8_t{0},
+        .deadline_missed = timing.deadline_missed ? std::uint8_t{1} : std::uint8_t{0},
+        .overrun = timing.overrun ? std::uint8_t{1} : std::uint8_t{0},
+        .reserved = {},
+    };
+}
+
 flowrt::Status status_from_c(flowrt_status_t status) {
     switch (status) {
         case FLOWRT_STATUS_OK:
@@ -926,10 +959,17 @@ const char* callback_table_validation_error(const flowrt_c_component_callback_ta
     if (callbacks->version_minor != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR) {
         return "FlowRT C component callback table minor version mismatch";
     }
-    constexpr std::uint64_t kRequiredFeatures = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0;
-    constexpr std::uint64_t kKnownFeatures = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0;
-    if ((callbacks->feature_flags & kRequiredFeatures) != kRequiredFeatures) {
+    constexpr std::uint64_t kRequiredFeatures =
+        FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 |
+        FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1;
+    constexpr std::uint64_t kKnownFeatures = kRequiredFeatures;
+    if ((callbacks->feature_flags & FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0) !=
+        FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0) {
         return "FlowRT C component callback table missing v0 feature bit";
+    }
+    if ((callbacks->feature_flags & FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1) !=
+        FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1) {
+        return "FlowRT C component callback table missing task timing feature bit";
     }
     if ((callbacks->feature_flags & ~kKnownFeatures) != 0U) {
         return "FlowRT C component callback table has unknown feature bit";
@@ -953,20 +993,27 @@ flowrt_c_component_context_t make_c_component_context(std::string_view component
                                                       std::string_view instance_name,
                                                       std::string_view task_name,
                                                       std::string_view lane_name,
+                                                      const flowrt::Context& runtime_context,
                                                       std::uint64_t step,
                                                       std::uint64_t tick_time_ms,
                                                       std::uint64_t deadline_ms,
                                                       bool has_deadline_ms) {
+    const auto* timing = runtime_context.timing();
     return flowrt_c_component_context_t{
         .component_name = c_string_view(component_name),
         .instance_name = c_string_view(instance_name),
         .task_name = c_string_view(task_name),
         .lane_name = c_string_view(lane_name),
-        .step = step,
-        .tick_time_ms = tick_time_ms,
-        .deadline_ms = deadline_ms,
-        .has_deadline_ms = has_deadline_ms ? std::uint8_t{1} : std::uint8_t{0},
+        .step = timing != nullptr ? timing->step : step,
+        .tick_time_ms = timing != nullptr ? timing->observed_time_ms : tick_time_ms,
+        .deadline_ms =
+            timing != nullptr ? timing->deadline_ms.value_or(0U) : deadline_ms,
+        .has_deadline_ms =
+            timing != nullptr ? (timing->deadline_ms.has_value() ? std::uint8_t{1} : std::uint8_t{0})
+                              : (has_deadline_ms ? std::uint8_t{1} : std::uint8_t{0}),
+        .has_timing = timing != nullptr ? std::uint8_t{1} : std::uint8_t{0},
         .reserved = {},
+        .timing = timing != nullptr ? make_c_task_timing(*timing) : flowrt_c_task_timing_t{},
     };
 }
 
@@ -1035,7 +1082,7 @@ fn emit_c_adapter_class(graph: &GraphIr, instance: &InstanceIr, component: &Comp
         output.push_str(&emit_c_adapter_task_method(component, instance, task));
     }
     output.push_str(&format!(
-        "private:\n    bool callbacks_valid(std::string_view instance_name) const {{\n        const char* error = callback_table_validation_error(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n        if (error == nullptr) {{\n            return true;\n        }}\n        std::cerr << \"FlowRT C component callback table invalid for instance `\" << instance_name << \"`: \" << error << '\\n';\n        return false;\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name) {{\n        if (!callbacks_valid(instance_name)) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, 0U, 0U, 0U, false);\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
+        "private:\n    bool callbacks_valid(std::string_view instance_name) const {{\n        const char* error = callback_table_validation_error(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n        if (error == nullptr) {{\n            return true;\n        }}\n        std::cerr << \"FlowRT C component callback table invalid for instance `\" << instance_name << \"`: \" << error << '\\n';\n        return false;\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name, const flowrt::Context& runtime_context) {{\n        if (!callbacks_valid(instance_name)) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, runtime_context, 0U, 0U, 0U, false);\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
         component = component_cpp_name(component),
     ));
     output
@@ -1047,7 +1094,7 @@ fn emit_c_adapter_lifecycle_method(
     instance_name: &str,
 ) -> String {
     format!(
-        "    flowrt::Status {name}(flowrt::Context& context) override {{\n        (void)context;\n        return call_lifecycle(callbacks_ != nullptr ? callbacks_->{name} : nullptr, {hook}, {component}, {instance});\n    }}\n\n",
+        "    flowrt::Status {name}(flowrt::Context& context) override {{\n        return call_lifecycle(callbacks_ != nullptr ? callbacks_->{name} : nullptr, {hook}, {component}, {instance}, context);\n    }}\n\n",
         hook = cpp_string_literal(name),
         component = cpp_string_literal(component_name),
         instance = cpp_string_literal(instance_name),
@@ -1078,6 +1125,7 @@ fn emit_c_adapter_task_method(
     let mut args = vec![
         "std::uint64_t step".to_string(),
         "std::uint64_t tick_time_ms".to_string(),
+        "flowrt::Context& tick_context".to_string(),
     ];
     for input in &component.inputs {
         args.push(format!("std::uint64_t {}_revision", input.name));
@@ -1101,7 +1149,7 @@ fn emit_c_adapter_task_method(
         .join(",\n");
     let callback_field = c_task_callback_field(task);
     let mut output = format!(
-        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid({instance_name}) || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, step, tick_time_ms, {deadline}, {has_deadline});\n",
+        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid({instance_name}) || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, tick_context, step, tick_time_ms, {deadline}, {has_deadline});\n",
         method = c_adapter_task_method_name(task),
         component_name = cpp_string_literal(&component.name),
         instance_name = cpp_string_literal(&instance.name),
@@ -1265,6 +1313,7 @@ fn emit_c_adapter_task_step_call(
     let mut args = vec![
         "static_cast<std::uint64_t>(tick)".to_string(),
         "tick_time_ms".to_string(),
+        "tick_context".to_string(),
     ];
     for input in &component.inputs {
         args.push(c_input_revision_expr(emission, instance, input));

@@ -7,16 +7,17 @@ use std::ffi::{c_char, c_void};
 
 use crate::service::{ServiceError, ServiceFrameHeader};
 use crate::{
-    BackendHealthSnapshot, BackendHealthState, BackendKind, FrameDescriptor, FrameLeaseStatus,
-    OperationId, OperationState, ReconnectPolicy, Status,
+    BackendHealthSnapshot, BackendHealthState, BackendKind, ClockSource, FrameDescriptor,
+    FrameLeaseStatus, OperationId, OperationState, ReconnectPolicy, Status,
 };
 
 pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_ABI_VERSION_MINOR: u32 = 2;
 
 pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR: u32 = 0;
-pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 1;
+pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 2;
 pub const FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0: u64 = 1;
+pub const FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1: u64 = 1 << 1;
 
 pub type FlowrtStatus = u32;
 pub const FLOWRT_STATUS_OK: FlowrtStatus = 0;
@@ -378,6 +379,34 @@ pub const FLOWRT_C_OUTPUT_WRITTEN: FlowrtCOutputStatus = 1;
 pub const FLOWRT_C_OUTPUT_TRUNCATED: FlowrtCOutputStatus = 2;
 pub const FLOWRT_C_OUTPUT_ERROR: FlowrtCOutputStatus = 3;
 
+pub type FlowrtCClockSource = u32;
+pub const FLOWRT_C_CLOCK_SOURCE_RUNTIME: FlowrtCClockSource = 0;
+pub const FLOWRT_C_CLOCK_SOURCE_REPLAY: FlowrtCClockSource = 1;
+
+/// C component task timing POD。字符串字段为借用 view。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCTaskTiming {
+    pub step: u64,
+    pub task_name: FlowrtStringView,
+    pub trigger: FlowrtStringView,
+    pub clock_source: FlowrtCClockSource,
+    pub reserved0: u32,
+    pub scheduled_time_ms: u64,
+    pub observed_time_ms: u64,
+    pub scheduled_delta_ms: u64,
+    pub observed_delta_ms: u64,
+    pub period_ms: u64,
+    pub deadline_ms: u64,
+    pub lateness_ms: u64,
+    pub missed_periods: u64,
+    pub has_period_ms: u8,
+    pub has_deadline_ms: u8,
+    pub deadline_missed: u8,
+    pub overrun: u8,
+    pub reserved: [u8; 4],
+}
+
 /// C component callback 只读上下文。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,7 +419,9 @@ pub struct FlowrtCComponentContext {
     pub tick_time_ms: u64,
     pub deadline_ms: u64,
     pub has_deadline_ms: u8,
-    pub reserved: [u8; 7],
+    pub has_timing: u8,
+    pub reserved: [u8; 6],
+    pub timing: FlowrtCTaskTiming,
 }
 
 /// C component fixed-size input borrowed view.
@@ -497,6 +528,13 @@ pub const fn backend_health_state_to_abi(state: BackendHealthState) -> FlowrtBac
         BackendHealthState::Reconnecting => FLOWRT_BACKEND_HEALTH_RECONNECTING,
         BackendHealthState::Failed => FLOWRT_BACKEND_HEALTH_FAILED,
         BackendHealthState::Unsupported => FLOWRT_BACKEND_HEALTH_UNSUPPORTED,
+    }
+}
+
+pub const fn clock_source_to_c_abi(source: ClockSource) -> FlowrtCClockSource {
+    match source {
+        ClockSource::Runtime => FLOWRT_C_CLOCK_SOURCE_RUNTIME,
+        ClockSource::Replay => FLOWRT_C_CLOCK_SOURCE_REPLAY,
     }
 }
 

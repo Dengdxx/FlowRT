@@ -7,9 +7,14 @@
 #ifndef FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0
 #error "FlowRT C component callback ABI v0 is required"
 #endif
+#ifndef FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1
+#error "FlowRT C component task timing ABI is required"
+#endif
 
 _Static_assert((FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 & UINT64_C(1)) == UINT64_C(1),
                "FlowRT C component callback ABI v0 feature bit is required");
+_Static_assert((FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1 & UINT64_C(2)) == UINT64_C(2),
+               "FlowRT C component task timing feature bit is required");
 
 typedef struct Count {
     uint32_t value;
@@ -45,7 +50,8 @@ const flowrt_c_component_callback_table_t *flowrt_app_counter_sink_callbacks(voi
         .version_major = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR,
         .version_minor = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR,
         .reserved0 = 0U,
-        .feature_flags = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0,
+        .feature_flags = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 |
+                         FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1,
         .user_data = NULL,
         .on_init = NULL,
         .on_start = NULL,
