@@ -276,10 +276,13 @@ focused tests、Rust iox2 generated shell、backend route、Rust/C++ runtime exe
 执行，不跳过；低资源本地机器可用 `FLOWRT_V0110_SMOKE_DRY_RUN=1`
 只验证脚本入口，但 package/release gate 不使用 dry-run。
 
+release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.Y.Z`”状态行。
+发布后如果只移动 `CHANGELOG.md` 版本段而忘记更新当前上下文，脚本会拒绝通过。
+
 发布前检查：
 
 ```bash
-version=0.10.3
+version=X.Y.Z
 tag="v${version}"
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
@@ -295,8 +298,8 @@ scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 创建并推送 tag：
 
 ```bash
-git tag -a v0.10.3 -m "v0.10.3"
-git push origin v0.10.3
+git tag -a "$tag" -m "$tag"
+git push origin "$tag"
 ```
 
 ## 提交规则

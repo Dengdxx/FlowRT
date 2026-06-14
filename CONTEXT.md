@@ -5,9 +5,9 @@
 
 ## 当前版本背景
 
-当前 workspace 版本仍为 `0.10.3`；`dev/v0.11.0` 分支正在收口未发布的
-v0.11.0 App SDK 能力。当前用户主路径已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和
-可重建的 `flowrt/` 生成目录：`flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，
+当前 workspace 版本为 `0.11.0`；`v0.11.0` 已发布并合入 `master`。当前用户主路径
+已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
+`flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，
 `rsdl/` 放系统契约，`app/` 放用户算法，`flowrt/` 只放 FlowRT 管理产物。CLI 已新增
 `flowrt init [path] --lang <rust|cpp|c>`，生成现代项目骨架；默认 Rust，可显式生成 C++
 或 C callback table v0 骨架。`flowrt add message/module/component` 省略 RSDL 时从
@@ -31,10 +31,12 @@ amd64/arm64 `v0.11.0 App SDK Smoke`：在临时项目中覆盖 `flowrt init` Rus
 `flowrt add message/component`、`flowrt explain --format text/json`，并在临时
 `examples/c_counter_demo` 副本上按 runner 架构运行普通 build/run 与 launcher build/launch；
 package/release 依赖链会等待该 gate，`scripts/check-release-readiness.sh` 也会检查该 gate、
-`CHANGELOG.md` 未发布段和 release notes 事实源。C v0
-仍只支持 native component、fixed-size plain data 输入/输出和 inproc demo，不支持
-params、service、operation、variable frame、`io_boundary`、`external`、`pkg_config`、
-动态加载、独立 C runtime 或 Python binding。RSDL / Contract IR / validator 现已承载
+`CHANGELOG.md` 版本段和 `CONTEXT.md` 当前版本状态。C v0 仍只支持 native component、
+fixed-size plain data 输入/输出和 inproc demo，不支持 params、service、operation、
+variable frame、`io_boundary`、`external`、`pkg_config`、动态加载、独立 C runtime 或
+Python binding。`v0.11.1` 定位为 App SDK / C ABI v0 hardening：不扩展 C 功能，不引入
+Python，只收紧 `flowrt init/add/explain` 诊断、C callback table 失败原因、用户骨架边界
+和发布就绪检查。RSDL / Contract IR / validator 现已承载
 v0.10.0 并发
 语义基础：component 可声明 `concurrency = "exclusive" | "parallel"`，task 可选声明
 同名字段，未声明时默认继承 component 并解析为 `exclusive`；normalized
@@ -257,6 +259,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.10.2` | 真并发收口：backend thread-affinity、two-phase output commit、scheduler-local transport commit 和并发验收 gate。 |
 | `v0.10.3` | 标准 app/ 用户代码布局：废弃旧 `src/` 用户路径，用户实现统一进入 `app/`。 |
 | `v0.11.0` | FlowRT App SDK 化与 C ABI v0：项目脚手架、用户 API 可发现性、C component 最小可运行路径。 |
+| `v0.11.1` | App SDK / C ABI v0 hardening：诊断、失败路径、用户骨架和 release readiness 收口。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -325,6 +328,10 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   `external`、`pkg_config`、动态加载、独立 C runtime 和 Python binding，codegen 只在
   C v0 native / fixed-size message 范围内生成 callback table adapter。generated
   supervisor 已支持 `runtime_kind = "c"` 并启动 CMake app binary。
+- `v0.11.1` 不扩展 C ABI v0 的功能面，只做硬化：callback table 校验必须报告明确
+  失败原因；`flowrt add` 写入前要尽量完成冲突和 Contract IR 校验；用户骨架要把
+  callback table size/version/feature bit 和 borrowed view 所有权边界写清；release
+  readiness 必须检查 `CONTEXT.md` 当前版本状态，避免发布后状态文档滞后。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 
