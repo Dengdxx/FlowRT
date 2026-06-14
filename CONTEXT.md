@@ -189,23 +189,22 @@ RSDL 的 target platform，避免 arm64 runner 误按示例默认 `linux-amd64` 
 `WireCodec` 的 `cursor` unused warning：生成代码在 encode/decode 末尾断言 cursor
 等于 `WIRE_SIZE`，避免 release smoke 输出噪声。
 
-为后续 runtime shell 真并发 dispatch 做准备，Rust/C++ runtime executor 已补齐共同
-primitive：`DeterministicExecutor` 保留原有串行 `run_ready`，同时新增稳定的
-`ReadyBatch` / `run_ready_parallel` admission 形态，按 ready set 的确定性顺序为每个 lane
-一次只取一个 task，并在 dispatch 前更新 `lane_last_dispatched_tick` 后从 ready set
-移除。`WorkerPool` 两侧也已对齐 `close_admission`、`drain`、panic/exception 聚合为
-`Status::Error`、空队列 shutdown 和多 worker active 计数释放语义；用户组件 API 仍不
-直接暴露这些 executor primitive，后续 generated shell 只需复用该边界。
+为 `v0.14.0` executor 革命，Rust/C++ runtime executor 的主路径已收敛为显式
+admission 与 completion 边界：`DeterministicExecutor` 只负责 ready set 判定、每个 lane
+一次 admission 一个 `TaskAdmission`、记录 inflight task，并在 scheduler 线程收到完成结果
+后通过 `complete_task` 释放 inflight token。`WorkerPool` 只运行用户 task；worker 结果通过
+`WorkerCompletionQueue` 回到 scheduler 线程，scheduler 按 admission canonical order drain
+完成队列、提交 output、更新 introspection 和 backend。旧同步 helper 不再作为 generated
+Rust/C++ scheduler 的兼容路径，避免为了 deterministic commit order 同步等待长任务完成。
+用户组件 API 仍不直接暴露这些 executor primitive。
 runtime 已补齐 output transaction primitive：Rust/C++ `Output<T>::write(...)`
 用户 API 保持不变，generated shell 可以在 worker 回调内使用 task-local output，回调
 返回后把输出转成带 task、port、payload、`published_at_ms` 和 `tick_time_ms` 的 commit
-record，并通过 `ReadyBatch` collect 路径把结果按原 ready 顺序交还 scheduler 线程；
-只有 `Status::Ok` 的结果保留可提交 output，`Retry`、`Error`、panic 和 exception
-都会丢弃本次输出。
-Rust/C++ generated runtime shell 已接入 two-phase output commit 主路径：
-scheduler 仍负责 backend output commit，worker 只执行用户 task 并返回可提交 closure。
-commit 顺序按 ready batch canonical task order，而不是 worker 完成顺序；`iox2` 路径不再
-依赖整批 `run_local` 作为并发规避手段。
+record；只有 `Status::Ok` 的结果保留可提交 output，`Retry`、`Error`、panic 和 exception
+都会丢弃本次输出。Rust/C++ generated runtime shell 已接入 two-phase output commit
+主路径：scheduler 仍负责 backend output commit，worker 只执行用户 task 并返回可提交
+closure。commit 顺序按 admission canonical task order，而不是 worker 完成顺序；`iox2`
+路径不再依赖整批本地运行作为并发规避手段。
 
 `flowrt cache status/clean` 已用于解释和安全清理 FlowRT deps cache、项目 build 目录、
 incremental cache 和 stale 临时候选。清理命令必须按默认可清、条件可清、仅展示、
