@@ -644,8 +644,16 @@ io_health = "runtime_reported"
 io_shutdown = "cooperative"
 
 [component.sensor.resource.lidar_uart]
-kind = "serial"
+capability = "perception.lidar.samples"
 required = true
+
+[[resource.provider]]
+name = "lidar_provider"
+capabilities = ["perception.lidar.samples"]
+scope = "process"
+process = "sensor_proc"
+health_source = "provider_health"
+readiness_source = "provider_ready"
 
 [instance.sensor]
 component = "sensor"
@@ -681,8 +689,12 @@ backends = ["inproc"]
             "shutdown": "cooperative",
             "resources": [{
                 "name": "lidar_uart",
-                "kind": "serial",
-                "required": true
+                "capability": "perception.lidar.samples",
+                "access": "read_write",
+                "required": true,
+                "readiness": "before_start",
+                "health": "required",
+                "on_failure": "stop_process"
             }]
         })
     );
@@ -697,8 +709,12 @@ backends = ["inproc"]
         selfdesc["component_types"][0]["resources"][0],
         serde_json::json!({
             "name": "lidar_uart",
-            "kind": "serial",
-            "required": true
+            "capability": "perception.lidar.samples",
+            "access": "read_write",
+            "required": true,
+            "readiness": "before_start",
+            "health": "required",
+            "on_failure": "stop_process"
         })
     );
 }
@@ -873,8 +889,16 @@ io_health = "runtime_reported"
 io_shutdown = "cooperative"
 
 [component.sensor.resource.lidar_uart]
-kind = "serial"
+capability = "perception.lidar.samples"
 required = true
+
+[[resource.provider]]
+name = "lidar_provider"
+capabilities = ["perception.lidar.samples"]
+scope = "process"
+process = "main"
+health_source = "provider_health"
+readiness_source = "provider_ready"
 
 [instance.sensor]
 component = "sensor"
@@ -892,7 +916,7 @@ output = ["sample"]
             .contains("introspection_state.register_io_boundary(\"sensor\", \"sensor\", vec![")
     );
     assert!(rust_shell.contains("name: \"lidar_uart\".to_string()"));
-    assert!(rust_shell.contains("kind: \"serial\".to_string()"));
+    assert!(rust_shell.contains("kind: \"perception.lidar.samples\".to_string()"));
     assert!(rust_shell.contains("let mut sensor_boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext::new(\"sensor\", \"sensor\", introspection_state.clone()));"));
     assert!(rust_shell.contains("boundary.mark_ready();"));
 
@@ -915,8 +939,16 @@ io_health = "runtime_reported"
 io_shutdown = "cooperative"
 
 [component.sensor.resource.lidar_uart]
-kind = "serial"
+capability = "perception.lidar.samples"
 required = true
+
+[[resource.provider]]
+name = "lidar_provider"
+capabilities = ["perception.lidar.samples"]
+scope = "process"
+process = "main"
+health_source = "provider_health"
+readiness_source = "provider_ready"
 
 [instance.sensor]
 component = "sensor"
@@ -932,7 +964,7 @@ output = ["sample"]
     assert!(cpp_shell.contains("introspection_state.register_io_boundary(\"sensor\", \"sensor\", std::vector<flowrt::BoundaryResourceStatus>{"));
     assert!(
         cpp_shell
-            .contains("flowrt::BoundaryResourceStatus{.name = \"lidar_uart\", .kind = \"serial\"}")
+            .contains("flowrt::BoundaryResourceStatus{.name = \"lidar_uart\", .kind = \"perception.lidar.samples\"}")
     );
     assert!(cpp_shell.contains("auto sensor_boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext{\"sensor\", \"sensor\""));
     assert!(

@@ -172,11 +172,62 @@ pub struct ComponentBuildIr {
 /// 组件声明的资源需求。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceRequirementIr {
+    pub id: EntityId,
     pub name: String,
-    pub kind: ResourceKind,
+    pub capability: CapabilityAtom,
+    #[serde(default)]
+    pub access: ResourceAccess,
     pub required: bool,
+    #[serde(default)]
+    pub readiness: ResourceReadinessGate,
+    #[serde(default)]
+    pub health: ResourceHealthPolicy,
+    #[serde(default)]
+    pub on_failure: ResourceFailurePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor: Option<ResourceDescriptorSchemaIr>,
+}
+
+/// 组件对资源的访问方式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceAccess {
+    Read,
+    Write,
+    #[default]
+    ReadWrite,
+    Exclusive,
+}
+
+/// resource readiness gate。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceReadinessGate {
+    BeforeInit,
+    #[default]
+    BeforeStart,
+    Lazy,
+}
+
+/// resource health 对系统健康的影响。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceHealthPolicy {
+    #[default]
+    Required,
+    Optional,
+    Ignored,
+}
+
+/// resource 故障传播策略。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceFailurePolicy {
+    #[default]
+    StopProcess,
+    RestartProcess,
+    Degrade,
+    StopGraph,
 }
 
 /// 资源对普通 channel 暴露的 descriptor schema。
@@ -198,18 +249,6 @@ pub struct ResourceDescriptorSchemaIr {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceDescriptorKind {
     Frame,
-}
-
-/// FlowRT 认识的 I/O boundary 资源类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResourceKind {
-    Serial,
-    Shm,
-    Udp,
-    File,
-    Device,
-    Sdk,
 }
 
 /// 进程内 I/O boundary 的静态策略。
@@ -348,6 +387,10 @@ pub struct GraphIr {
     pub processes: Vec<ProcessIr>,
     #[serde(default)]
     pub external_processes: Vec<ExternalProcessIr>,
+    #[serde(default)]
+    pub resource_providers: Vec<ResourceProviderIr>,
+    #[serde(default)]
+    pub resource_satisfactions: Vec<ResourceSatisfactionIr>,
     pub tasks: Vec<TaskIr>,
     pub binds: Vec<ChannelEdgeIr>,
     pub services: Vec<ServiceEdgeIr>,
@@ -356,6 +399,53 @@ pub struct GraphIr {
     #[serde(default)]
     pub boundary_endpoints: Vec<BoundaryEndpointIr>,
     pub ros2_bridges: Vec<Ros2BridgeIr>,
+}
+
+/// graph 级抽象 resource provider。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceProviderIr {
+    pub id: EntityId,
+    pub name: String,
+    pub capabilities: Vec<CapabilityAtom>,
+    pub scope: ResourceProviderScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<EntityRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_package: Option<String>,
+    pub health_source: String,
+    pub readiness_source: String,
+}
+
+/// resource provider 的作用域。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceProviderScope {
+    Target,
+    Process,
+    ExternalPackage,
+}
+
+/// graph 中某个 instance requirement 的派生满足状态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceSatisfactionIr {
+    pub id: EntityId,
+    pub instance: EntityRef,
+    pub component: EntityRef,
+    pub requirement: EntityRef,
+    pub resource: String,
+    pub capability: CapabilityAtom,
+    pub access: ResourceAccess,
+    pub required: bool,
+    pub readiness: ResourceReadinessGate,
+    pub health: ResourceHealthPolicy,
+    pub on_failure: ResourceFailurePolicy,
+    pub satisfied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<EntityRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
 }
 
 /// graph 级 typed boundary endpoint。

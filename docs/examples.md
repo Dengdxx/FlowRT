@@ -404,6 +404,10 @@ examples/frame_descriptor_demo/rsdl/robot.rsdl
 RSDL 中的 descriptor 绑定到输出端口：
 
 ```toml
+[component.camera.resource.frames]
+capability = "payload.frame_buffer"
+required = false
+
 [component.camera.resource.frames.descriptor]
 kind = "frame"
 port = "frame"

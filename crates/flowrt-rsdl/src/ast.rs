@@ -52,6 +52,7 @@ pub struct RawCompositionDocument {
     pub instances: BTreeMap<String, RawInstance>,
     pub processes: Vec<RawProcess>,
     pub external_processes: Vec<RawExternalProcess>,
+    pub resource_providers: Vec<RawResourceProvider>,
     pub binds: Vec<RawDataflowBind>,
     pub service_binds: Vec<RawServiceBind>,
     pub operation_binds: Vec<RawOperationBind>,
@@ -73,6 +74,7 @@ pub struct RawDocument {
     pub instances: BTreeMap<String, RawInstance>,
     pub processes: Vec<RawProcess>,
     pub external_processes: Vec<RawExternalProcess>,
+    pub resource_providers: Vec<RawResourceProvider>,
     pub binds: Vec<RawDataflowBind>,
     pub service_binds: Vec<RawServiceBind>,
     pub operation_binds: Vec<RawOperationBind>,
@@ -150,9 +152,26 @@ pub struct RawComponentBuild {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawResourceRequirement {
     pub name: String,
-    pub kind: String,
+    pub capability: String,
+    pub access: Option<String>,
     pub required: bool,
+    pub readiness: Option<String>,
+    pub health: Option<String>,
+    pub on_failure: Option<String>,
     pub descriptor: Option<RawResourceDescriptor>,
+}
+
+/// `[[resource.provider]]` 表项，声明抽象 resource capability 的提供者。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawResourceProvider {
+    pub name: String,
+    pub capabilities: Vec<String>,
+    pub scope: String,
+    pub target: Option<String>,
+    pub process: Option<String>,
+    pub external_package: Option<String>,
+    pub health_source: String,
+    pub readiness_source: String,
 }
 
 /// `[component.<name>.resource.<resource_name>.descriptor]` 表。

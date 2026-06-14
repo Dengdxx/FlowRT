@@ -68,6 +68,7 @@ pub(super) fn expand_workspace(
                 instances: parsed.instances.clone(),
                 processes: parsed.processes.clone(),
                 external_processes: parsed.external_processes.clone(),
+                resource_providers: parsed.resource_providers.clone(),
                 binds: parsed.binds.clone(),
                 service_binds: parsed.service_binds.clone(),
                 operation_binds: parsed.operation_binds.clone(),
@@ -98,6 +99,7 @@ fn validate_module_document(
         (!parsed.instances.is_empty(), "instance"),
         (!parsed.processes.is_empty(), "process"),
         (!parsed.external_processes.is_empty(), "external_process"),
+        (!parsed.resource_providers.is_empty(), "resource"),
         (!parsed.binds.is_empty(), "bind"),
         (!parsed.service_binds.is_empty(), "bind.service"),
         (!parsed.operation_binds.is_empty(), "bind.operation"),
@@ -132,6 +134,12 @@ fn merge_composition_document(
     document
         .external_processes
         .extend(composition.external_processes);
+    merge_named_vec(
+        "resource.provider",
+        &mut document.resource_providers,
+        composition.resource_providers,
+        |provider| &provider.name,
+    )?;
     document.binds.extend(composition.binds);
     document.service_binds.extend(composition.service_binds);
     document.operation_binds.extend(composition.operation_binds);

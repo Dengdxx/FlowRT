@@ -19,6 +19,23 @@ pub use ids::hash_source;
 pub use params::{param_value_compatible, param_value_kind};
 pub use profiles::project_contract_to_profile;
 
+pub fn derive_resource_satisfactions(
+    graph_name: &str,
+    instances: &[crate::InstanceIr],
+    components: &[crate::ComponentIr],
+    providers: &[crate::ResourceProviderIr],
+) -> Vec<crate::ResourceSatisfactionIr> {
+    graphs::derive_resource_satisfactions(graph_name, instances, components, providers)
+}
+
+pub fn provider_satisfies_instance_requirement(
+    provider: &crate::ResourceProviderIr,
+    instance: &crate::InstanceIr,
+    capability: &crate::CapabilityAtom,
+) -> bool {
+    graphs::provider_satisfies_instance_requirement(provider, instance, capability)
+}
+
 pub(crate) fn entity_id_for_projection(kind: &str, qualified_name: &str) -> crate::EntityId {
     ids::entity_id(kind, qualified_name)
 }
@@ -132,6 +149,19 @@ fn normalize_document_with_modules(
     )?;
     let processes = graphs::normalize_processes(document, &instances)?;
     let external_processes = graphs::normalize_external_processes(document)?;
+    let resource_providers = graphs::normalize_resource_providers(
+        document,
+        &graph_name,
+        &target_ids,
+        &processes,
+        &external_processes,
+    )?;
+    let resource_satisfactions = graphs::derive_resource_satisfactions(
+        &graph_name,
+        &instances,
+        &components,
+        &resource_providers,
+    );
     let service_edges = services::normalize_service_binds(
         document,
         &instance_refs,
@@ -164,6 +194,8 @@ fn normalize_document_with_modules(
         instances,
         processes,
         external_processes,
+        resource_providers,
+        resource_satisfactions,
         tasks,
         binds,
         services: service_edges,
@@ -542,7 +574,7 @@ io_side_effect = ["device", "read"]
 output = ["frame:FrameHandle"]
 
 [component.camera.resource.frames]
-kind = "shm"
+capability = "payload.frame_buffer"
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"
@@ -584,6 +616,195 @@ output = ["frame"]
     }
 
     #[test]
+    fn normalizes_abstract_resource_providers_and_satisfaction_metadata() {
+        let source = r#"
+[package]
+name = "abstract_resource_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.target_consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.target_consumer.resource.frames]
+capability = "perception.camera.frames"
+access = "read"
+readiness = "before_init"
+health = "required"
+on_failure = "stop_process"
+
+[component.process_consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.process_consumer.resource.cache]
+capability = "storage.calibration.cache"
+access = "write"
+health = "optional"
+on_failure = "restart_process"
+
+[component.external_consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[component.external_consumer.resource.inference]
+capability = "compute.vision.inference"
+access = "read_write"
+readiness = "lazy"
+on_failure = "stop_graph"
+
+[component.optional_observer]
+language = "rust"
+
+[component.optional_observer.resource.trace]
+capability = "observability.trace"
+required = false
+
+[component.vision_driver]
+language = "external"
+kind = "external"
+
+[instance.target_consumer]
+component = "target_consumer"
+process = "control"
+target = "edge"
+
+[instance.process_consumer]
+component = "process_consumer"
+process = "control"
+target = "edge"
+
+[instance.external_consumer]
+component = "external_consumer"
+process = "control"
+target = "edge"
+
+[instance.optional_observer]
+component = "optional_observer"
+process = "control"
+target = "edge"
+
+[instance.vision_driver]
+component = "vision_driver"
+process = "vision_driver"
+target = "edge"
+
+[[external_process]]
+process = "vision_driver"
+package = "vision_driver_pkg"
+executable = "driver"
+
+[[resource.provider]]
+name = "vision_driver_provider"
+capabilities = ["compute.vision.inference"]
+scope = "external_package"
+external_package = "vision_driver_pkg"
+health_source = "driver_health"
+readiness_source = "driver_ready"
+
+[[resource.provider]]
+name = "camera_provider"
+capabilities = ["perception.camera.frames"]
+scope = "target"
+target = "edge"
+health_source = "target_health"
+readiness_source = "target_ready"
+
+[[resource.provider]]
+name = "calibration_provider"
+capabilities = ["storage.calibration.cache"]
+scope = "process"
+process = "control"
+health_source = "cache_health"
+readiness_source = "cache_ready"
+
+[profile.default]
+backend = "inproc"
+
+[target.edge]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        let graph = &ir.graphs[0];
+
+        assert_eq!(
+            graph
+                .resource_providers
+                .iter()
+                .map(|provider| provider.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "calibration_provider",
+                "camera_provider",
+                "vision_driver_provider"
+            ]
+        );
+        assert_eq!(
+            graph.resource_satisfactions.len(),
+            4,
+            "one satisfaction record per active instance requirement"
+        );
+
+        let target = graph
+            .resource_satisfactions
+            .iter()
+            .find(|satisfaction| satisfaction.instance.name == "target_consumer")
+            .unwrap();
+        assert!(target.satisfied);
+        assert_eq!(
+            target
+                .provider
+                .as_ref()
+                .map(|provider| provider.name.as_str()),
+            Some("camera_provider")
+        );
+        assert_eq!(target.diagnostic, None);
+
+        let optional = graph
+            .resource_satisfactions
+            .iter()
+            .find(|satisfaction| satisfaction.instance.name == "optional_observer")
+            .unwrap();
+        assert!(!optional.satisfied);
+        assert!(optional.provider.is_none());
+        assert!(optional.diagnostic.as_deref().unwrap().contains("optional"));
+
+        let json = ir.to_canonical_json().unwrap();
+        let roundtrip = crate::ContractIr::from_json_str(&json).unwrap();
+        assert_eq!(roundtrip, ir);
+    }
+
+    #[test]
+    fn rejects_unknown_resource_access_enum() {
+        let source = r#"
+[package]
+name = "bad_resource_access"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "rust"
+
+[component.camera.resource.frames]
+capability = "perception.camera.frames"
+access = "shared"
+"#;
+        let raw = parse_str(source).unwrap();
+        let error = normalize_document(&raw, hash_source(source))
+            .expect_err("unknown resource access should fail");
+
+        assert!(
+            format!("{error}").contains("invalid `resource access` value `shared`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_frame_descriptor_resource_schema_without_output_port() {
         let source = r#"
 [package]
@@ -603,7 +824,7 @@ io_side_effect = ["device", "read"]
 output = ["frame:FrameHandle"]
 
 [component.camera.resource.frames]
-kind = "shm"
+capability = "payload.frame_buffer"
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"

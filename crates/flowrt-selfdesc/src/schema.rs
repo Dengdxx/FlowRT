@@ -161,9 +161,17 @@ pub struct SelfDescriptionResourceRequirement {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub kind: String,
+    pub capability: String,
+    #[serde(default)]
+    pub access: String,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub readiness: String,
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub on_failure: String,
     /// resource 对普通 channel 暴露的 descriptor schema；旧 selfdesc 可缺省。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor: Option<SelfDescriptionResourceDescriptor>,

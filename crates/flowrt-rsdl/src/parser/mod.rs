@@ -17,8 +17,8 @@ use schema::validate_top_level_sections;
 use tables::{
     parse_binds, parse_boundary_endpoints, parse_component, parse_external_processes,
     parse_instance, parse_module, parse_named_tables, parse_operation_binds, parse_package,
-    parse_processes, parse_profile, parse_ros2_bridges, parse_service_binds, parse_target,
-    parse_type, parse_workspace,
+    parse_processes, parse_profile, parse_resource_providers, parse_ros2_bridges,
+    parse_service_binds, parse_target, parse_type, parse_workspace,
 };
 use workspace::expand_workspace;
 
@@ -32,6 +32,7 @@ struct ParsedDocument {
     instances: BTreeMap<String, RawInstance>,
     processes: Vec<RawProcess>,
     external_processes: Vec<RawExternalProcess>,
+    resource_providers: Vec<RawResourceProvider>,
     binds: Vec<RawDataflowBind>,
     service_binds: Vec<RawServiceBind>,
     operation_binds: Vec<RawOperationBind>,
@@ -145,6 +146,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         instances: parse_named_tables(root, "instance", parse_instance)?,
         processes: parse_processes(root)?,
         external_processes: parse_external_processes(root)?,
+        resource_providers: parse_resource_providers(root)?,
         binds: parse_binds(root)?,
         service_binds: parse_service_binds(root)?,
         operation_binds: parse_operation_binds(root)?,
@@ -165,6 +167,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         instances: parsed.instances,
         processes: parsed.processes,
         external_processes: parsed.external_processes,
+        resource_providers: parsed.resource_providers,
         binds: parsed.binds,
         service_binds: parsed.service_binds,
         operation_binds: parsed.operation_binds,
@@ -559,7 +562,7 @@ io_shutdown = "cooperative"
 output = ["frame:FrameHandle"]
 
 [component.camera.resource.frames]
-kind = "shm"
+capability = "payload.frame_buffer"
 required = true
 
 [component.camera.resource.frames.descriptor]
@@ -590,7 +593,7 @@ output = ["frame"]
         assert_eq!(camera.resources.len(), 1);
         let resource = &camera.resources[0];
         assert_eq!(resource.name, "frames");
-        assert_eq!(resource.kind, "shm");
+        assert_eq!(resource.capability, "payload.frame_buffer");
         assert!(resource.required);
         let descriptor = resource.descriptor.as_ref().unwrap();
         assert_eq!(descriptor.kind, "frame");
@@ -599,6 +602,78 @@ output = ["frame"]
         assert_eq!(descriptor.encoding.as_deref(), Some("row_major"));
         assert_eq!(descriptor.metadata["width"], "640");
         assert!(descriptor.record_payload);
+    }
+
+    #[test]
+    fn parses_abstract_resource_requirement_and_provider_tables() {
+        let document = parse_str(
+            r#"
+[package]
+name = "resource_contract_demo"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "rust"
+
+[component.camera.resource.frames]
+capability = "perception.camera.frames"
+access = "read"
+required = false
+readiness = "lazy"
+health = "optional"
+on_failure = "degrade"
+
+[[resource.provider]]
+name = "camera_driver_provider"
+capabilities = ["perception.camera.frames", "perception.camera.health"]
+scope = "external_package"
+external_package = "camera_driver"
+health_source = "driver_health"
+readiness_source = "driver_ready"
+"#,
+        )
+        .unwrap();
+
+        let resource = &document.components["camera"].resources[0];
+        assert_eq!(resource.name, "frames");
+        assert_eq!(resource.capability, "perception.camera.frames");
+        assert_eq!(resource.access.as_deref(), Some("read"));
+        assert!(!resource.required);
+        assert_eq!(resource.readiness.as_deref(), Some("lazy"));
+        assert_eq!(resource.health.as_deref(), Some("optional"));
+        assert_eq!(resource.on_failure.as_deref(), Some("degrade"));
+
+        let provider = &document.resource_providers[0];
+        assert_eq!(provider.name, "camera_driver_provider");
+        assert_eq!(
+            provider.capabilities,
+            vec!["perception.camera.frames", "perception.camera.health"]
+        );
+        assert_eq!(provider.scope, "external_package");
+        assert_eq!(provider.external_package.as_deref(), Some("camera_driver"));
+        assert_eq!(provider.health_source, "driver_health");
+        assert_eq!(provider.readiness_source, "driver_ready");
+    }
+
+    #[test]
+    fn rejects_concrete_resource_schema_fields() {
+        let error = parse_str(
+            r#"
+[package]
+name = "bad_resource"
+rsdl_version = "0.1"
+
+[component.camera]
+language = "rust"
+
+[component.camera.resource.frames]
+capability = "perception.camera.frames"
+serial_port = "/dev/ttyUSB0"
+"#,
+        )
+        .expect_err("concrete hardware fields must not enter the core resource schema");
+
+        assert!(error.to_string().contains("unknown field `serial_port`"));
     }
 
     #[test]

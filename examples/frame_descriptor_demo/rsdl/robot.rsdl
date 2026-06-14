@@ -26,8 +26,8 @@ io_shutdown = "cooperative"
 output = ["frame:FrameHandle"]
 
 [component.camera.resource.frames]
-kind = "shm"
-required = true
+capability = "payload.frame_buffer"
+required = false
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"

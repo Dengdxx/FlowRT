@@ -22,8 +22,9 @@ pub use backend::{
 pub use error::{IrError, Result};
 pub use model::*;
 pub use normalize::{
-    hash_source, normalize_document, normalize_loaded_document, param_value_compatible,
-    param_value_kind, project_contract_to_profile,
+    derive_resource_satisfactions, hash_source, normalize_document, normalize_loaded_document,
+    param_value_compatible, param_value_kind, project_contract_to_profile,
+    provider_satisfies_instance_requirement,
 };
 pub use temporary_island::{
     TemporaryBoundaryMapping, TemporaryIslandOverlay, apply_temporary_island_overlay,

@@ -12,6 +12,7 @@ pub(super) fn validate_top_level_sections(root: &Table) -> Result<()> {
         "instance",
         "process",
         "external_process",
+        "resource",
         "bind",
         "bridge",
         "boundary",

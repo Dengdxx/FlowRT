@@ -255,13 +255,6 @@ fn validate_component_kind_and_resources(
             component.name
         )));
     }
-    if component.kind != ComponentKind::IoBoundary && !component.resources.is_empty() {
-        errors.push(ValidationError::new(format!(
-            "component `{}` declares resources but kind is not `io_boundary`",
-            component.name
-        )));
-    }
-
     let mut resources = BTreeSet::new();
     for resource in &component.resources {
         if !resources.insert(resource.name.as_str()) {

@@ -2203,7 +2203,7 @@ pub(crate) fn live_status_summary_for_sockets(
                             .map(format_descriptor_schema)
                             .unwrap_or_default();
                         lines.push(format!(
-                            "io_boundary_resource={}.{} kind={} ready={} message={} last_error={} updated_unix_ms={}{} socket={}",
+                            "io_boundary_resource={}.{} capability={} ready={} message={} last_error={} updated_unix_ms={}{} socket={}",
                             boundary.name,
                             resource.name,
                             resource.kind,

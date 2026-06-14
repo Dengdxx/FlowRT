@@ -4,7 +4,7 @@ use flowrt_ir::{
     BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind,
     ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode,
     InstanceIr, IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
-    ResourceKind, ResourceRequirementIr, ServicePortIr, TaskIr,
+    ResourceRequirementIr, ServicePortIr, TaskIr,
 };
 
 use crate::runtime_plan::bridge_runtime_plans;
@@ -467,8 +467,12 @@ fn launch_io_boundaries(
 fn launch_resource_requirement(resource: &ResourceRequirementIr) -> serde_json::Value {
     let mut value = serde_json::json!({
         "name": resource.name,
-        "kind": resource_kind_name(resource.kind),
+        "capability": resource.capability.0.as_str(),
+        "access": resource_access_name(resource.access),
         "required": resource.required,
+        "readiness": resource_readiness_name(resource.readiness),
+        "health": resource_health_name(resource.health),
+        "on_failure": resource_failure_name(resource.on_failure),
     });
     if let Some(descriptor) = &resource.descriptor {
         value["descriptor"] = serde_json::json!({
@@ -512,20 +516,43 @@ fn external_health_name(kind: ExternalHealthKind) -> &'static str {
     }
 }
 
-fn resource_kind_name(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Serial => "serial",
-        ResourceKind::Shm => "shm",
-        ResourceKind::Udp => "udp",
-        ResourceKind::File => "file",
-        ResourceKind::Device => "device",
-        ResourceKind::Sdk => "sdk",
-    }
-}
-
 fn resource_descriptor_kind_name(kind: flowrt_ir::ResourceDescriptorKind) -> &'static str {
     match kind {
         flowrt_ir::ResourceDescriptorKind::Frame => "frame",
+    }
+}
+
+fn resource_access_name(kind: flowrt_ir::ResourceAccess) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceAccess::Read => "read",
+        flowrt_ir::ResourceAccess::Write => "write",
+        flowrt_ir::ResourceAccess::ReadWrite => "read_write",
+        flowrt_ir::ResourceAccess::Exclusive => "exclusive",
+    }
+}
+
+fn resource_readiness_name(kind: flowrt_ir::ResourceReadinessGate) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceReadinessGate::BeforeInit => "before_init",
+        flowrt_ir::ResourceReadinessGate::BeforeStart => "before_start",
+        flowrt_ir::ResourceReadinessGate::Lazy => "lazy",
+    }
+}
+
+fn resource_health_name(kind: flowrt_ir::ResourceHealthPolicy) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceHealthPolicy::Required => "required",
+        flowrt_ir::ResourceHealthPolicy::Optional => "optional",
+        flowrt_ir::ResourceHealthPolicy::Ignored => "ignored",
+    }
+}
+
+fn resource_failure_name(kind: flowrt_ir::ResourceFailurePolicy) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceFailurePolicy::StopProcess => "stop_process",
+        flowrt_ir::ResourceFailurePolicy::RestartProcess => "restart_process",
+        flowrt_ir::ResourceFailurePolicy::Degrade => "degrade",
+        flowrt_ir::ResourceFailurePolicy::StopGraph => "stop_graph",
     }
 }
 

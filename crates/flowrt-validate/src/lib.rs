@@ -8,6 +8,7 @@ mod components;
 mod contract;
 mod graphs;
 mod names;
+mod resources;
 mod types;
 
 use std::collections::BTreeSet;
@@ -28,6 +29,7 @@ use contract::{
 use flowrt_ir::ContractIr;
 use graphs::validate_graphs;
 use names::validate_names;
+use resources::validate_resources;
 use types::{
     validate_message_abi, validate_message_type_cycles, validate_message_types,
     validate_variable_frame_shapes,
@@ -106,6 +108,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_message_type_cycles(ir, &mut errors);
     validate_message_abi(ir, &mut errors);
     validate_components(ir, &type_names, &mut errors);
+    validate_resources(ir, &mut errors);
     validate_graphs(ir, &mut errors);
     validate_declared_backends(ir, &mut errors);
     validate_route_backends(ir, &mut errors);

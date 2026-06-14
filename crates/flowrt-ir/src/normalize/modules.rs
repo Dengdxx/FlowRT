@@ -6,10 +6,11 @@ use flowrt_rsdl::{
 };
 
 use crate::{
-    ComponentBuildIr, ComponentIr, ComponentKind, EntityId, FieldIr, IoBoundaryHealth,
-    IoBoundaryIr, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError, LanguageKind,
-    LifecycleSurface, ModuleIr, OperationPortIr, PortIr, ResourceDescriptorKind,
-    ResourceDescriptorSchemaIr, ResourceKind, ResourceRequirementIr, Result, ServicePortIr,
+    CapabilityAtom, ComponentBuildIr, ComponentIr, ComponentKind, EntityId, FieldIr,
+    IoBoundaryHealth, IoBoundaryIr, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError,
+    LanguageKind, LifecycleSurface, ModuleIr, OperationPortIr, PortIr, ResourceAccess,
+    ResourceDescriptorKind, ResourceDescriptorSchemaIr, ResourceFailurePolicy,
+    ResourceHealthPolicy, ResourceReadinessGate, ResourceRequirementIr, Result, ServicePortIr,
     TaskConcurrency, TypeIr, parse_type_expr,
 };
 
@@ -141,7 +142,7 @@ pub(super) fn normalize_components(
                     current_module,
                 )?,
                 params: super::params::normalize_component_params(name, raw)?,
-                resources: normalize_resources(&raw.resources)?,
+                resources: normalize_resources(&symbol.qualified_name, &raw.resources)?,
                 io_boundary: normalize_io_boundary(raw)?,
                 lifecycle: LifecycleSurface::reserved_v0_1(),
             })
@@ -239,17 +240,40 @@ pub(super) fn parse_component_kind(context: &str, value: &str) -> Result<Compone
     }
 }
 
-fn normalize_resources(raw: &[RawResourceRequirement]) -> Result<Vec<ResourceRequirementIr>> {
+fn normalize_resources(
+    component_qualified_name: &str,
+    raw: &[RawResourceRequirement],
+) -> Result<Vec<ResourceRequirementIr>> {
     let mut resources = raw
         .iter()
         .map(|resource| {
             Ok(ResourceRequirementIr {
+                id: entity_id(
+                    "resource_requirement",
+                    &format!("{component_qualified_name}.{}", resource.name),
+                ),
                 name: resource.name.clone(),
-                kind: parse_resource_kind(
-                    &format!("component.resource.{}.kind", resource.name),
-                    &resource.kind,
+                capability: normalize_capability_atom(
+                    &format!("component.resource.{}.capability", resource.name),
+                    &resource.capability,
+                )?,
+                access: parse_resource_access(
+                    &format!("component.resource.{}.access", resource.name),
+                    resource.access.as_deref(),
                 )?,
                 required: resource.required,
+                readiness: parse_resource_readiness(
+                    &format!("component.resource.{}.readiness", resource.name),
+                    resource.readiness.as_deref(),
+                )?,
+                health: parse_resource_health(
+                    &format!("component.resource.{}.health", resource.name),
+                    resource.health.as_deref(),
+                )?,
+                on_failure: parse_resource_failure(
+                    &format!("component.resource.{}.on_failure", resource.name),
+                    resource.on_failure.as_deref(),
+                )?,
                 descriptor: normalize_resource_descriptor(
                     &format!("component.resource.{}.descriptor", resource.name),
                     resource.descriptor.as_ref(),
@@ -326,15 +350,52 @@ fn normalize_io_boundary(raw: &RawComponent) -> Result<Option<IoBoundaryIr>> {
     }))
 }
 
-fn parse_resource_kind(context: &str, value: &str) -> Result<ResourceKind> {
-    match value {
-        "serial" => Ok(ResourceKind::Serial),
-        "shm" => Ok(ResourceKind::Shm),
-        "udp" => Ok(ResourceKind::Udp),
-        "file" => Ok(ResourceKind::File),
-        "device" => Ok(ResourceKind::Device),
-        "sdk" => Ok(ResourceKind::Sdk),
-        _ => Err(invalid_enum(context, "resource kind", value)),
+pub(super) fn normalize_capability_atom(context: &str, value: &str) -> Result<CapabilityAtom> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(IrError::InvalidValue {
+            context: context.to_string(),
+            message: "resource capability must not be empty".to_string(),
+        });
+    }
+    Ok(CapabilityAtom(value.to_string()))
+}
+
+fn parse_resource_access(context: &str, value: Option<&str>) -> Result<ResourceAccess> {
+    match value.unwrap_or("read_write") {
+        "read" => Ok(ResourceAccess::Read),
+        "write" => Ok(ResourceAccess::Write),
+        "read_write" => Ok(ResourceAccess::ReadWrite),
+        "exclusive" => Ok(ResourceAccess::Exclusive),
+        value => Err(invalid_enum(context, "resource access", value)),
+    }
+}
+
+fn parse_resource_readiness(context: &str, value: Option<&str>) -> Result<ResourceReadinessGate> {
+    match value.unwrap_or("before_start") {
+        "before_init" => Ok(ResourceReadinessGate::BeforeInit),
+        "before_start" => Ok(ResourceReadinessGate::BeforeStart),
+        "lazy" => Ok(ResourceReadinessGate::Lazy),
+        value => Err(invalid_enum(context, "resource readiness", value)),
+    }
+}
+
+fn parse_resource_health(context: &str, value: Option<&str>) -> Result<ResourceHealthPolicy> {
+    match value.unwrap_or("required") {
+        "required" => Ok(ResourceHealthPolicy::Required),
+        "optional" => Ok(ResourceHealthPolicy::Optional),
+        "ignored" => Ok(ResourceHealthPolicy::Ignored),
+        value => Err(invalid_enum(context, "resource health", value)),
+    }
+}
+
+fn parse_resource_failure(context: &str, value: Option<&str>) -> Result<ResourceFailurePolicy> {
+    match value.unwrap_or("stop_process") {
+        "stop_process" => Ok(ResourceFailurePolicy::StopProcess),
+        "restart_process" => Ok(ResourceFailurePolicy::RestartProcess),
+        "degrade" => Ok(ResourceFailurePolicy::Degrade),
+        "stop_graph" => Ok(ResourceFailurePolicy::StopGraph),
+        value => Err(invalid_enum(context, "resource failure policy", value)),
     }
 }
 

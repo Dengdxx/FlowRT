@@ -189,16 +189,28 @@ fn optional_resource_table(table: &Table, context: &str) -> Result<Vec<RawResour
         validate_known_fields(
             resource_table,
             &resource_context,
-            &["kind", "required", "descriptor"],
+            &[
+                "capability",
+                "access",
+                "required",
+                "readiness",
+                "health",
+                "on_failure",
+                "descriptor",
+            ],
         )?;
         resources.push(RawResourceRequirement {
             name: name.clone(),
-            kind: required_string(resource_table, &resource_context, "kind")?,
+            capability: required_string(resource_table, &resource_context, "capability")?,
+            access: optional_string(resource_table, &resource_context, "access")?,
             required: if resource_table.contains_key("required") {
                 optional_bool(resource_table, &resource_context, "required")?
             } else {
                 true
             },
+            readiness: optional_string(resource_table, &resource_context, "readiness")?,
+            health: optional_string(resource_table, &resource_context, "health")?,
+            on_failure: optional_string(resource_table, &resource_context, "on_failure")?,
             descriptor: optional_resource_descriptor(resource_table, &resource_context)?,
         });
     }
@@ -493,6 +505,67 @@ pub(super) fn parse_external_processes(root: &Table) -> Result<Vec<RawExternalPr
             working_dir: optional_string(table, &context, "working_dir")?,
             health: optional_string(table, &context, "health")?,
             required_backends: optional_string_array(table, &context, "required_backends")?,
+        });
+    }
+    Ok(parsed)
+}
+
+pub(super) fn parse_resource_providers(root: &Table) -> Result<Vec<RawResourceProvider>> {
+    let Some(resource_value) = root.get("resource") else {
+        return Ok(Vec::new());
+    };
+    let resource_table = resource_value
+        .as_table()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "resource".to_string(),
+            expected: "table",
+        })?;
+    validate_known_fields(resource_table, "resource", &["provider"])?;
+    let Some(provider_value) = resource_table.get("provider") else {
+        return Ok(Vec::new());
+    };
+    let providers = provider_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "resource".to_string(),
+            field: "provider".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(providers.len());
+    for (index, value) in providers.iter().enumerate() {
+        let context = format!("resource.provider[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "resource".to_string(),
+                field: "provider".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &[
+                "name",
+                "capabilities",
+                "scope",
+                "target",
+                "process",
+                "external_package",
+                "health_source",
+                "readiness_source",
+            ],
+        )?;
+        parsed.push(RawResourceProvider {
+            name: required_string(table, &context, "name")?,
+            capabilities: optional_string_array(table, &context, "capabilities")?,
+            scope: required_string(table, &context, "scope")?,
+            target: optional_string(table, &context, "target")?,
+            process: optional_string(table, &context, "process")?,
+            external_package: optional_string(table, &context, "external_package")?,
+            health_source: required_string(table, &context, "health_source")?,
+            readiness_source: required_string(table, &context, "readiness_source")?,
         });
     }
     Ok(parsed)

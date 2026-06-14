@@ -4,7 +4,7 @@ use flowrt_ir::{
     ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness,
     LanguageKind, OperationConcurrencyPolicy, OperationPreemptPolicy,
     OverflowPolicy as IrOverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, PortIr,
-    ResourceKind, Ros2BridgeDirection, StalePolicy as IrStalePolicy,
+    Ros2BridgeDirection, StalePolicy as IrStalePolicy,
 };
 
 use crate::messages::cpp_type;
@@ -1981,7 +1981,7 @@ fn cpp_boundary_resources_literal(component: &ComponentIr) -> String {
         output.push_str(&format!(
             "flowrt::BoundaryResourceStatus{{.name = {}, .kind = {}}},",
             cpp_string_literal(&resource.name),
-            cpp_string_literal(resource_kind_name(resource.kind))
+            cpp_string_literal(&resource.capability.0)
         ));
     }
     output.push('}');
@@ -1996,17 +1996,6 @@ fn cpp_lifecycle_context_name(component: &ComponentIr, instance: &InstanceIr) ->
         )
     } else {
         "lifecycle_context".to_string()
-    }
-}
-
-fn resource_kind_name(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Serial => "serial",
-        ResourceKind::Shm => "shm",
-        ResourceKind::Udp => "udp",
-        ResourceKind::File => "file",
-        ResourceKind::Device => "device",
-        ResourceKind::Sdk => "sdk",
     }
 }
 

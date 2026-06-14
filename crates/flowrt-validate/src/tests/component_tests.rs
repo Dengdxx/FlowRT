@@ -54,8 +54,16 @@ io_health = "runtime_reported"
 io_shutdown = "cooperative"
 
 [component.sensor.resource.lidar_uart]
-kind = "serial"
+capability = "perception.lidar.samples"
 required = true
+
+[[resource.provider]]
+name = "lidar_provider"
+capabilities = ["perception.lidar.samples"]
+scope = "process"
+process = "main"
+health_source = "provider_health"
+readiness_source = "provider_ready"
 
 [instance.sensor]
 component = "sensor"
@@ -76,7 +84,10 @@ output = ["sample"]
         .unwrap();
     assert_eq!(component.kind, flowrt_ir::ComponentKind::IoBoundary);
     assert_eq!(component.resources[0].name, "lidar_uart");
-    assert_eq!(component.resources[0].kind, flowrt_ir::ResourceKind::Serial);
+    assert_eq!(
+        component.resources[0].capability.0,
+        "perception.lidar.samples"
+    );
 }
 
 #[test]
@@ -783,7 +794,8 @@ io_side_effect = ["device", "read"]
 output = ["frame:{output_type}"]
 
 [component.camera.resource.frames]
-kind = "shm"
+capability = "payload.frame_buffer"
+required = false
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"

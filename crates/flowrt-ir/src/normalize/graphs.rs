@@ -2,22 +2,26 @@ use std::collections::BTreeMap;
 
 use flowrt_rsdl::{
     RawBoundaryEndpoint, RawDocument, RawExternalProcess, RawModuleDocument, RawProcess,
+    RawResourceProvider,
 };
 
 use crate::{
-    BackendName, BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ChannelEdgeIr,
-    ChannelKind, ChannelPolicySourceIr, ComponentIr, DeploymentIr, EntityId, EntityRef,
-    ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr, IrError,
-    OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr,
-    ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr, Result,
-    RtPolicy, StalePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr, channel_capabilities,
+    BackendName, BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, CapabilityAtom,
+    ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr, ComponentIr, DeploymentIr, EntityId,
+    EntityRef, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr,
+    IrError, OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr,
+    ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr,
+    ResourceProviderIr, ResourceProviderScope, ResourceSatisfactionIr, Result, RtPolicy,
+    StalePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr, channel_capabilities,
     channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
     parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
 use super::ids::entity_id;
-use super::modules::{parse_declared_concurrency, parse_readiness, parse_trigger};
+use super::modules::{
+    normalize_capability_atom, parse_declared_concurrency, parse_readiness, parse_trigger,
+};
 use super::params::merge_instance_params;
 use super::profiles::{parse_overflow_policy, parse_stale_policy};
 use super::resolver::NameResolver;
@@ -246,6 +250,230 @@ pub(super) fn normalize_external_processes(
         .collect::<Result<Vec<_>>>()?;
     processes.sort_by(|left, right| left.process.cmp(&right.process));
     Ok(processes)
+}
+
+pub(super) fn normalize_resource_providers(
+    document: &RawDocument,
+    graph_name: &str,
+    target_ids: &BTreeMap<String, EntityId>,
+    processes: &[ProcessIr],
+    external_processes: &[ExternalProcessIr],
+) -> Result<Vec<ResourceProviderIr>> {
+    let process_names = processes
+        .iter()
+        .map(|process| process.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let external_packages = external_processes
+        .iter()
+        .map(|process| process.package.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut providers = document
+        .resource_providers
+        .iter()
+        .map(|raw| {
+            if !seen.insert(raw.name.clone()) {
+                return Err(IrError::InvalidValue {
+                    context: format!("resource.provider.{}", raw.name),
+                    message: "resource provider is declared more than once".to_string(),
+                });
+            }
+            normalize_resource_provider(
+                raw,
+                graph_name,
+                target_ids,
+                &process_names,
+                &external_packages,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    providers.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(providers)
+}
+
+fn normalize_resource_provider(
+    raw: &RawResourceProvider,
+    graph_name: &str,
+    target_ids: &BTreeMap<String, EntityId>,
+    process_names: &std::collections::BTreeSet<&str>,
+    external_packages: &std::collections::BTreeSet<&str>,
+) -> Result<ResourceProviderIr> {
+    let mut capabilities = raw
+        .capabilities
+        .iter()
+        .map(|capability| {
+            normalize_capability_atom(
+                &format!("resource.provider.{}.capabilities", raw.name),
+                capability,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    capabilities.sort();
+    capabilities.dedup();
+
+    let target = raw
+        .target
+        .as_ref()
+        .map(|target_name| {
+            target_ids
+                .get(target_name)
+                .cloned()
+                .map(|id| EntityRef {
+                    id,
+                    name: target_name.clone(),
+                })
+                .ok_or_else(|| IrError::InvalidValue {
+                    context: format!("resource.provider.{}.target", raw.name),
+                    message: format!("unknown target `{target_name}`"),
+                })
+        })
+        .transpose()?;
+    if let Some(process) = &raw.process
+        && !process_names.contains(process.as_str())
+    {
+        return Err(IrError::InvalidValue {
+            context: format!("resource.provider.{}.process", raw.name),
+            message: format!("unknown process `{process}`"),
+        });
+    }
+    if let Some(package) = &raw.external_package
+        && !external_packages.contains(package.as_str())
+    {
+        return Err(IrError::InvalidValue {
+            context: format!("resource.provider.{}.external_package", raw.name),
+            message: format!("unknown external package `{package}`"),
+        });
+    }
+
+    Ok(ResourceProviderIr {
+        id: entity_id("resource_provider", &format!("{graph_name}.{}", raw.name)),
+        name: raw.name.clone(),
+        capabilities,
+        scope: parse_resource_provider_scope(
+            &format!("resource.provider.{}.scope", raw.name),
+            &raw.scope,
+        )?,
+        target,
+        process: raw.process.clone(),
+        external_package: raw.external_package.clone(),
+        health_source: raw.health_source.clone(),
+        readiness_source: raw.readiness_source.clone(),
+    })
+}
+
+fn parse_resource_provider_scope(context: &str, value: &str) -> Result<ResourceProviderScope> {
+    match value {
+        "target" => Ok(ResourceProviderScope::Target),
+        "process" => Ok(ResourceProviderScope::Process),
+        "external_package" => Ok(ResourceProviderScope::ExternalPackage),
+        value => Err(IrError::InvalidEnum {
+            context: context.to_string(),
+            kind: "resource provider scope",
+            value: value.to_string(),
+        }),
+    }
+}
+
+pub fn derive_resource_satisfactions(
+    graph_name: &str,
+    instances: &[InstanceIr],
+    components: &[ComponentIr],
+    providers: &[ResourceProviderIr],
+) -> Vec<ResourceSatisfactionIr> {
+    let components_by_name = components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
+        .collect::<BTreeMap<_, _>>();
+    let mut satisfactions = Vec::new();
+
+    for instance in instances {
+        let Some(component) = components_by_name
+            .get(instance.component.name.as_str())
+            .copied()
+        else {
+            continue;
+        };
+        for requirement in &component.resources {
+            let provider = providers.iter().find(|provider| {
+                provider_satisfies_instance_requirement(provider, instance, &requirement.capability)
+            });
+            let provider_ref = provider.map(|provider| EntityRef {
+                id: provider.id.clone(),
+                name: provider.name.clone(),
+            });
+            let satisfied = provider_ref.is_some();
+            let requirement_name = format!("{}.{}", component.qualified_name, requirement.name);
+            satisfactions.push(ResourceSatisfactionIr {
+                id: entity_id(
+                    "resource_satisfaction",
+                    &format!("{graph_name}.{}.{}", instance.name, requirement.name),
+                ),
+                instance: EntityRef {
+                    id: instance.id.clone(),
+                    name: instance.name.clone(),
+                },
+                component: EntityRef {
+                    id: component.id.clone(),
+                    name: component.qualified_name.clone(),
+                },
+                requirement: EntityRef {
+                    id: requirement.id.clone(),
+                    name: requirement_name,
+                },
+                resource: requirement.name.clone(),
+                capability: requirement.capability.clone(),
+                access: requirement.access,
+                required: requirement.required,
+                readiness: requirement.readiness,
+                health: requirement.health,
+                on_failure: requirement.on_failure,
+                satisfied,
+                provider: provider_ref,
+                diagnostic: if satisfied {
+                    None
+                } else {
+                    Some(format!(
+                        "{} resource requirement `{}` capability `{}` has no provider",
+                        if requirement.required {
+                            "required"
+                        } else {
+                            "optional"
+                        },
+                        requirement.name,
+                        requirement.capability.0
+                    ))
+                },
+            });
+        }
+    }
+    satisfactions.sort_by(|left, right| {
+        (&left.instance.name, &left.resource).cmp(&(&right.instance.name, &right.resource))
+    });
+    satisfactions
+}
+
+pub fn provider_satisfies_instance_requirement(
+    provider: &ResourceProviderIr,
+    instance: &InstanceIr,
+    capability: &CapabilityAtom,
+) -> bool {
+    provider
+        .capabilities
+        .iter()
+        .any(|candidate| candidate == capability)
+        && match provider.scope {
+            ResourceProviderScope::Target => provider.target.as_ref().is_none_or(|target| {
+                instance
+                    .target
+                    .as_ref()
+                    .is_some_and(|instance_target| instance_target.name == target.name)
+            }),
+            ResourceProviderScope::Process => provider.process.as_ref().is_none_or(|process| {
+                instance.process.as_deref().unwrap_or("main") == process.as_str()
+            }),
+            ResourceProviderScope::ExternalPackage => true,
+        }
 }
 
 fn normalize_external_process(

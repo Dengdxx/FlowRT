@@ -358,6 +358,13 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   RKNN、CUDA、设备路径或端口号等具体硬件和协议细节；这些映射属于 external
   package、driver package、target profile 或部署配置。validator 只校验抽象需求能否
   被目标提供者满足，supervisor 只按抽象 contract 做启动门控、health 汇报和失败传播。
+  当前 RSDL / Contract IR 已支持 `[component.<name>.resource.<name>]` 抽象 requirement
+  和 `[[resource.provider]]` provider；normalizer 会填充默认 access、readiness、
+  health 和 failure policy，按名称 canonical 排序并派生 per-instance satisfaction。
+  validator 会重新推导 satisfaction，拒绝 required unsatisfied、exclusive 多实例冲突、
+  provider target/process/external package 引用错误、非 canonical metadata 和 concrete
+  hardware/protocol 词进入 resource capability；optional unsatisfied requirement 保留
+  diagnostic 供后续 `status` / `doctor` 展示。supervisor 行为仍未接入该 contract。
 - `v0.14.0` 才进入 Python 与更多语言入口：Python binding / generator 必须建立在
   v0.13.0 收口后的 C ABI、App API manifest 和 FlowRT 语义边界上，不能直接暴露
   iox2、zenoh、C++ runtime 对象或 backend SDK 句柄。

@@ -979,6 +979,8 @@ mod tests {
             instances: vec![],
             processes: vec![],
             external_processes: vec![],
+            resource_providers: vec![],
+            resource_satisfactions: vec![],
             tasks: vec![
                 crate::TaskIr {
                     id: crate::EntityId("task_0000000000000001".to_string()),

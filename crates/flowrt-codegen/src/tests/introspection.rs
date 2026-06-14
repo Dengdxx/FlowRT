@@ -240,7 +240,8 @@ io_side_effect = ["device", "read"]
 output = ["frame:FrameHandle"]
 
 [component.camera.resource.frames]
-kind = "shm"
+capability = "payload.frame_buffer"
+required = false
 
 [component.camera.resource.frames.descriptor]
 kind = "frame"

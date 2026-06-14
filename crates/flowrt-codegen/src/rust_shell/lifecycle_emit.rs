@@ -1,6 +1,4 @@
-use flowrt_ir::{
-    ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness, ResourceKind,
-};
+use flowrt_ir::{ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness};
 
 use crate::runtime_plan::{
     BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan,
@@ -435,7 +433,7 @@ fn emit_rust_io_boundary_registration(contract: &ContractIr, order: &[&InstanceI
             output.push_str(&format!(
                 "            flowrt::IntrospectionIoBoundaryResourceStatus {{\n                name: {}.to_string(),\n                kind: {}.to_string(),\n                ready: false,\n                message: None,\n                last_error: None,\n                updated_unix_ms: None,\n            }},\n",
                 crate::rust_string_literal(&resource.name),
-                crate::rust_string_literal(resource_kind_name(resource.kind))
+                crate::rust_string_literal(&resource.capability.0)
             ));
         }
         output.push_str("        ]);\n");
@@ -504,17 +502,6 @@ fn lifecycle_context_name(component: &flowrt_ir::ComponentIr, instance: &Instanc
         )
     } else {
         "lifecycle_context".to_string()
-    }
-}
-
-fn resource_kind_name(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Serial => "serial",
-        ResourceKind::Shm => "shm",
-        ResourceKind::Udp => "udp",
-        ResourceKind::File => "file",
-        ResourceKind::Device => "device",
-        ResourceKind::Sdk => "sdk",
     }
 }
 

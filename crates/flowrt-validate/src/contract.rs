@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
     ChannelEdgeIr, ContractIr, EntityId, EntityRef, LanguageKind, OperationEdgeIr, RSDL_VERSION,
+    ResourceSatisfactionIr,
 };
 
 use crate::ValidationError;
@@ -59,6 +60,14 @@ pub(crate) fn validate_contract_canonical_fields(
     }
     for component in &ir.components {
         validate_entity_id_shape("component id", "component", &component.id, errors);
+        for resource in &component.resources {
+            validate_entity_id_shape(
+                "resource requirement id",
+                "resource_requirement",
+                &resource.id,
+                errors,
+            );
+        }
     }
     for graph in &ir.graphs {
         validate_entity_id_shape("graph id", "graph", &graph.id, errors);
@@ -82,6 +91,22 @@ pub(crate) fn validate_contract_canonical_fields(
         }
         for bridge in &graph.ros2_bridges {
             validate_entity_id_shape("ROS2 bridge id", "bridge", &bridge.id, errors);
+        }
+        for provider in &graph.resource_providers {
+            validate_entity_id_shape(
+                "resource provider id",
+                "resource_provider",
+                &provider.id,
+                errors,
+            );
+        }
+        for satisfaction in &graph.resource_satisfactions {
+            validate_entity_id_shape(
+                "resource satisfaction id",
+                "resource_satisfaction",
+                &satisfaction.id,
+                errors,
+            );
         }
     }
     for profile in &ir.profiles {
@@ -167,6 +192,16 @@ pub(crate) fn validate_contract_canonical_ordering(
         {
             errors.push(ValidationError::new(format!(
                 "component `{}` params must use canonical name order",
+                component.name
+            )));
+        }
+        if !component
+            .resources
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "component `{}` resources must use canonical name order",
                 component.name
             )));
         }
@@ -280,6 +315,25 @@ pub(crate) fn validate_contract_canonical_ordering(
                 graph.name
             )));
         }
+        if !graph
+            .resource_providers
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` resource providers must use canonical name order",
+                graph.name
+            )));
+        }
+        if !graph.resource_satisfactions.windows(2).all(|pair| {
+            resource_satisfaction_canonical_key(&pair[0])
+                <= resource_satisfaction_canonical_key(&pair[1])
+        }) {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` resource satisfactions must use canonical instance/resource order",
+                graph.name
+            )));
+        }
     }
 
     if !ir
@@ -363,6 +417,17 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
         ir.graphs.iter().map(|graph| graph.name.as_str()),
         errors,
     );
+    for component in &ir.components {
+        validate_unique_names(
+            &format!("component `{}`", component.name),
+            "resource",
+            component
+                .resources
+                .iter()
+                .map(|resource| resource.name.as_str()),
+            errors,
+        );
+    }
 
     for graph in &ir.graphs {
         validate_unique_names(
@@ -384,6 +449,15 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
             &format!("graph `{}`", graph.name),
             "ROS2 bridge",
             graph.ros2_bridges.iter().map(|bridge| bridge.name.as_str()),
+            errors,
+        );
+        validate_unique_names(
+            &format!("graph `{}`", graph.name),
+            "resource provider",
+            graph
+                .resource_providers
+                .iter()
+                .map(|provider| provider.name.as_str()),
             errors,
         );
         for direction in [BoundaryDirection::Input, BoundaryDirection::Output] {
@@ -423,6 +497,17 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
             format!("component `{}`", component.name),
             errors,
         );
+        for resource in &component.resources {
+            record_entity_id(
+                &mut seen,
+                &resource.id,
+                format!(
+                    "resource requirement `{}.{}`",
+                    component.name, resource.name
+                ),
+                errors,
+            );
+        }
     }
     for graph in &ir.graphs {
         record_entity_id(
@@ -502,6 +587,25 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
                 errors,
             );
         }
+        for provider in &graph.resource_providers {
+            record_entity_id(
+                &mut seen,
+                &provider.id,
+                format!("resource provider `{}`", provider.name),
+                errors,
+            );
+        }
+        for satisfaction in &graph.resource_satisfactions {
+            record_entity_id(
+                &mut seen,
+                &satisfaction.id,
+                format!(
+                    "resource satisfaction `{}.{}`",
+                    satisfaction.instance.name, satisfaction.resource
+                ),
+                errors,
+            );
+        }
     }
     for profile in &ir.profiles {
         record_entity_id(
@@ -567,6 +671,22 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
         .iter()
         .map(|target| (target.name.as_str(), &target.id))
         .collect::<BTreeMap<_, _>>();
+    let resource_requirement_ids = ir
+        .components
+        .iter()
+        .flat_map(|component| {
+            component.resources.iter().map(|resource| {
+                (
+                    format!("{}.{}", component.qualified_name, resource.name),
+                    &resource.id,
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let resource_requirement_ref_ids = resource_requirement_ids
+        .iter()
+        .map(|(name, id)| (name.as_str(), *id))
+        .collect::<BTreeMap<_, _>>();
 
     for graph in &ir.graphs {
         let instance_ids = graph
@@ -578,6 +698,11 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
             .boundary_endpoints
             .iter()
             .map(|endpoint| (endpoint.name.as_str(), &endpoint.id))
+            .collect::<BTreeMap<_, _>>();
+        let provider_ids = graph
+            .resource_providers
+            .iter()
+            .map(|provider| (provider.name.as_str(), &provider.id))
             .collect::<BTreeMap<_, _>>();
 
         for instance in &graph.instances {
@@ -690,6 +815,63 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
                 &instance_ids,
                 errors,
             );
+        }
+
+        for provider in &graph.resource_providers {
+            if let Some(target) = &provider.target {
+                validate_named_entity_ref(
+                    &format!("resource provider `{}` target reference", provider.name),
+                    "target",
+                    target,
+                    &target_ids,
+                    errors,
+                );
+            }
+        }
+
+        for satisfaction in &graph.resource_satisfactions {
+            validate_named_entity_ref(
+                &format!(
+                    "resource satisfaction `{}.{}` instance reference",
+                    satisfaction.instance.name, satisfaction.resource
+                ),
+                "instance",
+                &satisfaction.instance,
+                &instance_ids,
+                errors,
+            );
+            validate_named_entity_ref(
+                &format!(
+                    "resource satisfaction `{}.{}` component reference",
+                    satisfaction.instance.name, satisfaction.resource
+                ),
+                "component",
+                &satisfaction.component,
+                &component_ids,
+                errors,
+            );
+            validate_named_entity_ref(
+                &format!(
+                    "resource satisfaction `{}.{}` requirement reference",
+                    satisfaction.instance.name, satisfaction.resource
+                ),
+                "resource requirement",
+                &satisfaction.requirement,
+                &resource_requirement_ref_ids,
+                errors,
+            );
+            if let Some(provider) = &satisfaction.provider {
+                validate_named_entity_ref(
+                    &format!(
+                        "resource satisfaction `{}.{}` provider reference",
+                        satisfaction.instance.name, satisfaction.resource
+                    ),
+                    "resource provider",
+                    provider,
+                    &provider_ids,
+                    errors,
+                );
+            }
         }
     }
 
@@ -806,6 +988,13 @@ fn boundary_endpoint_canonical_key(endpoint: &BoundaryEndpointIr) -> (BoundaryDi
 
 fn task_canonical_key(task: &flowrt_ir::TaskIr) -> (&str, &str) {
     (task.instance.name.as_str(), task.name.as_str())
+}
+
+fn resource_satisfaction_canonical_key(satisfaction: &ResourceSatisfactionIr) -> (&str, &str) {
+    (
+        satisfaction.instance.name.as_str(),
+        satisfaction.resource.as_str(),
+    )
 }
 
 fn target_runtime_rank(language: LanguageKind) -> u8 {
