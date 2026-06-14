@@ -86,7 +86,7 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// 用户组件语言；当前开放 Rust/C++ 和 C callback table v0。
+        /// 初始 RSDL 目标语言；当前开放 Rust/C++ 和 C callback table v0。
         #[arg(long = "lang", value_enum, default_value = "rust")]
         language: AppInitLanguage,
     },
@@ -1360,7 +1360,7 @@ fn main() -> Result<()> {
 fn init_app_project(root: &Path, language: AppInitLanguage) -> Result<String> {
     let package_name = app_init_package_name(root);
     let rsdl_main = Path::new("rsdl/robot.rsdl");
-    let mut files = vec![
+    let files = vec![
         (
             PathBuf::from(project_manifest::MANIFEST_FILE_NAME),
             project_manifest::render_project_manifest(rsdl_main)?,
@@ -1370,20 +1370,6 @@ fn init_app_project(root: &Path, language: AppInitLanguage) -> Result<String> {
             app_init_rsdl_template(&package_name, language),
         ),
     ];
-    match language {
-        AppInitLanguage::Rust => files.push((
-            PathBuf::from("app/rust/mod.rs"),
-            app_init_rust_template().to_string(),
-        )),
-        AppInitLanguage::C => files.push((
-            PathBuf::from("app/c/controller.c"),
-            app_init_c_template().to_string(),
-        )),
-        AppInitLanguage::Cpp => files.push((
-            PathBuf::from("app/cpp/components.cpp"),
-            app_init_cpp_template().to_string(),
-        )),
-    }
 
     for (relative, _) in &files {
         let target = root.join(relative);
@@ -1402,10 +1388,11 @@ fn init_app_project(root: &Path, language: AppInitLanguage) -> Result<String> {
     }
 
     Ok(format!(
-        "initialized FlowRT app: {} language={} main={}",
+        "initialized FlowRT app: {} language={} main={}\nnext: add contract facts with `flowrt add message` and `flowrt add component --lang {}`; then run `flowrt prepare` or `flowrt explain` before writing app/ code",
         root.display(),
         language.as_str(),
-        rsdl_main.display()
+        rsdl_main.display(),
+        language.as_str()
     ))
 }
 
@@ -1471,7 +1458,6 @@ fn sanitize_app_init_identifier(raw: &str) -> String {
 }
 
 fn app_init_rsdl_template(package_name: &str, language: AppInitLanguage) -> String {
-    let language_name = language.as_str();
     let runtime = language.as_str();
     format!(
         r#"[package]
@@ -1479,22 +1465,9 @@ name = "{package_name}"
 version = "0.1.0"
 rsdl_version = "0.1"
 
-[type.Tick]
-value = "u32"
-
-[component.controller]
-language = "{language_name}"
-output = ["tick:Tick"]
-
-[instance.controller]
-component = "controller"
-process = "main"
-target = "linux"
-
-[instance.controller.task]
-trigger = "periodic"
-period_ms = 100
-output = ["tick"]
+# Edit this contract directly, or start with:
+# flowrt add message Sample value:u32
+# flowrt add component Source --lang {runtime} --output sample:Sample
 
 [profile.default]
 backend = "inproc"
@@ -1508,116 +1481,6 @@ runtime = ["{runtime}"]
 backends = ["inproc"]
 "#
     )
-}
-
-fn app_init_rust_template() -> &'static str {
-    r#"use crate::components::Controller;
-use crate::messages::Tick;
-
-#[derive(Default)]
-pub struct ControllerImpl;
-
-impl Controller for ControllerImpl {
-    fn on_tick(&mut self, tick: &mut flowrt::Output<Tick>) -> flowrt::Status {
-        tick.write(Tick { value: 0 });
-        flowrt::Status::Ok
-    }
-}
-
-pub fn build_app() -> crate::App {
-    crate::App::new(Box::new(ControllerImpl))
-}
-"#
-}
-
-fn app_init_cpp_template() -> &'static str {
-    r#"#include "flowrt_app/runtime_shell.hpp"
-
-#include <memory>
-
-namespace {
-
-class Controller final : public flowrt_app::ControllerInterface {
-public:
-    flowrt::Status on_tick(flowrt::Output<flowrt_app::Tick>& tick) override {
-        tick.write(flowrt_app::Tick{0});
-        return flowrt::Status::Ok;
-    }
-};
-
-}  // namespace
-
-namespace flowrt_user {
-
-flowrt_app::App build_app() {
-    return flowrt_app::App(std::make_unique<Controller>());
-}
-
-}  // namespace flowrt_user
-"#
-}
-
-fn app_init_c_template() -> &'static str {
-    r#"#include "flowrt_app/c_components.h"
-
-#include <stddef.h>
-#include <stdint.h>
-#include <string.h>
-
-#ifndef FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0
-#error "FlowRT C component callback ABI v0 is required"
-#endif
-
-typedef struct ControllerState {
-    uint32_t value;
-} ControllerState;
-
-static flowrt_status_t controller_run_periodic(void *user_data,
-                                               const flowrt_c_component_context_t *context,
-                                               const flowrt_c_input_array_view_t *inputs,
-                                               flowrt_c_output_array_view_t *outputs) {
-    (void)context;
-    (void)inputs;
-    ControllerState *state = (ControllerState *)user_data;
-    if (state == NULL || outputs == NULL || outputs->data == NULL || outputs->len != 1U) {
-        return FLOWRT_STATUS_ERROR;
-    }
-    flowrt_c_output_slot_t *tick = &outputs->data[0];
-    if (tick->data == NULL || tick->capacity < sizeof(uint32_t) ||
-        tick->size_bytes != sizeof(uint32_t)) {
-        return FLOWRT_STATUS_ERROR;
-    }
-    const uint32_t value = state->value++;
-    memset(tick->data, 0, tick->capacity);
-    memcpy(tick->data, &value, sizeof(value));
-    tick->written_len = sizeof(value);
-    tick->status = FLOWRT_C_OUTPUT_WRITTEN;
-    return FLOWRT_STATUS_OK;
-}
-
-static ControllerState controller_state = {0U};
-
-const flowrt_c_component_callback_table_t *flowrt_app_controller_callbacks(void) {
-    static const flowrt_c_component_callback_table_t callbacks = {
-        .size = (uint32_t)sizeof(flowrt_c_component_callback_table_t),
-        .version_major = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR,
-        .version_minor = FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR,
-        .reserved0 = 0U,
-        .feature_flags = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0,
-        .user_data = &controller_state,
-        .on_init = NULL,
-        .on_start = NULL,
-        .on_stop = NULL,
-        .on_shutdown = NULL,
-        .run_periodic = controller_run_periodic,
-        .run_on_message = NULL,
-        .run_startup = NULL,
-        .run_shutdown = NULL,
-        .reserved = {0U},
-    };
-    return &callbacks;
-}
-"#
 }
 
 fn parse_positive_usize(raw: &str) -> std::result::Result<usize, String> {

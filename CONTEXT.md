@@ -9,13 +9,15 @@
 已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
 `flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，
 `rsdl/` 放系统契约，`app/` 放用户算法，`flowrt/` 只放 FlowRT 管理产物。CLI 已新增
-`flowrt init [path] --lang <rust|cpp|c>`，生成现代项目骨架；默认 Rust，可显式生成 C++
-或 C callback table v0 骨架。`flowrt add message/module/component` 省略 RSDL 时从
-`flowrt.toml` 找主 RSDL，可追加根 message、当前可解析的 `rsdl/modules/*.rsdl`
-workspace module 注册，以及 Rust/C++/C native component、同名 instance、最小 periodic
-task 和现代 `app/` 用户骨架；写入前会重新解析、归一化并校验更新后的 Contract IR，
-C component 骨架写入 `app/c/<component>.c`。`check`、`explain`、`prepare`、`build`、
-`run`、`deps` 和 `doctor` 省略 RSDL 路径时会从当前目录向上发现最近的 `flowrt.toml`；
+`flowrt init [path] --lang <rust|cpp|c>`，只生成现代项目入口和最小
+`rsdl/robot.rsdl`；默认 Rust，可显式把初始 target runtime 设为 C++ 或 C，但不生成
+默认用户实现文件、C++ `build_app()` 或 C callback table factory。`flowrt add
+message/module/component` 省略 RSDL 时从 `flowrt.toml` 找主 RSDL，可追加根 message、
+当前可解析的 `rsdl/modules/*.rsdl` workspace module 注册，以及 Rust/C++/C native
+component、同名 instance 和最小 periodic task；写入前会重新解析、归一化并校验更新后
+的 Contract IR，且不创建、追加或覆盖 `app/` 用户代码。`check`、`explain`、`prepare`、
+`build`、`run`、`deps` 和 `doctor` 省略 RSDL 路径时会从当前目录向上发现最近的
+`flowrt.toml`；
 显式 RSDL 路径优先。`launch`、`bundle` 和 `deploy` 仍要求显式路径或 bundle 参数。
 `flowrt explain [rsdl] [--format text|json]` 已开放，输出 component 用户实现路径、接口、
 task、params、service 和 operation 摘要；C component 会展示 `app/c/<component>.c`
@@ -335,10 +337,11 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   失败原因；`flowrt add` 写入前要尽量完成冲突和 Contract IR 校验；用户骨架要把
   callback table size/version/feature bit 和 borrowed view 所有权边界写清；release
   readiness 必须检查 `CONTEXT.md` 当前版本状态，避免发布后状态文档滞后。
-- `v0.12.0` 纠正 FlowRT app 作者主路径：`flowrt add` 只作为 RSDL 编辑助手，不再
-  生成或修改用户 `app/` 代码；`prepare` / codegen 从 validated Contract IR 生成
-  App API manifest、实现清单和 `flowrt/app/stubs/` 参考模板，但只能写 `flowrt/`
-  可重建生成物，不直接创建、追加或覆盖用户 `app/`。
+- `v0.12.0` 纠正 FlowRT app 作者主路径：`flowrt init` 只创建项目入口和最小
+  RSDL，不再把默认 component 的用户实现写进 `app/`；`flowrt add` 只作为 RSDL
+  编辑助手，不再生成或修改用户 `app/` 代码；`prepare` / codegen 从 validated
+  Contract IR 生成 App API manifest、实现清单和 `flowrt/app/stubs/` 参考模板，但只能写
+  `flowrt/` 可重建生成物，不直接创建、追加或覆盖用户 `app/`。
 - `v0.13.0` 的资源模型必须保持抽象。FlowRT core 只建模 component 需要的
   capability / resource contract、访问模式、必需/可选、readiness gate、health、
   故障传播和观测字段；target / deployment / external package 声明哪些 provider
