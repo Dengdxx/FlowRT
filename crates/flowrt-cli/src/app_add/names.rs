@@ -89,19 +89,3 @@ fn pascal_or_camel_to_snake(raw: &str) -> Result<String> {
     }
     Ok(output.trim_matches('_').to_string())
 }
-
-pub(super) fn generated_type_name(name: &str) -> String {
-    let mut output = String::new();
-    for part in name.split("::").flat_map(|part| part.split('_')) {
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            output.extend(first.to_uppercase());
-            output.push_str(chars.as_str());
-        }
-    }
-    output
-}
-
-pub(super) fn pascal_case(name: &str) -> String {
-    generated_type_name(name)
-}

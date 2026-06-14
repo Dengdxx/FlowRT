@@ -181,7 +181,7 @@ fn cli_parses_add_message_module_and_component_commands() {
 #[test]
 fn cli_parses_c_add_component_language() {
     let cli = Cli::try_parse_from(["flowrt", "add", "component", "Sensor", "--lang", "c"])
-        .expect("flowrt add component should expose C skeletons");
+        .expect("flowrt add component should expose C language");
 
     let Command::Add {
         command: AddCommand::Component { name, language, .. },
@@ -386,11 +386,13 @@ fn add_module_creates_workspace_module_without_overwriting() {
 }
 
 #[test]
-fn add_component_rust_appends_contract_and_modern_skeleton() {
+fn add_component_rust_updates_rsdl_without_touching_user_code() {
     let root = temp_test_dir("add-component-rust").join("demo-bot");
     init_app_project(&root, AppInitLanguage::Rust).unwrap();
     let rsdl = root.join("rsdl/robot.rsdl");
     add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+    let app_path = root.join("app/rust/mod.rs");
+    let app_before = std::fs::read_to_string(&app_path).unwrap();
 
     let output = add_component_to_rsdl(
         &rsdl,
@@ -404,19 +406,17 @@ fn add_component_rust_appends_contract_and_modern_skeleton() {
     .unwrap();
 
     assert!(output.contains("added component `source`"));
+    assert!(output.contains("flowrt prepare"));
+    assert!(output.contains("flowrt explain"));
     let source = std::fs::read_to_string(&rsdl).unwrap();
     assert!(source.contains("[component.source]"));
     assert!(source.contains("language = \"rust\""));
     assert!(source.contains("output = [\"sample:Sample\"]"));
     assert!(source.contains("[instance.source]"));
     assert!(source.contains("[instance.source.task]"));
-    let app = std::fs::read_to_string(root.join("app/rust/mod.rs")).unwrap();
-    assert!(app.contains("use crate::components::Source;"));
-    assert!(app.contains("use crate::messages::Sample;"));
-    assert!(app.contains("pub struct SourceImpl;"));
-    assert!(app.contains("impl Source for SourceImpl"));
-    assert!(app.contains("sample.write(Sample::default());"));
-    assert!(app.contains("Box::new(SourceImpl::default())"));
+    assert_eq!(std::fs::read_to_string(&app_path).unwrap(), app_before);
+    assert!(!root.join("app/cpp").exists());
+    assert!(!root.join("app/c/source.c").exists());
     let contract = load_contract_from_rsdl(&rsdl).unwrap();
     assert!(
         contract
@@ -428,13 +428,15 @@ fn add_component_rust_appends_contract_and_modern_skeleton() {
 }
 
 #[test]
-fn add_component_cpp_appends_contract_and_modern_skeleton() {
+fn add_component_cpp_updates_rsdl_without_touching_user_code() {
     let root = temp_test_dir("add-component-cpp").join("demo-bot");
     init_app_project(&root, AppInitLanguage::Cpp).unwrap();
     let rsdl = root.join("rsdl/robot.rsdl");
     add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+    let app_path = root.join("app/cpp/components.cpp");
+    let app_before = std::fs::read_to_string(&app_path).unwrap();
 
-    add_component_to_rsdl(
+    let output = add_component_to_rsdl(
         &rsdl,
         AddComponentSpec {
             name: "Source".to_string(),
@@ -445,10 +447,16 @@ fn add_component_cpp_appends_contract_and_modern_skeleton() {
     )
     .unwrap();
 
-    let app = std::fs::read_to_string(root.join("app/cpp/components.cpp")).unwrap();
-    assert!(app.contains("class Source final : public flowrt_app::SourceInterface"));
-    assert!(app.contains("sample.write(flowrt_app::Sample{});"));
-    assert!(app.contains("std::make_unique<Source>()"));
+    assert!(output.contains("added component `source`"));
+    assert!(output.contains("flowrt prepare"));
+    assert!(output.contains("flowrt explain"));
+    let source = std::fs::read_to_string(&rsdl).unwrap();
+    assert!(source.contains("[component.source]"));
+    assert!(source.contains("language = \"cpp\""));
+    assert!(source.contains("output = [\"sample:Sample\"]"));
+    assert_eq!(std::fs::read_to_string(&app_path).unwrap(), app_before);
+    assert!(!root.join("app/rust").exists());
+    assert!(!root.join("app/c/source.c").exists());
     let contract = load_contract_from_rsdl(&rsdl).unwrap();
     assert!(
         contract
@@ -460,13 +468,15 @@ fn add_component_cpp_appends_contract_and_modern_skeleton() {
 }
 
 #[test]
-fn add_component_c_appends_contract_and_callback_skeleton() {
+fn add_component_c_updates_rsdl_without_creating_callback_file() {
     let root = temp_test_dir("add-component-c").join("demo-bot");
     init_app_project(&root, AppInitLanguage::C).unwrap();
     let rsdl = root.join("rsdl/robot.rsdl");
     add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
+    let app_path = root.join("app/c/controller.c");
+    let app_before = std::fs::read_to_string(&app_path).unwrap();
 
-    add_component_to_rsdl(
+    let output = add_component_to_rsdl(
         &rsdl,
         AddComponentSpec {
             name: "Source".to_string(),
@@ -477,20 +487,18 @@ fn add_component_c_appends_contract_and_callback_skeleton() {
     )
     .unwrap();
 
+    assert!(output.contains("added component `source`"));
+    assert!(output.contains("flowrt prepare"));
+    assert!(output.contains("flowrt explain"));
     let source = std::fs::read_to_string(&rsdl).unwrap();
     assert!(source.contains("[component.source]"));
     assert!(source.contains("language = \"c\""));
     assert!(source.contains("input = [\"sample:Sample\"]"));
     assert!(source.contains("output = [\"result:Sample\"]"));
-    let app = std::fs::read_to_string(root.join("app/c/source.c")).unwrap();
-    assert!(app.contains("#include \"flowrt_app/c_components.h\""));
-    assert!(app.contains("FlowRT 只在本次 callback 调用期间持有输入和输出缓冲区"));
-    assert!(app.contains("inputs->data == NULL"));
-    assert!(app.contains("FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0"));
-    assert!(app.contains("FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR"));
-    assert!(app.contains("sizeof(flowrt_c_component_callback_table_t)"));
-    assert!(app.contains("flowrt_app_source_callbacks"));
-    assert!(app.contains("FLOWRT_C_OUTPUT_WRITTEN"));
+    assert_eq!(std::fs::read_to_string(&app_path).unwrap(), app_before);
+    assert!(!root.join("app/c/source.c").exists());
+    assert!(!root.join("app/rust").exists());
+    assert!(!root.join("app/cpp").exists());
     let contract = load_contract_from_rsdl(&rsdl).unwrap();
     assert!(
         contract
@@ -530,16 +538,15 @@ fn add_component_rejects_existing_component_without_touching_user_file() {
 }
 
 #[test]
-fn add_component_rejects_custom_user_file_without_touching_rsdl() {
+fn add_component_ignores_custom_user_file_and_updates_rsdl() {
     let root = temp_test_dir("add-component-custom-user-file").join("demo-bot");
     init_app_project(&root, AppInitLanguage::Rust).unwrap();
     let rsdl = root.join("rsdl/robot.rsdl");
     add_message_to_rsdl(&rsdl, "Sample", &["value:u32".to_string()]).unwrap();
     let app_path = root.join("app/rust/mod.rs");
     std::fs::write(&app_path, "pub fn custom_user_code() {}\n").unwrap();
-    let before_rsdl = std::fs::read_to_string(&rsdl).unwrap();
 
-    let error = add_component_to_rsdl(
+    let output = add_component_to_rsdl(
         &rsdl,
         AddComponentSpec {
             name: "Source".to_string(),
@@ -548,10 +555,14 @@ fn add_component_rejects_custom_user_file_without_touching_rsdl() {
             outputs: vec!["sample:Sample".to_string()],
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(error.to_string().contains("no `crate::App::new(...)` call"));
-    assert_eq!(std::fs::read_to_string(&rsdl).unwrap(), before_rsdl);
+    assert!(output.contains("flowrt prepare"));
+    assert!(
+        std::fs::read_to_string(&rsdl)
+            .unwrap()
+            .contains("[component.source]")
+    );
     assert_eq!(
         std::fs::read_to_string(app_path).unwrap(),
         "pub fn custom_user_code() {}\n"

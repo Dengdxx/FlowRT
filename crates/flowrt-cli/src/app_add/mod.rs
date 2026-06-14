@@ -8,7 +8,6 @@ use crate::application_root_from_rsdl;
 
 mod names;
 mod rsdl;
-mod skeleton;
 mod types;
 
 use names::{normalize_snake_name, validate_pascal_name};
@@ -16,9 +15,6 @@ use rsdl::{
     add_component_tables, ensure_target_runtime, ensure_workspace_modules_glob, first_target_name,
     nested_table_exists, parse_rsdl_value, read_rsdl_source, render_rsdl_value, table_entry_mut,
     write_new_file, write_validated_rsdl_replacement,
-};
-use skeleton::{
-    merge_c_component_skeleton, merge_cpp_component_skeleton, merge_rust_component_skeleton,
 };
 use types::{parse_field_specs, parse_port_specs};
 
@@ -48,12 +44,12 @@ pub(crate) enum AddCommand {
         rsdl: Option<PathBuf>,
     },
 
-    /// 追加 Rust/C++/C native component、instance、task 和用户代码骨架。
+    /// 向 RSDL 追加 Rust/C++/C native component、instance 和 task。
     Component {
         /// Component 名称，推荐 PascalCase；RSDL 中会规范化为 snake_case。
         name: String,
 
-        /// 用户组件语言；C 当前使用 callback table v0 最小切片。
+        /// 用户组件语言。
         #[arg(long = "lang", value_enum)]
         language: AppAddLanguage,
 
@@ -201,23 +197,9 @@ pub(crate) fn add_component_to_rsdl(rsdl: &Path, spec: AddComponentSpec) -> Resu
     )?;
     ensure_target_runtime(&mut document, spec.language)?;
     let updated_rsdl = render_rsdl_value(document)?;
-    rsdl::validate_rsdl_source(rsdl, &updated_rsdl)?;
-
-    let app_root = application_root_from_rsdl(rsdl)?;
-    match spec.language {
-        AppAddLanguage::Rust => {
-            merge_rust_component_skeleton(&app_root, &component_name, &inputs, &outputs)?
-        }
-        AppAddLanguage::C => {
-            merge_c_component_skeleton(&app_root, &component_name, &inputs, &outputs)?
-        }
-        AppAddLanguage::Cpp => {
-            merge_cpp_component_skeleton(&app_root, &component_name, &inputs, &outputs)?
-        }
-    }
     write_validated_rsdl_replacement(rsdl, &updated_rsdl)?;
     Ok(format!(
-        "added component `{component_name}` language={} to {}",
+        "added component `{component_name}` language={} to {}; next run `flowrt prepare` or `flowrt explain` to inspect the user implementation interface",
         spec.language.as_output(),
         rsdl.display()
     ))
