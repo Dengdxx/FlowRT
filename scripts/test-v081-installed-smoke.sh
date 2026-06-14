@@ -73,7 +73,7 @@ for _ in {1..120}; do
     )"
     if [[ -n "$socket" ]] &&
         grep -q 'io_boundary=camera component=camera ready=true healthy=true' <<<"$status" &&
-        grep -q 'io_boundary_resource=camera.frames kind=shm ready=true' <<<"$status"; then
+        grep -q 'io_boundary_resource=camera.frames kind=payload.frame_buffer ready=true' <<<"$status"; then
         break
     fi
     sleep 0.05

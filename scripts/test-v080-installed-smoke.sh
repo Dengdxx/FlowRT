@@ -32,6 +32,17 @@ require_grep() {
     fi
 }
 
+require_status_grep() {
+    local pattern="$1"
+    local status="$2"
+    local label="$3"
+    if ! grep -q "$pattern" <<<"$status"; then
+        printf 'missing expected %s in live status\n' "$label" >&2
+        printf '%s\n' "$status" >&2
+        exit 1
+    fi
+}
+
 case "$(uname -m)" in
     x86_64) flowrt_platform="linux-amd64" ;;
     aarch64 | arm64) flowrt_platform="linux-arm64" ;;
@@ -184,16 +195,16 @@ for _ in {1..100}; do
     status="$("$flowrt" status --live-only 2>/dev/null || true)"
     if grep -q 'package=io_boundary_demo' <<<"$status" &&
         grep -q 'io_boundary=camera component=camera ready=true healthy=true' <<<"$status" &&
-        grep -q 'io_boundary_resource=camera.frames kind=shm ready=true' <<<"$status"; then
+        grep -q 'io_boundary_resource=camera.frames kind=payload.frame_buffer ready=true' <<<"$status"; then
         break
     fi
     sleep 0.05
 done
 
 status="$("$flowrt" status --live-only)"
-grep -q 'package=io_boundary_demo' <<<"$status"
-grep -q 'io_boundary=camera component=camera ready=true healthy=true' <<<"$status"
-grep -q 'io_boundary_resource=camera.frames kind=shm ready=true' <<<"$status"
+require_status_grep 'package=io_boundary_demo' "$status" "io_boundary_demo package"
+require_status_grep 'io_boundary=camera component=camera ready=true healthy=true' "$status" "healthy io_boundary"
+require_status_grep 'io_boundary_resource=camera.frames kind=payload.frame_buffer ready=true' "$status" "ready frame buffer resource"
 
 kill "$runtime_pid" 2>/dev/null || true
 wait "$runtime_pid" 2>/dev/null || true
