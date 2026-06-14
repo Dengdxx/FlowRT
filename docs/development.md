@@ -121,6 +121,12 @@ printf '%s\n' "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
 仓库内 `flowrt build` 默认不会回退到源码树 `runtime/cpp`；如果安装包未配置且未设置 `FLOWRT_CPP_RUNTIME_DIR`，CLI 和生成 CMake 都会报错。在 FlowRT 仓库内开发时，设置 `FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=1` 环境变量或 `-DFLOWRT_ALLOW_REPO_RUNTIME_FALLBACK=ON` CMake 变量即可启用源码树回退，不影响正式用户路径。
 
+`scripts/test-v0120-authoring-smoke.sh` 是 Contract-driven App Authoring 的 focused
+gate：覆盖 Rust、C++ 和 C 的 `init`、`add`、`check`、`prepare`、`explain`，确认
+`init/add/prepare` 不写用户 `app/`，并跑通 Rust/C++/C 示例的普通 `build/run`。
+CI 的 `v0.12.0 Authoring Smoke` 会在 amd64 和 arm64 runner 上执行该脚本，package
+和 release job 必须依赖该 gate。
+
 ## 代码与生成物边界
 
 - `flowrt/` 和 `examples/*/flowrt/` 是生成物目录，不入库。
@@ -272,13 +278,13 @@ focused tests、Rust iox2 generated shell、backend route、Rust/C++ runtime exe
 该 gate 保证 worker 只执行用户 task、scheduler 按 canonical ready order 提交 output，
 以及 iox2 scheduler-local transport commit 不再把整批 task 串行化。
 
-`v0.11.0 App SDK Smoke` 在 amd64 与 arm64 runner 上覆盖 `flowrt init` Rust/C++/C、
-项目内 `flowrt add message/component`、`flowrt explain --format text/json`，并在临时
-`examples/c_counter_demo` 副本上按 runner 架构改写 target platform 后运行普通
-`flowrt build` / `flowrt run` 和 `flowrt build --launcher` / `flowrt launch`。CI 容器
-会安装 CMake、Ninja 和 g++，因此 C callback v0 launcher 路径在 release gate 中真实
-执行，不跳过；低资源本地机器可用 `FLOWRT_V0110_SMOKE_DRY_RUN=1`
-只验证脚本入口，但 package/release gate 不使用 dry-run。
+`v0.12.0 Authoring Smoke` 在 amd64 与 arm64 runner 上覆盖 `flowrt init` Rust/C++/C、
+项目内 `flowrt add message/component`、`flowrt check`、`flowrt prepare` 和
+`flowrt explain --format text/json`，确认 `init/add/prepare` 不创建或覆盖用户 `app/`，
+并在临时 `import_demo`、`cpp_counter_demo` 和 `c_counter_demo` 副本上按 runner 架构改写
+target platform 后运行普通 `flowrt build` / `flowrt run`。CI 容器会安装 CMake、Ninja、
+g++ 和 pkg-config；低资源本地机器可用 `FLOWRT_V0120_SMOKE_DRY_RUN=1` 只验证脚本入口，
+但 package/release gate 不使用 dry-run。
 
 release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.Y.Z`”状态行。
 发布后如果只移动 `CHANGELOG.md` 版本段而忘记更新当前上下文，脚本会拒绝通过。

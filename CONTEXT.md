@@ -5,7 +5,7 @@
 
 ## 当前版本背景
 
-当前 workspace 版本仍为 `0.11.0`；`v0.11.0` 已发布并合入 `master`，`dev/v0.12.0`
+当前 workspace 版本为 `0.11.0`；`v0.11.0` 已发布并合入 `master`，`dev/v0.12.0`
 正在收口 Contract-driven App Authoring，正式发布前再统一 bump 版本号。当前用户主路径
 已经统一为 `flowrt.toml`、`rsdl/`、`app/` 和可重建的 `flowrt/` 生成目录：
 `flowrt.toml` 记录 `[project].main = "rsdl/robot.rsdl"`，

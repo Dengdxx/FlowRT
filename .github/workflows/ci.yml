@@ -595,8 +595,8 @@ jobs:
           export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
           FLOWRT_BUILD_JOBS=1 scripts/test-v0102-concurrency-smoke.sh
 
-  v0110-app-sdk-smoke:
-    name: v0.11.0 App SDK Smoke (${{ matrix.arch }})
+  v0120-authoring-smoke:
+    name: v0.12.0 Authoring Smoke (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -628,19 +628,19 @@ jobs:
           shared-key: ${{ github.job }}
           cache-on-failure: true
 
-      - name: 缓存 FlowRT v0.11.0 App SDK deps
+      - name: 缓存 FlowRT v0.12.0 authoring deps
         uses: actions/cache@v4
         with:
-          path: .flowrt-cache/v0110-app-sdk-${{ matrix.arch }}
-          key: flowrt-v0110-app-sdk-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'runtime/cpp/**', 'crates/flowrt-cli/src/main.rs', 'crates/flowrt-cli/src/app_add/**', 'crates/flowrt-codegen/src/explain.rs', 'scripts/test-v0110-app-sdk-smoke.sh', 'examples/c_counter_demo/**') }}
+          path: .flowrt-cache/v0120-authoring-${{ matrix.arch }}
+          key: flowrt-v0120-authoring-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'runtime/rust/Cargo.toml', 'runtime/cpp/**', 'crates/flowrt-cli/src/main.rs', 'crates/flowrt-cli/src/app_add/**', 'crates/flowrt-codegen/src/app_api.rs', 'crates/flowrt-codegen/src/explain.rs', 'scripts/test-v0120-authoring-smoke.sh', 'examples/import_demo/**', 'examples/cpp_counter_demo/**', 'examples/c_counter_demo/**') }}
 
-      - name: v0.11.0 App SDK smoke
+      - name: v0.12.0 authoring smoke
         run: |
           export CARGO_BUILD_JOBS=1
           export FLOWRT_BUILD_JOBS=1
-          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0110-app-sdk-${{ matrix.arch }}"
+          export FLOWRT_CACHE_DIR="$GITHUB_WORKSPACE/.flowrt-cache/v0120-authoring-${{ matrix.arch }}"
           export FLOWRT_SMOKE_TARGET_PLATFORM="linux-${{ matrix.arch }}"
-          scripts/test-v0110-app-sdk-smoke.sh
+          scripts/test-v0120-authoring-smoke.sh
 
   v083-toolchain-smoke:
     name: v0.8.3 Cross Toolchain Smoke
@@ -772,7 +772,7 @@ jobs:
       - v091-island-tooling-smoke
       - v092-island-offline-validation-smoke
       - v0102-concurrency-smoke
-      - v0110-app-sdk-smoke
+      - v0120-authoring-smoke
       - v083-toolchain-smoke
 
     steps:
@@ -1250,7 +1250,7 @@ jobs:
       - v091-island-tooling-smoke
       - v092-island-offline-validation-smoke
       - v0102-concurrency-smoke
-      - v0110-app-sdk-smoke
+      - v0120-authoring-smoke
       - v083-toolchain-smoke
       - cpp-zenoh-runtime
       - package

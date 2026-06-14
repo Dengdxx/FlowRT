@@ -793,65 +793,65 @@ else
     fail "v0.10.2 concurrency smoke 脚本不存在或不可执行: $installed_v0102_smoke"
 fi
 
-# ── 16. v0.11.0 focused CI gate 覆盖 ─────────────────────────
+# ── 16. v0.12.0 focused CI gate 覆盖 ─────────────────────────
 
-printf '\n[16/19] v0.11.0 App SDK focused CI gate 覆盖\n'
+printf '\n[16/19] v0.12.0 Authoring focused CI gate 覆盖\n'
 
 if [[ ! -f "$ci_file" ]]; then
-    fail "CI 配置不存在，无法检查 v0.11.0 focused gate"
+    fail "CI 配置不存在，无法检查 v0.12.0 focused gate"
 else
-    require_ci_text "CI 包含 v0.11.0 App SDK smoke job" \
-        "v0110-app-sdk-smoke:" "$ci_file"
-    require_ci_text "v0.11.0 gate 覆盖 amd64" \
+    require_ci_text "CI 包含 v0.12.0 authoring smoke job" \
+        "v0120-authoring-smoke:" "$ci_file"
+    require_ci_text "v0.12.0 gate 覆盖 amd64" \
         "arch: amd64" "$ci_file"
-    require_ci_text "v0.11.0 gate 覆盖 arm64" \
+    require_ci_text "v0.12.0 gate 覆盖 arm64" \
         "arch: arm64" "$ci_file"
-    require_ci_text "v0.11.0 gate 使用 FlowRT App SDK cache" \
-        ".flowrt-cache/v0110-app-sdk" "$ci_file"
-    require_ci_text "v0.11.0 gate 按 runner 架构选择 smoke target" \
+    require_ci_text "v0.12.0 gate 使用 FlowRT authoring cache" \
+        ".flowrt-cache/v0120-authoring" "$ci_file"
+    require_ci_text "v0.12.0 gate 按 runner 架构选择 smoke target" \
         "FLOWRT_SMOKE_TARGET_PLATFORM=\"linux-\${{ matrix.arch }}\"" "$ci_file"
-    require_ci_text "v0.11.0 gate 运行 App SDK smoke 脚本" \
-        "scripts/test-v0110-app-sdk-smoke.sh" "$ci_file"
-    require_ci_text_count_at_least "package/release 依赖 v0.11.0 focused gate" \
-        "- v0110-app-sdk-smoke" "$ci_file" 2
+    require_ci_text "v0.12.0 gate 运行 authoring smoke 脚本" \
+        "scripts/test-v0120-authoring-smoke.sh" "$ci_file"
+    require_ci_text_count_at_least "package/release 依赖 v0.12.0 focused gate" \
+        "- v0120-authoring-smoke" "$ci_file" 2
 fi
 
-installed_v0110_smoke="$repo_root/scripts/test-v0110-app-sdk-smoke.sh"
-if [[ -x "$installed_v0110_smoke" ]]; then
-    pass "v0.11.0 App SDK smoke 脚本存在且可执行"
-    require_file_text "v0.11.0 smoke 覆盖 flowrt init Rust" \
-        'run_flowrt init "$rust_app" --lang rust' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 flowrt init C++" \
-        'run_flowrt init "$cpp_app" --lang cpp' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 flowrt init C" \
-        'run_flowrt init "$c_app" --lang c' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 flowrt add message" \
-        'add message Sample value:u32' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 Rust add component" \
-        'add component Source --lang rust --output sample:Sample' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 C v0 add component 骨架" \
-        'add component Source --lang c --output sample:Sample' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 explain text" \
-        'explain --format text' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 explain json" \
-        'explain --format json' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 c_counter_demo 示例" \
-        'examples/c_counter_demo' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 c_counter_demo 普通 build" \
-        'run_flowrt build "$c_demo/rsdl/robot.rsdl"' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 c_counter_demo 普通 run" \
-        'run_flowrt run --run-steps 3 "$c_demo/rsdl/robot.rsdl"' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 c_counter_demo launcher build" \
-        'run_flowrt build --launcher "$c_demo/rsdl/robot.rsdl"' "$installed_v0110_smoke"
-    require_file_text "v0.11.0 smoke 覆盖 c_counter_demo launch" \
-        'run_flowrt launch --run-steps 3 "$c_demo/rsdl/robot.rsdl"' "$installed_v0110_smoke"
+installed_v0120_smoke="$repo_root/scripts/test-v0120-authoring-smoke.sh"
+if [[ -x "$installed_v0120_smoke" ]]; then
+    pass "v0.12.0 authoring smoke 脚本存在且可执行"
+    require_file_text "v0.12.0 smoke 覆盖 flowrt init Rust" \
+        'exercise_authoring_project rust' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 flowrt init C++" \
+        'exercise_authoring_project cpp' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 flowrt init C" \
+        'exercise_authoring_project c' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 断言 init/add 不写用户 app" \
+        'assert_no_user_app "$project"' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 flowrt prepare" \
+        'run_flowrt_at "$project" prepare' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 检查 App API manifest" \
+        'flowrt/app/app_api.json' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 检查 implementation 清单" \
+        'flowrt/app/implementation.md' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 检查 reference stubs" \
+        'flowrt/app/stubs/$lang' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 explain text" \
+        'explain --format text' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 explain json" \
+        'explain --format json' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 Rust demo build/run" \
+        'exercise_demo import_demo' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 C++ demo build/run" \
+        'exercise_demo cpp_counter_demo' "$installed_v0120_smoke"
+    require_file_text "v0.12.0 smoke 覆盖 C demo build/run" \
+        'exercise_demo c_counter_demo' "$installed_v0120_smoke"
 else
-    fail "v0.11.0 App SDK smoke 脚本不存在或不可执行: $installed_v0110_smoke"
+    fail "v0.12.0 authoring smoke 脚本不存在或不可执行: $installed_v0120_smoke"
 fi
 
-v0110_release_body="$(
+v0120_release_body="$(
     awk '
-        /^## v0\.11\.0 - / {
+        /^## v0\.12\.0 - / {
             inside = 1;
             next;
         }
@@ -863,11 +863,11 @@ v0110_release_body="$(
         }
     ' "$repo_root/CHANGELOG.md"
 )"
-v0110_notes_source="CHANGELOG v0.11.0 版本段"
-v0110_notes_body="$v0110_release_body"
-if [[ -z "$v0110_notes_body" ]]; then
-    v0110_notes_source="CHANGELOG 未发布段"
-    v0110_notes_body="$(
+v0120_notes_source="CHANGELOG v0.12.0 版本段"
+v0120_notes_body="$v0120_release_body"
+if [[ -z "$v0120_notes_body" ]]; then
+    v0120_notes_source="CHANGELOG 未发布段"
+    v0120_notes_body="$(
     awk '
         /^## 未发布$/ {
             inside = 1;
@@ -882,23 +882,23 @@ if [[ -z "$v0110_notes_body" ]]; then
     ' "$repo_root/CHANGELOG.md"
 )"
 fi
-if [[ -z "$v0110_notes_body" ]]; then
-    fail "CHANGELOG.md 缺少可作为 v0.11.0 release notes 事实源的版本段或未发布段"
+if [[ -z "$v0120_notes_body" ]]; then
+    fail "CHANGELOG.md 缺少可作为 v0.12.0 release notes 事实源的版本段或未发布段"
 else
-    if grep -qF 'v0.11.0 App SDK Smoke' <<<"$v0110_notes_body"; then
-        pass "$v0110_notes_source 记录 v0.11.0 App SDK focused gate"
+    if grep -qF 'Contract-driven App Authoring' <<<"$v0120_notes_body"; then
+        pass "$v0120_notes_source 记录 Contract-driven App Authoring"
     else
-        fail "$v0110_notes_source 缺少 v0.11.0 App SDK focused gate 条目"
+        fail "$v0120_notes_source 缺少 Contract-driven App Authoring 条目"
     fi
-    if grep -qF 'init/add/explain' <<<"$v0110_notes_body"; then
-        pass "$v0110_notes_source 记录 init/add/explain 主路径"
+    if grep -qF 'flowrt/app/app_api.json' <<<"$v0120_notes_body"; then
+        pass "$v0120_notes_source 记录 App API manifest"
     else
-        fail "$v0110_notes_source 缺少 init/add/explain 主路径说明"
+        fail "$v0120_notes_source 缺少 App API manifest 说明"
     fi
-    if grep -qF 'examples/c_counter_demo' <<<"$v0110_notes_body"; then
-        pass "$v0110_notes_source 记录 c_counter_demo smoke"
+    if grep -qF 'v0.12.0 Authoring Smoke' <<<"$v0120_notes_body"; then
+        pass "$v0120_notes_source 记录 v0.12.0 authoring focused gate"
     else
-        fail "$v0110_notes_source 缺少 c_counter_demo smoke 说明"
+        fail "$v0120_notes_source 缺少 v0.12.0 authoring focused gate 条目"
     fi
 fi
 
