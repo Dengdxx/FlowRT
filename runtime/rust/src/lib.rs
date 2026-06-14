@@ -260,13 +260,65 @@ impl BoundaryContext {
     }
 }
 
+/// task timing 使用的毫秒时间来源。
+///
+/// `Runtime` 表示由 generated scheduler 维护的运行态单调毫秒模型；`Replay` 表示
+/// `flowrt replay` 或 temporary island overlay 使用 fixture `at_ms` 驱动同一毫秒模型。
+/// 该枚举只标记来源，不在 runtime primitive 中采样 wall-clock 时间。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockSource {
+    /// 运行态 scheduler 的逻辑毫秒时间。
+    Runtime,
+    /// replay fixture 驱动的模拟毫秒时间。
+    Replay,
+}
+
+/// 单次 task 回调可观察的调度时间上下文。
+///
+/// 该结构由 generated scheduler 或测试注入，runtime primitive 本身不读取 system time。
+/// `scheduled_*` 表达 scheduler 计划时间，`observed_*` 表达本次回调实际观察到的 runtime
+/// 毫秒时间；在 replay 模式下这些值来自 fixture `at_ms` 驱动的同一时间模型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTiming {
+    /// 当前 scheduler step 序号。
+    pub step: u64,
+    /// 当前执行的 task 名称。
+    pub task_name: String,
+    /// task trigger 名称，例如 `periodic`、`on_message`、`startup` 或 `shutdown`。
+    pub trigger: String,
+    /// 本次 timing 的时间来源。
+    pub clock_source: ClockSource,
+    /// scheduler 计划唤醒或执行该 task 的毫秒时间。
+    pub scheduled_time_ms: u64,
+    /// runtime 在回调边界观察到的毫秒时间。
+    pub observed_time_ms: u64,
+    /// 相对上一计划时间的毫秒间隔。
+    pub scheduled_delta_ms: u64,
+    /// 相对上一观察时间的毫秒间隔。
+    pub observed_delta_ms: u64,
+    /// periodic task 的声明周期；非 periodic task 为 `None`。
+    pub period_ms: Option<u64>,
+    /// task 的声明 deadline；未声明时为 `None`。
+    pub deadline_ms: Option<u64>,
+    /// `observed_time_ms` 超过 `scheduled_time_ms` 的毫秒数；未迟到时为 0。
+    pub lateness_ms: u64,
+    /// scheduler 已跳过的周期数。
+    pub missed_periods: u64,
+    /// 本次回调是否超过声明 deadline。
+    pub deadline_missed: bool,
+    /// 本次执行是否超过声明周期或调度窗口。
+    pub overrun: bool,
+}
+
 /// runtime 传递给生命周期钩子和调度步骤的上下文。
 ///
 /// 普通组件看到空上下文；I/O boundary 组件会收到带 `BoundaryContext` 的上下文，用于
-/// 上报资源、readiness 和 health。上下文不暴露底层 backend SDK。
+/// 上报资源、readiness 和 health。task 回调可额外收到 `TaskTiming`，生命周期上下文默认
+/// 不携带 timing。上下文不暴露底层 backend SDK。
 #[derive(Debug, Default)]
 pub struct Context {
     boundary: Option<BoundaryContext>,
+    timing: Option<TaskTiming>,
 }
 
 impl Context {
@@ -275,10 +327,18 @@ impl Context {
         Self::default()
     }
 
+    /// 构造带 task timing 的上下文。
+    pub fn with_timing(timing: TaskTiming) -> Self {
+        let mut context = Self::default();
+        context.set_timing(timing);
+        context
+    }
+
     /// 构造 I/O boundary 上下文。
     pub fn for_boundary(boundary: BoundaryContext) -> Self {
         Self {
             boundary: Some(boundary),
+            timing: None,
         }
     }
 
@@ -290,6 +350,16 @@ impl Context {
     /// 返回当前 I/O boundary 可变上下文；普通组件返回 `None`。
     pub fn boundary_mut(&mut self) -> Option<&mut BoundaryContext> {
         self.boundary.as_mut()
+    }
+
+    /// 替换当前 task timing；生命周期上下文可保持 `None`。
+    pub fn set_timing(&mut self, timing: TaskTiming) {
+        self.timing = Some(timing);
+    }
+
+    /// 返回当前 task timing；普通生命周期上下文返回 `None`。
+    pub fn timing(&self) -> Option<&TaskTiming> {
+        self.timing.as_ref()
     }
 
     /// 判断当前上下文是否属于 I/O boundary 组件。
@@ -459,12 +529,73 @@ mod tests {
         let plain = Context::new();
         assert!(!plain.is_io_boundary());
         assert!(plain.boundary().is_none());
+        assert!(plain.timing().is_none());
 
         let state = IntrospectionState::new();
         let boundary = BoundaryContext::new("camera", "CameraDriver", state.clone());
-        let context = Context::for_boundary(boundary);
+        let mut context = Context::for_boundary(boundary);
         assert!(context.is_io_boundary());
         assert_eq!(context.boundary().unwrap().instance(), "camera");
         assert_eq!(context.boundary().unwrap().component(), "CameraDriver");
+        assert!(context.timing().is_none());
+
+        context.set_timing(TaskTiming {
+            step: 9,
+            task_name: "camera.capture".to_string(),
+            trigger: "periodic".to_string(),
+            clock_source: ClockSource::Replay,
+            scheduled_time_ms: 1_000,
+            observed_time_ms: 1_008,
+            scheduled_delta_ms: 20,
+            observed_delta_ms: 28,
+            period_ms: Some(20),
+            deadline_ms: Some(5),
+            lateness_ms: 8,
+            missed_periods: 0,
+            deadline_missed: true,
+            overrun: true,
+        });
+        assert_eq!(
+            context.timing().map(|timing| timing.task_name.as_str()),
+            Some("camera.capture")
+        );
+        assert!(context.is_io_boundary());
+    }
+
+    #[test]
+    fn context_exposes_optional_task_timing() {
+        let timing = TaskTiming {
+            step: 3,
+            task_name: "planner.update".to_string(),
+            trigger: "on_message".to_string(),
+            clock_source: ClockSource::Runtime,
+            scheduled_time_ms: 120,
+            observed_time_ms: 125,
+            scheduled_delta_ms: 40,
+            observed_delta_ms: 45,
+            period_ms: None,
+            deadline_ms: Some(10),
+            lateness_ms: 5,
+            missed_periods: 2,
+            deadline_missed: false,
+            overrun: false,
+        };
+
+        let mut context = Context::with_timing(timing.clone());
+
+        assert!(!context.is_io_boundary());
+        assert!(context.boundary().is_none());
+        assert_eq!(context.timing(), Some(&timing));
+
+        let updated = TaskTiming {
+            clock_source: ClockSource::Replay,
+            scheduled_time_ms: 200,
+            observed_time_ms: 200,
+            deadline_missed: true,
+            ..timing
+        };
+        context.set_timing(updated.clone());
+
+        assert_eq!(context.timing(), Some(&updated));
     }
 }

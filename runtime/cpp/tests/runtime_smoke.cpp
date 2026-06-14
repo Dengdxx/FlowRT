@@ -310,6 +310,42 @@ int main() {
     flowrt::Context context;
     (void)context;
     assert(!context.is_io_boundary());
+    assert(context.timing() == nullptr);
+    const flowrt::TaskTiming timing{
+        .step = 3U,
+        .task_name = "planner.update",
+        .trigger = "on_message",
+        .clock_source = flowrt::ClockSource::Runtime,
+        .scheduled_time_ms = 120U,
+        .observed_time_ms = 125U,
+        .scheduled_delta_ms = 40U,
+        .observed_delta_ms = 45U,
+        .deadline_ms = 10U,
+        .lateness_ms = 5U,
+        .missed_periods = 2U,
+    };
+    auto task_context = flowrt::Context::with_timing(timing);
+    assert(!task_context.is_io_boundary());
+    assert(task_context.boundary() == nullptr);
+    assert(task_context.timing() != nullptr);
+    assert(task_context.timing()->task_name == "planner.update");
+    assert(task_context.timing()->trigger == "on_message");
+    assert(task_context.timing()->clock_source == flowrt::ClockSource::Runtime);
+    assert(task_context.timing()->period_ms == std::nullopt);
+    assert(task_context.timing()->deadline_ms == 10U);
+    task_context.set_timing(flowrt::TaskTiming{
+        .step = 4U,
+        .task_name = "planner.update",
+        .trigger = "periodic",
+        .clock_source = flowrt::ClockSource::Replay,
+        .scheduled_time_ms = 200U,
+        .observed_time_ms = 200U,
+        .scheduled_delta_ms = 40U,
+        .observed_delta_ms = 40U,
+        .period_ms = 40U,
+    });
+    assert(task_context.timing()->clock_source == flowrt::ClockSource::Replay);
+    assert(task_context.timing()->period_ms == 40U);
     bool boundary_reported = false;
     auto boundary_context = flowrt::Context::for_boundary(flowrt::BoundaryContext{
         "camera", "CameraDriver",
@@ -323,6 +359,7 @@ int main() {
         }});
     assert(boundary_context.is_io_boundary());
     assert(boundary_context.boundary() != nullptr);
+    assert(boundary_context.timing() == nullptr);
     boundary_context.boundary()->mark_ready();
     assert(boundary_reported);
 

@@ -394,14 +394,57 @@ class BoundaryContext {
 };
 
 /**
+ * @brief task timing 使用的毫秒时间来源。
+ *
+ * `Runtime` 表示 generated scheduler 维护的运行态单调毫秒模型；`Replay` 表示
+ * `flowrt replay` 或 temporary island overlay 使用 fixture `at_ms` 驱动同一时间模型。
+ * 该枚举只标记来源，不在 runtime primitive 中采样 wall-clock 时间。
+ */
+enum class ClockSource : std::uint8_t {
+    Runtime,
+    Replay,
+};
+
+/**
+ * @brief 单次 task 回调可观察的调度时间上下文。
+ *
+ * 该结构由 generated scheduler 或测试注入，runtime primitive 本身不读取 system time。
+ * `scheduled_*` 表达 scheduler 计划时间，`observed_*` 表达回调边界观察到的 runtime
+ * 毫秒时间；replay 模式下这些值来自 fixture `at_ms` 驱动的同一时间模型。
+ */
+struct TaskTiming {
+    std::uint64_t step{};                            ///< 当前 scheduler step 序号。
+    std::string task_name;                           ///< 当前执行的 task 名称。
+    std::string trigger;                             ///< task trigger 名称。
+    ClockSource clock_source{ClockSource::Runtime};  ///< 本次 timing 的时间来源。
+    std::uint64_t scheduled_time_ms{};       ///< scheduler 计划执行该 task 的毫秒时间。
+    std::uint64_t observed_time_ms{};        ///< runtime 在回调边界观察到的毫秒时间。
+    std::uint64_t scheduled_delta_ms{};      ///< 相对上一计划时间的毫秒间隔。
+    std::uint64_t observed_delta_ms{};       ///< 相对上一观察时间的毫秒间隔。
+    std::optional<std::uint64_t> period_ms;  ///< periodic task 的声明周期。
+    std::optional<std::uint64_t> deadline_ms;  ///< task 的声明 deadline。
+    std::uint64_t lateness_ms{};               ///< 迟到毫秒数；未迟到时为 0。
+    std::uint64_t missed_periods{};            ///< scheduler 已跳过的周期数。
+    bool deadline_missed{};                    ///< 本次回调是否超过声明 deadline。
+    bool overrun{};  ///< 本次执行是否超过声明周期或调度窗口。
+};
+
+/**
  * @brief runtime 传递给生命周期钩子和调度步骤的上下文。
  *
  * 普通组件看到空上下文；I/O boundary 组件会收到带 `BoundaryContext` 的上下文，用于上报
- * 资源、readiness 和 health。上下文不暴露底层 backend SDK。
+ * 资源、readiness 和 health。task 回调可额外收到 `TaskTiming`，生命周期上下文默认不携带
+ * timing。上下文不暴露底层 backend SDK。
  */
 class Context {
    public:
     Context() = default;
+
+    static Context with_timing(TaskTiming timing) {
+        Context context;
+        context.set_timing(std::move(timing));
+        return context;
+    }
 
     static Context for_boundary(BoundaryContext boundary) {
         Context context;
@@ -419,8 +462,15 @@ class Context {
 
     [[nodiscard]] bool is_io_boundary() const noexcept { return boundary_.has_value(); }
 
+    void set_timing(TaskTiming timing) { timing_ = std::move(timing); }
+
+    [[nodiscard]] const TaskTiming *timing() const noexcept {
+        return timing_ ? std::addressof(*timing_) : nullptr;
+    }
+
    private:
     std::optional<BoundaryContext> boundary_;
+    std::optional<TaskTiming> timing_;
 };
 
 /**
