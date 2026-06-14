@@ -137,6 +137,14 @@ gate：覆盖 Rust、C++ 和 C 的 `init`、`add`、`check`、`prepare`、`expla
 CI 的 `v0.12.0 Authoring Smoke` 会在 amd64 和 arm64 runner 上执行该脚本，package
 和 release job 必须依赖该 gate。
 
+`scripts/test-v0130-runtime-completion-smoke.sh` 是 Robot Runtime Completion 的 focused
+gate：覆盖 replay、temporary island overlay、抽象 resource contract、external /
+boundary health、variable frame、params runtime apply、Operation lifecycle、结构化
+diagnostics、record/status、bundle/deploy/doctor/cross 和 C ABI。CI 的
+`v0.13.0 Robot Runtime Completion Smoke` 会在 amd64 和 arm64 runner 上执行该脚本，
+package 和 release job 必须依赖该 gate；低资源本地机器可用
+`FLOWRT_V0130_SMOKE_DRY_RUN=1` 只验证脚本入口。
+
 ## 代码与生成物边界
 
 - `flowrt/` 和 `examples/*/flowrt/` 是生成物目录，不入库。
@@ -221,7 +229,8 @@ focused smoke、amd64/arm64 v0.8.1 FrameDescriptor focused smoke、v0.8.3 交叉
 focused smoke、amd64/arm64 v0.9.0 island focused smoke、amd64/arm64 v0.9.1 island
 tooling focused smoke、amd64/arm64 v0.9.2 island offline validation focused smoke、
 amd64/arm64 v0.10.2 concurrency focused smoke、amd64/arm64 v0.11.0 App SDK
-focused smoke、amd64/arm64 C++ zenoh runtime、
+focused smoke、amd64/arm64 v0.12.0 authoring focused smoke、amd64/arm64 v0.13.0
+robot runtime completion focused smoke、amd64/arm64 C++ zenoh runtime、
 amd64/arm64 deb package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64
 demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge
 smoke 全部通过，再创建 GitHub Release，并上传
@@ -300,6 +309,14 @@ focused tests、Rust iox2 generated shell、backend route、Rust/C++ runtime exe
 target platform 后运行普通 `flowrt build` / `flowrt run`。CI 容器会安装 CMake、Ninja、
 g++ 和 pkg-config；低资源本地机器可用 `FLOWRT_V0120_SMOKE_DRY_RUN=1` 只验证脚本入口，
 但 package/release gate 不使用 dry-run。
+
+`v0.13.0 Robot Runtime Completion Smoke` 在 amd64 与 arm64 runner 上覆盖当前
+机器人 runtime completion 主线：replay / temporary island overlay、抽象 resource
+contract、external/boundary health、variable frame、params runtime apply、Operation
+lifecycle、diagnostics/status/record、bundle/deploy/doctor/cross 和 C ABI。该 gate
+只调用 focused crate tests，不新增长期 demo 目录；本地低资源机器可用
+`FLOWRT_V0130_SMOKE_DRY_RUN=1 scripts/test-v0130-runtime-completion-smoke.sh` 验证
+入口和目标平台参数。
 
 release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.Y.Z`”状态行。
 发布后如果只移动 `CHANGELOG.md` 版本段而忘记更新当前上下文，脚本会拒绝通过。

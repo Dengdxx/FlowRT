@@ -330,6 +330,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.11.1` | App SDK / C ABI v0 hardening：诊断、失败路径、用户骨架和 release readiness 收口。 |
 | `v0.12.0` | Contract-driven App Authoring：RSDL 先行，`prepare` / `explain` 产出真实用户实现接口。 |
 | `v0.13.0` | Robot Runtime Completion：补齐 package/test/clock/抽象资源契约/trace/deployment/control authority 等核心设施。 |
+| `v0.13.1` | Scheduler dispatch hardening：解耦调度 admission 与长任务 completion，修复同步等待导致 tick 退化的问题。 |
 | `v0.14.0` | Python 与更多语言入口：建立在稳定 C ABI 与 App API manifest 之上。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -421,7 +422,12 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   validator 会重新推导 satisfaction，拒绝 required unsatisfied、exclusive 多实例冲突、
   provider target/process/external package 引用错误、非 canonical metadata 和 concrete
   hardware/protocol 词进入 resource capability；optional unsatisfied requirement 保留
-  diagnostic 供后续 `status` / `doctor` 展示。supervisor 行为仍未接入该 contract。
+  diagnostic 供 `status` / `doctor` 展示。supervisor 已接入 resource health gate，以
+  抽象 provider readiness / health 控制启动和诊断，不读取具体硬件字段。
+- `v0.13.1` 修复已确认的 scheduler 同步执行阻塞问题：当前 scheduler loop 会同步等待
+  `ReadyBatch::run_collect` 完成，长任务会拖慢后续 tick。修复方向是让调度/admission
+  与 task completion 解耦，通过 completion queue 或等价异步完成通知维持 deterministic
+  output commit order，而不是回退到临时 polling。
 - `v0.14.0` 才进入 Python 与更多语言入口：Python binding / generator 必须建立在
   v0.13.0 收口后的 C ABI、App API manifest 和 FlowRT 语义边界上，不能直接暴露
   iox2、zenoh、C++ runtime 对象或 backend SDK 句柄。
@@ -901,15 +907,16 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 当前 `.github/workflows/ci.yml` 将 Linux 验证拆为分层 job，覆盖生成物保护、Rust
 格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1
 focused smoke、v0.8.3 交叉编译 focused smoke、v0.9.x island focused smoke、
-v0.10.2 concurrency focused smoke、打包、C++ zenoh runtime、demo smoke、ROS2 bridge
+v0.10.2 concurrency focused smoke、v0.12.0 authoring focused smoke、v0.13.0 robot
+runtime completion focused smoke、打包、C++ zenoh runtime、demo smoke、ROS2 bridge
 smoke 和 release。Linux job 默认
 运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个
 发行版，并安装对应的 `rmw_zenoh_cpp`。
 
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
-v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.9.x / v0.10.2 focused smoke、Debian
-package、C++ zenoh runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在
-对应架构 runner 上执行。
+v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.9.x / v0.10.2 / v0.12.0 / v0.13.0
+focused smoke、Debian package、C++ zenoh runtime、demo smoke、ROS2 Jazzy bridge 和
+ROS2 Lyrical bridge 都在对应架构 runner 上执行。
 `v0.8.3 Cross Toolchain Smoke` 固定在 amd64 host 上准备
 `aarch64-unknown-linux-gnu` Rust target、`aarch64-linux-gnu` C/C++ 交叉编译器和
 `pkg-config`，并运行 `flowrt-cli` 的 toolchain、build model、command 和 CMake target
@@ -937,10 +944,13 @@ SDK 语义；`v0.8.3 Installed amd64 to arm64 Smoke` 覆盖安装版真实交叉
 `v0.10.2 Concurrency Hardening Smoke` 覆盖 codegen 并发 focused tests、Rust iox2
 generated shell、backend route、Rust/C++ runtime executor，以及临时 generated Rust/C++
 shell 构建，确保 two-phase commit 和 scheduler-local transport commit 进入 release
-gate。发布前应运行
+gate。`v0.13.0 Robot Runtime Completion Smoke` 覆盖 replay、temporary island overlay、
+抽象 resource contract、external/boundary health、variable frame、params runtime apply、
+Operation lifecycle、diagnostics/status/record、bundle/deploy/doctor/cross 和 C ABI。
+发布前应运行
 `scripts/check-release-readiness.sh <version>`；脚本会汇总版本来源、CHANGELOG 段、
 release notes 抽取和 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 /
-v0.9.x / v0.10.2 / v0.12.0 focused gate 覆盖状态。
+v0.9.x / v0.10.2 / v0.12.0 / v0.13.0 focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、
 C ABI layout、C codegen adapter、C reference stub、C v0 fail-fast，以及
