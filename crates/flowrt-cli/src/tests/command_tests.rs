@@ -1321,11 +1321,24 @@ fn cli_parses_operation_commands() {
 fn cli_parses_status_live_only() {
     let cli = Cli::try_parse_from(["flowrt", "status", "--live-only"]).unwrap();
 
-    let Command::Status { live_only } = cli.command else {
+    let Command::Status { live_only, format } = cli.command else {
         panic!("status command should parse into Command::Status")
     };
 
     assert!(live_only);
+    assert_eq!(format, StatusFormat::Text);
+}
+
+#[test]
+fn cli_parses_status_json_format() {
+    let cli = Cli::try_parse_from(["flowrt", "status", "--format", "json"]).unwrap();
+
+    let Command::Status { live_only, format } = cli.command else {
+        panic!("status command should parse into Command::Status")
+    };
+
+    assert!(!live_only);
+    assert_eq!(format, StatusFormat::Json);
 }
 
 #[test]

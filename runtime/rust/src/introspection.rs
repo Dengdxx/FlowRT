@@ -162,6 +162,9 @@ pub struct IntrospectionStatus {
     /// v0.8+ I/O boundary 运行态健康状态。
     #[serde(default)]
     pub io_boundaries: Vec<IntrospectionIoBoundaryStatus>,
+    /// v0.13+ runtime 参数 live 状态，用于 status 级诊断和离线记录。
+    #[serde(default)]
+    pub params: Vec<IntrospectionParamStatus>,
     /// v0.4+ service 运行态健康状态。
     #[serde(default)]
     pub services: Vec<IntrospectionServiceStatus>,
@@ -177,6 +180,39 @@ pub struct IntrospectionStatus {
     /// v0.6+ recorder 运行态状态。
     #[serde(default)]
     pub recorder: IntrospectionRecorderStatus,
+    /// v0.13+ 由 status/self-description 实体派生的结构化诊断快照。
+    #[serde(default)]
+    pub diagnostics: Vec<IntrospectionDiagnostic>,
+}
+
+/// 结构化诊断中的单个数值或状态指标。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionDiagnosticMetric {
+    pub name: String,
+    pub value: serde_json::Value,
+}
+
+/// runtime live status 的统一诊断项。
+///
+/// `entity_id` 使用 self-description / Contract IR 中的 canonical 名称；`reason` 和
+/// `suggestion` 是结构化字段，不承载无法解析的日志 blob。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionDiagnostic {
+    pub category: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub state: String,
+    pub severity: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub suggestion: Option<String>,
+    #[serde(default)]
+    pub updated_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub observed_ms: Option<u64>,
+    #[serde(default)]
+    pub metrics: Vec<IntrospectionDiagnosticMetric>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -630,9 +666,19 @@ pub struct IntrospectionParamStatus {
     pub update: String,
     pub current: serde_json::Value,
     pub pending: Option<serde_json::Value>,
+    #[serde(default = "default_param_apply_state")]
+    pub apply_state: String,
+    #[serde(default)]
+    pub last_reject_reason: Option<String>,
+    #[serde(default)]
+    pub updated_unix_ms: Option<u64>,
     pub min: Option<serde_json::Value>,
     pub max: Option<serde_json::Value>,
     pub choices: Vec<serde_json::Value>,
+}
+
+fn default_param_apply_state() -> String {
+    "applied".to_string()
 }
 
 /// boundary input 注入结果。
@@ -851,6 +897,9 @@ struct ParamState {
     update: String,
     current: serde_json::Value,
     pending: Option<serde_json::Value>,
+    apply_state: String,
+    last_reject_reason: Option<String>,
+    updated_unix_ms: Option<u64>,
     min: Option<serde_json::Value>,
     max: Option<serde_json::Value>,
     choices: Vec<serde_json::Value>,
@@ -935,6 +984,9 @@ impl IntrospectionState {
                 update: schema.update,
                 current: schema.current,
                 pending: None,
+                apply_state: "applied".to_string(),
+                last_reject_reason: None,
+                updated_unix_ms: None,
                 min: schema.min,
                 max: schema.max,
                 choices: schema.choices,
@@ -1241,32 +1293,74 @@ impl IntrospectionState {
 
     /// 返回当前 status 快照。
     pub fn status(&self) -> IntrospectionStatus {
-        let inner = self.lock_inner();
-        IntrospectionStatus {
-            tick_count: inner.tick_count,
-            clock: inner.clock.clone(),
-            channels: inner
-                .channels
-                .iter()
-                .map(|(name, channel)| IntrospectionChannelStatus {
-                    name: name.clone(),
-                    message_type: channel.message_type.clone(),
-                    published_count: channel.probe.snapshot().published_count,
-                    last_payload_len: channel.probe.snapshot().payload.as_ref().map(Vec::len),
-                    active_observers: channel.probe.active_count(),
-                    dropped_samples: channel.probe.dropped_samples(),
+        let mut status = {
+            let inner = self.lock_inner();
+            IntrospectionStatus {
+                tick_count: inner.tick_count,
+                clock: inner.clock.clone(),
+                channels: inner
+                    .channels
+                    .iter()
+                    .map(|(name, channel)| {
+                        let snapshot = channel.probe.snapshot();
+                        IntrospectionChannelStatus {
+                            name: name.clone(),
+                            message_type: channel.message_type.clone(),
+                            published_count: snapshot.published_count,
+                            last_payload_len: snapshot.payload.as_ref().map(Vec::len),
+                            active_observers: channel.probe.active_count(),
+                            dropped_samples: channel.probe.dropped_samples(),
+                        }
+                    })
+                    .collect(),
+                inputs: inner.inputs.values().cloned().collect(),
+                routes: inner.routes.values().cloned().collect(),
+                processes: inner.processes.values().cloned().collect(),
+                resources: inner.resources.values().cloned().collect(),
+                io_boundaries: inner.io_boundaries.values().cloned().collect(),
+                params: inner
+                    .params
+                    .iter()
+                    .map(|(name, param)| param_status(name, param))
+                    .collect(),
+                services: inner.services.values().cloned().collect(),
+                operations: inner.operations.values().cloned().collect(),
+                tasks: inner.tasks.values().cloned().collect(),
+                lanes: inner.lanes.values().cloned().collect(),
+                recorder: self.recorder.status(),
+                diagnostics: Vec::new(),
+            }
+        };
+        status.diagnostics = derive_diagnostics(&status);
+        status
+    }
+
+    /// 将当前诊断项写入 recorder。`status()` 本身保持无副作用，避免内部轮询污染录制。
+    pub fn record_current_diagnostics(&self) {
+        let status = self.status();
+        self.record_diagnostics_events(&status);
+    }
+
+    fn record_diagnostics_events(&self, status: &IntrospectionStatus) {
+        for diagnostic in &status.diagnostics {
+            let payload = serde_json::to_value(diagnostic).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "category": diagnostic.category,
+                    "entity_kind": diagnostic.entity_kind,
+                    "entity_id": diagnostic.entity_id,
+                    "state": diagnostic.state,
+                    "severity": "error",
+                    "reason": "failed to serialize diagnostic payload",
                 })
-                .collect(),
-            inputs: inner.inputs.values().cloned().collect(),
-            routes: inner.routes.values().cloned().collect(),
-            processes: inner.processes.values().cloned().collect(),
-            resources: inner.resources.values().cloned().collect(),
-            io_boundaries: inner.io_boundaries.values().cloned().collect(),
-            services: inner.services.values().cloned().collect(),
-            operations: inner.operations.values().cloned().collect(),
-            tasks: inner.tasks.values().cloned().collect(),
-            lanes: inner.lanes.values().cloned().collect(),
-            recorder: self.recorder.status(),
+            });
+            self.recorder.record_diagnostics_event_json(
+                &diagnostic.entity_id,
+                "flowrt.diagnostics.status",
+                payload,
+                diagnostic
+                    .observed_ms
+                    .map(|value| value.saturating_mul(1_000_000)),
+            );
         }
     }
 
@@ -1853,6 +1947,9 @@ impl IntrospectionState {
         }
         validate_param_json_value(name, param, &value)?;
         param.pending = Some(value);
+        param.apply_state = "pending".to_string();
+        param.last_reject_reason = None;
+        param.updated_unix_ms = Some(unix_time_ms());
         let status = param_status(name, param);
         drop(inner);
         self.recorder.record_param_event_json(
@@ -1897,6 +1994,9 @@ impl IntrospectionState {
                 param.pending = None;
             }
             param.current = value.clone();
+            param.apply_state = "applied".to_string();
+            param.last_reject_reason = None;
+            param.updated_unix_ms = Some(unix_time_ms());
             drop(inner);
             self.recorder.record_param_event_json(
                 name,
@@ -1919,6 +2019,9 @@ impl IntrospectionState {
             if param.pending.as_ref() == Some(&value) {
                 param.pending = None;
             }
+            param.apply_state = "rejected".to_string();
+            param.last_reject_reason = Some(reason.clone());
+            param.updated_unix_ms = Some(unix_time_ms());
             drop(inner);
             self.recorder.record_param_event_json(
                 name,
@@ -2519,9 +2622,10 @@ fn handle_connection(
     stream.set_write_timeout(Some(INTROSPECTION_RESPONSE_WRITE_TIMEOUT))?;
     match request {
         IntrospectionRequest::Status => {
+            let status = state.status();
             let response = IntrospectionResponse::Status {
                 handshake: handshake.clone(),
-                status: state.status(),
+                status,
             };
             let mut writer = stream;
             writer.write_all(
@@ -2767,6 +2871,7 @@ fn handle_connection(
                 runtime_pid: handshake.pid,
                 selfdesc_hash: handshake.self_description_hash.clone(),
             });
+            state.record_current_diagnostics();
             let response = IntrospectionResponse::RecorderValue {
                 handshake: handshake.clone(),
                 recorder,
@@ -2820,6 +2925,9 @@ fn param_status(name: &str, param: &ParamState) -> IntrospectionParamStatus {
         update: param.update.clone(),
         current: param.current.clone(),
         pending: param.pending.clone(),
+        apply_state: param.apply_state.clone(),
+        last_reject_reason: param.last_reject_reason.clone(),
+        updated_unix_ms: param.updated_unix_ms,
         min: param.min.clone(),
         max: param.max.clone(),
         choices: param.choices.clone(),
@@ -2904,6 +3012,458 @@ fn bytes_of<T: Copy>(value: &T) -> Vec<u8> {
         );
     }
     bytes
+}
+
+fn derive_diagnostics(status: &IntrospectionStatus) -> Vec<IntrospectionDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let clock_ms = status.clock.tick_time_ms;
+    diagnostics.push(diagnostic(
+        "clock",
+        "clock",
+        &status.clock.source,
+        &status.clock.source,
+        if status.clock.source == "realtime" {
+            "info"
+        } else {
+            "warn"
+        },
+        Some(format!("{} time source", status.clock.source)),
+        None,
+        None,
+        clock_ms,
+        vec![
+            metric("tick_time_ms", status.clock.tick_time_ms),
+            metric("unit", status.clock.unit.clone()),
+            metric("field", status.clock.field.clone()),
+        ],
+    ));
+
+    for channel in &status.channels {
+        let dropped = channel.dropped_samples;
+        diagnostics.push(diagnostic(
+            "channel",
+            "channel",
+            &channel.name,
+            if dropped > 0 { "dropping" } else { "ok" },
+            if dropped > 0 { "warn" } else { "info" },
+            (dropped > 0).then(|| "channel probe dropped samples".to_string()),
+            None,
+            None,
+            clock_ms,
+            vec![
+                metric("published_count", channel.published_count),
+                metric("last_payload_len", channel.last_payload_len),
+                metric("active_observers", channel.active_observers),
+                metric("dropped_samples", dropped),
+            ],
+        ));
+    }
+
+    for input in &status.inputs {
+        let severity = if !input.present {
+            "error"
+        } else if input.stale {
+            "warn"
+        } else {
+            "info"
+        };
+        let reason = if !input.present {
+            Some("input has no latest sample".to_string())
+        } else if input.stale {
+            Some("input latest sample is stale".to_string())
+        } else {
+            None
+        };
+        diagnostics.push(diagnostic(
+            "input",
+            "input",
+            &input_status_key(input),
+            if !input.present {
+                "missing"
+            } else if input.stale {
+                "stale"
+            } else {
+                "present"
+            },
+            severity,
+            reason,
+            None,
+            input.updated_unix_ms,
+            input.last_read_ms.or(clock_ms),
+            vec![
+                metric("present", input.present),
+                metric("stale", input.stale),
+                metric("last_revision", input.last_revision),
+                metric("last_read_ms", input.last_read_ms),
+                metric("dropped_samples", input.dropped_samples),
+                metric("backpressure_count", input.backpressure_count),
+                metric("overflow_count", input.overflow_count),
+            ],
+        ));
+    }
+
+    for route in &status.routes {
+        let has_error = route.last_error.is_some();
+        let has_loss =
+            route.dropped_samples > 0 || route.backpressure_count > 0 || route.overflow_count > 0;
+        let mut metrics = vec![
+            metric("published_count", route.published_count),
+            metric("dropped_samples", route.dropped_samples),
+            metric("backpressure_count", route.backpressure_count),
+            metric("overflow_count", route.overflow_count),
+            metric("last_publish_ms", route.last_publish_ms),
+        ];
+        if let (Some(now), Some(last)) = (clock_ms, route.last_publish_ms)
+            && now >= last
+        {
+            metrics.push(metric("latest_age_ms", now - last));
+        }
+        diagnostics.push(diagnostic(
+            "route",
+            "route",
+            &route.name,
+            if has_error {
+                "error"
+            } else if has_loss {
+                "degraded"
+            } else {
+                "selected"
+            },
+            if has_error {
+                "error"
+            } else if has_loss {
+                "warn"
+            } else {
+                "info"
+            },
+            route
+                .last_error
+                .clone()
+                .or_else(|| Some(format!("backend selected: {}", route.selected_reason))),
+            None,
+            None,
+            route.last_publish_ms.or(clock_ms),
+            {
+                metrics.push(metric("backend", route.backend.clone()));
+                metrics.push(metric("selected_reason", route.selected_reason.clone()));
+                metrics
+            },
+        ));
+    }
+
+    for process in &status.processes {
+        let bad_state = !matches!(
+            process.state.as_str(),
+            "running" | "ready" | "started" | "ok"
+        );
+        let severity = if process.exit_code.is_some() || process.tick_stale {
+            "error"
+        } else if bad_state || process.restart_count > 0 {
+            "warn"
+        } else {
+            "info"
+        };
+        let reason = process
+            .readiness_wait
+            .as_ref()
+            .map(|wait| format!("waiting for {wait}"))
+            .or_else(|| process.exit_code.map(|code| format!("exit_code={code}")))
+            .or_else(|| {
+                process
+                    .tick_stale
+                    .then(|| "process tick is stale".to_string())
+            });
+        diagnostics.push(diagnostic(
+            "process",
+            "process",
+            &process.name,
+            &process.state,
+            severity,
+            reason,
+            None,
+            process.last_seen_unix_ms,
+            process.tick_count.or(clock_ms),
+            vec![
+                metric("pid", process.pid),
+                metric("restart_count", process.restart_count),
+                metric("tick_count", process.tick_count),
+                metric("tick_stale", process.tick_stale),
+                metric("exit_code", process.exit_code),
+            ],
+        ));
+    }
+
+    for resource in &status.resources {
+        let satisfied = resource
+            .satisfied
+            .unwrap_or(matches!(resource.state.as_str(), "ready"));
+        let severity = match resource.state.as_str() {
+            "failed" => "error",
+            "degraded" | "pending" if resource.required => "warn",
+            _ if resource.required && !satisfied => "error",
+            _ => "info",
+        };
+        diagnostics.push(diagnostic(
+            "resource",
+            "resource",
+            &resource.name,
+            &resource.state,
+            severity,
+            resource
+                .last_error
+                .clone()
+                .or_else(|| resource.diagnostic.clone())
+                .or_else(|| resource.contract_status.clone()),
+            resource.suggestion.clone(),
+            resource.updated_unix_ms,
+            clock_ms,
+            vec![
+                metric("capability", resource.capability.clone()),
+                metric("required", resource.required),
+                metric("readiness", resource.readiness.clone()),
+                metric("health", resource.health.clone()),
+                metric("on_failure", resource.on_failure.clone()),
+                metric("satisfied", resource.satisfied),
+                metric("provider", resource.provider.clone()),
+            ],
+        ));
+    }
+
+    for boundary in &status.io_boundaries {
+        let severity = if !boundary.healthy {
+            "error"
+        } else if !boundary.ready {
+            "warn"
+        } else {
+            "info"
+        };
+        diagnostics.push(diagnostic(
+            "io_boundary",
+            "io_boundary",
+            &boundary.name,
+            if boundary.ready && boundary.healthy {
+                "ready"
+            } else if !boundary.healthy {
+                "unhealthy"
+            } else {
+                "not_ready"
+            },
+            severity,
+            boundary.last_error.clone(),
+            None,
+            boundary.updated_unix_ms,
+            clock_ms,
+            vec![
+                metric("ready", boundary.ready),
+                metric("healthy", boundary.healthy),
+                metric("resource_count", boundary.resources.len()),
+            ],
+        ));
+        for resource in &boundary.resources {
+            diagnostics.push(diagnostic(
+                "io_boundary",
+                "io_boundary_resource",
+                &format!("{}.{}", boundary.name, resource.name),
+                if resource.ready { "ready" } else { "not_ready" },
+                if resource.ready { "info" } else { "warn" },
+                resource
+                    .last_error
+                    .clone()
+                    .or_else(|| resource.message.clone()),
+                None,
+                resource.updated_unix_ms,
+                clock_ms,
+                vec![
+                    metric("kind", resource.kind.clone()),
+                    metric("ready", resource.ready),
+                ],
+            ));
+        }
+    }
+
+    for param in &status.params {
+        diagnostics.push(diagnostic(
+            "param",
+            "param",
+            &param.name,
+            &param.apply_state,
+            if param.apply_state == "rejected" {
+                "error"
+            } else if param.pending.is_some() {
+                "warn"
+            } else {
+                "info"
+            },
+            param.last_reject_reason.clone(),
+            None,
+            param.updated_unix_ms,
+            clock_ms,
+            vec![
+                metric("update", param.update.clone()),
+                metric("pending", param.pending.clone()),
+                metric("current", param.current.clone()),
+            ],
+        ));
+    }
+
+    for service in &status.services {
+        let failures = service.timeout_count
+            + service.busy_count
+            + service.unavailable_count
+            + service.late_drop_count;
+        diagnostics.push(diagnostic(
+            "service",
+            "service",
+            &service.name,
+            if service.ready {
+                "ready"
+            } else {
+                "unavailable"
+            },
+            if !service.ready || failures > 0 {
+                "warn"
+            } else {
+                "info"
+            },
+            (!service.ready)
+                .then(|| "service endpoint is not ready".to_string())
+                .or_else(|| (failures > 0).then(|| "service has failed requests".to_string())),
+            None,
+            None,
+            clock_ms,
+            vec![
+                metric("in_flight", service.in_flight),
+                metric("queued", service.queued),
+                metric("total_requests", service.total_requests),
+                metric("timeout_count", service.timeout_count),
+                metric("busy_count", service.busy_count),
+                metric("unavailable_count", service.unavailable_count),
+                metric("late_drop_count", service.late_drop_count),
+            ],
+        ));
+    }
+
+    for operation in &status.operations {
+        let failed = operation.failed_count + operation.timeout_count + operation.preempted_count;
+        diagnostics.push(diagnostic(
+            "operation",
+            "operation",
+            &operation.name,
+            operation
+                .current_state
+                .as_deref()
+                .unwrap_or(if operation.ready {
+                    "ready"
+                } else {
+                    "unavailable"
+                }),
+            if operation.last_error.is_some() || failed > 0 {
+                "error"
+            } else if operation.running > 0 || operation.queued > 0 {
+                "warn"
+            } else {
+                "info"
+            },
+            operation
+                .last_error
+                .clone()
+                .or_else(|| operation.last_event.clone()),
+            None,
+            operation.last_transition_ms,
+            operation.current_deadline_ms.or(clock_ms),
+            vec![
+                metric("ready", operation.ready),
+                metric("running", operation.running),
+                metric("queued", operation.queued),
+                metric("total_started", operation.total_started),
+                metric("succeeded_count", operation.succeeded_count),
+                metric("failed_count", operation.failed_count),
+                metric("timeout_count", operation.timeout_count),
+                metric("current_deadline_ms", operation.current_deadline_ms),
+            ],
+        ));
+    }
+
+    for task in &status.tasks {
+        let has_failure = task.consecutive_failures > 0;
+        let has_timing_issue = task.deadline_missed > 0
+            || task.stale_input > 0
+            || task.backpressure > 0
+            || task.overflow > 0;
+        diagnostics.push(diagnostic(
+            "task",
+            "task",
+            &task.name,
+            if has_failure {
+                "failing"
+            } else if has_timing_issue {
+                "degraded"
+            } else {
+                "ok"
+            },
+            if has_failure {
+                "error"
+            } else if has_timing_issue {
+                "warn"
+            } else {
+                "info"
+            },
+            has_failure
+                .then(|| "task has consecutive failures".to_string())
+                .or_else(|| {
+                    has_timing_issue.then(|| "task timing/input counters are non-zero".to_string())
+                }),
+            None,
+            task.last_run_ms,
+            task.last_run_ms.or(clock_ms),
+            vec![
+                metric("lane", task.lane.clone()),
+                metric("deadline_missed", task.deadline_missed),
+                metric("stale_input", task.stale_input),
+                metric("backpressure", task.backpressure),
+                metric("overflow", task.overflow),
+                metric("run_count", task.run_count),
+                metric("success_count", task.success_count),
+                metric("consecutive_failures", task.consecutive_failures),
+            ],
+        ));
+    }
+
+    diagnostics
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diagnostic(
+    category: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    state: &str,
+    severity: &str,
+    reason: Option<String>,
+    suggestion: Option<String>,
+    updated_unix_ms: Option<u64>,
+    observed_ms: Option<u64>,
+    metrics: Vec<IntrospectionDiagnosticMetric>,
+) -> IntrospectionDiagnostic {
+    IntrospectionDiagnostic {
+        category: category.to_string(),
+        entity_kind: entity_kind.to_string(),
+        entity_id: entity_id.to_string(),
+        state: state.to_string(),
+        severity: severity.to_string(),
+        reason,
+        suggestion,
+        updated_unix_ms,
+        observed_ms,
+        metrics,
+    }
+}
+
+fn metric(name: &str, value: impl Serialize) -> IntrospectionDiagnosticMetric {
+    IntrospectionDiagnosticMetric {
+        name: name.to_string(),
+        value: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+    }
 }
 
 fn io_boundary_entry<'a>(
@@ -3818,6 +4378,9 @@ mod tests {
             update: "on_tick".to_string(),
             current: serde_json::json!(9007199254740992_u64),
             pending: None,
+            apply_state: "applied".to_string(),
+            last_reject_reason: None,
+            updated_unix_ms: None,
             min: None,
             max: Some(serde_json::json!(9007199254740992_u64)),
             choices: vec![],
@@ -4531,6 +5094,181 @@ mod tests {
     }
 
     #[test]
+    fn status_derives_structured_diagnostics_from_live_state() {
+        let state = IntrospectionState::new();
+        state.record_tick_at(250, "simulated_replay");
+        state.register_route(IntrospectionRouteStatus {
+            name: "source.packet_to_sink.packet".to_string(),
+            from: "source.packet".to_string(),
+            to: "sink.packet".to_string(),
+            message_type: "Packet".to_string(),
+            backend: "zenoh".to_string(),
+            selected_reason: "variable_frame_auto_fallback".to_string(),
+            published_count: 4,
+            dropped_samples: 1,
+            backpressure_count: 2,
+            overflow_count: 3,
+            last_publish_ms: Some(120),
+            last_error: Some("queue overflow".to_string()),
+        });
+        state.record_input_status(IntrospectionInputStatus {
+            task: "sink.main".to_string(),
+            input: "packet".to_string(),
+            channel: "source.packet_to_sink.packet".to_string(),
+            message_type: "Packet".to_string(),
+            present: false,
+            stale: true,
+            last_revision: Some(9),
+            last_read_ms: Some(125),
+            updated_unix_ms: Some(2000),
+            dropped_samples: 1,
+            backpressure_count: 2,
+            overflow_count: 3,
+        });
+        state.record_process_health(IntrospectionProcessStatus {
+            name: "sensors".to_string(),
+            state: "stale".to_string(),
+            pid: Some(77),
+            restart_count: 2,
+            tick_count: Some(10),
+            last_seen_unix_ms: Some(2000),
+            tick_stale: true,
+            exit_code: Some(1),
+            readiness_wait: Some("resource_ready".to_string()),
+            resource_placement: None,
+        });
+        state.register_resource(IntrospectionResourceStatus {
+            name: "sensor.lidar_uart".to_string(),
+            capability: "perception.lidar.samples".to_string(),
+            state: "failed".to_string(),
+            required: true,
+            readiness: Some("before_start".to_string()),
+            health: Some("required".to_string()),
+            on_failure: Some("stop_process".to_string()),
+            diagnostic: Some("provider failed".to_string()),
+            suggestion: Some("start driver package".to_string()),
+            updated_unix_ms: Some(4000),
+            ..Default::default()
+        });
+        state.register_io_boundary(
+            "camera",
+            "CameraDriver",
+            vec![IntrospectionIoBoundaryResourceStatus {
+                name: "camera_shm".to_string(),
+                kind: "shm".to_string(),
+                ready: false,
+                message: Some("waiting for frame".to_string()),
+                last_error: Some("timeout".to_string()),
+                updated_unix_ms: Some(5000),
+            }],
+        );
+        state.record_io_boundary_error("camera", "frame timeout");
+        state.register_param(IntrospectionParamSchema {
+            name: "controller.kp".to_string(),
+            ty: "f32".to_string(),
+            update: "on_tick".to_string(),
+            current: serde_json::json!(1.0),
+            min: Some(serde_json::json!(0.0)),
+            max: Some(serde_json::json!(10.0)),
+            choices: vec![],
+        });
+        state
+            .set_param_pending("controller.kp", serde_json::json!(2.0))
+            .unwrap();
+        state.record_param_rejected("controller.kp", serde_json::json!(2.0), "callback_rejected");
+        state.record_operation_result("controller.plan", "1:2:3", "failed", Some("handler error"));
+        state.record_task_health(IntrospectionTaskHealth {
+            name: "control_loop".to_string(),
+            lane: "control".to_string(),
+            deadline_missed: 1,
+            stale_input: 1,
+            backpressure: 1,
+            overflow: 1,
+            run_count: 8,
+            success_count: 7,
+            consecutive_failures: 1,
+            ..Default::default()
+        });
+
+        let status = state.status();
+        assert!(
+            status
+                .params
+                .iter()
+                .any(|param| param.name == "controller.kp")
+        );
+        let categories = status
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.category.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for category in [
+            "task",
+            "input",
+            "route",
+            "resource",
+            "io_boundary",
+            "process",
+            "param",
+            "operation",
+            "clock",
+        ] {
+            assert!(
+                categories.contains(category),
+                "missing diagnostics category `{category}` in {:?}",
+                status.diagnostics
+            );
+        }
+        let route = status
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.category == "route")
+            .expect("route diagnostic should exist");
+        assert_eq!(route.entity_kind, "route");
+        assert_eq!(route.entity_id, "source.packet_to_sink.packet");
+        assert_eq!(route.reason.as_deref(), Some("queue overflow"));
+        assert!(route.metrics.iter().any(|metric| {
+            metric.name == "latest_age_ms" && metric.value == serde_json::json!(130)
+        }));
+    }
+
+    #[test]
+    fn recorder_captures_diagnostics_events_from_status() {
+        let state = IntrospectionState::new();
+        state.start_recorder(IntrospectionRecorderStart {
+            output: None,
+            filters: vec!["all".to_string()],
+            queue_depth: None,
+            package: "robot_demo".to_string(),
+            process: "main".to_string(),
+            runtime_pid: 42,
+            selfdesc_hash: "abc123".to_string(),
+        });
+        state.record_route_error("source.packet_to_sink.packet", "queue overflow");
+
+        state.record_current_diagnostics();
+
+        let events = state.drain_recorder_events();
+        let diagnostic = events
+            .iter()
+            .find(|event| {
+                event.event_kind == flowrt_record::RecordEventKind::DiagnosticsEvent
+                    && event.entity.name == "source.packet_to_sink.packet"
+            })
+            .expect("current diagnostics should record diagnostics events");
+        assert_eq!(diagnostic.selfdesc_hash, "abc123");
+        assert_eq!(
+            diagnostic.entity.kind,
+            flowrt_record::RecordEntityKind::Diagnostic
+        );
+        assert_eq!(diagnostic.entity.name, "source.packet_to_sink.packet");
+        assert_eq!(diagnostic.payload_schema, "flowrt.diagnostics.status");
+        let payload: serde_json::Value = serde_json::from_slice(&diagnostic.payload).unwrap();
+        assert_eq!(payload["category"], "route");
+        assert_eq!(payload["reason"], "queue overflow");
+    }
+
+    #[test]
     fn health_fields_serialize_roundtrip() {
         let status = IntrospectionStatus {
             tick_count: 42,
@@ -4592,6 +5330,7 @@ mod tests {
                 }],
                 updated_unix_ms: Some(998),
             }],
+            params: Vec::new(),
             services: vec![],
             operations: vec![IntrospectionOperationStatus {
                 name: "controller.plan".to_string(),
@@ -4629,6 +5368,7 @@ mod tests {
                 fairness_violations: 1,
             }],
             recorder: Default::default(),
+            diagnostics: Vec::new(),
         };
 
         let json = serde_json::to_string(&status).unwrap();

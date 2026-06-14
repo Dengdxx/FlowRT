@@ -439,6 +439,41 @@ impl RecorderTap {
         )
     }
 
+    pub fn record_diagnostics_event_json(
+        &self,
+        name: &str,
+        payload_schema: &str,
+        payload: serde_json::Value,
+        monotonic_ns: Option<u64>,
+    ) -> RecorderTapOutcome {
+        if !self.enabled() {
+            return RecorderTapOutcome::default();
+        }
+        let Ok(payload) = serde_json::to_vec(&payload) else {
+            return RecorderTapOutcome {
+                recorded: false,
+                dropped: true,
+            };
+        };
+        let entity = RecordEntity {
+            kind: RecordEntityKind::Diagnostic,
+            name: name.to_string(),
+            instance: instance_from_endpoint(name),
+            task: None,
+            type_name: None,
+        };
+        self.record_bytes(
+            "diagnostics",
+            name,
+            RecordEventKind::DiagnosticsEvent,
+            entity,
+            PayloadEncoding::Json,
+            payload_schema,
+            &payload,
+            monotonic_ns,
+        )
+    }
+
     pub fn record_runtime_event_json(
         &self,
         kind: RecordEntityKind,

@@ -26,6 +26,14 @@ satisfaction 和 concrete hardware/protocol 词进入 resource capability。Flow
 串口、TCP、UDP、USB、V4L2、NPU SDK 路径等具体资源字段；这些属于应用、driver package
 或 external package 边界。
 
+运行态观测已收束到结构化 diagnostics schema。Rust/C++ live status 会从 clock、channel、
+input、route、process、resource、I/O boundary、param、service、operation 和 task 状态
+派生 `category`、`entity_kind`、`entity_id`、`state`、`severity`、`reason`、
+`suggestion`、时间戳和 metrics；`flowrt status --format json` 输出按 socket 分组的
+handshake/status/error 完整 JSON，文本输出保留 `diagnostic=...` 与参数 `apply_state`
+行。`flowrt record` 会在显式录制路径写入 `diagnostics_event`，status 查询本身保持无副
+作用，避免轮询状态污染录制。
+
 variable frame 工程化已进入生成物和运行态观测主路径。Rust/C++ 生成物在含 `bytes`、
 `string` 或 `sequence<T>` 的 message contract 中生成 `message_frame` conformance 测试：
 C++ 测试编码 canonical frame 并写出 byte fixture，Rust 测试读取同一 fixture 并断言字节

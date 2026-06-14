@@ -280,6 +280,7 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
     };
     let state = flowrt::IntrospectionState::new();
     state.set_self_description_json(selfdesc_json);
+    state.record_tick_at(250, "simulated_replay");
     state.register_route(flowrt::IntrospectionRouteStatus {
         name: "source.packet_to_sink.packet".to_string(),
         from: "source.packet".to_string(),
@@ -329,6 +330,60 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
     assert!(output.contains("stale=true"));
     assert!(output.contains("last_revision=9"));
     assert!(output.contains("last_read_ms=125"));
+    assert!(output.contains("diagnostic=source.packet_to_sink.packet"));
+    assert!(output.contains("category=route"));
+    assert!(output.contains("severity=error"));
+    assert!(output.contains("latest_age_ms"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_json_exposes_machine_readable_diagnostics() {
+    let root = temp_test_dir("live-status-json-diagnostics");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 79,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.record_tick_at(250, "simulated_replay");
+    state.register_route(flowrt::IntrospectionRouteStatus {
+        name: "source.packet_to_sink.packet".to_string(),
+        from: "source.packet".to_string(),
+        to: "sink.packet".to_string(),
+        message_type: "Packet".to_string(),
+        backend: "zenoh".to_string(),
+        selected_reason: "variable_frame_auto_fallback".to_string(),
+        published_count: 4,
+        dropped_samples: 1,
+        backpressure_count: 2,
+        overflow_count: 3,
+        last_publish_ms: Some(120),
+        last_error: Some("queue overflow".to_string()),
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = crate::introspection::live_status_json_for_sockets(vec![socket], false).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value[0]["live"], true);
+    assert_eq!(value[0]["status"]["clock"]["source"], "simulated_replay");
+    assert!(
+        value[0]["status"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["category"] == "route"
+                && diagnostic["entity_id"] == "source.packet_to_sink.packet"
+                && diagnostic["reason"] == "queue overflow")
+    );
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
@@ -703,6 +758,8 @@ fn live_hz_summary_formats_channel_delta_rate() {
             tasks: Vec::new(),
             lanes: Vec::new(),
             recorder: Default::default(),
+            params: Vec::new(),
+            diagnostics: Vec::new(),
         },
     };
     let second = flowrt::IntrospectionResponse::Status {
@@ -736,6 +793,8 @@ fn live_hz_summary_formats_channel_delta_rate() {
             tasks: Vec::new(),
             lanes: Vec::new(),
             recorder: Default::default(),
+            params: Vec::new(),
+            diagnostics: Vec::new(),
         },
     };
 

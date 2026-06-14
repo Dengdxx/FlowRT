@@ -424,22 +424,6 @@ struct IntrospectionResourceStatus {
 };
 
 /**
- * @brief 运行态 status 快照。
- */
-struct IntrospectionStatus {
-    std::uint64_t tick_count = 0;
-    IntrospectionClockStatus clock;
-    std::vector<IntrospectionChannelStatus> channels;
-    std::vector<IntrospectionResourceStatus> resources;
-    std::vector<BoundaryStatus> io_boundaries;
-    std::vector<IntrospectionServiceStatus> services;
-    std::vector<IntrospectionOperationStatus> operations;
-    std::vector<IntrospectionTaskHealth> tasks;
-    std::vector<IntrospectionLaneHealth> lanes;
-    IntrospectionRecorderStatus recorder;
-};
-
-/**
  * @brief generated shell 注册到 runtime 控制面的参数 schema。
  *
  * `current`、`min`、`max` 和 `choices` 使用合法 JSON 片段，避免 C++ runtime 依赖完整 JSON 库。
@@ -463,9 +447,56 @@ struct IntrospectionParamStatus {
     std::string update;
     std::string current;
     std::optional<std::string> pending;
+    std::string apply_state = "applied";
+    std::optional<std::string> last_reject_reason;
+    std::optional<std::uint64_t> updated_unix_ms;
     std::optional<std::string> min;
     std::optional<std::string> max;
     std::vector<std::string> choices;
+};
+
+/**
+ * @brief 结构化诊断中的单个指标。
+ *
+ * value 使用合法 JSON 片段，避免 C++ runtime 引入 JSON DOM 依赖。
+ */
+struct IntrospectionDiagnosticMetric {
+    std::string name;
+    std::string value;
+};
+
+/**
+ * @brief runtime live status 的统一诊断项。
+ */
+struct IntrospectionDiagnostic {
+    std::string category;
+    std::string entity_kind;
+    std::string entity_id;
+    std::string state;
+    std::string severity;
+    std::optional<std::string> reason;
+    std::optional<std::string> suggestion;
+    std::optional<std::uint64_t> updated_unix_ms;
+    std::optional<std::uint64_t> observed_ms;
+    std::vector<IntrospectionDiagnosticMetric> metrics;
+};
+
+/**
+ * @brief 运行态 status 快照。
+ */
+struct IntrospectionStatus {
+    std::uint64_t tick_count = 0;
+    IntrospectionClockStatus clock;
+    std::vector<IntrospectionChannelStatus> channels;
+    std::vector<IntrospectionResourceStatus> resources;
+    std::vector<BoundaryStatus> io_boundaries;
+    std::vector<IntrospectionParamStatus> params;
+    std::vector<IntrospectionServiceStatus> services;
+    std::vector<IntrospectionOperationStatus> operations;
+    std::vector<IntrospectionTaskHealth> tasks;
+    std::vector<IntrospectionLaneHealth> lanes;
+    IntrospectionRecorderStatus recorder;
+    std::vector<IntrospectionDiagnostic> diagnostics;
 };
 
 namespace detail {
@@ -657,8 +688,9 @@ inline std::string resource_status_json(const IntrospectionResourceStatus &resou
     output.append(",\"provider_scope\":");
     output.append(resource.provider_scope ? json_string(*resource.provider_scope) : "null");
     output.append(",\"provider_readiness_source\":");
-    output.append(resource.provider_readiness_source ? json_string(*resource.provider_readiness_source)
-                                                     : "null");
+    output.append(resource.provider_readiness_source
+                      ? json_string(*resource.provider_readiness_source)
+                      : "null");
     output.append(",\"provider_health_source\":");
     output.append(resource.provider_health_source ? json_string(*resource.provider_health_source)
                                                   : "null");
@@ -825,67 +857,6 @@ inline std::string clock_status_json(const IntrospectionClockStatus &clock) {
     return output;
 }
 
-inline std::string status_json(const IntrospectionStatus &status) {
-    std::string output;
-    output.append("{\"tick_count\":");
-    output.append(std::to_string(status.tick_count));
-    output.append(",\"clock\":");
-    output.append(clock_status_json(status.clock));
-    output.append(",\"recorder\":");
-    output.append(recorder_status_json(status.recorder));
-    output.append(",\"channels\":[");
-    for (std::size_t index = 0; index < status.channels.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(channel_status_json(status.channels[index]));
-    }
-    output.append("],\"processes\":[],\"resources\":[");
-    for (std::size_t index = 0; index < status.resources.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(resource_status_json(status.resources[index]));
-    }
-    output.append("],\"io_boundaries\":[");
-    for (std::size_t index = 0; index < status.io_boundaries.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(boundary_status_json(status.io_boundaries[index]));
-    }
-    output.append("],\"services\":[");
-    for (std::size_t index = 0; index < status.services.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(service_status_json(status.services[index]));
-    }
-    output.append("],\"operations\":[");
-    for (std::size_t index = 0; index < status.operations.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(operation_status_json(status.operations[index]));
-    }
-    output.append("],\"tasks\":[");
-    for (std::size_t index = 0; index < status.tasks.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(task_health_json(status.tasks[index]));
-    }
-    output.append("],\"lanes\":[");
-    for (std::size_t index = 0; index < status.lanes.size(); ++index) {
-        if (index != 0) {
-            output.push_back(',');
-        }
-        output.append(lane_health_json(status.lanes[index]));
-    }
-    output.append("]}");
-    return output;
-}
-
 inline std::string optional_json_fragment(const std::optional<std::string> &value) {
     return value ? *value : "null";
 }
@@ -915,6 +886,12 @@ inline std::string param_status_json(const IntrospectionParamStatus &param) {
     output.append(param.current);
     output.append(",\"pending\":");
     output.append(optional_json_fragment(param.pending));
+    output.append(",\"apply_state\":");
+    output.append(json_string(param.apply_state));
+    output.append(",\"last_reject_reason\":");
+    output.append(param.last_reject_reason ? json_string(*param.last_reject_reason) : "null");
+    output.append(",\"updated_unix_ms\":");
+    output.append(optional_u64_json(param.updated_unix_ms));
     output.append(",\"min\":");
     output.append(optional_json_fragment(param.min));
     output.append(",\"max\":");
@@ -922,6 +899,122 @@ inline std::string param_status_json(const IntrospectionParamStatus &param) {
     output.append(",\"choices\":");
     output.append(json_fragment_array(param.choices));
     output.push_back('}');
+    return output;
+}
+
+inline std::string diagnostic_metric_json(const IntrospectionDiagnosticMetric &metric) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(metric.name));
+    output.append(",\"value\":");
+    output.append(metric.value);
+    output.push_back('}');
+    return output;
+}
+
+inline std::string diagnostic_status_json(const IntrospectionDiagnostic &diagnostic) {
+    std::string output;
+    output.append("{\"category\":");
+    output.append(json_string(diagnostic.category));
+    output.append(",\"entity_kind\":");
+    output.append(json_string(diagnostic.entity_kind));
+    output.append(",\"entity_id\":");
+    output.append(json_string(diagnostic.entity_id));
+    output.append(",\"state\":");
+    output.append(json_string(diagnostic.state));
+    output.append(",\"severity\":");
+    output.append(json_string(diagnostic.severity));
+    output.append(",\"reason\":");
+    output.append(diagnostic.reason ? json_string(*diagnostic.reason) : "null");
+    output.append(",\"suggestion\":");
+    output.append(diagnostic.suggestion ? json_string(*diagnostic.suggestion) : "null");
+    output.append(",\"updated_unix_ms\":");
+    output.append(optional_u64_json(diagnostic.updated_unix_ms));
+    output.append(",\"observed_ms\":");
+    output.append(optional_u64_json(diagnostic.observed_ms));
+    output.append(",\"metrics\":[");
+    for (std::size_t index = 0; index < diagnostic.metrics.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(diagnostic_metric_json(diagnostic.metrics[index]));
+    }
+    output.append("]}");
+    return output;
+}
+
+inline std::string status_json(const IntrospectionStatus &status) {
+    std::string output;
+    output.append("{\"tick_count\":");
+    output.append(std::to_string(status.tick_count));
+    output.append(",\"clock\":");
+    output.append(clock_status_json(status.clock));
+    output.append(",\"recorder\":");
+    output.append(recorder_status_json(status.recorder));
+    output.append(",\"channels\":[");
+    for (std::size_t index = 0; index < status.channels.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(channel_status_json(status.channels[index]));
+    }
+    output.append("],\"inputs\":[],\"routes\":[],\"processes\":[],\"resources\":[");
+    for (std::size_t index = 0; index < status.resources.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(resource_status_json(status.resources[index]));
+    }
+    output.append("],\"io_boundaries\":[");
+    for (std::size_t index = 0; index < status.io_boundaries.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(boundary_status_json(status.io_boundaries[index]));
+    }
+    output.append("],\"params\":[");
+    for (std::size_t index = 0; index < status.params.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(param_status_json(status.params[index]));
+    }
+    output.append("],\"services\":[");
+    for (std::size_t index = 0; index < status.services.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(service_status_json(status.services[index]));
+    }
+    output.append("],\"operations\":[");
+    for (std::size_t index = 0; index < status.operations.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(operation_status_json(status.operations[index]));
+    }
+    output.append("],\"tasks\":[");
+    for (std::size_t index = 0; index < status.tasks.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(task_health_json(status.tasks[index]));
+    }
+    output.append("],\"lanes\":[");
+    for (std::size_t index = 0; index < status.lanes.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(lane_health_json(status.lanes[index]));
+    }
+    output.append("],\"diagnostics\":[");
+    for (std::size_t index = 0; index < status.diagnostics.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(diagnostic_status_json(status.diagnostics[index]));
+    }
+    output.append("]}");
     return output;
 }
 
@@ -1801,9 +1894,7 @@ class IntrospectionState {
     /**
      * @brief 增加 scheduler tick 计数。
      */
-    void record_tick() const {
-        record_tick(0U, std::string_view{"realtime"});
-    }
+    void record_tick() const { record_tick(0U, std::string_view{"realtime"}); }
 
     /**
      * @brief 按统一 runtime 毫秒时间模型记录 scheduler tick。
@@ -2189,8 +2280,7 @@ class IntrospectionState {
             ",\"failed\":" + std::to_string(status.failed_count) +
             ",\"canceled\":" + std::to_string(status.canceled_count) +
             ",\"timeout\":" + std::to_string(status.timeout_count) +
-            ",\"preempted\":" + std::to_string(status.preempted_count) +
-            ",\"state\":" +
+            ",\"preempted\":" + std::to_string(status.preempted_count) + ",\"state\":" +
             (status.current_state ? detail::json_string(*status.current_state) : "null") +
             ",\"owner\":" +
             (status.current_owner ? detail::json_string(*status.current_owner) : "null") +
@@ -2201,10 +2291,10 @@ class IntrospectionState {
             (status.last_error ? detail::json_string(*status.last_error) : "null") +
             ",\"last_transition_ms\":" + detail::optional_u64_json(status.last_transition_ms) + "}";
         const auto name = status.name;
-        const auto monotonic_ns = status.last_transition_ms.has_value()
-                                      ? std::optional<std::uint64_t>{*status.last_transition_ms *
-                                                                     1000000U}
-                                      : std::nullopt;
+        const auto monotonic_ns =
+            status.last_transition_ms.has_value()
+                ? std::optional<std::uint64_t>{*status.last_transition_ms * 1000000U}
+                : std::nullopt;
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->operations.insert_or_assign(status.name, std::move(status));
         record_event_locked("operation", name, "operation_event", "operation", name, "", "json",
@@ -2215,8 +2305,7 @@ class IntrospectionState {
      * @brief 记录 operation 状态转换事件。
      */
     void record_operation_transition(std::string_view operation, std::string_view operation_id,
-                                     std::string_view state,
-                                     std::optional<std::string_view> owner,
+                                     std::string_view state, std::optional<std::string_view> owner,
                                      std::optional<std::uint64_t> deadline_ms) const {
         const auto now = detail::unix_time_ms();
         const auto operation_name = std::string{operation};
@@ -2227,28 +2316,27 @@ class IntrospectionState {
         entry.name = operation_name;
         entry.ready = true;
         entry.current_state = state_name;
-        entry.current_owner = owner ? std::optional<std::string>{std::string{*owner}} : std::nullopt;
+        entry.current_owner =
+            owner ? std::optional<std::string>{std::string{*owner}} : std::nullopt;
         entry.current_deadline_ms = deadline_ms;
         entry.last_event = "flowrt.operation.state_changed";
         entry.last_error = std::nullopt;
         entry.last_transition_ms = now;
-        if (state != "idle" && state != "succeeded" && state != "failed" &&
-            state != "cancelled" && state != "timed_out") {
+        if (state != "idle" && state != "succeeded" && state != "failed" && state != "cancelled" &&
+            state != "timed_out") {
             if (std::find(entry.current_operation_ids.begin(), entry.current_operation_ids.end(),
                           id) == entry.current_operation_ids.end()) {
                 entry.current_operation_ids.push_back(id);
             }
             entry.running = 1;
         } else {
-            entry.current_operation_ids.erase(
-                std::remove(entry.current_operation_ids.begin(), entry.current_operation_ids.end(),
-                            id),
-                entry.current_operation_ids.end());
+            entry.current_operation_ids.erase(std::remove(entry.current_operation_ids.begin(),
+                                                          entry.current_operation_ids.end(), id),
+                                              entry.current_operation_ids.end());
             entry.running = 0;
         }
         const auto payload = "{\"operation_id\":" + detail::json_string(id) +
-                             ",\"state\":" + detail::json_string(state_name) +
-                             ",\"owner\":" +
+                             ",\"state\":" + detail::json_string(state_name) + ",\"owner\":" +
                              (owner ? detail::json_string(*owner) : std::string{"null"}) +
                              ",\"deadline_ms\":" + detail::optional_u64_json(deadline_ms) +
                              ",\"transition_ms\":" + std::to_string(now) + "}";
@@ -2293,8 +2381,7 @@ class IntrospectionState {
                              ",\"result\":" + detail::json_string(result) + ",\"error\":" +
                              (error ? detail::json_string(*error) : std::string{"null"}) + "}";
         record_event_locked("operation", operation_name, "operation_event", "operation",
-                            operation_name, "", "json", event, string_bytes(payload),
-                            std::nullopt);
+                            operation_name, "", "json", event, string_bytes(payload), std::nullopt);
     }
 
     /**
@@ -2307,9 +2394,9 @@ class IntrospectionState {
         {
             std::lock_guard<std::mutex> lock(inner_->mutex);
             for (auto &[name, operation] : inner_->operations) {
-                const auto match = std::find(operation.current_operation_ids.begin(),
-                                             operation.current_operation_ids.end(),
-                                             std::string{operation_id});
+                const auto match =
+                    std::find(operation.current_operation_ids.begin(),
+                              operation.current_operation_ids.end(), std::string{operation_id});
                 if (match == operation.current_operation_ids.end()) {
                     continue;
                 }
@@ -2426,6 +2513,10 @@ class IntrospectionState {
         for (const auto &[name, resource] : inner_->resources) {
             snapshot.resources.push_back(resource);
         }
+        snapshot.params.reserve(inner_->params.size());
+        for (const auto &[name, param] : inner_->params) {
+            snapshot.params.push_back(param_status(name, param));
+        }
         snapshot.services.reserve(inner_->services.size());
         for (const auto &[name, service] : inner_->services) {
             snapshot.services.push_back(service);
@@ -2443,7 +2534,19 @@ class IntrospectionState {
             snapshot.lanes.push_back(lane);
         }
         snapshot.recorder = recorder_status_locked();
+        snapshot.diagnostics = derive_diagnostics(snapshot);
         return snapshot;
+    }
+
+    /**
+     * @brief 将当前结构化诊断快照写入 recorder。
+     *
+     * `status()` 保持无副作用；控制面在需要把诊断纳入 record 时显式调用该方法。
+     */
+    void record_current_diagnostics() const {
+        const auto snapshot = status();
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        record_diagnostics_locked(snapshot.diagnostics);
     }
 
     /**
@@ -2539,6 +2642,9 @@ class IntrospectionState {
             return *error;
         }
         param->second.pending = std::move(value);
+        param->second.apply_state = "pending";
+        param->second.last_reject_reason = std::nullopt;
+        param->second.updated_unix_ms = detail::unix_time_ms();
         record_event_locked(
             "param", name, "param_event", "param", name, "", "json", "param_set_pending",
             string_bytes("{\"name\":" + detail::json_string(name) + "}"), std::nullopt);
@@ -2591,6 +2697,9 @@ class IntrospectionState {
             if (clear_pending) {
                 param->second.pending = std::nullopt;
             }
+            param->second.apply_state = "applied";
+            param->second.last_reject_reason = std::nullopt;
+            param->second.updated_unix_ms = detail::unix_time_ms();
         }
         record_event_locked(
             "param", name, "param_event", "param", name, "", "json", "param_applied",
@@ -2608,11 +2717,16 @@ class IntrospectionState {
             *param->second.pending == value) {
             param->second.pending = std::nullopt;
         }
-        record_event_locked(
-            "param", name, "param_event", "param", name, "", "json", "param_rejected",
-            string_bytes("{\"name\":" + detail::json_string(name) +
-                         ",\"reason\":" + detail::json_string(reason) + "}"),
-            std::nullopt);
+        if (param != inner_->params.end()) {
+            param->second.apply_state = "rejected";
+            param->second.last_reject_reason = std::string{reason};
+            param->second.updated_unix_ms = detail::unix_time_ms();
+        }
+        record_event_locked("param", name, "param_event", "param", name, "", "json",
+                            "param_rejected",
+                            string_bytes("{\"name\":" + detail::json_string(name) +
+                                         ",\"reason\":" + detail::json_string(reason) + "}"),
+                            std::nullopt);
     }
 
    private:
@@ -2626,6 +2740,9 @@ class IntrospectionState {
         std::string update;
         std::string current;
         std::optional<std::string> pending;
+        std::string apply_state = "applied";
+        std::optional<std::string> last_reject_reason;
+        std::optional<std::uint64_t> updated_unix_ms;
         std::optional<std::string> min;
         std::optional<std::string> max;
         std::vector<std::string> choices;
@@ -2663,9 +2780,8 @@ class IntrospectionState {
         std::map<std::string, BoundaryStatus> io_boundaries;
         std::map<std::string, IntrospectionServiceStatus> services;
         std::map<std::string, IntrospectionOperationStatus> operations;
-        std::map<std::string,
-                 std::function<std::variant<IntrospectionOperationStatus, std::string>(
-                     std::string_view)>>
+        std::map<std::string, std::function<std::variant<IntrospectionOperationStatus, std::string>(
+                                  std::string_view)>>
             operation_cancel_handlers;
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
@@ -2844,6 +2960,19 @@ class IntrospectionState {
         return IntrospectionProbeRecord{.recorded = true, .dropped = false};
     }
 
+    void record_diagnostics_locked(const std::vector<IntrospectionDiagnostic> &diagnostics) const {
+        for (const auto &diagnostic : diagnostics) {
+            const auto payload = detail::diagnostic_status_json(diagnostic);
+            const auto monotonic_ns =
+                diagnostic.observed_ms
+                    ? std::optional<std::uint64_t>{diagnostic.observed_ms.value() * 1000000U}
+                    : std::nullopt;
+            record_event_locked("diagnostics", diagnostic.entity_id, "diagnostics_event",
+                                "diagnostic", diagnostic.entity_id, "", "json",
+                                "flowrt.diagnostics.status", string_bytes(payload), monotonic_ns);
+        }
+    }
+
     IntrospectionProbeRecord record_json_event(
         std::string_view filter_kind, std::string_view entity_kind, std::string_view entity_name,
         std::string_view event_kind, std::string_view payload_schema, std::string_view payload_json,
@@ -2864,10 +2993,205 @@ class IntrospectionState {
             .update = param.update,
             .current = param.current,
             .pending = param.pending,
+            .apply_state = param.apply_state,
+            .last_reject_reason = param.last_reject_reason,
+            .updated_unix_ms = param.updated_unix_ms,
             .min = param.min,
             .max = param.max,
             .choices = param.choices,
         };
+    }
+
+    static IntrospectionDiagnosticMetric metric(std::string name, std::string value_json) {
+        return IntrospectionDiagnosticMetric{
+            .name = std::move(name),
+            .value = std::move(value_json),
+        };
+    }
+
+    static std::string optional_string_metric(const std::optional<std::string> &value) {
+        return value ? detail::json_string(*value) : "null";
+    }
+
+    static std::string optional_u64_metric(const std::optional<std::uint64_t> &value) {
+        return detail::optional_u64_json(value);
+    }
+
+    static std::string bool_metric(bool value) { return value ? "true" : "false"; }
+
+    static IntrospectionDiagnostic diagnostic(
+        std::string category, std::string entity_kind, std::string entity_id, std::string state,
+        std::string severity, std::optional<std::string> reason = std::nullopt,
+        std::optional<std::string> suggestion = std::nullopt,
+        std::optional<std::uint64_t> updated_unix_ms = std::nullopt,
+        std::optional<std::uint64_t> observed_ms = std::nullopt,
+        std::vector<IntrospectionDiagnosticMetric> metrics = {}) {
+        return IntrospectionDiagnostic{
+            .category = std::move(category),
+            .entity_kind = std::move(entity_kind),
+            .entity_id = std::move(entity_id),
+            .state = std::move(state),
+            .severity = std::move(severity),
+            .reason = std::move(reason),
+            .suggestion = std::move(suggestion),
+            .updated_unix_ms = updated_unix_ms,
+            .observed_ms = observed_ms,
+            .metrics = std::move(metrics),
+        };
+    }
+
+    static std::vector<IntrospectionDiagnostic> derive_diagnostics(
+        const IntrospectionStatus &status) {
+        std::vector<IntrospectionDiagnostic> diagnostics;
+        diagnostics.push_back(
+            diagnostic("clock", "clock", status.clock.source, status.clock.source,
+                       status.clock.source == "realtime" ? "info" : "warn",
+                       status.clock.source + " time source", std::nullopt, std::nullopt,
+                       status.clock.tick_time_ms,
+                       {metric("tick_time_ms", optional_u64_metric(status.clock.tick_time_ms)),
+                        metric("unit", detail::json_string(status.clock.unit)),
+                        metric("field", detail::json_string(status.clock.field))}));
+
+        for (const auto &channel : status.channels) {
+            const bool dropping = channel.dropped_samples != 0U;
+            diagnostics.push_back(diagnostic(
+                "channel", "channel", channel.name, dropping ? "dropping" : "ok",
+                dropping ? "warn" : "info",
+                dropping ? std::optional<std::string>{"channel probe dropped samples"}
+                         : std::nullopt,
+                std::nullopt, std::nullopt, status.clock.tick_time_ms,
+                {metric("published_count", std::to_string(channel.published_count)),
+                 metric("last_payload_len", channel.last_payload_len
+                                                ? std::to_string(*channel.last_payload_len)
+                                                : "null"),
+                 metric("active_observers", std::to_string(channel.active_observers)),
+                 metric("dropped_samples", std::to_string(channel.dropped_samples))}));
+        }
+
+        for (const auto &resource : status.resources) {
+            const bool satisfied = resource.satisfied.value_or(resource.state == "ready");
+            const auto severity =
+                resource.state == "failed" || (resource.required && !satisfied) ? "error"
+                : (resource.state == "pending" || resource.state == "degraded") ? "warn"
+                                                                                : "info";
+            diagnostics.push_back(diagnostic(
+                "resource", "resource", resource.name, resource.state, severity,
+                resource.last_error
+                    ? resource.last_error
+                    : (resource.diagnostic ? resource.diagnostic : resource.contract_status),
+                resource.suggestion, resource.updated_unix_ms, status.clock.tick_time_ms,
+                {metric("capability", detail::json_string(resource.capability)),
+                 metric("required", bool_metric(resource.required)),
+                 metric("readiness", optional_string_metric(resource.readiness)),
+                 metric("health", optional_string_metric(resource.health)),
+                 metric("on_failure", optional_string_metric(resource.on_failure)),
+                 metric("satisfied",
+                        resource.satisfied ? bool_metric(*resource.satisfied) : "null"),
+                 metric("provider", optional_string_metric(resource.provider))}));
+        }
+
+        for (const auto &boundary : status.io_boundaries) {
+            const auto state = boundary.ready && boundary.healthy
+                                   ? "ready"
+                                   : (!boundary.healthy ? "unhealthy" : "not_ready");
+            const auto severity = !boundary.healthy ? "error" : (!boundary.ready ? "warn" : "info");
+            diagnostics.push_back(diagnostic(
+                "io_boundary", "io_boundary", boundary.name, state, severity, boundary.last_error,
+                std::nullopt, boundary.updated_unix_ms, status.clock.tick_time_ms,
+                {metric("ready", bool_metric(boundary.ready)),
+                 metric("healthy", bool_metric(boundary.healthy)),
+                 metric("resource_count", std::to_string(boundary.resources.size()))}));
+            for (const auto &resource : boundary.resources) {
+                diagnostics.push_back(diagnostic(
+                    "io_boundary", "io_boundary_resource", boundary.name + "." + resource.name,
+                    resource.ready ? "ready" : "not_ready", resource.ready ? "info" : "warn",
+                    resource.last_error ? resource.last_error : resource.message, std::nullopt,
+                    resource.updated_unix_ms, status.clock.tick_time_ms,
+                    {metric("kind", detail::json_string(resource.kind)),
+                     metric("ready", bool_metric(resource.ready))}));
+            }
+        }
+
+        for (const auto &param : status.params) {
+            diagnostics.push_back(diagnostic(
+                "param", "param", param.name, param.apply_state,
+                param.apply_state == "rejected" ? "error" : (param.pending ? "warn" : "info"),
+                param.last_reject_reason, std::nullopt, param.updated_unix_ms,
+                status.clock.tick_time_ms,
+                {metric("update", detail::json_string(param.update)),
+                 metric("pending", detail::optional_json_fragment(param.pending)),
+                 metric("current", param.current)}));
+        }
+
+        for (const auto &service : status.services) {
+            const auto failures = service.timeout_count + service.busy_count +
+                                  service.unavailable_count + service.late_drop_count;
+            diagnostics.push_back(diagnostic(
+                "service", "service", service.name, service.ready ? "ready" : "unavailable",
+                (!service.ready || failures != 0U) ? "warn" : "info",
+                !service.ready
+                    ? std::optional<std::string>{"service endpoint is not ready"}
+                    : (failures != 0U ? std::optional<std::string>{"service has failed requests"}
+                                      : std::nullopt),
+                std::nullopt, std::nullopt, status.clock.tick_time_ms,
+                {metric("in_flight", std::to_string(service.in_flight)),
+                 metric("queued", std::to_string(service.queued)),
+                 metric("total_requests", std::to_string(service.total_requests)),
+                 metric("timeout_count", std::to_string(service.timeout_count)),
+                 metric("busy_count", std::to_string(service.busy_count)),
+                 metric("unavailable_count", std::to_string(service.unavailable_count)),
+                 metric("late_drop_count", std::to_string(service.late_drop_count))}));
+        }
+
+        for (const auto &operation : status.operations) {
+            const auto failed =
+                operation.failed_count + operation.timeout_count + operation.preempted_count;
+            const auto state =
+                operation.current_state.value_or(operation.ready ? "ready" : "unavailable");
+            diagnostics.push_back(diagnostic(
+                "operation", "operation", operation.name, state,
+                (operation.last_error || failed != 0U)
+                    ? "error"
+                    : ((operation.running != 0U || operation.queued != 0U) ? "warn" : "info"),
+                operation.last_error ? operation.last_error : operation.last_event, std::nullopt,
+                operation.last_transition_ms,
+                operation.current_deadline_ms ? operation.current_deadline_ms
+                                              : status.clock.tick_time_ms,
+                {metric("ready", bool_metric(operation.ready)),
+                 metric("running", std::to_string(operation.running)),
+                 metric("queued", std::to_string(operation.queued)),
+                 metric("total_started", std::to_string(operation.total_started)),
+                 metric("succeeded_count", std::to_string(operation.succeeded_count)),
+                 metric("failed_count", std::to_string(operation.failed_count)),
+                 metric("timeout_count", std::to_string(operation.timeout_count)),
+                 metric("current_deadline_ms",
+                        optional_u64_metric(operation.current_deadline_ms))}));
+        }
+
+        for (const auto &task : status.tasks) {
+            const bool failing = task.consecutive_failures != 0U;
+            const bool timing_issue = task.deadline_missed != 0U || task.stale_input != 0U ||
+                                      task.backpressure != 0U || task.overflow != 0U;
+            diagnostics.push_back(diagnostic(
+                "task", "task", task.name, failing ? "failing" : (timing_issue ? "degraded" : "ok"),
+                failing ? "error" : (timing_issue ? "warn" : "info"),
+                failing
+                    ? std::optional<std::string>{"task has consecutive failures"}
+                    : (timing_issue
+                           ? std::optional<std::string>{"task timing/input counters are non-zero"}
+                           : std::nullopt),
+                std::nullopt, task.last_run_ms,
+                task.last_run_ms ? task.last_run_ms : status.clock.tick_time_ms,
+                {metric("lane", detail::json_string(task.lane)),
+                 metric("deadline_missed", std::to_string(task.deadline_missed)),
+                 metric("stale_input", std::to_string(task.stale_input)),
+                 metric("backpressure", std::to_string(task.backpressure)),
+                 metric("overflow", std::to_string(task.overflow)),
+                 metric("run_count", std::to_string(task.run_count)),
+                 metric("success_count", std::to_string(task.success_count)),
+                 metric("consecutive_failures", std::to_string(task.consecutive_failures))}));
+        }
+        return diagnostics;
     }
 
     static std::optional<std::string> validate_param_json_value(const std::string &name,
@@ -3112,9 +3436,11 @@ inline void handle_introspection_connection(
     } else if (const auto request = parse_introspection_request(*line)) {
         initial_permit.reset();
         switch (request->kind) {
-            case IntrospectionRequestKind::Status:
-                response = status_response_json(handshake, state.status());
+            case IntrospectionRequestKind::Status: {
+                const auto status = state.status();
+                response = status_response_json(handshake, status);
                 break;
+            }
             case IntrospectionRequestKind::SelfDescription: {
                 const auto json = state.self_description_json();
                 response = json ? self_description_response_json(handshake, *json)
@@ -3213,6 +3539,7 @@ inline void handle_introspection_connection(
                     .runtime_pid = handshake.pid,
                     .self_description_hash = handshake.self_description_hash,
                 });
+                state.record_current_diagnostics();
                 response = recorder_value_response_json(handshake, recorder);
                 break;
             }

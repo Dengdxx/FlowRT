@@ -544,6 +544,11 @@ int main() {
         assert_contains(status_response, R"("queue_depth":2)");
         assert_contains(status_response, R"("dispatched_count":500)");
         assert_contains(status_response, R"("operations":[)");
+        assert_contains(status_response, R"("params":[)");
+        assert_contains(status_response, R"("apply_state":"applied")");
+        assert_contains(status_response, R"("diagnostics":[)");
+        assert_contains(status_response, R"("category":"resource")");
+        assert_contains(status_response, R"("category":"operation")");
         assert_contains(status_response, R"("resources":[)");
         assert_contains(status_response, R"("name":"sensor.lidar_uart")");
         assert_contains(status_response, R"("capability":"perception.lidar.samples")");
@@ -588,6 +593,23 @@ int main() {
             request_line(socket_path, R"({"command":"recorder_stop"})");
         assert_contains(recorder_stop_response, R"("response":"recorder_value")");
         assert_contains(recorder_stop_response, R"("enabled":false)");
+
+        const auto diagnostics_recorder_start_response = request_line(
+            socket_path,
+            R"({"command":"recorder_start","output":"memory://diag.mcap","filters":["all"],"queue_depth":16})");
+        assert_contains(diagnostics_recorder_start_response, R"("response":"recorder_value")");
+        const auto diagnostics_status_response =
+            request_line(socket_path, R"({"command":"status"})");
+        assert_contains(diagnostics_status_response, R"("diagnostics":[)");
+        const auto diagnostics_drain_response =
+            request_line(socket_path, R"({"command":"recorder_drain"})");
+        assert_contains(diagnostics_drain_response, R"("event_kind":"diagnostics_event")");
+        assert_contains(diagnostics_drain_response, R"("entity":{"kind":"diagnostic")");
+        assert_contains(diagnostics_drain_response,
+                        R"("payload_schema":"flowrt.diagnostics.status")");
+        const auto diagnostics_recorder_stop_response =
+            request_line(socket_path, R"({"command":"recorder_stop"})");
+        assert_contains(diagnostics_recorder_stop_response, R"("enabled":false)");
 
         const auto operation_cancel_response =
             request_line(socket_path, R"({"command":"operation_cancel","operation_id":"111:7:3"})");

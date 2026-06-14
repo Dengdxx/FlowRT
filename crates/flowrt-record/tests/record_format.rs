@@ -53,7 +53,7 @@ fn record_envelope_serializes_with_language_neutral_snake_case_fields() -> TestR
 }
 
 #[test]
-fn record_event_kind_covers_all_v0_6_record_scopes() {
+fn record_event_kind_covers_all_current_record_scopes() {
     assert_eq!(
         RecordEventKind::ALL,
         [
@@ -63,6 +63,7 @@ fn record_event_kind_covers_all_v0_6_record_scopes() {
             RecordEventKind::ServiceEvent,
             RecordEventKind::OperationEvent,
             RecordEventKind::SchedulerEvent,
+            RecordEventKind::DiagnosticsEvent,
             RecordEventKind::ClockEvent,
             RecordEventKind::RuntimeEvent,
         ]

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use zenoh::Wait;
 
 use flowrt_selfdesc::{
@@ -1862,6 +1863,24 @@ fn format_operation_status(
     line
 }
 
+fn format_diagnostic_status(diagnostic: &flowrt::IntrospectionDiagnostic, socket: &Path) -> String {
+    let metrics = serde_json::to_string(&diagnostic.metrics).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "diagnostic={} category={} entity_kind={} state={} severity={} reason={} suggestion={} updated_unix_ms={} observed_ms={} metrics={} socket={}",
+        diagnostic.entity_id,
+        diagnostic.category,
+        diagnostic.entity_kind,
+        diagnostic.state,
+        diagnostic.severity,
+        option_str(diagnostic.reason.as_deref()),
+        option_str(diagnostic.suggestion.as_deref()),
+        option_u64(diagnostic.updated_unix_ms),
+        option_u64(diagnostic.observed_ms),
+        metrics,
+        socket.display()
+    )
+}
+
 pub(crate) fn operation_list(image: Option<&Path>, socket: Option<&Path>) -> Result<String> {
     let self_description = match image {
         Some(image) => load_self_description(image)?,
@@ -2096,6 +2115,72 @@ pub(crate) fn live_status_summary(live_only: bool) -> Result<String> {
     live_status_summary_for_sockets(sockets, live_only)
 }
 
+#[derive(Debug, Serialize)]
+struct LiveStatusJsonEntry {
+    socket: String,
+    live: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handshake: Option<flowrt::IntrospectionHandshake>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<flowrt::IntrospectionStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+pub(crate) fn live_status_json(live_only: bool) -> Result<String> {
+    let sockets = discover_cli_runtime_sockets()?;
+    live_status_json_for_sockets(sockets, live_only)
+}
+
+pub(crate) fn live_status_json_for_sockets(
+    sockets: Vec<PathBuf>,
+    live_only: bool,
+) -> Result<String> {
+    let mut entries = Vec::new();
+    for socket in sockets {
+        match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
+            Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
+                entries.push(LiveStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    live: true,
+                    handshake: Some(handshake),
+                    status: Some(status),
+                    error: None,
+                });
+            }
+            Ok(flowrt::IntrospectionResponse::Error { message, .. }) if !live_only => {
+                entries.push(LiveStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    live: false,
+                    handshake: None,
+                    status: None,
+                    error: Some(message),
+                });
+            }
+            Ok(_) if !live_only => {
+                entries.push(LiveStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    live: false,
+                    handshake: None,
+                    status: None,
+                    error: Some("unexpected introspection response".to_string()),
+                });
+            }
+            Err(error) if !live_only => {
+                entries.push(LiveStatusJsonEntry {
+                    socket: socket.display().to_string(),
+                    live: false,
+                    handshake: None,
+                    status: None,
+                    error: Some(error.to_string()),
+                });
+            }
+            _ => {}
+        }
+    }
+    serde_json::to_string_pretty(&entries).context("序列化 live status JSON 失败")
+}
+
 pub(crate) fn live_status_summary_for_sockets(
     sockets: Vec<PathBuf>,
     live_only: bool,
@@ -2218,6 +2303,13 @@ pub(crate) fn live_status_summary_for_sockets(
                         socket.display()
                     ));
                 }
+                for param in &status.params {
+                    lines.push(format!(
+                        "param={} socket={}",
+                        format_param_status(param),
+                        socket.display()
+                    ));
+                }
                 for process in status.processes {
                     let readiness_info = process
                         .readiness_wait
@@ -2330,7 +2422,7 @@ pub(crate) fn live_status_summary_for_sockets(
                             .map(format_descriptor_schema)
                             .unwrap_or_default();
                         lines.push(format!(
-                            "io_boundary_resource={}.{} capability={} ready={} message={} last_error={} updated_unix_ms={}{} socket={}",
+                            "io_boundary_resource={}.{} kind={} ready={} message={} last_error={} updated_unix_ms={}{} socket={}",
                             boundary.name,
                             resource.name,
                             resource.kind,
@@ -2376,6 +2468,9 @@ pub(crate) fn live_status_summary_for_sockets(
                         lane.fairness_violations,
                         socket.display()
                     ));
+                }
+                for diagnostic in &status.diagnostics {
+                    lines.push(format_diagnostic_status(diagnostic, &socket));
                 }
                 if recorder.enabled
                     || recorder.dropped_count != 0

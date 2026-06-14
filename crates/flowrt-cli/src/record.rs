@@ -35,6 +35,7 @@ struct RecordWriterChannels {
     service_event: RecordChannel,
     operation_event: RecordChannel,
     scheduler_event: RecordChannel,
+    diagnostics_event: RecordChannel,
     clock_event: RecordChannel,
     runtime_event: RecordChannel,
 }
@@ -62,6 +63,10 @@ impl RecordWriterChannels {
                 "flowrt/record/scheduler_event",
                 RecordEventKind::SchedulerEvent,
             )?,
+            diagnostics_event: writer.register_channel(
+                "flowrt/record/diagnostics_event",
+                RecordEventKind::DiagnosticsEvent,
+            )?,
             clock_event: writer
                 .register_channel("flowrt/record/clock_event", RecordEventKind::ClockEvent)?,
             runtime_event: writer
@@ -77,6 +82,7 @@ impl RecordWriterChannels {
             RecordEventKind::ServiceEvent => self.service_event,
             RecordEventKind::OperationEvent => self.operation_event,
             RecordEventKind::SchedulerEvent => self.scheduler_event,
+            RecordEventKind::DiagnosticsEvent => self.diagnostics_event,
             RecordEventKind::ClockEvent => self.clock_event,
             RecordEventKind::RuntimeEvent => self.runtime_event,
         }

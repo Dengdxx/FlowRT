@@ -92,19 +92,21 @@ pub enum RecordEventKind {
     ServiceEvent,
     OperationEvent,
     SchedulerEvent,
+    DiagnosticsEvent,
     ClockEvent,
     RuntimeEvent,
 }
 
 impl RecordEventKind {
     /// 当前 schema 版本支持的全部事件分类，顺序保持 canonical。
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ChannelSample,
         Self::DescriptorEvent,
         Self::ParamEvent,
         Self::ServiceEvent,
         Self::OperationEvent,
         Self::SchedulerEvent,
+        Self::DiagnosticsEvent,
         Self::ClockEvent,
         Self::RuntimeEvent,
     ];
@@ -118,6 +120,7 @@ impl RecordEventKind {
             Self::ServiceEvent => "service_event",
             Self::OperationEvent => "operation_event",
             Self::SchedulerEvent => "scheduler_event",
+            Self::DiagnosticsEvent => "diagnostics_event",
             Self::ClockEvent => "clock_event",
             Self::RuntimeEvent => "runtime_event",
         }
@@ -135,6 +138,7 @@ pub enum RecordEntityKind {
     Operation,
     Task,
     Lane,
+    Diagnostic,
     Clock,
     Runtime,
     Process,

@@ -42,10 +42,11 @@ use build_model::{BuildMode, CacheLayout, DepsCacheKey, RuntimeFeatureSet, defau
 use cache::{CacheCleanOptions, cache_clean_for_cwd, cache_status_summary_for_cwd};
 use introspection::{
     EchoFormatOptions, EchoSelection, echo_channel, echo_channel_follow, echo_channels,
-    echo_channels_follow, live_hz_summary, live_status_summary, load_self_description,
-    operation_cancel, operation_list, operation_status_summary, params_get, params_list,
-    params_set, params_set_from_file, remote_params_get, remote_params_list, remote_params_set,
-    remote_params_set_from_file, self_description_nodes, self_description_summary,
+    echo_channels_follow, live_hz_summary, live_status_json, live_status_summary,
+    load_self_description, operation_cancel, operation_list, operation_status_summary, params_get,
+    params_list, params_set, params_set_from_file, remote_params_get, remote_params_list,
+    remote_params_set, remote_params_set_from_file, self_description_nodes,
+    self_description_summary,
 };
 use record::{RecordOptions, record_runtime};
 use replay::replay_fixture;
@@ -459,6 +460,10 @@ enum Command {
         /// 只输出成功响应 status 的 live runtime，隐藏 stale socket 诊断行。
         #[arg(long)]
         live_only: bool,
+
+        /// 输出格式。text 面向人读，json 面向脚本消费完整 status/diagnostics。
+        #[arg(long, value_enum, default_value_t = StatusFormat::Text)]
+        format: StatusFormat,
     },
 
     /// 统计 live channel 发布频率。
@@ -739,6 +744,13 @@ enum DepsBackend {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 enum ExplainFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+enum StatusFormat {
     #[default]
     Text,
     Json,
@@ -1297,8 +1309,12 @@ fn main() -> Result<()> {
                 println!("{}", operation_cancel(&operation_id, socket.as_deref())?);
             }
         },
-        Command::Status { live_only } => {
-            println!("{}", live_status_summary(live_only)?);
+        Command::Status { live_only, format } => {
+            let output = match format {
+                StatusFormat::Text => live_status_summary(live_only)?,
+                StatusFormat::Json => live_status_json(live_only)?,
+            };
+            println!("{output}");
         }
         Command::Hz {
             channel,

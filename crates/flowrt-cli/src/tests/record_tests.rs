@@ -70,7 +70,7 @@ fn record_writes_mcap_from_fake_runtime() {
             .expect("record should write MCAP");
 
     producer.join().expect("producer thread should finish");
-    assert!(summary.contains("event_count=1"));
+    assert!(summary.contains("event_count=3"));
     assert!(summary.contains("dropped_count=0"));
     assert!(summary.contains("descriptor_payload=descriptor_only"));
     let bytes = std::fs::read(&output).expect("MCAP output should exist");
@@ -112,10 +112,57 @@ fn record_writes_variable_frame_event_from_fake_runtime() {
             .expect("record should write MCAP");
 
     producer.join().expect("producer thread should finish");
-    assert!(summary.contains("event_count=1"));
+    assert!(summary.contains("event_count=3"));
     assert!(summary.contains("dropped_count=0"));
     let bytes = std::fs::read(&output).expect("MCAP output should exist");
     assert!(bytes.starts_with(flowrt_record::MCAP_MAGIC));
+    assert!(!state.status().recorder.enabled);
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn record_writes_diagnostics_event_from_fake_runtime() {
+    let root = temp_test_dir("record-diagnostics-event");
+    let socket = root.join("main.sock");
+    let output = root.join("run.mcap");
+    let state = flowrt::IntrospectionState::new();
+    state.register_resource(flowrt::IntrospectionResourceStatus {
+        name: "sensor.lidar".to_string(),
+        capability: "perception.lidar.samples".to_string(),
+        state: "pending".to_string(),
+        required: true,
+        last_error: Some("provider not ready".to_string()),
+        updated_unix_ms: Some(1000),
+        ..Default::default()
+    });
+    let server =
+        flowrt::spawn_status_server_at(socket.clone(), handshake(421, "main"), state.clone())
+            .expect("status server should start");
+
+    let summary =
+        record::record_runtime_for_sockets(record_options(output.clone(), None), vec![socket])
+            .expect("record should write MCAP");
+
+    assert!(summary.contains("event_count="));
+    let bytes = std::fs::read(&output).expect("MCAP output should exist");
+    assert!(bytes.starts_with(flowrt_record::MCAP_MAGIC));
+    assert!(
+        bytes
+            .windows(b"flowrt.diagnostics.status".len())
+            .any(|window| window == b"flowrt.diagnostics.status")
+    );
+    assert!(
+        bytes
+            .windows(b"sensor.lidar".len())
+            .any(|window| window == b"sensor.lidar")
+    );
+    assert!(
+        bytes
+            .windows(b"diagnostic".len())
+            .any(|window| window == b"diagnostic")
+    );
     assert!(!state.status().recorder.enabled);
 
     drop(server);
@@ -279,7 +326,7 @@ fn record_stops_when_shutdown_token_is_requested() {
         .expect("record should stop on shutdown token");
 
     producer.join().expect("producer thread should finish");
-    assert!(summary.contains("event_count=0"));
+    assert!(summary.contains("event_count=1"));
     assert!(!state.status().recorder.enabled);
     assert!(
         std::fs::read(&output)
