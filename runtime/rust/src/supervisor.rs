@@ -2756,41 +2756,41 @@ mod tests {
         }
     }
 
-    fn resource_gate_fixture(
-        readiness: &str,
+    struct ResourceGateFixtureOptions<'a> {
+        readiness: &'a str,
         required: bool,
-        health: &str,
-        on_failure: &str,
-        status: &str,
+        health: &'a str,
+        on_failure: &'a str,
+        status: &'a str,
         satisfied: bool,
-        provider: Option<&str>,
-        diagnostic: Option<&str>,
+        provider: Option<&'a str>,
+        diagnostic: Option<&'a str>,
+    }
+
+    fn resource_gate_fixture(
+        options: ResourceGateFixtureOptions<'_>,
     ) -> (LaunchGraph, LaunchProcess) {
-        let manifest = parse_launch_manifest(&resource_gate_manifest_json(
-            readiness, required, health, on_failure, status, satisfied, provider, diagnostic,
-        ))
-        .unwrap();
+        let manifest = parse_launch_manifest(&resource_gate_manifest_json(&options)).unwrap();
         let graph = manifest.graphs.into_iter().next().unwrap();
         let process = graph.processes[0].clone();
         (graph, process)
     }
 
-    fn resource_gate_manifest_json(
-        readiness: &str,
-        required: bool,
-        health: &str,
-        on_failure: &str,
-        status: &str,
-        satisfied: bool,
-        provider: Option<&str>,
-        diagnostic: Option<&str>,
-    ) -> String {
-        let provider_value = provider
+    fn resource_gate_manifest_json(options: &ResourceGateFixtureOptions<'_>) -> String {
+        let provider_value = options
+            .provider
             .map(|name| format!(r#""{name}""#))
             .unwrap_or_else(|| "null".to_string());
-        let diagnostic_value = diagnostic
+        let diagnostic_value = options
+            .diagnostic
             .map(|message| format!(r#""{message}""#))
             .unwrap_or_else(|| "null".to_string());
+        let readiness = options.readiness;
+        let required = options.required;
+        let health = options.health;
+        let on_failure = options.on_failure;
+        let status = options.status;
+        let satisfied = options.satisfied;
         format!(
             r#"{{
             "package": "demo",
@@ -4231,16 +4231,16 @@ mod tests {
 
     #[test]
     fn manifest_deserialization_parses_resource_contract_fields() {
-        let json = resource_gate_manifest_json(
-            "before_start",
-            true,
-            "required",
-            "stop_process",
-            "satisfied",
-            true,
-            Some("sensor_provider"),
-            None,
-        );
+        let json = resource_gate_manifest_json(&ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "stop_process",
+            status: "satisfied",
+            satisfied: true,
+            provider: Some("sensor_provider"),
+            diagnostic: None,
+        });
         let manifest = parse_launch_manifest(&json).unwrap();
         let contract = &manifest.graphs[0].resource_contract;
 
@@ -4278,16 +4278,16 @@ mod tests {
 
     #[test]
     fn resource_gate_allows_required_satisfied_before_start() {
-        let (graph, process) = resource_gate_fixture(
-            "before_start",
-            true,
-            "required",
-            "stop_process",
-            "satisfied",
-            true,
-            Some("sensor_provider"),
-            None,
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "stop_process",
+            status: "satisfied",
+            satisfied: true,
+            provider: Some("sensor_provider"),
+            diagnostic: None,
+        });
 
         let decision =
             evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
@@ -4307,16 +4307,16 @@ mod tests {
 
     #[test]
     fn resource_gate_keeps_lazy_unsatisfied_pending_without_blocking() {
-        let (graph, process) = resource_gate_fixture(
-            "lazy",
-            true,
-            "required",
-            "stop_process",
-            "unsatisfied",
-            false,
-            None,
-            Some("provider not ready"),
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "lazy",
+            required: true,
+            health: "required",
+            on_failure: "stop_process",
+            status: "unsatisfied",
+            satisfied: false,
+            provider: None,
+            diagnostic: Some("provider not ready"),
+        });
 
         let decision =
             evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
@@ -4331,16 +4331,16 @@ mod tests {
 
     #[test]
     fn resource_gate_degrades_optional_unsatisfied_without_blocking() {
-        let (graph, process) = resource_gate_fixture(
-            "before_init",
-            false,
-            "optional",
-            "degrade",
-            "optional_unsatisfied",
-            false,
-            None,
-            Some("optional provider not configured"),
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_init",
+            required: false,
+            health: "optional",
+            on_failure: "degrade",
+            status: "optional_unsatisfied",
+            satisfied: false,
+            provider: None,
+            diagnostic: Some("optional provider not configured"),
+        });
 
         let decision =
             evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
@@ -4355,16 +4355,16 @@ mod tests {
 
     #[test]
     fn resource_gate_blocks_required_stop_process_with_diagnostic() {
-        let (graph, process) = resource_gate_fixture(
-            "before_init",
-            true,
-            "required",
-            "stop_process",
-            "unsatisfied",
-            false,
-            None,
-            Some("provider missing"),
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_init",
+            required: true,
+            health: "required",
+            on_failure: "stop_process",
+            status: "unsatisfied",
+            satisfied: false,
+            provider: None,
+            diagnostic: Some("provider missing"),
+        });
 
         let decision =
             evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
@@ -4379,16 +4379,16 @@ mod tests {
 
     #[test]
     fn resource_gate_blocks_required_stop_graph_with_diagnostic() {
-        let (graph, process) = resource_gate_fixture(
-            "before_start",
-            true,
-            "required",
-            "stop_graph",
-            "unsatisfied",
-            false,
-            None,
-            Some("target provider missing"),
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "stop_graph",
+            status: "unsatisfied",
+            satisfied: false,
+            provider: None,
+            diagnostic: Some("target provider missing"),
+        });
 
         let decision =
             evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Startup);
@@ -4401,31 +4401,31 @@ mod tests {
 
     #[test]
     fn restart_process_waits_for_resource_then_allows_restart() {
-        let (graph, process) = resource_gate_fixture(
-            "before_start",
-            true,
-            "required",
-            "restart_process",
-            "unsatisfied",
-            false,
-            None,
-            Some("provider not ready"),
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "restart_process",
+            status: "unsatisfied",
+            satisfied: false,
+            provider: None,
+            diagnostic: Some("provider not ready"),
+        });
 
         let blocked = evaluate_process_resource_gates(&graph, &process, ResourceGatePhase::Restart);
         assert_eq!(blocked.action, ResourceGateAction::WaitRestart);
         assert_eq!(blocked.statuses[0].state, "pending");
 
-        let (ready_graph, ready_process) = resource_gate_fixture(
-            "before_start",
-            true,
-            "required",
-            "restart_process",
-            "satisfied",
-            true,
-            Some("sensor_provider"),
-            None,
-        );
+        let (ready_graph, ready_process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "restart_process",
+            status: "satisfied",
+            satisfied: true,
+            provider: Some("sensor_provider"),
+            diagnostic: None,
+        });
         let ready = evaluate_process_resource_gates(
             &ready_graph,
             &ready_process,
@@ -4436,16 +4436,16 @@ mod tests {
 
     #[test]
     fn restart_child_resource_gate_uses_live_ready_status() {
-        let (graph, process) = resource_gate_fixture(
-            "before_start",
-            true,
-            "required",
-            "restart_process",
-            "unsatisfied",
-            false,
-            None,
-            Some("provider not ready"),
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "restart_process",
+            status: "unsatisfied",
+            satisfied: false,
+            provider: None,
+            diagnostic: Some("provider not ready"),
+        });
         let mut cmd = Command::new("sleep");
         cmd.arg("30");
         let real_child = cmd.spawn().unwrap();
@@ -4506,16 +4506,16 @@ mod tests {
 
     #[test]
     fn io_boundary_resource_error_updates_abstract_resource_status() {
-        let (graph, process) = resource_gate_fixture(
-            "before_start",
-            true,
-            "required",
-            "stop_process",
-            "satisfied",
-            true,
-            Some("sensor_provider"),
-            None,
-        );
+        let (graph, process) = resource_gate_fixture(ResourceGateFixtureOptions {
+            readiness: "before_start",
+            required: true,
+            health: "required",
+            on_failure: "stop_process",
+            status: "satisfied",
+            satisfied: true,
+            provider: Some("sensor_provider"),
+            diagnostic: None,
+        });
         let mut cmd = Command::new("sleep");
         cmd.arg("30");
         let real_child = cmd.spawn().unwrap();
