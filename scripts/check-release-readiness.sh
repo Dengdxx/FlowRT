@@ -27,8 +27,8 @@
 #       island bundle/deploy gate 和 shared Cargo target app 隔离
 #   15. v0.10.2 focused CI gate 是否覆盖 two-phase concurrency、iox2
 #       scheduler-local commit、跨语言 generated smoke 和 package/release 依赖
-#   16. v0.11.0 focused CI gate 是否覆盖 App SDK init/add/explain、C v0 骨架、
-#       C counter demo build/run/launch 和 package/release 依赖
+#   16. v0.12.0 focused CI gate 是否覆盖 contract-driven authoring、
+#       App API 产物、三语言 demo build/run 和 package/release 依赖
 #   17. README 安装示例版本是否与发布版本一致
 #   18. CONTEXT 当前 workspace 版本是否与发布版本一致
 #   19. tag 状态提示
