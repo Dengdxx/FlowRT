@@ -172,6 +172,15 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 - 所有会写 `flowrt/` 输出目录的 CLI 命令都必须在命令级持有 OS advisory lock；`.flowrt.lock` 文件可以残留，PID 只作为诊断内容，真实占用状态必须由锁判断。`check`、`inspect`、`run`、`launch`、`list`、`nodes`、`status`、`echo` 和 `params` 不写生成物，不应获取该锁。
 - 生成的 Rust/C++ runtime shell 必须把 SIGINT/SIGTERM 转成 runtime `ShutdownToken`，让长期运行的 scheduler loop 优雅退出，并继续执行 `shutdown` task、`on_stop` 和 `on_shutdown`。CLI 的 `--run-steps` 只是显式运行上限，`--run-ticks` 是兼容别名，二者都不是核心 runtime 行为来源。
 - Scheduler v2 以 task 为调度单元：`periodic` 由 timer 唤醒，`on_message` 由输入 revision 或 FIFO backlog 唤醒。前序 task 在同一 step 发布数据后，依赖它的 `on_message` task 必须在同一 drain loop 中继续执行，不能退回“下一轮 polling 才看见”。阻塞等待前的 data-generation barrier 必须在 drain loop 的最后一轮 wake probe 前刷新，避免同一 step 内部发布的数据把 scheduler 自己再次无意义唤醒。transport backend 的 wake probe 只能刷新 endpoint cache，task 输入读取必须使用 cached latest view，避免探测本身消费掉用户回调需要的样本。iox2 typed pub/sub 不直接暴露 sample-arrival waitable，因此 FlowRT 使用同名 iox2 event service 做 sideband wake；zenoh 使用 subscriber callback 唤醒 scheduler。
+- `v0.14.0` 的 scheduler 改造必须把 admission 和 task completion 解耦：scheduler 线程负责
+  ready 判定、admission、backend commit、introspection 和 deterministic output commit；
+  worker 只运行用户 task，并通过 completion queue 或等价通知交还结果。不得因为保持
+  deterministic commit order 而同步等待长任务完成，也不得回退成临时 polling。Rust/C++
+  runtime、generated shell、status、record 和 `flowrt::Context` 必须使用同一套 runtime
+  scheduling time 字段：`scheduled_time_ms`、`observed_time_ms`、`lateness_ms`、
+  `missed_periods`、`overrun` 和相邻运行 `dt`。这些字段只表达 runtime 观察到的调度
+  时序；`v0.14.0` 不承诺硬实时，不实现 sensor event-time、clock domain、PTP、NTP、
+  exact sync、approx sync 或多传感器同步策略。
 - Runtime 与 codegen 不能吞掉 bind-level channel 语义：`latest` 和 `fifo` 都要保留 `overflow`、`max_age_ms` 与 `stale_policy`，inproc shell 也应使用 timestamped read/write 路径传递 freshness。
 - 跨 process group 的 bind 会在该 route 的 Contract IR capability 派生中要求 `topology:multi_process`；跨 target route 还会要求 `topology:multi_host`。validator、normalizer 和 CLI 必须共享同一套 route topology 判定，不要再各自手写 process-boundary 特判。
 - Task-level execution intent 也必须映射到 runtime 行为：`deadline_ms` 要进入 required capabilities，并由生成 shell 在用户回调和输出发布边界执行检查。

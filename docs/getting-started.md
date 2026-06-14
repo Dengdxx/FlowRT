@@ -443,7 +443,7 @@ flowrt status
 task 健康行示例：
 
 ```text
-task_health=fast_loop lane=sensor_lane deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=... last_success_ms=... socket=...
+task_health=fast_loop lane=sensor_lane scheduled_time_ms=... observed_time_ms=... lateness_ms=2 missed_periods=0 overrun=false deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=... last_success_ms=... socket=...
 ```
 
 lane 健康行示例：
@@ -454,6 +454,11 @@ lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=
 
 关键字段含义：
 
+- `scheduled_time_ms`：runtime 计划该次 task 应被调度的时间。
+- `observed_time_ms`：scheduler 实际观察并 admission 该次 task 的时间。
+- `lateness_ms`：`observed_time_ms - scheduled_time_ms` 的非负部分。
+- `missed_periods`：periodic task 因迟到跨过的周期数。
+- `overrun`：上一轮执行越过本轮周期或 deadline 边界。
 - `deadline_missed`：task 执行超过 `deadline_ms` 的次数。超限时 runtime 会阻止 late output 发布。
 - `stale_input`：输入数据超过 `max_age_ms` 的次数。
 - `backpressure`：下游队列满导致的背压事件次数。
@@ -462,7 +467,10 @@ lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=
 - `queue_depth`：lane 当前排队任务数。
 - `dispatched_count`：lane 累计调度次数。
 
-这些指标由 runtime 内置的调度健康策略自动采集，Rust 和 C++ 生成 shell 行为一致。所有健康字段使用 `serde(default)` 保证前向兼容，旧版 JSON 不含健康字段时解析为零值。
+这些指标由 runtime 内置的调度健康策略自动采集，Rust 和 C++ 生成 shell 行为一致。task timing
+字段也会通过现有 `flowrt::Context` 提供给用户算法；它们描述的是 FlowRT runtime 的调度
+时间，不是传感器事件时间或跨机器时钟同步。所有健康字段使用 `serde(default)` 保证前向
+兼容，旧版 JSON 不含健康字段时解析为零值。
 
 ## 录制运行态事件
 

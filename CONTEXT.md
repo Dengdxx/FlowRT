@@ -5,8 +5,31 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.13.0`；`v0.13.0` 完成机器人 runtime completion 收口，
-补齐参数运行态 apply、抽象 resource contract 和 variable frame 工程化。参数控制面已
+当前 workspace 版本仍为 `0.13.0`；当前开发线进入
+`v0.14.0 Realtime Scheduler + Task Timing Context`。`v0.14.0` 把原先调度
+admission 同步等待长任务完成的问题，和用户算法无法看到真实 runtime 调度时间的问题
+合并处理：scheduler 线程只负责 ready 判定、admission、backend commit 和
+introspection，worker 只运行用户 task，并通过 completion queue 或等价完成通知把结果
+交回 scheduler。用户 task 仍通过现有 `flowrt::Context` 读取调度时间上下文，不改变
+handler 签名。
+
+`v0.14.0` 的长期用户语义是 runtime scheduling time，不是传感器事件时间。对每次 task
+运行，运行态观测和 `Context` 要区分 `scheduled_time_ms`、`observed_time_ms`、
+`lateness_ms`、`missed_periods` 和 `overrun`：`scheduled_time_ms` 是 runtime 计划该次
+task 应被调度的时间，`observed_time_ms` 是 scheduler 实际观察并 admission 该次 task
+的时间，`lateness_ms` 是两者差值的非负部分，`missed_periods` 只对 periodic task 表示
+因迟到跨过的周期数，`overrun` 表示上一轮执行越过本轮周期或 deadline 边界。realtime
+路径暴露真实 runtime 观测到的 wall-clock lateness 和相邻运行 `dt`；replay /
+temporary island 的 simulated clock 仍保持确定性，fixture `at_ms` / `published_at_ms`
+驱动 scheduler、record、Operation 和 status 的同一毫秒时间模型。
+
+`v0.14.0` 明确不承诺硬实时；不实现 sensor timestamp、sensor event-time、clock
+domain、PTP、NTP、跨机器 exact sync 或 approx sync，也不把多传感器同步策略塞进
+runtime scheduler。deadline、lateness、missed period 和 overrun 只解释 FlowRT runtime
+看到的调度时序，用于用户算法自适应、status/record 观测和诊断。
+
+`v0.13.0` 完成机器人 runtime completion 收口，补齐参数运行态 apply、抽象 resource
+contract 和 variable frame 工程化。参数控制面已
 补齐 runtime apply 闭环：RSDL/Contract IR 参数 schema、component default、instance
 override、live pending set 和 scheduler 边界 apply 由同一自描述元数据串联；Rust/C++
 generated shell 在 apply 边界重新校验 type、`min`、`max`、`enum` 与
@@ -330,8 +353,8 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.11.1` | App SDK / C ABI v0 hardening：诊断、失败路径、用户骨架和 release readiness 收口。 |
 | `v0.12.0` | Contract-driven App Authoring：RSDL 先行，`prepare` / `explain` 产出真实用户实现接口。 |
 | `v0.13.0` | Robot Runtime Completion：补齐 package/test/clock/抽象资源契约/trace/deployment/control authority 等核心设施。 |
-| `v0.13.1` | Scheduler dispatch hardening：解耦调度 admission 与长任务 completion，修复同步等待导致 tick 退化的问题。 |
-| `v0.14.0` | Python 与更多语言入口：建立在稳定 C ABI 与 App API manifest 之上。 |
+| `v0.13.1` | 预留 v0.13.0 维护修复；scheduler dispatch hardening 已并入 v0.14.0 主线。 |
+| `v0.14.0` | Realtime Scheduler + Task Timing Context：解耦 scheduler admission 与 task completion，并暴露 runtime 调度时间上下文。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -424,13 +447,17 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   hardware/protocol 词进入 resource capability；optional unsatisfied requirement 保留
   diagnostic 供 `status` / `doctor` 展示。supervisor 已接入 resource health gate，以
   抽象 provider readiness / health 控制启动和诊断，不读取具体硬件字段。
-- `v0.13.1` 修复已确认的 scheduler 同步执行阻塞问题：当前 scheduler loop 会同步等待
-  `ReadyBatch::run_collect` 完成，长任务会拖慢后续 tick。修复方向是让调度/admission
-  与 task completion 解耦，通过 completion queue 或等价异步完成通知维持 deterministic
-  output commit order，而不是回退到临时 polling。
-- `v0.14.0` 才进入 Python 与更多语言入口：Python binding / generator 必须建立在
-  v0.13.0 收口后的 C ABI、App API manifest 和 FlowRT 语义边界上，不能直接暴露
-  iox2、zenoh、C++ runtime 对象或 backend SDK 句柄。
+- `v0.13.1` 不再承载单独的 scheduler 主线；已确认的同步等待阻塞修复并入
+  `v0.14.0`，避免把调度 admission 改造和用户可见时间上下文拆成两个互相漂移的版本。
+- `v0.14.0` 修复 scheduler 同步执行阻塞问题，并把 runtime scheduling time 暴露为
+  长期用户语义。scheduler loop 不应同步等待长任务完成；调度/admission 与 task
+  completion 解耦后，仍必须由 scheduler 线程按 deterministic ready / completion order
+  提交 output、更新 introspection 和执行 backend commit。`flowrt::Context` 暴露
+  `scheduled_time_ms`、`observed_time_ms`、`lateness_ms`、`missed_periods`、
+  `overrun` 和相邻运行 `dt`，让用户算法能区分周期迟到、漏周期和执行越界。该版本不
+  承诺硬实时，不做 sensor timestamp、clock domain、PTP、NTP、跨机器 exact sync /
+  approx sync 或多传感器同步策略；realtime 路径报告 runtime 实际观察时间，replay /
+  temporary island 路径继续由 simulated clock 保持确定性。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 

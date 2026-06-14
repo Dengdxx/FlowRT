@@ -768,11 +768,19 @@ generated shell 使用 two-phase output commit：worker 执行用户 task，sche
 `flowrt status` 会展示 task 级和 lane 级调度健康指标：
 
 ```text
-task_health=fast_loop lane=sensor_lane deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=1717800000000 last_success_ms=1717800000000 socket=...
+task_health=fast_loop lane=sensor_lane scheduled_time_ms=1717800000000 observed_time_ms=1717800000002 lateness_ms=2 missed_periods=0 overrun=false deadline_missed=0 stale_input=2 backpressure=0 overflow=0 fairness_violations=0 runs=1000 successes=998 consecutive_failures=0 last_run_ms=1717800000002 last_success_ms=1717800000002 socket=...
 lane_health=sensor_lane queue_depth=0 dispatched_count=1000 fairness_violations=0 socket=...
 ```
 
-task 健康字段包括：`deadline_missed`（截止时间超限次数）、`stale_input`（输入过期次数）、`backpressure`（背压事件次数）、`overflow`（溢出事件次数）、`fairness_violations`（lane 饥饿公平性违规次数）、`runs`/`successes`/`consecutive_failures`（运行计数）和 `last_run_ms`/`last_success_ms`（最近运行时间戳）。
+task 健康字段包括：`scheduled_time_ms`（计划调度时间）、`observed_time_ms`（实际观察并
+admission 的时间）、`lateness_ms`（调度迟到）、`missed_periods`（periodic task 因迟到跨过
+的周期数）、`overrun`（上一轮执行越过本轮周期或 deadline 边界）、
+`deadline_missed`（截止时间超限次数）、`stale_input`（输入过期次数）、
+`backpressure`（背压事件次数）、`overflow`（溢出事件次数）、`fairness_violations`
+（lane 饥饿公平性违规次数）、`runs`/`successes`/`consecutive_failures`（运行计数）和
+`last_run_ms`/`last_success_ms`（最近运行时间戳）。这些 timing 字段描述 FlowRT runtime
+看到的调度时间，可通过现有 `flowrt::Context` 提供给用户算法；它们不是传感器事件时间、
+跨机器时钟同步或硬实时承诺。
 
 lane 健康字段包括：`queue_depth`（当前排队任务数）、`dispatched_count`（累计调度次数）和 `fairness_violations`（lane 间饥饿违规次数）。
 
