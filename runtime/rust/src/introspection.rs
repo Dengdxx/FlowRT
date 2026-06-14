@@ -156,6 +156,9 @@ pub struct IntrospectionStatus {
     pub routes: Vec<IntrospectionRouteStatus>,
     #[serde(default)]
     pub processes: Vec<IntrospectionProcessStatus>,
+    /// v0.13+ abstract resource readiness/health 状态。
+    #[serde(default)]
+    pub resources: Vec<IntrospectionResourceStatus>,
     /// v0.8+ I/O boundary 运行态健康状态。
     #[serde(default)]
     pub io_boundaries: Vec<IntrospectionIoBoundaryStatus>,
@@ -304,6 +307,34 @@ pub struct IntrospectionRouteStatus {
     /// 最近一次 route/backend 错误。
     #[serde(default)]
     pub last_error: Option<String>,
+}
+
+/// 抽象 resource 的运行态 readiness/health 状态。
+///
+/// `state` 使用 `ready|pending|degraded|failed|unknown` 字符串，避免把后续
+/// supervisor readiness gate 语义提前固化到 ABI enum。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionResourceStatus {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default = "default_resource_state")]
+    pub state: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub owner_process: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub updated_unix_ms: Option<u64>,
+}
+
+fn default_resource_state() -> String {
+    "unknown".to_string()
 }
 
 /// 单个 channel 的 latest raw ABI snapshot。
@@ -828,6 +859,7 @@ struct IntrospectionStateInner {
     params: BTreeMap<String, ParamState>,
     boundary_inputs: BTreeMap<String, BoundaryInputState>,
     processes: BTreeMap<String, IntrospectionProcessStatus>,
+    resources: BTreeMap<String, IntrospectionResourceStatus>,
     io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
     services: BTreeMap<String, IntrospectionServiceStatus>,
     operations: BTreeMap<String, IntrospectionOperationStatus>,
@@ -1204,6 +1236,7 @@ impl IntrospectionState {
             inputs: inner.inputs.values().cloned().collect(),
             routes: inner.routes.values().cloned().collect(),
             processes: inner.processes.values().cloned().collect(),
+            resources: inner.resources.values().cloned().collect(),
             io_boundaries: inner.io_boundaries.values().cloned().collect(),
             services: inner.services.values().cloned().collect(),
             operations: inner.operations.values().cloned().collect(),
@@ -1217,6 +1250,18 @@ impl IntrospectionState {
     pub fn record_process_health(&self, status: IntrospectionProcessStatus) {
         let mut inner = self.lock_inner();
         inner.processes.insert(status.name.clone(), status);
+    }
+
+    /// 预注册一个抽象 resource，使未知运行态也可被 `flowrt status` 发现。
+    pub fn register_resource(&self, status: IntrospectionResourceStatus) {
+        let mut inner = self.lock_inner();
+        inner.resources.entry(status.name.clone()).or_insert(status);
+    }
+
+    /// 记录抽象 resource 的最新运行态。
+    pub fn record_resource_status(&self, status: IntrospectionResourceStatus) {
+        let mut inner = self.lock_inner();
+        inner.resources.insert(status.name.clone(), status);
     }
 
     /// 预注册一条 route，使 backend 选择原因和传输计数能进入 live status。
@@ -4468,6 +4513,16 @@ mod tests {
             clock: IntrospectionClockStatus::default(),
             channels: vec![],
             processes: vec![],
+            resources: vec![IntrospectionResourceStatus {
+                name: "sensor.lidar_uart".to_string(),
+                capability: "perception.lidar.samples".to_string(),
+                state: "pending".to_string(),
+                required: true,
+                source: Some("contract".to_string()),
+                owner_process: Some("main".to_string()),
+                last_error: Some("provider not reported ready".to_string()),
+                updated_unix_ms: Some(4000),
+            }],
             inputs: vec![IntrospectionInputStatus {
                 task: "sink.main".to_string(),
                 input: "packet".to_string(),
@@ -4565,6 +4620,10 @@ mod tests {
             parsed.routes[0].selected_reason,
             "variable_frame_auto_fallback"
         );
+        assert_eq!(parsed.resources.len(), 1);
+        assert_eq!(parsed.resources[0].name, "sensor.lidar_uart");
+        assert_eq!(parsed.resources[0].state, "pending");
+        assert_eq!(parsed.resources[0].source.as_deref(), Some("contract"));
         assert_eq!(parsed.operations.len(), 1);
         assert_eq!(parsed.operations[0].name, "controller.plan");
         assert_eq!(parsed.io_boundaries.len(), 1);

@@ -453,6 +453,16 @@ int main() {
         "source.imu_to_sink.imu", "Imu",
         std::vector<std::uint8_t>{std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}},
         std::optional<std::uint64_t>{9U});
+    state.register_resource(flowrt::IntrospectionResourceStatus{
+        .name = "sensor.lidar_uart",
+        .capability = "perception.lidar.samples",
+        .state = "pending",
+        .required = true,
+        .source = std::optional<std::string>{"contract"},
+        .owner_process = std::optional<std::string>{"main"},
+        .last_error = std::optional<std::string>{"provider not reported ready"},
+        .updated_unix_ms = std::optional<std::uint64_t>{4000U},
+    });
     state.register_param(flowrt::IntrospectionParamSchema{
         .name = "controller.kp",
         .ty = "f32",
@@ -522,6 +532,13 @@ int main() {
         assert_contains(status_response, R"("queue_depth":2)");
         assert_contains(status_response, R"("dispatched_count":500)");
         assert_contains(status_response, R"("operations":[)");
+        assert_contains(status_response, R"("resources":[)");
+        assert_contains(status_response, R"("name":"sensor.lidar_uart")");
+        assert_contains(status_response, R"("capability":"perception.lidar.samples")");
+        assert_contains(status_response, R"("state":"pending")");
+        assert_contains(status_response, R"("source":"contract")");
+        assert_contains(status_response, R"("owner_process":"main")");
+        assert_contains(status_response, R"("last_error":"provider not reported ready")");
         assert_contains(status_response, R"("name":"controller.plan")");
         assert_contains(status_response, R"("running":1)");
         assert_contains(status_response, R"("current_operation_ids":["111:7:3"])");

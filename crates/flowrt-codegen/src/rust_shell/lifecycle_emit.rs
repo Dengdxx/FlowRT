@@ -281,6 +281,11 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             emission.order,
         ),
     );
+    output.push_str(&emit_rust_resource_registration(
+        emission.graph,
+        emission.order,
+        emission.process_name,
+    ));
     output.push_str(&emit_rust_io_boundary_registration(
         emission.contract,
         emission.order,
@@ -415,6 +420,34 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
 
 fn run_scope_receiver(code: &str) -> String {
     code.replace("self.", "app.")
+}
+
+fn emit_rust_resource_registration(
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+    process_name: &str,
+) -> String {
+    let instance_names = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut output = String::new();
+    for satisfaction in &graph.resource_satisfactions {
+        if !instance_names.contains(satisfaction.instance.name.as_str()) {
+            continue;
+        }
+        output.push_str(&format!(
+            "        introspection_state.register_resource(flowrt::IntrospectionResourceStatus {{\n            name: {}.to_string(),\n            capability: {}.to_string(),\n            state: \"unknown\".to_string(),\n            required: {},\n            source: Some(\"contract\".to_string()),\n            owner_process: Some({}.to_string()),\n            last_error: None,\n            updated_unix_ms: None,\n        }});\n",
+            crate::rust_string_literal(&format!(
+                "{}.{}",
+                satisfaction.instance.name, satisfaction.resource
+            )),
+            crate::rust_string_literal(&satisfaction.capability.0),
+            satisfaction.required,
+            crate::rust_string_literal(process_name),
+        ));
+    }
+    output
 }
 
 fn emit_rust_io_boundary_registration(contract: &ContractIr, order: &[&InstanceIr]) -> String {

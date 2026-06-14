@@ -40,6 +40,7 @@ const CHILD_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const ZENOH_AUTO_PORT_BASE: u16 = 49_152;
 const ZENOH_AUTO_PORT_COUNT: u16 = 16_384;
 const SUPPORTED_LAUNCH_IR_VERSION: &str = "0.1";
+const SUPPORTED_RESOURCE_CONTRACT_VERSION: &str = "0.1";
 
 /// readiness 等待参数，支持测试注入短超时。
 #[derive(Debug, Clone)]
@@ -116,6 +117,8 @@ pub struct LaunchGraph {
     #[serde(default)]
     pub scheduler: serde_json::Value,
     #[serde(default)]
+    pub resource_contract: LaunchResourceContract,
+    #[serde(default)]
     pub channels: Vec<serde_json::Value>,
     #[serde(default)]
     pub boundary_endpoints: Vec<LaunchBoundaryEndpoint>,
@@ -132,6 +135,34 @@ pub struct LaunchGraph {
 
 fn default_graph_mode() -> String {
     "strict".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchResourceContract {
+    #[serde(default = "default_resource_contract_version")]
+    pub resource_contract_version: String,
+    #[serde(default)]
+    pub requirements: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub providers: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub satisfactions: Vec<serde_json::Value>,
+}
+
+impl Default for LaunchResourceContract {
+    fn default() -> Self {
+        Self {
+            resource_contract_version: default_resource_contract_version(),
+            requirements: Vec::new(),
+            providers: Vec::new(),
+            satisfactions: Vec::new(),
+        }
+    }
+}
+
+fn default_resource_contract_version() -> String {
+    SUPPORTED_RESOURCE_CONTRACT_VERSION.to_string()
 }
 
 /// manifest 中的 island boundary endpoint 静态摘要。
@@ -363,6 +394,15 @@ fn parse_launch_manifest(manifest_json: &str) -> Result<LaunchManifest, String> 
             "unsupported FlowRT launch manifest IR version `{}`; expected `{SUPPORTED_LAUNCH_IR_VERSION}`",
             manifest.ir_version
         ));
+    }
+    for graph in &manifest.graphs {
+        if graph.resource_contract.resource_contract_version != SUPPORTED_RESOURCE_CONTRACT_VERSION
+        {
+            return Err(format!(
+                "unsupported FlowRT resource contract version `{}`; expected `{SUPPORTED_RESOURCE_CONTRACT_VERSION}`",
+                graph.resource_contract.resource_contract_version
+            ));
+        }
     }
     Ok(manifest)
 }
@@ -3487,6 +3527,7 @@ mod tests {
             name: "main".to_string(),
             mode: "strict".to_string(),
             scheduler: serde_json::json!({}),
+            resource_contract: LaunchResourceContract::default(),
             channels: vec![],
             boundary_endpoints: vec![],
             services: vec![

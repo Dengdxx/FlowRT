@@ -38,6 +38,14 @@ input = ["scan:Scan"]
 output = ["cmd:Cmd"]
 service_client = ["plan:PlanRequest->PlanResponse"]
 
+[component.controller.resource.accel_budget]
+capability = "compute.acceleration.inference"
+access = "read"
+required = false
+readiness = "lazy"
+health = "optional"
+on_failure = "degrade"
+
 [component.controller.params]
 gain = { type = "f32", default = 1.0, min = 0.0, max = 10.0, enum = [1.0, 2.0], update = "on_tick" }
 
@@ -201,6 +209,18 @@ fn app_api_manifest_exposes_generated_user_contract() {
         controller["outputs"][0]["handler_argument"],
         "cmd: &mut flowrt::Output<Cmd>"
     );
+    assert_eq!(
+        controller["resources"][0],
+        serde_json::json!({
+            "name": "accel_budget",
+            "capability": "compute.acceleration.inference",
+            "access": "read",
+            "required": false,
+            "readiness": "lazy",
+            "health": "optional",
+            "on_failure": "degrade"
+        })
+    );
     assert_eq!(controller["params"][0]["name"], "gain");
     assert_eq!(controller["params"][0]["type"], "f32");
     assert_eq!(controller["params"][0]["update"], "on_tick");
@@ -303,6 +323,7 @@ fn app_api_artifacts_include_implementation_notes_and_reference_stubs() {
     assert!(implementation.contains("app/c/c_filter.c"));
     assert!(implementation.contains("app/stubs/rust/controller.rs"));
     assert!(implementation.contains("flowrt_app/c_components.h"));
+    assert!(implementation.contains("resource accel_budget capability=compute.acceleration.inference access=read required=false readiness=lazy health=optional on_failure=degrade"));
 
     let rust_stub = artifact_content(&bundle, "app/stubs/rust/controller.rs");
     assert!(rust_stub.contains("impl flowrt_app::components::Controller for Controller"));

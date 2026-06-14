@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use flowrt_ir::{
     BoundaryDirection, ComponentIr, ComponentKind, ContractIr, GraphIr, GraphMode, InstanceIr,
-    LanguageKind, OperationPortIr, ParamIr, ParamValue, PortIr, ServicePortIr, TaskConcurrency,
-    TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    LanguageKind, OperationPortIr, ParamIr, ParamValue, PortIr, ResourceRequirementIr,
+    ServicePortIr, TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
 };
 use serde::Serialize;
 
@@ -68,6 +68,7 @@ struct AppApiComponent {
     tasks: Vec<AppApiTask>,
     inputs: Vec<AppApiPortView>,
     outputs: Vec<AppApiPortView>,
+    resources: Vec<AppApiResourceRequirement>,
     params: Vec<AppApiParam>,
     #[serde(skip_serializing_if = "Option::is_none")]
     params_update_hook: Option<&'static str>,
@@ -128,6 +129,17 @@ struct AppApiParam {
     max: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     choices: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct AppApiResourceRequirement {
+    name: String,
+    capability: String,
+    access: &'static str,
+    required: bool,
+    readiness: &'static str,
+    health: &'static str,
+    on_failure: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -312,6 +324,11 @@ fn component_manifest(
             .outputs
             .iter()
             .map(|port| output_view(graph, component, port))
+            .collect(),
+        resources: component
+            .resources
+            .iter()
+            .map(resource_requirement)
             .collect(),
         params: component.params.iter().map(param_manifest).collect(),
         params_update_hook: (!component.params.is_empty()).then_some("on_params_update"),
@@ -534,6 +551,18 @@ fn param_manifest(param: &ParamIr) -> AppApiParam {
     }
 }
 
+fn resource_requirement(resource: &ResourceRequirementIr) -> AppApiResourceRequirement {
+    AppApiResourceRequirement {
+        name: resource.name.clone(),
+        capability: resource.capability.0.clone(),
+        access: resource_access_name(resource.access),
+        required: resource.required,
+        readiness: resource_readiness_name(resource.readiness),
+        health: resource_health_name(resource.health),
+        on_failure: resource_failure_name(resource.on_failure),
+    }
+}
+
 fn service_client(
     component: &ComponentIr,
     port: &ServicePortIr,
@@ -733,6 +762,21 @@ fn emit_implementation_md(manifest: &AppApiManifest) -> String {
                 ));
             }
         }
+        if !component.resources.is_empty() {
+            output.push_str("- resources:\n");
+            for resource in &component.resources {
+                output.push_str(&format!(
+                    "  - resource {} capability={} access={} required={} readiness={} health={} on_failure={}\n",
+                    resource.name,
+                    resource.capability,
+                    resource.access,
+                    resource.required,
+                    resource.readiness,
+                    resource.health,
+                    resource.on_failure
+                ));
+            }
+        }
         output.push('\n');
     }
     output
@@ -768,6 +812,7 @@ pub(crate) fn format_app_api_manifest_text(manifest: &AppApiManifest) -> String 
         push_app_api_handlers_text(&mut output, &component.handlers);
         push_app_api_ports_text(&mut output, "inputs", &component.inputs);
         push_app_api_ports_text(&mut output, "outputs", &component.outputs);
+        push_app_api_resources_text(&mut output, &component.resources);
         push_app_api_params_text(&mut output, &component.params);
         push_app_api_service_clients_text(&mut output, &component.service_clients);
         push_app_api_service_servers_text(&mut output, &component.service_servers);
@@ -859,6 +904,26 @@ fn push_app_api_ports_text(output: &mut String, label: &str, ports: &[AppApiPort
         if !port.targets.is_empty() {
             output.push_str(&format!(" targets={}", port.targets.join("|")));
         }
+    }
+}
+
+fn push_app_api_resources_text(output: &mut String, resources: &[AppApiResourceRequirement]) {
+    output.push_str("\n    resources:");
+    if resources.is_empty() {
+        output.push_str(" none");
+        return;
+    }
+    for resource in resources {
+        output.push_str(&format!(
+            "\n      resource {} capability={} access={} required={} readiness={} health={} on_failure={}",
+            resource.name,
+            resource.capability,
+            resource.access,
+            resource.required,
+            resource.readiness,
+            resource.health,
+            resource.on_failure
+        ));
     }
 }
 
@@ -1708,6 +1773,40 @@ fn readiness_name(readiness: TaskReadiness) -> &'static str {
     match readiness {
         TaskReadiness::AnyReady => "any_ready",
         TaskReadiness::AllReady => "all_ready",
+    }
+}
+
+fn resource_access_name(kind: flowrt_ir::ResourceAccess) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceAccess::Read => "read",
+        flowrt_ir::ResourceAccess::Write => "write",
+        flowrt_ir::ResourceAccess::ReadWrite => "read_write",
+        flowrt_ir::ResourceAccess::Exclusive => "exclusive",
+    }
+}
+
+fn resource_readiness_name(kind: flowrt_ir::ResourceReadinessGate) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceReadinessGate::BeforeInit => "before_init",
+        flowrt_ir::ResourceReadinessGate::BeforeStart => "before_start",
+        flowrt_ir::ResourceReadinessGate::Lazy => "lazy",
+    }
+}
+
+fn resource_health_name(kind: flowrt_ir::ResourceHealthPolicy) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceHealthPolicy::Required => "required",
+        flowrt_ir::ResourceHealthPolicy::Optional => "optional",
+        flowrt_ir::ResourceHealthPolicy::Ignored => "ignored",
+    }
+}
+
+fn resource_failure_name(kind: flowrt_ir::ResourceFailurePolicy) -> &'static str {
+    match kind {
+        flowrt_ir::ResourceFailurePolicy::StopProcess => "stop_process",
+        flowrt_ir::ResourceFailurePolicy::RestartProcess => "restart_process",
+        flowrt_ir::ResourceFailurePolicy::Degrade => "degrade",
+        flowrt_ir::ResourceFailurePolicy::StopGraph => "stop_graph",
     }
 }
 

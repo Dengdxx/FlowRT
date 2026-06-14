@@ -624,7 +624,7 @@ backends = ["zenoh"]
 }
 
 #[test]
-fn launch_manifest_and_selfdesc_expose_io_boundary_contract() {
+fn launch_manifest_and_selfdesc_expose_resource_contract() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -677,6 +677,57 @@ backends = ["inproc"]
     let launch: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
     let process = &launch["graphs"][0]["processes"][0];
+    let resource_contract = &launch["graphs"][0]["resource_contract"];
+
+    assert_eq!(resource_contract["resource_contract_version"], "0.1");
+    assert_eq!(
+        resource_contract["providers"][0],
+        serde_json::json!({
+            "name": "lidar_provider",
+            "scope": "process",
+            "capabilities": ["perception.lidar.samples"],
+            "target": null,
+            "process": "sensor_proc",
+            "external_package": null,
+            "readiness_source": "provider_ready",
+            "health_source": "provider_health"
+        })
+    );
+    assert_eq!(
+        resource_contract["requirements"][0],
+        serde_json::json!({
+            "instance": "sensor",
+            "component": "sensor",
+            "name": "lidar_uart",
+            "capability": "perception.lidar.samples",
+            "access": "read_write",
+            "required": true,
+            "readiness": "before_start",
+            "health": "required",
+            "on_failure": "stop_process",
+            "satisfaction": "satisfied",
+            "provider": "lidar_provider",
+            "diagnostic": null
+        })
+    );
+    assert_eq!(
+        resource_contract["satisfactions"][0],
+        serde_json::json!({
+            "instance": "sensor",
+            "component": "sensor",
+            "resource": "lidar_uart",
+            "capability": "perception.lidar.samples",
+            "access": "read_write",
+            "required": true,
+            "readiness": "before_start",
+            "health": "required",
+            "on_failure": "stop_process",
+            "status": "satisfied",
+            "satisfied": true,
+            "provider": "lidar_provider",
+            "diagnostic": null
+        })
+    );
 
     assert_eq!(
         process["io_boundaries"][0],
@@ -716,6 +767,10 @@ backends = ["inproc"]
             "health": "required",
             "on_failure": "stop_process"
         })
+    );
+    assert_eq!(
+        selfdesc["graphs"][0]["resource_contract"],
+        *resource_contract
     );
 }
 
@@ -904,7 +959,7 @@ backend = "inproc"
 }
 
 #[test]
-fn rust_and_cpp_shells_wire_io_boundary_contexts() {
+fn rust_and_cpp_shells_register_resource_surface_and_wire_io_boundary_contexts() {
     let rust_ir = contract_from_source(
         r#"
 [package]
@@ -946,6 +1001,13 @@ output = ["sample"]
     );
     let rust_bundle = emit_artifacts(&rust_ir).unwrap();
     let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(
+        rust_shell
+            .contains("introspection_state.register_resource(flowrt::IntrospectionResourceStatus")
+    );
+    assert!(rust_shell.contains("name: \"sensor.lidar_uart\".to_string()"));
+    assert!(rust_shell.contains("state: \"unknown\".to_string()"));
+    assert!(rust_shell.contains("owner_process: Some(\"main\".to_string())"));
     assert!(
         rust_shell
             .contains("introspection_state.register_io_boundary(\"sensor\", \"sensor\", vec![")
@@ -996,6 +1058,13 @@ output = ["sample"]
     );
     let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
     let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(
+        cpp_shell
+            .contains("introspection_state.register_resource(flowrt::IntrospectionResourceStatus{")
+    );
+    assert!(cpp_shell.contains(".name = \"sensor.lidar_uart\""));
+    assert!(cpp_shell.contains(".state = \"unknown\""));
+    assert!(cpp_shell.contains(".owner_process = std::optional<std::string>{\"main\"}"));
     assert!(cpp_shell.contains("introspection_state.register_io_boundary(\"sensor\", \"sensor\", std::vector<flowrt::BoundaryResourceStatus>{"));
     assert!(
         cpp_shell

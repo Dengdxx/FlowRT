@@ -435,6 +435,47 @@ fn live_status_summary_displays_io_boundary_health() {
 }
 
 #[test]
+fn live_status_summary_displays_resource_state() {
+    let root = temp_test_dir("live-status-resource-state");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 74,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_resource(flowrt::IntrospectionResourceStatus {
+        name: "sensor.lidar_uart".to_string(),
+        capability: "perception.lidar.samples".to_string(),
+        state: "pending".to_string(),
+        required: true,
+        source: Some("contract".to_string()),
+        owner_process: Some("main".to_string()),
+        last_error: Some("provider not reported ready".to_string()),
+        updated_unix_ms: Some(4000),
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("resource=sensor.lidar_uart"));
+    assert!(output.contains("capability=perception.lidar.samples"));
+    assert!(output.contains("state=pending"));
+    assert!(output.contains("required=true"));
+    assert!(output.contains("source=contract"));
+    assert!(output.contains("owner_process=main"));
+    assert!(output.contains("last_error=provider not reported ready"));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_status_summary_enriches_io_boundary_resource_descriptor_schema() {
     let root = temp_test_dir("live-status-boundary-descriptor");
     let socket = root.join("main.sock");
@@ -649,6 +690,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
                 dropped_samples: 0,
             }],
             processes: Vec::new(),
+            resources: Vec::new(),
             inputs: Vec::new(),
             routes: Vec::new(),
             io_boundaries: Vec::new(),
@@ -681,6 +723,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
                 dropped_samples: 0,
             }],
             processes: Vec::new(),
+            resources: Vec::new(),
             inputs: Vec::new(),
             routes: Vec::new(),
             io_boundaries: Vec::new(),
@@ -1533,6 +1576,113 @@ fn self_description_summary_shows_component_types() {
     assert!(list.contains("component sensor language=rust kind=native"));
     assert!(list.contains("outputs: imu:Imu"));
     assert!(list.contains("params: rate:f64 update=on_tick"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn list_summary_shows_resource_contract() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "resource_demo" },
+  "graphs": [{
+    "name": "default",
+    "resource_contract": {
+      "resource_contract_version": "0.1",
+      "providers": [{
+        "name": "lidar_provider",
+        "scope": "process",
+        "capabilities": ["perception.lidar.samples"],
+        "target": null,
+        "process": "sensor_proc",
+        "external_package": null,
+        "readiness_source": "provider_ready",
+        "health_source": "provider_health"
+      }],
+      "requirements": [{
+        "instance": "sensor",
+        "component": "sensor",
+        "name": "lidar_uart",
+        "capability": "perception.lidar.samples",
+        "access": "read_write",
+        "required": true,
+        "readiness": "before_start",
+        "health": "required",
+        "on_failure": "stop_process",
+        "satisfaction": "satisfied",
+        "provider": "lidar_provider",
+        "diagnostic": null
+      }, {
+        "instance": "detector",
+        "component": "detector",
+        "name": "accelerator",
+        "capability": "compute.acceleration.inference",
+        "access": "read",
+        "required": false,
+        "readiness": "lazy",
+        "health": "optional",
+        "on_failure": "degrade",
+        "satisfaction": "optional_unsatisfied",
+        "provider": null,
+        "diagnostic": "optional resource has no provider"
+      }],
+      "satisfactions": []
+    },
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-resource-contract");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let self_description = load_self_description(&path).unwrap();
+    let list = self_description_summary(&self_description);
+
+    assert!(list.contains("resource_contract_version=0.1"));
+    assert!(list.contains("resource_provider lidar_provider scope=process capabilities=perception.lidar.samples readiness_source=provider_ready health_source=provider_health process=sensor_proc"));
+    assert!(list.contains("resource_requirement sensor.lidar_uart component=sensor capability=perception.lidar.samples access=read_write required=true readiness=before_start health=required on_failure=stop_process satisfaction=satisfied provider=lidar_provider"));
+    assert!(list.contains("resource_requirement detector.accelerator component=detector capability=compute.acceleration.inference access=read required=false readiness=lazy health=optional on_failure=degrade satisfaction=optional_unsatisfied provider=none diagnostic=optional resource has no provider"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn self_description_loader_rejects_unsupported_resource_contract_version() {
+    let source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "resource_demo" },
+  "graphs": [{
+    "name": "default",
+    "resource_contract": {
+      "resource_contract_version": "9.9",
+      "providers": [],
+      "requirements": [],
+      "satisfactions": []
+    },
+    "instances": [],
+    "tasks": [],
+    "channels": []
+  }],
+  "message_abi": []
+}
+"#;
+    let root = temp_test_dir("selfdesc-resource-contract-version");
+    let path = root.join("selfdesc.json");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(&path, source).unwrap();
+
+    let error = format!("{:#}", load_self_description(&path).unwrap_err());
+
+    assert!(error.contains("unsupported FlowRT resource contract version `9.9`"));
 
     let _ = std::fs::remove_dir_all(&root);
 }

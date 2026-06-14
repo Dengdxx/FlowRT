@@ -8,7 +8,10 @@ use object::{Object, ObjectSection};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::schema::{SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription};
+use crate::schema::{
+    RESOURCE_CONTRACT_SCHEMA_VERSION, SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION,
+    SelfDescription,
+};
 
 /// 加载错误。
 #[derive(Debug, Error)]
@@ -30,6 +33,13 @@ pub enum LoadError {
         "unsupported FlowRT self-description version `{actual}`; supported version is `{supported}`"
     )]
     UnsupportedVersion {
+        actual: String,
+        supported: &'static str,
+    },
+    #[error(
+        "unsupported FlowRT resource contract version `{actual}`; supported version is `{supported}`"
+    )]
+    UnsupportedResourceContractVersion {
         actual: String,
         supported: &'static str,
     },
@@ -76,7 +86,24 @@ fn parse_self_description_json(json: &[u8]) -> Result<SelfDescription, LoadError
             supported: SELF_DESCRIPTION_SCHEMA_VERSION,
         });
     }
+    for graph in &self_description.graphs {
+        if self_description_resource_contract_present(graph)
+            && graph.resource_contract.resource_contract_version != RESOURCE_CONTRACT_SCHEMA_VERSION
+        {
+            return Err(LoadError::UnsupportedResourceContractVersion {
+                actual: graph.resource_contract.resource_contract_version.clone(),
+                supported: RESOURCE_CONTRACT_SCHEMA_VERSION,
+            });
+        }
+    }
     Ok(self_description)
+}
+
+fn self_description_resource_contract_present(graph: &crate::schema::SelfDescriptionGraph) -> bool {
+    !graph.resource_contract.requirements.is_empty()
+        || !graph.resource_contract.providers.is_empty()
+        || !graph.resource_contract.satisfactions.is_empty()
+        || graph.resource_contract.resource_contract_version != RESOURCE_CONTRACT_SCHEMA_VERSION
 }
 
 /// 计算 self-description JSON 的 SHA-256 哈希（hex 小写）。

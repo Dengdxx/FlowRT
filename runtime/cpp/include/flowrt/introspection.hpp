@@ -396,12 +396,29 @@ struct IntrospectionClockStatus {
 };
 
 /**
+ * @brief 抽象 resource 的运行态 readiness/health 状态。
+ *
+ * state 使用 ready / pending / degraded / failed / unknown 字符串。
+ */
+struct IntrospectionResourceStatus {
+    std::string name;
+    std::string capability;
+    std::string state = "unknown";
+    bool required = false;
+    std::optional<std::string> source;
+    std::optional<std::string> owner_process;
+    std::optional<std::string> last_error;
+    std::optional<std::uint64_t> updated_unix_ms;
+};
+
+/**
  * @brief 运行态 status 快照。
  */
 struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
     IntrospectionClockStatus clock;
     std::vector<IntrospectionChannelStatus> channels;
+    std::vector<IntrospectionResourceStatus> resources;
     std::vector<BoundaryStatus> io_boundaries;
     std::vector<IntrospectionServiceStatus> services;
     std::vector<IntrospectionOperationStatus> operations;
@@ -601,6 +618,28 @@ inline std::string boundary_status_json(const BoundaryStatus &boundary) {
     return output;
 }
 
+inline std::string resource_status_json(const IntrospectionResourceStatus &resource) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(resource.name));
+    output.append(",\"capability\":");
+    output.append(json_string(resource.capability));
+    output.append(",\"state\":");
+    output.append(json_string(resource.state));
+    output.append(",\"required\":");
+    output.append(resource.required ? "true" : "false");
+    output.append(",\"source\":");
+    output.append(resource.source ? json_string(*resource.source) : "null");
+    output.append(",\"owner_process\":");
+    output.append(resource.owner_process ? json_string(*resource.owner_process) : "null");
+    output.append(",\"last_error\":");
+    output.append(resource.last_error ? json_string(*resource.last_error) : "null");
+    output.append(",\"updated_unix_ms\":");
+    output.append(resource.updated_unix_ms ? std::to_string(*resource.updated_unix_ms) : "null");
+    output.push_back('}');
+    return output;
+}
+
 inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) {
     return value ? std::to_string(*value) : "null";
 }
@@ -763,7 +802,14 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(channel_status_json(status.channels[index]));
     }
-    output.append("],\"processes\":[],\"io_boundaries\":[");
+    output.append("],\"processes\":[],\"resources\":[");
+    for (std::size_t index = 0; index < status.resources.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(resource_status_json(status.resources[index]));
+    }
+    output.append("],\"io_boundaries\":[");
     for (std::size_t index = 0; index < status.io_boundaries.size(); ++index) {
         if (index != 0) {
             output.push_back(',');
@@ -2016,6 +2062,24 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 预注册一个抽象 resource，使未知运行态也可被 status 发现。
+     */
+    void register_resource(IntrospectionResourceStatus status) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto key = status.name;
+        inner_->resources.try_emplace(key, std::move(status));
+    }
+
+    /**
+     * @brief 记录抽象 resource 的最新运行态。
+     */
+    void record_resource_status(IntrospectionResourceStatus status) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto key = status.name;
+        inner_->resources.insert_or_assign(key, std::move(status));
+    }
+
+    /**
      * @brief 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
      */
     void register_service(std::string name) const {
@@ -2320,6 +2384,10 @@ class IntrospectionState {
         for (const auto &[name, boundary] : inner_->io_boundaries) {
             snapshot.io_boundaries.push_back(boundary);
         }
+        snapshot.resources.reserve(inner_->resources.size());
+        for (const auto &[name, resource] : inner_->resources) {
+            snapshot.resources.push_back(resource);
+        }
         snapshot.services.reserve(inner_->services.size());
         for (const auto &[name, service] : inner_->services) {
             snapshot.services.push_back(service);
@@ -2553,6 +2621,7 @@ class IntrospectionState {
         std::map<std::string, ChannelState> channels;
         std::map<std::string, ParamState> params;
         std::map<std::string, BoundaryInputState> boundary_inputs;
+        std::map<std::string, IntrospectionResourceStatus> resources;
         std::map<std::string, BoundaryStatus> io_boundaries;
         std::map<std::string, IntrospectionServiceStatus> services;
         std::map<std::string, IntrospectionOperationStatus> operations;

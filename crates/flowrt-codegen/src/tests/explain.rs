@@ -40,6 +40,14 @@ input = ["scan:Scan"]
 output = ["cmd:Cmd"]
 service_client = ["plan:PlanRequest->PlanResponse"]
 
+[component.controller.resource.accel_budget]
+capability = "compute.acceleration.inference"
+access = "read"
+required = false
+readiness = "lazy"
+health = "optional"
+on_failure = "degrade"
+
 [component.controller.params]
 gain = { type = "f32", default = 1.0, update = "on_tick" }
 
@@ -138,6 +146,7 @@ backend = "inproc"
     assert!(text.contains("on_params_update source=rust_trait required=false: fn on_params_update(&self, old_params: &ControllerParams, new_params: &ControllerParams, context: &mut flowrt::Context) -> flowrt::Status"));
     assert!(text.contains("scan:Scan arg=scan: flowrt::Latest<'_, Scan> source=sensor.scan"));
     assert!(text.contains("cmd:Cmd arg=cmd: &mut flowrt::Output<Cmd>"));
+    assert!(text.contains("resource accel_budget capability=compute.acceleration.inference access=read required=false readiness=lazy health=optional on_failure=degrade"));
     assert!(text.contains("gain:f32 update=on_tick default=1.0"));
     assert!(text.contains("plan:PlanRequest->PlanResponse handle=ServiceClient_controller_plan arg=plan: &ServiceClient_controller_plan backend=inproc server=plan_svc.plan"));
     assert!(text.contains("navigate:PlanGoal->PlanFeedback->PlanResult handle=OperationClient_controller_navigate arg=navigate: &OperationClient_controller_navigate backend=inproc server=navigator.navigate"));
@@ -151,6 +160,10 @@ backend = "inproc"
         .find(|component| component["name"] == "controller")
         .unwrap();
     assert_eq!(controller["user_file_path"], "app/rust/mod.rs");
+    assert_eq!(
+        controller["resources"][0]["capability"],
+        "compute.acceleration.inference"
+    );
     assert_eq!(controller["tasks"][0]["lane"], "control_lane");
     assert_eq!(
         controller["handlers"][4]["signature"],

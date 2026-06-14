@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 /// self-description schema 版本。
 pub const SELF_DESCRIPTION_SCHEMA_VERSION: &str = "0.1";
 
+/// resource contract 子 schema 版本。
+pub const RESOURCE_CONTRACT_SCHEMA_VERSION: &str = "0.1";
+
 /// `.flowrt.selfdesc` ELF/PE/Mach-O section 名称。
 pub const SELF_DESCRIPTION_SECTION: &str = ".flowrt.selfdesc";
 
@@ -180,6 +183,112 @@ pub struct SelfDescriptionDeployment {
     pub satisfied: bool,
 }
 
+/// graph 级抽象 resource contract 摘要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionResourceContract {
+    #[serde(default = "default_resource_contract_version")]
+    pub resource_contract_version: String,
+    #[serde(default)]
+    pub requirements: Vec<SelfDescriptionResourceRequirementBinding>,
+    #[serde(default)]
+    pub providers: Vec<SelfDescriptionResourceProvider>,
+    #[serde(default)]
+    pub satisfactions: Vec<SelfDescriptionResourceSatisfaction>,
+}
+
+impl Default for SelfDescriptionResourceContract {
+    fn default() -> Self {
+        Self {
+            resource_contract_version: default_resource_contract_version(),
+            requirements: Vec::new(),
+            providers: Vec::new(),
+            satisfactions: Vec::new(),
+        }
+    }
+}
+
+fn default_resource_contract_version() -> String {
+    RESOURCE_CONTRACT_SCHEMA_VERSION.to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionResourceRequirementBinding {
+    #[serde(default)]
+    pub instance: String,
+    #[serde(default)]
+    pub component: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default)]
+    pub access: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub readiness: String,
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub on_failure: String,
+    #[serde(default)]
+    pub satisfaction: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionResourceProvider {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub process: Option<String>,
+    #[serde(default)]
+    pub external_package: Option<String>,
+    #[serde(default)]
+    pub readiness_source: String,
+    #[serde(default)]
+    pub health_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionResourceSatisfaction {
+    #[serde(default)]
+    pub instance: String,
+    #[serde(default)]
+    pub component: String,
+    #[serde(default)]
+    pub resource: String,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default)]
+    pub access: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub readiness: String,
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub on_failure: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub satisfied: bool,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+}
+
 /// 可复用组件类型声明摘要。
 ///
 /// 记录 component 的语言、kind、I/O boundary 资源和声明端口（inputs、outputs、
@@ -329,6 +438,9 @@ pub struct SelfDescriptionGraph {
     pub mode: String,
     #[serde(default)]
     pub scheduler: SelfDescriptionScheduler,
+    /// v0.13+ graph 级抽象 resource contract。
+    #[serde(default)]
+    pub resource_contract: SelfDescriptionResourceContract,
     /// v0.7+ external process package/executable 摘要。
     #[serde(default)]
     pub external_processes: Vec<SelfDescriptionExternalProcess>,

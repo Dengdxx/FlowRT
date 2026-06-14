@@ -6,8 +6,8 @@ use flowrt_ir::{
     ComponentIr, ComponentKind, ContractIr, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth,
     IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, OperationConcurrencyPolicy,
     OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy,
-    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskReadiness,
-    TriggerKind, TypeExpr, TypeIr,
+    ResourceProviderIr, ResourceProviderScope, ResourceSatisfactionIr, ServiceOverflowPolicy,
+    StalePolicy as IrStalePolicy, TaskConcurrency, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
@@ -18,7 +18,9 @@ use flowrt_selfdesc::{
     SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
     SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
     SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
-    SelfDescriptionProfile, SelfDescriptionResourceDescriptor, SelfDescriptionResourceRequirement,
+    SelfDescriptionProfile, SelfDescriptionResourceContract, SelfDescriptionResourceDescriptor,
+    SelfDescriptionResourceProvider, SelfDescriptionResourceRequirement,
+    SelfDescriptionResourceRequirementBinding, SelfDescriptionResourceSatisfaction,
     SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
     SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
     SelfDescriptionTask, SelfDescriptionTemporaryOverlay,
@@ -194,6 +196,7 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
         name: graph.name.clone(),
         mode: graph_mode_name(contract_artifact_mode(contract)).to_string(),
         scheduler: self_description_scheduler(contract, graph),
+        resource_contract: self_description_resource_contract(graph),
         external_processes: graph
             .external_processes
             .iter()
@@ -293,6 +296,91 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
             .map(|service| self_description_service_endpoint(contract, graph, service))
             .collect(),
         operations: self_description_operation_endpoints(contract, graph),
+    }
+}
+
+fn self_description_resource_contract(graph: &GraphIr) -> SelfDescriptionResourceContract {
+    SelfDescriptionResourceContract {
+        resource_contract_version: flowrt_selfdesc::RESOURCE_CONTRACT_SCHEMA_VERSION.to_string(),
+        requirements: graph
+            .resource_satisfactions
+            .iter()
+            .map(self_description_resource_requirement_binding)
+            .collect(),
+        providers: graph
+            .resource_providers
+            .iter()
+            .map(self_description_resource_provider)
+            .collect(),
+        satisfactions: graph
+            .resource_satisfactions
+            .iter()
+            .map(self_description_resource_satisfaction)
+            .collect(),
+    }
+}
+
+fn self_description_resource_requirement_binding(
+    satisfaction: &ResourceSatisfactionIr,
+) -> SelfDescriptionResourceRequirementBinding {
+    SelfDescriptionResourceRequirementBinding {
+        instance: satisfaction.instance.name.clone(),
+        component: satisfaction.component.name.clone(),
+        name: satisfaction.resource.clone(),
+        capability: satisfaction.capability.0.clone(),
+        access: resource_access_name(satisfaction.access).to_string(),
+        required: satisfaction.required,
+        readiness: resource_readiness_name(satisfaction.readiness).to_string(),
+        health: resource_health_name(satisfaction.health).to_string(),
+        on_failure: resource_failure_name(satisfaction.on_failure).to_string(),
+        satisfaction: resource_satisfaction_status(satisfaction).to_string(),
+        provider: satisfaction
+            .provider
+            .as_ref()
+            .map(|provider| provider.name.clone()),
+        diagnostic: satisfaction.diagnostic.clone(),
+    }
+}
+
+fn self_description_resource_provider(
+    provider: &ResourceProviderIr,
+) -> SelfDescriptionResourceProvider {
+    SelfDescriptionResourceProvider {
+        name: provider.name.clone(),
+        scope: resource_provider_scope_name(provider.scope).to_string(),
+        capabilities: provider
+            .capabilities
+            .iter()
+            .map(|capability| capability.0.clone())
+            .collect(),
+        target: provider.target.as_ref().map(|target| target.name.clone()),
+        process: provider.process.clone(),
+        external_package: provider.external_package.clone(),
+        readiness_source: provider.readiness_source.clone(),
+        health_source: provider.health_source.clone(),
+    }
+}
+
+fn self_description_resource_satisfaction(
+    satisfaction: &ResourceSatisfactionIr,
+) -> SelfDescriptionResourceSatisfaction {
+    SelfDescriptionResourceSatisfaction {
+        instance: satisfaction.instance.name.clone(),
+        component: satisfaction.component.name.clone(),
+        resource: satisfaction.resource.clone(),
+        capability: satisfaction.capability.0.clone(),
+        access: resource_access_name(satisfaction.access).to_string(),
+        required: satisfaction.required,
+        readiness: resource_readiness_name(satisfaction.readiness).to_string(),
+        health: resource_health_name(satisfaction.health).to_string(),
+        on_failure: resource_failure_name(satisfaction.on_failure).to_string(),
+        status: resource_satisfaction_status(satisfaction).to_string(),
+        satisfied: satisfaction.satisfied,
+        provider: satisfaction
+            .provider
+            .as_ref()
+            .map(|provider| provider.name.clone()),
+        diagnostic: satisfaction.diagnostic.clone(),
     }
 }
 
@@ -690,6 +778,30 @@ fn resource_failure_name(kind: flowrt_ir::ResourceFailurePolicy) -> &'static str
         flowrt_ir::ResourceFailurePolicy::RestartProcess => "restart_process",
         flowrt_ir::ResourceFailurePolicy::Degrade => "degrade",
         flowrt_ir::ResourceFailurePolicy::StopGraph => "stop_graph",
+    }
+}
+
+fn resource_provider_scope_name(kind: ResourceProviderScope) -> &'static str {
+    match kind {
+        ResourceProviderScope::Target => "target",
+        ResourceProviderScope::Process => "process",
+        ResourceProviderScope::ExternalPackage => "external_package",
+    }
+}
+
+fn resource_satisfaction_status(satisfaction: &ResourceSatisfactionIr) -> &'static str {
+    if satisfaction.satisfied {
+        "satisfied"
+    } else if satisfaction
+        .diagnostic
+        .as_deref()
+        .is_some_and(|diagnostic| diagnostic.contains("conflict"))
+    {
+        "conflict"
+    } else if !satisfaction.required {
+        "optional_unsatisfied"
+    } else {
+        "unsatisfied"
     }
 }
 

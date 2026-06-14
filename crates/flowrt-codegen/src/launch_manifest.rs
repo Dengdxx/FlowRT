@@ -4,7 +4,8 @@ use flowrt_ir::{
     BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind,
     ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode,
     InstanceIr, IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
-    ResourceRequirementIr, ServicePortIr, TaskIr,
+    ResourceProviderIr, ResourceProviderScope, ResourceRequirementIr, ResourceSatisfactionIr,
+    ServicePortIr, TaskIr,
 };
 
 use crate::runtime_plan::bridge_runtime_plans;
@@ -22,6 +23,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
                 "name": graph.name,
                 "mode": graph_mode_name(contract_artifact_mode(contract)),
                 "scheduler": launch_scheduler(contract, graph),
+                "resource_contract": launch_resource_contract(graph),
                 "processes": launch_processes(contract, graph),
                 "channels": launch_channels(contract, graph),
                 "boundary_endpoints": launch_boundary_endpoints(graph),
@@ -66,6 +68,79 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
+}
+
+fn launch_resource_contract(graph: &GraphIr) -> serde_json::Value {
+    serde_json::json!({
+        "resource_contract_version": flowrt_selfdesc::RESOURCE_CONTRACT_SCHEMA_VERSION,
+        "requirements": graph
+            .resource_satisfactions
+            .iter()
+            .map(launch_resource_requirement_binding)
+            .collect::<Vec<_>>(),
+        "providers": graph
+            .resource_providers
+            .iter()
+            .map(launch_resource_provider)
+            .collect::<Vec<_>>(),
+        "satisfactions": graph
+            .resource_satisfactions
+            .iter()
+            .map(launch_resource_satisfaction)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn launch_resource_requirement_binding(satisfaction: &ResourceSatisfactionIr) -> serde_json::Value {
+    serde_json::json!({
+        "instance": satisfaction.instance.name,
+        "component": satisfaction.component.name,
+        "name": satisfaction.resource,
+        "capability": satisfaction.capability.0.as_str(),
+        "access": resource_access_name(satisfaction.access),
+        "required": satisfaction.required,
+        "readiness": resource_readiness_name(satisfaction.readiness),
+        "health": resource_health_name(satisfaction.health),
+        "on_failure": resource_failure_name(satisfaction.on_failure),
+        "satisfaction": resource_satisfaction_status(satisfaction),
+        "provider": satisfaction.provider.as_ref().map(|provider| provider.name.as_str()),
+        "diagnostic": satisfaction.diagnostic.as_deref(),
+    })
+}
+
+fn launch_resource_provider(provider: &ResourceProviderIr) -> serde_json::Value {
+    serde_json::json!({
+        "name": provider.name,
+        "scope": resource_provider_scope_name(provider.scope),
+        "capabilities": provider
+            .capabilities
+            .iter()
+            .map(|capability| capability.0.as_str())
+            .collect::<Vec<_>>(),
+        "target": provider.target.as_ref().map(|target| target.name.as_str()),
+        "process": provider.process.as_deref(),
+        "external_package": provider.external_package.as_deref(),
+        "readiness_source": provider.readiness_source,
+        "health_source": provider.health_source,
+    })
+}
+
+fn launch_resource_satisfaction(satisfaction: &ResourceSatisfactionIr) -> serde_json::Value {
+    serde_json::json!({
+        "instance": satisfaction.instance.name,
+        "component": satisfaction.component.name,
+        "resource": satisfaction.resource,
+        "capability": satisfaction.capability.0.as_str(),
+        "access": resource_access_name(satisfaction.access),
+        "required": satisfaction.required,
+        "readiness": resource_readiness_name(satisfaction.readiness),
+        "health": resource_health_name(satisfaction.health),
+        "on_failure": resource_failure_name(satisfaction.on_failure),
+        "status": resource_satisfaction_status(satisfaction),
+        "satisfied": satisfaction.satisfied,
+        "provider": satisfaction.provider.as_ref().map(|provider| provider.name.as_str()),
+        "diagnostic": satisfaction.diagnostic.as_deref(),
+    })
 }
 
 fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_json::Value>> {
@@ -587,6 +662,30 @@ fn resource_failure_name(kind: flowrt_ir::ResourceFailurePolicy) -> &'static str
         flowrt_ir::ResourceFailurePolicy::RestartProcess => "restart_process",
         flowrt_ir::ResourceFailurePolicy::Degrade => "degrade",
         flowrt_ir::ResourceFailurePolicy::StopGraph => "stop_graph",
+    }
+}
+
+fn resource_provider_scope_name(kind: ResourceProviderScope) -> &'static str {
+    match kind {
+        ResourceProviderScope::Target => "target",
+        ResourceProviderScope::Process => "process",
+        ResourceProviderScope::ExternalPackage => "external_package",
+    }
+}
+
+fn resource_satisfaction_status(satisfaction: &ResourceSatisfactionIr) -> &'static str {
+    if satisfaction.satisfied {
+        "satisfied"
+    } else if satisfaction
+        .diagnostic
+        .as_deref()
+        .is_some_and(|diagnostic| diagnostic.contains("conflict"))
+    {
+        "conflict"
+    } else if !satisfaction.required {
+        "optional_unsatisfied"
+    } else {
+        "unsatisfied"
     }
 }
 

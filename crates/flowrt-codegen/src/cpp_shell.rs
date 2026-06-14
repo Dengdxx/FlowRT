@@ -1799,6 +1799,11 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.contract,
         run.order,
     ));
+    output.push_str(&emit_cpp_resource_registration(
+        run.graph,
+        run.order,
+        run.process_name,
+    ));
     output.push_str(&emit_cpp_io_boundary_registration(run.contract, run.order));
     output.push_str(&emit_cpp_boundary_input_registration(run.boundaries));
     output.push_str(&emit_cpp_boundary_output_probe_registration(run.boundaries));
@@ -1871,6 +1876,34 @@ fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str("    return status;\n}\n\n");
+    output
+}
+
+fn emit_cpp_resource_registration(
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+    process_name: &str,
+) -> String {
+    let instance_names = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut output = String::new();
+    for satisfaction in &graph.resource_satisfactions {
+        if !instance_names.contains(satisfaction.instance.name.as_str()) {
+            continue;
+        }
+        output.push_str(&format!(
+            "    introspection_state.register_resource(flowrt::IntrospectionResourceStatus{{\n        .name = {},\n        .capability = {},\n        .state = \"unknown\",\n        .required = {},\n        .source = std::optional<std::string>{{\"contract\"}},\n        .owner_process = std::optional<std::string>{{{}}},\n        .last_error = std::nullopt,\n        .updated_unix_ms = std::nullopt,\n    }});\n",
+            cpp_string_literal(&format!(
+                "{}.{}",
+                satisfaction.instance.name, satisfaction.resource
+            )),
+            cpp_string_literal(&satisfaction.capability.0),
+            satisfaction.required,
+            cpp_string_literal(process_name),
+        ));
+    }
     output
 }
 

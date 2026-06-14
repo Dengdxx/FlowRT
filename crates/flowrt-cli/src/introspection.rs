@@ -156,6 +156,75 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
 
     for graph in &self_description.graphs {
         output.push_str(&format!("\ngraph {} mode={}", graph.name, graph.mode));
+        if !graph.resource_contract.providers.is_empty()
+            || !graph.resource_contract.requirements.is_empty()
+            || !graph.resource_contract.satisfactions.is_empty()
+        {
+            output.push_str(&format!(
+                "\n  resource_contract_version={}",
+                graph.resource_contract.resource_contract_version
+            ));
+            for provider in &graph.resource_contract.providers {
+                let mut scope_detail = String::new();
+                if let Some(target) = &provider.target {
+                    scope_detail.push_str(&format!(" target={target}"));
+                }
+                if let Some(process) = &provider.process {
+                    scope_detail.push_str(&format!(" process={process}"));
+                }
+                if let Some(package) = &provider.external_package {
+                    scope_detail.push_str(&format!(" external_package={package}"));
+                }
+                output.push_str(&format!(
+                    "\n  resource_provider {} scope={} capabilities={} readiness_source={} health_source={}{}",
+                    provider.name,
+                    provider.scope,
+                    provider.capabilities.join("|"),
+                    provider.readiness_source,
+                    provider.health_source,
+                    scope_detail
+                ));
+            }
+            for requirement in &graph.resource_contract.requirements {
+                output.push_str(&format!(
+                    "\n  resource_requirement {}.{} component={} capability={} access={} required={} readiness={} health={} on_failure={} satisfaction={} provider={}",
+                    requirement.instance,
+                    requirement.name,
+                    requirement.component,
+                    requirement.capability,
+                    requirement.access,
+                    requirement.required,
+                    requirement.readiness,
+                    requirement.health,
+                    requirement.on_failure,
+                    requirement.satisfaction,
+                    requirement.provider.as_deref().unwrap_or("none")
+                ));
+                if let Some(diagnostic) = &requirement.diagnostic {
+                    output.push_str(&format!(" diagnostic={diagnostic}"));
+                }
+            }
+            for satisfaction in &graph.resource_contract.satisfactions {
+                output.push_str(&format!(
+                    "\n  resource_satisfaction {}.{} component={} capability={} access={} required={} readiness={} health={} on_failure={} status={} provider={} satisfied={}",
+                    satisfaction.instance,
+                    satisfaction.resource,
+                    satisfaction.component,
+                    satisfaction.capability,
+                    satisfaction.access,
+                    satisfaction.required,
+                    satisfaction.readiness,
+                    satisfaction.health,
+                    satisfaction.on_failure,
+                    satisfaction.status,
+                    satisfaction.provider.as_deref().unwrap_or("none"),
+                    satisfaction.satisfied
+                ));
+                if let Some(diagnostic) = &satisfaction.diagnostic {
+                    output.push_str(&format!(" diagnostic={diagnostic}"));
+                }
+            }
+        }
 
         // 展示 component types。
         let graph_component_names: BTreeMap<&str, ()> = graph
@@ -2216,6 +2285,20 @@ pub(crate) fn live_status_summary_for_sockets(
                 }
                 for operation in status.operations {
                     lines.push(format_operation_status(&operation, Some(&socket)));
+                }
+                for resource in &status.resources {
+                    lines.push(format!(
+                        "resource={} capability={} state={} required={} source={} owner_process={} last_error={} updated_unix_ms={} socket={}",
+                        resource.name,
+                        resource.capability,
+                        resource.state,
+                        resource.required,
+                        option_str(resource.source.as_deref()),
+                        option_str(resource.owner_process.as_deref()),
+                        option_str(resource.last_error.as_deref()),
+                        option_u64(resource.updated_unix_ms),
+                        socket.display()
+                    ));
                 }
                 for boundary in &status.io_boundaries {
                     lines.push(format!(
