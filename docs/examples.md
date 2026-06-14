@@ -789,9 +789,14 @@ feedback = "latest"
 result_retention_ms = 60000
 ```
 
-当前 generated Operation runtime 只支持单 in-flight reject 子集：`concurrency =
-"reject"`、`preempt = "reject"`、`max_in_flight = 1`。多 invocation queue 和
-cancel-running preempt 策略属于长期 IR 语义，在 runtime 完整实现前由 validator
+当前 generated Operation runtime 使用最终生命周期 `idle`、`starting`、`running`、
+`cancel_requested`、`cancelled`、`succeeded`、`failed`、`timed_out`，并只支持单
+in-flight reject 子集：`concurrency = "reject"`、`preempt = "reject"`、
+`max_in_flight = 1`。start 会建立 invocation id、owner 和 deadline；默认同一 scope
+只允许单 owner 控制，第二个 owner start 会被结构化拒绝。cancel 只作用于当前
+invocation id，stale id 不会误取消后续 invocation。timeout/deadline 由 runtime hidden
+task 驱动，status/record 会输出 state change、progress、result 和 error。多 invocation
+queue 和 cancel-running preempt 策略属于长期 IR 语义，在 runtime 完整实现前由 validator
 拒绝。
 
 用户代码实现 server handler：

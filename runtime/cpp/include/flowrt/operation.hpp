@@ -1,10 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/service.hpp>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -24,17 +27,28 @@ struct OperationId {
 };
 
 /**
+ * @brief Operation control authority owner。
+ */
+struct OperationOwner {
+    std::uint64_t scope_key = 0;  ///< 控制域 key。
+    std::uint64_t owner_key = 0;  ///< owner key。
+
+    friend constexpr bool operator==(const OperationOwner &, const OperationOwner &) noexcept =
+        default;
+};
+
+/**
  * @brief Operation 状态机状态。
  */
 enum class OperationState : std::uint8_t {
-    Accepted = 0,  ///< start request 已接受，尚未进入用户 handler。
-    Running = 1,   ///< 用户 handler 正在执行。
-    Canceling = 2,  ///< 已请求 cooperative cancel，等待用户 handler 观察 token 并退出。
-    Succeeded = 3,  ///< 用户 handler 成功完成。
-    Failed = 4,     ///< 用户 handler 或 runtime 执行失败。
-    Canceled = 5,   ///< 用户 handler 响应 cancel 请求并结束。
-    Timeout = 6,    ///< Operation 超时。
-    Preempted = 7,  ///< 因 preempt policy 被新 invocation 抢占。
+    Idle = 0,             ///< 没有 active invocation。
+    Starting = 1,         ///< start request 已接受，尚未进入用户 handler。
+    Running = 2,          ///< 用户 handler 正在执行。
+    CancelRequested = 3,  ///< 已请求 cooperative cancel。
+    Succeeded = 4,        ///< 用户 handler 成功完成。
+    Failed = 5,           ///< 用户 handler 或 runtime 执行失败。
+    Cancelled = 6,        ///< 用户 handler 响应 cancel 请求并结束。
+    TimedOut = 7,         ///< Operation 超时。
 };
 
 /**
@@ -44,6 +58,19 @@ enum class OperationError : std::uint8_t {
     Ok = 0,                 ///< 操作成功。
     InvalidTransition = 1,  ///< 状态转换不合法。
     InvalidPolicy = 2,      ///< policy 字段非法。
+};
+
+/**
+ * @brief Operation control authority 错误。
+ */
+enum class OperationControlError : std::uint8_t {
+    Ok = 0,
+    InvalidTransition = 1,
+    InvalidPolicy = 2,
+    Busy = 3,
+    OwnerConflict = 4,
+    StaleInvocation = 5,
+    AlreadyTerminal = 6,
 };
 
 /**
@@ -78,30 +105,29 @@ enum class OperationPreemptPolicy : std::uint8_t {
 
 inline constexpr bool is_terminal(OperationState state) noexcept {
     return state == OperationState::Succeeded || state == OperationState::Failed ||
-           state == OperationState::Canceled || state == OperationState::Timeout ||
-           state == OperationState::Preempted;
+           state == OperationState::Cancelled || state == OperationState::TimedOut;
 }
 
 inline std::string_view to_string(OperationState state) noexcept {
     switch (state) {
-        case OperationState::Accepted:
-            return "Accepted";
+        case OperationState::Idle:
+            return "idle";
+        case OperationState::Starting:
+            return "starting";
         case OperationState::Running:
-            return "Running";
-        case OperationState::Canceling:
-            return "Canceling";
+            return "running";
+        case OperationState::CancelRequested:
+            return "cancel_requested";
         case OperationState::Succeeded:
-            return "Succeeded";
+            return "succeeded";
         case OperationState::Failed:
-            return "Failed";
-        case OperationState::Canceled:
-            return "Canceled";
-        case OperationState::Timeout:
-            return "Timeout";
-        case OperationState::Preempted:
-            return "Preempted";
+            return "failed";
+        case OperationState::Cancelled:
+            return "cancelled";
+        case OperationState::TimedOut:
+            return "timed_out";
     }
-    return "Unknown";
+    return "unknown";
 }
 
 inline std::string_view to_string(OperationError error) noexcept {
@@ -114,6 +140,32 @@ inline std::string_view to_string(OperationError error) noexcept {
             return "InvalidPolicy";
     }
     return "Unknown";
+}
+
+inline std::string_view to_string(OperationControlError error) noexcept {
+    switch (error) {
+        case OperationControlError::Ok:
+            return "Ok";
+        case OperationControlError::InvalidTransition:
+            return "InvalidTransition";
+        case OperationControlError::InvalidPolicy:
+            return "InvalidPolicy";
+        case OperationControlError::Busy:
+            return "Busy";
+        case OperationControlError::OwnerConflict:
+            return "OwnerConflict";
+        case OperationControlError::StaleInvocation:
+            return "StaleInvocation";
+        case OperationControlError::AlreadyTerminal:
+            return "AlreadyTerminal";
+    }
+    return "Unknown";
+}
+
+inline std::uint64_t monotonic_time_ms() noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
 }
 
 inline OperationClientError operation_client_error_from_service_error(ServiceError error) noexcept {
@@ -268,17 +320,15 @@ class OperationHealthCounters {
             case OperationState::Failed:
                 ++failed_;
                 break;
-            case OperationState::Canceled:
+            case OperationState::Cancelled:
                 ++canceled_;
                 break;
-            case OperationState::Timeout:
+            case OperationState::TimedOut:
                 ++timeout_;
                 break;
-            case OperationState::Preempted:
-                ++preempted_;
-                break;
-            case OperationState::Accepted:
-            case OperationState::Canceling:
+            case OperationState::Idle:
+            case OperationState::Starting:
+            case OperationState::CancelRequested:
                 break;
         }
     }
@@ -309,8 +359,10 @@ class OperationHealthCounters {
  */
 struct OperationStatusSnapshot {
     OperationId id{};
-    OperationState state{OperationState::Accepted};
+    OperationOwner owner{};
+    OperationState state{OperationState::Idle};
     bool cancel_requested = false;
+    std::uint64_t deadline_ms = 0;
     OperationHealthSnapshot health{};
 };
 
@@ -319,11 +371,39 @@ struct OperationStatusSnapshot {
  */
 struct OperationStartAck {
     OperationId id{};
+    OperationOwner owner{};
+    std::uint64_t deadline_ms = 0;
     bool accepted = false;
 
     static constexpr OperationStartAck accepted_ack(OperationId value) noexcept {
-        return OperationStartAck{.id = value, .accepted = true};
+        return OperationStartAck{
+            .id = value,
+            .owner = OperationOwner{.scope_key = 0, .owner_key = value.client_id},
+            .deadline_ms = 0,
+            .accepted = true,
+        };
     }
+
+    static constexpr OperationStartAck accepted_with_authority(OperationId value,
+                                                               OperationOwner owner,
+                                                               std::uint64_t deadline_ms) noexcept {
+        return OperationStartAck{
+            .id = value,
+            .owner = owner,
+            .deadline_ms = deadline_ms,
+            .accepted = true,
+        };
+    }
+};
+
+/**
+ * @brief Operation start 内部 lowering 请求。
+ */
+template <typename T>
+struct OperationStartRequest {
+    T goal{};
+    OperationOwner owner{};
+    std::chrono::milliseconds timeout{0};
 };
 
 /**
@@ -343,10 +423,16 @@ template <typename T>
 class OperationProgressPublisher {
    public:
     explicit OperationProgressPublisher(OperationId id) : id_(id) {}
+    OperationProgressPublisher(OperationId id, std::function<void(OperationId, std::uint64_t)> hook)
+        : id_(id), progress_hook_(std::move(hook)) {}
 
     void publish(T value) {
-        events_.push_back(OperationProgress<T>{.id = id_, .sequence = next_sequence_++,
-                                               .value = std::move(value)});
+        const auto sequence = next_sequence_++;
+        if (progress_hook_) {
+            progress_hook_(id_, sequence);
+        }
+        events_.push_back(
+            OperationProgress<T>{.id = id_, .sequence = sequence, .value = std::move(value)});
     }
 
     const std::vector<OperationProgress<T>> &events() const noexcept { return events_; }
@@ -361,6 +447,7 @@ class OperationProgressPublisher {
     OperationId id_{};
     std::uint64_t next_sequence_ = 0;
     std::vector<OperationProgress<T>> events_;
+    std::function<void(OperationId, std::uint64_t)> progress_hook_;
 };
 
 /**
@@ -404,21 +491,59 @@ class OperationHandlerResult {
 };
 
 /**
+ * @brief Operation runtime event 类型。
+ */
+enum class OperationRuntimeEventKind : std::uint8_t {
+    StateChanged,
+    Progress,
+    Result,
+    Error,
+};
+
+/**
+ * @brief Operation runtime event。
+ */
+struct OperationRuntimeEvent {
+    OperationId id{};
+    OperationRuntimeEventKind kind{OperationRuntimeEventKind::StateChanged};
+    std::optional<OperationState> state;
+    std::optional<std::uint64_t> sequence;
+    std::optional<std::string_view> message;
+};
+
+/**
  * @brief Operation 生命周期状态机。
  */
 class OperationLifecycle {
    public:
     OperationLifecycle(OperationId id, OperationPolicy policy)
         : id_(id),
+          owner_(OperationOwner{.scope_key = 0, .owner_key = id.client_id}),
+          deadline_ms_(static_cast<std::uint64_t>(policy.timeout.count())),
           policy_(policy),
           valid_policy_(policy.valid()),
-          state_(OperationState::Accepted) {}
+          state_(OperationState::Starting) {}
+
+    OperationLifecycle(OperationId id, OperationPolicy policy, OperationOwner owner,
+                       std::uint64_t deadline_ms)
+        : id_(id),
+          owner_(owner),
+          deadline_ms_(deadline_ms),
+          policy_(policy),
+          valid_policy_(policy.valid()),
+          state_(OperationState::Starting) {}
 
     /** @brief 返回 invocation ID。 */
     constexpr OperationId id() const noexcept { return id_; }
 
     /** @brief 返回 policy。 */
     constexpr OperationPolicy policy() const noexcept { return policy_; }
+
+    /** @brief 返回 owner。 */
+    constexpr OperationOwner owner() const noexcept { return owner_; }
+
+    /** @brief 返回 absolute deadline（runtime monotonic 毫秒）。 */
+    constexpr std::uint64_t deadline_ms() const noexcept { return deadline_ms_; }
 
     /** @brief 返回当前状态。 */
     constexpr OperationState state() const noexcept { return state_; }
@@ -445,10 +570,10 @@ class OperationLifecycle {
             return OperationError::InvalidPolicy;
         }
         cancel_token_.request_cancel();
-        if (state_ == OperationState::Accepted || state_ == OperationState::Running) {
-            return transition(OperationState::Canceling);
+        if (state_ == OperationState::Starting || state_ == OperationState::Running) {
+            return transition(OperationState::CancelRequested);
         }
-        if (state_ == OperationState::Canceling) {
+        if (state_ == OperationState::CancelRequested) {
             return OperationError::Ok;
         }
         return OperationError::InvalidTransition;
@@ -458,33 +583,266 @@ class OperationLifecycle {
     OperationStatusSnapshot snapshot() const noexcept {
         return OperationStatusSnapshot{
             .id = id_,
+            .owner = owner_,
             .state = state_,
             .cancel_requested = cancel_token_.is_canceled(),
+            .deadline_ms = deadline_ms_,
             .health = health_.snapshot(),
         };
     }
 
    private:
     static constexpr bool valid_transition(OperationState from, OperationState to) noexcept {
-        return (from == OperationState::Accepted &&
-                (to == OperationState::Running || to == OperationState::Canceling ||
-                 to == OperationState::Failed || to == OperationState::Timeout ||
-                 to == OperationState::Preempted)) ||
+        return (from == OperationState::Idle && to == OperationState::Starting) ||
+               (from == OperationState::Starting &&
+                (to == OperationState::Running || to == OperationState::CancelRequested ||
+                 to == OperationState::Failed || to == OperationState::TimedOut)) ||
                (from == OperationState::Running &&
                 (to == OperationState::Succeeded || to == OperationState::Failed ||
-                 to == OperationState::Canceling || to == OperationState::Timeout ||
-                 to == OperationState::Preempted)) ||
-               (from == OperationState::Canceling &&
-                (to == OperationState::Canceled || to == OperationState::Failed ||
-                 to == OperationState::Timeout));
+                 to == OperationState::CancelRequested || to == OperationState::TimedOut)) ||
+               (from == OperationState::CancelRequested &&
+                (to == OperationState::Cancelled || to == OperationState::Failed ||
+                 to == OperationState::TimedOut));
     }
 
     OperationId id_{};
+    OperationOwner owner_{};
+    std::uint64_t deadline_ms_ = 0;
     OperationPolicy policy_{};
     bool valid_policy_ = true;
-    OperationState state_{OperationState::Accepted};
+    OperationState state_{OperationState::Starting};
     OperationCancelToken cancel_token_{};
     OperationHealthCounters health_{};
+};
+
+/**
+ * @brief Operation start result。
+ */
+class OperationStartResult {
+   public:
+    static OperationStartResult ok(OperationStartAck ack) {
+        OperationStartResult result;
+        result.value_ = ack;
+        return result;
+    }
+
+    static OperationStartResult err(OperationControlError error) {
+        OperationStartResult result;
+        result.error_ = error;
+        return result;
+    }
+
+    bool has_value() const noexcept { return value_.has_value(); }
+    explicit operator bool() const noexcept { return has_value(); }
+    const OperationStartAck &value() const noexcept { return *value_; }
+    const OperationStartAck *operator->() const noexcept { return &*value_; }
+    OperationControlError error() const noexcept { return error_; }
+
+   private:
+    std::optional<OperationStartAck> value_;
+    OperationControlError error_{OperationControlError::Ok};
+};
+
+/**
+ * @brief Single-owner Operation control state。
+ */
+class OperationControl {
+   public:
+    OperationControl(std::uint64_t operation_key, OperationPolicy policy)
+        : operation_key_(operation_key), policy_(policy) {}
+
+    OperationStartResult start(OperationOwner owner, std::uint64_t now_ms) {
+        return start_with_timeout(owner, now_ms, policy_.timeout);
+    }
+
+    OperationStartResult start_with_timeout(OperationOwner owner, std::uint64_t now_ms,
+                                            std::chrono::milliseconds timeout) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lifecycle_.has_value() &&
+            (handler_active_ || !is_terminal(lifecycle_->state()))) {
+            if (lifecycle_->owner() != owner) {
+                return OperationStartResult::err(OperationControlError::OwnerConflict);
+            }
+            return OperationStartResult::err(OperationControlError::Busy);
+        }
+        if (lifecycle_.has_value() && is_terminal(lifecycle_->state()) && !handler_active_) {
+            lifecycle_.reset();
+        }
+        const auto sequence = next_sequence_++;
+        const OperationId id{
+            .operation_key = operation_key_,
+            .client_id = owner.owner_key,
+            .sequence = sequence,
+        };
+        const auto timeout_ms = static_cast<std::uint64_t>(std::max<std::int64_t>(1, timeout.count()));
+        const auto deadline_ms = now_ms + timeout_ms;
+        lifecycle_.emplace(id, policy_, owner, deadline_ms);
+        handler_active_ = true;
+        push_state_event(id, OperationState::Starting);
+        return OperationStartResult::ok(
+            OperationStartAck::accepted_with_authority(id, owner, deadline_ms));
+    }
+
+    OperationControlError mark_running(OperationId id) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto *lifecycle = current(id);
+        if (lifecycle == nullptr) {
+            return OperationControlError::StaleInvocation;
+        }
+        const auto error = map_error(lifecycle->transition(OperationState::Running));
+        if (error == OperationControlError::Ok) {
+            health_.record_state(OperationState::Running);
+            push_state_event(id, OperationState::Running);
+        }
+        return error;
+    }
+
+    OperationControlError request_cancel(OperationId id, OperationOwner owner) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto *lifecycle = current(id);
+        if (lifecycle == nullptr) {
+            return OperationControlError::StaleInvocation;
+        }
+        if (lifecycle->owner() != owner) {
+            return OperationControlError::OwnerConflict;
+        }
+        if (is_terminal(lifecycle->state())) {
+            return OperationControlError::AlreadyTerminal;
+        }
+        const auto error = map_error(lifecycle->request_cancel());
+        if (error == OperationControlError::Ok) {
+            push_state_event(id, OperationState::CancelRequested);
+        }
+        return error;
+    }
+
+    OperationControlError complete(OperationId id, OperationState terminal_state) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto *lifecycle = current(id);
+        if (lifecycle == nullptr) {
+            return OperationControlError::StaleInvocation;
+        }
+        if (is_terminal(lifecycle->state())) {
+            handler_active_ = false;
+            return OperationControlError::AlreadyTerminal;
+        }
+        const auto error = map_error(lifecycle->transition(terminal_state));
+        handler_active_ = false;
+        if (error == OperationControlError::Ok) {
+            health_.record_state(terminal_state);
+            events_.push_back(OperationRuntimeEvent{
+                .id = id,
+                .kind = terminal_state == OperationState::Failed ? OperationRuntimeEventKind::Error
+                                                                  : OperationRuntimeEventKind::Result,
+                .state = terminal_state,
+                .sequence = std::nullopt,
+                .message = std::nullopt,
+            });
+            push_state_event(id, terminal_state);
+        }
+        return error;
+    }
+
+    bool check_deadline(std::uint64_t now_ms) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lifecycle_.has_value() || is_terminal(lifecycle_->state()) ||
+            now_ms < lifecycle_->deadline_ms()) {
+            return false;
+        }
+        lifecycle_->cancel_token().request_cancel();
+        if (lifecycle_->transition(OperationState::TimedOut) == OperationError::Ok) {
+            health_.record_state(OperationState::TimedOut);
+            push_state_event(lifecycle_->id(), OperationState::TimedOut);
+            return true;
+        }
+        return false;
+    }
+
+    void publish_progress(OperationId id, std::uint64_t sequence) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lifecycle_.has_value() || !(lifecycle_->id() == id) ||
+            is_terminal(lifecycle_->state())) {
+            return;
+        }
+        events_.push_back(OperationRuntimeEvent{
+            .id = id,
+            .kind = OperationRuntimeEventKind::Progress,
+            .state = std::nullopt,
+            .sequence = sequence,
+            .message = std::nullopt,
+        });
+    }
+
+    std::optional<OperationCancelToken> cancel_token() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lifecycle_.has_value()) {
+            return std::nullopt;
+        }
+        return lifecycle_->cancel_token();
+    }
+
+    OperationStatusSnapshot snapshot() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lifecycle_.has_value()) {
+            return OperationStatusSnapshot{
+                .id = OperationId{.operation_key = operation_key_, .client_id = 0, .sequence = 0},
+                .owner = OperationOwner{},
+                .state = OperationState::Idle,
+                .cancel_requested = false,
+                .deadline_ms = 0,
+                .health = health_.snapshot(),
+            };
+        }
+        auto snapshot = lifecycle_->snapshot();
+        snapshot.health = health_.snapshot();
+        return snapshot;
+    }
+
+    std::vector<OperationRuntimeEvent> drain_events() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto events = std::move(events_);
+        events_.clear();
+        return events;
+    }
+
+   private:
+    static OperationControlError map_error(OperationError error) noexcept {
+        switch (error) {
+            case OperationError::Ok:
+                return OperationControlError::Ok;
+            case OperationError::InvalidTransition:
+                return OperationControlError::InvalidTransition;
+            case OperationError::InvalidPolicy:
+                return OperationControlError::InvalidPolicy;
+        }
+        return OperationControlError::InvalidTransition;
+    }
+
+    OperationLifecycle *current(OperationId id) noexcept {
+        if (!lifecycle_.has_value() || !(lifecycle_->id() == id)) {
+            return nullptr;
+        }
+        return &*lifecycle_;
+    }
+
+    void push_state_event(OperationId id, OperationState state) {
+        events_.push_back(OperationRuntimeEvent{
+            .id = id,
+            .kind = OperationRuntimeEventKind::StateChanged,
+            .state = state,
+            .sequence = std::nullopt,
+            .message = std::nullopt,
+        });
+    }
+
+    std::uint64_t operation_key_ = 0;
+    OperationPolicy policy_{};
+    std::uint64_t next_sequence_ = 0;
+    std::optional<OperationLifecycle> lifecycle_;
+    bool handler_active_ = false;
+    OperationHealthCounters health_{};
+    std::vector<OperationRuntimeEvent> events_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace flowrt

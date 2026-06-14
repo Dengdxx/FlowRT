@@ -1756,10 +1756,20 @@ fn format_operation_status(
     let last_transition = operation
         .last_transition_ms
         .map_or_else(|| "none".to_string(), |value| value.to_string());
+    let state = operation.current_state.as_deref().unwrap_or("idle");
+    let owner = operation.current_owner.as_deref().unwrap_or("none");
+    let deadline = operation
+        .current_deadline_ms
+        .map_or_else(|| "none".to_string(), |value| value.to_string());
+    let last_event = operation.last_event.as_deref().unwrap_or("none");
+    let last_error = operation.last_error.as_deref().unwrap_or("none");
     let mut line = format!(
-        "operation={} ready={} running={} queued={} current_operation_ids={} total_started={} succeeded={} failed={} canceled={} timeout={} preempted={} last_transition_ms={}",
+        "operation={} ready={} state={} owner={} deadline_ms={} running={} queued={} current_operation_ids={} total_started={} succeeded={} failed={} canceled={} timeout={} preempted={} last_event={} last_error={} last_transition_ms={}",
         operation.name,
         operation.ready,
+        state,
+        owner,
+        deadline,
         operation.running,
         operation.queued,
         current_ids,
@@ -1769,6 +1779,8 @@ fn format_operation_status(
         operation.canceled_count,
         operation.timeout_count,
         operation.preempted_count,
+        last_event,
+        last_error,
         last_transition
     );
     if let Some(socket) = socket {

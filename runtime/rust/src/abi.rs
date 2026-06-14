@@ -232,14 +232,14 @@ pub struct FlowrtParamsUpdateResult {
 }
 
 pub type FlowrtOperationState = u32;
-pub const FLOWRT_OPERATION_STATE_ACCEPTED: FlowrtOperationState = 0;
-pub const FLOWRT_OPERATION_STATE_RUNNING: FlowrtOperationState = 1;
-pub const FLOWRT_OPERATION_STATE_CANCELING: FlowrtOperationState = 2;
-pub const FLOWRT_OPERATION_STATE_SUCCEEDED: FlowrtOperationState = 3;
-pub const FLOWRT_OPERATION_STATE_FAILED: FlowrtOperationState = 4;
-pub const FLOWRT_OPERATION_STATE_CANCELED: FlowrtOperationState = 5;
-pub const FLOWRT_OPERATION_STATE_TIMEOUT: FlowrtOperationState = 6;
-pub const FLOWRT_OPERATION_STATE_PREEMPTED: FlowrtOperationState = 7;
+pub const FLOWRT_OPERATION_STATE_IDLE: FlowrtOperationState = 0;
+pub const FLOWRT_OPERATION_STATE_STARTING: FlowrtOperationState = 1;
+pub const FLOWRT_OPERATION_STATE_RUNNING: FlowrtOperationState = 2;
+pub const FLOWRT_OPERATION_STATE_CANCEL_REQUESTED: FlowrtOperationState = 3;
+pub const FLOWRT_OPERATION_STATE_SUCCEEDED: FlowrtOperationState = 4;
+pub const FLOWRT_OPERATION_STATE_FAILED: FlowrtOperationState = 5;
+pub const FLOWRT_OPERATION_STATE_CANCELLED: FlowrtOperationState = 6;
+pub const FLOWRT_OPERATION_STATE_TIMED_OUT: FlowrtOperationState = 7;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -581,14 +581,14 @@ pub const fn operation_id_to_abi(id: OperationId) -> FlowrtOperationId {
 
 pub const fn operation_state_to_abi(state: OperationState) -> FlowrtOperationState {
     match state {
-        OperationState::Accepted => FLOWRT_OPERATION_STATE_ACCEPTED,
+        OperationState::Idle => FLOWRT_OPERATION_STATE_IDLE,
+        OperationState::Starting => FLOWRT_OPERATION_STATE_STARTING,
         OperationState::Running => FLOWRT_OPERATION_STATE_RUNNING,
-        OperationState::Canceling => FLOWRT_OPERATION_STATE_CANCELING,
+        OperationState::CancelRequested => FLOWRT_OPERATION_STATE_CANCEL_REQUESTED,
         OperationState::Succeeded => FLOWRT_OPERATION_STATE_SUCCEEDED,
         OperationState::Failed => FLOWRT_OPERATION_STATE_FAILED,
-        OperationState::Canceled => FLOWRT_OPERATION_STATE_CANCELED,
-        OperationState::Timeout => FLOWRT_OPERATION_STATE_TIMEOUT,
-        OperationState::Preempted => FLOWRT_OPERATION_STATE_PREEMPTED,
+        OperationState::Cancelled => FLOWRT_OPERATION_STATE_CANCELLED,
+        OperationState::TimedOut => FLOWRT_OPERATION_STATE_TIMED_OUT,
     }
 }
 

@@ -606,9 +606,27 @@ codegen 为 client 生成 `OperationClient_{instance}_{port}` typed handle，为
 lower 成内部 start/cancel/status service 与 feedback/result endpoint；`flowrt list`
 和 `flowrt op list` 默认展示 Operation 主语义，需要调试时再查看 lowering refs。
 
-当前 generated Operation runtime 支持单个运行中的 invocation：`concurrency =
-"reject"`、`preempt = "reject"`、`max_in_flight = 1`。第二个 start 会返回 `Busy`，
-直到当前 invocation 进入终态。`queue`、`cancel_running` 和多 in-flight 策略已保留在
+generated Operation runtime 使用明确生命周期：
+
+| state | 含义 |
+|---|---|
+| `idle` | 当前无 active invocation |
+| `starting` | start 已接受，runtime 已分配 invocation id、owner 和 deadline |
+| `running` | 用户 handler 正在执行 |
+| `cancel_requested` | 已请求 cooperative cancel，等待 handler 检查 token 并退出 |
+| `cancelled` | handler 响应 cancel 后结束 |
+| `succeeded` | handler 成功返回 result |
+| `failed` | handler error、panic/exception 或 runtime 执行失败 |
+| `timed_out` | scheduler/runtime 驱动 deadline 到期 |
+
+当前 generated Operation runtime 支持单个运行中的 invocation 和默认 single-owner control
+authority：`concurrency = "reject"`、`preempt = "reject"`、`max_in_flight = 1`。
+start 会建立 invocation id、owner 和 deadline；第二个 owner start 返回结构化冲突错误。
+cancel 只作用于当前 invocation id，stale id 会被拒绝或返回明确说明，不会误取消后续
+invocation。timeout/deadline 由 runtime hidden task 驱动，不依赖用户 handler 自觉检查。
+用户 handler 通过 `OperationCancelToken` 做 cooperative cancel check，并通过 typed
+`OperationProgressPublisher` 发布 progress。`status` / `record` 会输出 state change、
+progress、result 和 error 事件。`queue`、`cancel_running` 和多 in-flight 策略已保留在
 IR 长期模型中，但在 runtime 完整实现前由 validator 拒绝。
 
 查看 Operation 拓扑和运行态状态：

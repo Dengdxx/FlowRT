@@ -449,9 +449,16 @@ long-running command、generated state machine、explicit policy、observable ha
 底层编译期 lower 成 Service + Channel。用户只看 Operation，调试时才展开底层拓扑。
 Operation policy 必须显式声明 concurrency、preempt、cancel、timeout 和
 result retention；用户不得手写 start/cancel/result/progress 四套底层协议。当前
-generated Operation runtime 先支持单 in-flight reject 子集：`concurrency =
-"reject"`、`preempt = "reject"`、`max_in_flight = 1`；`queue`、`cancel_running`
-和多 in-flight 仍保留为长期 IR 语义，在 runtime 完整实现前由 validator 拒绝。
+generated Operation runtime 已收口长期 lifecycle：`idle`、`starting`、`running`、
+`cancel_requested`、`cancelled`、`succeeded`、`failed`、`timed_out`。start 建立
+invocation id、owner 和 deadline；默认 single-owner control authority 只允许同一 scope
+单 owner 控制 active invocation，第二 owner start 返回结构化冲突错误。cancel 只作用于
+当前 invocation id，stale id 被拒绝或返回明确说明，不会误取消后续 invocation。
+timeout/deadline 由 runtime hidden task 驱动；用户 handler 通过 cancel token 做
+cooperative cancel check，并通过 typed progress publisher 发布 progress。当前只支持单
+in-flight reject 子集：`concurrency = "reject"`、`preempt = "reject"`、
+`max_in_flight = 1`；`queue`、`cancel_running` 和多 in-flight 仍保留为长期 IR 语义，
+在 runtime 完整实现前由 validator 拒绝。
 
 Operation 解决的不是“长时间 service call”，而是机器人系统里常见的可取消、
 可抢占、可观测、可恢复的长任务。生成器负责把 Operation lowered 成 request、
@@ -462,9 +469,10 @@ start/cancel/result/progress glue。
 Operation 观测路径沿用 FlowRT 自描述和本机 introspection socket：self-description
 记录 operation client/server 端口、goal/feedback/result 类型、policy、backend 和
 内部 lowering refs；runtime status 记录 ready/running/queued、当前 operation id、
-成功/失败/取消/超时/抢占计数和最近状态转换时间；`flowrt op list/status/cancel`
-提供本机观测和 cooperative cancel 控制面。`flowrt op start`、跨机 Operation 控制面
-和 replay 驱动执行不属于 `v0.6.0` 范围。
+当前 state、owner、deadline、成功/失败/取消/超时/抢占计数、最近事件、最近错误和
+最近状态转换时间；record 输出 state change、progress、result 和 error 事件；
+`flowrt op list/status/cancel` 提供本机观测和 cooperative cancel 控制面。`flowrt op start`、
+跨机 Operation 控制面和 replay 驱动执行不属于当前范围。
 
 `v0.6.0` 的录制系统只做 record，不做 replay。录制使用 MCAP 作为容器，FlowRT 自有
 record envelope 作为 schema，覆盖 channel sample、parameter control-plane event、
@@ -807,7 +815,10 @@ borrowed frame view、`ReconnectPolicy`、`BackendHealthSnapshot`、params view/
 result、operation status/progress/result summary view、diagnostic view、resource health
 snapshot、C component context、fixed input view、output slot 和 callback table 的稳定
 POD 形状；Rust/C++ runtime 内部仍使用各自语言的
-高层类型，并通过转换函数或 C header 对齐。该 callback table 只表达边界；当前 C v0
+高层类型，并通过转换函数或 C header 对齐。operation state 编码使用当前长期 lifecycle
+常量：`IDLE`、`STARTING`、`RUNNING`、`CANCEL_REQUESTED`、`SUCCEEDED`、`FAILED`、
+`CANCELLED` 和 `TIMED_OUT`，不保留旧 `ACCEPTED` / `CANCELING` / `PREEMPTED`
+别名。该 callback table 只表达边界；当前 C v0
 已开放 adapter、`app/c` 用户接入路径和最小 demo，但不表示完整 C runtime、动态加载或 Python
 binding 已开放。`iox2` 和 `zenoh`
 endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地

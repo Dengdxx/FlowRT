@@ -43,7 +43,7 @@ int main() {
            flowrt::OperationError::InvalidPolicy);
 
     flowrt::OperationLifecycle lifecycle{id, *policy};
-    assert(lifecycle.state() == flowrt::OperationState::Accepted);
+    assert(lifecycle.state() == flowrt::OperationState::Starting);
     assert(lifecycle.transition(flowrt::OperationState::Running) == flowrt::OperationError::Ok);
     assert(lifecycle.transition(flowrt::OperationState::Succeeded) == flowrt::OperationError::Ok);
     assert(lifecycle.transition(flowrt::OperationState::Failed) ==
@@ -61,21 +61,38 @@ int main() {
     assert(canceling.request_cancel() == flowrt::OperationError::Ok);
     assert(token.is_canceled());
     assert(clone.is_canceled());
-    assert(canceling.state() == flowrt::OperationState::Canceling);
-    assert(canceling.transition(flowrt::OperationState::Canceled) == flowrt::OperationError::Ok);
+    assert(canceling.state() == flowrt::OperationState::CancelRequested);
+    assert(canceling.transition(flowrt::OperationState::Cancelled) == flowrt::OperationError::Ok);
     snapshot = canceling.snapshot();
     assert(snapshot.cancel_requested);
     assert(snapshot.health.canceled == 1U);
 
     flowrt::OperationLifecycle timed{flowrt::OperationId{1U, 3U, 3U}, *policy};
     assert(timed.transition(flowrt::OperationState::Running) == flowrt::OperationError::Ok);
-    assert(timed.transition(flowrt::OperationState::Timeout) == flowrt::OperationError::Ok);
+    assert(timed.transition(flowrt::OperationState::TimedOut) == flowrt::OperationError::Ok);
     assert(timed.snapshot().health.timeout == 1U);
 
-    flowrt::OperationLifecycle preempted{flowrt::OperationId{1U, 4U, 3U}, *policy};
-    assert(preempted.transition(flowrt::OperationState::Running) == flowrt::OperationError::Ok);
-    assert(preempted.transition(flowrt::OperationState::Preempted) == flowrt::OperationError::Ok);
-    assert(preempted.snapshot().health.preempted == 1U);
+    flowrt::OperationControl control{99U, *policy};
+    const flowrt::OperationOwner owner_a{.scope_key = 10U, .owner_key = 20U};
+    const flowrt::OperationOwner owner_b{.scope_key = 10U, .owner_key = 30U};
+    assert(control.snapshot().state == flowrt::OperationState::Idle);
+    const auto started = control.start(owner_a, 100U);
+    assert(started.has_value());
+    assert(started->owner == owner_a);
+    assert(started->deadline_ms == 1100U);
+    assert(control.snapshot().state == flowrt::OperationState::Starting);
+    assert(control.mark_running(started->id) == flowrt::OperationControlError::Ok);
+    const auto second_owner = control.start(owner_b, 101U);
+    assert(!second_owner.has_value());
+    assert(second_owner.error() == flowrt::OperationControlError::OwnerConflict);
+    assert(control.request_cancel(flowrt::OperationId{99U, owner_a.owner_key, 77U}, owner_a) ==
+           flowrt::OperationControlError::StaleInvocation);
+    assert(!control.check_deadline(1099U));
+    assert(control.check_deadline(1100U));
+    assert(control.snapshot().state == flowrt::OperationState::TimedOut);
+    assert(control.snapshot().cancel_requested);
+    assert(control.cancel_token().has_value());
+    assert(control.cancel_token()->is_canceled());
 
     const auto progress = flowrt::OperationProgress<int>{flowrt::OperationId{9U, 10U, 11U}, 3U, 42};
     assert(progress.id.operation_key == 9U);
@@ -115,12 +132,16 @@ int main() {
     flowrt::OperationHealthCounters counters;
     counters.record_state(flowrt::OperationState::Running);
     counters.record_state(flowrt::OperationState::Failed);
-    counters.record_state(flowrt::OperationState::Canceled);
+    counters.record_state(flowrt::OperationState::Cancelled);
+    counters.record_state(flowrt::OperationState::TimedOut);
     const auto health = counters.snapshot();
     assert(health.started == 1U);
     assert(health.failed == 1U);
     assert(health.canceled == 1U);
+    assert(health.timeout == 1U);
 
-    assert(flowrt::to_string(flowrt::OperationState::Canceling) == "Canceling");
+    assert(flowrt::to_string(flowrt::OperationState::CancelRequested) == "cancel_requested");
+    assert(flowrt::to_string(flowrt::OperationState::TimedOut) == "timed_out");
+    assert(flowrt::to_string(flowrt::OperationState::Cancelled) == "cancelled");
     assert(flowrt::to_string(flowrt::OperationError::InvalidTransition) == "InvalidTransition");
 }

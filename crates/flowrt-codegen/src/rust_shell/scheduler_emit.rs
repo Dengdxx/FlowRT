@@ -214,6 +214,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     } else {
         "let woke_on_message = false;"
     };
+    output.push_str(&operation_emit::emit_rust_operation_tick_driver_state(
+        contract, graph,
+    ));
     output.push_str(&format!(
         "            introspection_state.record_tick();\n            loop {{\n                observed_data_generation = scheduler_events.data_generation();\n                {woke_on_message_decl}\n"
     ));

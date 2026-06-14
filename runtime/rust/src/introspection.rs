@@ -414,6 +414,21 @@ pub struct IntrospectionOperationStatus {
     /// 累计抢占次数。
     #[serde(default)]
     pub preempted_count: u64,
+    /// 当前 invocation 状态。
+    #[serde(default)]
+    pub current_state: Option<String>,
+    /// 当前 control owner。
+    #[serde(default)]
+    pub current_owner: Option<String>,
+    /// 当前 invocation deadline（runtime monotonic 毫秒）。
+    #[serde(default)]
+    pub current_deadline_ms: Option<u64>,
+    /// 最近一条 operation 事件名。
+    #[serde(default)]
+    pub last_event: Option<String>,
+    /// 最近一条 operation error。
+    #[serde(default)]
+    pub last_error: Option<String>,
     /// 最近一次状态转换时间戳（Unix 毫秒）。
     pub last_transition_ms: Option<u64>,
 }
@@ -750,13 +765,22 @@ struct ParamState {
 }
 
 /// runtime shell 可共享更新的 introspection live 状态。
-#[derive(Debug, Clone, Default)]
+type OperationCancelHandler =
+    Arc<dyn Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String> + Send + Sync>;
+
+#[derive(Clone, Default)]
 pub struct IntrospectionState {
     inner: Arc<Mutex<IntrospectionStateInner>>,
     recorder: RecorderTap,
 }
 
-#[derive(Debug, Default)]
+impl std::fmt::Debug for IntrospectionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntrospectionState").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
 struct IntrospectionStateInner {
     tick_count: u64,
     self_description_json: Option<String>,
@@ -769,6 +793,7 @@ struct IntrospectionStateInner {
     io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
     services: BTreeMap<String, IntrospectionServiceStatus>,
     operations: BTreeMap<String, IntrospectionOperationStatus>,
+    operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
     tasks: BTreeMap<String, IntrospectionTaskHealth>,
     lanes: BTreeMap<String, IntrospectionLaneHealth>,
 }
@@ -1392,6 +1417,21 @@ impl IntrospectionState {
             });
     }
 
+    /// 注册 operation cancel control hook。
+    pub fn register_operation_cancel_handler<F>(&self, name: impl Into<String>, handler: F)
+    where
+        F: Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let name = name.into();
+        let mut inner = self.lock_inner();
+        inner
+            .operation_cancel_handlers
+            .insert(name, Arc::new(handler));
+    }
+
     /// 记录 operation 运行态健康状态快照。
     pub fn record_operation_health(&self, status: IntrospectionOperationStatus) {
         let status_for_record = status.clone();
@@ -1412,7 +1452,112 @@ impl IntrospectionState {
                 "canceled": status_for_record.canceled_count,
                 "timeout": status_for_record.timeout_count,
                 "preempted": status_for_record.preempted_count,
+                "state": status_for_record.current_state,
+                "owner": status_for_record.current_owner,
+                "deadline_ms": status_for_record.current_deadline_ms,
+                "last_event": status_for_record.last_event,
+                "last_error": status_for_record.last_error,
                 "last_transition_ms": status_for_record.last_transition_ms,
+            }),
+        );
+    }
+
+    /// 记录 operation 状态转换事件。
+    pub fn record_operation_transition(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        state: &str,
+        owner: Option<&str>,
+        deadline_ms: Option<u64>,
+    ) {
+        let now = unix_time_ms();
+        {
+            let mut inner = self.lock_inner();
+            let entry = inner.operations.entry(operation.to_string()).or_default();
+            entry.name = operation.to_string();
+            entry.ready = true;
+            entry.current_state = Some(state.to_string());
+            entry.current_owner = owner.map(str::to_string);
+            entry.current_deadline_ms = deadline_ms;
+            entry.last_event = Some("flowrt.operation.state_changed".to_string());
+            entry.last_error = None;
+            entry.last_transition_ms = Some(now);
+            if !matches!(
+                state,
+                "idle" | "succeeded" | "failed" | "cancelled" | "timed_out"
+            ) {
+                if !entry
+                    .current_operation_ids
+                    .iter()
+                    .any(|id| id == operation_id)
+                {
+                    entry.current_operation_ids.push(operation_id.to_string());
+                }
+                entry.running = 1;
+            } else {
+                entry.current_operation_ids.retain(|id| id != operation_id);
+                entry.running = 0;
+            }
+        }
+        self.recorder.record_operation_event_json(
+            operation,
+            "flowrt.operation.state_changed",
+            serde_json::json!({
+                "operation_id": operation_id,
+                "state": state,
+                "owner": owner,
+                "deadline_ms": deadline_ms,
+                "transition_ms": now,
+            }),
+        );
+    }
+
+    /// 记录 operation progress 事件。
+    pub fn record_operation_progress(&self, operation: &str, operation_id: &str, sequence: u64) {
+        {
+            let mut inner = self.lock_inner();
+            let entry = inner.operations.entry(operation.to_string()).or_default();
+            entry.name = operation.to_string();
+            entry.last_event = Some("flowrt.operation.progress".to_string());
+        }
+        self.recorder.record_operation_event_json(
+            operation,
+            "flowrt.operation.progress",
+            serde_json::json!({
+                "operation_id": operation_id,
+                "sequence": sequence,
+            }),
+        );
+    }
+
+    /// 记录 operation result/error 事件。
+    pub fn record_operation_result(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        result: &str,
+        error: Option<&str>,
+    ) {
+        let event = if error.is_some() || result == "failed" {
+            "flowrt.operation.error"
+        } else {
+            "flowrt.operation.result"
+        };
+        {
+            let mut inner = self.lock_inner();
+            let entry = inner.operations.entry(operation.to_string()).or_default();
+            entry.name = operation.to_string();
+            entry.last_event = Some(event.to_string());
+            entry.last_error = error.map(str::to_string);
+        }
+        self.recorder.record_operation_event_json(
+            operation,
+            event,
+            serde_json::json!({
+                "operation_id": operation_id,
+                "result": result,
+                "error": error,
             }),
         );
     }
@@ -1422,6 +1567,27 @@ impl IntrospectionState {
         &self,
         operation_id: &str,
     ) -> std::result::Result<IntrospectionOperationStatus, String> {
+        let handler = {
+            let inner = self.lock_inner();
+            inner.operations.values().find_map(|operation| {
+                if operation
+                    .current_operation_ids
+                    .iter()
+                    .any(|id| id == operation_id)
+                {
+                    inner
+                        .operation_cancel_handlers
+                        .get(&operation.name)
+                        .cloned()
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(handler) = handler {
+            return handler(operation_id);
+        }
+
         let mut inner = self.lock_inner();
         for operation in inner.operations.values_mut() {
             let Some(position) = operation
@@ -1436,9 +1602,10 @@ impl IntrospectionState {
                     "FlowRT operation `{operation_id}` is already finished"
                 ));
             }
-            operation.current_operation_ids.remove(position);
-            operation.running = operation.running.saturating_sub(1);
-            operation.canceled_count = operation.canceled_count.saturating_add(1);
+            let _ = position;
+            operation.current_state = Some("cancel_requested".to_string());
+            operation.last_event = Some("flowrt.operation.state_changed".to_string());
+            operation.last_error = None;
             operation.last_transition_ms = Some(unix_time_ms());
             return Ok(operation.clone());
         }
@@ -3566,6 +3733,11 @@ mod tests {
             canceled_count: 0,
             timeout_count: 1,
             preempted_count: 0,
+            current_state: Some("running".to_string()),
+            current_owner: Some("controller.plan".to_string()),
+            current_deadline_ms: Some(1500),
+            last_event: Some("flowrt.operation.state_changed".to_string()),
+            last_error: None,
             last_transition_ms: Some(12345),
         });
 
@@ -3592,17 +3764,18 @@ mod tests {
             panic!("operation cancel returned wrong response")
         };
         assert_eq!(operation.name, "controller.plan");
-        assert_eq!(operation.running, 0);
-        assert_eq!(operation.canceled_count, 1);
-        assert!(operation.current_operation_ids.is_empty());
+        assert_eq!(operation.running, 1);
+        assert_eq!(operation.canceled_count, 0);
+        assert_eq!(operation.current_state.as_deref(), Some("cancel_requested"));
+        assert_eq!(operation.current_operation_ids, vec!["111:7:3".to_string()]);
 
-        let IntrospectionResponse::Error { message, .. } =
+        let IntrospectionResponse::OperationValue { operation, .. } =
             request_operation_cancel(server.path(), "111:7:3")
-                .expect("finished operation should return structured error")
+                .expect("repeated current cancel should be idempotent")
         else {
             panic!("second operation cancel returned wrong response")
         };
-        assert_eq!(message, "unknown FlowRT operation `111:7:3`");
+        assert_eq!(operation.current_state.as_deref(), Some("cancel_requested"));
 
         drop(server);
         let _ = fs::remove_dir_all(root);
@@ -4087,8 +4260,23 @@ mod tests {
             canceled_count: 0,
             timeout_count: 0,
             preempted_count: 0,
+            current_state: Some("running".to_string()),
+            current_owner: Some("controller.plan".to_string()),
+            current_deadline_ms: Some(1500),
+            last_event: Some("flowrt.operation.state_changed".to_string()),
+            last_error: None,
             last_transition_ms: Some(12),
         });
+        state.record_operation_transition(
+            "controller.plan",
+            "1:2:3",
+            "running",
+            Some("controller.plan"),
+            Some(1500),
+        );
+        state.record_operation_progress("controller.plan", "1:2:3", 0);
+        state.record_operation_result("controller.plan", "1:2:3", "succeeded", None);
+        state.record_operation_result("controller.plan", "1:2:4", "failed", Some("handler error"));
         state.record_task_health(IntrospectionTaskHealth {
             name: "control_loop".to_string(),
             lane: "control".to_string(),
@@ -4115,6 +4303,22 @@ mod tests {
         assert!(events.iter().any(|event| {
             event.event_kind == flowrt_record::RecordEventKind::OperationEvent
                 && event.entity.name == "controller.plan"
+                && event.payload_schema == "flowrt.operation.state_changed"
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_kind == flowrt_record::RecordEventKind::OperationEvent
+                && event.entity.name == "controller.plan"
+                && event.payload_schema == "flowrt.operation.progress"
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_kind == flowrt_record::RecordEventKind::OperationEvent
+                && event.entity.name == "controller.plan"
+                && event.payload_schema == "flowrt.operation.result"
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_kind == flowrt_record::RecordEventKind::OperationEvent
+                && event.entity.name == "controller.plan"
+                && event.payload_schema == "flowrt.operation.error"
         }));
         assert!(
             events
@@ -4231,6 +4435,7 @@ mod tests {
                 timeout_count: 0,
                 preempted_count: 0,
                 last_transition_ms: Some(998),
+                ..Default::default()
             }],
             tasks: vec![IntrospectionTaskHealth {
                 name: "t1".to_string(),

@@ -11,7 +11,7 @@ fn operation_state_machine_tracks_success_and_counters() {
     let id = OperationId::new(0xAA, 1, 0xBB);
     let mut lifecycle = OperationLifecycle::new(id, OperationPolicy::default()).unwrap();
 
-    assert_eq!(lifecycle.state(), OperationState::Accepted);
+    assert_eq!(lifecycle.state(), OperationState::Starting);
     lifecycle.transition(OperationState::Running).unwrap();
     lifecycle.transition(OperationState::Succeeded).unwrap();
 
@@ -55,8 +55,8 @@ fn operation_cancel_is_cooperative_and_counts_canceled() {
     lifecycle.request_cancel().unwrap();
 
     assert!(token.is_canceled());
-    assert_eq!(lifecycle.state(), OperationState::Canceling);
-    lifecycle.transition(OperationState::Canceled).unwrap();
+    assert_eq!(lifecycle.state(), OperationState::CancelRequested);
+    lifecycle.transition(OperationState::Cancelled).unwrap();
 
     let snapshot = lifecycle.snapshot();
     assert!(snapshot.cancel_requested);
@@ -110,18 +110,12 @@ fn operation_lifecycle_rejects_manually_invalid_policy() {
 }
 
 #[test]
-fn operation_timeout_and_preempt_update_counters() {
+fn operation_timeout_updates_counters() {
     let timeout_id = OperationId::new(1, 3, 7);
     let mut timed = OperationLifecycle::new(timeout_id, OperationPolicy::default()).unwrap();
     timed.transition(OperationState::Running).unwrap();
-    timed.transition(OperationState::Timeout).unwrap();
+    timed.transition(OperationState::TimedOut).unwrap();
     assert_eq!(timed.snapshot().health.timeout, 1);
-
-    let preempt_id = OperationId::new(1, 4, 7);
-    let mut preempted = OperationLifecycle::new(preempt_id, OperationPolicy::default()).unwrap();
-    preempted.transition(OperationState::Running).unwrap();
-    preempted.transition(OperationState::Preempted).unwrap();
-    assert_eq!(preempted.snapshot().health.preempted, 1);
 }
 
 #[test]
@@ -138,12 +132,14 @@ fn operation_health_counters_can_record_terminal_states() {
     let counters = OperationHealthCounters::default();
     counters.record_state(OperationState::Running);
     counters.record_state(OperationState::Failed);
-    counters.record_state(OperationState::Canceled);
+    counters.record_state(OperationState::Cancelled);
+    counters.record_state(OperationState::TimedOut);
 
     let snapshot = counters.snapshot();
     assert_eq!(snapshot.started, 1);
     assert_eq!(snapshot.failed, 1);
     assert_eq!(snapshot.canceled, 1);
+    assert_eq!(snapshot.timeout, 1);
 }
 
 #[test]

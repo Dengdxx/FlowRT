@@ -74,6 +74,10 @@ fn rust_operation_client_handle_is_generated() {
         "operation client handle must expose start().\n\n{components}"
     );
     assert!(
+        components.contains("flowrt::OperationStartRequest<PlanGoal>"),
+        "generated handle must wrap goals in the internal start envelope carrying owner/deadline authority.\n\n{components}"
+    );
+    assert!(
         components.contains("fn cancel("),
         "operation client handle must expose cancel().\n\n{components}"
     );
@@ -165,8 +169,8 @@ fn rust_operation_start_handler_spawns_background_invocation() {
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(
-        shell.contains("let operation_cancel_token_0"),
-        "runtime shell must keep a shared cancel token slot for cancel/status handlers.\n\n{shell}"
+        shell.contains("let operation_control_0"),
+        "runtime shell must keep a shared OperationControl for cancel/status/deadline handlers.\n\n{shell}"
     );
     assert!(
         shell.contains("std::thread::Builder::new()"),
@@ -181,7 +185,7 @@ fn rust_operation_start_handler_spawns_background_invocation() {
         .find("std::thread::Builder::new()")
         .expect("start handler must spawn worker");
     let ack_index = start_handler
-        .find("flowrt::ServiceResult::ok(flowrt::OperationStartAck::accepted(id))")
+        .find("flowrt::ServiceResult::ok(ack)")
         .expect("start handler must return accepted ack");
     assert!(
         ack_index > spawn_index,
@@ -191,31 +195,63 @@ fn rust_operation_start_handler_spawns_background_invocation() {
         !start_handler.contains(".on_plan_operation(&goal,"),
         "start handler itself must not call the user operation handler synchronously.\n\n{start_handler}"
     );
+    assert!(
+        start_handler.contains("request.owner"),
+        "start handler must read control owner from OperationStartRequest.\n\n{start_handler}"
+    );
+    assert!(
+        start_handler.contains("request.goal"),
+        "start handler must unwrap the typed goal after accepting control authority.\n\n{start_handler}"
+    );
 }
 
-/// 当前 generated Operation runtime 只支持单个运行中的 invocation，第二个 start 必须被拒绝。
+/// 当前 generated Operation runtime 默认 single-owner，第二个 owner 必须被结构化拒绝。
 #[test]
-fn rust_operation_start_handler_rejects_second_active_invocation() {
+fn rust_operation_start_handler_rejects_second_owner() {
     let contract = contract_from_source(RUST_OPERATION_RSDL);
     let bundle = emit_artifacts(&contract).unwrap();
     let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
     let start_handler = generated_function_block(shell, "let operation_start_handler_0");
 
     assert!(
-        shell.contains("let operation_active_0"),
-        "runtime shell must keep an active flag for reject concurrency.\n\n{shell}"
+        shell.contains("let operation_control_0"),
+        "runtime shell must keep an OperationControl state machine.\n\n{shell}"
     );
     assert!(
-        start_handler.contains(".compare_exchange(false, true"),
-        "start handler must atomically reserve the single active invocation.\n\n{start_handler}"
+        start_handler.contains(".start_with_timeout(request.owner"),
+        "start handler must reserve control authority through OperationControl.\n\n{start_handler}"
     );
     assert!(
-        start_handler.contains("flowrt::ServiceError::Busy"),
-        "start handler must reject a second start while one invocation is active.\n\n{start_handler}"
+        start_handler.contains("flowrt_operation_control_error"),
+        "start handler must return structured control errors for owner conflicts.\n\n{start_handler}"
+    );
+}
+
+/// Runtime scheduler step 必须主动驱动 deadline timeout，不能只靠用户 handler 自觉退出。
+#[test]
+fn rust_operation_step_drives_deadline_timeout_and_stale_cancel_errors() {
+    let contract = contract_from_source(RUST_OPERATION_RSDL);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let step_fn = generated_function_block(shell, "fn step_operation_navigator_plan");
+    let cancel_handler = generated_function_block(shell, "let operation_cancel_handler_0");
+
+    assert!(
+        step_fn.contains(".check_deadline(flowrt::monotonic_time_ms())"),
+        "operation hidden scheduler task must drive runtime deadline checks.\n\n{step_fn}"
     );
     assert!(
-        start_handler.contains("operation_worker_active.store(false"),
-        "operation worker must release the active flag after terminal state.\n\n{start_handler}"
+        cancel_handler.contains("flowrt_operation_control_error"),
+        "stale cancel invocation ids must return a structured error.\n\n{cancel_handler}"
+    );
+    assert!(
+        components.contains("flowrt::ServiceError::Rejected"),
+        "generated helper must map stale invocation ids to structured rejected errors.\n\n{components}"
+    );
+    assert!(
+        step_fn.contains("state.as_str()"),
+        "generated shell must publish final lifecycle state names through OperationState::as_str().\n\n{step_fn}"
     );
 }
 
@@ -297,6 +333,10 @@ fn cpp_operation_components_are_generated() {
         "C++ components header must expose operation client wrapper.\n\n{components}"
     );
     assert!(
+        components.contains("flowrt::OperationStartRequest<PlanGoal>"),
+        "C++ operation client wrapper must send the internal start envelope.\n\n{components}"
+    );
+    assert!(
         components.contains("OperationClient_controller_plan& plan"),
         "controller interface on_tick must receive operation client handle.\n\n{components}"
     );
@@ -337,28 +377,28 @@ fn cpp_operation_components_are_generated() {
         "C++ operation lowering must include a background worker for long handlers.\n\n{shell}"
     );
     assert!(
-        shell.contains("operation_cancel_token_0"),
-        "C++ operation lowering must keep a shared cancel token slot.\n\n{shell}"
+        shell.contains("operation_control->cancel_token()"),
+        "C++ operation lowering must get cooperative cancel token from OperationControl.\n\n{shell}"
     );
     assert!(
         !shell.contains("const auto result = this->navigator_->on_plan_operation(goal,"),
         "C++ start handler itself must not call user operation handler synchronously.\n\n{shell}"
     );
     assert!(
-        shell.contains("std::atomic_bool"),
-        "C++ operation lowering must keep an active flag for reject concurrency.\n\n{shell}"
+        shell.contains("operation_control_0"),
+        "C++ operation lowering must keep an OperationControl state machine.\n\n{shell}"
     );
     assert!(
-        shell.contains("compare_exchange_strong"),
-        "C++ start handler must atomically reserve the single active invocation.\n\n{shell}"
+        shell.contains("start_with_timeout(request.owner"),
+        "C++ start handler must reserve control authority through OperationControl.\n\n{shell}"
     );
     assert!(
-        shell.contains("flowrt::ServiceError::Busy"),
-        "C++ start handler must reject a second start while one invocation is active.\n\n{shell}"
+        shell.contains("flowrt_operation_control_error"),
+        "C++ start handler must return structured Operation control errors.\n\n{shell}"
     );
     assert!(
-        shell.contains("operation_worker_active->store(false"),
-        "C++ operation worker must release the active flag after terminal state.\n\n{shell}"
+        shell.contains("check_deadline(flowrt::monotonic_time_ms())"),
+        "C++ operation hidden scheduler task must drive runtime deadline checks.\n\n{shell}"
     );
 }
 

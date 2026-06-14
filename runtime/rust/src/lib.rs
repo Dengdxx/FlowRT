@@ -75,10 +75,12 @@ pub use introspection::{
     runtime_socket_dir, runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
 };
 pub use operation::{
-    OperationCancelToken, OperationClientError, OperationConcurrencyPolicy, OperationError,
-    OperationHandlerResult, OperationHealthCounters, OperationHealthSnapshot, OperationId,
-    OperationLifecycle, OperationPolicy, OperationPreemptPolicy, OperationProgress,
-    OperationProgressPublisher, OperationStartAck, OperationState, OperationStatusSnapshot,
+    OperationCancelToken, OperationClientError, OperationConcurrencyPolicy, OperationControl,
+    OperationControlError, OperationError, OperationHandlerResult, OperationHealthCounters,
+    OperationHealthSnapshot, OperationId, OperationLifecycle, OperationOwner, OperationPolicy,
+    OperationPreemptPolicy, OperationProgress, OperationProgressPublisher, OperationRuntimeEvent,
+    OperationRuntimeEventKind, OperationStartAck, OperationStartRequest, OperationState,
+    OperationStatusSnapshot, monotonic_time_ms,
 };
 #[cfg(feature = "zenoh")]
 pub use params_remote::{

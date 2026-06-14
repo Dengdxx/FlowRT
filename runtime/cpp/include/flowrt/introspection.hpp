@@ -345,6 +345,11 @@ struct IntrospectionOperationStatus {
     std::uint64_t canceled_count = 0;
     std::uint64_t timeout_count = 0;
     std::uint64_t preempted_count = 0;
+    std::optional<std::string> current_state;
+    std::optional<std::string> current_owner;
+    std::optional<std::uint64_t> current_deadline_ms;
+    std::optional<std::string> last_event;
+    std::optional<std::string> last_error;
     std::optional<std::uint64_t> last_transition_ms;
 };
 
@@ -658,6 +663,16 @@ inline std::string operation_status_json(const IntrospectionOperationStatus &ope
     output.append(std::to_string(operation.timeout_count));
     output.append(",\"preempted_count\":");
     output.append(std::to_string(operation.preempted_count));
+    output.append(",\"current_state\":");
+    output.append(operation.current_state ? json_string(*operation.current_state) : "null");
+    output.append(",\"current_owner\":");
+    output.append(operation.current_owner ? json_string(*operation.current_owner) : "null");
+    output.append(",\"current_deadline_ms\":");
+    output.append(optional_u64_json(operation.current_deadline_ms));
+    output.append(",\"last_event\":");
+    output.append(operation.last_event ? json_string(*operation.last_event) : "null");
+    output.append(",\"last_error\":");
+    output.append(operation.last_error ? json_string(*operation.last_error) : "null");
     output.append(",\"last_transition_ms\":");
     output.append(optional_u64_json(operation.last_transition_ms));
     output.push_back('}');
@@ -2004,6 +2019,17 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 注册 operation cancel control hook。
+     */
+    void register_operation_cancel_handler(
+        std::string name,
+        std::function<std::variant<IntrospectionOperationStatus, std::string>(std::string_view)>
+            handler) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->operation_cancel_handlers.insert_or_assign(std::move(name), std::move(handler));
+    }
+
+    /**
      * @brief 记录 operation 运行态健康状态快照。
      */
     void record_operation_health(IntrospectionOperationStatus status) const {
@@ -2018,6 +2044,15 @@ class IntrospectionState {
             ",\"canceled\":" + std::to_string(status.canceled_count) +
             ",\"timeout\":" + std::to_string(status.timeout_count) +
             ",\"preempted\":" + std::to_string(status.preempted_count) +
+            ",\"state\":" +
+            (status.current_state ? detail::json_string(*status.current_state) : "null") +
+            ",\"owner\":" +
+            (status.current_owner ? detail::json_string(*status.current_owner) : "null") +
+            ",\"deadline_ms\":" + detail::optional_u64_json(status.current_deadline_ms) +
+            ",\"last_event\":" +
+            (status.last_event ? detail::json_string(*status.last_event) : "null") +
+            ",\"last_error\":" +
+            (status.last_error ? detail::json_string(*status.last_error) : "null") +
             ",\"last_transition_ms\":" + detail::optional_u64_json(status.last_transition_ms) + "}";
         const auto name = status.name;
         std::lock_guard<std::mutex> lock(inner_->mutex);
@@ -2027,10 +2062,118 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 记录 operation 状态转换事件。
+     */
+    void record_operation_transition(std::string_view operation, std::string_view operation_id,
+                                     std::string_view state,
+                                     std::optional<std::string_view> owner,
+                                     std::optional<std::uint64_t> deadline_ms) const {
+        const auto now = detail::unix_time_ms();
+        const auto operation_name = std::string{operation};
+        const auto id = std::string{operation_id};
+        const auto state_name = std::string{state};
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &entry = inner_->operations[operation_name];
+        entry.name = operation_name;
+        entry.ready = true;
+        entry.current_state = state_name;
+        entry.current_owner = owner ? std::optional<std::string>{std::string{*owner}} : std::nullopt;
+        entry.current_deadline_ms = deadline_ms;
+        entry.last_event = "flowrt.operation.state_changed";
+        entry.last_error = std::nullopt;
+        entry.last_transition_ms = now;
+        if (state != "idle" && state != "succeeded" && state != "failed" &&
+            state != "cancelled" && state != "timed_out") {
+            if (std::find(entry.current_operation_ids.begin(), entry.current_operation_ids.end(),
+                          id) == entry.current_operation_ids.end()) {
+                entry.current_operation_ids.push_back(id);
+            }
+            entry.running = 1;
+        } else {
+            entry.current_operation_ids.erase(
+                std::remove(entry.current_operation_ids.begin(), entry.current_operation_ids.end(),
+                            id),
+                entry.current_operation_ids.end());
+            entry.running = 0;
+        }
+        const auto payload = "{\"operation_id\":" + detail::json_string(id) +
+                             ",\"state\":" + detail::json_string(state_name) +
+                             ",\"owner\":" +
+                             (owner ? detail::json_string(*owner) : std::string{"null"}) +
+                             ",\"deadline_ms\":" + detail::optional_u64_json(deadline_ms) +
+                             ",\"transition_ms\":" + std::to_string(now) + "}";
+        record_event_locked("operation", operation_name, "operation_event", "operation",
+                            operation_name, "", "json", "flowrt.operation.state_changed",
+                            string_bytes(payload), std::nullopt);
+    }
+
+    /**
+     * @brief 记录 operation progress 事件。
+     */
+    void record_operation_progress(std::string_view operation, std::string_view operation_id,
+                                   std::uint64_t sequence) const {
+        const auto operation_name = std::string{operation};
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &entry = inner_->operations[operation_name];
+        entry.name = operation_name;
+        entry.last_event = "flowrt.operation.progress";
+        const auto payload = "{\"operation_id\":" + detail::json_string(operation_id) +
+                             ",\"sequence\":" + std::to_string(sequence) + "}";
+        record_event_locked("operation", operation_name, "operation_event", "operation",
+                            operation_name, "", "json", "flowrt.operation.progress",
+                            string_bytes(payload), std::nullopt);
+    }
+
+    /**
+     * @brief 记录 operation result/error 事件。
+     */
+    void record_operation_result(std::string_view operation, std::string_view operation_id,
+                                 std::string_view result,
+                                 std::optional<std::string_view> error) const {
+        const auto operation_name = std::string{operation};
+        const auto event = (error.has_value() || result == "failed")
+                               ? std::string{"flowrt.operation.error"}
+                               : std::string{"flowrt.operation.result"};
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &entry = inner_->operations[operation_name];
+        entry.name = operation_name;
+        entry.last_event = event;
+        entry.last_error = error ? std::optional<std::string>{std::string{*error}} : std::nullopt;
+        const auto payload = "{\"operation_id\":" + detail::json_string(operation_id) +
+                             ",\"result\":" + detail::json_string(result) + ",\"error\":" +
+                             (error ? detail::json_string(*error) : std::string{"null"}) + "}";
+        record_event_locked("operation", operation_name, "operation_event", "operation",
+                            operation_name, "", "json", event, string_bytes(payload),
+                            std::nullopt);
+    }
+
+    /**
      * @brief 请求取消指定 operation invocation。
      */
     std::variant<IntrospectionOperationStatus, std::string> cancel_operation(
         std::string_view operation_id) const {
+        std::function<std::variant<IntrospectionOperationStatus, std::string>(std::string_view)>
+            handler;
+        {
+            std::lock_guard<std::mutex> lock(inner_->mutex);
+            for (auto &[name, operation] : inner_->operations) {
+                const auto match = std::find(operation.current_operation_ids.begin(),
+                                             operation.current_operation_ids.end(),
+                                             std::string{operation_id});
+                if (match == operation.current_operation_ids.end()) {
+                    continue;
+                }
+                if (auto handler_it = inner_->operation_cancel_handlers.find(name);
+                    handler_it != inner_->operation_cancel_handlers.end()) {
+                    handler = handler_it->second;
+                    break;
+                }
+            }
+        }
+        if (handler) {
+            return handler(operation_id);
+        }
+
         std::lock_guard<std::mutex> lock(inner_->mutex);
         for (auto &[name, operation] : inner_->operations) {
             (void)name;
@@ -2363,6 +2506,10 @@ class IntrospectionState {
         std::map<std::string, BoundaryStatus> io_boundaries;
         std::map<std::string, IntrospectionServiceStatus> services;
         std::map<std::string, IntrospectionOperationStatus> operations;
+        std::map<std::string,
+                 std::function<std::variant<IntrospectionOperationStatus, std::string>(
+                     std::string_view)>>
+            operation_cancel_handlers;
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
         RecorderState recorder;

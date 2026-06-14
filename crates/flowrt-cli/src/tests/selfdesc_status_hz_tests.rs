@@ -1135,6 +1135,11 @@ fn live_status_summary_displays_operation_health() {
         canceled_count: 0,
         timeout_count: 1,
         preempted_count: 0,
+        current_state: Some("running".to_string()),
+        current_owner: Some("controller.plan".to_string()),
+        current_deadline_ms: Some(1500),
+        last_event: Some("flowrt.operation.state_changed".to_string()),
+        last_error: None,
         last_transition_ms: Some(12345),
     });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
@@ -1150,6 +1155,10 @@ fn live_status_summary_displays_operation_health() {
     assert!(output.contains("total_started=9"));
     assert!(output.contains("succeeded=5"));
     assert!(output.contains("timeout=1"));
+    assert!(output.contains("state=running"));
+    assert!(output.contains("owner=controller.plan"));
+    assert!(output.contains("deadline_ms=1500"));
+    assert!(output.contains("last_event=flowrt.operation.state_changed"));
     assert!(output.contains("last_transition_ms=12345"));
 
     drop(server);
@@ -1182,6 +1191,11 @@ fn operation_cli_status_and_cancel_use_runtime_socket() {
         canceled_count: 0,
         timeout_count: 0,
         preempted_count: 0,
+        current_state: Some("cancel_requested".to_string()),
+        current_owner: Some("controller.plan".to_string()),
+        current_deadline_ms: Some(1500),
+        last_event: Some("flowrt.operation.state_changed".to_string()),
+        last_error: None,
         last_transition_ms: Some(12345),
     });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
@@ -1194,7 +1208,8 @@ fn operation_cli_status_and_cancel_use_runtime_socket() {
     let canceled = operation_cancel("111:7:3", Some(&socket)).unwrap();
     assert!(canceled.contains("operation=controller.plan"));
     assert!(canceled.contains("operation_id=111:7:3"));
-    assert!(canceled.contains("canceled=1"));
+    assert!(canceled.contains("state=cancel_requested"));
+    assert!(canceled.contains("canceled=0"));
 
     drop(server);
     let _ = std::fs::remove_dir_all(&root);
@@ -1238,6 +1253,11 @@ fn operation_cancel_without_socket_refuses_ambiguous_id_without_side_effects() {
             canceled_count: 0,
             timeout_count: 0,
             preempted_count: 0,
+            current_state: Some("running".to_string()),
+            current_owner: Some("controller.plan".to_string()),
+            current_deadline_ms: Some(1500),
+            last_event: Some("flowrt.operation.state_changed".to_string()),
+            last_error: None,
             last_transition_ms: Some(12345),
         });
     }

@@ -172,14 +172,14 @@ typedef struct flowrt_params_update_result_t {
 } flowrt_params_update_result_t;
 
 typedef uint32_t flowrt_operation_state_t;
-#define FLOWRT_OPERATION_STATE_ACCEPTED ((flowrt_operation_state_t)0U)
-#define FLOWRT_OPERATION_STATE_RUNNING ((flowrt_operation_state_t)1U)
-#define FLOWRT_OPERATION_STATE_CANCELING ((flowrt_operation_state_t)2U)
-#define FLOWRT_OPERATION_STATE_SUCCEEDED ((flowrt_operation_state_t)3U)
-#define FLOWRT_OPERATION_STATE_FAILED ((flowrt_operation_state_t)4U)
-#define FLOWRT_OPERATION_STATE_CANCELED ((flowrt_operation_state_t)5U)
-#define FLOWRT_OPERATION_STATE_TIMEOUT ((flowrt_operation_state_t)6U)
-#define FLOWRT_OPERATION_STATE_PREEMPTED ((flowrt_operation_state_t)7U)
+#define FLOWRT_OPERATION_STATE_IDLE ((flowrt_operation_state_t)0U)
+#define FLOWRT_OPERATION_STATE_STARTING ((flowrt_operation_state_t)1U)
+#define FLOWRT_OPERATION_STATE_RUNNING ((flowrt_operation_state_t)2U)
+#define FLOWRT_OPERATION_STATE_CANCEL_REQUESTED ((flowrt_operation_state_t)3U)
+#define FLOWRT_OPERATION_STATE_SUCCEEDED ((flowrt_operation_state_t)4U)
+#define FLOWRT_OPERATION_STATE_FAILED ((flowrt_operation_state_t)5U)
+#define FLOWRT_OPERATION_STATE_CANCELLED ((flowrt_operation_state_t)6U)
+#define FLOWRT_OPERATION_STATE_TIMED_OUT ((flowrt_operation_state_t)7U)
 
 typedef struct flowrt_operation_id_t {
     uint64_t operation_key;

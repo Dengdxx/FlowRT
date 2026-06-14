@@ -222,6 +222,12 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
     );
+    output.push_str(
+        "std::string flowrt_operation_id_string(flowrt::OperationId id) {\n    return std::to_string(id.operation_key) + \":\" + std::to_string(id.client_id) + \":\" + std::to_string(id.sequence);\n}\n\nflowrt::IntrospectionOperationStatus flowrt_operation_status_from_snapshot(std::string_view name, std::string_view owner, const flowrt::OperationStatusSnapshot& snapshot) {\n    const bool active = !flowrt::is_terminal(snapshot.state) && snapshot.state != flowrt::OperationState::Idle;\n    flowrt::IntrospectionOperationStatus status;\n    status.name = std::string{name};\n    status.ready = true;\n    status.running = active ? 1U : 0U;\n    status.queued = 0U;\n    if (active) {\n        status.current_operation_ids.push_back(flowrt_operation_id_string(snapshot.id));\n    }\n    status.total_started = snapshot.health.started;\n    status.succeeded_count = snapshot.health.succeeded;\n    status.failed_count = snapshot.health.failed;\n    status.canceled_count = snapshot.health.canceled;\n    status.timeout_count = snapshot.health.timeout;\n    status.preempted_count = snapshot.health.preempted;\n    status.current_state = std::string{flowrt::to_string(snapshot.state)};\n    status.current_owner = snapshot.owner.owner_key == 0U ? std::nullopt : std::optional<std::string>{std::string{owner}};\n    status.current_deadline_ms = active ? std::optional<std::uint64_t>{snapshot.deadline_ms} : std::nullopt;\n    status.last_event = \"flowrt.operation.state_changed\";\n    status.last_error = std::nullopt;\n    status.last_transition_ms = flowrt::monotonic_time_ms();\n    return status;\n}\n\n",
+    );
+    output.push_str(
+        "template <typename T>\nflowrt::ServiceResult<T> flowrt_operation_control_error(flowrt::OperationControlError error) {\n    switch (error) {\n        case flowrt::OperationControlError::Busy:\n        case flowrt::OperationControlError::OwnerConflict:\n            return flowrt::ServiceResult<T>::err_with_message(flowrt::ServiceError::Busy, std::string{flowrt::to_string(error)});\n        case flowrt::OperationControlError::StaleInvocation:\n        case flowrt::OperationControlError::AlreadyTerminal:\n            return flowrt::ServiceResult<T>::err_with_message(flowrt::ServiceError::Rejected, std::string{flowrt::to_string(error)});\n        case flowrt::OperationControlError::InvalidTransition:\n        case flowrt::OperationControlError::InvalidPolicy:\n        case flowrt::OperationControlError::Ok:\n            return flowrt::ServiceResult<T>::err_with_message(flowrt::ServiceError::HandlerError, std::string{flowrt::to_string(error)});\n    }\n    return flowrt::ServiceResult<T>::err(flowrt::ServiceError::HandlerError);\n}\n\n",
+    );
     if contract_has_c_components(contract) {
         output.push_str(&emit_c_adapter_helpers(contract, graph, &order));
     }
@@ -330,8 +336,12 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         if plan.backend.0 == "zenoh" {
             continue;
         }
+        let operation_name = cpp_string_literal(&plan.operation_name);
+        let owner_name =
+            cpp_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
+        let operation_index = plan.index;
         output.push_str(&format!(
-            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    (void)scheduler_events;\n    (void)health_map;\n    if ({start_server}_.has_value()) {{\n        {start_server}_->process_pending();\n    }}\n    if ({cancel_server}_.has_value()) {{\n        {cancel_server}_->process_pending();\n    }}\n    if ({status_server}_.has_value()) {{\n        {status_server}_->process_pending();\n    }}\n    return flowrt::Status::Ok;\n}}\n\n",
+            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)scheduler_events;\n    (void)health_map;\n    introspection_state.register_operation_cancel_handler({operation_name}, [this](std::string_view operation_id) -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {{\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        if (flowrt_operation_id_string(snapshot.id) != operation_id) {{\n            return std::string{{\"stale operation invocation `\"}} + std::string{{operation_id}} + \"`; current is `\" + flowrt_operation_id_string(snapshot.id) + \"`\";\n        }}\n        if (const auto error = this->operation_control_{operation_index}_->request_cancel(snapshot.id, snapshot.owner); error != flowrt::OperationControlError::Ok) {{\n            return std::string{{flowrt::to_string(error)}};\n        }}\n        return flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, this->operation_control_{operation_index}_->snapshot());\n    }});\n    if ({start_server}_.has_value()) {{\n        {start_server}_->process_pending();\n    }}\n    if ({cancel_server}_.has_value()) {{\n        {cancel_server}_->process_pending();\n    }}\n    if ({status_server}_.has_value()) {{\n        {status_server}_->process_pending();\n    }}\n    if (this->operation_control_{operation_index}_) {{\n        (void)this->operation_control_{operation_index}_->check_deadline(flowrt::monotonic_time_ms());\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        const auto events = this->operation_control_{operation_index}_->drain_events();\n        for (const auto& event : events) {{\n            const auto operation_id = flowrt_operation_id_string(event.id);\n            switch (event.kind) {{\n                case flowrt::OperationRuntimeEventKind::StateChanged:\n                    if (event.state.has_value()) {{\n                        introspection_state.record_operation_transition(\n                            {operation_name},\n                            operation_id,\n                            flowrt::to_string(*event.state),\n                            std::optional<std::string_view>{{{owner_name}}},\n                            flowrt::is_terminal(*event.state) ? std::nullopt : std::optional<std::uint64_t>{{snapshot.deadline_ms}});\n                    }}\n                    break;\n                case flowrt::OperationRuntimeEventKind::Progress:\n                    introspection_state.record_operation_progress({operation_name}, operation_id, event.sequence.value_or(0U));\n                    break;\n                case flowrt::OperationRuntimeEventKind::Result: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"succeeded\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::nullopt);\n                    break;\n                }}\n                case flowrt::OperationRuntimeEventKind::Error: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"failed\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::optional<std::string_view>{{\"handler error\"}});\n                    break;\n                }}\n            }}\n        }}\n        introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n    }}\n    return flowrt::Status::Ok;\n}}\n\n",
             fn_name = cpp_operation_step_fn_name(plan),
             start_server = cpp_operation_start_server_field_name(plan),
             cancel_server = cpp_operation_cancel_server_field_name(plan),
@@ -531,7 +541,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         }
         let goal_ty = cpp_type(&plan.goal_type);
         output.push_str(&format!(
-            "    std::optional<flowrt::InprocServiceServer<{goal_ty}, flowrt::OperationStartAck>> {}_;\n",
+            "    std::optional<flowrt::InprocServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>> {}_;\n",
             cpp_operation_start_server_field_name(plan)
         ));
         output.push_str(&format!(
@@ -541,6 +551,10 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "    std::optional<flowrt::InprocServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>> {}_;\n",
             cpp_operation_status_server_field_name(plan)
+        ));
+        output.push_str(&format!(
+            "    std::shared_ptr<flowrt::OperationControl> operation_control_{}_; \n",
+            plan.index
         ));
     }
     // service step function declarations
@@ -775,71 +789,44 @@ fn cpp_operation_registration_block(plan: &crate::runtime_plan::OperationRuntime
         r#"    {{
         (void){feedback_name};
         (void){result_name};
-        auto operation_state_{operation_index} = std::make_shared<flowrt::OperationStatusSnapshot>(flowrt::OperationStatusSnapshot{{
-            .id = flowrt::OperationId{{.operation_key = flowrt::fnv1a64({operation_key_name}), .client_id = 0, .sequence = 0}},
-            .state = flowrt::OperationState::Accepted,
-            .cancel_requested = false,
-            .health = flowrt::OperationHealthSnapshot{{}},
-        }});
-        auto operation_state_mutex_{operation_index} = std::make_shared<std::mutex>();
-        auto operation_cancel_token_{operation_index} = std::make_shared<std::optional<flowrt::OperationCancelToken>>();
-        auto operation_cancel_mutex_{operation_index} = std::make_shared<std::mutex>();
-        auto operation_sequence_{operation_index} = std::make_shared<std::uint64_t>(0);
-        auto operation_active_{operation_index} = std::make_shared<std::atomic_bool>(false);
+        const auto operation_policy_{operation_index} = flowrt::OperationPolicy::make(
+            std::chrono::milliseconds{{{timeout_ms}}},
+            {concurrency},
+            {preempt},
+            {queue_depth}U,
+            {max_in_flight}U);
+        this->operation_control_{operation_index}_ = std::make_shared<flowrt::OperationControl>(
+            flowrt::fnv1a64({operation_key_name}),
+            operation_policy_{operation_index}.value());
         flowrt::InprocServiceConfig config;
         config.queue_depth = {queue_depth};
         config.max_in_flight = {max_in_flight};
         config.default_timeout_ms = {timeout_ms};
         {start_server}_.emplace(
             {start_name},
-            [this, operation_state_{operation_index}, operation_state_mutex_{operation_index}, operation_cancel_token_{operation_index}, operation_cancel_mutex_{operation_index}, operation_sequence_{operation_index}, operation_active_{operation_index}](const {goal_ty}& goal) -> flowrt::ServiceResult<flowrt::OperationStartAck> {{
+            [this](const flowrt::OperationStartRequest<{goal_ty}>& request) -> flowrt::ServiceResult<flowrt::OperationStartAck> {{
                 auto operation_worker_server = this->{server_instance}_;
                 if (!operation_worker_server) {{
                     return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Unavailable);
                 }}
-                bool expected_active = false;
-                if (!operation_active_{operation_index}->compare_exchange_strong(
-                        expected_active,
-                        true,
-                        std::memory_order_acq_rel,
-                        std::memory_order_acquire)) {{
-                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Busy);
+                auto operation_control = this->operation_control_{operation_index}_;
+                const auto started = operation_control->start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout);
+                if (!started.has_value()) {{
+                    return flowrt_operation_control_error<flowrt::OperationStartAck>(started.error());
                 }}
-                const auto sequence = (*operation_sequence_{operation_index})++;
-                const flowrt::OperationId id{{
-                    .operation_key = flowrt::fnv1a64({operation_key_name}),
-                    .client_id = 0,
-                    .sequence = sequence,
-                }};
-                const auto policy = flowrt::OperationPolicy::make(
-                    std::chrono::milliseconds{{{timeout_ms}}},
-                    {concurrency},
-                    {preempt},
-                    {queue_depth}U,
-                    {max_in_flight}U);
-                if (!policy.has_value()) {{
-                    operation_active_{operation_index}->store(false, std::memory_order_release);
-                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);
+                const auto ack = started.value();
+                const auto id = ack.id;
+                const auto cancel = operation_control->cancel_token().value();
+                if (const auto error = operation_control->mark_running(id);
+                    error != flowrt::OperationControlError::Ok) {{
+                    return flowrt_operation_control_error<flowrt::OperationStartAck>(error);
                 }}
-                auto lifecycle = std::make_shared<flowrt::OperationLifecycle>(id, *policy);
-                if (lifecycle->transition(flowrt::OperationState::Running) != flowrt::OperationError::Ok) {{
-                    operation_active_{operation_index}->store(false, std::memory_order_release);
-                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);
-                }}
-                const auto cancel = lifecycle->cancel_token();
-                {{
-                    std::lock_guard lock(*operation_state_mutex_{operation_index});
-                    *operation_state_{operation_index} = lifecycle->snapshot();
-                }}
-                {{
-                    std::lock_guard lock(*operation_cancel_mutex_{operation_index});
-                    *operation_cancel_token_{operation_index} = cancel;
-                }}
-                auto goal_for_worker = goal;
-                auto operation_worker_active = operation_active_{operation_index};
+                auto goal_for_worker = request.goal;
                 try {{
-                    std::thread([operation_worker_server, operation_state_{operation_index}, operation_state_mutex_{operation_index}, operation_worker_active, lifecycle, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {{
-                        auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{lifecycle->id()}};
+                    std::thread([operation_worker_server, operation_control, id, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {{
+                        auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {{
+                            operation_control->publish_progress(progress_id, sequence);
+                        }}}};
                         flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
                         try {{
                             const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, cancel, progress);
@@ -851,58 +838,40 @@ fn cpp_operation_registration_block(plan: &crate::runtime_plan::OperationRuntime
                                     terminal_state = flowrt::OperationState::Failed;
                                     break;
                                 case flowrt::OperationHandlerResult<{result_ty}>::Kind::Canceled:
-                                    terminal_state = flowrt::OperationState::Canceled;
+                                    terminal_state = flowrt::OperationState::Cancelled;
                                     break;
                             }}
                         }} catch (...) {{
                             terminal_state = flowrt::OperationState::Failed;
                         }}
-                        if (terminal_state == flowrt::OperationState::Canceled) {{
-                            (void)lifecycle->request_cancel();
-                        }}
-                        (void)lifecycle->transition(terminal_state);
-                        std::lock_guard lock(*operation_state_mutex_{operation_index});
-                        *operation_state_{operation_index} = lifecycle->snapshot();
-                        operation_worker_active->store(false, std::memory_order_release);
+                        (void)operation_control->complete(id, terminal_state);
                     }}).detach();
                 }} catch (...) {{
-                    (void)lifecycle->transition(flowrt::OperationState::Failed);
-                    std::lock_guard lock(*operation_state_mutex_{operation_index});
-                    *operation_state_{operation_index} = lifecycle->snapshot();
-                    operation_active_{operation_index}->store(false, std::memory_order_release);
+                    (void)operation_control->complete(id, flowrt::OperationState::Failed);
                     return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);
                 }}
-                return flowrt::ServiceResult<flowrt::OperationStartAck>::ok(flowrt::OperationStartAck::accepted_ack(id));
+                return flowrt::ServiceResult<flowrt::OperationStartAck>::ok(ack);
             }},
             config);
         {cancel_server}_.emplace(
             {cancel_name},
-            [operation_state_{operation_index}, operation_state_mutex_{operation_index}, operation_cancel_token_{operation_index}, operation_cancel_mutex_{operation_index}](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
-                std::lock_guard state_lock(*operation_state_mutex_{operation_index});
-                if (operation_state_{operation_index}->id == id) {{
-                    {{
-                        std::lock_guard cancel_lock(*operation_cancel_mutex_{operation_index});
-                        if (operation_cancel_token_{operation_index}->has_value()) {{
-                            operation_cancel_token_{operation_index}->value().request_cancel();
-                        }}
-                    }}
-                    operation_state_{operation_index}->cancel_requested = true;
-                    if (!flowrt::is_terminal(operation_state_{operation_index}->state)) {{
-                        operation_state_{operation_index}->state = flowrt::OperationState::Canceling;
-                    }}
+            [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
+                const auto snapshot = this->operation_control_{operation_index}_->snapshot();
+                if (const auto error = this->operation_control_{operation_index}_->request_cancel(id, snapshot.owner);
+                    error != flowrt::OperationControlError::Ok) {{
+                    return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(error);
                 }}
-                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(*operation_state_{operation_index});
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_{operation_index}_->snapshot());
             }},
             config);
         {status_server}_.emplace(
             {status_name},
-            [operation_state_{operation_index}, operation_state_mutex_{operation_index}](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
-                std::lock_guard lock(*operation_state_mutex_{operation_index});
-                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(*operation_state_{operation_index});
+            [this](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_{operation_index}_->snapshot());
             }},
             config);
         {client_field}_ = {handle_name}(
-            flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck>({start_name}, *{start_server}_, 0, {server_lane_id}),
+            flowrt::InprocServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>({start_name}, *{start_server}_, 0, {server_lane_id}),
             flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({cancel_name}, *{cancel_server}_, 0, {server_lane_id}),
             flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>({status_name}, *{status_server}_, 0, {server_lane_id}));
     }}
@@ -2090,6 +2059,15 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         run.contract,
         run.order,
     ));
+    for plan in &operation_plans {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        output.push_str(&format!(
+            "        bool flowrt_operation_tick_driven_{} = false;\n",
+            plan.index
+        ));
+    }
     let has_inproc_service = service_plans.iter().any(|p| p.backend.0 != "zenoh");
     let has_inproc_operation = operation_plans.iter().any(|p| p.backend.0 != "zenoh");
     let woke_on_message_decl = if tasks
@@ -2129,8 +2107,9 @@ fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         let start_server = cpp_operation_start_server_field_name(plan);
         let cancel_server = cpp_operation_cancel_server_field_name(plan);
         let status_server = cpp_operation_status_server_field_name(plan);
+        let operation_index = plan.index;
         output.push_str(&format!(
-            "            if (({start_server}_.has_value() && {start_server}_->pending_count() > 0) || ({cancel_server}_.has_value() && {cancel_server}_->pending_count() > 0) || ({status_server}_.has_value() && {status_server}_->pending_count() > 0)) {{\n                scheduler.wake(flowrt::TaskId{{{service_task_id}}});\n                woke_on_message = true;\n            }}\n"
+            "            const auto flowrt_operation_snapshot_{operation_index} = this->operation_control_{operation_index}_ ? this->operation_control_{operation_index}_->snapshot() : flowrt::OperationStatusSnapshot{{}};\n            const bool flowrt_operation_active_{operation_index} = !flowrt::is_terminal(flowrt_operation_snapshot_{operation_index}.state) && flowrt_operation_snapshot_{operation_index}.state != flowrt::OperationState::Idle;\n            if (({start_server}_.has_value() && {start_server}_->pending_count() > 0) || ({cancel_server}_.has_value() && {cancel_server}_->pending_count() > 0) || ({status_server}_.has_value() && {status_server}_->pending_count() > 0) || (flowrt_operation_active_{operation_index} && !flowrt_operation_tick_driven_{operation_index})) {{\n                scheduler.wake(flowrt::TaskId{{{service_task_id}}});\n                if (flowrt_operation_active_{operation_index}) {{\n                    flowrt_operation_tick_driven_{operation_index} = true;\n                }}\n                woke_on_message = true;\n            }}\n"
         ));
     }
     output.push_str(
@@ -3493,6 +3472,9 @@ fn cpp_operation_client_handle_classes(
         }
         let goal_ty = cpp_type(&plan.goal_type);
         let default_timeout_ms = plan.timeout_ms.max(1);
+        let owner_scope = cpp_string_literal(&plan.operation_name);
+        let owner_name =
+            cpp_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
         if plan.backend.0 == "zenoh" {
             output.push_str(&format!(
                 "/**\n * @brief `{client}.{port}` Operation client（zenoh backend，未实现）。\n */\nclass {handle_name} {{\npublic:\n    {handle_name}() = default;\n\n    flowrt::OperationClientResult<flowrt::OperationStartAck> start(const {goal_ty}& /*goal*/, std::uint64_t /*timeout_ms*/ = {default_timeout_ms}) {{\n        return flowrt::OperationClientResult<flowrt::OperationStartAck>::err(flowrt::OperationClientError::Backend);\n    }}\n\n    flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> cancel(flowrt::OperationId /*id*/, std::uint64_t /*timeout_ms*/ = {default_timeout_ms}) {{\n        return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Backend);\n    }}\n\n    flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> status(flowrt::OperationId /*id*/, std::uint64_t /*timeout_ms*/ = {default_timeout_ms}) {{\n        return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Backend);\n    }}\n}};\n\n",
@@ -3501,7 +3483,7 @@ fn cpp_operation_client_handle_classes(
             ));
         } else {
             output.push_str(&format!(
-                "/**\n * @brief `{client}.{port}` Operation client typed wrapper。\n */\nclass {handle_name} {{\npublic:\n    {handle_name}() = default;\n\n    {handle_name}(\n        flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck> start_client,\n        flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot> cancel_client,\n        flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot> status_client)\n        : start_client_(std::move(start_client)), cancel_client_(std::move(cancel_client)), status_client_(std::move(status_client)) {{}}\n\n    flowrt::OperationClientResult<flowrt::OperationStartAck> start(const {goal_ty}& goal, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!start_client_.has_value()) {{\n            return flowrt::OperationClientResult<flowrt::OperationStartAck>::err(flowrt::OperationClientError::Unavailable);\n        }}\n        return flowrt::operation_client_result_from_service(start_client_->call(goal, timeout_ms));\n    }}\n\n    flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> cancel(flowrt::OperationId id, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!cancel_client_.has_value()) {{\n            return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Unavailable);\n        }}\n        return flowrt::operation_client_result_from_service(cancel_client_->call(id, timeout_ms));\n    }}\n\n    flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> status(flowrt::OperationId id, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!status_client_.has_value()) {{\n            return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Unavailable);\n        }}\n        return flowrt::operation_client_result_from_service(status_client_->call(id, timeout_ms));\n    }}\n\nprivate:\n    std::optional<flowrt::InprocServiceClient<{goal_ty}, flowrt::OperationStartAck>> start_client_;\n    std::optional<flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> cancel_client_;\n    std::optional<flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> status_client_;\n}};\n\n",
+                "/**\n * @brief `{client}.{port}` Operation client typed wrapper。\n */\nclass {handle_name} {{\npublic:\n    {handle_name}() = default;\n\n    {handle_name}(\n        flowrt::InprocServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck> start_client,\n        flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot> cancel_client,\n        flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot> status_client)\n        : start_client_(std::move(start_client)), cancel_client_(std::move(cancel_client)), status_client_(std::move(status_client)) {{}}\n\n    flowrt::OperationClientResult<flowrt::OperationStartAck> start(const {goal_ty}& goal, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!start_client_.has_value()) {{\n            return flowrt::OperationClientResult<flowrt::OperationStartAck>::err(flowrt::OperationClientError::Unavailable);\n        }}\n        const auto owner = flowrt::OperationOwner{{.scope_key = flowrt::fnv1a64({owner_scope}), .owner_key = flowrt::fnv1a64({owner_name})}};\n        const auto request = flowrt::OperationStartRequest<{goal_ty}>{{.goal = goal, .owner = owner, .timeout = std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(timeout_ms)}}}};\n        return flowrt::operation_client_result_from_service(start_client_->call(request, timeout_ms));\n    }}\n\n    flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> cancel(flowrt::OperationId id, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!cancel_client_.has_value()) {{\n            return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Unavailable);\n        }}\n        return flowrt::operation_client_result_from_service(cancel_client_->call(id, timeout_ms));\n    }}\n\n    flowrt::OperationClientResult<flowrt::OperationStatusSnapshot> status(flowrt::OperationId id, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!status_client_.has_value()) {{\n            return flowrt::OperationClientResult<flowrt::OperationStatusSnapshot>::err(flowrt::OperationClientError::Unavailable);\n        }}\n        return flowrt::operation_client_result_from_service(status_client_->call(id, timeout_ms));\n    }}\n\nprivate:\n    std::optional<flowrt::InprocServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>> start_client_;\n    std::optional<flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> cancel_client_;\n    std::optional<flowrt::InprocServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>> status_client_;\n}};\n\n",
                 client = plan.client_instance,
                 port = plan.client_port,
             ));

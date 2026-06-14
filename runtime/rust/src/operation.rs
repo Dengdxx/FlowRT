@@ -6,10 +6,10 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::ServiceError;
@@ -36,25 +36,44 @@ impl OperationId {
     }
 }
 
+/// Operation control authority owner。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OperationOwner {
+    /// 控制域 key；同一 Operation endpoint 使用同一 scope。
+    pub scope_key: u64,
+    /// owner key；默认由 generated client endpoint 派生。
+    pub owner_key: u64,
+}
+
+impl OperationOwner {
+    /// 构造 Operation owner。
+    pub const fn new(scope_key: u64, owner_key: u64) -> Self {
+        Self {
+            scope_key,
+            owner_key,
+        }
+    }
+}
+
 /// Operation 状态机状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperationState {
+    /// 没有 active invocation。
+    Idle,
     /// start request 已接受，尚未进入用户 handler。
-    Accepted,
+    Starting,
     /// 用户 handler 正在执行。
     Running,
     /// 已请求 cooperative cancel，等待用户 handler 观察 token 并退出。
-    Canceling,
+    CancelRequested,
     /// 用户 handler 成功完成。
     Succeeded,
     /// 用户 handler 或 runtime 执行失败。
     Failed,
     /// 用户 handler 响应 cancel 请求并结束。
-    Canceled,
+    Cancelled,
     /// Operation 超时。
-    Timeout,
-    /// 因 preempt policy 被新 invocation 抢占。
-    Preempted,
+    TimedOut,
 }
 
 impl OperationState {
@@ -62,8 +81,22 @@ impl OperationState {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Canceled | Self::Timeout | Self::Preempted
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut
         )
+    }
+
+    /// 返回 status/record 使用的 canonical snake_case 名称。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::CancelRequested => "cancel_requested",
+            Self::Cancelled => "cancelled",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+        }
     }
 }
 
@@ -97,6 +130,94 @@ pub enum OperationError {
     },
     /// policy 字段非法。
     InvalidPolicy(&'static str),
+}
+
+/// Operation control authority 错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperationControlError {
+    /// 操作成功。
+    Ok,
+    /// 状态转换不合法。
+    InvalidTransition {
+        /// 当前状态。
+        from: OperationState,
+        /// 目标状态。
+        to: OperationState,
+    },
+    /// policy 字段非法。
+    InvalidPolicy(&'static str),
+    /// 当前 single-owner operation 已有同 owner active invocation。
+    Busy {
+        /// 当前 owner。
+        active_owner: OperationOwner,
+    },
+    /// 当前 single-owner operation 已由其他 owner 控制。
+    OwnerConflict {
+        /// 当前 owner。
+        active_owner: OperationOwner,
+        /// 请求 owner。
+        requested_owner: OperationOwner,
+    },
+    /// cancel/status/complete 指向了非当前 invocation。
+    StaleInvocation {
+        /// 请求中的 invocation id。
+        requested: OperationId,
+        /// 当前 invocation id。
+        current: Option<OperationId>,
+    },
+    /// invocation 已进入终态。
+    AlreadyTerminal {
+        /// 当前终态。
+        state: OperationState,
+    },
+}
+
+impl std::fmt::Display for OperationControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok => write!(f, "ok"),
+            Self::InvalidTransition { from, to } => {
+                write!(f, "invalid operation transition from {from:?} to {to:?}")
+            }
+            Self::InvalidPolicy(field) => write!(f, "invalid operation policy field `{field}`"),
+            Self::Busy { active_owner } => write!(
+                f,
+                "operation owner {} already has an active invocation",
+                active_owner.owner_key
+            ),
+            Self::OwnerConflict {
+                active_owner,
+                requested_owner,
+            } => write!(
+                f,
+                "operation owner conflict: active owner {} requested owner {}",
+                active_owner.owner_key, requested_owner.owner_key
+            ),
+            Self::StaleInvocation { requested, current } => write!(
+                f,
+                "stale operation invocation {}:{}:{}, current={:?}",
+                requested.operation_key, requested.client_id, requested.sequence, current
+            ),
+            Self::AlreadyTerminal { state } => {
+                write!(
+                    f,
+                    "operation invocation already terminal: {}",
+                    state.as_str()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OperationControlError {}
+
+impl From<OperationError> for OperationControlError {
+    fn from(value: OperationError) -> Self {
+        match value {
+            OperationError::InvalidTransition { from, to } => Self::InvalidTransition { from, to },
+            OperationError::InvalidPolicy(field) => Self::InvalidPolicy(field),
+        }
+    }
 }
 
 impl std::fmt::Display for OperationError {
@@ -245,6 +366,7 @@ pub struct OperationHealthSnapshot {
     pub failed: u64,
     pub canceled: u64,
     pub timeout: u64,
+    /// 保留历史计数槽；当前 v0.13 lifecycle 不再产生 preempted 状态。
     pub preempted: u64,
 }
 
@@ -272,16 +394,13 @@ impl OperationHealthCounters {
             OperationState::Failed => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
             }
-            OperationState::Canceled => {
+            OperationState::Cancelled => {
                 self.canceled.fetch_add(1, Ordering::Relaxed);
             }
-            OperationState::Timeout => {
+            OperationState::TimedOut => {
                 self.timeout.fetch_add(1, Ordering::Relaxed);
             }
-            OperationState::Preempted => {
-                self.preempted.fetch_add(1, Ordering::Relaxed);
-            }
-            OperationState::Accepted | OperationState::Canceling => {}
+            OperationState::Idle | OperationState::Starting | OperationState::CancelRequested => {}
         }
     }
 
@@ -302,8 +421,10 @@ impl OperationHealthCounters {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperationStatusSnapshot {
     pub id: OperationId,
+    pub owner: OperationOwner,
     pub state: OperationState,
     pub cancel_requested: bool,
+    pub deadline_ms: u64,
     pub health: OperationHealthSnapshot,
 }
 
@@ -311,13 +432,56 @@ pub struct OperationStatusSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperationStartAck {
     pub id: OperationId,
+    pub owner: OperationOwner,
+    pub deadline_ms: u64,
     pub accepted: bool,
 }
 
 impl OperationStartAck {
     /// 构造 accepted ack。
     pub const fn accepted(id: OperationId) -> Self {
-        Self { id, accepted: true }
+        Self {
+            id,
+            owner: OperationOwner {
+                scope_key: 0,
+                owner_key: id.client_id,
+            },
+            deadline_ms: 0,
+            accepted: true,
+        }
+    }
+
+    /// 构造带 control authority 元数据的 accepted ack。
+    pub const fn accepted_with_authority(
+        id: OperationId,
+        owner: OperationOwner,
+        deadline_ms: u64,
+    ) -> Self {
+        Self {
+            id,
+            owner,
+            deadline_ms,
+            accepted: true,
+        }
+    }
+}
+
+/// Operation start 内部 lowering 请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationStartRequest<T> {
+    pub goal: T,
+    pub owner: OperationOwner,
+    pub timeout: Duration,
+}
+
+impl<T> OperationStartRequest<T> {
+    /// 构造 start 请求 envelope。用户 API 仍只暴露 typed goal 和 timeout。
+    pub const fn new(goal: T, owner: OperationOwner, timeout: Duration) -> Self {
+        Self {
+            goal,
+            owner,
+            timeout,
+        }
     }
 }
 
@@ -344,11 +508,22 @@ impl<T> OperationProgress<T> {
 ///
 /// 生成的 server handler 通过该类型发布 typed feedback。当前 inproc lowering 在 handler
 /// 返回后统一取走事件；后续跨进程 backend 可把相同事件流接到 transport channel。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OperationProgressPublisher<T> {
     id: OperationId,
     next_sequence: u64,
     events: Vec<OperationProgress<T>>,
+    progress_hook: Option<Arc<dyn Fn(OperationId, u64) + Send + Sync>>,
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for OperationProgressPublisher<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperationProgressPublisher")
+            .field("id", &self.id)
+            .field("next_sequence", &self.next_sequence)
+            .field("events", &self.events)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T> OperationProgressPublisher<T> {
@@ -358,6 +533,20 @@ impl<T> OperationProgressPublisher<T> {
             id,
             next_sequence: 0,
             events: Vec::new(),
+            progress_hook: None,
+        }
+    }
+
+    /// 构造带 runtime event hook 的 progress 发布器。
+    pub fn with_hook(
+        id: OperationId,
+        progress_hook: Arc<dyn Fn(OperationId, u64) + Send + Sync>,
+    ) -> Self {
+        Self {
+            id,
+            next_sequence: 0,
+            events: Vec::new(),
+            progress_hook: Some(progress_hook),
         }
     }
 
@@ -365,6 +554,9 @@ impl<T> OperationProgressPublisher<T> {
     pub fn publish(&mut self, value: T) {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
+        if let Some(hook) = &self.progress_hook {
+            hook(self.id, sequence);
+        }
         self.events
             .push(OperationProgress::new(self.id, sequence, value));
     }
@@ -409,6 +601,8 @@ impl<T> OperationHandlerResult<T> {
 #[derive(Debug)]
 pub struct OperationLifecycle {
     id: OperationId,
+    owner: OperationOwner,
+    deadline_ms: u64,
     policy: OperationPolicy,
     state: OperationState,
     cancel_token: OperationCancelToken,
@@ -418,10 +612,27 @@ pub struct OperationLifecycle {
 impl OperationLifecycle {
     /// 构造已接受但尚未运行的 Operation lifecycle。
     pub fn new(id: OperationId, policy: OperationPolicy) -> Result<Self, OperationError> {
+        Self::new_with_authority(
+            id,
+            policy,
+            OperationOwner::new(0, id.client_id),
+            policy.timeout.as_millis() as u64,
+        )
+    }
+
+    /// 构造带 owner/deadline 的 Operation lifecycle。
+    pub fn new_with_authority(
+        id: OperationId,
+        policy: OperationPolicy,
+        owner: OperationOwner,
+        deadline_ms: u64,
+    ) -> Result<Self, OperationError> {
         Ok(Self {
             id,
+            owner,
+            deadline_ms,
             policy: policy.validate()?,
-            state: OperationState::Accepted,
+            state: OperationState::Starting,
             cancel_token: OperationCancelToken::new(),
             health: OperationHealthCounters::default(),
         })
@@ -440,6 +651,16 @@ impl OperationLifecycle {
     /// 返回当前状态。
     pub const fn state(&self) -> OperationState {
         self.state
+    }
+
+    /// 返回 owner。
+    pub const fn owner(&self) -> OperationOwner {
+        self.owner
+    }
+
+    /// 返回 absolute deadline（runtime monotonic 毫秒）。
+    pub const fn deadline_ms(&self) -> u64 {
+        self.deadline_ms
     }
 
     /// 返回可共享给用户 handler 的 cancel token。
@@ -462,17 +683,17 @@ impl OperationLifecycle {
     pub fn request_cancel(&mut self) -> Result<(), OperationError> {
         self.cancel_token.request_cancel();
         match self.state {
-            OperationState::Accepted | OperationState::Running => {
-                self.transition(OperationState::Canceling)
+            OperationState::Starting | OperationState::Running => {
+                self.transition(OperationState::CancelRequested)
             }
-            OperationState::Canceling => Ok(()),
+            OperationState::CancelRequested => Ok(()),
             state if state.is_terminal() => Err(OperationError::InvalidTransition {
                 from: state,
-                to: OperationState::Canceling,
+                to: OperationState::CancelRequested,
             }),
             _ => Err(OperationError::InvalidTransition {
                 from: self.state,
-                to: OperationState::Canceling,
+                to: OperationState::CancelRequested,
             }),
         }
     }
@@ -481,8 +702,10 @@ impl OperationLifecycle {
     pub fn snapshot(&self) -> OperationStatusSnapshot {
         OperationStatusSnapshot {
             id: self.id,
+            owner: self.owner,
             state: self.state,
             cancel_requested: self.cancel_token.is_canceled(),
+            deadline_ms: self.deadline_ms,
             health: self.health.snapshot(),
         }
     }
@@ -492,20 +715,281 @@ fn valid_transition(from: OperationState, to: OperationState) -> bool {
     use OperationState as S;
     matches!(
         (from, to),
-        (S::Accepted, S::Running)
-            | (S::Accepted, S::Canceling)
-            | (S::Accepted, S::Failed)
-            | (S::Accepted, S::Timeout)
-            | (S::Accepted, S::Preempted)
+        (S::Idle, S::Starting)
+            | (S::Starting, S::Running)
+            | (S::Starting, S::CancelRequested)
+            | (S::Starting, S::Failed)
+            | (S::Starting, S::TimedOut)
             | (S::Running, S::Succeeded)
             | (S::Running, S::Failed)
-            | (S::Running, S::Canceling)
-            | (S::Running, S::Timeout)
-            | (S::Running, S::Preempted)
-            | (S::Canceling, S::Canceled)
-            | (S::Canceling, S::Failed)
-            | (S::Canceling, S::Timeout)
+            | (S::Running, S::CancelRequested)
+            | (S::Running, S::TimedOut)
+            | (S::CancelRequested, S::Cancelled)
+            | (S::CancelRequested, S::Failed)
+            | (S::CancelRequested, S::TimedOut)
     )
+}
+
+/// Operation runtime event 类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperationRuntimeEventKind {
+    StateChanged,
+    Progress,
+    Result,
+    Error,
+}
+
+/// Operation runtime event。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationRuntimeEvent {
+    pub id: OperationId,
+    pub kind: OperationRuntimeEventKind,
+    pub state: Option<OperationState>,
+    pub sequence: Option<u64>,
+    pub message: Option<&'static str>,
+}
+
+/// Single-owner Operation control state。
+#[derive(Debug)]
+pub struct OperationControl {
+    operation_key: u64,
+    policy: OperationPolicy,
+    next_sequence: u64,
+    lifecycle: Option<OperationLifecycle>,
+    handler_active: bool,
+    health: OperationHealthCounters,
+    events: Vec<OperationRuntimeEvent>,
+}
+
+impl OperationControl {
+    /// 构造空闲 Operation control state。
+    pub fn new(operation_key: u64, policy: OperationPolicy) -> Self {
+        Self {
+            operation_key,
+            policy,
+            next_sequence: 0,
+            lifecycle: None,
+            handler_active: false,
+            health: OperationHealthCounters::default(),
+            events: Vec::new(),
+        }
+    }
+
+    /// 使用 policy timeout 启动一次 invocation。
+    pub fn start(
+        &mut self,
+        owner: OperationOwner,
+        now_ms: u64,
+    ) -> Result<OperationStartAck, OperationControlError> {
+        self.start_with_timeout(owner, now_ms, self.policy.timeout)
+    }
+
+    /// 使用显式 timeout 启动一次 invocation。
+    pub fn start_with_timeout(
+        &mut self,
+        owner: OperationOwner,
+        now_ms: u64,
+        timeout: Duration,
+    ) -> Result<OperationStartAck, OperationControlError> {
+        if let Some(active) = self.lifecycle.as_ref() {
+            if self.handler_active || !active.state().is_terminal() {
+                if active.owner() != owner {
+                    return Err(OperationControlError::OwnerConflict {
+                        active_owner: active.owner(),
+                        requested_owner: owner,
+                    });
+                }
+                return Err(OperationControlError::Busy {
+                    active_owner: active.owner(),
+                });
+            }
+        }
+
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        let id = OperationId::new(self.operation_key, owner.owner_key, sequence);
+        let timeout_ms = duration_millis_u64(timeout).max(1);
+        let deadline_ms = now_ms.saturating_add(timeout_ms);
+        let lifecycle =
+            OperationLifecycle::new_with_authority(id, self.policy, owner, deadline_ms)?;
+        let ack = OperationStartAck::accepted_with_authority(id, owner, deadline_ms);
+        self.lifecycle = Some(lifecycle);
+        self.handler_active = true;
+        self.push_state_event(id, OperationState::Starting);
+        Ok(ack)
+    }
+
+    /// 标记 invocation 已进入用户 handler。
+    pub fn mark_running(&mut self, id: OperationId) -> Result<(), OperationControlError> {
+        let lifecycle = self.current_mut(id)?;
+        lifecycle.transition(OperationState::Running)?;
+        self.health.record_state(OperationState::Running);
+        self.push_state_event(id, OperationState::Running);
+        Ok(())
+    }
+
+    /// 请求 cooperative cancel。
+    pub fn request_cancel(
+        &mut self,
+        id: OperationId,
+        owner: OperationOwner,
+    ) -> Result<OperationStatusSnapshot, OperationControlError> {
+        let current_id = self.lifecycle.as_ref().map(OperationLifecycle::id);
+        let lifecycle = self.current_mut(id)?;
+        if lifecycle.owner() != owner {
+            return Err(OperationControlError::OwnerConflict {
+                active_owner: lifecycle.owner(),
+                requested_owner: owner,
+            });
+        }
+        if lifecycle.state().is_terminal() {
+            return Err(OperationControlError::AlreadyTerminal {
+                state: lifecycle.state(),
+            });
+        }
+        lifecycle.request_cancel()?;
+        self.push_state_event(id, OperationState::CancelRequested);
+        current_id
+            .filter(|current| *current == id)
+            .map(|_| self.snapshot())
+            .ok_or(OperationControlError::StaleInvocation {
+                requested: id,
+                current: current_id,
+            })
+    }
+
+    /// 完成 invocation。若 runtime 已先进入 timeout 终态，释放 handler 并返回终态错误。
+    pub fn complete(
+        &mut self,
+        id: OperationId,
+        terminal_state: OperationState,
+    ) -> Result<(), OperationControlError> {
+        let lifecycle = self.current_mut(id)?;
+        if lifecycle.state().is_terminal() {
+            let state = lifecycle.state();
+            self.handler_active = false;
+            return Err(OperationControlError::AlreadyTerminal { state });
+        }
+        lifecycle.transition(terminal_state)?;
+        self.health.record_state(terminal_state);
+        self.handler_active = false;
+        let kind = if terminal_state == OperationState::Failed {
+            OperationRuntimeEventKind::Error
+        } else {
+            OperationRuntimeEventKind::Result
+        };
+        self.events.push(OperationRuntimeEvent {
+            id,
+            kind,
+            state: Some(terminal_state),
+            sequence: None,
+            message: None,
+        });
+        self.push_state_event(id, terminal_state);
+        Ok(())
+    }
+
+    /// 记录 progress publish。
+    pub fn publish_progress(&mut self, id: OperationId, sequence: u64) {
+        if self
+            .lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| lifecycle.id() == id && !lifecycle.state().is_terminal())
+        {
+            self.events.push(OperationRuntimeEvent {
+                id,
+                kind: OperationRuntimeEventKind::Progress,
+                state: None,
+                sequence: Some(sequence),
+                message: None,
+            });
+        }
+    }
+
+    /// 由 runtime/scheduler step 驱动 deadline。
+    pub fn check_deadline(&mut self, now_ms: u64) -> bool {
+        let Some(lifecycle) = self.lifecycle.as_mut() else {
+            return false;
+        };
+        if lifecycle.state().is_terminal() || now_ms < lifecycle.deadline_ms() {
+            return false;
+        }
+        let id = lifecycle.id();
+        lifecycle.cancel_token.request_cancel();
+        if lifecycle.transition(OperationState::TimedOut).is_ok() {
+            self.health.record_state(OperationState::TimedOut);
+            self.push_state_event(id, OperationState::TimedOut);
+            return true;
+        }
+        false
+    }
+
+    /// 返回当前 cancel token。
+    pub fn cancel_token(&self) -> Option<OperationCancelToken> {
+        self.lifecycle
+            .as_ref()
+            .map(OperationLifecycle::cancel_token)
+    }
+
+    /// 返回当前状态快照。
+    pub fn snapshot(&self) -> OperationStatusSnapshot {
+        if let Some(lifecycle) = self.lifecycle.as_ref() {
+            let mut snapshot = lifecycle.snapshot();
+            snapshot.health = self.health.snapshot();
+            snapshot
+        } else {
+            OperationStatusSnapshot {
+                id: OperationId::new(self.operation_key, 0, 0),
+                owner: OperationOwner::default(),
+                state: OperationState::Idle,
+                cancel_requested: false,
+                deadline_ms: 0,
+                health: self.health.snapshot(),
+            }
+        }
+    }
+
+    /// 取走 runtime events。
+    pub fn drain_events(&mut self) -> Vec<OperationRuntimeEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    fn current_mut(
+        &mut self,
+        id: OperationId,
+    ) -> Result<&mut OperationLifecycle, OperationControlError> {
+        let current = self.lifecycle.as_ref().map(OperationLifecycle::id);
+        if current != Some(id) {
+            return Err(OperationControlError::StaleInvocation {
+                requested: id,
+                current,
+            });
+        }
+        Ok(self
+            .lifecycle
+            .as_mut()
+            .expect("checked current lifecycle must exist"))
+    }
+
+    fn push_state_event(&mut self, id: OperationId, state: OperationState) {
+        self.events.push(OperationRuntimeEvent {
+            id,
+            kind: OperationRuntimeEventKind::StateChanged,
+            state: Some(state),
+            sequence: None,
+            message: None,
+        });
+    }
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+/// 返回 runtime monotonic 毫秒，用于 Operation deadline 驱动。
+pub fn monotonic_time_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    duration_millis_u64(START.get_or_init(Instant::now).elapsed())
 }
 
 #[cfg(test)]
@@ -555,5 +1039,118 @@ mod tests {
             OperationHandlerResult::<u32>::canceled(),
             OperationHandlerResult::Canceled
         );
+    }
+
+    #[test]
+    fn operation_control_records_owner_deadline_and_success_lifecycle() {
+        let policy = OperationPolicy::new(
+            Duration::from_millis(50),
+            OperationConcurrencyPolicy::Reject,
+            OperationPreemptPolicy::Reject,
+            8,
+            1,
+        )
+        .unwrap();
+        let owner = OperationOwner::new(10, 20);
+        let mut control = OperationControl::new(99, policy);
+
+        assert_eq!(control.snapshot().state, OperationState::Idle);
+
+        let ack = control.start(owner, 100).unwrap();
+        assert!(ack.accepted);
+        assert_eq!(ack.id, OperationId::new(99, owner.owner_key, 0));
+        assert_eq!(ack.owner, owner);
+        assert_eq!(ack.deadline_ms, 150);
+        assert_eq!(control.snapshot().state, OperationState::Starting);
+
+        control.mark_running(ack.id).unwrap();
+        control.complete(ack.id, OperationState::Succeeded).unwrap();
+
+        let snapshot = control.snapshot();
+        assert_eq!(snapshot.state, OperationState::Succeeded);
+        assert_eq!(snapshot.owner, owner);
+        assert_eq!(snapshot.deadline_ms, 150);
+        assert_eq!(snapshot.health.started, 1);
+        assert_eq!(snapshot.health.succeeded, 1);
+        let events = control.drain_events();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].state, Some(OperationState::Starting));
+        assert_eq!(events[1].state, Some(OperationState::Running));
+        assert_eq!(events[2].kind, OperationRuntimeEventKind::Result);
+        assert_eq!(events[2].state, Some(OperationState::Succeeded));
+        assert_eq!(events[3].state, Some(OperationState::Succeeded));
+    }
+
+    #[test]
+    fn operation_control_rejects_second_owner_and_stale_cancel() {
+        let policy = OperationPolicy::default();
+        let owner_a = OperationOwner::new(10, 20);
+        let owner_b = OperationOwner::new(10, 30);
+        let mut control = OperationControl::new(99, policy);
+        let ack = control.start(owner_a, 100).unwrap();
+        control.mark_running(ack.id).unwrap();
+
+        let conflict = control
+            .start(owner_b, 101)
+            .expect_err("second owner must not control active single-owner operation");
+        assert_eq!(
+            conflict,
+            OperationControlError::OwnerConflict {
+                active_owner: owner_a,
+                requested_owner: owner_b,
+            }
+        );
+
+        let stale_id = OperationId::new(99, owner_a.owner_key, 123);
+        let stale = control
+            .request_cancel(stale_id, owner_a)
+            .expect_err("cancel must only affect the current invocation id");
+        assert_eq!(
+            stale,
+            OperationControlError::StaleInvocation {
+                requested: stale_id,
+                current: Some(ack.id),
+            }
+        );
+        assert_eq!(control.snapshot().state, OperationState::Running);
+    }
+
+    #[test]
+    fn operation_control_timeout_is_runtime_tick_driven() {
+        let policy = OperationPolicy::new(
+            Duration::from_millis(5),
+            OperationConcurrencyPolicy::Reject,
+            OperationPreemptPolicy::Reject,
+            8,
+            1,
+        )
+        .unwrap();
+        let owner = OperationOwner::new(10, 20);
+        let mut control = OperationControl::new(99, policy);
+        let ack = control.start(owner, 100).unwrap();
+        control.mark_running(ack.id).unwrap();
+
+        assert!(!control.check_deadline(104));
+        assert_eq!(control.snapshot().state, OperationState::Running);
+        assert!(control.check_deadline(105));
+
+        let snapshot = control.snapshot();
+        assert_eq!(snapshot.state, OperationState::TimedOut);
+        assert!(snapshot.cancel_requested);
+        assert_eq!(snapshot.health.timeout, 1);
+        assert!(control.cancel_token().unwrap().is_canceled());
+    }
+
+    #[test]
+    fn operation_control_handler_error_enters_failed() {
+        let owner = OperationOwner::new(10, 20);
+        let mut control = OperationControl::new(99, OperationPolicy::default());
+        let ack = control.start(owner, 100).unwrap();
+        control.mark_running(ack.id).unwrap();
+        control.complete(ack.id, OperationState::Failed).unwrap();
+
+        let snapshot = control.snapshot();
+        assert_eq!(snapshot.state, OperationState::Failed);
+        assert_eq!(snapshot.health.failed, 1);
     }
 }

@@ -1140,17 +1140,40 @@ flowrt op cancel 111:7:3 --socket /run/user/1000/flowrt/12345.sock
 
 `op` 面向 Operation 的观测和基础控制。Operation 是 typed long-running command，不是 Service 别名；生成器会把 Operation lower 成内部 start/cancel/status service 与 feedback/result channel，但用户和 CLI 的主视图仍是 Operation。
 
-当前 generated Operation runtime 只支持单个运行中的 invocation：policy 必须是 `concurrency = "reject"`、`preempt = "reject"`、`max_in_flight = 1`。第二个 start 会返回 `Busy`，直到当前 invocation 进入终态。`queue`、`cancel_running` 和多 in-flight 策略属于长期 IR 语义，runtime 完整实现前由 validator 拒绝。
+Operation runtime 生命周期固定为：
+
+| state | 含义 |
+|---|---|
+| `idle` | 当前无 active invocation |
+| `starting` | start 已接受，runtime 已分配 invocation id、owner 和 deadline |
+| `running` | 用户 handler 正在执行 |
+| `cancel_requested` | 已请求 cooperative cancel，等待 handler 检查 token 并退出 |
+| `cancelled` | handler 响应 cancel 后结束 |
+| `succeeded` | handler 成功返回 result |
+| `failed` | handler error、panic/exception 或 runtime 执行失败 |
+| `timed_out` | scheduler/runtime 驱动 deadline 到期 |
+
+当前 generated Operation runtime 只支持单个运行中的 invocation 和默认 single-owner
+control authority：policy 必须是 `concurrency = "reject"`、`preempt = "reject"`、
+`max_in_flight = 1`。start 会建立 invocation id、owner 和 deadline；同一 scope 的第二个
+owner start 会返回结构化冲突错误。cancel 只作用于当前 invocation id，stale id 会被拒绝或
+返回明确说明，不会误取消后续 invocation。timeout/deadline 由 runtime hidden task 驱动，
+不依赖用户 handler 自觉检查。`queue`、`cancel_running` 和多 in-flight 策略属于长期 IR
+语义，runtime 完整实现前由 validator 拒绝。
 
 `op list` 读取 self-description：传入 `--image` 时读取生成应用二进制或 `selfdesc.json`，省略 `--image` 时通过 live socket 请求当前进程嵌入的 self-description。输出包含 Operation name、canonical id、client/server 端口、goal/feedback/result 类型、backend 和 policy 摘要。
 
 `op status` 读取 live runtime status。省略 operation 名称时输出所有 live Operation；传入 `<client_instance>.<client_port>` 时只输出该 Operation。输出格式与 `status` 的 operation 行一致：
 
 ```text
-operation=controller.plan ready=true running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_transition_ms=1717800000000 socket=...
+operation=controller.plan ready=true state=running owner=controller.plan deadline_ms=1500 running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_event=flowrt.operation.state_changed last_error=none last_transition_ms=1717800000000 socket=...
 ```
 
-`op cancel <operation_id>` 通过 runtime introspection socket 发送 `operation_cancel` 请求。`operation_id` 来自 `op status` 的 `current_operation_ids` 字段。省略 `--socket` 时 CLI 会先通过 `status` 无副作用筛选唯一 runtime；如果多个进程都报告同一个 ID，会要求显式传入 `--socket <path>`，不会广播取消。
+`op cancel <operation_id>` 通过 runtime introspection socket 发送 `operation_cancel` 请求。
+`operation_id` 来自 `op status` 的 `current_operation_ids` 字段。runtime 会把请求交给
+generated control hook，只对当前 invocation 生效；stale id 不会被解释为后续 invocation。
+省略 `--socket` 时 CLI 会先通过 `status` 无副作用筛选唯一 runtime；如果多个进程都报告
+同一个 ID，会要求显式传入 `--socket <path>`，不会广播取消。
 
 ## `status`
 
@@ -1200,10 +1223,15 @@ service=planner.plan_to_executor.execute client_instance=planner server_instance
 runtime 也可以预注册 Operation endpoint，`status` 会输出每个 Operation 的运行态健康行：
 
 ```text
-operation=controller.plan ready=true running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_transition_ms=1717800000000 socket=/run/user/1000/flowrt/12345.sock
+operation=controller.plan ready=true state=running owner=controller.plan deadline_ms=1500 running=1 queued=0 current_operation_ids=[111:7:3] total_started=1 succeeded=0 failed=0 canceled=0 timeout=0 preempted=0 last_event=flowrt.operation.state_changed last_error=none last_transition_ms=1717800000000 socket=/run/user/1000/flowrt/12345.sock
 ```
 
-字段说明：`ready` 表示 Operation endpoint 是否可用；`running` / `queued` 是当前运行和排队 invocation 数；`current_operation_ids` 是可用于 `flowrt op cancel` 的非终态 ID；`total_started`、`succeeded`、`failed`、`canceled`、`timeout` 和 `preempted` 是累计计数；`last_transition_ms` 为最近状态转换时间戳，`none` 表示尚无状态转换。
+字段说明：`ready` 表示 Operation endpoint 是否可用；`state` 是当前 lifecycle 状态；
+`owner` 是当前 control owner；`deadline_ms` 是当前 invocation 的 runtime monotonic deadline；
+`running` / `queued` 是当前运行和排队 invocation 数；`current_operation_ids` 是可用于
+`flowrt op cancel` 的非终态 ID；`total_started`、`succeeded`、`failed`、`canceled`、
+`timeout` 和 `preempted` 是累计计数；`last_event` / `last_error` 表示最近 Operation
+事件和错误；`last_transition_ms` 为最近状态转换时间戳，`none` 表示尚无状态转换。
 
 录制开启或存在累计 recorder 计数时，`status` 会输出 recorder 行：
 
