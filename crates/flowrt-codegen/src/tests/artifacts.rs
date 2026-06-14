@@ -296,11 +296,20 @@ channel = "latest"
 
     let runtime_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
     assert!(runtime_shell.contains("#include \"flowrt_app/c_components.h\""));
+    assert!(runtime_shell.contains("#include <iostream>"));
     assert!(
         runtime_shell
             .contains("class CControllerAdapter final : public flowrt_app::ControllerInterface")
     );
-    assert!(runtime_shell.contains("validate_callback_table("));
+    assert!(runtime_shell.contains("callback_table_validation_error("));
+    assert!(runtime_shell.contains("FlowRT C component callback table is null"));
+    assert!(runtime_shell.contains("FlowRT C component callback table size is too small"));
+    assert!(runtime_shell.contains("FlowRT C component callback table major version mismatch"));
+    assert!(runtime_shell.contains("FlowRT C component callback table minor version mismatch"));
+    assert!(runtime_shell.contains("FlowRT C component callback table missing v0 feature bit"));
+    assert!(runtime_shell.contains("FlowRT C component callback table has unknown feature bit"));
+    assert!(runtime_shell.contains("FlowRT C component callback table missing run_on_message"));
+    assert!(runtime_shell.contains("FlowRT C component callback table invalid for instance `"));
     assert!(
         runtime_shell.contains("callbacks->size < sizeof(flowrt_c_component_callback_table_t)")
     );
@@ -363,6 +372,8 @@ output = ["cmd"]
     assert!(runtime_shell.contains("controller_cmd_output.status == FLOWRT_C_OUTPUT_WRITTEN"));
     assert!(runtime_shell.contains("controller_cmd_output.written_len == sizeof(Cmd)"));
     assert!(runtime_shell.contains("std::memcpy(&controller_cmd_value"));
+    assert!(runtime_shell.contains("FlowRT C component output invalid for instance `controller`"));
+    assert!(runtime_shell.contains("port `cmd`"));
     assert!(runtime_shell.contains("return flowrt::Status::Error;"));
     assert!(!cargo_manifest.contains("path = \"../rust/src/main.rs\""));
 }

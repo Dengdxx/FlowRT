@@ -213,7 +213,11 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         output.push_str("#include \"flowrt_app/c_components.h\"\n\n");
     }
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <algorithm>\n#include <array>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdlib>\n#include <cstring>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <algorithm>\n#include <array>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdlib>\n#include <cstring>\n");
+    if contract_has_c_components(contract) {
+        output.push_str("#include <iostream>\n");
+    }
+    output.push_str("#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",
@@ -932,44 +936,44 @@ flowrt::Status status_from_c(flowrt_status_t status) {
     }
 }
 
-bool validate_callback_table(const flowrt_c_component_callback_table_t* callbacks,
-                             bool needs_periodic,
-                             bool needs_on_message,
-                             bool needs_startup,
-                             bool needs_shutdown) {
+const char* callback_table_validation_error(const flowrt_c_component_callback_table_t* callbacks,
+                                            bool needs_periodic,
+                                            bool needs_on_message,
+                                            bool needs_startup,
+                                            bool needs_shutdown) {
     if (callbacks == nullptr) {
-        return false;
+        return "FlowRT C component callback table is null";
     }
     if (callbacks->size < sizeof(flowrt_c_component_callback_table_t)) {
-        return false;
+        return "FlowRT C component callback table size is too small";
     }
     if (callbacks->version_major != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR) {
-        return false;
+        return "FlowRT C component callback table major version mismatch";
     }
     if (callbacks->version_minor != FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR) {
-        return false;
+        return "FlowRT C component callback table minor version mismatch";
     }
     constexpr std::uint64_t kRequiredFeatures = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0;
     constexpr std::uint64_t kKnownFeatures = FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0;
     if ((callbacks->feature_flags & kRequiredFeatures) != kRequiredFeatures) {
-        return false;
+        return "FlowRT C component callback table missing v0 feature bit";
     }
     if ((callbacks->feature_flags & ~kKnownFeatures) != 0U) {
-        return false;
+        return "FlowRT C component callback table has unknown feature bit";
     }
     if (needs_periodic && callbacks->run_periodic == nullptr) {
-        return false;
+        return "FlowRT C component callback table missing run_periodic";
     }
     if (needs_on_message && callbacks->run_on_message == nullptr) {
-        return false;
+        return "FlowRT C component callback table missing run_on_message";
     }
     if (needs_startup && callbacks->run_startup == nullptr) {
-        return false;
+        return "FlowRT C component callback table missing run_startup";
     }
     if (needs_shutdown && callbacks->run_shutdown == nullptr) {
-        return false;
+        return "FlowRT C component callback table missing run_shutdown";
     }
-    return true;
+    return nullptr;
 }
 
 flowrt_c_component_context_t make_c_component_context(std::string_view component_name,
@@ -1058,7 +1062,7 @@ fn emit_c_adapter_class(graph: &GraphIr, instance: &InstanceIr, component: &Comp
         output.push_str(&emit_c_adapter_task_method(component, instance, task));
     }
     output.push_str(&format!(
-        "private:\n    bool callbacks_valid() const noexcept {{\n        return validate_callback_table(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name) {{\n        if (!callbacks_valid()) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, 0U, 0U, 0U, false);\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
+        "private:\n    bool callbacks_valid(std::string_view instance_name) const {{\n        const char* error = callback_table_validation_error(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n        if (error == nullptr) {{\n            return true;\n        }}\n        std::cerr << \"FlowRT C component callback table invalid for instance `\" << instance_name << \"`: \" << error << '\\n';\n        return false;\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name) {{\n        if (!callbacks_valid(instance_name)) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, 0U, 0U, 0U, false);\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
         component = component_cpp_name(component),
     ));
     output
@@ -1124,7 +1128,7 @@ fn emit_c_adapter_task_method(
         .join(",\n");
     let callback_field = c_task_callback_field(task);
     let mut output = format!(
-        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid() || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, step, tick_time_ms, {deadline}, {has_deadline});\n",
+        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid({instance_name}) || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, step, tick_time_ms, {deadline}, {has_deadline});\n",
         method = c_adapter_task_method_name(task),
         component_name = cpp_string_literal(&component.name),
         instance_name = cpp_string_literal(&instance.name),
@@ -1200,8 +1204,9 @@ fn emit_c_adapter_task_method(
     {
         let output_name = crate::snake_identifier(&output_port.name);
         output.push_str(&format!(
-            "        if ({instance}_{output_name}_output.status == FLOWRT_C_OUTPUT_WRITTEN && {instance}_{output_name}_output.written_len == sizeof({ty})) {{\n            {ty} {instance}_{output_name}_value{{}};\n            std::memcpy(&{instance}_{output_name}_value, {instance}_{output_name}_storage.data(), sizeof({ty}));\n            {port}.write({instance}_{output_name}_value);\n        }} else if ({instance}_{output_name}_output.status == FLOWRT_C_OUTPUT_UNWRITTEN) {{\n        }} else {{\n            return flowrt::Status::Error;\n        }}\n",
+            "        if ({instance}_{output_name}_output.status == FLOWRT_C_OUTPUT_WRITTEN && {instance}_{output_name}_output.written_len == sizeof({ty})) {{\n            {ty} {instance}_{output_name}_value{{}};\n            std::memcpy(&{instance}_{output_name}_value, {instance}_{output_name}_storage.data(), sizeof({ty}));\n            {port}.write({instance}_{output_name}_value);\n        }} else if ({instance}_{output_name}_output.status == FLOWRT_C_OUTPUT_UNWRITTEN) {{\n        }} else {{\n            std::cerr << \"FlowRT C component output invalid for instance `{instance_raw}`, port `{port}`: status=\"\n                      << {instance}_{output_name}_output.status << \" written_len=\"\n                      << {instance}_{output_name}_output.written_len << \" expected=\" << sizeof({ty}) << '\\n';\n            return flowrt::Status::Error;\n        }}\n",
             instance = crate::snake_identifier(&instance.name),
+            instance_raw = instance.name,
             port = output_port.name,
             ty = cpp_type(&output_port.ty),
         ));
