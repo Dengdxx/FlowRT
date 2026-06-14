@@ -90,6 +90,8 @@ pub struct LaunchArtifact {
     pub temporary_island: bool,
     #[serde(default)]
     pub test_only: bool,
+    #[serde(default)]
+    pub clock: LaunchClock,
 }
 
 impl Default for LaunchArtifact {
@@ -98,6 +100,29 @@ impl Default for LaunchArtifact {
             mode: default_graph_mode(),
             temporary_island: false,
             test_only: false,
+            clock: LaunchClock::default(),
+        }
+    }
+}
+
+/// manifest 中 supervisor 观察到的调度时钟元数据。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchClock {
+    #[serde(default = "default_clock_source")]
+    pub source: String,
+    #[serde(default = "default_clock_unit")]
+    pub unit: String,
+    #[serde(default = "default_clock_field")]
+    pub field: String,
+}
+
+impl Default for LaunchClock {
+    fn default() -> Self {
+        Self {
+            source: default_clock_source(),
+            unit: default_clock_unit(),
+            field: default_clock_field(),
         }
     }
 }
@@ -138,6 +163,18 @@ pub struct LaunchGraph {
 
 fn default_graph_mode() -> String {
     "strict".to_string()
+}
+
+fn default_clock_source() -> String {
+    "realtime".to_string()
+}
+
+fn default_clock_unit() -> String {
+    "ms".to_string()
+}
+
+fn default_clock_field() -> String {
+    "tick_time_ms".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3854,6 +3891,45 @@ mod tests {
         assert_eq!(manifest.artifact.mode, "island");
         assert!(manifest.artifact.temporary_island);
         assert!(manifest.artifact.test_only);
+        assert_eq!(manifest.artifact.clock.source, "realtime");
+        assert_eq!(manifest.artifact.clock.unit, "ms");
+        assert_eq!(manifest.artifact.clock.field, "tick_time_ms");
+    }
+
+    #[test]
+    fn manifest_deserialization_accepts_artifact_clock_metadata() {
+        let json = r#"{
+            "package": "demo",
+            "ir_version": "0.1",
+            "artifact": {
+                "mode": "strict",
+                "temporary_island": false,
+                "test_only": false,
+                "clock": {
+                    "source": "simulated_replay",
+                    "unit": "ms",
+                    "field": "tick_time_ms"
+                }
+            },
+            "profiles": ["default"],
+            "targets": ["default"],
+            "graphs": [{
+                "name": "main",
+                "scheduler": {},
+                "channels": [],
+                "services": [],
+                "ros2_bridges": [],
+                "instances": [],
+                "tasks": [],
+                "processes": []
+            }]
+        }"#;
+
+        let manifest = parse_launch_manifest(json).unwrap();
+
+        assert_eq!(manifest.artifact.clock.source, "simulated_replay");
+        assert_eq!(manifest.artifact.clock.unit, "ms");
+        assert_eq!(manifest.artifact.clock.field, "tick_time_ms");
     }
 
     #[test]
