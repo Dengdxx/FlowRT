@@ -20,6 +20,7 @@ pub mod recorder;
 pub mod service;
 pub mod shutdown;
 pub mod supervisor;
+pub mod time_driver;
 pub mod wire;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
