@@ -61,6 +61,13 @@ check_v0150_architecture_convergence_readiness() {
     fi
 
     local installed_v0150_smoke="$repo_root/scripts/test-v0150-architecture-convergence-smoke.sh"
+    local architecture_contract_guard="$repo_root/scripts/check-architecture-contract.sh"
+    if [[ -x "$architecture_contract_guard" ]]; then
+        pass "architecture contract guard 脚本存在且可执行"
+    else
+        fail "architecture contract guard 脚本不存在或不可执行: $architecture_contract_guard"
+    fi
+
     if [[ -x "$installed_v0150_smoke" ]]; then
         pass "v0.15.0 architecture convergence smoke 脚本存在且可执行"
         require_file_text "v0.15.0 smoke 支持 dry run" \
@@ -69,8 +76,14 @@ check_v0150_architecture_convergence_readiness() {
             "release-gate check-registry 0.15.0" "$installed_v0150_smoke"
         require_file_text "v0.15.0 smoke 运行 architecture size guard" \
             "scripts/check-architecture-size.sh" "$installed_v0150_smoke"
-        require_file_text "v0.15.0 smoke 保留 structure guard 入口" \
-            "check_optional_structure_guard" "$installed_v0150_smoke"
+        require_file_text "v0.15.0 smoke 运行 architecture contract guard" \
+            "scripts/check-architecture-contract.sh" "$installed_v0150_smoke"
+        if grep -qF "check_optional_structure_guard" "$installed_v0150_smoke" ||
+            grep -qF "check-architecture-structure.sh" "$installed_v0150_smoke"; then
+            fail "v0.15.0 smoke 不应保留 optional structure guard 兼容路径"
+        else
+            pass "v0.15.0 smoke 已移除 optional structure guard 兼容路径"
+        fi
     else
         fail "v0.15.0 architecture convergence smoke 脚本不存在或不可执行: $installed_v0150_smoke"
     fi
