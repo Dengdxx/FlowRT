@@ -4,8 +4,8 @@
 # 用法：scripts/check-release-readiness.sh [VERSION]
 #
 # 不传 VERSION 时从根 Cargo.toml 读取 workspace version。
-# 检查项涵盖版本来源、CHANGELOG/release notes、CI release job、历代 focused
-# gate、README/CONTEXT、release candidate 门禁和 tag 状态。实际分节编号在
+# 检查项涵盖版本来源、CHANGELOG/release notes、release evidence、历代 focused
+# gate、README/CONTEXT、tag release 门禁和 tag 状态。实际分节编号在
 # 输出中维护；版本专项检查可拆到 scripts/release-readiness/ 下。
 #
 # 任何检查失败都会给出清晰错误信息并以非零状态退出。
@@ -65,6 +65,18 @@ require_file_text() {
         pass "$label"
     else
         fail "$label: $file 缺少 '$needle'"
+    fi
+}
+
+forbid_file_text() {
+    local label="$1"
+    local needle="$2"
+    local file="$3"
+
+    if grep -qF -- "$needle" "$file"; then
+        fail "$label: $file 不应包含 '$needle'"
+    else
+        pass "$label"
     fi
 }
 
@@ -240,45 +252,51 @@ else
     fi
 fi
 
-# ── 4. CI release job 版本校验覆盖 ───────────────────────────
+# ── 4. Release evidence 版本校验覆盖 ────────────────────────
 
-printf '\n[4/24] CI release job 版本校验覆盖\n'
+printf '\n[4/24] Release evidence 版本校验覆盖\n'
 
 ci_file="$repo_root/.github/workflows/ci.yml"
+release_workflow_file="$repo_root/.github/workflows/release.yml"
 if [[ ! -f "$ci_file" ]]; then
     fail "CI 配置不存在: $ci_file"
 else
-    # 检查 release job 是否校验了 tag 与 Cargo.toml 版本
-    if grep -q 'cargo_version' "$ci_file"; then
-        pass "release job 包含 tag vs Cargo.toml 版本校验"
+    # release evidence gate 复用 readiness 脚本做版本来源一致性校验。
+    if grep -qF 'scripts/check-release-readiness.sh "$version"' "$ci_file"; then
+        pass "release evidence gate 运行 release readiness 版本校验"
     else
-        fail "release job 缺少 tag vs Cargo.toml 版本校验"
+        fail "release evidence gate 缺少 release readiness 版本校验"
     fi
-    if grep -q 'cargo_lock_mismatches' "$ci_file" && grep -qF 'flowrt* packages' "$ci_file"; then
-        pass "release job 包含 Cargo.lock flowrt* 版本校验"
+    if grep -qF 'deb_version="$(dpkg-deb -f "$deb" Version)"' "$ci_file"; then
+        pass "release evidence gate 校验 deb 版本"
     else
-        fail "release job 缺少 Cargo.lock flowrt* 版本校验"
-    fi
-
-    # 检查 release job 是否校验了 release notes 非空
-    if grep -q 'release-notes' "$ci_file" && grep -q 'fail_on_unmatched_files' "$ci_file"; then
-        pass "release job 包含 release notes 和 artifact 校验"
-    else
-        warn "release job 的 release notes 校验可能不完整"
+        fail "release evidence gate 缺少 deb 版本校验"
     fi
 
-    # 检查是否校验了 runtime/rust/Cargo.toml 版本
-    if grep -q 'runtime/rust/Cargo.toml' "$ci_file"; then
-        pass "release job 校验了 runtime/rust/Cargo.toml 版本"
+    # 检查 release evidence 是否校验了 release notes 和 artifact。
+    if grep -q 'release-notes' "$ci_file" && grep -qF 'flowrt-release-evidence' "$ci_file"; then
+        pass "release evidence gate 包含 release notes 和 artifact 校验"
     else
-        warn "release job 未校验 runtime/rust/Cargo.toml 版本一致性"
+        fail "release evidence gate 缺少 release notes 或 artifact 校验"
     fi
+fi
 
-    # 检查是否校验了 runtime/cpp/CMakeLists.txt 版本
-    if grep -q 'CMakeLists.txt' "$ci_file" && grep -q 'FLOWRT_RUNTIME_CPP_VERSION' "$ci_file"; then
-        pass "release job 校验了 CMakeLists.txt 版本"
+if [[ ! -f "$release_workflow_file" ]]; then
+    fail "release workflow 不存在: $release_workflow_file"
+else
+    if grep -qF 'release-evidence.json' "$release_workflow_file" &&
+        grep -qF "'.version'" "$release_workflow_file" &&
+        grep -qF "'.sha'" "$release_workflow_file" &&
+        grep -qF "'.run_id'" "$release_workflow_file"; then
+        pass "tag release 校验 release evidence 的 version/tag/sha/run_id"
     else
-        warn "release job 未校验 runtime/cpp/CMakeLists.txt 版本一致性"
+        fail "tag release 缺少 release evidence version/tag/sha/run_id 校验"
+    fi
+    if grep -qF 'sha256sum -c SHA256SUMS' "$release_workflow_file" &&
+        grep -qF 'fail_on_unmatched_files: true' "$release_workflow_file"; then
+        pass "tag release 校验校验和并要求发布文件存在"
+    else
+        fail "tag release 缺少校验和或 artifact 存在性校验"
     fi
 fi
 
@@ -1092,9 +1110,10 @@ printf '\n[19/24] v0.14.1 Architecture focused CI gate 覆盖\n'
 
 source "$repo_root/scripts/release-readiness/v0141-architecture.sh"; check_v0141_architecture_readiness
 
-# ── 20. v0.15.0 focused CI gate 覆盖 ────────────────────────
-printf '\n[20/24] v0.15.0 Architecture Convergence focused CI gate 覆盖\n'
+# ── 20. v0.15.x focused CI gate 覆盖 ────────────────────────
+printf '\n[20/24] v0.15.x focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0150-architecture-convergence.sh"; check_v0150_architecture_convergence_readiness
+source "$repo_root/scripts/release-readiness/v0151-ci-release-evidence.sh"; check_v0151_ci_release_evidence_readiness
 
 # ── 21. README 安装示例版本 ──────────────────────────────────
 
@@ -1137,41 +1156,11 @@ else
     fail "CONTEXT.md 不存在"
 fi
 
-# ── 23. Release candidate 门禁覆盖 ─────────────────────────
+# ── 23. Release evidence 门禁覆盖 ─────────────────────────
 
-printf '\n[23/24] Release candidate 门禁覆盖\n'
+printf '\n[23/24] Release evidence 门禁覆盖\n'
 
-release_candidate_script="$repo_root/scripts/check-release-candidate.sh"
-if [[ -x "$release_candidate_script" ]]; then
-    pass "release candidate 本地脚本存在且可执行"
-    require_file_text "release candidate 脚本支持触发远端 CI" \
-        "gh workflow run ci.yml" "$release_candidate_script"
-    require_file_text "release candidate 脚本支持等待远端 CI" \
-        "gh run watch" "$release_candidate_script"
-    require_file_text "release candidate 脚本校验远端分支 SHA" \
-        "远端分支尚未指向当前提交" "$release_candidate_script"
-else
-    fail "release candidate 本地脚本不存在或不可执行: $release_candidate_script"
-fi
-
-if [[ ! -f "$ci_file" ]]; then
-    fail "CI 配置不存在，无法检查 release candidate 门禁"
-else
-    require_ci_text "CI 支持 workflow_dispatch" \
-        "workflow_dispatch:" "$ci_file"
-    require_ci_text "CI 支持 release_candidate 输入" \
-        "release_candidate:" "$ci_file"
-    require_ci_text "CI 包含 Release Candidate Gate job" \
-        "release-candidate:" "$ci_file"
-    require_ci_text "Release Candidate Gate 不创建 GitHub Release" \
-        "release candidate passed" "$ci_file"
-    require_ci_text "tag release 校验同 SHA release candidate" \
-        "校验同 SHA release candidate" "$ci_file"
-    require_ci_text "tag release 查找 workflow_dispatch 成功 run" \
-        "event=workflow_dispatch&head_sha=\${GITHUB_SHA}&status=success" "$ci_file"
-    require_ci_text "tag release 要求 Release Candidate Gate job 成功" \
-        "Release Candidate Gate\" and .conclusion == \"success\"" "$ci_file"
-fi
+pass "release evidence 门禁由 v0.15.1 专项 adapter 覆盖"
 
 # ── 24. Tag 与版本匹配（运行时检测） ────────────────────────
 

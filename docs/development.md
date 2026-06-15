@@ -233,13 +233,20 @@ package 和 release job 必须依赖该 gate；低资源本地机器可用
 
 ## 发布流程
 
-FlowRT 的 release notes 来自 `CHANGELOG.md`。正式推送 `v*` tag 前，必须先对待发布
-分支 HEAD 运行 release candidate gate：该 gate 通过 `workflow_dispatch` 跑完整发布同款
-CI、下载 amd64/arm64 deb artifact、校验版本、release notes 和校验和，但不创建 GitHub
-Release。tag release job 会查询同一 `GITHUB_SHA` 是否已有成功的 `Release Candidate
-Gate`，没有则拒绝发布。
+FlowRT 的 release notes 来自 `CHANGELOG.md`。正式推送 `v*` tag 前，必须先把待发布
+分支推到 `dev/vX.Y.Z`。发布分支的普通 push CI 会运行完整发布同款矩阵、构建
+amd64/arm64 deb artifact，并在最后运行 `Release Evidence Gate`：该 gate 校验版本、
+release notes、deb 架构、deb 版本和 `SHA256SUMS`，然后上传
+`flowrt-release-evidence` artifact。仓库不再使用手工 `workflow_dispatch` 发布候选入口。
 
-推送 `v*` tag 后，CI 会等待
+推送 `v*` tag 后，独立的 `release.yml` 会解析 tag 指向的 commit SHA，并只查询同一
+commit SHA 上已经成功的 push CI。
+只有该 run 内的 `Release Evidence Gate` 成功，tag release 才会下载同一 run 的 deb 与
+evidence artifact，复核 evidence 的 version/tag/sha、deb 元数据和 `SHA256SUMS`，然后创建
+GitHub Release。tag workflow 不重跑完整矩阵，避免发布 tag 因重复构建再次消耗资源或引入
+新的不确定性。
+
+发布分支 push CI 会等待
 `guard-generated`、amd64/arm64 Rust fmt/test/clippy、amd64/arm64 C++ runtime、
 amd64/arm64 v0.5.0 runtime focused smoke、amd64/arm64 v0.6.0 runtime focused smoke、
 amd64/arm64 v0.7.0 external/deploy focused smoke、amd64/arm64 v0.8.0 integration
@@ -253,9 +260,7 @@ focused smoke、amd64/arm64 v0.14.1 architecture focused smoke、amd64/arm64
 v0.15.0 architecture convergence focused smoke、amd64/arm64 C++ zenoh runtime、
 amd64/arm64 deb package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64
 demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge
-smoke 全部通过，再创建 GitHub Release，并上传
-`flowrt_*_amd64.deb`、
-`flowrt_*_arm64.deb` 与统一 `SHA256SUMS`。
+smoke 全部通过，才会产出发布证据。
 
 `v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
 supervisor readiness/resource、远程参数控制面、status/hz 健康展示、scheduler
@@ -348,7 +353,9 @@ helper 兼容路径，release package 和 release job 必须等待该 gate。
 registry 查询 focused smoke，并串联脚本语法检查、`scripts/check-architecture-size.sh`
 和 `scripts/check-architecture-contract.sh`。后者检查 release gate contract、Contract IR
 derived facts 和 runtime observability facts 是否已经进入 validator、codegen、status、
-diagnostics 与 recorder 的生产消费路径。
+diagnostics 与 recorder 的生产消费路径。`v0.15.1 CI Release Evidence Smoke` 检查 CI
+只在发布分支 push 上产出 release evidence，tag release 只消费同一 commit SHA 的成功
+evidence，并确认本地 helper 不再手工触发远端 CI。
 
 release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.Y.Z`”状态行。
 发布后如果只移动 `CHANGELOG.md` 版本段而忘记更新当前上下文，脚本会拒绝通过。
@@ -364,22 +371,23 @@ scripts/check-architecture-contract.sh
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
 scripts/check-release-candidate.sh "$version"
-scripts/check-release-candidate.sh "$version" --dispatch --wait --ref <release-branch>
+git push origin "HEAD:refs/heads/dev/v${version}"
+scripts/check-release-candidate.sh "$version" --wait --ref "dev/v${version}"
 ```
 
 要求：
 
 - `CHANGELOG.md` 必须包含对应二级标题，格式为 `## vX.Y.Z - YYYY-MM-DD`。
 - tag 名必须是 `vX.Y.Z`，且版本号必须与根 `Cargo.toml` 的 workspace version 一致。
-- tag 只能指向已经通过同 SHA release candidate 的提交；不要绕过
-  `scripts/check-release-candidate.sh ... --dispatch --wait` 直接推 tag。
+- tag 只能指向已经通过同一 commit SHA `Release Evidence Gate` 的提交；不要在发布分支
+  push CI 成功前直接推 tag。
 - 对应版本段不能为空；CI 会把该段原样作为 GitHub Release 说明。
 - `## 未发布` 只放尚未发布的后续变化；正式发版前把本次条目移入版本段。
-- `v0.15.0` 之后，release candidate 本地预检会先运行 release readiness，再通过
+- `v0.15.0` 之后，release evidence 本地预检会先运行 release readiness，再通过
   release gate registry 选择对应版本的 focused smoke；新增版本必须先登记 registry，
-  不要在 release candidate 脚本里手写版本分支。
+  不要在 release helper 里手写版本分支。
 
-release candidate 通过后，创建并推送 tag：
+release evidence 通过后，创建并推送 tag：
 
 ```bash
 git tag -a "$tag" -m "$tag"

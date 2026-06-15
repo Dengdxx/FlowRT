@@ -11,8 +11,8 @@ check_v0141_architecture_readiness() {
             "scripts/test-v0141-architecture-smoke.sh" "$ci_file"
         require_ci_text "v0.14.1 gate 运行 architecture size guard" \
             "scripts/check-architecture-size.sh" "$ci_file"
-        require_ci_text_count_at_least "package/release/RC 依赖 v0.14.1 architecture gate" \
-            "- v0141-architecture-smoke" "$ci_file" 3
+        require_ci_text_count_at_least "package/release evidence 依赖 v0.14.1 architecture gate" \
+            "- v0141-architecture-smoke" "$ci_file" 2
     fi
 
     local architecture_size_script="$repo_root/scripts/check-architecture-size.sh"
@@ -48,10 +48,10 @@ check_v0141_architecture_readiness() {
 
     local release_candidate_script="$repo_root/scripts/check-release-candidate.sh"
     if [[ -x "$release_candidate_script" ]]; then
-        require_file_text "release candidate 通过 devtools registry 查询 focused smoke" \
+        require_file_text "release evidence helper 通过 devtools registry 查询 focused smoke" \
             "release-gate focused-smoke" "$release_candidate_script"
     else
-        fail "release candidate 本地脚本不存在或不可执行: $release_candidate_script"
+        fail "release evidence helper 不存在或不可执行: $release_candidate_script"
     fi
 
     local v0141_release_body

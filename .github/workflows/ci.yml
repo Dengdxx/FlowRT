@@ -2,17 +2,9 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
-  workflow_dispatch:
-    inputs:
-      release_candidate:
-        description: "运行 tag 前 release candidate gate，不创建 GitHub Release"
-        required: false
-        default: "false"
-      version:
-        description: "期望发布版本，例如 0.14.1"
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -91,6 +83,26 @@ jobs:
           set -euo pipefail
 
           focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.15.0)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
+  v0151-ci-release-evidence-smoke:
+    name: v0.15.1 CI Release Evidence Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.15.1 CI release evidence smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.15.1)"
           bash -n "$focused_smoke"
           "$focused_smoke"
 
@@ -901,6 +913,7 @@ jobs:
       - guard-generated
       - v0141-architecture-smoke
       - v0150-architecture-convergence-smoke
+      - v0151-ci-release-evidence-smoke
       - rust-test
       - cpp-runtime
       - v050-runtime-smoke
@@ -1377,13 +1390,14 @@ jobs:
           export FLOWRT_CACHE_DIR="${FLOWRT_CACHE_DIR:-$GITHUB_WORKSPACE/.flowrt-cache/ros2-lyrical-${{ matrix.deb_arch }}}"
           scripts/test-ros2-bridge-installed.sh --distro lyrical
 
-  release-candidate:
-    name: Release Candidate Gate
+  release-evidence:
+    name: Release Evidence Gate
     runs-on: ubuntu-latest
     needs:
       - guard-generated
       - v0141-architecture-smoke
       - v0150-architecture-convergence-smoke
+      - v0151-ci-release-evidence-smoke
       - rust-fmt
       - rust-test
       - rust-clippy
@@ -1408,9 +1422,8 @@ jobs:
       - demo-smoke
       - ros2-jazzy-bridge
       - ros2-lyrical-bridge
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_candidate == 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/v')
     permissions:
-      actions: read
       contents: read
 
     steps:
@@ -1429,17 +1442,17 @@ jobs:
           name: flowrt-linux-arm64-deb
           path: dist
 
-      - name: 校验 release candidate
+      - name: 校验 release evidence
         shell: bash
         run: |
           set -euo pipefail
 
-          version="${{ github.event.inputs.version }}"
-          if [[ -z "$version" ]]; then
-            printf 'workflow_dispatch input version is required for release candidate\n' >&2
+          ref_version="${GITHUB_REF_NAME##*/}"
+          version="${ref_version#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'release evidence requires dev/vX.Y.Z branch, got %s\n' "$GITHUB_REF_NAME" >&2
             exit 1
           fi
-          version="${version#v}"
           tag="v${version}"
 
           scripts/check-release-readiness.sh "$version"
@@ -1451,7 +1464,7 @@ jobs:
 
           mapfile -t debs < <(find dist -maxdepth 1 -type f -name 'flowrt_*_*.deb' | sort)
           if [[ "${#debs[@]}" -ne 2 ]]; then
-            printf 'release candidate expected 2 deb artifacts, found %s\n' "${#debs[@]}" >&2
+            printf 'release evidence expected 2 deb artifacts, found %s\n' "${#debs[@]}" >&2
             printf '%s\n' "${debs[@]}" >&2
             exit 1
           fi
@@ -1476,7 +1489,7 @@ jobs:
           done
 
           if [[ "$found_amd64" -ne 1 || "$found_arm64" -ne 1 ]]; then
-            printf 'release candidate artifacts must include amd64 and arm64 deb packages\n' >&2
+            printf 'release evidence artifacts must include amd64 and arm64 deb packages\n' >&2
             exit 1
           fi
 
@@ -1486,190 +1499,30 @@ jobs:
             exit 1
           fi
 
-          printf 'release candidate passed: version=%s sha=%s run_id=%s\n' \
+          cat > dist/release-evidence.json <<EOF
+          {
+            "version": "$version",
+            "tag": "$tag",
+            "sha": "$GITHUB_SHA",
+            "run_id": "$GITHUB_RUN_ID",
+            "workflow": "ci.yml",
+            "job": "Release Evidence Gate",
+            "artifacts": [
+              "flowrt-linux-amd64-deb",
+              "flowrt-linux-arm64-deb"
+            ]
+          }
+          EOF
+
+          printf 'release evidence passed: version=%s sha=%s run_id=%s\n' \
             "$version" "$GITHUB_SHA" "$GITHUB_RUN_ID"
 
-  release:
-    name: GitHub Release
-    runs-on: ubuntu-latest
-    needs:
-      - guard-generated
-      - v0141-architecture-smoke
-      - v0150-architecture-convergence-smoke
-      - rust-fmt
-      - rust-test
-      - rust-clippy
-      - cpp-runtime
-      - v050-runtime-smoke
-      - v060-runtime-smoke
-      - v070-runtime-smoke
-      - v080-runtime-smoke
-      - v081-runtime-smoke
-      - v090-island-smoke
-      - v091-island-tooling-smoke
-      - v092-island-offline-validation-smoke
-      - v0102-concurrency-smoke
-      - v0120-authoring-smoke
-      - v0130-runtime-completion-smoke
-      - v0140-realtime-scheduler-smoke
-      - v083-toolchain-smoke
-      - cpp-zenoh-runtime
-      - package
-      - v083-cross-compile-smoke
-      - v086-cross-sdk-smoke
-      - demo-smoke
-      - ros2-jazzy-bridge
-      - ros2-lyrical-bridge
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      actions: read
-      contents: write
-
-    steps:
-      - name: 检出仓库
-        uses: actions/checkout@v6
-
-      - name: 校验同 SHA release candidate
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          version="${GITHUB_REF_NAME#v}"
-          mapfile -t run_ids < <(
-            gh api \
-              "/repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&head_sha=${GITHUB_SHA}&status=success&per_page=100" \
-              --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id'
-          )
-
-          for run_id in "${run_ids[@]}"; do
-            job_url="$(
-              gh api \
-                "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
-                --paginate \
-                --jq '.jobs[] | select(.name == "Release Candidate Gate" and .conclusion == "success") | .html_url' |
-                sed -n '1p'
-            )"
-            if [[ -n "$job_url" ]]; then
-              printf 'found successful release candidate for sha=%s: %s\n' "$GITHUB_SHA" "$job_url"
-              exit 0
-            fi
-          done
-
-          printf 'missing successful release candidate for tag %s at sha %s\n' \
-            "$GITHUB_REF_NAME" "$GITHUB_SHA" >&2
-          printf 'run this before pushing the tag:\n' >&2
-          printf '  scripts/check-release-candidate.sh %s --dispatch --wait --ref <release-branch>\n' \
-            "$version" >&2
-          exit 1
-
-      - name: 下载 amd64 deb artifact
-        uses: actions/download-artifact@v7
+      - name: 上传 release evidence
+        uses: actions/upload-artifact@v7
         with:
-          name: flowrt-linux-amd64-deb
-          path: dist
-
-      - name: 下载 arm64 deb artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: flowrt-linux-arm64-deb
-          path: dist
-
-      - name: 准备 release 说明和校验和
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-
-          # 校验根 Cargo.toml
-          cargo_version="$(
-            awk '
-              $1 == "version" && $2 == "=" {
-                gsub(/"/, "", $3);
-                print $3;
-                exit;
-              }
-            ' Cargo.toml
-          )"
-          if [[ "$version" != "$cargo_version" ]]; then
-            printf 'tag version %s does not match Cargo.toml version %s\n' "$version" "$cargo_version" >&2
-            exit 1
-          fi
-
-          # 校验 runtime/rust/Cargo.toml
-          rust_runtime_version="$(
-            awk '
-              $1 == "version" && $2 == "=" {
-                gsub(/"/, "", $3);
-                print $3;
-                exit;
-              }
-            ' runtime/rust/Cargo.toml
-          )"
-          if [[ "$version" != "$rust_runtime_version" ]]; then
-            printf 'tag version %s does not match runtime/rust/Cargo.toml version %s\n' "$version" "$rust_runtime_version" >&2
-            exit 1
-          fi
-
-          # 校验 runtime/cpp/CMakeLists.txt
-          cpp_version="$(
-            grep -oP '(?<=FLOWRT_RUNTIME_CPP_VERSION ")[0-9]+\.[0-9]+\.[0-9]+' runtime/cpp/CMakeLists.txt
-          )"
-          if [[ "$version" != "$cpp_version" ]]; then
-            printf 'tag version %s does not match runtime/cpp/CMakeLists.txt version %s\n' "$version" "$cpp_version" >&2
-            exit 1
-          fi
-
-          # 校验 Cargo.lock 中所有本仓库 flowrt* package
-          cargo_lock_mismatches="$(
-            awk -v expected="$version" '
-              /^\[\[package\]\]/ {
-                name = "";
-                next;
-              }
-              /^name = "/ {
-                name = $3;
-                gsub(/"/, "", name);
-                next;
-              }
-              /^version = "/ {
-                package_version = $3;
-                gsub(/"/, "", package_version);
-                if (name ~ /^flowrt/ && package_version != expected) {
-                  printf "%s=%s\n", name, package_version;
-                }
-              }
-            ' Cargo.lock
-          )"
-          if [[ -n "$cargo_lock_mismatches" ]]; then
-            printf 'tag version %s does not match Cargo.lock flowrt* packages:\n%s\n' "$version" "$cargo_lock_mismatches" >&2
-            exit 1
-          fi
-
-          scripts/extract-release-notes.sh "$tag" CHANGELOG.md > dist/release-notes.md
-
-          # 校验 release notes 非空
-          if [[ ! -s dist/release-notes.md ]]; then
-            printf 'release notes for %s are empty\n' "$tag" >&2
-            exit 1
-          fi
-
-          (cd dist && sha256sum flowrt_*_*.deb > SHA256SUMS)
-
-          # 校验 SHA256SUMS 非空
-          if [[ ! -s dist/SHA256SUMS ]]; then
-            printf 'SHA256SUMS is empty — no deb packages found\n' >&2
-            exit 1
-          fi
-
-      - name: 发布 GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: dist/release-notes.md
-          files: |
-            dist/flowrt_*_*.deb
+          name: flowrt-release-evidence
+          path: |
+            dist/release-evidence.json
+            dist/release-notes.md
             dist/SHA256SUMS
-          fail_on_unmatched_files: true
+          if-no-files-found: error

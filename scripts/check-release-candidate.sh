@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# 发布候选门禁脚本。
+# 发布证据门禁脚本。
 #
 # 用法：
-#   scripts/check-release-candidate.sh VERSION [--dispatch] [--wait] [--ref REF]
+#   scripts/check-release-candidate.sh VERSION [--wait] [--ref REF]
 #
-# 默认只运行本地发布就绪检查。加 --dispatch 后触发 GitHub Actions CI 的
-# workflow_dispatch release_candidate gate；加 --wait 后等待该 run 完成。
+# 默认只运行本地发布就绪检查和 focused smoke。加 --wait 后等待同一提交的
+# push CI，并要求 Release Evidence Gate 成功。该脚本不触发远端 CI；远端
+# evidence 只能由 push 自动产生。
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 fail() {
@@ -59,15 +60,11 @@ if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     fail "VERSION 必须是 X.Y.Z 或 vX.Y.Z，实际为: $version"
 fi
 
-dispatch=false
 wait_for_run=false
 ref=""
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
-        --dispatch)
-            dispatch=true
-            ;;
         --wait)
             wait_for_run=true
             ;;
@@ -101,7 +98,7 @@ fi
 tracked_status="$(git status --short --untracked-files=no)"
 if [[ -n "$tracked_status" ]]; then
     printf '%s\n' "$tracked_status" >&2
-    fail "存在未提交的 tracked 改动；发布候选检查必须基于一个确定提交"
+    fail "存在未提交的 tracked 改动；发布证据检查必须基于一个确定提交"
 fi
 
 info "本地发布就绪检查: $tag"
@@ -113,8 +110,8 @@ fi
 
 run_focused_smoke "$version"
 
-if [[ "$dispatch" != true && "$wait_for_run" != true ]]; then
-    info "本地预检完成；未使用 --dispatch，未触发远端 release candidate"
+if [[ "$wait_for_run" != true ]]; then
+    info "本地预检完成；未使用 --wait，未检查远端 release evidence"
     exit 0
 fi
 
@@ -123,7 +120,7 @@ command -v gh >/dev/null 2>&1 || fail "需要安装并登录 gh CLI"
 repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 
 if [[ -z "$ref" ]]; then
-    fail "当前不是具名分支；请用 --ref 指定要触发的远端分支"
+    fail "当前不是具名分支；请用 --ref 指定要等待的远端分支"
 fi
 
 remote_sha="$(git ls-remote origin "refs/heads/${ref}" | awk '{print $1}')"
@@ -133,27 +130,19 @@ fi
 if [[ "$remote_sha" != "$head_sha" ]]; then
     printf '本地 HEAD:  %s\n' "$head_sha" >&2
     printf 'origin/%s: %s\n' "$ref" "$remote_sha" >&2
-    fail "远端分支尚未指向当前提交；请先 push 再触发 release candidate"
+    fail "远端分支尚未指向当前提交；请先 push 再等待 release evidence"
 fi
 
 find_run_id() {
     gh run list \
         --workflow ci.yml \
-        --event workflow_dispatch \
+        --event push \
         --branch "$ref" \
         --limit 20 \
         --json databaseId,headSha \
         --jq ".[] | select(.headSha == \"${head_sha}\") | .databaseId" |
         sed -n '1p'
 }
-
-if [[ "$dispatch" == true ]]; then
-    info "触发 GitHub Actions release candidate: ref=$ref version=$version sha=$head_sha"
-    gh workflow run ci.yml \
-        --ref "$ref" \
-        -f release_candidate=true \
-        -f version="$version"
-fi
 
 run_id=""
 for _ in $(seq 1 30); do
@@ -165,24 +154,22 @@ for _ in $(seq 1 30); do
 done
 
 if [[ -z "$run_id" ]]; then
-    fail "未找到 sha=$head_sha 的 workflow_dispatch run"
+    fail "未找到 sha=$head_sha 的 push CI run"
 fi
 
 run_url="$(gh run view "$run_id" --json url --jq .url)"
-info "release candidate run: $run_url"
+info "release evidence source run: $run_url"
 
-if [[ "$wait_for_run" == true ]]; then
-    gh run watch "$run_id" --exit-status
+gh run watch "$run_id" --exit-status
 
-    rc_job_url="$(
-        gh api \
-            "/repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" \
-            --paginate \
-            --jq '.jobs[] | select(.name == "Release Candidate Gate" and .conclusion == "success") | .html_url' |
-            sed -n '1p'
-    )"
-    if [[ -z "$rc_job_url" ]]; then
-        fail "workflow run 已结束，但未找到成功的 Release Candidate Gate job"
-    fi
-    info "release candidate gate 通过: $rc_job_url"
+evidence_job_url="$(
+    gh api \
+        "/repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" \
+        --paginate \
+        --jq '.jobs[] | select(.name == "Release Evidence Gate" and .conclusion == "success") | .html_url' |
+        sed -n '1p'
+)"
+if [[ -z "$evidence_job_url" ]]; then
+    fail "push CI 已结束，但未找到成功的 Release Evidence Gate job"
 fi
+info "release evidence gate 通过: $evidence_job_url"
