@@ -437,7 +437,8 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.15.0` | Architecture Convergence：收束 release gate contract、Contract IR derived facts、runtime observability facts 和 architecture contract guard。 |
 | `v0.15.1` | CI Release Evidence：发布分支 push 自动产出 release evidence，tag release 只消费同一 commit SHA 已验证产物。 |
 | `v0.15.2` | Scheduler Clock Fix：realtime generated scheduler 使用 monotonic elapsed time，temporary overlay 继续使用 fixture 时间。 |
-| `v0.16.0` | Time Model / Clock Semantics：补齐 clock domain、sensor event time、跨机器同步能力声明和多传感器同步策略。 |
+| `v0.16.0` | Clock Model & Deterministic Replay：区分 runtime monotonic / wall-clock / simulated replay 时间基准，让 logical clock 确定性驱动调度器，用户经 runtime 时钟取 `dt`，并把回放升级为 runtime 原生确定性驱动。 |
+| `v0.17.0` | Sensor Time & Synchronization：在 v0.16.0 clock domain 脚手架上引入 sensor event time、跨机器同步能力声明和多传感器同步策略。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -546,16 +547,27 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   后续改动如果新增派生事实，必须优先接入 typed derived facts 或 observability facts，
   并让 architecture contract guard 能检查生产消费路径；不要重新在 validator、codegen、
   CLI 或 runtime 中手写相同推导。
-- `v0.16.0` 应把 FlowRT 的时间概念从 runtime scheduling time 扩展为完整的时间模型：
-  显式区分 runtime monotonic time、wall-clock time、simulated replay time 和 sensor
-  event time；在 RSDL / Contract IR 中建模 clock domain、timestamp source、unit、
-  epoch、同步能力和派生诊断；定义 sample time、publish time、receive time、
-  scheduled time 与 observed time 的关系；为多传感器 exact sync、approx sync、
-  window/tolerance 和 late sample policy 提供可校验语义。record/replay 必须能同时保持
+- `v0.16.0` 是时间模型的底座主线，只推进一个主轴：把 FlowRT 的时间概念从单一
+  runtime scheduling time 扩展为可区分、可确定性回放的 clock 模型。显式区分 runtime
+  monotonic time、wall-clock time 和 simulated replay time 三种基准；让 simulated /
+  logical clock 确定性驱动调度器——周期任务按逻辑时间周期触发并自动 catch-up，调度
+  推进到"下一个 periodic deadline 或下一个事件"，不再被 wall-clock 节拍绑死，因此
+  回放的物理快慢不影响行为结果；用户算法经 runtime 时钟（`context.now()` /
+  `context.timing()`）取时间与 `dt`，不再直接读 `steady_clock`；clock source
+  （realtime / simulated-replay / external-stepped）成为 Contract IR 一等概念，不再靠
+  `temporary_overlay.is_some()` 隐式推断；record/replay 由 runtime 原生确定性驱动而非
+  per-event introspection socket 注入，保持 deterministic runtime time 可逐位复现，
+  status / diagnostics / record 输出 clock source 与 domain。本版本仍是 runtime
+  scheduling time，不引入 sensor event-time 或多传感器同步；它解锁 deterministic
+  debug、Rust/C++ conformance parity、回归门禁和 ROS2 功能包迁移的标准化行为验证。
+- `v0.17.0` 才在 `v0.16.0` 的 clock domain 脚手架上扩展第四种时间基准 sensor event
+  time，并补齐多传感器同步：在 RSDL / Contract IR 建模 clock domain、timestamp
+  source、unit、epoch、同步能力和派生诊断；定义 sample time、publish time、receive
+  time、scheduled time 与 observed time 的关系；为多传感器 exact sync、approx sync、
+  window/tolerance 和 late sample policy 提供可校验语义；record/replay 同时保持
   deterministic runtime time 与真实 event-time 差异，status / diagnostics / record
-  必须输出 clock source、domain、drift 和 sync 状态。validator 不得把未声明 clock
-  domain 的 sensor timestamp 隐式当成同步依据，也不得把 PTP、NTP 或跨机器同步能力写成
-  backend 内部假设。
+  输出 drift 和 sync 状态。validator 不得把未声明 clock domain 的 sensor timestamp
+  隐式当成同步依据，也不得把 PTP、NTP 或跨机器同步能力写成 backend 内部假设。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 
