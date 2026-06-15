@@ -652,15 +652,11 @@ fn emit_rust_operation_submit_cases(
 }
 
 fn scheduler_clock_source(contract: &ContractIr) -> &'static str {
-    if contract.artifact.temporary_overlay.is_some() {
-        "simulated_replay"
-    } else {
-        "realtime"
-    }
+    contract.artifact.clock_source.label()
 }
 
 fn rust_scheduler_uses_data_time(contract: &ContractIr) -> bool {
-    contract.artifact.temporary_overlay.is_some()
+    !contract.artifact.clock_source.is_realtime()
 }
 
 fn rust_scheduler_clock_init(contract: &ContractIr) -> String {
@@ -685,10 +681,10 @@ fn rust_scheduler_data_time_update(contract: &ContractIr, indent: &str) -> Strin
 }
 
 fn rust_task_clock_source_expr(contract: &ContractIr) -> &'static str {
-    if contract.artifact.temporary_overlay.is_some() {
-        "flowrt::ClockSource::Replay"
-    } else {
+    if contract.artifact.clock_source.is_realtime() {
         "flowrt::ClockSource::Runtime"
+    } else {
+        "flowrt::ClockSource::Replay"
     }
 }
 

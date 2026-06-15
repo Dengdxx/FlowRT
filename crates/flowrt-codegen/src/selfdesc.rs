@@ -434,11 +434,7 @@ fn graph_mode_name(mode: GraphMode) -> &'static str {
 }
 
 fn clock_source_name(contract: &ContractIr) -> &'static str {
-    if contract.artifact.temporary_overlay.is_some() {
-        "simulated_replay"
-    } else {
-        "realtime"
-    }
+    contract.artifact.clock_source.label()
 }
 
 fn self_description_temporary_overlay(

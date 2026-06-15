@@ -136,6 +136,102 @@ backend = "inproc"
     }));
 }
 
+/// 构造一个最小 strict 合同 IR，用于 clock source 派生回归。
+fn strict_clock_fixture() -> flowrt_ir::ContractIr {
+    let source = r#"
+[package]
+name = "clock_source_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    normalize_document(&raw, hash_source(source)).unwrap()
+}
+
+/// 把最小 strict 合同投影成 temporary island overlay，用于 simulated_replay 派生回归。
+fn temporary_overlay_clock_fixture() -> flowrt_ir::ContractIr {
+    let ir = strict_clock_fixture();
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    flowrt_ir::apply_temporary_island_overlay(
+        &projected,
+        &flowrt_ir::TemporaryIslandOverlay {
+            boundary_inputs: vec![flowrt_ir::TemporaryBoundaryMapping {
+                name: "sample_in".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+            boundary_outputs: vec![],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn derives_simulated_replay_clock_for_temporary_overlay() {
+    let island = temporary_overlay_clock_fixture();
+    assert_eq!(
+        island.artifact.clock_source,
+        flowrt_ir::ClockSourceKind::SimulatedReplay
+    );
+    validate_contract(&island)
+        .expect("temporary overlay with simulated_replay clock should validate");
+}
+
+#[test]
+fn rejects_temporary_overlay_clock_tampered_to_realtime() {
+    let mut island = temporary_overlay_clock_fixture();
+    island.artifact.clock_source = flowrt_ir::ClockSourceKind::Realtime;
+    let report = validate_contract(&island)
+        .expect_err("temporary overlay tampered to realtime clock should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "artifact clock source `realtime` is inconsistent with derived `simulated_replay`",
+        )
+    }));
+}
+
+#[test]
+fn rejects_strict_artifact_clock_tampered_to_simulated_replay() {
+    let mut ir = strict_clock_fixture();
+    ir.artifact.clock_source = flowrt_ir::ClockSourceKind::SimulatedReplay;
+    let report = validate_contract(&ir)
+        .expect_err("strict artifact tampered to simulated_replay clock should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "artifact clock source `simulated_replay` is inconsistent with derived `realtime`",
+        )
+    }));
+}
+
+#[test]
+fn rejects_external_stepped_clock_source() {
+    let mut ir = strict_clock_fixture();
+    ir.artifact.clock_source = flowrt_ir::ClockSourceKind::ExternalStepped;
+    let report =
+        validate_contract(&ir).expect_err("external_stepped clock source should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("external_stepped clock source is not supported yet")
+    }));
+}
+
 #[test]
 fn rejects_contract_with_multiple_graphs() {
     let source = r#"

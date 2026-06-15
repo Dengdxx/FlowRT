@@ -51,10 +51,48 @@ impl ContractIr {
     }
 }
 
+/// runtime 时间基准来源。
+///
+/// 标记 generated scheduler 用哪种时钟推进调度：`Realtime` 由 runtime monotonic 时间驱动；
+/// `SimulatedReplay` 由注入事件 / fixture 的逻辑毫秒驱动，使调度结果不受回放物理快慢影响；
+/// `ExternalStepped` 由外部 stepper 推进逻辑时钟（保留长期模型边界，v0.16.0 暂不支持）。
+/// clock source 是 normalization 派生事实：validator 必须按 `temporary_overlay` 重新推导并
+/// 拒绝不一致或暂不支持的取值，不能信任落盘 IR 中可被手工改写的来源。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockSourceKind {
+    /// runtime monotonic 实时时钟。
+    #[default]
+    Realtime,
+    /// 注入事件 / fixture 驱动的模拟回放逻辑时钟。
+    SimulatedReplay,
+    /// 外部 stepper 推进的逻辑时钟（保留扩展边界，v0.16.0 暂不支持）。
+    ExternalStepped,
+}
+
+impl ClockSourceKind {
+    /// 判断是否为实时时钟来源；用于 canonical JSON 跳过默认值。
+    pub fn is_realtime(&self) -> bool {
+        matches!(self, ClockSourceKind::Realtime)
+    }
+
+    /// 返回 clock source 的 canonical 名称，作为 validator、codegen 和 self-description 共享的
+    /// 唯一字符串事实源。
+    pub fn label(&self) -> &'static str {
+        match self {
+            ClockSourceKind::Realtime => "realtime",
+            ClockSourceKind::SimulatedReplay => "simulated_replay",
+            ClockSourceKind::ExternalStepped => "external_stepped",
+        }
+    }
+}
+
 /// 当前 Contract IR 产物的使用边界。
 ///
 /// 常规 normalized IR 默认为 strict、非测试产物；temporary island overlay 会把这里标记为
 /// test-only island，让 self-description、launch manifest、bundle/deploy gate 共享同一事实源。
+/// `clock_source` 把调度时钟来源提升为 IR 一等事实，取代 codegen 散落的 `temporary_overlay`
+/// 推断；它由 normalization 派生、validator 重新校验。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractArtifactIr {
     #[serde(default)]
@@ -65,6 +103,8 @@ pub struct ContractArtifactIr {
     pub test_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_overlay: Option<TemporaryOverlayIr>,
+    #[serde(default, skip_serializing_if = "ClockSourceKind::is_realtime")]
+    pub clock_source: ClockSourceKind,
 }
 
 impl ContractArtifactIr {
@@ -73,6 +113,7 @@ impl ContractArtifactIr {
             && !self.temporary_island
             && !self.test_only
             && self.temporary_overlay.is_none()
+            && self.clock_source.is_realtime()
     }
 }
 
@@ -1085,6 +1126,31 @@ mod tests {
             targets: Vec::new(),
             deployments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn clock_source_realtime_omitted_and_simulated_replay_roundtrips() {
+        // 默认 realtime artifact 整体不写入 canonical JSON。
+        let realtime = minimal_contract();
+        let json = realtime.to_canonical_json().unwrap();
+        assert!(
+            !json.contains("clock_source"),
+            "default realtime clock source must be omitted: {json}"
+        );
+
+        // simulated_replay 必须落盘并 round-trip 回 IR。
+        let mut replay = minimal_contract();
+        replay.artifact.clock_source = ClockSourceKind::SimulatedReplay;
+        let json = replay.to_canonical_json().unwrap();
+        assert!(
+            json.contains("\"clock_source\": \"simulated_replay\""),
+            "simulated_replay clock source must serialize: {json}"
+        );
+        let parsed = ContractIr::from_json_str(&json).unwrap();
+        assert_eq!(
+            parsed.artifact.clock_source,
+            ClockSourceKind::SimulatedReplay
+        );
     }
 
     #[test]

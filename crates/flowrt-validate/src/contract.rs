@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
-    ChannelEdgeIr, ContractIr, EntityId, EntityRef, GraphMode, LanguageKind, OperationEdgeIr,
-    RSDL_VERSION, ResourceSatisfactionIr,
+    ChannelEdgeIr, ClockSourceKind, ContractIr, EntityId, EntityRef, GraphMode, LanguageKind,
+    OperationEdgeIr, RSDL_VERSION, ResourceSatisfactionIr,
 };
 
 use crate::ValidationError;
@@ -43,6 +43,11 @@ pub(crate) fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<Validati
     }
 }
 
+/// 返回 clock source 的 canonical 名称，用于诊断文案。
+fn clock_source_label(source: ClockSourceKind) -> &'static str {
+    source.label()
+}
+
 pub(crate) fn validate_contract_artifact(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     let artifact = &ir.artifact;
     if artifact.temporary_island && !artifact.test_only {
@@ -54,6 +59,31 @@ pub(crate) fn validate_contract_artifact(ir: &ContractIr, errors: &mut Vec<Valid
         errors.push(ValidationError::new(
             "test_only artifact must identify its temporary_overlay source",
         ));
+    }
+
+    // clock source 是派生事实：按 temporary_overlay 重新推导，拒绝不一致或暂不支持的取值，
+    // 不能信任落盘 IR 中可被手工改写的来源。
+    match artifact.clock_source {
+        ClockSourceKind::ExternalStepped => {
+            errors.push(ValidationError::new(
+                "external_stepped clock source is not supported yet; \
+                 use a realtime or simulated_replay contract",
+            ));
+        }
+        clock_source => {
+            let expected = if artifact.temporary_overlay.is_some() {
+                ClockSourceKind::SimulatedReplay
+            } else {
+                ClockSourceKind::Realtime
+            };
+            if clock_source != expected {
+                errors.push(ValidationError::new(format!(
+                    "artifact clock source `{}` is inconsistent with derived `{}`",
+                    clock_source_label(clock_source),
+                    clock_source_label(expected),
+                )));
+            }
+        }
     }
 
     let Some(overlay) = artifact.temporary_overlay.as_ref() else {

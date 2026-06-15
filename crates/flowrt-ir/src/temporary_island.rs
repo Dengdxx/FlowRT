@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    BoundaryDirection, BoundaryEndpointIr, ContractArtifactIr, ContractIr, EntityId, EntityRef,
-    GraphMode, IrError, PortRef, Result, TemporaryOverlayBoundaryMappingIr,
+    BoundaryDirection, BoundaryEndpointIr, ClockSourceKind, ContractArtifactIr, ContractIr,
+    EntityId, EntityRef, GraphMode, IrError, PortRef, Result, TemporaryOverlayBoundaryMappingIr,
     TemporaryOverlayGenerationIr, TemporaryOverlayIr, TypeExpr,
 };
 
@@ -75,6 +75,7 @@ pub fn apply_temporary_island_overlay(
             generated_by: overlay.generated_by.clone(),
             boundary_mappings,
         }),
+        clock_source: ClockSourceKind::SimulatedReplay,
     };
     for profile in &mut projected.profiles {
         profile.mode = GraphMode::Island;
