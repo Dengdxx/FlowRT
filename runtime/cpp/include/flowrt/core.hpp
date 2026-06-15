@@ -468,6 +468,36 @@ class Context {
         return timing_ ? std::addressof(*timing_) : nullptr;
     }
 
+    /**
+     * @brief 返回当前 task 的逻辑观察时间(毫秒)。
+     *
+     * 这是用户算法获取时间的规范入口：调度时间一律来自 runtime 时钟——realtime 下是 runtime
+     * monotonic 时间，simulated_replay 下是注入事件驱动的逻辑时间。用户不得改用 steady_clock 或
+     * system_clock，否则回放将失去确定性。生命周期上下文无 timing 时返回 std::nullopt。
+     */
+    [[nodiscard]] std::optional<std::uint64_t> now_ms() const noexcept {
+        return timing_ ? std::optional<std::uint64_t>{timing_->observed_time_ms} : std::nullopt;
+    }
+
+    /// 返回当前 task 的逻辑观察时间(秒)，便于连续量积分。
+    [[nodiscard]] std::optional<double> now_secs() const noexcept {
+        return timing_ ? std::optional<double>{static_cast<double>(timing_->observed_time_ms) /
+                                               1000.0}
+                       : std::nullopt;
+    }
+
+    /// 返回相对上一次本 task 运行的观察时间间隔(毫秒)；首个样本为 0。
+    [[nodiscard]] std::optional<std::uint64_t> dt_ms() const noexcept {
+        return timing_ ? std::optional<std::uint64_t>{timing_->observed_delta_ms} : std::nullopt;
+    }
+
+    /// 返回相对上一次本 task 运行的观察时间间隔(秒)，是积分步长的规范来源。
+    [[nodiscard]] std::optional<double> dt_secs() const noexcept {
+        return timing_ ? std::optional<double>{static_cast<double>(timing_->observed_delta_ms) /
+                                               1000.0}
+                       : std::nullopt;
+    }
+
    private:
     std::optional<BoundaryContext> boundary_;
     std::optional<TaskTiming> timing_;

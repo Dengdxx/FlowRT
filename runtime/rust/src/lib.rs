@@ -362,6 +362,30 @@ impl Context {
         self.timing.as_ref()
     }
 
+    /// 返回当前 task 的逻辑观察时间（毫秒）；生命周期上下文无 timing 时返回 `None`。
+    ///
+    /// 这是用户算法获取时间的规范入口：调度时间一律来自 runtime 时钟——realtime 下是 runtime
+    /// monotonic 时间，simulated_replay 下是注入事件驱动的逻辑时间。用户不得改用 `Instant::now`
+    /// 或 `SystemTime`，否则回放将失去确定性。
+    pub fn now_ms(&self) -> Option<u64> {
+        self.timing.as_ref().map(|timing| timing.observed_time_ms)
+    }
+
+    /// 返回当前 task 的逻辑观察时间（秒），便于连续量积分。
+    pub fn now_secs(&self) -> Option<f64> {
+        self.now_ms().map(|ms| ms as f64 / 1000.0)
+    }
+
+    /// 返回相对上一次本 task 运行的观察时间间隔（毫秒）；首个样本为 0。
+    pub fn dt_ms(&self) -> Option<u64> {
+        self.timing.as_ref().map(|timing| timing.observed_delta_ms)
+    }
+
+    /// 返回相对上一次本 task 运行的观察时间间隔（秒），是积分步长的规范来源。
+    pub fn dt_secs(&self) -> Option<f64> {
+        self.dt_ms().map(|ms| ms as f64 / 1000.0)
+    }
+
     /// 判断当前上下文是否属于 I/O boundary 组件。
     pub fn is_io_boundary(&self) -> bool {
         self.boundary.is_some()
@@ -597,5 +621,37 @@ mod tests {
         context.set_timing(updated.clone());
 
         assert_eq!(context.timing(), Some(&updated));
+    }
+
+    #[test]
+    fn context_now_and_dt_read_runtime_clock() {
+        let timing = TaskTiming {
+            step: 1,
+            task_name: "planner.update".to_string(),
+            trigger: "periodic".to_string(),
+            clock_source: ClockSource::Replay,
+            scheduled_time_ms: 1_000,
+            observed_time_ms: 1_005,
+            scheduled_delta_ms: 5,
+            observed_delta_ms: 6,
+            period_ms: Some(5),
+            deadline_ms: None,
+            lateness_ms: 0,
+            missed_periods: 0,
+            deadline_missed: false,
+            overrun: false,
+        };
+        let context = Context::with_timing(timing);
+        assert_eq!(context.now_ms(), Some(1_005));
+        assert_eq!(context.dt_ms(), Some(6));
+        assert_eq!(context.now_secs(), Some(1_005.0 / 1000.0));
+        assert_eq!(context.dt_secs(), Some(6.0 / 1000.0));
+
+        // 生命周期上下文无 timing：now/dt 一律返回 None，不伪装出有效时间。
+        let lifecycle = Context::new();
+        assert_eq!(lifecycle.now_ms(), None);
+        assert_eq!(lifecycle.dt_ms(), None);
+        assert_eq!(lifecycle.now_secs(), None);
+        assert_eq!(lifecycle.dt_secs(), None);
     }
 }

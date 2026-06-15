@@ -361,6 +361,10 @@ int main() {
     (void)context;
     assert(!context.is_io_boundary());
     assert(context.timing() == nullptr);
+    assert(context.now_ms() == std::nullopt);
+    assert(context.dt_ms() == std::nullopt);
+    assert(context.now_secs() == std::nullopt);
+    assert(context.dt_secs() == std::nullopt);
     const flowrt::TaskTiming timing{
         .step = 3U,
         .task_name = "planner.update",
@@ -383,6 +387,10 @@ int main() {
     assert(task_context.timing()->clock_source == flowrt::ClockSource::Runtime);
     assert(task_context.timing()->period_ms == std::nullopt);
     assert(task_context.timing()->deadline_ms == 10U);
+    assert(task_context.now_ms() == 125U);
+    assert(task_context.dt_ms() == 45U);
+    assert(task_context.now_secs().has_value() && *task_context.now_secs() == 125.0 / 1000.0);
+    assert(task_context.dt_secs().has_value() && *task_context.dt_secs() == 45.0 / 1000.0);
     task_context.set_timing(flowrt::TaskTiming{
         .step = 4U,
         .task_name = "planner.update",
