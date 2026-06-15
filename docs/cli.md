@@ -21,7 +21,7 @@ flowrt toolchain init --target <linux-arm64> [--sdk-overlay <path>] [--force]
 flowrt external check <path/to/external-package>
 flowrt external list --path <path/to/search-root>
 flowrt build [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
-flowrt run [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
+flowrt run [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--replay <path/to/recording.mcap>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>] [--allow-island]
 flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run] [--allow-island]

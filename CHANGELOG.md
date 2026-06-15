@@ -4,6 +4,40 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.17.0 - 2026-06-16
+
+### 新增
+
+- 运行时原生确定性回放（Rust）：runtime 自己拥有回放事件时间线并按确定性网格逐周期步进，
+  取代 v0.16.0 经 introspection socket 由外部 wall-clock 节奏逐事件注入的回放。新增
+  `flowrt::ReplayDriver`（在「下一个事件时间」与「下一个 periodic 网格点」间取较早者推进
+  逻辑时钟）、`TimeDriver` 抽象、`SteppedDriver` + `StepController`（external_stepped 预备）、
+  `flowrt-record` 的 MCAP→回放时间线 reader，以及 runtime `replay_driver_from_mcap` 装配桥。
+- `flowrt record` 录制 boundary input 激励：`publish_boundary_input` 在 recorder 覆盖该
+  endpoint 时把注入作为 canonical frame channel sample 记录，作为确定性回放的边界激励来源——
+  回放只重放外部边界激励，由 runtime 重算下游 channel。
+- `flowrt run --replay <mcap>`：以 `FLOWRT_REPLAY_SOURCE` 注入生成运行时，配合
+  `--temporary-island` 触发 simulated_replay 时钟源的 runtime 原生确定回放；realtime 忽略并告警。
+
+### 变更
+
+- simulated_replay 生成 Rust runtime shell 改为 runtime 原生回放：循环前从
+  `FLOWRT_REPLAY_SOURCE` 装配 `ReplayDriver`（只含本图 boundary 激励），调度逐周期步进并在
+  命中事件时经 `publish_boundary_input` 进程内注入；不再读外部注入 data_time 或计算 wall-clock
+  deadline。realtime 调度路径不变。
+
+### 测试
+
+- 新增 ReplayDriver 逐周期步进/同时刻多事件、TimeDriver+SteppedDriver 预算步进、MCAP 时间线
+  reader、boundary 激励录制、runtime MCAP→driver 装配、Rust simulated_replay codegen 走原生
+  回放等单测；新增 `v0.17.0 Deterministic Replay Smoke` focused gate。
+
+### 文档
+
+- `v0.17.0 Deterministic Replay` 聚焦 Rust 侧 runtime 原生确定回放；**C++ runtime 暂仍走
+  v0.16.0 外部注入回放路径，跨语言 parity、external_stepped 点亮与 sensor event-time 一并在
+  `v0.18.0` 完成（C++/Rust 同步实现）**。更新 roadmap 与 `docs/cli.md`（`flowrt run --replay`）。
+
 ## v0.16.0 - 2026-06-15
 
 ### 新增
