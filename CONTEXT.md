@@ -5,18 +5,28 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.15.2`；当前发布线为
-`v0.15.2 Scheduler Clock Fix`。这是针对 generated Rust/C++ scheduler realtime clock 的
-缺陷修复版本，不新增 RSDL 用户语义、Contract IR schema、runtime API、C ABI 或长期时间
-模型；它只补齐已有 realtime / temporary replay clock source 元数据对应的实际 clock
-driver 分支。
+当前 workspace 版本为 `0.16.0`；当前发布线为
+`v0.16.0 Clock Model & Deterministic Replay`。这是时间模型的底座主线，把 FlowRT 的时间
+概念从单一 runtime scheduling time 扩展为可区分、可确定性回放的 clock 模型，不引入 sensor
+event-time 或多传感器同步（属 `v0.17.0`）。
 
-`v0.15.2` 修复 Rust/C++ generated scheduler 在 realtime 产物中误把 boundary / replay
-注入的 `published_at_ms` 当作 `scheduler_now_ms` 推进的问题。当前生成物只在
-`artifact.temporary_overlay` 存在时消费样本发布时间推进 simulated replay clock；strict 和
-普通 island realtime 产物会清空 pending 样本时间戳，并使用 scheduler 启动后的 monotonic
-elapsed time 驱动 runtime scheduling time，避免 fixture 或外部样本时间污染 periodic task、
-record/status timing 和用户 `Context::timing()`。
+`v0.16.0` 把 clock source 提升为 Contract IR 一等概念：`artifact.clock_source` 取
+`realtime` / `simulated_replay` / `external_stepped`，由 normalization 派生（temporary
+island overlay 为 `simulated_replay`，常规合同为 `realtime`），validator 重新推导并拒绝
+不一致取值，`external_stepped` 保留长期边界但暂不支持；codegen、launch manifest 和
+self-description 不再散落 `temporary_overlay.is_some()` 推断 clock source。用户算法经
+`Context::now_ms()` / `now_secs()` / `dt_ms()` / `dt_secs()` 取调度时间与积分步长，不再
+直读 `steady_clock` / `Instant::now`。`simulated_replay` 调度去除 wall-clock 绑定：
+generated scheduler 只等待下一个注入事件或关停，逻辑时钟由事件 `data_time` 推进、周期
+task 在调度边界自动 catch-up，回放结果只取决于事件序列而与物理快慢无关；`status` /
+`list` / record 统一输出 clock source。逐周期回放步进（与 realtime 完全对齐的积分粒度）
+和 record/replay 由 runtime 原生确定性驱动留待后续补齐，本版本只解除 wall-clock 绑定。
+
+上一发布线 `v0.15.2 Scheduler Clock Fix` 是针对 generated Rust/C++ scheduler realtime
+clock 的缺陷修复版本，修复 realtime 产物误把 boundary / replay 注入的 `published_at_ms`
+当作 `scheduler_now_ms` 推进的问题；strict 和普通 island realtime 产物清空 pending 样本
+时间戳并使用 scheduler 启动后的 monotonic elapsed time，避免 fixture 或外部样本时间污染
+periodic task、record/status timing 和用户 `Context::timing()`。
 
 上一发布线 `v0.15.1 CI Release Evidence` 是针对 CI/release 机制的可靠性版本，不新增
 RSDL 用户语义、Contract IR schema、runtime API、C ABI 或时间模型；它把发布前置条件从
@@ -437,7 +447,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.15.0` | Architecture Convergence：收束 release gate contract、Contract IR derived facts、runtime observability facts 和 architecture contract guard。 |
 | `v0.15.1` | CI Release Evidence：发布分支 push 自动产出 release evidence，tag release 只消费同一 commit SHA 已验证产物。 |
 | `v0.15.2` | Scheduler Clock Fix：realtime generated scheduler 使用 monotonic elapsed time，temporary overlay 继续使用 fixture 时间。 |
-| `v0.16.0` | Clock Model & Deterministic Replay：区分 runtime monotonic / wall-clock / simulated replay 时间基准，让 logical clock 确定性驱动调度器，用户经 runtime 时钟取 `dt`，并把回放升级为 runtime 原生确定性驱动。 |
+| `v0.16.0` | Clock Model & Deterministic Replay：clock source 成为 Contract IR 一等概念，用户经 `context.now()/dt()` 取时间，simulated_replay 调度去除 wall-clock 绑定使回放结果与物理快慢无关；逐周期回放步进与 runtime 原生确定性回放驱动留待后续。 |
 | `v0.17.0` | Sensor Time & Synchronization：在 v0.16.0 clock domain 脚手架上引入 sensor event time、跨机器同步能力声明和多传感器同步策略。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -547,19 +557,19 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   后续改动如果新增派生事实，必须优先接入 typed derived facts 或 observability facts，
   并让 architecture contract guard 能检查生产消费路径；不要重新在 validator、codegen、
   CLI 或 runtime 中手写相同推导。
-- `v0.16.0` 是时间模型的底座主线，只推进一个主轴：把 FlowRT 的时间概念从单一
-  runtime scheduling time 扩展为可区分、可确定性回放的 clock 模型。显式区分 runtime
-  monotonic time、wall-clock time 和 simulated replay time 三种基准；让 simulated /
-  logical clock 确定性驱动调度器——周期任务按逻辑时间周期触发并自动 catch-up，调度
-  推进到"下一个 periodic deadline 或下一个事件"，不再被 wall-clock 节拍绑死，因此
-  回放的物理快慢不影响行为结果；用户算法经 runtime 时钟（`context.now()` /
-  `context.timing()`）取时间与 `dt`，不再直接读 `steady_clock`；clock source
-  （realtime / simulated-replay / external-stepped）成为 Contract IR 一等概念，不再靠
-  `temporary_overlay.is_some()` 隐式推断；record/replay 由 runtime 原生确定性驱动而非
-  per-event introspection socket 注入，保持 deterministic runtime time 可逐位复现，
-  status / diagnostics / record 输出 clock source 与 domain。本版本仍是 runtime
-  scheduling time，不引入 sensor event-time 或多传感器同步；它解锁 deterministic
-  debug、Rust/C++ conformance parity、回归门禁和 ROS2 功能包迁移的标准化行为验证。
+- `v0.16.0` 是时间模型的底座主线，把 FlowRT 的时间概念从单一 runtime scheduling time
+  扩展为可区分、可确定性回放的 clock 模型。clock source（realtime / simulated_replay /
+  external_stepped）成为 Contract IR 一等概念，由 normalization 派生、validator 重新推导，
+  不再靠 `temporary_overlay.is_some()` 隐式推断（external_stepped 暂不支持，直接拒绝）；
+  用户算法经 runtime 时钟（`context.now_ms()` / `now_secs()` / `dt_ms()` / `dt_secs()`）取
+  时间与 `dt`，不再直接读 `steady_clock`；simulated_replay 调度去除 wall-clock 绑定——
+  只等下一个注入事件或关停，逻辑时钟由事件 `data_time` 推进、周期 task 在调度边界自动
+  catch-up，回放物理快慢不影响行为结果；status / diagnostics / record 输出 clock source。
+  本版本仍是 runtime scheduling time，不引入 sensor event-time 或多传感器同步。逐周期回放
+  步进（与 realtime 完全对齐的积分粒度）和 record/replay 由 runtime 原生确定性驱动（替代
+  per-event introspection socket 注入、逐位复现）作为紧随其后的 follow-up，本版本只解除
+  wall-clock 绑定并解锁回放结果的物理快慢无关性，已足以支撑 deterministic debug、Rust/C++
+  conformance parity 和 ROS2 功能包迁移的标准化行为验证。
 - `v0.17.0` 才在 `v0.16.0` 的 clock domain 脚手架上扩展第四种时间基准 sensor event
   time，并补齐多传感器同步：在 RSDL / Contract IR 建模 clock domain、timestamp
   source、unit、epoch、同步能力和派生诊断；定义 sample time、publish time、receive
