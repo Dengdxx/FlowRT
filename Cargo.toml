@@ -4,6 +4,7 @@ members = [
     "crates/flowrt-cli",
     "crates/flowrt-codegen",
     "crates/flowrt-conformance",
+    "crates/flowrt-devtools",
     "crates/flowrt-ir",
     "crates/flowrt-record",
     "crates/flowrt-rsdl",

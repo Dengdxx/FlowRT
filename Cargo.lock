@@ -721,6 +721,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowrt-devtools"
+version = "0.14.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "flowrt-ir"
 version = "0.14.1"
 dependencies = [
