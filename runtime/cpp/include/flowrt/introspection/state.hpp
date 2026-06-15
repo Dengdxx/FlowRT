@@ -128,6 +128,12 @@ class IntrospectionState {
         if (std::holds_alternative<std::string>(revision)) {
             return std::get<std::string>(revision);
         }
+        // recorder 开启且覆盖该 endpoint 时，把注入作为 canonical frame channel sample 记录，
+        // 作为确定性回放的边界激励来源——回放只重放这些外部激励，由 runtime 重新推导下游 channel。
+        if (recorder_enabled_for_channel(endpoint)) {
+            (void)try_record_channel_sample_frame_bytes(endpoint, boundary.message_type, payload,
+                                                        published_at_ms);
+        }
         return IntrospectionBoundaryPublishStatus{
             .endpoint = std::string{endpoint},
             .message_type = boundary.message_type,
@@ -295,6 +301,26 @@ class IntrospectionState {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         return record_event_locked("channel", name, "channel_sample", "channel", name, message_type,
                                    "raw_abi", message_type, payload,
+                                   published_at_ms
+                                       ? std::optional<std::uint64_t>{*published_at_ms * 1000000U}
+                                       : std::nullopt);
+    }
+
+    /**
+     * @brief 按需以 canonical frame 编码记录 channel 样本。
+     *
+     * boundary input 注入的是 canonical Message ABI frame，作为确定性回放的边界激励来源，
+     * 编码标记为 `canonical_frame`，与 Rust try_record_channel_sample_frame_bytes 对齐。
+     */
+    IntrospectionProbeRecord try_record_channel_sample_frame_bytes(
+        std::string_view name, std::string_view message_type, std::span<const std::uint8_t> payload,
+        std::optional<std::uint64_t> published_at_ms) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return record_event_locked("channel", name, "channel_sample", "channel", name, message_type,
+                                   "canonical_frame", message_type, payload,
                                    published_at_ms
                                        ? std::optional<std::uint64_t>{*published_at_ms * 1000000U}
                                        : std::nullopt);
