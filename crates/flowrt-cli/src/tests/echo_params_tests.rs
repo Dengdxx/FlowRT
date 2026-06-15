@@ -2730,6 +2730,7 @@ fn main() {{}}
         .arg("build")
         .arg("--quiet")
         .current_dir(&root)
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .unwrap();
     assert!(status.success());
