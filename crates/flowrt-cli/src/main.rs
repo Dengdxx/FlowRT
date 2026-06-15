@@ -315,6 +315,11 @@ enum Command {
         /// 临时 boundary output 映射，格式为 `name=instance.port`。
         #[arg(long = "boundary-output")]
         boundary_output: Vec<String>,
+
+        /// 运行时原生确定性回放源（MCAP 录制）。设置后以 FLOWRT_REPLAY_SOURCE 注入生成运行时；
+        /// 仅 simulated_replay 时钟源（temporary island）消费，realtime 忽略。
+        #[arg(long)]
+        replay: Option<PathBuf>,
     },
 
     /// 准备、构建并运行生成的 process supervisor。
@@ -1020,6 +1025,7 @@ fn main() -> Result<()> {
             temporary_island,
             boundary_input,
             boundary_output,
+            replay,
         } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
@@ -1061,12 +1067,18 @@ fn main() -> Result<()> {
                 ensure_prepared_profile_matches(&contract, profile.as_deref(), &build_hint)?;
                 contract
             };
+            if replay.is_some() && contract.artifact.clock_source.is_realtime() {
+                eprintln!(
+                    "FlowRT: --replay 仅用于 simulated_replay 时钟源（temporary island）；当前为 realtime，回放源被忽略"
+                );
+            }
             run_workspace(
                 &contract,
                 &out_dir,
                 process.as_deref(),
                 run_ticks,
                 build_mode,
+                replay.as_deref(),
             )?;
         }
         Command::Launch {

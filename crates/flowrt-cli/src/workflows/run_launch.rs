@@ -287,6 +287,7 @@ pub(crate) fn run_workspace(
     process: Option<&str>,
     run_ticks: Option<usize>,
     requested_build_mode: Option<BuildMode>,
+    replay_source: Option<&Path>,
 ) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
     ensure_backend_runtime_supported(contract, "run")?;
@@ -308,7 +309,7 @@ pub(crate) fn run_workspace(
                     bin.display()
                 );
             }
-            run_binary(&bin, process, run_ticks)?;
+            run_binary(&bin, process, run_ticks, replay_source)?;
         }
         RunMode::CmakeApp => {
             let bin = executable_from_build_info(
@@ -317,7 +318,7 @@ pub(crate) fn run_workspace(
                 "C++ app",
                 "flowrt build",
             )?;
-            run_cmake_app(&bin, process, run_ticks)?;
+            run_cmake_app(&bin, process, run_ticks, replay_source)?;
         }
     }
     Ok(())
@@ -459,6 +460,7 @@ pub(crate) fn run_cmake_app(
     app: &Path,
     process: Option<&str>,
     run_ticks: Option<usize>,
+    replay_source: Option<&Path>,
 ) -> Result<()> {
     if !app.exists() {
         anyhow::bail!(
@@ -473,6 +475,9 @@ pub(crate) fn run_cmake_app(
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
+    if let Some(replay_source) = replay_source {
+        command.env("FLOWRT_REPLAY_SOURCE", replay_source);
+    }
     let status = command
         .status()
         .with_context(|| format!("failed to spawn C++ app `{}`", app.display()))?;
@@ -486,6 +491,7 @@ pub(crate) fn run_binary(
     binary: &Path,
     process: Option<&str>,
     run_ticks: Option<usize>,
+    replay_source: Option<&Path>,
 ) -> Result<()> {
     let mut command = ProcessCommand::new(binary);
     if let Some(process) = process {
@@ -493,6 +499,9 @@ pub(crate) fn run_binary(
     }
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
+    }
+    if let Some(replay_source) = replay_source {
+        command.env("FLOWRT_REPLAY_SOURCE", replay_source);
     }
     let status = command
         .status()
