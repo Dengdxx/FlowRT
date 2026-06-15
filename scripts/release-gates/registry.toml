@@ -17,3 +17,7 @@ script = "scripts/test-v0151-ci-release-evidence-smoke.sh"
 [[focused_smoke]]
 version = "0.15.2"
 script = "scripts/test-v0152-scheduler-clock-smoke.sh"
+
+[[focused_smoke]]
+version = "0.16.0"
+script = "scripts/test-v0160-clock-model-smoke.sh"
