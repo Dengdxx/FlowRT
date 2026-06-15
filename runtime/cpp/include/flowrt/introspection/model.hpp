@@ -43,6 +43,60 @@ struct IntrospectionChannelStatus {
 };
 
 /**
+ * @brief 单个 active input 的 latest 读取状态。
+ */
+struct IntrospectionInputStatus {
+    std::string task;
+    std::string input;
+    std::string channel;
+    std::string message_type;
+    bool present = false;
+    bool stale = false;
+    std::optional<std::uint64_t> last_revision;
+    std::optional<std::uint64_t> last_read_ms;
+    std::optional<std::uint64_t> updated_unix_ms;
+    std::uint64_t dropped_samples = 0;
+    std::uint64_t backpressure_count = 0;
+    std::uint64_t overflow_count = 0;
+};
+
+/**
+ * @brief 单条 dataflow route 的 backend 与传输健康状态。
+ */
+struct IntrospectionRouteStatus {
+    std::string name;
+    std::string from;
+    std::string to;
+    std::string message_type;
+    std::string backend;
+    std::string selected_reason;
+    std::uint64_t published_count = 0;
+    std::uint64_t dropped_samples = 0;
+    std::uint64_t backpressure_count = 0;
+    std::uint64_t overflow_count = 0;
+    std::optional<std::uint64_t> last_publish_ms;
+    std::optional<std::string> last_error;
+};
+
+/**
+ * @brief supervisor 维护的子进程健康状态。
+ *
+ * `resource_placement` 使用合法 JSON 片段，避免 C++ runtime 依赖 Rust supervisor 类型。
+ */
+struct IntrospectionProcessStatus {
+    std::string name;
+    std::string state;
+    std::optional<std::uint32_t> pid;
+    std::uint32_t restart_count = 0;
+    std::optional<std::uint64_t> tick_count;
+    std::optional<std::uint64_t> last_seen_unix_ms;
+    bool tick_stale = false;
+    std::optional<std::int32_t> exit_code;
+    std::optional<std::string> readiness_wait;
+    std::optional<std::string> resource_placement;
+};
+
+/**
  * @brief 单个 channel 的 latest raw ABI snapshot。
  */
 struct IntrospectionChannelSnapshot {
@@ -299,6 +353,9 @@ struct IntrospectionStatus {
     std::uint64_t tick_count = 0;
     IntrospectionClockStatus clock;
     std::vector<IntrospectionChannelStatus> channels;
+    std::vector<IntrospectionInputStatus> inputs;
+    std::vector<IntrospectionRouteStatus> routes;
+    std::vector<IntrospectionProcessStatus> processes;
     std::vector<IntrospectionResourceStatus> resources;
     std::vector<BoundaryStatus> io_boundaries;
     std::vector<IntrospectionParamStatus> params;

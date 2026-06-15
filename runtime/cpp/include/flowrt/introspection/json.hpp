@@ -92,6 +92,108 @@ inline std::string channel_status_json(const IntrospectionChannelStatus &channel
     return output;
 }
 
+inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) {
+    return value ? std::to_string(*value) : "null";
+}
+
+inline std::string optional_i32_json(const std::optional<std::int32_t> &value) {
+    return value ? std::to_string(*value) : "null";
+}
+
+inline std::string optional_u32_json(const std::optional<std::uint32_t> &value) {
+    return value ? std::to_string(*value) : "null";
+}
+
+inline std::string input_status_json(const IntrospectionInputStatus &input) {
+    std::string output;
+    output.append("{\"task\":");
+    output.append(json_string(input.task));
+    output.append(",\"input\":");
+    output.append(json_string(input.input));
+    output.append(",\"channel\":");
+    output.append(json_string(input.channel));
+    output.append(",\"message_type\":");
+    output.append(json_string(input.message_type));
+    output.append(",\"present\":");
+    output.append(input.present ? "true" : "false");
+    output.append(",\"stale\":");
+    output.append(input.stale ? "true" : "false");
+    output.append(",\"last_revision\":");
+    output.append(optional_u64_json(input.last_revision));
+    output.append(",\"last_read_ms\":");
+    output.append(optional_u64_json(input.last_read_ms));
+    output.append(",\"updated_unix_ms\":");
+    output.append(optional_u64_json(input.updated_unix_ms));
+    output.append(",\"dropped_samples\":");
+    output.append(std::to_string(input.dropped_samples));
+    output.append(",\"backpressure_count\":");
+    output.append(std::to_string(input.backpressure_count));
+    output.append(",\"overflow_count\":");
+    output.append(std::to_string(input.overflow_count));
+    output.push_back('}');
+    return output;
+}
+
+inline std::string route_status_json(const IntrospectionRouteStatus &route) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(route.name));
+    output.append(",\"from\":");
+    output.append(json_string(route.from));
+    output.append(",\"to\":");
+    output.append(json_string(route.to));
+    output.append(",\"message_type\":");
+    output.append(json_string(route.message_type));
+    output.append(",\"backend\":");
+    output.append(json_string(route.backend));
+    output.append(",\"selected_reason\":");
+    output.append(json_string(route.selected_reason));
+    output.append(",\"published_count\":");
+    output.append(std::to_string(route.published_count));
+    output.append(",\"dropped_samples\":");
+    output.append(std::to_string(route.dropped_samples));
+    output.append(",\"backpressure_count\":");
+    output.append(std::to_string(route.backpressure_count));
+    output.append(",\"overflow_count\":");
+    output.append(std::to_string(route.overflow_count));
+    output.append(",\"last_publish_ms\":");
+    output.append(optional_u64_json(route.last_publish_ms));
+    output.append(",\"last_error\":");
+    output.append(route.last_error ? json_string(*route.last_error) : "null");
+    output.push_back('}');
+    return output;
+}
+
+inline std::string optional_json_fragment(const std::optional<std::string> &value) {
+    return value ? *value : "null";
+}
+
+inline std::string process_status_json(const IntrospectionProcessStatus &process) {
+    std::string output;
+    output.append("{\"name\":");
+    output.append(json_string(process.name));
+    output.append(",\"state\":");
+    output.append(json_string(process.state));
+    output.append(",\"pid\":");
+    output.append(optional_u32_json(process.pid));
+    output.append(",\"restart_count\":");
+    output.append(std::to_string(process.restart_count));
+    output.append(",\"tick_count\":");
+    output.append(optional_u64_json(process.tick_count));
+    output.append(",\"last_seen_unix_ms\":");
+    output.append(optional_u64_json(process.last_seen_unix_ms));
+    output.append(",\"tick_stale\":");
+    output.append(process.tick_stale ? "true" : "false");
+    output.append(",\"exit_code\":");
+    output.append(optional_i32_json(process.exit_code));
+    output.append(",\"readiness_wait\":");
+    output.append(process.readiness_wait ? json_string(*process.readiness_wait) : "null");
+    output.append(",\"resource_placement\":");
+    output.append(optional_json_fragment(process.resource_placement));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string service_status_json(const IntrospectionServiceStatus &service) {
     std::string output;
     output.append("{\"name\":");
@@ -206,10 +308,6 @@ inline std::string resource_status_json(const IntrospectionResourceStatus &resou
     output.append(resource.updated_unix_ms ? std::to_string(*resource.updated_unix_ms) : "null");
     output.push_back('}');
     return output;
-}
-
-inline std::string optional_u64_json(const std::optional<std::uint64_t> &value) {
-    return value ? std::to_string(*value) : "null";
 }
 
 inline std::string optional_bool_json(const std::optional<bool> &value) {
@@ -371,10 +469,6 @@ inline std::string clock_status_json(const IntrospectionClockStatus &clock) {
     return output;
 }
 
-inline std::string optional_json_fragment(const std::optional<std::string> &value) {
-    return value ? *value : "null";
-}
-
 inline std::string json_fragment_array(const std::vector<std::string> &values) {
     std::string output;
     output.push_back('[');
@@ -472,7 +566,28 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(channel_status_json(status.channels[index]));
     }
-    output.append("],\"inputs\":[],\"routes\":[],\"processes\":[],\"resources\":[");
+    output.append("],\"inputs\":[");
+    for (std::size_t index = 0; index < status.inputs.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(input_status_json(status.inputs[index]));
+    }
+    output.append("],\"routes\":[");
+    for (std::size_t index = 0; index < status.routes.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(route_status_json(status.routes[index]));
+    }
+    output.append("],\"processes\":[");
+    for (std::size_t index = 0; index < status.processes.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(process_status_json(status.processes[index]));
+    }
+    output.append("],\"resources\":[");
     for (std::size_t index = 0; index < status.resources.size(); ++index) {
         if (index != 0) {
             output.push_back(',');

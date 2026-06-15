@@ -341,6 +341,81 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
 }
 
 #[test]
+fn live_status_summary_labels_static_facts_and_keeps_live_route_authoritative() {
+    let root = temp_test_dir("live-status-static-live-split");
+    let socket = root.join("main.sock");
+    let selfdesc_json = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "0123456789abcdef",
+  "artifact": { "mode": "strict", "temporary_island": false, "test_only": false },
+  "package": { "name": "robot_demo", "version": null, "rsdl_version": "0.1" },
+  "graphs": [{
+    "name": "default",
+    "mode": "strict",
+    "instances": [],
+    "tasks": [],
+    "channels": [{
+      "from": "source.packet",
+      "to": "sink.packet",
+      "message_type": "PacketStatic",
+      "backend": "iox2",
+      "thread_affinity": "scheduler_local_commit"
+    }]
+  }]
+}
+"#;
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 82,
+        started_at_unix_ms: 1234,
+        self_description_hash: self_description_hash(selfdesc_json.as_bytes()),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.set_self_description_json(selfdesc_json);
+    state.register_route(flowrt::IntrospectionRouteStatus {
+        name: "source.packet_to_sink.packet".to_string(),
+        from: "source.packet".to_string(),
+        to: "sink.packet".to_string(),
+        message_type: "PacketLive".to_string(),
+        backend: "zenoh".to_string(),
+        selected_reason: "runtime_probe".to_string(),
+        published_count: 11,
+        dropped_samples: 0,
+        backpressure_count: 0,
+        overflow_count: 0,
+        last_publish_ms: Some(512),
+        last_error: None,
+    });
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(output.contains("static_selfdesc=loaded"), "{output}");
+    assert!(output.contains(
+        "route=source.packet_to_sink.packet from=source.packet to=sink.packet type=PacketLive backend=zenoh"
+    ), "{output}");
+    assert!(output.contains("selected_reason=runtime_probe"), "{output}");
+    assert!(
+        output.contains(
+            "thread_affinity=scheduler_local_commit static_thread_affinity=scheduler_local_commit"
+        ),
+        "{output}"
+    );
+    assert!(
+        !output.contains("type=PacketStatic backend=iox2"),
+        "{output}"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn live_status_json_exposes_machine_readable_diagnostics() {
     let root = temp_test_dir("live-status-json-diagnostics");
     let socket = root.join("main.sock");
@@ -724,7 +799,7 @@ fn live_status_summary_reports_stalled_socket_as_stale() {
 }
 
 #[test]
-fn live_status_summary_keeps_status_when_selfdesc_enrichment_stalls() {
+fn live_status_summary_keeps_status_when_static_selfdesc_stalls() {
     let root = temp_test_dir("live-status-stalled-selfdesc");
     let socket = root.join("main.sock");
     std::fs::create_dir_all(&root).unwrap();

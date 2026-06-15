@@ -1379,29 +1379,21 @@ pub(crate) fn live_status_summary_for_sockets(
     for socket in sockets {
         match flowrt::request_status_with_timeout(&socket, LOCAL_INTROSPECTION_TIMEOUT) {
             Ok(flowrt::IntrospectionResponse::Status { handshake, status }) => {
-                // 尝试从同一 socket 获取 self-description，用于把 live status 和静态合同关联。
-                let enrichment =
-                    load_self_description_enrichment(&socket, &handshake.self_description_hash);
+                // static self-description 只提供合同关联信息；live status 仍是运行态事实源。
+                let static_facts =
+                    load_static_self_description_facts(&socket, &handshake.self_description_hash);
                 let recorder = status.recorder.clone();
 
-                let active_observers = status
-                    .channels
-                    .iter()
-                    .map(|channel| channel.active_observers)
-                    .sum::<u64>();
-                let dropped_samples = status
-                    .channels
-                    .iter()
-                    .map(|channel| channel.dropped_samples)
-                    .sum::<u64>();
-                let temporary_overlay = enrichment.artifact.temporary_overlay.is_some();
+                let live_counts = live_status_counts(&status);
+                let temporary_overlay = static_facts.artifact.temporary_overlay.is_some();
                 lines.push(format!(
-                    "pid={} package={} process={} runtime={} selfdesc={} ticks={} clock_source={} tick_time_ms={} clock_unit={} clock_field={} channels={} inputs={} routes={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} temporary_overlay={} socket={}",
+                    "pid={} package={} process={} runtime={} selfdesc={} static_selfdesc={} ticks={} clock_source={} tick_time_ms={} clock_unit={} clock_field={} channels={} inputs={} routes={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} temporary_overlay={} socket={}",
                     handshake.pid,
                     handshake.package,
                     handshake.process,
                     handshake.runtime,
                     handshake.self_description_hash,
+                    static_facts.load_state_label(),
                     status.tick_count,
                     status.clock.source,
                     option_u64(status.clock.tick_time_ms),
@@ -1410,15 +1402,15 @@ pub(crate) fn live_status_summary_for_sockets(
                     status.channels.len(),
                     status.inputs.len(),
                     status.routes.len(),
-                    active_observers,
-                    dropped_samples,
-                    enrichment.artifact.mode,
-                    enrichment.artifact.temporary_island,
-                    enrichment.artifact.test_only,
+                    live_counts.active_observers,
+                    live_counts.dropped_samples,
+                    static_facts.artifact.mode,
+                    static_facts.artifact.temporary_island,
+                    static_facts.artifact.test_only,
                     temporary_overlay,
                     socket.display()
                 ));
-                for graph in &enrichment.graphs {
+                for graph in &static_facts.graphs {
                     lines.push(format!(
                         "graph={} mode={} boundary_endpoints={} socket={}",
                         graph.name,
@@ -1427,7 +1419,7 @@ pub(crate) fn live_status_summary_for_sockets(
                         socket.display()
                     ));
                 }
-                for boundary in &enrichment.boundary_endpoints {
+                for boundary in &static_facts.boundary_endpoints {
                     lines.push(format!(
                         "boundary_endpoint={} direction={} endpoint={} type={} graph={} mode={} socket={}",
                         boundary.name,
@@ -1452,19 +1444,20 @@ pub(crate) fn live_status_summary_for_sockets(
                     ));
                 }
                 for route in &status.routes {
-                    let thread_affinity = enrichment
+                    let static_thread_affinity = static_facts
                         .route_thread_affinity
                         .get(&route_affinity_key(&route.from, &route.to))
                         .map(String::as_str)
                         .unwrap_or("none");
                     lines.push(format!(
-                        "route={} from={} to={} type={} backend={} thread_affinity={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} socket={}",
+                        "route={} from={} to={} type={} backend={} thread_affinity={} static_thread_affinity={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} socket={}",
                         route.name,
                         route.from,
                         route.to,
                         route.message_type,
                         route.backend,
-                        thread_affinity,
+                        static_thread_affinity,
+                        static_thread_affinity,
                         empty_as_none(&route.selected_reason),
                         route.published_count,
                         route.dropped_samples,
@@ -1528,7 +1521,7 @@ pub(crate) fn live_status_summary_for_sockets(
                     ));
                 }
                 for service in status.services {
-                    let (client_inst, server_inst) = enrichment
+                    let (client_inst, server_inst) = static_facts
                         .service_endpoints
                         .get(service.name.as_str())
                         .map(|ep| (ep.client_instance.as_str(), ep.server_instance.as_str()))
@@ -1606,7 +1599,7 @@ pub(crate) fn live_status_summary_for_sockets(
                         socket.display()
                     ));
                     for resource in &boundary.resources {
-                        let descriptor_info = enrichment
+                        let descriptor_info = static_facts
                             .resource_descriptors
                             .get(&resource_descriptor_key(&boundary.name, &resource.name))
                             .map(format_descriptor_schema)
@@ -1784,9 +1777,10 @@ struct BoundaryEndpointAssoc {
     message_type: String,
 }
 
-/// live status 输出的静态合同增强信息。
+/// live status 输出中来自 static self-description 的合同事实。
 #[derive(Default)]
-struct StatusEnrichment {
+struct StaticSelfDescriptionFacts {
+    loaded: bool,
     artifact: flowrt_selfdesc::SelfDescriptionArtifact,
     graphs: Vec<GraphModeAssoc>,
     boundary_endpoints: Vec<BoundaryEndpointAssoc>,
@@ -1795,38 +1789,68 @@ struct StatusEnrichment {
     resource_descriptors: BTreeMap<String, SelfDescriptionResourceDescriptor>,
 }
 
-/// 从 runtime socket 请求 self-description，构建 service/resource 关联映射。
+impl StaticSelfDescriptionFacts {
+    fn load_state_label(&self) -> &'static str {
+        if self.loaded { "loaded" } else { "unavailable" }
+    }
+}
+
+struct LiveStatusCounts {
+    active_observers: u64,
+    dropped_samples: u64,
+}
+
+fn live_status_counts(status: &flowrt::IntrospectionStatus) -> LiveStatusCounts {
+    LiveStatusCounts {
+        active_observers: status
+            .channels
+            .iter()
+            .map(|channel| channel.active_observers)
+            .sum(),
+        dropped_samples: status
+            .channels
+            .iter()
+            .map(|channel| channel.dropped_samples)
+            .sum(),
+    }
+}
+
+/// 从 runtime socket 请求 static self-description，构建 service/resource 关联映射。
 ///
 /// 如果 self-description 请求失败（如 socket 不支持），返回空 map，不报错。
-fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> StatusEnrichment {
+fn load_static_self_description_facts(
+    socket: &Path,
+    expected_hash: &str,
+) -> StaticSelfDescriptionFacts {
     let Ok(response) =
         flowrt::request_self_description_with_timeout(socket, LOCAL_INTROSPECTION_TIMEOUT)
     else {
-        return StatusEnrichment::default();
+        return StaticSelfDescriptionFacts::default();
     };
     let flowrt::IntrospectionResponse::SelfDescription { handshake, json } = response else {
-        return StatusEnrichment::default();
+        return StaticSelfDescriptionFacts::default();
     };
     if handshake.self_description_hash != expected_hash
         || self_description_hash(json.as_bytes()) != expected_hash
     {
-        return StatusEnrichment::default();
+        return StaticSelfDescriptionFacts::default();
     }
     let Ok(sd) = serde_json::from_str::<SelfDescription>(&json) else {
-        return StatusEnrichment::default();
+        return StaticSelfDescriptionFacts::default();
     };
-    let mut enrichment = StatusEnrichment {
+    let mut static_facts = StaticSelfDescriptionFacts {
+        loaded: true,
         artifact: sd.artifact.clone(),
-        ..StatusEnrichment::default()
+        ..StaticSelfDescriptionFacts::default()
     };
     for graph in &sd.graphs {
-        enrichment.graphs.push(GraphModeAssoc {
+        static_facts.graphs.push(GraphModeAssoc {
             name: graph.name.clone(),
             mode: graph.mode.clone(),
             boundary_endpoint_count: graph.boundary_endpoints.len(),
         });
         for boundary in &graph.boundary_endpoints {
-            enrichment.boundary_endpoints.push(BoundaryEndpointAssoc {
+            static_facts.boundary_endpoints.push(BoundaryEndpointAssoc {
                 graph: graph.name.clone(),
                 graph_mode: graph.mode.clone(),
                 name: boundary.name.clone(),
@@ -1839,14 +1863,14 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
             if channel.thread_affinity.is_empty() {
                 continue;
             }
-            enrichment.route_thread_affinity.insert(
+            static_facts.route_thread_affinity.insert(
                 route_affinity_key(&channel.from, &channel.to),
                 channel.thread_affinity.clone(),
             );
         }
         for ep in &graph.services {
             if !ep.client_instance.is_empty() && !ep.server_instance.is_empty() {
-                enrichment.service_endpoints.insert(
+                static_facts.service_endpoints.insert(
                     ep.name.clone(),
                     ServiceEndpointAssoc {
                         client_instance: ep.client_instance.clone(),
@@ -1873,14 +1897,14 @@ fn load_self_description_enrichment(socket: &Path, expected_hash: &str) -> Statu
                 let Some(descriptor) = &resource.descriptor else {
                     continue;
                 };
-                enrichment.resource_descriptors.insert(
+                static_facts.resource_descriptors.insert(
                     resource_descriptor_key(instance, &resource.name),
                     descriptor.clone(),
                 );
             }
         }
     }
-    enrichment
+    static_facts
 }
 
 fn route_affinity_key(from: &str, to: &str) -> String {

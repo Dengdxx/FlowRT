@@ -6,13 +6,16 @@
 #include <cstdlib>
 #include <filesystem>
 #include <flowrt/runtime.hpp>
+#include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -104,9 +107,395 @@ void assert_payload_contains_text(const std::string &value, std::string_view exp
     assert_contains(value, byte_array_fragment(expected));
 }
 
+struct JsonValue {
+    enum class Kind { Null, Bool, Number, String, Array, Object };
+
+    Kind kind = Kind::Null;
+    bool boolean = false;
+    std::string number;
+    std::string string;
+    std::vector<JsonValue> array;
+    std::map<std::string, JsonValue> object;
+};
+
+class JsonParser {
+   public:
+    explicit JsonParser(std::string_view source) : source_(source) {}
+
+    JsonValue parse() {
+        auto value = parse_value();
+        skip_ws();
+        if (position_ != source_.size()) {
+            throw std::runtime_error("trailing JSON input");
+        }
+        return value;
+    }
+
+   private:
+    std::string_view source_;
+    std::size_t position_ = 0;
+
+    void skip_ws() {
+        while (position_ < source_.size() &&
+               (source_[position_] == ' ' || source_[position_] == '\n' ||
+                source_[position_] == '\r' || source_[position_] == '\t')) {
+            ++position_;
+        }
+    }
+
+    char peek() {
+        skip_ws();
+        if (position_ >= source_.size()) {
+            throw std::runtime_error("unexpected end of JSON input");
+        }
+        return source_[position_];
+    }
+
+    char consume() {
+        const char byte = peek();
+        ++position_;
+        return byte;
+    }
+
+    void expect(std::string_view literal) {
+        skip_ws();
+        if (source_.substr(position_, literal.size()) != literal) {
+            throw std::runtime_error("unexpected JSON literal");
+        }
+        position_ += literal.size();
+    }
+
+    JsonValue parse_value() {
+        switch (peek()) {
+            case 'n':
+                expect("null");
+                return JsonValue{};
+            case 't':
+                expect("true");
+                return JsonValue{.kind = JsonValue::Kind::Bool, .boolean = true};
+            case 'f':
+                expect("false");
+                return JsonValue{.kind = JsonValue::Kind::Bool, .boolean = false};
+            case '"':
+                return JsonValue{.kind = JsonValue::Kind::String, .string = parse_string()};
+            case '[':
+                return parse_array();
+            case '{':
+                return parse_object();
+            default:
+                return parse_number();
+        }
+    }
+
+    std::string parse_string() {
+        if (consume() != '"') {
+            throw std::runtime_error("expected JSON string");
+        }
+        std::string output;
+        while (position_ < source_.size()) {
+            const char byte = source_[position_++];
+            if (byte == '"') {
+                return output;
+            }
+            if (byte != '\\') {
+                output.push_back(byte);
+                continue;
+            }
+            if (position_ >= source_.size()) {
+                throw std::runtime_error("unterminated JSON escape");
+            }
+            const char escaped = source_[position_++];
+            switch (escaped) {
+                case '"':
+                case '\\':
+                case '/':
+                    output.push_back(escaped);
+                    break;
+                case 'b':
+                    output.push_back('\b');
+                    break;
+                case 'f':
+                    output.push_back('\f');
+                    break;
+                case 'n':
+                    output.push_back('\n');
+                    break;
+                case 'r':
+                    output.push_back('\r');
+                    break;
+                case 't':
+                    output.push_back('\t');
+                    break;
+                case 'u':
+                    if (position_ + 4U > source_.size()) {
+                        throw std::runtime_error("short JSON unicode escape");
+                    }
+                    output.append("\\u");
+                    output.append(source_.substr(position_, 4U));
+                    position_ += 4U;
+                    break;
+                default:
+                    throw std::runtime_error("invalid JSON escape");
+            }
+        }
+        throw std::runtime_error("unterminated JSON string");
+    }
+
+    JsonValue parse_number() {
+        skip_ws();
+        const auto start = position_;
+        if (position_ < source_.size() && source_[position_] == '-') {
+            ++position_;
+        }
+        while (position_ < source_.size() && source_[position_] >= '0' &&
+               source_[position_] <= '9') {
+            ++position_;
+        }
+        if (position_ < source_.size() && source_[position_] == '.') {
+            ++position_;
+            while (position_ < source_.size() && source_[position_] >= '0' &&
+                   source_[position_] <= '9') {
+                ++position_;
+            }
+        }
+        if (position_ < source_.size() &&
+            (source_[position_] == 'e' || source_[position_] == 'E')) {
+            ++position_;
+            if (position_ < source_.size() &&
+                (source_[position_] == '+' || source_[position_] == '-')) {
+                ++position_;
+            }
+            while (position_ < source_.size() && source_[position_] >= '0' &&
+                   source_[position_] <= '9') {
+                ++position_;
+            }
+        }
+        if (start == position_) {
+            throw std::runtime_error("expected JSON number");
+        }
+        return JsonValue{.kind = JsonValue::Kind::Number,
+                         .number = std::string{source_.substr(start, position_ - start)}};
+    }
+
+    JsonValue parse_array() {
+        if (consume() != '[') {
+            throw std::runtime_error("expected JSON array");
+        }
+        JsonValue value{.kind = JsonValue::Kind::Array};
+        if (peek() == ']') {
+            ++position_;
+            return value;
+        }
+        while (true) {
+            value.array.push_back(parse_value());
+            const char delimiter = consume();
+            if (delimiter == ']') {
+                return value;
+            }
+            if (delimiter != ',') {
+                throw std::runtime_error("expected JSON array delimiter");
+            }
+        }
+    }
+
+    JsonValue parse_object() {
+        if (consume() != '{') {
+            throw std::runtime_error("expected JSON object");
+        }
+        JsonValue value{.kind = JsonValue::Kind::Object};
+        if (peek() == '}') {
+            ++position_;
+            return value;
+        }
+        while (true) {
+            const auto key = parse_string();
+            if (consume() != ':') {
+                throw std::runtime_error("expected JSON object separator");
+            }
+            value.object.insert_or_assign(key, parse_value());
+            const char delimiter = consume();
+            if (delimiter == '}') {
+                return value;
+            }
+            if (delimiter != ',') {
+                throw std::runtime_error("expected JSON object delimiter");
+            }
+        }
+    }
+};
+
+const JsonValue &object_field(const JsonValue &object, std::string_view key) {
+    assert(object.kind == JsonValue::Kind::Object);
+    const auto found = object.object.find(std::string{key});
+    assert(found != object.object.end());
+    return found->second;
+}
+
+const JsonValue &array_item(const JsonValue &array, std::size_t index) {
+    assert(array.kind == JsonValue::Kind::Array);
+    assert(index < array.array.size());
+    return array.array[index];
+}
+
+void assert_string_field(const JsonValue &object, std::string_view key, std::string_view expected) {
+    const auto &field = object_field(object, key);
+    assert(field.kind == JsonValue::Kind::String);
+    assert(field.string == expected);
+}
+
+void assert_number_field(const JsonValue &object, std::string_view key, std::string_view expected) {
+    const auto &field = object_field(object, key);
+    assert(field.kind == JsonValue::Kind::Number);
+    assert(field.number == expected);
+}
+
+void assert_bool_field(const JsonValue &object, std::string_view key, bool expected) {
+    const auto &field = object_field(object, key);
+    assert(field.kind == JsonValue::Kind::Bool);
+    assert(field.boolean == expected);
+}
+
+void assert_null_field(const JsonValue &object, std::string_view key) {
+    assert(object_field(object, key).kind == JsonValue::Kind::Null);
+}
+
+void assert_status_json_schema_parity_fixture() {
+    flowrt::IntrospectionStatus status;
+    status.tick_count = 7;
+    status.clock = flowrt::IntrospectionClockStatus{
+        .source = "simulated_replay",
+        .tick_time_ms = std::optional<std::uint64_t>{250U},
+        .unit = "ms",
+        .field = "tick_time_ms",
+    };
+    status.channels.push_back(flowrt::IntrospectionChannelStatus{
+        .name = "source.packet_to_sink.packet",
+        .message_type = "Packet",
+        .published_count = 4,
+        .last_payload_len = std::optional<std::size_t>{16U},
+        .active_observers = 1,
+        .dropped_samples = 2,
+    });
+    status.inputs.push_back(flowrt::IntrospectionInputStatus{
+        .task = "sink.main",
+        .input = "packet",
+        .channel = "source.packet_to_sink.packet",
+        .message_type = "Packet",
+        .present = false,
+        .stale = true,
+        .last_revision = std::optional<std::uint64_t>{9U},
+        .last_read_ms = std::optional<std::uint64_t>{125U},
+        .updated_unix_ms = std::optional<std::uint64_t>{2000U},
+        .dropped_samples = 0,
+        .backpressure_count = 1,
+        .overflow_count = 2,
+    });
+    status.routes.push_back(flowrt::IntrospectionRouteStatus{
+        .name = "source.packet_to_sink.packet",
+        .from = "source.packet",
+        .to = "sink.packet",
+        .message_type = "Packet",
+        .backend = "zenoh",
+        .selected_reason = "variable_frame_auto_fallback",
+        .published_count = 4,
+        .dropped_samples = 1,
+        .backpressure_count = 2,
+        .overflow_count = 3,
+        .last_publish_ms = std::optional<std::uint64_t>{120U},
+        .last_error = std::optional<std::string>{"queue overflow"},
+    });
+    status.processes.push_back(flowrt::IntrospectionProcessStatus{
+        .name = "sensors",
+        .state = "running",
+        .pid = std::optional<std::uint32_t>{99U},
+        .restart_count = 1,
+        .tick_count = std::optional<std::uint64_t>{7U},
+        .last_seen_unix_ms = std::optional<std::uint64_t>{3000U},
+        .tick_stale = false,
+        .exit_code = std::nullopt,
+        .readiness_wait = std::optional<std::string>{"runtime_ready"},
+        .resource_placement = std::nullopt,
+    });
+    status.diagnostics.push_back(flowrt::IntrospectionDiagnostic{
+        .category = "route",
+        .entity_kind = "route",
+        .entity_id = "source.packet_to_sink.packet",
+        .state = "error",
+        .severity = "error",
+        .reason = std::optional<std::string>{"queue overflow"},
+        .suggestion = std::nullopt,
+        .updated_unix_ms = std::nullopt,
+        .observed_ms = std::optional<std::uint64_t>{250U},
+        .metrics = {flowrt::IntrospectionDiagnosticMetric{
+            .name = "backpressure_count",
+            .value = "2",
+        }},
+    });
+
+    const auto parsed = JsonParser{flowrt::detail::status_json(status)}.parse();
+    assert(parsed.kind == JsonValue::Kind::Object);
+    assert_number_field(parsed, "tick_count", "7");
+    assert_string_field(object_field(parsed, "clock"), "source", "simulated_replay");
+    assert_number_field(object_field(parsed, "clock"), "tick_time_ms", "250");
+    assert(object_field(parsed, "channels").array.size() == 1U);
+    assert(object_field(parsed, "inputs").array.size() == 1U);
+    assert(object_field(parsed, "routes").array.size() == 1U);
+    assert(object_field(parsed, "processes").array.size() == 1U);
+    assert(object_field(parsed, "diagnostics").array.size() == 1U);
+
+    const auto &input = array_item(object_field(parsed, "inputs"), 0);
+    assert_string_field(input, "task", "sink.main");
+    assert_string_field(input, "input", "packet");
+    assert_string_field(input, "channel", "source.packet_to_sink.packet");
+    assert_bool_field(input, "present", false);
+    assert_bool_field(input, "stale", true);
+    assert_number_field(input, "last_revision", "9");
+    assert_number_field(input, "last_read_ms", "125");
+    assert_number_field(input, "updated_unix_ms", "2000");
+    assert_number_field(input, "backpressure_count", "1");
+    assert_number_field(input, "overflow_count", "2");
+
+    const auto &route = array_item(object_field(parsed, "routes"), 0);
+    assert_string_field(route, "name", "source.packet_to_sink.packet");
+    assert_string_field(route, "from", "source.packet");
+    assert_string_field(route, "to", "sink.packet");
+    assert_string_field(route, "backend", "zenoh");
+    assert_string_field(route, "selected_reason", "variable_frame_auto_fallback");
+    assert_number_field(route, "published_count", "4");
+    assert_number_field(route, "dropped_samples", "1");
+    assert_number_field(route, "backpressure_count", "2");
+    assert_number_field(route, "overflow_count", "3");
+    assert_number_field(route, "last_publish_ms", "120");
+    assert_string_field(route, "last_error", "queue overflow");
+
+    const auto &process = array_item(object_field(parsed, "processes"), 0);
+    assert_string_field(process, "name", "sensors");
+    assert_string_field(process, "state", "running");
+    assert_number_field(process, "pid", "99");
+    assert_number_field(process, "restart_count", "1");
+    assert_number_field(process, "tick_count", "7");
+    assert_number_field(process, "last_seen_unix_ms", "3000");
+    assert_bool_field(process, "tick_stale", false);
+    assert_null_field(process, "exit_code");
+    assert_string_field(process, "readiness_wait", "runtime_ready");
+    assert_null_field(process, "resource_placement");
+
+    const auto &diagnostic = array_item(object_field(parsed, "diagnostics"), 0);
+    assert_string_field(diagnostic, "category", "route");
+    assert_string_field(diagnostic, "entity_kind", "route");
+    assert_string_field(diagnostic, "entity_id", "source.packet_to_sink.packet");
+    assert_string_field(diagnostic, "severity", "error");
+    assert_string_field(diagnostic, "reason", "queue overflow");
+    const auto &metric = array_item(object_field(diagnostic, "metrics"), 0);
+    assert_string_field(metric, "name", "backpressure_count");
+    assert_number_field(metric, "value", "2");
+}
+
 }  // namespace
 
 int main() {
+    assert_status_json_schema_parity_fixture();
+
     {
         auto active = std::make_shared<std::atomic_size_t>(0U);
         auto first = flowrt::detail::try_acquire_introspection_client_permit(active, 1U);
