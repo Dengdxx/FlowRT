@@ -3,7 +3,7 @@ use flowrt_rsdl::{LoadedDocument, RawDocument};
 use crate::{ContractIr, Result};
 
 mod assembly;
-mod backends;
+pub(crate) mod backends;
 mod graphs;
 mod ids;
 mod modules;

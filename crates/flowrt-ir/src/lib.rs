@@ -4,6 +4,7 @@
 //! RSDL 文本必须先归一化为强类型 IR，后续阶段不应直接依赖源文件的表结构。
 
 mod backend;
+pub mod derived;
 mod error;
 mod model;
 mod normalize;
@@ -18,6 +19,10 @@ pub use backend::{
     channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
     is_known_backend, is_known_operation_backend, is_known_service_backend,
     message_abi_capabilities, resolve_channel_backend, target_capabilities, trigger_capability,
+};
+pub use derived::{
+    ContractDerivedFacts, DeploymentDerivedFacts, GraphDerivedFacts, ResourceDerivedFacts,
+    RouteDerivedFacts, TargetDerivedFacts, derive_contract_facts,
 };
 pub use error::{IrError, Result};
 pub use model::*;

@@ -6,7 +6,7 @@ use crate::{
 
 pub(super) use crate::resolve_channel_backend;
 
-pub(super) fn source_port_types_by_endpoint(
+pub(crate) fn source_port_types_by_endpoint(
     components: &[ComponentIr],
     instances: &[InstanceIr],
 ) -> BTreeMap<(String, String), TypeExpr> {
@@ -29,7 +29,7 @@ pub(super) fn source_port_types_by_endpoint(
     ports
 }
 
-pub(super) fn route_topology_by_bind_id(
+pub(crate) fn route_topology_by_bind_id(
     graph: &GraphIr,
     components: &[ComponentIr],
 ) -> BTreeMap<EntityId, RouteTopology> {
@@ -54,7 +54,7 @@ pub(super) fn route_topology_by_bind_id(
         .collect()
 }
 
-pub(super) fn route_topology(
+pub(crate) fn route_topology(
     instances: &BTreeMap<&str, &InstanceIr>,
     components: Option<&BTreeMap<&str, &ComponentIr>>,
     from: &PortRef,
