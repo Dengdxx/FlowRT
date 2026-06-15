@@ -5,6 +5,7 @@ use flowrt_ir::{
     ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode,
     InstanceIr, IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
     ResourceProviderIr, ResourceRequirementIr, ResourceSatisfactionIr, ServicePortIr, TaskIr,
+    derived::GraphDerivedFacts,
 };
 
 use crate::resource_names::{
@@ -12,24 +13,26 @@ use crate::resource_names::{
     resource_health_name, resource_provider_scope_name, resource_readiness_name,
     resource_satisfaction_status,
 };
-use crate::runtime_plan::bridge_runtime_plans;
+use crate::runtime_plan::{bridge_runtime_plans, contract_derived_facts, graph_derived_facts};
 use crate::{
     CodegenError, Result, component_by_name, iox2_service_name_for_edge, language_name,
     ros2_bridge_key_expr, zenoh_key_expr_for_edge,
 };
 
 pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
+    let facts = contract_derived_facts(contract)?;
     let graphs = contract
         .graphs
         .iter()
         .map(|graph| {
+            let graph_facts = graph_derived_facts(&facts, graph);
             Ok(serde_json::json!({
                 "name": graph.name,
                 "mode": graph_mode_name(contract_artifact_mode(contract)),
                 "scheduler": launch_scheduler(contract, graph),
-                "resource_contract": launch_resource_contract(graph),
-                "processes": launch_processes(contract, graph),
-                "channels": launch_channels(contract, graph),
+                "resource_contract": launch_resource_contract(graph, graph_facts),
+                "processes": launch_processes(contract, graph, graph_facts),
+                "channels": launch_channels(contract, graph, graph_facts),
                 "boundary_endpoints": launch_boundary_endpoints(graph),
                 "services": launch_services(contract, graph)?,
                 "ros2_bridges": launch_ros2_bridges(contract, graph),
@@ -74,11 +77,12 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     Ok(output)
 }
 
-fn launch_resource_contract(graph: &GraphIr) -> serde_json::Value {
+fn launch_resource_contract(graph: &GraphIr, graph_facts: &GraphDerivedFacts) -> serde_json::Value {
     serde_json::json!({
         "resource_contract_version": flowrt_selfdesc::RESOURCE_CONTRACT_SCHEMA_VERSION,
-        "requirements": graph
-            .resource_satisfactions
+        "requirements": graph_facts
+            .resources
+            .satisfactions
             .iter()
             .map(launch_resource_requirement_binding)
             .collect::<Vec<_>>(),
@@ -87,8 +91,9 @@ fn launch_resource_contract(graph: &GraphIr) -> serde_json::Value {
             .iter()
             .map(launch_resource_provider)
             .collect::<Vec<_>>(),
-        "satisfactions": graph
-            .resource_satisfactions
+        "satisfactions": graph_facts
+            .resources
+            .satisfactions
             .iter()
             .map(launch_resource_satisfaction)
             .collect::<Vec<_>>(),
@@ -408,13 +413,26 @@ fn ros2_bridge_direction_name(direction: flowrt_ir::Ros2BridgeDirection) -> &'st
     }
 }
 
-fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
+fn launch_channels(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    graph_facts: &GraphDerivedFacts,
+) -> Vec<serde_json::Value> {
+    let route_facts = graph_facts
+        .routes
+        .iter()
+        .map(|route| (route.bind_id.0.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
     graph
         .binds
         .iter()
         .enumerate()
         .map(|(index, bind)| {
-            let backend = bind.backend.0.as_str();
+            let route = route_facts
+                .get(bind.id.0.as_str())
+                .copied()
+                .expect("derived route facts must contain every launch channel");
+            let backend = route.backend.0.as_str();
             let service = (backend == "iox2")
                 .then(|| iox2_service_name_for_edge(contract, graph, index, bind));
             let key_expr =
@@ -423,7 +441,7 @@ fn launch_channels(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Va
                 "from": format!("{}.{}", bind.from.instance.name, bind.from.port),
                 "to": format!("{}.{}", bind.to.instance.name, bind.to.port),
                 "backend": backend,
-                "thread_affinity": bind.thread_affinity.map(thread_affinity_name),
+                "thread_affinity": route.thread_affinity.map(thread_affinity_name),
                 "service": service,
                 "key_expr": key_expr,
                 "channel": bind.channel,
@@ -443,7 +461,11 @@ fn thread_affinity_name(affinity: BackendThreadAffinity) -> &'static str {
     }
 }
 
-fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
+fn launch_processes(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    graph_facts: &GraphDerivedFacts,
+) -> Vec<serde_json::Value> {
     let mut processes = BTreeMap::<String, Vec<&InstanceIr>>::new();
     let external_processes = graph
         .external_processes
@@ -477,6 +499,7 @@ fn launch_processes(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::V
                 .map(|external| launch_external_process(external));
             let backend = process_backend(
                 graph,
+                graph_facts,
                 &instance_names,
                 external_processes.get(name.as_str()).copied(),
             );
@@ -671,6 +694,7 @@ fn process_orchestration<'a>(graph: &'a GraphIr, process_name: &str) -> &'a Proc
 
 fn process_backend(
     graph: &GraphIr,
+    graph_facts: &GraphDerivedFacts,
     instance_names: &BTreeSet<&str>,
     external: Option<&ExternalProcessIr>,
 ) -> String {
@@ -679,10 +703,10 @@ fn process_backend(
     }) {
         return "zenoh".to_string();
     }
-    if graph.binds.iter().any(|bind| {
-        bind.backend.0 == "zenoh"
-            && (instance_names.contains(bind.from.instance.name.as_str())
-                || instance_names.contains(bind.to.instance.name.as_str()))
+    if graph_facts.routes.iter().any(|route| {
+        route.backend.0 == "zenoh"
+            && (instance_names.contains(route.from.instance.name.as_str())
+                || instance_names.contains(route.to.instance.name.as_str()))
     }) {
         return "zenoh".to_string();
     }
@@ -700,10 +724,10 @@ fn process_backend(
     }) {
         return "zenoh".to_string();
     }
-    if graph.binds.iter().any(|bind| {
-        bind.backend.0 == "iox2"
-            && (instance_names.contains(bind.from.instance.name.as_str())
-                || instance_names.contains(bind.to.instance.name.as_str()))
+    if graph_facts.routes.iter().any(|route| {
+        route.backend.0 == "iox2"
+            && (instance_names.contains(route.from.instance.name.as_str())
+                || instance_names.contains(route.to.instance.name.as_str()))
     }) {
         return "iox2".to_string();
     }

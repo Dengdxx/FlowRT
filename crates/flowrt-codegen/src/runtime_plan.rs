@@ -6,6 +6,7 @@ use flowrt_ir::{
     OverflowPolicy as IrOverflowPolicy, ParamIr, Ros2BridgeDirection, Ros2BridgeIr,
     ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
     TriggerKind, TypeExpr,
+    derived::{ContractDerivedFacts, GraphDerivedFacts, derive_contract_facts},
 };
 
 use crate::{
@@ -354,11 +355,30 @@ pub(crate) fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<Process
 }
 
 pub(crate) fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<BindRuntimePlan> {
+    let facts = validated_contract_derived_facts(contract);
+    let graph_facts = graph_derived_facts(&facts, graph);
+    bind_runtime_plans_from_facts(contract, graph, graph_facts)
+}
+
+fn bind_runtime_plans_from_facts(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    graph_facts: &GraphDerivedFacts,
+) -> Vec<BindRuntimePlan> {
+    let route_facts = graph_facts
+        .routes
+        .iter()
+        .map(|route| (route.bind_id.0.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
     graph
         .binds
         .iter()
         .enumerate()
         .map(|(index, bind)| {
+            let route = route_facts
+                .get(bind.id.0.as_str())
+                .copied()
+                .expect("derived route facts must contain every validated bind");
             let source_instance = instance_by_name(graph, &bind.from.instance.name);
             let source_component = component_by_name(contract, &source_instance.component.name);
             let source_port = port_by_name(&source_component.outputs, &bind.from.port);
@@ -367,8 +387,8 @@ pub(crate) fn bind_runtime_plans(contract: &ContractIr, graph: &GraphIr) -> Vec<
                 field_name: format!("bind_{index}"),
                 probe_field_name: format!("introspection_probe_bind_{index}"),
                 channel: bind.channel,
-                backend: bind.backend.clone(),
-                backend_source: bind.backend_source,
+                backend: route.backend.clone(),
+                backend_source: route.backend_source,
                 overflow: bind.overflow,
                 stale: bind.stale,
                 max_age_ms: bind.max_age_ms,
@@ -571,15 +591,28 @@ pub(crate) fn bind_backend(bind: &BindRuntimePlan) -> &str {
 }
 
 pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> bool {
+    let facts = validated_contract_derived_facts(contract);
+    contract_uses_backend_with_facts(contract, &facts, backend)
+}
+
+fn contract_uses_backend_with_facts(
+    contract: &ContractIr,
+    facts: &ContractDerivedFacts,
+    backend: &str,
+) -> bool {
     contract
         .profiles
         .iter()
         .any(|profile| profile.backend.0 == backend)
-        || contract
+        || facts
+            .deployments
+            .iter()
+            .any(|deployment| deployment.backend.0 == backend)
+        || facts
             .graphs
             .iter()
-            .flat_map(|graph| &graph.binds)
-            .any(|bind| bind.backend.0 == backend)
+            .flat_map(|graph| &graph.routes)
+            .any(|route| route.backend.0 == backend)
         || contract
             .graphs
             .iter()
@@ -599,15 +632,43 @@ pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> boo
 
 pub(crate) fn contract_backend_features(contract: &ContractIr) -> Vec<&'static str> {
     let mut features = Vec::new();
-    if contract_uses_backend(contract, "iox2") {
+    let facts = validated_contract_derived_facts(contract);
+    if contract_uses_backend_with_facts(contract, &facts, "iox2") {
         features.push("iox2");
     }
-    if contract_uses_backend(contract, "zenoh")
+    if contract_uses_backend_with_facts(contract, &facts, "zenoh")
         || contract_has_params_for_language(contract, flowrt_ir::LanguageKind::Rust)
     {
         features.push("zenoh");
     }
     features
+}
+
+pub(crate) fn contract_derived_facts(
+    contract: &ContractIr,
+) -> flowrt_ir::Result<ContractDerivedFacts> {
+    derive_contract_facts(contract)
+}
+
+pub(crate) fn validated_contract_derived_facts(contract: &ContractIr) -> ContractDerivedFacts {
+    contract_derived_facts(contract).expect("validated Contract IR derived facts should recompute")
+}
+
+pub(crate) fn graph_derived_facts<'a>(
+    facts: &'a ContractDerivedFacts,
+    graph: &GraphIr,
+) -> &'a GraphDerivedFacts {
+    facts
+        .graphs
+        .iter()
+        .find(|graph_facts| graph_facts.graph.id == graph.id)
+        .or_else(|| {
+            facts
+                .graphs
+                .iter()
+                .find(|graph_facts| graph_facts.graph.name == graph.name)
+        })
+        .expect("derived facts must contain every graph")
 }
 
 pub(crate) fn contract_has_params_for_language(

@@ -2,23 +2,35 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     CapabilityAtom, ComponentIr, ContractIr, GraphIr, ResourceAccess, ResourceProviderIr,
-    ResourceProviderScope, derive_resource_satisfactions,
+    ResourceProviderScope, derive_resource_satisfactions, derived::derive_contract_facts,
 };
 
 use crate::ValidationError;
 
 pub(crate) fn validate_resources(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let resource_facts_by_graph = derive_contract_facts(ir).ok().map(|facts| {
+        facts
+            .graphs
+            .into_iter()
+            .map(|graph| (graph.graph.name, graph.resources.satisfactions))
+            .collect::<BTreeMap<_, _>>()
+    });
     for component in &ir.components {
         validate_component_resource_requirements(component, errors);
     }
     for graph in &ir.graphs {
         validate_resource_providers(graph, ir, errors);
-        let expected = derive_resource_satisfactions(
-            &graph.name,
-            &graph.instances,
-            &ir.components,
-            &graph.resource_providers,
-        );
+        let expected = resource_facts_by_graph
+            .as_ref()
+            .and_then(|facts| facts.get(&graph.name).cloned())
+            .unwrap_or_else(|| {
+                derive_resource_satisfactions(
+                    &graph.name,
+                    &graph.instances,
+                    &ir.components,
+                    &graph.resource_providers,
+                )
+            });
         if graph.resource_satisfactions != expected {
             errors.push(ValidationError::new(format!(
                 "graph `{}` resource satisfaction metadata is not canonical",

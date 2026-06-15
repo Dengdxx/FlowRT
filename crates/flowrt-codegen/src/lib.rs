@@ -80,6 +80,9 @@ pub enum CodegenError {
     #[error("failed to derive message ABI expectations: {0}")]
     MessageAbi(#[from] flowrt_conformance::AbiError),
 
+    #[error("failed to derive Contract IR facts: {0}")]
+    DerivedFacts(#[from] flowrt_ir::IrError),
+
     #[error("contract validation failed: {0}")]
     Validation(#[from] flowrt_validate::ValidationReport),
 }

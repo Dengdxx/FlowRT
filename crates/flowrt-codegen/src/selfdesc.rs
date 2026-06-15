@@ -8,6 +8,7 @@ use flowrt_ir::{
     OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy,
     ResourceProviderIr, ResourceSatisfactionIr, ServiceOverflowPolicy,
     StalePolicy as IrStalePolicy, TaskConcurrency, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    derived::GraphDerivedFacts,
 };
 use flowrt_selfdesc::{
     SELF_DESCRIPTION_SCHEMA_VERSION, SELF_DESCRIPTION_SECTION, SelfDescription,
@@ -37,6 +38,7 @@ use crate::{
     Result, component_by_name, fixed_message_abi_expectations, frame_header_size_for_expr,
     frame_header_size_for_type, frame_max_size_for_type, language_name, managed_header,
     param_type_name, param_update_name, param_value_for_instance, param_value_json,
+    runtime_plan::{contract_derived_facts, graph_derived_facts},
     type_contains_variable_data, variable_tail_max_size,
 };
 
@@ -108,6 +110,7 @@ pub(super) fn emit_rust_selfdesc(contract: &ContractIr) -> String {
 }
 
 fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
+    let facts = contract_derived_facts(contract)?;
     Ok(SelfDescription {
         self_description_version: SELF_DESCRIPTION_SCHEMA_VERSION.to_string(),
         ir_version: contract.ir_version.clone(),
@@ -163,7 +166,7 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
                     .collect(),
             })
             .collect(),
-        deployments: contract
+        deployments: facts
             .deployments
             .iter()
             .map(|deployment| SelfDescriptionDeployment {
@@ -171,13 +174,15 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
                 profile: deployment.profile.name.clone(),
                 target: deployment.target.name.clone(),
                 backend: deployment.backend.0.clone(),
-                satisfied: deployment.satisfied,
+                satisfied: deployment.decision.satisfied,
             })
             .collect(),
         graphs: contract
             .graphs
             .iter()
-            .map(|graph| self_description_graph(contract, graph))
+            .map(|graph| {
+                self_description_graph(contract, graph, graph_derived_facts(&facts, graph))
+            })
             .collect(),
         component_types: contract
             .components
@@ -196,12 +201,21 @@ fn self_description(contract: &ContractIr) -> Result<SelfDescription> {
     })
 }
 
-fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescriptionGraph {
+fn self_description_graph(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    graph_facts: &GraphDerivedFacts,
+) -> SelfDescriptionGraph {
+    let route_facts = graph_facts
+        .routes
+        .iter()
+        .map(|route| (route.bind_id.0.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
     SelfDescriptionGraph {
         name: graph.name.clone(),
         mode: graph_mode_name(contract_artifact_mode(contract)).to_string(),
         scheduler: self_description_scheduler(contract, graph),
-        resource_contract: self_description_resource_contract(graph),
+        resource_contract: self_description_resource_contract(graph, graph_facts),
         external_processes: graph
             .external_processes
             .iter()
@@ -259,7 +273,11 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
             .iter()
             .enumerate()
             .map(|(index, bind)| {
-                let backend = bind.backend.0.clone();
+                let route = route_facts
+                    .get(bind.id.0.as_str())
+                    .copied()
+                    .expect("derived route facts must contain every self-description channel");
+                let backend = route.backend.0.clone();
                 SelfDescriptionChannel {
                     from: format!("{}.{}", bind.from.instance.name, bind.from.port),
                     to: format!("{}.{}", bind.to.instance.name, bind.to.port),
@@ -282,7 +300,7 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
                     stale_policy: stale_name(bind.stale).to_string(),
                     max_age_ms: bind.max_age_ms,
                     backend,
-                    thread_affinity: bind
+                    thread_affinity: route
                         .thread_affinity
                         .map(thread_affinity_name)
                         .unwrap_or_default()
@@ -304,11 +322,15 @@ fn self_description_graph(contract: &ContractIr, graph: &GraphIr) -> SelfDescrip
     }
 }
 
-fn self_description_resource_contract(graph: &GraphIr) -> SelfDescriptionResourceContract {
+fn self_description_resource_contract(
+    graph: &GraphIr,
+    graph_facts: &GraphDerivedFacts,
+) -> SelfDescriptionResourceContract {
     SelfDescriptionResourceContract {
         resource_contract_version: flowrt_selfdesc::RESOURCE_CONTRACT_SCHEMA_VERSION.to_string(),
-        requirements: graph
-            .resource_satisfactions
+        requirements: graph_facts
+            .resources
+            .satisfactions
             .iter()
             .map(self_description_resource_requirement_binding)
             .collect(),
@@ -317,8 +339,9 @@ fn self_description_resource_contract(graph: &GraphIr) -> SelfDescriptionResourc
             .iter()
             .map(self_description_resource_provider)
             .collect(),
-        satisfactions: graph
-            .resource_satisfactions
+        satisfactions: graph_facts
+            .resources
+            .satisfactions
             .iter()
             .map(self_description_resource_satisfaction)
             .collect(),

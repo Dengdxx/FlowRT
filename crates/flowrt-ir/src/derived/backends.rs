@@ -1,7 +1,8 @@
 use crate::{
     BackendName, BackendThreadAffinity, CapabilityAtom, ChannelBackendSource, ContractIr, EntityId,
-    GraphIr, PolicyValueSource, PortRef, Result, RouteTopology, channel_capabilities,
-    channel_route_capabilities, normalize::backends::route_topology_by_bind_id,
+    GraphIr, PolicyValueSource, PortRef, Result, RouteTopology, backend::ChannelBackendResolution,
+    channel_capabilities, channel_route_capabilities,
+    normalize::backends::route_topology_by_bind_id,
     normalize::backends::source_port_types_by_endpoint, resolve_channel_backend,
 };
 
@@ -62,7 +63,18 @@ pub(super) fn derive_route_facts(
                 &contract.types,
                 topology,
                 explicit_backend,
-            )?;
+            )
+            .or_else(|error| {
+                if explicit_backend {
+                    // validator 需要继续审计手工篡改后的显式 backend 元数据。
+                    Ok(ChannelBackendResolution {
+                        backend: requested_backend.to_string(),
+                        source: ChannelBackendSource::Explicit,
+                    })
+                } else {
+                    Err(error)
+                }
+            })?;
             let capability_requirements = match source_type {
                 Some(source_type) => channel_route_capabilities(
                     &contract.types,

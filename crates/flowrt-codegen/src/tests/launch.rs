@@ -775,6 +775,78 @@ backends = ["inproc"]
 }
 
 #[test]
+fn internal_resource_contract_projection_uses_rederived_facts() {
+    let mut ir = contract_from_source(
+        r#"
+[package]
+name = "resource_facts_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.sensor]
+language = "rust"
+kind = "io_boundary"
+output = ["sample:Sample"]
+
+[component.sensor.resource.lidar]
+capability = "perception.lidar.samples"
+required = true
+
+[[resource.provider]]
+name = "lidar_provider"
+capabilities = ["perception.lidar.samples"]
+scope = "process"
+process = "main"
+health_source = "provider_health"
+readiness_source = "provider_ready"
+
+[instance.sensor]
+component = "sensor"
+
+[instance.sensor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+"#,
+    );
+    ir.graphs[0].resource_satisfactions.clear();
+
+    let launch: serde_json::Value =
+        serde_json::from_str(&crate::launch_manifest::emit_launch_manifest(&ir).unwrap()).unwrap();
+    let launch_resource_contract = &launch["graphs"][0]["resource_contract"];
+    assert_eq!(
+        launch_resource_contract["requirements"][0]["capability"],
+        "perception.lidar.samples"
+    );
+    assert_eq!(
+        launch_resource_contract["requirements"][0]["satisfaction"],
+        "satisfied"
+    );
+    assert_eq!(
+        launch_resource_contract["satisfactions"][0]["provider"],
+        "lidar_provider"
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(&crate::selfdesc::emit_self_description(&ir).unwrap()).unwrap();
+    let selfdesc_resource_contract = &selfdesc["graphs"][0]["resource_contract"];
+    assert_eq!(
+        selfdesc_resource_contract["requirements"][0]["capability"],
+        "perception.lidar.samples"
+    );
+    assert_eq!(
+        selfdesc_resource_contract["requirements"][0]["satisfaction"],
+        "satisfied"
+    );
+    assert_eq!(
+        selfdesc_resource_contract["satisfactions"][0]["provider"],
+        "lidar_provider"
+    );
+}
+
+#[test]
 fn launch_manifest_and_selfdesc_expose_island_boundary_contract() {
     let ir = contract_from_source(
         r#"

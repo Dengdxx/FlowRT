@@ -644,3 +644,84 @@ backends = ["zenoh"]
     assert_eq!(channel["backend"], "zenoh");
     assert_eq!(channel["thread_affinity"], "send_safe");
 }
+
+#[test]
+fn internal_codegen_route_projection_uses_rederived_facts() {
+    let mut ir = contract_from_source(
+        r#"
+[package]
+name = "derived_route_demo"
+rsdl_version = "0.1"
+
+[component.producer]
+language = "rust"
+output = ["sample:u32"]
+
+[component.consumer]
+language = "rust"
+input = ["sample:u32"]
+
+[instance.producer]
+component = "producer"
+target = "linux"
+
+[instance.producer.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+
+[instance.consumer]
+component = "consumer"
+target = "linux"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "producer.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#,
+    );
+    ir.graphs[0].binds[0].backend = flowrt_ir::BackendName("iox2".to_string());
+    ir.graphs[0].binds[0].backend_source = flowrt_ir::ChannelBackendSource::ProfileDefault;
+    ir.graphs[0].binds[0].thread_affinity =
+        Some(flowrt_ir::BackendThreadAffinity::SchedulerLocalCommit);
+
+    let bind_plans = crate::runtime_plan::bind_runtime_plans(&ir, &ir.graphs[0]);
+    assert_eq!(bind_plans[0].backend.0, "zenoh");
+    assert_eq!(
+        bind_plans[0].backend_source,
+        flowrt_ir::ChannelBackendSource::ProfileDefault
+    );
+
+    let launch: serde_json::Value =
+        serde_json::from_str(&crate::launch_manifest::emit_launch_manifest(&ir).unwrap()).unwrap();
+    let launch_channel = &launch["graphs"][0]["channels"][0];
+    assert_eq!(launch_channel["backend"], "zenoh");
+    assert_eq!(launch_channel["thread_affinity"], "send_safe");
+    assert_eq!(launch_channel["service"], serde_json::Value::Null);
+    assert_eq!(
+        launch_channel["key_expr"],
+        "flowrt/derived_route_demo/default/default/bind_0/producer_sample_to_consumer_sample"
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(&crate::selfdesc::emit_self_description(&ir).unwrap()).unwrap();
+    let selfdesc_channel = &selfdesc["graphs"][0]["channels"][0];
+    assert_eq!(selfdesc_channel["backend"], "zenoh");
+    assert_eq!(selfdesc_channel["thread_affinity"], "send_safe");
+    assert_eq!(selfdesc_channel["service"], serde_json::Value::Null);
+    assert_eq!(
+        selfdesc_channel["key_expr"],
+        "flowrt/derived_route_demo/default/default/bind_0/producer_sample_to_consumer_sample"
+    );
+}
