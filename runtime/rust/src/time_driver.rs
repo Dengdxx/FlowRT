@@ -96,6 +96,157 @@ impl ReplayDriver {
     }
 }
 
+/// 时间驱动抽象：让调度循环对时间来源不可知。
+///
+/// realtime 暂仍走生成 shell 既有 wall-clock 路径（后续可迁移到本 trait）；[`ReplayDriver`]
+/// 与 [`SteppedDriver`] 通过本 trait 统一接入：`next_step` 推进逻辑时钟并分类本步，
+/// `take_pending_events` 取出 [`Step::Data`] 步需注入的回放事件（realtime 恒为空——其数据由
+/// 真实 backend 经 `ScheduleWaiter` 自行注入）。
+pub trait TimeDriver {
+    /// 推进到下一个调度步。`next_periodic_deadline_ms` 是调度器算出的下一个 periodic
+    /// deadline（无 periodic 待触发时为 `None`）；`shutdown` 触发时返回 [`Step::Shutdown`]。
+    fn next_step(
+        &mut self,
+        next_periodic_deadline_ms: Option<u64>,
+        shutdown: &crate::ShutdownToken,
+    ) -> Step;
+
+    /// 当前逻辑毫秒时间。
+    fn now_ms(&self) -> u64;
+
+    /// 取走上一个 [`Step::Data`] 暂存的待注入事件。默认空（realtime 数据由 backend 自注入）。
+    fn take_pending_events(&mut self) -> Vec<ReplayEvent> {
+        Vec::new()
+    }
+}
+
+impl TimeDriver for ReplayDriver {
+    fn next_step(
+        &mut self,
+        next_periodic_deadline_ms: Option<u64>,
+        shutdown: &crate::ShutdownToken,
+    ) -> Step {
+        if shutdown.is_requested() {
+            return Step::Shutdown;
+        }
+        self.step(next_periodic_deadline_ms)
+    }
+
+    fn now_ms(&self) -> u64 {
+        ReplayDriver::now_ms(self)
+    }
+
+    fn take_pending_events(&mut self) -> Vec<ReplayEvent> {
+        ReplayDriver::take_pending_events(self)
+    }
+}
+
+/// external_stepped 时钟的外部步进控制器。
+///
+/// deterministic debug 场景下，外部控制面（introspection socket）按需 [`grant`](Self::grant)
+/// 步进预算；[`SteppedDriver`] 在预算耗尽时阻塞等待，直到获得新预算、被 [`close`](Self::close)
+/// 或收到 shutdown。控制器可克隆共享给控制面线程。
+#[derive(Debug, Clone, Default)]
+pub struct StepController {
+    state: std::sync::Arc<(std::sync::Mutex<StepState>, std::sync::Condvar)>,
+}
+
+#[derive(Debug, Default)]
+struct StepState {
+    budget: u64,
+    closed: bool,
+}
+
+impl StepController {
+    /// 构造预算为 0 的控制器。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 追加 `steps` 个步进预算并唤醒等待者。
+    pub fn grant(&self, steps: u64) {
+        let (mutex, condvar) = &*self.state;
+        let mut state = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.budget = state.budget.saturating_add(steps);
+        condvar.notify_all();
+    }
+
+    /// 关闭控制器：等待者将解除阻塞并结束回放。
+    pub fn close(&self) {
+        let (mutex, condvar) = &*self.state;
+        let mut state = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        condvar.notify_all();
+    }
+
+    /// 阻塞获取一个步进预算。返回 `false` 表示被关闭或 shutdown，应结束回放。
+    fn acquire(&self, shutdown: &crate::ShutdownToken) -> bool {
+        let (mutex, condvar) = &*self.state;
+        let mut state = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let poll = std::time::Duration::from_millis(50);
+        loop {
+            if shutdown.is_requested() {
+                return false;
+            }
+            if state.budget > 0 {
+                state.budget -= 1;
+                return true;
+            }
+            if state.closed {
+                return false;
+            }
+            let (next, _) = condvar
+                .wait_timeout(state, poll)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+        }
+    }
+}
+
+/// external_stepped 时间驱动：拥有回放时间线，但每一步都等外部控制器授权后才推进。
+#[derive(Debug)]
+pub struct SteppedDriver {
+    replay: ReplayDriver,
+    controller: StepController,
+}
+
+impl SteppedDriver {
+    /// 用回放时间线和共享控制器构造 driver。
+    pub fn new(timeline: Vec<ReplayEvent>, controller: StepController) -> Self {
+        Self {
+            replay: ReplayDriver::new(timeline),
+            controller,
+        }
+    }
+}
+
+impl TimeDriver for SteppedDriver {
+    fn next_step(
+        &mut self,
+        next_periodic_deadline_ms: Option<u64>,
+        shutdown: &crate::ShutdownToken,
+    ) -> Step {
+        if !self.controller.acquire(shutdown) {
+            return Step::Shutdown;
+        }
+        self.replay.step(next_periodic_deadline_ms)
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.replay.now_ms()
+    }
+
+    fn take_pending_events(&mut self) -> Vec<ReplayEvent> {
+        self.replay.take_pending_events()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +300,43 @@ mod tests {
         assert_eq!(driver.now_ms(), 7);
         assert_eq!(driver.take_pending_events().len(), 2);
         assert_eq!(driver.step(Some(100)), Step::Shutdown);
+    }
+
+    #[test]
+    fn replay_driver_as_time_driver_short_circuits_on_shutdown() {
+        let mut driver = ReplayDriver::new(vec![event(0, "a")]);
+        let shutdown = crate::ShutdownToken::new_for_test();
+        shutdown.request();
+        assert_eq!(
+            TimeDriver::next_step(&mut driver, Some(0), &shutdown),
+            Step::Shutdown
+        );
+    }
+
+    #[test]
+    fn stepped_driver_advances_only_with_granted_budget() {
+        let controller = StepController::new();
+        let mut driver = SteppedDriver::new(vec![event(0, "a"), event(5, "b")], controller.clone());
+        let shutdown = crate::ShutdownToken::new_for_test();
+        // 授权两步：分别命中两个事件。
+        controller.grant(2);
+        assert_eq!(driver.next_step(Some(0), &shutdown), Step::Data);
+        assert_eq!(driver.now_ms(), 0);
+        assert_eq!(driver.take_pending_events().len(), 1);
+        assert_eq!(driver.next_step(Some(100), &shutdown), Step::Data);
+        assert_eq!(driver.now_ms(), 5);
+        // 预算耗尽后关闭：driver 结束。
+        controller.close();
+        assert_eq!(driver.next_step(Some(100), &shutdown), Step::Shutdown);
+    }
+
+    #[test]
+    fn stepped_driver_shutdown_unblocks_without_budget() {
+        let controller = StepController::new();
+        let mut driver = SteppedDriver::new(vec![event(0, "a")], controller);
+        let shutdown = crate::ShutdownToken::new_for_test();
+        shutdown.request();
+        // 无预算但 shutdown 已请求：不应阻塞，直接结束。
+        assert_eq!(driver.next_step(Some(0), &shutdown), Step::Shutdown);
     }
 }
