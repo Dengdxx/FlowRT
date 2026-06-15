@@ -379,6 +379,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.13.0` | Robot Runtime Completion：补齐 package/test/clock/抽象资源契约/trace/deployment/control authority 等核心设施。 |
 | `v0.13.1` | 预留 v0.13.0 维护修复；scheduler dispatch hardening 已并入 v0.14.0 主线。 |
 | `v0.14.0` | Realtime Scheduler + Task Timing Context：解耦 scheduler admission 与 task completion，并暴露 runtime 调度时间上下文。 |
+| `v0.16.0` | Time Model / Clock Semantics：补齐 clock domain、sensor event time、跨机器同步能力声明和多传感器同步策略。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -482,6 +483,16 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   承诺硬实时，不做 sensor timestamp、clock domain、PTP、NTP、跨机器 exact sync /
   approx sync 或多传感器同步策略；realtime 路径报告 runtime 实际观察时间，replay /
   temporary island 路径继续由 simulated clock 保持确定性。
+- `v0.16.0` 应把 FlowRT 的时间概念从 runtime scheduling time 扩展为完整的时间模型：
+  显式区分 runtime monotonic time、wall-clock time、simulated replay time 和 sensor
+  event time；在 RSDL / Contract IR 中建模 clock domain、timestamp source、unit、
+  epoch、同步能力和派生诊断；定义 sample time、publish time、receive time、
+  scheduled time 与 observed time 的关系；为多传感器 exact sync、approx sync、
+  window/tolerance 和 late sample policy 提供可校验语义。record/replay 必须能同时保持
+  deterministic runtime time 与真实 event-time 差异，status / diagnostics / record
+  必须输出 clock source、domain、drift 和 sync 状态。validator 不得把未声明 clock
+  domain 的 sensor timestamp 隐式当成同步依据，也不得把 PTP、NTP 或跨机器同步能力写成
+  backend 内部假设。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 
