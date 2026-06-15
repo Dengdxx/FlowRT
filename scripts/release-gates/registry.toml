@@ -21,3 +21,7 @@ script = "scripts/test-v0152-scheduler-clock-smoke.sh"
 [[focused_smoke]]
 version = "0.16.0"
 script = "scripts/test-v0160-clock-model-smoke.sh"
+
+[[focused_smoke]]
+version = "0.17.0"
+script = "scripts/test-v0170-deterministic-replay-smoke.sh"
