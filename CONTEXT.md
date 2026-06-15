@@ -21,11 +21,10 @@ handler 签名。
 commit 和 status/introspection 元数据堆在单个 shell 文件里。
 
 `v0.14.1` 的 CI/release 护栏已开始收紧大文件增长：`scripts/check-architecture-size.sh`
-会检查 tracked Rust、C/C++ 和 shell 源文件单文件行数阈值，并把现存超阈值文件放入带中文
-理由、上限和目标版本的 legacy allowlist；`scripts/test-v0141-architecture-smoke.sh` 是
-本版本 focused smoke 入口，release candidate 本地预检会通过版本 registry 选择 0.14.0
-或 0.14.1 的 focused smoke。0.14.1 的后续大文件拆分应优先减少 allowlist，而不是提高
-上限。
+会检查 tracked Rust、C/C++ 和 shell 源文件单文件行数阈值。0.14.1 完成本轮既有大文件
+拆分后不保留 legacy allowlist，后续新增或回涨的超阈值文件会直接使 CI 失败；
+`scripts/test-v0141-architecture-smoke.sh` 是本版本 focused smoke 入口，release
+candidate 本地预检会通过版本 registry 选择 0.14.0 或 0.14.1 的 focused smoke。
 
 `v0.14.0` 的长期用户语义是 runtime scheduling time，不是传感器事件时间。对每次 task
 运行，运行态观测和 `Context` 要区分 `scheduled_time_ms`、`observed_time_ms`、

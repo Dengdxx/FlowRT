@@ -4,41 +4,9 @@
 # 用法：scripts/check-release-readiness.sh [VERSION]
 #
 # 不传 VERSION 时从根 Cargo.toml 读取 workspace version。
-# 检查项：
-#   1. 所有版本来源是否一致（Cargo.toml、runtime/rust/Cargo.toml、
-#      runtime/cpp/CMakeLists.txt、Cargo.lock、CHANGELOG.md、README.md）
-#   2. CHANGELOG.md 对应版本段是否存在且格式正确
-#   3. release notes 是否可以抽取且非空
-#   4. CI release job 版本校验是否覆盖全部版本来源
-#   5. v0.5.0 focused CI gate 是否覆盖关键运行时能力
-#   6. v0.6.0 focused CI gate 是否覆盖 Operation 和 record-only 主线
-#   7. v0.7.0 focused CI gate 是否覆盖 external process、bundle/deploy 和安装后 smoke
-#   8. v0.8.0 focused CI gate 是否覆盖 I/O boundary、variable frame、FrameDescriptor、
-#      ROS2 typed bridge、diagnostics 和安装后 smoke
-#   9. v0.8.1 focused CI gate 是否覆盖标准 FrameDescriptor 示例、echo、record、
-#      安装后 smoke 和 microbench
-#   10. v0.8.3 focused CI gate 是否覆盖 amd64 host 到 arm64 target 的完整交叉编译、
-#       完整 target SDK layout smoke、安装后真实 cross smoke 和 package/release 依赖
-#   11. v0.8.6 focused CI gate 是否覆盖 toolchain init/show、Contract-aware doctor、
-#       公开 SDK overlay、真实 cross build 和 package/release 依赖
-#   12. v0.9.0 focused CI gate 是否覆盖 Island Mode demo、flowrt pub 和 echo 闭环
-#   13. v0.9.1 focused CI gate 是否覆盖 JSONL pub、params 文件、空消息和多 echo
-#   14. v0.9.2 focused CI gate 是否覆盖 replay、temporary island overlay、echo raw/summary、
-#       island bundle/deploy gate 和 shared Cargo target app 隔离
-#   15. v0.10.2 focused CI gate 是否覆盖 two-phase concurrency、iox2
-#       scheduler-local commit、跨语言 generated smoke 和 package/release 依赖
-#   16. v0.12.0 focused CI gate 是否覆盖 contract-driven authoring、
-#       App API 产物、三语言 demo build/run 和 package/release 依赖
-#   17. v0.13.0 focused CI gate 是否覆盖 robot runtime completion、
-#       resource/diagnostics/operation/deploy/C ABI 和 package/release 依赖
-#   18. v0.14.0 focused CI gate 是否覆盖 realtime scheduler、
-#       task timing context、status timing 和 C ABI layout
-#   19. v0.14.1 focused CI gate 是否覆盖 architecture guard、
-#       smoke 脚本、release candidate registry 和 CHANGELOG 条目
-#   20. README 安装示例版本是否与发布版本一致
-#   21. CONTEXT 当前 workspace 版本是否与发布版本一致
-#   22. release candidate 门禁是否可触发且 tag release 是否强制检查同 SHA RC
-#   23. tag 状态提示
+# 检查项涵盖版本来源、CHANGELOG/release notes、CI release job、历代 focused
+# gate、README/CONTEXT、release candidate 门禁和 tag 状态。实际分节编号在
+# 输出中维护；版本专项检查可拆到 scripts/release-readiness/ 下。
 #
 # 任何检查失败都会给出清晰错误信息并以非零状态退出。
 
@@ -1119,116 +1087,8 @@ fi
 
 printf '\n[19/23] v0.14.1 Architecture focused CI gate 覆盖\n'
 
-if [[ ! -f "$ci_file" ]]; then
-    fail "CI 配置不存在，无法检查 v0.14.1 focused gate"
-else
-    require_ci_text "CI 包含 v0.14.1 architecture smoke job" \
-        "v0141-architecture-smoke:" "$ci_file"
-    require_ci_text "v0.14.1 gate 运行 architecture smoke 脚本" \
-        "scripts/test-v0141-architecture-smoke.sh" "$ci_file"
-    require_ci_text "v0.14.1 gate 运行 architecture size guard" \
-        "scripts/check-architecture-size.sh" "$ci_file"
-    require_ci_text_count_at_least "package/release/RC 依赖 v0.14.1 architecture gate" \
-        "- v0141-architecture-smoke" "$ci_file" 3
-fi
-
-architecture_size_script="$repo_root/scripts/check-architecture-size.sh"
-if [[ -x "$architecture_size_script" ]]; then
-    pass "architecture size guard 脚本存在且可执行"
-    require_file_text "architecture guard 默认 Rust 阈值 2500 行" \
-        'FLOWRT_ARCH_SIZE_RUST_LIMIT:-2500' "$architecture_size_script"
-    require_file_text "architecture guard 默认 C/C++ 阈值 2500 行" \
-        'FLOWRT_ARCH_SIZE_CPP_LIMIT:-2500' "$architecture_size_script"
-    require_file_text "architecture guard 默认 shell 阈值 1200 行" \
-        'FLOWRT_ARCH_SIZE_SHELL_LIMIT:-1200' "$architecture_size_script"
-    require_file_text "architecture guard 维护 legacy allowlist" \
-        "add_legacy_file" "$architecture_size_script"
-    require_file_text "architecture guard 要求中文理由和目标版本" \
-        "目标版本" "$architecture_size_script"
-else
-    fail "architecture size guard 脚本不存在或不可执行: $architecture_size_script"
-fi
-
-installed_v0141_smoke="$repo_root/scripts/test-v0141-architecture-smoke.sh"
-if [[ -x "$installed_v0141_smoke" ]]; then
-    pass "v0.14.1 architecture smoke 脚本存在且可执行"
-    require_file_text "v0.14.1 smoke 支持 dry run" \
-        "FLOWRT_V0141_ARCHITECTURE_SMOKE_DRY_RUN" "$installed_v0141_smoke"
-    require_file_text "v0.14.1 smoke 运行脚本语法检查" \
-        "bash -n" "$installed_v0141_smoke"
-    require_file_text "v0.14.1 smoke 运行 architecture size guard" \
-        "scripts/check-architecture-size.sh" "$installed_v0141_smoke"
-else
-    fail "v0.14.1 architecture smoke 脚本不存在或不可执行: $installed_v0141_smoke"
-fi
-
-release_candidate_script="$repo_root/scripts/check-release-candidate.sh"
-if [[ -x "$release_candidate_script" ]]; then
-    require_file_text "release candidate registry 包含 v0.14.1" \
-        "0.14.1)" "$release_candidate_script"
-    require_file_text "release candidate v0.14.1 运行 architecture smoke" \
-        "scripts/test-v0141-architecture-smoke.sh" "$release_candidate_script"
-else
-    fail "release candidate 本地脚本不存在或不可执行: $release_candidate_script"
-fi
-
-v0141_release_body="$(
-    awk '
-        /^## v0\.14\.1 - / {
-            inside = 1;
-            next;
-        }
-        inside && /^## / {
-            exit;
-        }
-        inside {
-            print;
-        }
-    ' "$repo_root/CHANGELOG.md"
-)"
-v0141_notes_source="CHANGELOG v0.14.1 版本段"
-v0141_notes_body="$v0141_release_body"
-if [[ -z "$v0141_notes_body" ]]; then
-    v0141_notes_source="CHANGELOG 未发布段"
-    v0141_notes_body="$(
-    awk '
-        /^## 未发布$/ {
-            inside = 1;
-            next;
-        }
-        inside && /^## / {
-            exit;
-        }
-        inside {
-            print;
-        }
-    ' "$repo_root/CHANGELOG.md"
-)"
-fi
-if [[ -z "$v0141_notes_body" ]]; then
-    fail "CHANGELOG.md 缺少可作为 v0.14.1 release notes 事实源的版本段或未发布段"
-else
-    if grep -qF '0.14.1' <<<"$v0141_notes_body"; then
-        pass "$v0141_notes_source 记录 0.14.1 定位"
-    else
-        fail "$v0141_notes_source 缺少 0.14.1 定位条目"
-    fi
-    if grep -qF 'SchedulerRuntimePlan' <<<"$v0141_notes_body"; then
-        pass "$v0141_notes_source 记录 SchedulerRuntimePlan"
-    else
-        fail "$v0141_notes_source 缺少 SchedulerRuntimePlan 条目"
-    fi
-    if grep -qF '大文件拆分' <<<"$v0141_notes_body"; then
-        pass "$v0141_notes_source 记录大文件拆分"
-    else
-        fail "$v0141_notes_source 缺少大文件拆分条目"
-    fi
-    if grep -qF 'architecture guard' <<<"$v0141_notes_body"; then
-        pass "$v0141_notes_source 记录 architecture guard"
-    else
-        fail "$v0141_notes_source 缺少 architecture guard 条目"
-    fi
-fi
+source "$repo_root/scripts/release-readiness/v0141-architecture.sh"
+check_v0141_architecture_readiness
 
 # ── 20. README 安装示例版本 ──────────────────────────────────
 
