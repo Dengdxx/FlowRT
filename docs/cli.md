@@ -1239,13 +1239,17 @@ live status 的 runtime；如果没有 live runtime，会输出 `no live FlowRT 
 
 当前 Rust/C++ 生成应用都会启动 status socket，路径优先使用 `$XDG_RUNTIME_DIR/flowrt/<pid>.sock`，没有 `XDG_RUNTIME_DIR` 时使用 `/tmp/flowrt.<uid>/<pid>.sock` 风格的当前用户目录。生成 shell 会把 scheduler tick 计数、active channel 摘要、发布计数、active echo observer 数量和 probe drop 计数写入 live status；payload 只在 echo 数据面 probe 启用期间 best-effort 记录。
 
-如果 runtime 暴露 self-description，`status` 会把静态 graph mode 和 boundary endpoint 关联到
-live socket 输出。island 生成物会出现 `graph=<name> mode=island boundary_endpoints=<N>` 行，
-每个 boundary endpoint 也会输出方向、绑定端点和消息类型，便于确认当前运行的是否仍是测试
-脚手架而不是 strict 生产图。
+如果 runtime 暴露 self-description，`status` 会把静态 graph mode、boundary endpoint 和
+route thread-affinity 关联到 live socket 输出。该静态自描述只提供合同关联信息，不替代
+runtime live status；live route 的 `type`、`backend`、`selected_reason`、计数和错误字段仍
+以当前 runtime status 为准。island 生成物会出现
+`graph=<name> mode=island boundary_endpoints=<N>` 行，每个 boundary endpoint 也会输出方向、
+绑定端点和消息类型，便于确认当前运行的是否仍是测试脚手架而不是 strict 生产图。
 
-status 第一行会同时展示 `artifact_mode`、`temporary_island`、`test_only`、
-`temporary_overlay`、`clock_source`、`tick_time_ms`、`clock_unit` 和 `clock_field`。
+status 第一行会同时展示 `static_selfdesc=loaded|unavailable`、`artifact_mode`、
+`temporary_island`、`test_only`、`temporary_overlay`、`clock_source`、`tick_time_ms`、
+`clock_unit` 和 `clock_field`。`static_selfdesc=loaded` 表示 CLI 已从同一 runtime socket
+关联到匹配 self-description；`static_selfdesc=unavailable` 表示只能展示 live status 本身。
 临时 island replay 路径使用 `clock_source=simulated_replay`；strict 生产路径默认使用
 `clock_source=realtime`。
 
@@ -1278,10 +1282,16 @@ runtime 启动时可以预注册 service endpoint，`status` 会输出每个 ser
 dataflow route 行会展示 backend 选择、thread-affinity 和传输计数：
 
 ```text
-route=source.packet_to_sink.packet from=source.packet to=sink.packet type=Packet backend=zenoh thread_affinity=send_safe selected_reason=profile_default published_count=100 dropped_samples=0 backpressure=0 overflow=0 last_publish_ms=1717800000000 last_error=none socket=/run/user/1000/flowrt/12345.sock
+route=source.packet_to_sink.packet from=source.packet to=sink.packet type=Packet backend=zenoh thread_affinity=send_safe static_thread_affinity=send_safe selected_reason=profile_default published_count=100 dropped_samples=0 backpressure=0 overflow=0 last_publish_ms=1717800000000 last_error=none socket=/run/user/1000/flowrt/12345.sock
 ```
 
-`thread_affinity=scheduler_local_commit` 表示 route 的 transport commit 留在 scheduler/local owner 线程执行；这不表示用户 task 被禁止并发。`status` 会优先从同一 runtime socket 的 self-description 补齐该字段，旧 runtime 或自描述不可用时显示 `thread_affinity=none`。
+`thread_affinity=scheduler_local_commit` 表示 route 的 transport commit 留在 scheduler/local
+owner 线程执行；这不表示用户 task 被禁止并发。`thread_affinity` 和
+`static_thread_affinity` 都来自同一 runtime socket 关联到的 static self-description；旧
+runtime 或自描述不可用时显示 `thread_affinity=none static_thread_affinity=none`。route 行中
+`type`、`backend`、`selected_reason`、`published_count`、`dropped_samples`、`backpressure`、
+`overflow`、`last_publish_ms` 和 `last_error` 仍来自 live status，不把 static schema 与 live
+schema 合并成一个事实源。
 
 ```text
 service=planner.plan_to_executor.execute client_instance=planner server_instance=executor ready=true in_flight=2 queued=1 total_requests=100 timeout=3 busy=1 unavailable=0 late_drop=2 socket=/run/user/1000/flowrt/12345.sock

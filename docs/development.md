@@ -249,7 +249,8 @@ tooling focused smoke、amd64/arm64 v0.9.2 island offline validation focused smo
 amd64/arm64 v0.10.2 concurrency focused smoke、amd64/arm64 v0.11.0 App SDK
 focused smoke、amd64/arm64 v0.12.0 authoring focused smoke、amd64/arm64 v0.13.0
 robot runtime completion focused smoke、amd64/arm64 v0.14.0 realtime scheduler
-focused smoke、amd64/arm64 C++ zenoh runtime、
+focused smoke、amd64/arm64 v0.14.1 architecture focused smoke、amd64/arm64
+v0.15.0 architecture convergence focused smoke、amd64/arm64 C++ zenoh runtime、
 amd64/arm64 deb package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64
 demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge
 smoke 全部通过，再创建 GitHub Release，并上传
@@ -342,6 +343,13 @@ admission/completion、Rust/C++ generated scheduler 非阻塞主路径、
 status/introspection timing 字段和 C ABI task timing layout。该 gate 不保留旧同步
 helper 兼容路径，release package 和 release job 必须等待该 gate。
 
+`v0.14.1 Architecture Guard` 在 amd64 与 arm64 runner 上覆盖 architecture size guard 和
+已完成的大文件拆分边界。`v0.15.0 Architecture Convergence Smoke` 通过 release gate
+registry 查询 focused smoke，并串联脚本语法检查、`scripts/check-architecture-size.sh`
+和 `scripts/check-architecture-contract.sh`。后者检查 release gate contract、Contract IR
+derived facts 和 runtime observability facts 是否已经进入 validator、codegen、status、
+diagnostics 与 recorder 的生产消费路径。
+
 release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.Y.Z`”状态行。
 发布后如果只移动 `CHANGELOG.md` 版本段而忘记更新当前上下文，脚本会拒绝通过。
 
@@ -350,8 +358,12 @@ release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.
 ```bash
 version=X.Y.Z
 tag="v${version}"
+cargo run -p flowrt-devtools -- release-gate check-registry "$version"
+cargo run -p flowrt-devtools -- release-gate focused-smoke "$version"
+scripts/check-architecture-contract.sh
 scripts/check-release-readiness.sh "$version"
 scripts/extract-release-notes.sh "$tag" CHANGELOG.md
+scripts/check-release-candidate.sh "$version"
 scripts/check-release-candidate.sh "$version" --dispatch --wait --ref <release-branch>
 ```
 
@@ -363,6 +375,9 @@ scripts/check-release-candidate.sh "$version" --dispatch --wait --ref <release-b
   `scripts/check-release-candidate.sh ... --dispatch --wait` 直接推 tag。
 - 对应版本段不能为空；CI 会把该段原样作为 GitHub Release 说明。
 - `## 未发布` 只放尚未发布的后续变化；正式发版前把本次条目移入版本段。
+- `v0.15.0` 之后，release candidate 本地预检会先运行 release readiness，再通过
+  release gate registry 选择对应版本的 focused smoke；新增版本必须先登记 registry，
+  不要在 release candidate 脚本里手写版本分支。
 
 release candidate 通过后，创建并推送 tag：
 

@@ -5,20 +5,45 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.14.1`；当前发布线为
-`v0.14.1 Architecture Guard + Codebase Split`。该版本定位为 `v0.14.0` 后的架构修缮版本：
-把 0.14.0 后已经显著膨胀的调度、codegen、CLI、introspection 和测试聚合文件拆回清晰
-边界，并引入 `SchedulerRuntimePlan` 作为 generated scheduler 与 runtime primitive
-之间的显式计划层，避免 codegen 继续把 task readiness、input snapshot、output
-transaction、backend commit 和 status/introspection 元数据堆在单个 shell 文件里。
+当前 workspace 版本为 `0.15.0`；当前发布线为
+`v0.15.0 Architecture Convergence`。这是插入的架构收敛版本，不新增 RSDL 用户语义、
+Contract IR schema、runtime API、C ABI 或时间模型；它把已经落地的发布门禁、契约派生
+事实和运行态观测事实收束成可检查的生产路径，避免后续大版本继续在多个模块里复制
+同一套派生逻辑。
 
-`v0.14.1` 的 CI/release 护栏已开始收紧大文件增长：`scripts/check-architecture-size.sh`
-会检查 tracked Rust、C/C++ 和 shell 源文件单文件行数阈值。0.14.1 完成本轮既有大文件
-拆分后不保留 legacy allowlist，后续新增或回涨的超阈值文件会直接使 CI 失败；
-`scripts/test-v0141-architecture-smoke.sh` 是本版本 focused smoke 入口，release
-candidate 本地预检会通过版本 registry 选择 0.14.0 或 0.14.1 的 focused smoke。
+`v0.15.0` 的第一个核心 Module 是 release gate contract：`flowrt-devtools release-gate`
+读取 `scripts/release-gates/registry.toml`，用 registry 校验版本对应的 focused smoke，
+`scripts/check-release-readiness.sh` 和 `scripts/check-release-candidate.sh` 都通过该
+registry 查询 `v0.15.0 Architecture Convergence Smoke`。本地 release candidate 预检会
+先跑 release readiness，再执行 registry 返回的 focused smoke；远端 tag release 仍要求
+同一 `GITHUB_SHA` 已有成功的 `Release Candidate Gate`。
 
-上一发布线 `v0.14.0 Realtime Scheduler + Task Timing Context` 把原先调度 admission
+第二个核心 Module 是 Contract IR derived facts：`flowrt-ir::derived` 暴露
+`derive_contract_facts`、`ContractDerivedFacts` 和 `GraphDerivedFacts`，集中推导 route
+backend satisfaction、capability、thread-affinity、resource satisfaction 等派生事实。
+validator 的 capability/resource 校验会重新推导这些 facts 并拒绝篡改；codegen 的
+runtime plan、launch manifest 和 self-description 通过 adapter 消费同一事实源。
+
+第三个核心 Module 是 runtime observability facts：Rust runtime introspection 的
+`facts` 模块从 live state 派生 status snapshot、diagnostics 和 recorder diagnostic event。
+C++ introspection schema parity 已通过测试补强，保证 route、diagnostics 和 selected
+backend 等字段与 Rust JSON-line wire schema 对齐。`flowrt status` 文本输出同时展示
+`static_selfdesc=loaded|unavailable`，route 行用 `thread_affinity` /
+`static_thread_affinity` 表达 static self-description 关联的线程亲和事实；live route 的
+`type`、`backend` 和 `selected_reason` 仍以 runtime live status 为准。
+
+架构护栏现在由两层脚本组成：`scripts/check-architecture-size.sh` 检查 tracked Rust、
+C/C++ 和 shell 源文件单文件行数阈值；`scripts/check-architecture-contract.sh` 检查
+release gate contract、Contract IR derived facts 和 runtime observability facts 的生产消费
+路径。`scripts/test-v0150-architecture-convergence-smoke.sh` 串联 registry 校验、脚本语法、
+size guard 和 contract guard，作为本版本 focused smoke。
+
+上一发布线 `v0.14.1 Architecture Guard + Codebase Split` 已把 0.14.0 后显著膨胀的
+调度、codegen、CLI、introspection 和测试聚合文件拆回清晰边界，并引入
+`SchedulerRuntimePlan` 作为 generated scheduler 与 runtime primitive 之间的显式计划层。
+`v0.15.0` 不重做这些拆分，只把可持续约束纳入 release gate 和 architecture contract。
+
+此前发布线 `v0.14.0 Realtime Scheduler + Task Timing Context` 把原先调度 admission
 同步等待长任务完成的问题，和用户算法无法看到真实 runtime 调度时间的问题合并处理：
 scheduler 线程只负责 ready 判定、admission、backend commit 和 introspection，worker
 只运行用户 task，并通过 completion queue 或等价完成通知把结果交回 scheduler。用户
@@ -379,6 +404,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.13.0` | Robot Runtime Completion：补齐 package/test/clock/抽象资源契约/trace/deployment/control authority 等核心设施。 |
 | `v0.13.1` | 预留 v0.13.0 维护修复；scheduler dispatch hardening 已并入 v0.14.0 主线。 |
 | `v0.14.0` | Realtime Scheduler + Task Timing Context：解耦 scheduler admission 与 task completion，并暴露 runtime 调度时间上下文。 |
+| `v0.15.0` | Architecture Convergence：收束 release gate contract、Contract IR derived facts、runtime observability facts 和 architecture contract guard。 |
 | `v0.16.0` | Time Model / Clock Semantics：补齐 clock domain、sensor event time、跨机器同步能力声明和多传感器同步策略。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
@@ -483,6 +509,11 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   承诺硬实时，不做 sensor timestamp、clock domain、PTP、NTP、跨机器 exact sync /
   approx sync 或多传感器同步策略；realtime 路径报告 runtime 实际观察时间，replay /
   temporary island 路径继续由 simulated clock 保持确定性。
+- `v0.15.0` 不新增用户语义，只把 release gate registry、Contract IR derived facts、
+  runtime observability facts 和 architecture contract guard 收束成明确模块与门禁。
+  后续改动如果新增派生事实，必须优先接入 typed derived facts 或 observability facts，
+  并让 architecture contract guard 能检查生产消费路径；不要重新在 validator、codegen、
+  CLI 或 runtime 中手写相同推导。
 - `v0.16.0` 应把 FlowRT 的时间概念从 runtime scheduling time 扩展为完整的时间模型：
   显式区分 runtime monotonic time、wall-clock time、simulated replay time 和 sensor
   event time；在 RSDL / Contract IR 中建模 clock domain、timestamp source、unit、
@@ -971,16 +1002,17 @@ FlowRT 作为标准 Linux 应用分发。当前单个 deb 包同时安装：
 格式化/测试/clippy、C++ runtime、v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1
 focused smoke、v0.8.3 交叉编译 focused smoke、v0.9.x island focused smoke、
 v0.10.2 concurrency focused smoke、v0.12.0 authoring focused smoke、v0.13.0 robot
-runtime completion focused smoke、v0.14.0 realtime scheduler focused smoke、打包、
-C++ zenoh runtime、demo smoke、ROS2 bridge smoke 和 release。Linux job 默认
+runtime completion focused smoke、v0.14.0 realtime scheduler focused smoke、v0.14.1
+architecture focused smoke、v0.15.0 architecture convergence focused smoke、打包、C++
+zenoh runtime、demo smoke、ROS2 bridge smoke 和 release。Linux job 默认
 运行在官方 ROS2 Jazzy base 容器上；ROS2 bridge smoke 覆盖 Jazzy 和 Lyrical 两个
 发行版，并安装对应的 `rmw_zenoh_cpp`。
 
 CI 的架构相关 job 使用 `amd64` / `arm64` 双矩阵：Rust fmt/test/clippy、C++ runtime、
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.9.x / v0.10.2 / v0.12.0 /
-v0.13.0 / v0.14.0 focused smoke、Debian package、C++ zenoh runtime、demo smoke、
-ROS2 Jazzy bridge 和
-ROS2 Lyrical bridge 都在对应架构 runner 上执行。
+v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 focused smoke、Debian package、C++ zenoh
+runtime、demo smoke、ROS2 Jazzy bridge 和 ROS2 Lyrical bridge 都在对应架构 runner 上
+执行。
 `v0.8.3 Cross Toolchain Smoke` 固定在 amd64 host 上准备
 `aarch64-unknown-linux-gnu` Rust target、`aarch64-linux-gnu` C/C++ 交叉编译器和
 `pkg-config`，并运行 `flowrt-cli` 的 toolchain、build model、command 和 CMake target
@@ -1017,13 +1049,18 @@ gate。`v0.13.0 Robot Runtime Completion Smoke` 覆盖 replay、temporary island
 Operation lifecycle、diagnostics/status/record、bundle/deploy/doctor/cross 和 C ABI。
 `v0.14.0 Realtime Scheduler Smoke` 覆盖 executor admission/completion、Rust/C++
 generated scheduler 非阻塞主路径、status/introspection timing 字段和 C ABI task
-timing layout。
+timing layout。`v0.14.1 Architecture Guard` 覆盖 architecture size guard 与既有大文件
+拆分边界。`v0.15.0 Architecture Convergence Smoke` 通过 release gate registry 查询
+focused smoke，并串联 architecture size guard 和 `scripts/check-architecture-contract.sh`；
+后者检查 release gate contract、Contract IR derived facts 和 runtime observability facts 的
+生产消费路径。
 发布前应运行
-`scripts/check-release-readiness.sh <version>` 和
+`scripts/check-architecture-contract.sh`、`scripts/check-release-readiness.sh <version>` 和
 `scripts/check-release-candidate.sh <version> --dispatch --wait --ref <release-branch>`；
-脚本会汇总版本来源、CHANGELOG 段、release notes 抽取、release candidate 门禁和
+脚本会汇总版本来源、CHANGELOG 段、release notes 抽取、release gate registry、
+release candidate 门禁和
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 / v0.9.x / v0.10.2 /
-v0.12.0 / v0.13.0 / v0.14.0 focused gate 覆盖状态。
+v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、
 C ABI layout、C codegen adapter、C reference stub、C v0 fail-fast，以及
