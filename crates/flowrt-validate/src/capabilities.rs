@@ -163,6 +163,7 @@ pub(crate) fn validate_channel_backend_sources(ir: &ContractIr, errors: &mut Vec
         let Some(graph_facts) = facts_by_graph.get(graph.name.as_str()).copied() else {
             continue;
         };
+        let source_types = source_types_by_route(ir, graph);
         let route_facts = graph_facts
             .routes
             .iter()
@@ -172,6 +173,28 @@ pub(crate) fn validate_channel_backend_sources(ir: &ContractIr, errors: &mut Vec
             let Some(route) = route_facts.get(bind.id.0.as_str()).copied() else {
                 continue;
             };
+            if bind.backend_policy_source == PolicyValueSource::Explicit {
+                let Some(source_type) = source_types.get(&bind.id) else {
+                    continue;
+                };
+                let expected = flowrt_ir::resolve_channel_backend(
+                    bind.backend.0.as_str(),
+                    Some(source_type),
+                    &ir.types,
+                    route.topology,
+                    true,
+                );
+                let explicit_semantics_match = expected
+                    .as_ref()
+                    .map(|expected| {
+                        bind.backend.0 == expected.backend && bind.backend_source == expected.source
+                    })
+                    .unwrap_or(false);
+                if !explicit_semantics_match {
+                    push_backend_source_error(bind, errors);
+                    continue;
+                }
+            }
             if bind.backend.0 != route.backend.0 || bind.backend_source != route.backend_source {
                 push_backend_source_error(bind, errors);
             }
@@ -508,6 +531,35 @@ fn push_backend_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationEr
 
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
     actual == expected
+}
+
+fn source_types_by_route(
+    ir: &ContractIr,
+    graph: &GraphIr,
+) -> BTreeMap<flowrt_ir::EntityId, flowrt_ir::TypeExpr> {
+    let components = ir
+        .components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
+        .collect::<BTreeMap<_, _>>();
+    let instances = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    graph
+        .binds
+        .iter()
+        .filter_map(|bind| {
+            let instance = instances.get(bind.from.instance.name.as_str())?;
+            let component = components.get(instance.component.name.as_str())?;
+            let port = component
+                .outputs
+                .iter()
+                .find(|port| port.name == bind.from.port)?;
+            Some((bind.id.clone(), port.ty.clone()))
+        })
+        .collect()
 }
 
 fn derive_facts(

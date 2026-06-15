@@ -289,6 +289,7 @@ backends = ["inproc", "iox2", "zenoh"]
     bind.backend = BackendName("iox2".to_string());
     bind.backend_policy_source = PolicyValueSource::Explicit;
     bind.backend_source = ChannelBackendSource::Explicit;
+    bind.thread_affinity = BackendThreadAffinity::for_backend("iox2");
 
     let report = validate_contract(&ir).expect_err("forged external route backend should fail");
 
