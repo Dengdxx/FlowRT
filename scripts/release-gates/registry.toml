@@ -9,4 +9,3 @@ script = "scripts/test-v0141-architecture-smoke.sh"
 [[focused_smoke]]
 version = "0.15.0"
 script = "scripts/test-v0150-architecture-convergence-smoke.sh"
-planned = true

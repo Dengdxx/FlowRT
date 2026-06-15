@@ -48,10 +48,8 @@ check_v0141_architecture_readiness() {
 
     local release_candidate_script="$repo_root/scripts/check-release-candidate.sh"
     if [[ -x "$release_candidate_script" ]]; then
-        require_file_text "release candidate registry 包含 v0.14.1" \
-            "0.14.1)" "$release_candidate_script"
-        require_file_text "release candidate v0.14.1 运行 architecture smoke" \
-            "scripts/test-v0141-architecture-smoke.sh" "$release_candidate_script"
+        require_file_text "release candidate 通过 devtools registry 查询 focused smoke" \
+            "release-gate focused-smoke" "$release_candidate_script"
     else
         fail "release candidate 本地脚本不存在或不可执行: $release_candidate_script"
     fi

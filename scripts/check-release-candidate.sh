@@ -26,20 +26,20 @@ info() {
 
 run_focused_smoke() {
     local version="$1"
+    local focused_smoke_script
 
-    case "$version" in
-        0.14.0)
-            info "运行 v0.14.0 focused smoke"
-            scripts/test-v0140-realtime-scheduler-smoke.sh
-            ;;
-        0.14.1)
-            info "运行 v0.14.1 focused smoke"
-            scripts/test-v0141-architecture-smoke.sh
-            ;;
-        *)
-            info "版本 v${version} 未登记本地 focused smoke；只运行通用发布就绪检查"
-            ;;
-    esac
+    focused_smoke_script="$(
+        cargo run -p flowrt-devtools -- release-gate focused-smoke "$version"
+    )"
+    if [[ -z "$focused_smoke_script" ]]; then
+        fail "release gate registry 未返回 v${version} focused smoke 脚本"
+    fi
+    if [[ ! -x "$focused_smoke_script" ]]; then
+        fail "v${version} focused smoke 脚本不存在或不可执行: $focused_smoke_script"
+    fi
+
+    info "运行 v${version} focused smoke: $focused_smoke_script"
+    "$focused_smoke_script"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
