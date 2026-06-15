@@ -259,9 +259,11 @@ graph default
 序列，与回放物理快慢（`--speed` / `--as-fast-as-possible`）无关。`flowrt list` / `status`
 与 record 输出统一携带 clock source、tick time、unit 和 field。
 
-本版本仍只是 runtime scheduling time：逐周期回放步进（与 `realtime` 完全对齐的积分粒度）
-和 record/replay 由 runtime 原生确定性驱动留待后续补齐；也不引入 sensor timestamp、
-event-time、clock domain、PTP、NTP 或 approximate sync 语义（属 `v0.17.0`）。
+逐周期回放步进（与 `realtime` 完全对齐的积分粒度）与 record/replay 由 runtime 原生确定性
+驱动，已在 `v0.17.0`（Rust）与 `v0.17.1`（C++）补齐：`simulated_replay` 下 runtime 自己拥有
+回放事件时间线并逐周期步进，`--replay <mcap>` 注入录制的边界激励（C++ 由 CLI 先把 MCAP
+规范化为 JSONL）。sensor timestamp、event-time、clock domain、PTP、NTP 与 approximate sync
+语义留待 `v0.18.0`。
 
 ## `prepare`
 
