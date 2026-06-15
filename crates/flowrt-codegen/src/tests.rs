@@ -14,6 +14,7 @@ mod messages;
 mod operation;
 mod params;
 mod ros2_bridge;
+mod runtime_plan;
 mod services;
 mod tasks;
 

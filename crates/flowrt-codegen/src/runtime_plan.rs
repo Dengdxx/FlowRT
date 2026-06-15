@@ -10,7 +10,8 @@ use flowrt_ir::{
 
 use crate::{
     component_by_name, fixed_message_abi_expectations, instance_by_name, port_by_name,
-    rust_wire_size, snake_identifier, type_contains_variable_data,
+    rust_wire_size, scheduler_tasks_for_order, selected_profile_worker_threads, snake_identifier,
+    type_contains_variable_data,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +112,155 @@ pub(crate) fn resolved_task_lane_name(task: &TaskIr) -> String {
     task.lane
         .clone()
         .unwrap_or_else(|| format!("{}_serial", task.instance.name))
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SchedulerRuntimePlan<'a> {
+    pub(crate) worker_threads: u32,
+    pub(crate) lanes: Vec<SchedulerLanePlan>,
+    pub(crate) dataflow_tasks: Vec<SchedulerDataflowTaskPlan<'a>>,
+    pub(crate) hidden_tasks: Vec<SchedulerHiddenTaskPlan>,
+    pub(crate) scheduler_base_period_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerLanePlan {
+    pub(crate) id: usize,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SchedulerDataflowTaskPlan<'a> {
+    pub(crate) id: usize,
+    pub(crate) task: &'a TaskIr,
+    pub(crate) timing_name: String,
+    pub(crate) lane: String,
+    pub(crate) lane_id: usize,
+    pub(crate) priority: u32,
+    pub(crate) deadline_ms: Option<u64>,
+    pub(crate) period_ms: Option<u64>,
+    pub(crate) periodic_wake: bool,
+    pub(crate) trigger: TriggerKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchedulerHiddenTaskKind {
+    Service,
+    Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerHiddenTaskPlan {
+    pub(crate) id: usize,
+    pub(crate) kind: SchedulerHiddenTaskKind,
+    pub(crate) source_index: usize,
+    pub(crate) source_name: String,
+    pub(crate) name: String,
+    pub(crate) lane: String,
+    pub(crate) lane_id: usize,
+    pub(crate) priority: u32,
+}
+
+pub(crate) fn scheduler_runtime_plan<'a>(
+    contract: &ContractIr,
+    graph: &'a GraphIr,
+    order: &[&'a InstanceIr],
+) -> SchedulerRuntimePlan<'a> {
+    let mut lanes = Vec::new();
+    let mut lane_ids = BTreeMap::<String, usize>::new();
+    let tasks = scheduler_tasks_for_order(graph, order);
+    let dataflow_tasks = tasks
+        .iter()
+        .enumerate()
+        .map(|(index, &task)| {
+            let lane = resolved_task_lane_name(task);
+            let lane_id = scheduler_lane_id(&mut lanes, &mut lane_ids, lane.clone());
+            SchedulerDataflowTaskPlan {
+                id: index + 1,
+                task,
+                timing_name: scheduler_task_timing_name(task),
+                lane,
+                lane_id,
+                priority: task.priority.unwrap_or(0),
+                deadline_ms: task.deadline_ms,
+                period_ms: task.period_ms,
+                periodic_wake: task.trigger == TriggerKind::Periodic,
+                trigger: task.trigger,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let scheduler_base_period_ms = dataflow_tasks
+        .iter()
+        .filter(|task| task.trigger == TriggerKind::Periodic)
+        .filter_map(|task| task.period_ms)
+        .min()
+        .unwrap_or(1);
+
+    let mut hidden_tasks = Vec::new();
+    let mut next_task_id = dataflow_tasks.len();
+    for plan in service_runtime_plans(contract, graph) {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        let lane = service_server_lane(&plan);
+        let lane_id = scheduler_lane_id(&mut lanes, &mut lane_ids, lane.clone());
+        next_task_id += 1;
+        hidden_tasks.push(SchedulerHiddenTaskPlan {
+            id: next_task_id,
+            kind: SchedulerHiddenTaskKind::Service,
+            source_index: plan.index,
+            source_name: plan.service_name.clone(),
+            name: format!("__flowrt_service.{}", plan.service_name),
+            lane,
+            lane_id,
+            priority: 0,
+        });
+    }
+    for plan in operation_runtime_plans(contract, graph) {
+        if plan.backend.0 == "zenoh" {
+            continue;
+        }
+        let lane = operation_server_lane(&plan);
+        let lane_id = scheduler_lane_id(&mut lanes, &mut lane_ids, lane.clone());
+        next_task_id += 1;
+        hidden_tasks.push(SchedulerHiddenTaskPlan {
+            id: next_task_id,
+            kind: SchedulerHiddenTaskKind::Operation,
+            source_index: plan.index,
+            source_name: plan.operation_name.clone(),
+            name: format!("__flowrt_operation.{}", plan.operation_name),
+            lane,
+            lane_id,
+            priority: 0,
+        });
+    }
+
+    SchedulerRuntimePlan {
+        worker_threads: selected_profile_worker_threads(contract),
+        lanes,
+        dataflow_tasks,
+        hidden_tasks,
+        scheduler_base_period_ms,
+    }
+}
+
+fn scheduler_lane_id(
+    lanes: &mut Vec<SchedulerLanePlan>,
+    lane_ids: &mut BTreeMap<String, usize>,
+    lane: String,
+) -> usize {
+    if let Some(id) = lane_ids.get(&lane) {
+        return *id;
+    }
+    let id = lane_ids.len() + 1;
+    lane_ids.insert(lane.clone(), id);
+    lanes.push(SchedulerLanePlan { id, name: lane });
+    id
+}
+
+fn scheduler_task_timing_name(task: &TaskIr) -> String {
+    format!("{}.{}", task.instance.name, task.name)
 }
 
 #[derive(Debug, Clone)]

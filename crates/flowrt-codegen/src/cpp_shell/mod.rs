@@ -37,21 +37,22 @@ use crate::resource_names::{
     resource_satisfaction_status,
 };
 use crate::runtime_plan::{
-    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan,
+    SchedulerDataflowTaskPlan, SchedulerHiddenTaskKind, TaskEmissionPhase,
     active_binds_for_instances, active_boundaries_for_instances, bind_backend, bind_runtime_plans,
     boundary_runtime_plans, bridge_runtime_plans, incoming_bind_index_map,
     incoming_boundary_index_map, incoming_bridge_index_map, indent_generated_block,
     indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
     outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
     process_runtime_plans, resolved_task_lane_name, runtime_channel_message_type,
-    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name, step_indent,
+    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name,
+    scheduler_runtime_plan, step_indent,
 };
 use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
     param_json_literal, param_type_name, param_update_name, param_value_for_instance,
-    ros2_bridge_key_expr, scheduler_tasks_for_order, selected_backend_name,
-    selected_profile_worker_threads, tasks_for_instance, topo_order_instances_for_languages,
-    zenoh_key_expr,
+    ros2_bridge_key_expr, scheduler_tasks_for_order, selected_backend_name, tasks_for_instance,
+    topo_order_instances_for_languages, zenoh_key_expr,
 };
 
 pub(crate) fn component_cpp_name(component: &ComponentIr) -> String {

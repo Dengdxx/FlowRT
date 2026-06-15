@@ -1,14 +1,15 @@
 use flowrt_ir::{ChannelKind, ContractIr, GraphIr, InstanceIr, PortIr, TaskIr, TriggerKind};
 
 use crate::runtime_plan::{
-    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan, TaskEmissionPhase,
+    BindRuntimePlan, BoundaryRuntimePlan, BridgeRuntimePlan, ProcessRuntimePlan,
+    SchedulerDataflowTaskPlan, SchedulerHiddenTaskKind, SchedulerHiddenTaskPlan, TaskEmissionPhase,
+    scheduler_runtime_plan,
 };
-use crate::{scheduler_tasks_for_order, selected_profile_worker_threads};
+use crate::scheduler_tasks_for_order;
 
 use super::step_emit::{
     RustStepEmission, emit_rust_app_step, emit_rust_apply_pending_params_for_order,
-    emit_rust_on_message_revision_state, emit_rust_on_message_wake_checks, scheduler_lane_ids,
-    task_health_name, task_lane_name,
+    emit_rust_on_message_revision_state, emit_rust_on_message_wake_checks,
 };
 use super::{operation_emit, service_emit, step_emit};
 
@@ -133,9 +134,29 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         fallback_step_function,
     } = emission;
     let _ = fallback_step_function;
-    let tasks = scheduler_tasks_for_order(graph, order);
+    let scheduler_plan = scheduler_runtime_plan(contract, graph, order);
+    let tasks = scheduler_plan
+        .dataflow_tasks
+        .iter()
+        .map(|task| task.task)
+        .collect::<Vec<_>>();
+    let lane_ids = scheduler_plan
+        .lanes
+        .iter()
+        .map(|lane| (lane.name.clone(), lane.id))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let service_tasks = scheduler_plan
+        .hidden_tasks
+        .iter()
+        .filter(|task| task.kind == SchedulerHiddenTaskKind::Service)
+        .collect::<Vec<_>>();
+    let operation_tasks = scheduler_plan
+        .hidden_tasks
+        .iter()
+        .filter(|task| task.kind == SchedulerHiddenTaskKind::Operation)
+        .collect::<Vec<_>>();
     let mut output = String::new();
-    let worker_threads = selected_profile_worker_threads(contract);
+    let worker_threads = scheduler_plan.worker_threads;
     output.push_str(&format!(
         "        let mut scheduler = flowrt::DeterministicExecutor::new({worker_threads});\n",
     ));
@@ -143,16 +164,17 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "        let worker_pool = flowrt::WorkerPool::new({worker_threads});\n"
     ));
 
-    let mut lane_ids = scheduler_lane_ids(&tasks);
-    for (lane, lane_id) in &lane_ids {
+    for lane in &scheduler_plan.lanes {
+        let lane_name = &lane.name;
+        let lane_id = lane.id;
         output.push_str(&format!(
-            "        scheduler.add_lane(flowrt::LaneId({lane_id}), flowrt::LaneKind::Serial);\n        let _ = {lane:?};\n"
+            "        scheduler.add_lane(flowrt::LaneId({lane_id}), flowrt::LaneKind::Serial);\n        let _ = {lane_name:?};\n"
         ));
     }
-    for (index, task) in tasks.iter().enumerate() {
-        let task_id = index + 1;
-        let lane_id = lane_ids[&task_lane_name(task)];
-        let priority = task.priority.unwrap_or(0);
+    for task in &scheduler_plan.dataflow_tasks {
+        let task_id = task.id;
+        let lane_id = task.lane_id;
+        let priority = task.priority;
         output.push_str(&format!(
             "        scheduler.add_task(flowrt::TaskSpec {{ id: flowrt::TaskId({task_id}), lane: flowrt::LaneId({lane_id}), priority: {priority} }});\n"
         ));
@@ -161,41 +183,27 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
                 "        scheduler.set_task_deadline_ms(flowrt::TaskId({task_id}), Some({deadline_ms}));\n"
             ));
         }
-        if task.trigger == TriggerKind::Periodic {
+        if task.periodic_wake {
             output.push_str(&format!(
                 "        scheduler.add_periodic(flowrt::PeriodicSpec {{ task: flowrt::TaskId({task_id}), period_ms: {} }});\n        scheduler.wake(flowrt::TaskId({task_id}));\n",
                 task.period_ms.unwrap_or(1)
             ));
         }
     }
-    // service task registration
-    let next_task_id = tasks.len();
-    let (service_lanes, service_tasks, service_task_end) =
-        service_emit::emit_rust_service_scheduler_registration(
-            contract,
-            graph,
-            next_task_id,
-            &mut lane_ids,
-        );
-    output.push_str(&service_lanes);
-    output.push_str(&service_tasks);
-    let (operation_lanes, operation_tasks, operation_task_end) =
-        operation_emit::emit_rust_operation_scheduler_registration(
-            contract,
-            graph,
-            service_task_end,
-            &mut lane_ids,
-        );
-    output.push_str(&operation_lanes);
-    output.push_str(&operation_tasks);
+    output.push_str(&service_emit::emit_rust_service_scheduler_registration(
+        &service_tasks,
+    ));
+    output.push_str(&operation_emit::emit_rust_operation_scheduler_registration(
+        &operation_tasks,
+    ));
     output.push_str(&emit_rust_on_message_revision_state(
         &tasks, binds, bridges, boundaries,
     ));
     output.push_str(&format!(
         "        let scheduler_base_period_ms: u64 = {};\n",
-        scheduler_base_period_ms(&tasks)
+        scheduler_plan.scheduler_base_period_ms
     ));
-    let task_health_init = emit_rust_task_health_init(&tasks);
+    let task_health_init = emit_rust_task_health_init(&scheduler_plan.dataflow_tasks);
     let clock_source = scheduler_clock_source(contract);
     let task_clock_source = rust_task_clock_source_expr(contract);
     output.push_str(
@@ -210,11 +218,8 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     );
     output.push_str(&task_health_init);
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
-    let has_service_tasks =
-        !service_emit::emit_rust_service_wake_checks(contract, graph, next_task_id).is_empty();
-    let has_operation_tasks =
-        !operation_emit::emit_rust_operation_wake_checks(contract, graph, service_task_end)
-            .is_empty();
+    let has_service_tasks = !service_tasks.is_empty();
+    let has_operation_tasks = !operation_tasks.is_empty();
     let woke_on_message_decl = if tasks
         .iter()
         .any(|task| task.trigger == TriggerKind::OnMessage)
@@ -226,7 +231,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "let woke_on_message = false;"
     };
     output.push_str(&operation_emit::emit_rust_operation_tick_driver_state(
-        contract, graph,
+        &operation_tasks,
     ));
     output.push_str(&format!(
         "            introspection_state.record_tick_at(tick_time_ms, clock_source);\n            loop {{\n                observed_data_generation = scheduler_events.data_generation();\n                {woke_on_message_decl}\n"
@@ -237,7 +242,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     ));
     // service wake checks
     let service_wake_checks =
-        service_emit::emit_rust_service_wake_checks(contract, graph, next_task_id);
+        service_emit::emit_rust_service_wake_checks(contract, graph, &service_tasks);
     if !service_wake_checks.is_empty() {
         output.push_str(&crate::runtime_plan::indent_generated_block_levels(
             &service_wake_checks,
@@ -245,7 +250,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         ));
     }
     let operation_wake_checks =
-        operation_emit::emit_rust_operation_wake_checks(contract, graph, service_task_end);
+        operation_emit::emit_rust_operation_wake_checks(contract, graph, &operation_tasks);
     if !operation_wake_checks.is_empty() {
         output.push_str(&crate::runtime_plan::indent_generated_block_levels(
             &operation_wake_checks,
@@ -255,9 +260,10 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(
         "                for task_result in task_completion_queue.drain_completed() {\n                    pending_task_results.insert(task_result.task, task_result);\n                }\n                {\n                    let mut completed_health = task_health_from_workers.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                    health_map.append(&mut *completed_health);\n                }\n                let ready_batch = scheduler.take_ready_batch();\n                let submitted_task_count = ready_batch.len();\n                for admission in ready_batch.admissions().iter().copied() {\n                    let scheduled_delta_ms = task_last_scheduled_time_ms\n                        .insert(admission.task, admission.scheduled_time_ms)\n                        .map_or(0, |last| admission.scheduled_time_ms.saturating_sub(last));\n                    let observed_delta_ms = task_last_observed_time_ms\n                        .insert(admission.task, admission.observed_time_ms)\n                        .map_or(0, |last| admission.observed_time_ms.saturating_sub(last));\n                    let task_completion_queue_for_task = task_completion_queue.clone();\n                    let submitted = match admission.task {\n",
     );
-    for (index, task) in tasks.iter().enumerate() {
-        let task_id = index + 1;
-        let lane_id = lane_ids[&task_lane_name(task)];
+    for task_plan in &scheduler_plan.dataflow_tasks {
+        let task = task_plan.task;
+        let task_id = task_plan.id;
+        let lane_id = task_plan.lane_id;
         let function_name = match process {
             Some(process) => rust_process_task_step_function_name(process, task),
             None => rust_task_step_function_name(task),
@@ -273,39 +279,39 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
                 task,
                 task_id,
                 lane_id,
+                task_name: &task_plan.timing_name,
+                trigger: task_plan.trigger,
             },
         ));
     }
     output.push_str(&emit_rust_service_submit_cases(
         contract,
         graph,
-        next_task_id,
-        &lane_ids,
+        &service_tasks,
     ));
     output.push_str(&emit_rust_operation_submit_cases(
         contract,
         graph,
-        service_task_end,
-        &lane_ids,
+        &operation_tasks,
     ));
     output.push_str(&format!(
         "                        _ => {{\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = flowrt::TaskRunOutcome::error(Vec::new());\n{}                            }})\n                        }},\n                    }};\n",
         emit_rust_hidden_worker_closure_context("__flowrt_hidden"),
         emit_rust_scheduler_task_closure_tail(),
     ));
-    let task_admission_health_update = emit_rust_task_admission_health_update(&tasks);
+    let task_admission_health_update =
+        emit_rust_task_admission_health_update(&scheduler_plan.dataflow_tasks);
     output.push_str(&format!(
         "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}                    if task_result.status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() && pending_task_order.is_empty() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{
                         if let Some(data_time_ms) = scheduler_events.take_data_time_ms() {{
                             scheduler_now_ms = scheduler_now_ms.max(data_time_ms);
                         }}
                     }}\n                }}\n            }}\n        }}\n",
-        next_deadline_expr = rust_next_periodic_deadline_expr(&tasks),
+        next_deadline_expr = rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
         fairness_check = emit_rust_fairness_check(&lane_ids),
         task_admission_health_update = task_admission_health_update,
-        task_result_health_update = emit_rust_task_result_health_update(&tasks),
+        task_result_health_update = emit_rust_task_result_health_update(&scheduler_plan.dataflow_tasks),
     ));
-    let _ = operation_task_end;
     output
 }
 
@@ -319,6 +325,8 @@ struct DataflowSubmitCaseEmission<'a> {
     task: &'a TaskIr,
     task_id: usize,
     lane_id: usize,
+    task_name: &'a str,
+    trigger: TriggerKind,
 }
 
 fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> String {
@@ -332,15 +340,16 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
         task,
         task_id,
         lane_id,
+        task_name,
+        trigger,
     } = emission;
-    let task_name = rust_task_timing_name(task);
-    let trigger = rust_trigger_name(task.trigger);
+    let trigger = rust_trigger_name(trigger);
     let call_args = rust_collect_task_call_args_for_scheduler(contract, graph, task).join(", ");
     let capture_prelude =
         emit_rust_task_capture_prelude(contract, graph, binds, bridges, boundaries, task);
     format!(
         "                        flowrt::TaskId({task_id}) => {{\n{capture_prelude}                            let introspection_state = introspection_state.clone();\n                            let scheduler_events = scheduler_events.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                Self::{function_name}({call_args}, tick_time_ms as usize, &mut local_context, &introspection_state, &scheduler_events, &mut local_health_map)\n                            }};\n{}                            }})\n                        }},\n",
-        emit_rust_worker_closure_context(&task_name, trigger),
+        emit_rust_worker_closure_context(task_name, trigger),
         emit_rust_scheduler_task_closure_tail(),
     )
 }
@@ -575,27 +584,26 @@ fn emit_rust_hidden_worker_closure_context(task_name: &str) -> String {
 fn emit_rust_service_submit_cases(
     contract: &ContractIr,
     graph: &GraphIr,
-    task_id_offset: usize,
-    lane_ids: &std::collections::BTreeMap<String, usize>,
+    service_tasks: &[&SchedulerHiddenTaskPlan],
 ) -> String {
     let plans = crate::runtime_plan::service_runtime_plans(contract, graph);
-    if plans.is_empty() {
+    if plans.is_empty() || service_tasks.is_empty() {
         return String::new();
     }
     let mut output = String::new();
-    let mut task_id = task_id_offset;
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        task_id += 1;
-        let lane_id = lane_ids[&crate::runtime_plan::service_server_lane(plan)];
+    for task in service_tasks {
+        let plan = plans
+            .iter()
+            .find(|plan| plan.index == task.source_index)
+            .expect("scheduler service task must reference a service plan");
+        let task_id = task.id;
+        let lane_id = task.lane_id;
         let server_field = service_emit::server_field_name(plan);
         let server_var = format!("__flowrt_{}", crate::snake_identifier(&server_field));
         let service_name = crate::rust_string_literal(&plan.service_name);
         output.push_str(&format!(
             "                        flowrt::TaskId({task_id}) => {{\n                            let {server_var} = self.{server_field}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                {server_var}.process_pending_requests();\n                                {{\n                                    let service_stats = {server_var}.stats();\n                                    introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {{\n                                        name: {service_name}.to_string(),\n                                        ready: true,\n                                        in_flight: {server_var}.in_flight_count() as u64,\n                                        queued: {server_var}.pending_count() as u64,\n                                        total_requests: service_stats.requests,\n                                        timeout_count: service_stats.timeout,\n                                        busy_count: service_stats.busy,\n                                        unavailable_count: service_stats.unavailable,\n                                        late_drop_count: service_stats.late_dropped,\n                                    }});\n                                }}\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
-            emit_rust_hidden_worker_closure_context(&format!("__flowrt_service.{}", plan.service_name)),
+            emit_rust_hidden_worker_closure_context(&task.name),
             emit_rust_scheduler_task_closure_tail(),
         ));
     }
@@ -605,21 +613,20 @@ fn emit_rust_service_submit_cases(
 fn emit_rust_operation_submit_cases(
     contract: &ContractIr,
     graph: &GraphIr,
-    task_id_offset: usize,
-    lane_ids: &std::collections::BTreeMap<String, usize>,
+    operation_tasks: &[&SchedulerHiddenTaskPlan],
 ) -> String {
     let plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
-    if plans.is_empty() {
+    if plans.is_empty() || operation_tasks.is_empty() {
         return String::new();
     }
     let mut output = String::new();
-    let mut task_id = task_id_offset;
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        task_id += 1;
-        let lane_id = lane_ids[&crate::runtime_plan::operation_server_lane(plan)];
+    for task in operation_tasks {
+        let plan = plans
+            .iter()
+            .find(|plan| plan.index == task.source_index)
+            .expect("scheduler operation task must reference an operation plan");
+        let task_id = task.id;
+        let lane_id = task.lane_id;
         let operation_name = crate::rust_string_literal(&plan.operation_name);
         let owner_name =
             crate::rust_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
@@ -633,7 +640,7 @@ fn emit_rust_operation_submit_cases(
         let control_var = format!("__flowrt_{}", control_field);
         output.push_str(&format!(
             "                        flowrt::TaskId({task_id}) => {{\n                            let {start_var} = self.{start_server}.clone();\n                            let {cancel_var} = self.{cancel_server}.clone();\n                            let {status_var} = self.{status_server}.clone();\n                            let {control_var} = self.{control_field}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let operation_cancel_control = {control_var}.clone();\n                                introspection_state.register_operation_cancel_handler({operation_name}, move |operation_id| {{\n                                    let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                    let snapshot = control.snapshot();\n                                    if flowrt_operation_id_string(snapshot.id) != operation_id {{\n                                        return Err(format!(\"stale operation invocation `{{}}`; current is `{{}}`\", operation_id, flowrt_operation_id_string(snapshot.id)));\n                                    }}\n                                    control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;\n                                    Ok(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, control.snapshot()))\n                                }});\n                                {start_var}.process_pending_requests();\n                                {cancel_var}.process_pending_requests();\n                                {status_var}.process_pending_requests();\n                                let mut operation_control = {control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());\n                                let snapshot = operation_control.snapshot();\n                                let events = operation_control.drain_events();\n                                drop(operation_control);\n                                for event in events {{\n                                    let operation_id = flowrt_operation_id_string(event.id);\n                                    match event.kind {{\n                                        flowrt::OperationRuntimeEventKind::StateChanged => {{\n                                            if let Some(state) = event.state {{\n                                                introspection_state.record_operation_transition({operation_name}, &operation_id, state.as_str(), Some({owner_name}), if state.is_terminal() {{ None }} else {{ Some(snapshot.deadline_ms) }});\n                                            }}\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Progress => {{\n                                            introspection_state.record_operation_progress({operation_name}, &operation_id, event.sequence.unwrap_or(0));\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Result => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"succeeded\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, None);\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Error => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"failed\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, Some(\"handler error\"));\n                                        }}\n                                    }}\n                                }}\n                                introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
-            emit_rust_hidden_worker_closure_context(&format!("__flowrt_operation.{}", plan.operation_name)),
+            emit_rust_hidden_worker_closure_context(&task.name),
             emit_rust_scheduler_task_closure_tail(),
         ));
     }
@@ -663,10 +670,6 @@ fn rust_trigger_name(trigger: TriggerKind) -> &'static str {
         TriggerKind::Startup => "startup",
         TriggerKind::Shutdown => "shutdown",
     }
-}
-
-fn rust_task_timing_name(task: &TaskIr) -> String {
-    format!("{}.{}", task.instance.name, task.name)
 }
 
 pub(super) fn emit_rust_scheduler_event_registration(
@@ -702,13 +705,13 @@ pub(super) fn emit_rust_scheduler_event_registration(
     output
 }
 
-fn emit_rust_task_result_health_update(tasks: &[&TaskIr]) -> String {
+fn emit_rust_task_result_health_update(tasks: &[SchedulerDataflowTaskPlan<'_>]) -> String {
     let mut output = String::new();
     output.push_str("                    match task_result.task {\n");
-    for (index, task) in tasks.iter().enumerate() {
-        let task_id = index + 1;
-        let task_health = task_health_name(task);
-        let lane = task_lane_name(task);
+    for task in tasks {
+        let task_id = task.id;
+        let task_health = &task.timing_name;
+        let lane = &task.lane;
         output.push_str(&format!(
             "                        flowrt::TaskId({task_id}) => {{\n                            let health = health_map.entry({task_health:?}.to_string()).or_default();\n                            health.name = {task_health:?}.to_string();\n                            health.lane = {lane:?}.to_string();\n                            health.inflight = false;\n                            if let Some(admission) = pending_task_admissions.remove(&task_result.task) {{\n                                health.scheduled_time_ms = Some(admission.scheduled_time_ms);\n                                health.observed_time_ms = Some(admission.observed_time_ms);\n                                health.lateness_ms = Some(admission.lateness_ms);\n                                health.missed_periods = Some(admission.missed_periods);\n                                health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));\n                            }}\n                            health.run_count += 1;\n                            health.last_run_ms = Some(tick_time_ms);\n                            if task_result.status == flowrt::Status::Ok {{\n                                health.success_count += 1;\n                                health.consecutive_failures = 0;\n                                health.last_success_ms = Some(tick_time_ms);\n                            }} else if task_result.status == flowrt::Status::Error {{\n                                health.consecutive_failures += 1;\n                            }}\n                        }}\n"
         ));
@@ -721,13 +724,13 @@ fn emit_rust_scheduler_task_closure_tail() -> String {
     "                            if let Some(health) = local_health_map.get_mut(task_name) {\n                                health.inflight = false;\n                                health.scheduled_time_ms = Some(admission.scheduled_time_ms);\n                                health.observed_time_ms = Some(admission.observed_time_ms);\n                                health.lateness_ms = Some(admission.lateness_ms);\n                                health.missed_periods = Some(admission.missed_periods);\n                                health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));\n                            }\n                            {\n                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                for (name, health) in local_health_map {\n                                    merged_health.insert(name, health);\n                                }\n                            }\n                            task_outcome\n".to_string()
 }
 
-fn emit_rust_task_admission_health_update(tasks: &[&TaskIr]) -> String {
+fn emit_rust_task_admission_health_update(tasks: &[SchedulerDataflowTaskPlan<'_>]) -> String {
     let mut output = String::new();
     output.push_str("                            match admission.task {\n");
-    for (index, task) in tasks.iter().enumerate() {
-        let task_id = index + 1;
-        let task_health = task_health_name(task);
-        let lane = task_lane_name(task);
+    for task in tasks {
+        let task_id = task.id;
+        let task_health = &task.timing_name;
+        let lane = &task.lane;
         output.push_str(&format!(
             "                                flowrt::TaskId({task_id}) => {{\n                                    let health = health_map.entry({task_health:?}.to_string()).or_default();\n                                    health.name = {task_health:?}.to_string();\n                                    health.lane = {lane:?}.to_string();\n                                    health.inflight = true;\n                                    health.scheduled_time_ms = Some(admission.scheduled_time_ms);\n                                    health.observed_time_ms = Some(admission.observed_time_ms);\n                                    health.lateness_ms = Some(admission.lateness_ms);\n                                    health.missed_periods = Some(admission.missed_periods);\n                                    health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));\n                                }}\n"
         ));
@@ -736,21 +739,12 @@ fn emit_rust_task_admission_health_update(tasks: &[&TaskIr]) -> String {
     output
 }
 
-fn scheduler_base_period_ms(tasks: &[&TaskIr]) -> u64 {
-    tasks
-        .iter()
-        .filter(|task| task.trigger == TriggerKind::Periodic)
-        .filter_map(|task| task.period_ms)
-        .min()
-        .unwrap_or(1)
-}
-
 /// 为本轮 scheduler 预注册 task health 条目，确保未运行 task 也能记录公平性计数。
-fn emit_rust_task_health_init(tasks: &[&TaskIr]) -> String {
+fn emit_rust_task_health_init(tasks: &[SchedulerDataflowTaskPlan<'_>]) -> String {
     let mut output = String::new();
     for task in tasks {
-        let task_health = task_health_name(task);
-        let lane = task_lane_name(task);
+        let task_health = &task.timing_name;
+        let lane = &task.lane;
         output.push_str(&format!(
             "            {{\n                let __h = health_map.entry({task_health:?}.to_string()).or_default();\n                __h.name = {task_health:?}.to_string();\n                __h.lane = {lane:?}.to_string();\n            }}\n"
         ));
@@ -772,12 +766,11 @@ fn emit_rust_fairness_check(lane_ids: &std::collections::BTreeMap<String, usize>
     output
 }
 
-fn rust_next_periodic_deadline_expr(tasks: &[&TaskIr]) -> String {
+fn rust_next_periodic_deadline_expr(tasks: &[SchedulerDataflowTaskPlan<'_>]) -> String {
     let deadlines = tasks
         .iter()
-        .enumerate()
-        .filter(|(_, task)| task.trigger == TriggerKind::Periodic)
-        .map(|(index, _)| format!("scheduler.next_deadline_ms(flowrt::TaskId({}))", index + 1))
+        .filter(|task| task.periodic_wake)
+        .map(|task| format!("scheduler.next_deadline_ms(flowrt::TaskId({}))", task.id))
         .collect::<Vec<_>>();
     if deadlines.is_empty() {
         "None::<u64>".to_string()

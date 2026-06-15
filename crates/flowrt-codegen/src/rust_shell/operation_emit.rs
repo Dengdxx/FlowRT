@@ -1,14 +1,12 @@
 //! Rust Operation codegen：typed client handle、server handler、内部 lowering task。
 
-use std::collections::BTreeMap;
-
 use flowrt_ir::{
     ContractIr, GraphIr, OperationConcurrencyPolicy, OperationFeedbackPolicy,
     OperationPreemptPolicy,
 };
 
 use crate::messages::rust_type;
-use crate::runtime_plan::{OperationRuntimePlan, operation_runtime_plans, operation_server_lane};
+use crate::runtime_plan::{OperationRuntimePlan, SchedulerHiddenTaskPlan, operation_runtime_plans};
 use crate::rust_string_literal;
 
 pub(crate) fn rust_operation_handler_methods(
@@ -429,60 +427,35 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
 }
 
 pub(crate) fn emit_rust_operation_scheduler_registration(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    next_task_id: usize,
-    lane_ids: &mut BTreeMap<String, usize>,
-) -> (String, String, usize) {
-    let plans = operation_runtime_plans(contract, graph);
-    if plans.is_empty() {
-        return (String::new(), String::new(), next_task_id);
-    }
-
-    let mut lane_output = String::new();
+    operation_tasks: &[&SchedulerHiddenTaskPlan],
+) -> String {
     let mut task_output = String::new();
-    let mut task_id = next_task_id;
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        let server_lane = operation_server_lane(plan);
-        if !lane_ids.contains_key(&server_lane) {
-            let lane_id = lane_ids.len() + 1;
-            lane_ids.insert(server_lane.clone(), lane_id);
-            lane_output.push_str(&format!(
-                "        scheduler.add_lane(flowrt::LaneId({lane_id}), flowrt::LaneKind::Serial);\n        let _ = {server_lane:?};\n",
-            ));
-        }
-        let lane_id = lane_ids[&server_lane];
-        task_id += 1;
+    for task in operation_tasks {
+        let task_id = task.id;
+        let lane_id = task.lane_id;
+        let priority = task.priority;
+        let operation = &task.source_name;
         task_output.push_str(&format!(
             "        // Operation task {task_id}: {operation}\n\
-             scheduler.add_task(flowrt::TaskSpec {{ id: flowrt::TaskId({task_id}), lane: flowrt::LaneId({lane_id}), priority: 0 }});\n",
-            operation = plan.operation_name,
+             scheduler.add_task(flowrt::TaskSpec {{ id: flowrt::TaskId({task_id}), lane: flowrt::LaneId({lane_id}), priority: {priority} }});\n",
         ));
     }
 
-    (lane_output, task_output, task_id)
+    task_output
 }
 
 pub(crate) fn emit_rust_operation_tick_driver_state(
-    contract: &ContractIr,
-    graph: &GraphIr,
+    operation_tasks: &[&SchedulerHiddenTaskPlan],
 ) -> String {
-    let plans = operation_runtime_plans(contract, graph);
-    if plans.is_empty() {
+    if operation_tasks.is_empty() {
         return String::new();
     }
 
     let mut output = String::new();
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
+    for task in operation_tasks {
         output.push_str(&format!(
             "            let mut flowrt_operation_tick_driven_{} = false;\n",
-            plan.index
+            task.source_index
         ));
     }
     output
@@ -491,20 +464,20 @@ pub(crate) fn emit_rust_operation_tick_driver_state(
 pub(crate) fn emit_rust_operation_wake_checks(
     contract: &ContractIr,
     graph: &GraphIr,
-    task_id_offset: usize,
+    operation_tasks: &[&SchedulerHiddenTaskPlan],
 ) -> String {
     let plans = operation_runtime_plans(contract, graph);
-    if plans.is_empty() {
+    if plans.is_empty() || operation_tasks.is_empty() {
         return String::new();
     }
 
     let mut output = String::new();
-    let mut task_id = task_id_offset;
-    for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
-        task_id += 1;
+    for task in operation_tasks {
+        let plan = plans
+            .iter()
+            .find(|plan| plan.index == task.source_index)
+            .expect("scheduler operation task must reference an operation plan");
+        let task_id = task.id;
         let tick_driven_flag = format!("flowrt_operation_tick_driven_{}", plan.index);
         let control_var = format!("operation_control_{}", plan.index);
         output.push_str(&format!(
