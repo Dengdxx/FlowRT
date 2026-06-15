@@ -24,5 +24,6 @@ docs/backend-contract.md
 docs/contract-ir-v0.1.md
 docs/message-abi-v0.1.md
 docs/rsdl-v0.1.md
+docs/superpowers/
 skills-lock.json
 *.rs.bk
