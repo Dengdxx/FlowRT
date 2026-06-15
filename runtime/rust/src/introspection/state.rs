@@ -172,6 +172,9 @@ impl IntrospectionState {
     }
 
     /// 向已注册的 island boundary input 注入 canonical Message ABI payload。
+    ///
+    /// recorder 开启且覆盖该 endpoint 时，注入会作为 canonical frame channel sample 记录，
+    /// 作为确定性回放的边界激励来源——回放只重放这些外部激励，由 runtime 重新推导下游 channel。
     pub fn publish_boundary_input(
         &self,
         endpoint: &str,
@@ -184,6 +187,14 @@ impl IntrospectionState {
         }
         .ok_or_else(|| format!("unknown FlowRT boundary input `{endpoint}`"))?;
         let revision = (boundary.handler)(&payload, published_at_ms)?;
+        if self.recorder_enabled_for_channel(endpoint) {
+            let _ = self.try_record_channel_sample_frame_bytes(
+                endpoint,
+                &boundary.message_type,
+                &payload,
+                published_at_ms,
+            );
+        }
         Ok(IntrospectionBoundaryPublishStatus {
             endpoint: endpoint.to_string(),
             message_type: boundary.message_type,

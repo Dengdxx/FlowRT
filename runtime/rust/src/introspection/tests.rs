@@ -1129,6 +1129,38 @@ fn recorder_disabled_does_not_capture_channel_payload() {
 }
 
 #[test]
+fn publish_boundary_input_records_canonical_stimulus_for_replay() {
+    let state = IntrospectionState::new();
+    state.register_boundary_input_handler("sample_in", "Sample", |_payload, _timestamp| Ok(1));
+    state.start_recorder(IntrospectionRecorderStart {
+        output: Some("memory://replay.mcap".to_string()),
+        filters: vec!["channel:sample_in".to_string()],
+        queue_depth: Some(4),
+        package: "demo".to_string(),
+        process: "main".to_string(),
+        runtime_pid: 7,
+        selfdesc_hash: "abc".to_string(),
+    });
+
+    state
+        .publish_boundary_input("sample_in", vec![9, 8, 7, 6], Some(123))
+        .expect("publish boundary input");
+
+    let events = state.drain_recorder_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].event_kind,
+        flowrt_record::RecordEventKind::ChannelSample
+    );
+    assert_eq!(events[0].entity.name, "sample_in");
+    assert_eq!(events[0].payload, vec![9, 8, 7, 6]);
+    assert_eq!(
+        events[0].payload_encoding,
+        flowrt_record::PayloadEncoding::CanonicalFrame
+    );
+}
+
+#[test]
 fn recorder_start_captures_channel_sample_and_reports_status() {
     let state = IntrospectionState::new();
     state.start_recorder(IntrospectionRecorderStart {
