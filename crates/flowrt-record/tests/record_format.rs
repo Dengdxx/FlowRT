@@ -4,7 +4,7 @@ use std::io::Cursor;
 use flowrt_record::{
     DescriptorRecordPayload, DescriptorRecordStatus, FlowrtMcapWriter, PayloadEncoding,
     RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope, RecordError,
-    RecordEventKind,
+    RecordEventKind, ReplayTimelineEntry, read_replay_timeline,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -68,6 +68,51 @@ fn record_event_kind_covers_all_current_record_scopes() {
             RecordEventKind::RuntimeEvent,
         ]
     );
+}
+
+#[test]
+fn read_replay_timeline_extracts_sorted_channel_samples() -> TestResult {
+    let mut writer = FlowrtMcapWriter::new(Cursor::new(Vec::new()))?;
+    let samples = writer.register_channel("samples", RecordEventKind::ChannelSample)?;
+    let scheduler = writer.register_channel("scheduler", RecordEventKind::SchedulerEvent)?;
+
+    // 乱序写入两个 channel sample，外加一个非 sample 事件验证过滤。
+    let mut later = sample_envelope(RecordEventKind::ChannelSample);
+    later.monotonic_ns = 20_000_000;
+    later.sequence = 2;
+    later.entity.name = "sensor.b".to_string();
+    later.payload = vec![2, 2];
+    let mut earlier = sample_envelope(RecordEventKind::ChannelSample);
+    earlier.monotonic_ns = 5_000_000;
+    earlier.sequence = 1;
+    earlier.entity.name = "sensor.a".to_string();
+    earlier.payload = vec![1];
+    let mut sched = sample_envelope(RecordEventKind::SchedulerEvent);
+    sched.monotonic_ns = 1_000_000;
+
+    writer.write_event(samples, &later)?;
+    writer.write_event(samples, &earlier)?;
+    writer.write_event(scheduler, &sched)?;
+    writer.flush()?;
+    let bytes = writer.finish_into_inner()?.into_inner();
+
+    let timeline = read_replay_timeline(&bytes)?;
+    assert_eq!(
+        timeline,
+        vec![
+            ReplayTimelineEntry {
+                time_ms: 5,
+                target: "sensor.a".to_string(),
+                payload: vec![1],
+            },
+            ReplayTimelineEntry {
+                time_ms: 20,
+                target: "sensor.b".to_string(),
+                payload: vec![2, 2],
+            },
+        ]
+    );
+    Ok(())
 }
 
 #[test]

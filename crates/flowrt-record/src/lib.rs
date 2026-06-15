@@ -77,6 +77,8 @@ pub enum RecordError {
     Serialize(#[from] serde_json::Error),
     #[error("write MCAP record: {0}")]
     Mcap(#[from] mcap::McapError),
+    #[error("read replay source: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// FlowRT 录制事件分类。
@@ -242,6 +244,54 @@ impl RecordEnvelope {
     pub fn to_json_bytes(&self) -> RecordResult<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
+}
+
+/// 回放时间线的一条记录：在某时刻把一段 wire payload 注入某个目标 channel/boundary。
+///
+/// 这是 record→replay 的中间表示：reader 只做「读 MCAP、过滤 channel sample、按时间排序」，
+/// 不依赖 runtime 类型；生成 shell 再把它映射为 runtime 回放事件并注入对应 boundary input。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayTimelineEntry {
+    /// 事件的逻辑毫秒时间（由 envelope `monotonic_ns` 推导）。
+    pub time_ms: u64,
+    /// 注入目标的 canonical 名称（envelope `entity.name`）。
+    pub target: String,
+    /// 注入的 wire payload 字节。
+    pub payload: Vec<u8>,
+}
+
+/// 从 MCAP 字节读出按时间升序的回放时间线（只取 `ChannelSample` 事件）。
+///
+/// 确定性回放只重放数据样本，按 `(monotonic_ns, sequence)` 稳定排序；毫秒时间用于逻辑时钟
+/// 步进。非 channel sample 事件（scheduler、param、clock 等观测事件）被跳过，不参与注入。
+pub fn read_replay_timeline(data: &[u8]) -> RecordResult<Vec<ReplayTimelineEntry>> {
+    let mut ordered: Vec<(u64, u64, ReplayTimelineEntry)> = Vec::new();
+    for message in mcap::MessageStream::new(data)? {
+        let message = message?;
+        let envelope: RecordEnvelope = serde_json::from_slice(&message.data)?;
+        if envelope.event_kind != RecordEventKind::ChannelSample {
+            continue;
+        }
+        ordered.push((
+            envelope.monotonic_ns,
+            envelope.sequence,
+            ReplayTimelineEntry {
+                time_ms: envelope.monotonic_ns / 1_000_000,
+                target: envelope.entity.name,
+                payload: envelope.payload,
+            },
+        ));
+    }
+    ordered.sort_by_key(|(monotonic_ns, sequence, _)| (*monotonic_ns, *sequence));
+    Ok(ordered.into_iter().map(|(_, _, entry)| entry).collect())
+}
+
+/// 读取 MCAP 文件并解析回放时间线。
+pub fn read_replay_timeline_from_path(
+    path: &std::path::Path,
+) -> RecordResult<Vec<ReplayTimelineEntry>> {
+    let data = std::fs::read(path)?;
+    read_replay_timeline(&data)
 }
 
 /// 已注册的 MCAP channel 句柄。
