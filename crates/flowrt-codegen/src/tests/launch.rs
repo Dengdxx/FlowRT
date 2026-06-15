@@ -1033,6 +1033,68 @@ backend = "inproc"
         rust_shell.contains("if let Some(data_time_ms) = scheduler_events.take_data_time_ms()")
     );
     assert!(rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(data_time_ms);"));
+    // T3：simulated_replay 调度逻辑时钟由注入事件驱动，唤醒只等下一个数据事件或关停，
+    // 不计算 wall-clock deadline、不被节拍绑死，回放结果只取决于事件序列。
+    assert!(
+        rust_shell.contains(
+            "scheduler_events.wait_until_after(observed_data_generation, None, &shutdown)"
+        )
+    );
+    assert!(!rust_shell.contains("let next_wake_deadline ="));
+}
+
+#[test]
+fn cpp_simulated_replay_shell_drops_wall_clock_wake() {
+    let strict = contract_from_source(
+        r#"
+[package]
+name = "cpp_temporary_island_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "cpp"
+input = ["sample:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.default]
+backend = "inproc"
+"#,
+    );
+    let projected = flowrt_ir::project_contract_to_profile(&strict, None).unwrap();
+    let island = flowrt_ir::apply_temporary_island_overlay(
+        &projected,
+        &flowrt_ir::TemporaryIslandOverlay {
+            boundary_inputs: vec![flowrt_ir::TemporaryBoundaryMapping {
+                name: "sample_in".to_string(),
+                endpoint: "consumer.sample".to_string(),
+            }],
+            boundary_outputs: vec![],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap();
+    let bundle = emit_artifacts(&island).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    // simulated_replay 的 C++ 调度同样不读 wall-clock：唤醒传 std::nullopt deadline，
+    // 不计算 steady_clock 节拍，逻辑时钟由注入事件 data_time 推进。
+    assert!(
+        cpp_shell.contains("const auto clock_source = std::string_view{\"simulated_replay\"};")
+    );
+    assert!(cpp_shell.contains(
+        "scheduler_events.wait_until_after(observed_data_generation, std::nullopt, shutdown)"
+    ));
+    assert!(!cpp_shell.contains("const auto next_wake_deadline ="));
+    assert!(cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
 }
 
 #[test]
