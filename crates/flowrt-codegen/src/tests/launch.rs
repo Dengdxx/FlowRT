@@ -1086,16 +1086,22 @@ backend = "inproc"
     let bundle = emit_artifacts(&island).unwrap();
     let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
 
-    // simulated_replay 的 C++ 调度同样不读 wall-clock：唤醒传 std::nullopt deadline，
-    // 不计算 steady_clock 节拍，逻辑时钟由注入事件 data_time 推进。
+    // v0.17.1：simulated_replay 的 C++ 调度由 runtime 原生回放驱动推进，不再读外部注入的
+    // data_time、不计算 steady_clock 节拍；runtime 从 FLOWRT_REPLAY_SOURCE 装配 JSONL 回放
+    // 时间线，只重放本图 boundary 激励，命中事件经 publish_boundary_input 注入。
     assert!(
         cpp_shell.contains("const auto clock_source = std::string_view{\"simulated_replay\"};")
     );
-    assert!(cpp_shell.contains(
+    assert!(cpp_shell.contains("std::getenv(\"FLOWRT_REPLAY_SOURCE\")"));
+    assert!(cpp_shell.contains("flowrt::replay_driver_from_timeline_file("));
+    assert!(cpp_shell.contains("replay_boundary_inputs = {\"sample_in\"}"));
+    assert!(cpp_shell.contains("replay_driver.next_step("));
+    assert!(cpp_shell.contains("introspection_state.publish_boundary_input("));
+    // 回放路径不再走 wall-clock 等待外部注入，也不再从注入的 data_time 推进逻辑时钟。
+    assert!(!cpp_shell.contains(
         "scheduler_events.wait_until_after(observed_data_generation, std::nullopt, shutdown)"
     ));
-    assert!(!cpp_shell.contains("const auto next_wake_deadline ="));
-    assert!(cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
+    assert!(!cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
 }
 
 #[test]

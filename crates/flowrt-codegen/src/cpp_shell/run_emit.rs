@@ -228,6 +228,10 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n",
     );
     output.push_str(&cpp_scheduler_clock_init(run.contract));
+    output.push_str(&cpp_scheduler_replay_driver_init(
+        run.contract,
+        run.boundaries,
+    ));
     output.push_str(&format!(
         "    const auto clock_source = std::string_view{{{}}};\n",
         cpp_string_literal(clock_source)
@@ -387,10 +391,10 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         cpp_scheduler_data_time_update(run.contract, "                    ")
     );
     output.push_str(&format!(
-        "                }}\n                }});\n                if (submitted.accepted) {{\n                    pending_task_order.push_back(admission.task);\n                    pending_task_admissions.insert_or_assign(admission.task, admission);\n{task_admission_health_update}                }} else {{\n                    (void)scheduler.complete_task(admission.task);\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            std::size_t committed_task_count = 0;\n            while (!pending_task_order.empty()) {{\n                const auto task = pending_task_order.front();\n                const auto result_it = pending_task_results.find(task);\n                if (result_it == pending_task_results.end()) {{\n                    break;\n                }}\n                auto task_result = std::move(result_it->second);\n                pending_task_results.erase(result_it);\n                pending_task_order.pop_front();\n                (void)scheduler.complete_task(task_result.task);\n                ++committed_task_count;\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            if (committed_task_count == 0U || (!woke_on_message && submitted_task_count == 0U)) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n            if (run_ticks.has_value() && pending_task_order.empty()) {{\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }}\n{wake_block}        }}\n    }}\n",
+        "                }}\n                }});\n                if (submitted.accepted) {{\n                    pending_task_order.push_back(admission.task);\n                    pending_task_admissions.insert_or_assign(admission.task, admission);\n{task_admission_health_update}                }} else {{\n                    (void)scheduler.complete_task(admission.task);\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            std::size_t committed_task_count = 0;\n            while (!pending_task_order.empty()) {{\n                const auto task = pending_task_order.front();\n                const auto result_it = pending_task_results.find(task);\n                if (result_it == pending_task_results.end()) {{\n                    break;\n                }}\n                auto task_result = std::move(result_it->second);\n                pending_task_results.erase(result_it);\n                pending_task_order.pop_front();\n                (void)scheduler.complete_task(task_result.task);\n                ++committed_task_count;\n{task_result_health_update}                if (task_result.status == flowrt::Status::Error) {{\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            if (committed_task_count == 0U || (!woke_on_message && submitted_task_count == 0U)) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n{advance_block}        }}\n    }}\n",
         task_result_health_update = task_result_health_update,
         task_admission_health_update = task_admission_health_update,
-            wake_block = cpp_scheduler_wake_block(run.contract, &cpp_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks))
+            advance_block = cpp_scheduler_advance_block(run.contract, &cpp_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks))
         )
         .replace(
             "case flowrt::ScheduleEvent::Data:\n                    break;",
@@ -445,9 +449,8 @@ fn cpp_scheduler_clock_init(contract: &ContractIr) -> String {
 
 fn cpp_scheduler_data_time_update(contract: &ContractIr, indent: &str) -> String {
     if cpp_scheduler_uses_data_time(contract) {
-        format!(
-            "{indent}if (const auto data_time_ms = scheduler_events.take_data_time_ms()) {{\n{indent}    scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);\n{indent}}}\n"
-        )
+        // replay 由 advance block 的回放驱动推进 scheduler_now_ms，loop 顶部不再读 data_time。
+        String::new()
     } else {
         format!(
             "{indent}scheduler_now_ms = std::max(scheduler_now_ms, scheduler_runtime_now_ms());\n{indent}(void)scheduler_events.take_data_time_ms();\n"
@@ -471,6 +474,51 @@ fn cpp_scheduler_wake_block(contract: &ContractIr, next_deadline_expr: &str) -> 
         format!(
             "            const auto next_periodic_deadline_ms = {next_deadline_expr};\n            const auto next_wake_deadline = next_periodic_deadline_ms.has_value()\n                ? std::optional<std::chrono::steady_clock::time_point>{{\n                      std::chrono::steady_clock::now() +\n                      std::chrono::milliseconds{{static_cast<std::chrono::milliseconds::rep>(\n                          next_periodic_deadline_ms->value > scheduler_now_ms\n                              ? next_periodic_deadline_ms->value - scheduler_now_ms\n                              : 0U)}}}}\n                : std::nullopt;\n            switch (scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)) {{\n                case flowrt::ScheduleEvent::Shutdown:\n                    status = flowrt::Status::Ok;\n                    break;\n                case flowrt::ScheduleEvent::Timer:\n                    scheduler_now_ms = next_periodic_deadline_ms.has_value()\n                                           ? next_periodic_deadline_ms->value\n                                           : scheduler_now_ms + scheduler_base_period_ms;\n                    break;\n                case flowrt::ScheduleEvent::Data:\n                    break;\n            }}\n            if (shutdown.is_requested()) {{\n                break;\n            }}\n"
         )
+    }
+}
+
+/// 为 replay 时钟源生成运行时原生回放驱动初始化。
+///
+/// 读取 `FLOWRT_REPLAY_SOURCE` 指向的 JSONL 回放时间线（C++ 无 MCAP 解析能力，`flowrt run`
+/// 启动 C++ 生成 shell 前已把 MCAP 规范化为 JSONL），只装配目标在本图 input boundary 名集合内
+/// 的外部激励事件。缺少环境变量或加载失败时打印诊断并把 `status` 置 `Error`（不抛异常），while
+/// 循环因此不进入，run 返回 `Error`。realtime 时钟源不生成本块。镜像 Rust
+/// rust_scheduler_replay_driver_init。
+fn cpp_scheduler_replay_driver_init(
+    contract: &ContractIr,
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
+    if !cpp_scheduler_uses_data_time(contract) {
+        return String::new();
+    }
+    let names = boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
+        .map(|boundary| cpp_string_literal(&boundary.endpoint_name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "    const std::set<std::string> replay_boundary_inputs = {{{names}}};\n    std::optional<flowrt::ReplayDriver> replay_time_driver;\n    {{\n        const char* replay_source = std::getenv(\"FLOWRT_REPLAY_SOURCE\");\n        if (replay_source != nullptr && replay_source[0] != '\\0') {{\n            auto replay_loaded = flowrt::replay_driver_from_timeline_file(replay_source, replay_boundary_inputs);\n            if (std::holds_alternative<flowrt::ReplayDriver>(replay_loaded)) {{\n                replay_time_driver = std::move(std::get<flowrt::ReplayDriver>(replay_loaded));\n            }} else {{\n                std::fprintf(stderr, \"FlowRT: 无法加载 FLOWRT_REPLAY_SOURCE `%s`: %s\\n\", replay_source, std::get<std::string>(replay_loaded).c_str());\n                status = flowrt::Status::Error;\n            }}\n        }} else {{\n            std::fprintf(stderr, \"FlowRT: simulated_replay 运行时需要设置 FLOWRT_REPLAY_SOURCE\\n\");\n            status = flowrt::Status::Error;\n        }}\n    }}\n"
+    )
+}
+
+/// 生成 scheduler 每个 tick 之后推进逻辑时钟的块。
+///
+/// realtime：保持既有行为——run_ticks 有界且无 pending 时按 base period 推进并 continue，否则
+/// 按 wall-clock deadline 等待下一个 periodic deadline 或数据事件。replay：由 runtime 原生回放
+/// 驱动在「下一个事件时间」与「下一个 periodic 网格点」间逐步推进逻辑时钟，命中事件时把暂存的
+/// 边界激励经 publish_boundary_input 注入，时间线耗尽即结束。镜像 Rust rust_scheduler_advance_block。
+fn cpp_scheduler_advance_block(contract: &ContractIr, next_deadline_expr: &str) -> String {
+    if cpp_scheduler_uses_data_time(contract) {
+        format!(
+            "            if (!replay_time_driver.has_value()) {{\n                break;\n            }}\n            auto& replay_driver = *replay_time_driver;\n            const auto next_periodic_deadline_chrono = {next_deadline_expr};\n            const auto replay_next_periodic_deadline_ms = next_periodic_deadline_chrono.has_value()\n                ? std::optional<std::uint64_t>{{static_cast<std::uint64_t>(next_periodic_deadline_chrono->count())}}\n                : std::nullopt;\n            const auto replay_step = replay_driver.next_step(replay_next_periodic_deadline_ms, shutdown);\n            if (replay_step == flowrt::Step::Shutdown) {{\n                break;\n            }}\n            scheduler_now_ms = replay_driver.now_ms();\n            if (replay_step == flowrt::Step::Data) {{\n                for (const auto& replay_event : replay_driver.take_pending_events()) {{\n                    (void)introspection_state.publish_boundary_input(replay_event.target, std::span<const std::uint8_t>{{replay_event.payload.data(), replay_event.payload.size()}}, std::optional<std::uint64_t>{{replay_event.time_ms}});\n                }}\n            }}\n"
+        )
+    } else {
+        let mut block = String::from(
+            "            if (run_ticks.has_value() && pending_task_order.empty()) {\n                scheduler_now_ms += scheduler_base_period_ms;\n                continue;\n            }\n",
+        );
+        block.push_str(&cpp_scheduler_wake_block(contract, next_deadline_expr));
+        block
     }
 }
 
