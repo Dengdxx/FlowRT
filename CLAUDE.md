@@ -422,6 +422,32 @@ ctest --test-dir build/cpp --output-on-failure
 
 如果无法运行验证，最终回复必须明确说明原因。
 
+## 发布收尾流程
+
+正式发布走 `dev/vX.Y.Z` 开发分支加 tag。在该分支上按顺序收尾，任一步失败先修再继续：
+
+1. 改动已原子提交在 `dev/vX.Y.Z`，工作树干净。
+2. 跑本地收尾门禁，全绿才继续：
+   - `cargo fmt --check`、`cargo test`、`cargo clippy --all-targets --all-features -- -D warnings`。
+   - `scripts/check-architecture-contract.sh`、`scripts/check-architecture-size.sh`。
+   - tracked 守卫：确认 `flowrt/**`、`examples/*/flowrt/**` 和 `.gitignore` 排除的本地设计草案未进索引。
+   - `scripts/check-release-readiness.sh X.Y.Z`：版本一致性、CHANGELOG 段、release notes、
+     focused gate、README/CONTEXT 和 tag 状态的总闸，必须输出全部检查通过。
+3. 版本与发布物料同步到 `X.Y.Z`：根 `Cargo.toml`、`runtime/rust/Cargo.toml`、
+   `runtime/cpp/CMakeLists.txt`、`Cargo.lock`、`README.md`、`CONTEXT.md`；CHANGELOG 把
+   `## 未发布` 定为 `## vX.Y.Z - YYYY-MM-DD`；`scripts/release-gates/registry.toml` 登记该
+   版本的 focused smoke（脚本须存在并自身通过），并在 `ci.yml` 接入对应 job。
+4. push `dev/vX.Y.Z`，等 push CI 全矩阵和 `Release Evidence Gate` 跑绿。`Release Evidence
+   Gate` 只在 `dev/vX.Y.Z` push 上运行，按分支名推版本号，校验后上传 deb 与
+   `flowrt-release-evidence`。
+5. 在那条已跑绿的 commit 上打 `vX.Y.Z` tag 并 push。`release.yml` 只监听 `v*` tag，按 tag
+   指向的 commit SHA 找同 SHA 且 `Release Evidence Gate` 成功的 push CI run，下载并复核
+   version/tag/sha/deb/校验和后创建 GitHub Release。tag 必须指向已具备 evidence 的 commit，
+   否则 release 失败。
+6. 合并 `dev/vX.Y.Z` 到 master 是惯例收尾；发布机制按 SHA 关联 evidence，与是否合并无关。
+
+CI 未绿前不得打 tag；不得跳过 readiness 门禁直接发布。
+
 ## Git 提交规范
 
 提交必须原子化。一次提交只做一类相关改动；不要像历史上的超大提交那样把多个不相
