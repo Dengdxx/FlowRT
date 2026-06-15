@@ -250,7 +250,11 @@ impl RecordEnvelope {
 ///
 /// 这是 record→replay 的中间表示：reader 只做「读 MCAP、过滤 channel sample、按时间排序」，
 /// 不依赖 runtime 类型；生成 shell 再把它映射为 runtime 回放事件并注入对应 boundary input。
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// 同时是 JSONL 回放源的行 schema（见 [`write_replay_timeline_jsonl`]）：`payload` 以 JSON
+/// 整数数组承载。后续 sensor event-time 可在保持向后兼容的前提下追加 `sample_time_ms` 字段，
+/// 当前 reader 默认忽略未知字段。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayTimelineEntry {
     /// 事件的逻辑毫秒时间（由 envelope `monotonic_ns` 推导）。
     pub time_ms: u64,
@@ -292,6 +296,53 @@ pub fn read_replay_timeline_from_path(
 ) -> RecordResult<Vec<ReplayTimelineEntry>> {
     let data = std::fs::read(path)?;
     read_replay_timeline(&data)
+}
+
+/// 把回放时间线写为 line-delimited JSON（每行一条 [`ReplayTimelineEntry`]）。
+///
+/// 这是 C++ runtime 可直接解析的回放源格式。C++ 没有 MCAP 解析能力，`flowrt run --replay`
+/// 在启动 C++ 生成 shell 前先用本函数把 MCAP 规范化为 JSONL 时间线。Rust runtime 仍直读
+/// MCAP，故本格式只是跨语言回放源的最小公共承载，不引入第二套 MCAP 解析实现。
+pub fn write_replay_timeline_jsonl<W: Write>(
+    writer: &mut W,
+    entries: &[ReplayTimelineEntry],
+) -> RecordResult<()> {
+    for entry in entries {
+        serde_json::to_writer(&mut *writer, entry)?;
+        writer.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+/// 把回放时间线写入 JSONL 文件。
+pub fn write_replay_timeline_jsonl_to_path(
+    path: &std::path::Path,
+    entries: &[ReplayTimelineEntry],
+) -> RecordResult<()> {
+    let mut file = std::fs::File::create(path)?;
+    write_replay_timeline_jsonl(&mut file, entries)?;
+    file.flush()?;
+    Ok(())
+}
+
+/// 解析 line-delimited JSON 回放时间线。空行被跳过；输入应保持写入时的时间升序。
+pub fn read_replay_timeline_jsonl(data: &str) -> RecordResult<Vec<ReplayTimelineEntry>> {
+    let mut entries = Vec::new();
+    for line in data.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        entries.push(serde_json::from_str(line)?);
+    }
+    Ok(entries)
+}
+
+/// 读取并解析 JSONL 回放时间线文件。
+pub fn read_replay_timeline_jsonl_from_path(
+    path: &std::path::Path,
+) -> RecordResult<Vec<ReplayTimelineEntry>> {
+    let data = std::fs::read_to_string(path)?;
+    read_replay_timeline_jsonl(&data)
 }
 
 /// 已注册的 MCAP channel 句柄。
@@ -405,5 +456,43 @@ impl<W: Write + Seek> FlowrtMcapWriter<W> {
 
     fn writer_mut(&mut self) -> RecordResult<&mut mcap::Writer<W>> {
         self.writer.as_mut().ok_or(RecordError::WriterClosed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_replay_timeline_jsonl_roundtrips_entries() {
+        let entries = vec![
+            ReplayTimelineEntry {
+                time_ms: 5,
+                target: "sample_in".to_string(),
+                payload: vec![1, 2, 3],
+            },
+            ReplayTimelineEntry {
+                time_ms: 7,
+                target: "imu_in".to_string(),
+                payload: vec![],
+            },
+        ];
+        let mut buffer = Vec::new();
+        write_replay_timeline_jsonl(&mut buffer, &entries).unwrap();
+        // 每条 entry 占一行。
+        assert_eq!(buffer.iter().filter(|byte| **byte == b'\n').count(), 2);
+        let text = String::from_utf8(buffer).unwrap();
+        assert_eq!(read_replay_timeline_jsonl(&text).unwrap(), entries);
+    }
+
+    #[test]
+    fn read_replay_timeline_jsonl_skips_blank_lines_and_tolerates_unknown_fields() {
+        // 未知 `sample_time_ms` 字段被忽略，验证 0.18.0 sensor event-time 的向前兼容承诺。
+        let text = "{\"time_ms\":1,\"target\":\"a\",\"payload\":[9],\"sample_time_ms\":42}\n\n";
+        let parsed = read_replay_timeline_jsonl(text).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].time_ms, 1);
+        assert_eq!(parsed[0].target, "a");
+        assert_eq!(parsed[0].payload, vec![9]);
     }
 }
