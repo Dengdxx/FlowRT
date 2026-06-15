@@ -1775,6 +1775,50 @@ fn recorder_captures_diagnostics_events_from_status() {
 }
 
 #[test]
+fn observability_facts_feed_status_diagnostics_and_recorder_events() {
+    let state = IntrospectionState::new();
+    state.record_tick_at(500, "simulated_replay");
+    state.record_route_error("source.packet_to_sink.packet", "queue overflow");
+    state.record_task_health(IntrospectionTaskHealth {
+        name: "controller.loop".to_string(),
+        lane: "control".to_string(),
+        scheduled_time_ms: Some(2_000),
+        observed_time_ms: Some(2_018),
+        lateness_ms: Some(18),
+        missed_periods: Some(1),
+        overrun: Some(true),
+        ..Default::default()
+    });
+
+    let facts = super::facts::RuntimeObservabilityFacts::from_status_snapshot(state.status());
+    let status = facts.status_snapshot();
+    let diagnostics = facts.diagnostic_snapshot();
+    let recorder_events = facts.recorder_diagnostic_events();
+
+    assert_eq!(status.diagnostics, diagnostics);
+    let task_diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.entity_id == "controller.loop")
+        .expect("task diagnostic fact should exist");
+    assert_eq!(
+        task_diagnostic.reason.as_deref(),
+        Some("runtime observed task timing issue")
+    );
+
+    let task_event = recorder_events
+        .iter()
+        .find(|event| event.entity_id == "controller.loop")
+        .expect("task recorder event fact should exist");
+    assert_eq!(task_event.payload_schema, "flowrt.diagnostics.status");
+    assert_eq!(task_event.monotonic_ns, Some(2_018_000_000));
+    assert_eq!(task_event.payload["category"], "task");
+    assert_eq!(
+        task_event.payload["reason"],
+        "runtime observed task timing issue"
+    );
+}
+
+#[test]
 fn health_fields_serialize_roundtrip() {
     let status = IntrospectionStatus {
         tick_count: 42,

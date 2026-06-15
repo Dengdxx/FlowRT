@@ -8,7 +8,7 @@ use crate::recorder::{
 };
 use crate::{FrameCodec, FrameDescriptor, FrameLeaseStatus};
 
-use super::diagnostics::{derive_diagnostics, input_status_key};
+use super::facts::{RuntimeObservabilityFacts, input_status_key};
 use super::model::*;
 use super::params::{ParamState, param_status, validate_param_json_value};
 use super::paths::unix_time_ms;
@@ -35,9 +35,9 @@ impl std::fmt::Debug for BoundaryInputState {
 }
 
 #[derive(Debug, Clone)]
-struct ChannelState {
-    message_type: String,
-    probe: IntrospectionChannelProbe,
+pub(super) struct ChannelState {
+    pub(super) message_type: String,
+    pub(super) probe: IntrospectionChannelProbe,
 }
 
 type OperationCancelHandler =
@@ -57,22 +57,22 @@ impl std::fmt::Debug for IntrospectionState {
 
 #[derive(Default)]
 pub(super) struct IntrospectionStateInner {
-    tick_count: u64,
-    clock: IntrospectionClockStatus,
+    pub(super) tick_count: u64,
+    pub(super) clock: IntrospectionClockStatus,
     self_description_json: Option<String>,
-    channels: BTreeMap<String, ChannelState>,
-    inputs: BTreeMap<String, IntrospectionInputStatus>,
-    routes: BTreeMap<String, IntrospectionRouteStatus>,
-    params: BTreeMap<String, ParamState>,
+    pub(super) channels: BTreeMap<String, ChannelState>,
+    pub(super) inputs: BTreeMap<String, IntrospectionInputStatus>,
+    pub(super) routes: BTreeMap<String, IntrospectionRouteStatus>,
+    pub(super) params: BTreeMap<String, ParamState>,
     boundary_inputs: BTreeMap<String, BoundaryInputState>,
-    processes: BTreeMap<String, IntrospectionProcessStatus>,
-    resources: BTreeMap<String, IntrospectionResourceStatus>,
-    io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
-    services: BTreeMap<String, IntrospectionServiceStatus>,
-    operations: BTreeMap<String, IntrospectionOperationStatus>,
+    pub(super) processes: BTreeMap<String, IntrospectionProcessStatus>,
+    pub(super) resources: BTreeMap<String, IntrospectionResourceStatus>,
+    pub(super) io_boundaries: BTreeMap<String, IntrospectionIoBoundaryStatus>,
+    pub(super) services: BTreeMap<String, IntrospectionServiceStatus>,
+    pub(super) operations: BTreeMap<String, IntrospectionOperationStatus>,
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
-    tasks: BTreeMap<String, IntrospectionTaskHealth>,
-    lanes: BTreeMap<String, IntrospectionLaneHealth>,
+    pub(super) tasks: BTreeMap<String, IntrospectionTaskHealth>,
+    pub(super) lanes: BTreeMap<String, IntrospectionLaneHealth>,
 }
 
 impl IntrospectionState {
@@ -427,74 +427,24 @@ impl IntrospectionState {
 
     /// 返回当前 status 快照。
     pub fn status(&self) -> IntrospectionStatus {
-        let mut status = {
-            let inner = self.lock_inner();
-            IntrospectionStatus {
-                tick_count: inner.tick_count,
-                clock: inner.clock.clone(),
-                channels: inner
-                    .channels
-                    .iter()
-                    .map(|(name, channel)| {
-                        let snapshot = channel.probe.snapshot();
-                        IntrospectionChannelStatus {
-                            name: name.clone(),
-                            message_type: channel.message_type.clone(),
-                            published_count: snapshot.published_count,
-                            last_payload_len: snapshot.payload.as_ref().map(Vec::len),
-                            active_observers: channel.probe.active_count(),
-                            dropped_samples: channel.probe.dropped_samples(),
-                        }
-                    })
-                    .collect(),
-                inputs: inner.inputs.values().cloned().collect(),
-                routes: inner.routes.values().cloned().collect(),
-                processes: inner.processes.values().cloned().collect(),
-                resources: inner.resources.values().cloned().collect(),
-                io_boundaries: inner.io_boundaries.values().cloned().collect(),
-                params: inner
-                    .params
-                    .iter()
-                    .map(|(name, param)| param_status(name, param))
-                    .collect(),
-                services: inner.services.values().cloned().collect(),
-                operations: inner.operations.values().cloned().collect(),
-                tasks: inner.tasks.values().cloned().collect(),
-                lanes: inner.lanes.values().cloned().collect(),
-                recorder: self.recorder.status(),
-                diagnostics: Vec::new(),
-            }
-        };
-        status.diagnostics = derive_diagnostics(&status);
-        status
+        let recorder = self.recorder.status();
+        let inner = self.lock_inner();
+        RuntimeObservabilityFacts::from_state_inner(&inner, recorder).status_snapshot()
     }
 
     /// 将当前诊断项写入 recorder。`status()` 本身保持无副作用，避免内部轮询污染录制。
     pub fn record_current_diagnostics(&self) {
-        let status = self.status();
-        self.record_diagnostics_events(&status);
+        let recorder = self.recorder.status();
+        let facts = {
+            let inner = self.lock_inner();
+            RuntimeObservabilityFacts::from_state_inner(&inner, recorder)
+        };
+        self.record_diagnostics_events(&facts);
     }
 
-    fn record_diagnostics_events(&self, status: &IntrospectionStatus) {
-        for diagnostic in &status.diagnostics {
-            let payload = serde_json::to_value(diagnostic).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "category": diagnostic.category,
-                    "entity_kind": diagnostic.entity_kind,
-                    "entity_id": diagnostic.entity_id,
-                    "state": diagnostic.state,
-                    "severity": "error",
-                    "reason": "failed to serialize diagnostic payload",
-                })
-            });
-            self.recorder.record_diagnostics_event_json(
-                &diagnostic.entity_id,
-                "flowrt.diagnostics.status",
-                payload,
-                diagnostic
-                    .observed_ms
-                    .map(|value| value.saturating_mul(1_000_000)),
-            );
+    fn record_diagnostics_events(&self, facts: &RuntimeObservabilityFacts) {
+        for event in facts.recorder_diagnostic_events() {
+            self.recorder.record_diagnostics_fact(&event);
         }
     }
 

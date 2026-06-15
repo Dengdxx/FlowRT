@@ -17,6 +17,7 @@ use flowrt_record::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::introspection::facts::RecorderDiagnosticFact;
 use crate::{FrameDescriptor, FrameLeaseStatus};
 
 /// recorder 启动时绑定的 runtime 元数据。
@@ -471,6 +472,18 @@ impl RecorderTap {
             payload_schema,
             &payload,
             monotonic_ns,
+        )
+    }
+
+    pub(crate) fn record_diagnostics_fact(
+        &self,
+        fact: &RecorderDiagnosticFact,
+    ) -> RecorderTapOutcome {
+        self.record_diagnostics_event_json(
+            &fact.entity_id,
+            fact.payload_schema,
+            fact.payload.clone(),
+            fact.monotonic_ns,
         )
     }
 

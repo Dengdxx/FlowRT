@@ -5,6 +5,7 @@
 
 mod client;
 mod diagnostics;
+pub(crate) mod facts;
 mod model;
 mod params;
 mod paths;
