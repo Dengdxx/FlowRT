@@ -17,6 +17,7 @@ pub mod operation;
 #[cfg(feature = "zenoh")]
 pub mod params_remote;
 pub mod recorder;
+pub mod replay;
 pub mod service;
 pub mod shutdown;
 pub mod supervisor;
@@ -93,6 +94,7 @@ pub use params_remote::{
 pub use recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderStatus, RecorderTap, RecorderTapOutcome,
 };
+pub use replay::{boundary_replay_events, replay_driver_from_mcap};
 pub use service::{
     Deadline, InprocServiceClient, InprocServiceConfig, InprocServiceServer, LaneGuard, RequestId,
     SERVICE_FRAME_HEADER_SIZE, SERVICE_FRAME_MAGIC, SERVICE_FRAME_VERSION, ServiceCallHandle,
@@ -100,6 +102,7 @@ pub use service::{
     ServiceStatsSnapshot, decode_service_frame, encode_service_frame, enter_lane, fnv1a64,
 };
 pub use shutdown::{ShutdownToken, install_signal_shutdown_token};
+pub use time_driver::{ReplayDriver, ReplayEvent, Step, StepController, SteppedDriver, TimeDriver};
 pub use wire::{WireCodec, WireCodecError};
 
 /// 生成组件接口返回的执行状态。
