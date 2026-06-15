@@ -10,7 +10,7 @@ on:
         required: false
         default: "false"
       version:
-        description: "期望发布版本，例如 0.14.0"
+        description: "期望发布版本，例如 0.14.1"
         required: false
         default: ""
 

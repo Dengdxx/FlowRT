@@ -5,26 +5,24 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.14.0`；当前发布线为
-`v0.14.0 Realtime Scheduler + Task Timing Context`。`v0.14.0` 把原先调度
-admission 同步等待长任务完成的问题，和用户算法无法看到真实 runtime 调度时间的问题
-合并处理：scheduler 线程只负责 ready 判定、admission、backend commit 和
-introspection，worker 只运行用户 task，并通过 completion queue 或等价完成通知把结果
-交回 scheduler。用户 task 仍通过现有 `flowrt::Context` 读取调度时间上下文，不改变
-handler 签名。
-
-`v0.14.1` 当前定位为 `v0.14.0` 后的架构修缮版本，当前 workspace 版本仍为
-`0.14.0`，不在本阶段提前修改版本号或创建正式 `v0.14.1` changelog 段。该版本重点是把
-0.14.0 后已经显著膨胀的调度、codegen、CLI、introspection 和测试聚合文件拆回清晰边界，
-并准备 `SchedulerRuntimePlan` 作为 generated scheduler 与 runtime primitive 之间的显式
-计划层，避免 codegen 继续把 task readiness、input snapshot、output transaction、backend
-commit 和 status/introspection 元数据堆在单个 shell 文件里。
+当前 workspace 版本为 `0.14.1`；当前发布线为
+`v0.14.1 Architecture Guard + Codebase Split`。该版本定位为 `v0.14.0` 后的架构修缮版本：
+把 0.14.0 后已经显著膨胀的调度、codegen、CLI、introspection 和测试聚合文件拆回清晰
+边界，并引入 `SchedulerRuntimePlan` 作为 generated scheduler 与 runtime primitive
+之间的显式计划层，避免 codegen 继续把 task readiness、input snapshot、output
+transaction、backend commit 和 status/introspection 元数据堆在单个 shell 文件里。
 
 `v0.14.1` 的 CI/release 护栏已开始收紧大文件增长：`scripts/check-architecture-size.sh`
 会检查 tracked Rust、C/C++ 和 shell 源文件单文件行数阈值。0.14.1 完成本轮既有大文件
 拆分后不保留 legacy allowlist，后续新增或回涨的超阈值文件会直接使 CI 失败；
 `scripts/test-v0141-architecture-smoke.sh` 是本版本 focused smoke 入口，release
 candidate 本地预检会通过版本 registry 选择 0.14.0 或 0.14.1 的 focused smoke。
+
+上一发布线 `v0.14.0 Realtime Scheduler + Task Timing Context` 把原先调度 admission
+同步等待长任务完成的问题，和用户算法无法看到真实 runtime 调度时间的问题合并处理：
+scheduler 线程只负责 ready 判定、admission、backend commit 和 introspection，worker
+只运行用户 task，并通过 completion queue 或等价完成通知把结果交回 scheduler。用户
+task 仍通过现有 `flowrt::Context` 读取调度时间上下文，不改变 handler 签名。
 
 `v0.14.0` 的长期用户语义是 runtime scheduling time，不是传感器事件时间。对每次 task
 运行，运行态观测和 `Context` 要区分 `scheduled_time_ms`、`observed_time_ms`、
