@@ -475,16 +475,56 @@ pub(crate) fn run_cmake_app(
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
-    if let Some(replay_source) = replay_source {
-        command.env("FLOWRT_REPLAY_SOURCE", replay_source);
+    // C++ runtime 无 MCAP 解析能力：把 MCAP 回放源规范化为 JSONL 时间线后再注入，由 C++ 生成
+    // shell 经 flowrt::replay_driver_from_timeline_file 解析。Rust 路径仍直读 MCAP。
+    let cpp_replay_timeline = match replay_source {
+        Some(replay_source) => Some(cpp_prepare_replay_timeline(app, replay_source)?),
+        None => None,
+    };
+    if let Some(timeline_path) = cpp_replay_timeline.as_deref() {
+        command.env("FLOWRT_REPLAY_SOURCE", timeline_path);
     }
     let status = command
         .status()
         .with_context(|| format!("failed to spawn C++ app `{}`", app.display()))?;
+    if let Some(timeline_path) = cpp_replay_timeline.as_deref() {
+        let _ = std::fs::remove_file(timeline_path);
+    }
     if !status.success() {
         anyhow::bail!("C++ app invocation failed with status {status}");
     }
     Ok(())
+}
+
+/// 把 MCAP 回放源规范化为 C++ runtime 可解析的 JSONL 时间线，返回临时文件路径。
+///
+/// C++ runtime 不解析 MCAP；CLI 读取 MCAP（flowrt-record，单一 MCAP 解析点）后写出按时间升序的
+/// JSONL 时间线，交由 C++ 生成 shell 装配回放驱动。读取或写入失败 fail-fast，不静默回退。
+fn cpp_prepare_replay_timeline(app: &Path, replay_source: &Path) -> Result<std::path::PathBuf> {
+    let entries = flowrt_record::read_replay_timeline_from_path(replay_source)
+        .with_context(|| format!("failed to read replay source `{}`", replay_source.display()))?;
+    let timeline_path = cpp_replay_timeline_path(app);
+    flowrt_record::write_replay_timeline_jsonl_to_path(&timeline_path, &entries).with_context(
+        || {
+            format!(
+                "failed to write replay timeline `{}`",
+                timeline_path.display()
+            )
+        },
+    )?;
+    Ok(timeline_path)
+}
+
+/// 派生 C++ 回放 JSONL 时间线的临时文件路径（按 app 文件名与当前进程号区分）。
+fn cpp_replay_timeline_path(app: &Path) -> std::path::PathBuf {
+    let file_name = app
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("flowrt-cpp-app");
+    std::env::temp_dir().join(format!(
+        ".{file_name}.flowrt-replay.{}.jsonl",
+        std::process::id()
+    ))
 }
 
 pub(crate) fn run_binary(
