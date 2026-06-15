@@ -24,6 +24,24 @@ info() {
     printf '→ %s\n' "$1"
 }
 
+run_focused_smoke() {
+    local version="$1"
+
+    case "$version" in
+        0.14.0)
+            info "运行 v0.14.0 focused smoke"
+            scripts/test-v0140-realtime-scheduler-smoke.sh
+            ;;
+        0.14.1)
+            info "运行 v0.14.1 focused smoke"
+            scripts/test-v0141-architecture-smoke.sh
+            ;;
+        *)
+            info "版本 v${version} 未登记本地 focused smoke；只运行通用发布就绪检查"
+            ;;
+    esac
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
@@ -93,10 +111,7 @@ if [[ ! -s /tmp/flowrt-release-notes-check.md ]]; then
     fail "$tag 的 release notes 为空"
 fi
 
-if [[ "$version" == "0.14.0" ]]; then
-    info "运行 v0.14.0 focused smoke"
-    scripts/test-v0140-realtime-scheduler-smoke.sh
-fi
+run_focused_smoke "$version"
 
 if [[ "$dispatch" != true && "$wait_for_run" != true ]]; then
     info "本地预检完成；未使用 --dispatch，未触发远端 release candidate"

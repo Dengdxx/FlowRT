@@ -55,6 +55,20 @@ jobs:
 
           echo "未发现被 tracked 的本地规格或 FlowRT 生成物。"
 
+  v0141-architecture-smoke:
+    name: v0.14.1 Architecture Guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: v0.14.1 architecture guard
+        shell: bash
+        run: |
+          bash -n scripts/check-architecture-size.sh scripts/test-v0141-architecture-smoke.sh
+          scripts/test-v0141-architecture-smoke.sh
+
   rust-fmt:
     name: Rust Fmt (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -860,6 +874,7 @@ jobs:
       image: ros:jazzy-ros-base-noble
     needs:
       - guard-generated
+      - v0141-architecture-smoke
       - rust-test
       - cpp-runtime
       - v050-runtime-smoke
@@ -1338,6 +1353,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - guard-generated
+      - v0141-architecture-smoke
       - rust-fmt
       - rust-test
       - rust-clippy
@@ -1448,6 +1464,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - guard-generated
+      - v0141-architecture-smoke
       - rust-fmt
       - rust-test
       - rust-clippy
