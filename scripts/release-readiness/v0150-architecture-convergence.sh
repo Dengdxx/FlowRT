@@ -9,6 +9,8 @@ check_v0150_architecture_convergence_readiness() {
             "v0150-architecture-convergence-smoke:" "$ci_file"
         require_ci_text "v0.15.0 gate 通过 devtools registry 查询 focused smoke" \
             "release-gate focused-smoke 0.15.0" "$ci_file"
+        require_ci_text "v0.15.0 gate 安装 architecture guard 依赖" \
+            "apt-get install -y ripgrep" "$ci_file"
         require_ci_text_count_at_least "package/release/RC 依赖 v0.15.0 architecture gate" \
             "- v0150-architecture-convergence-smoke" "$ci_file" 3
     fi
