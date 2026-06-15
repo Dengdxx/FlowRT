@@ -1114,6 +1114,7 @@ source "$repo_root/scripts/release-readiness/v0141-architecture.sh"; check_v0141
 printf '\n[20/24] v0.15.x focused CI gate 覆盖\n'
 source "$repo_root/scripts/release-readiness/v0150-architecture-convergence.sh"; check_v0150_architecture_convergence_readiness
 source "$repo_root/scripts/release-readiness/v0151-ci-release-evidence.sh"; check_v0151_ci_release_evidence_readiness
+source "$repo_root/scripts/release-readiness/v0152-scheduler-clock.sh"; check_v0152_scheduler_clock_readiness
 
 # ── 21. README 安装示例版本 ──────────────────────────────────
 

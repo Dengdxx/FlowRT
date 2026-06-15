@@ -106,6 +106,26 @@ jobs:
           bash -n "$focused_smoke"
           "$focused_smoke"
 
+  v0152-scheduler-clock-smoke:
+    name: v0.15.2 Scheduler Clock Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v6
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: v0.15.2 scheduler clock smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          focused_smoke="$(cargo run -p flowrt-devtools -- release-gate focused-smoke 0.15.2)"
+          bash -n "$focused_smoke"
+          "$focused_smoke"
+
   rust-fmt:
     name: Rust Fmt (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -914,6 +934,7 @@ jobs:
       - v0141-architecture-smoke
       - v0150-architecture-convergence-smoke
       - v0151-ci-release-evidence-smoke
+      - v0152-scheduler-clock-smoke
       - rust-test
       - cpp-runtime
       - v050-runtime-smoke
@@ -1398,6 +1419,7 @@ jobs:
       - v0141-architecture-smoke
       - v0150-architecture-convergence-smoke
       - v0151-ci-release-evidence-smoke
+      - v0152-scheduler-clock-smoke
       - rust-fmt
       - rust-test
       - rust-clippy

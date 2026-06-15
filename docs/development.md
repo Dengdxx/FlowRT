@@ -257,10 +257,11 @@ amd64/arm64 v0.10.2 concurrency focused smoke、amd64/arm64 v0.11.0 App SDK
 focused smoke、amd64/arm64 v0.12.0 authoring focused smoke、amd64/arm64 v0.13.0
 robot runtime completion focused smoke、amd64/arm64 v0.14.0 realtime scheduler
 focused smoke、amd64/arm64 v0.14.1 architecture focused smoke、amd64/arm64
-v0.15.0 architecture convergence focused smoke、amd64/arm64 C++ zenoh runtime、
-amd64/arm64 deb package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64
-demo smoke、amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge
-smoke 全部通过，才会产出发布证据。
+v0.15.0 architecture convergence focused smoke、v0.15.1 CI release evidence smoke、
+v0.15.2 scheduler clock focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb
+package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64 demo smoke、amd64/arm64
+ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，才会产出
+发布证据。
 
 `v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
 supervisor readiness/resource、远程参数控制面、status/hz 健康展示、scheduler
@@ -355,7 +356,10 @@ registry 查询 focused smoke，并串联脚本语法检查、`scripts/check-arc
 derived facts 和 runtime observability facts 是否已经进入 validator、codegen、status、
 diagnostics 与 recorder 的生产消费路径。`v0.15.1 CI Release Evidence Smoke` 检查 CI
 只在发布分支 push 上产出 release evidence，tag release 只消费同一 commit SHA 的成功
-evidence，并确认本地 helper 不再手工触发远端 CI。
+evidence，并确认本地 helper 不再手工触发远端 CI。`v0.15.2 Scheduler Clock Smoke`
+检查 realtime generated scheduler 清空 boundary/replay 样本时间戳但不把它推进
+runtime scheduling time，同时确认 temporary island overlay 继续使用 fixture 时间驱动
+simulated replay clock。
 
 release readiness 还会检查 `CONTEXT.md` 的“当前 workspace 版本为 `X.Y.Z`”状态行。
 发布后如果只移动 `CHANGELOG.md` 版本段而忘记更新当前上下文，脚本会拒绝通过。

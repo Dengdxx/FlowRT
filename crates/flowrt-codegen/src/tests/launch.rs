@@ -1028,6 +1028,11 @@ backend = "inproc"
     assert_eq!(selfdesc["artifact"]["clock"]["unit"], "ms");
     assert_eq!(selfdesc["artifact"]["clock"]["field"], "tick_time_ms");
     assert!(rust_shell.contains("let clock_source = \"simulated_replay\";"));
+    assert!(!rust_shell.contains("let scheduler_started_at = std::time::Instant::now();"));
+    assert!(
+        rust_shell.contains("if let Some(data_time_ms) = scheduler_events.take_data_time_ms()")
+    );
+    assert!(rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(data_time_ms);"));
 }
 
 #[test]

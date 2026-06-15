@@ -1090,8 +1090,10 @@ fixture 支持 JSONL 或 JSON array。每个事件包含：
 默认按事件时间回放，`--speed <倍率>` 调整 wall-clock 节奏，`--as-fast-as-possible` 忽略
 sleep 尽快注入。事件执行前会按 `at_ms` 稳定排序；相同时间保持文件顺序。输出摘要包含
 事件数、boundary 数、源文件、时间跨度、速度和模式。注入时 `at_ms` 会作为
-`published_at_ms` 进入 runtime，scheduler tick、record clock event、Operation event 和
-status 均使用同一 `tick_time_ms` 毫秒字段与 `time_source`/`clock_source` 解释时间来源。
+`published_at_ms` 进入 runtime，用于 boundary/channel 样本发布时间与录制元数据。只有
+temporary island overlay 产物会把该字段作为 `simulated_replay` 的 `tick_time_ms`；
+普通 realtime island 产物仍使用 runtime 观测到的 elapsed scheduling time 驱动
+scheduler。
 
 ## `params`
 
@@ -1385,7 +1387,7 @@ bytes 和 message type，由 self-description 解释字段 layout，不携带 RO
 
 scheduler/time event 使用与 `flowrt status` 相同的 runtime scheduling time 字段：
 `scheduled_time_ms`、`observed_time_ms`、`lateness_ms`、`missed_periods` 和 `overrun`。
-realtime 录制反映 runtime 实际观测到的时间；replay / temporary island 录制反映
+realtime 录制反映 runtime 实际观测到的时间；temporary island overlay replay 录制反映
 simulated clock，不受 `--speed` 或 `--as-fast-as-possible` 的 wall-clock 播放节奏影响。
 
 runtime 会在显式录制路径记录 `diagnostics_event`，payload 为同一结构化 diagnostic

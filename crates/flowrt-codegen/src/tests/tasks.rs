@@ -1280,6 +1280,11 @@ worker_threads = 2
 
     assert!(rust_shell.contains("let mut scheduler = flowrt::DeterministicExecutor::new(2);"));
     assert!(rust_shell.contains("let scheduler_base_period_ms: u64 = 5;"));
+    assert!(rust_shell.contains("let scheduler_started_at = std::time::Instant::now();"));
+    assert!(rust_shell.contains("let scheduler_runtime_now_ms = || -> u64 {"));
+    assert!(
+        rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(scheduler_runtime_now_ms());")
+    );
     assert!(rust_shell.contains("let tick_time_ms = scheduler_now_ms;"));
     assert!(rust_shell.contains("scheduler.add_periodic(flowrt::PeriodicSpec"));
     assert!(rust_shell.contains("let mut bind_0_seen_revision_for_sink_main: u64 = 0;"));
@@ -1305,10 +1310,8 @@ worker_threads = 2
     assert!(rust_shell.contains("scheduler_events.notify_data();"));
     assert!(rust_shell.contains("let clock_source = \"realtime\";"));
     assert!(rust_shell.contains("introspection_state.record_tick_at(tick_time_ms, clock_source);"));
-    assert!(
-        rust_shell.contains("if let Some(data_time_ms) = scheduler_events.take_data_time_ms()")
-    );
-    assert!(rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(data_time_ms);"));
+    assert!(rust_shell.contains("let _ = scheduler_events.take_data_time_ms();"));
+    assert!(!rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(data_time_ms);"));
     assert!(rust_shell.contains(
         "scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown)"
     ));
@@ -1497,6 +1500,16 @@ worker_threads = 2
 
     assert!(cpp_shell.contains("flowrt::DeterministicExecutor scheduler{2};"));
     assert!(cpp_shell.contains("const auto scheduler_base_period_ms = std::uint64_t{5};"));
+    assert!(
+        cpp_shell.contains("const auto scheduler_started_at = std::chrono::steady_clock::now();")
+    );
+    assert!(cpp_shell.contains(
+        "const auto scheduler_runtime_now_ms = [&scheduler_started_at]() -> std::uint64_t {"
+    ));
+    assert!(
+        cpp_shell
+            .contains("scheduler_now_ms = std::max(scheduler_now_ms, scheduler_runtime_now_ms());")
+    );
     assert!(cpp_shell.contains("const auto tick_time_ms = scheduler_now_ms;"));
     assert!(cpp_shell.contains("scheduler.add_periodic(flowrt::PeriodicSpec"));
     assert!(cpp_shell.contains("std::uint64_t bind_0_seen_revision_for_sink_main = 0;"));
@@ -1531,10 +1544,8 @@ worker_threads = 2
     assert!(cpp_shell.contains("scheduler_events.notify_data();"));
     assert!(cpp_shell.contains("const auto clock_source = std::string_view{\"realtime\"};"));
     assert!(cpp_shell.contains("introspection_state.record_tick(tick_time_ms, clock_source);"));
-    assert!(
-        cpp_shell.contains("if (const auto data_time_ms = scheduler_events.take_data_time_ms())")
-    );
-    assert!(cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
+    assert!(cpp_shell.contains("(void)scheduler_events.take_data_time_ms();"));
+    assert!(!cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
     assert!(cpp_shell.contains(
         "scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, shutdown)"
     ));

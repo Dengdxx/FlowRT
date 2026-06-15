@@ -209,12 +209,17 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(
         "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n",
     );
+    output.push_str(&rust_scheduler_clock_init(contract));
     output.push_str(&format!("        let clock_source = {clock_source:?};\n"));
     output.push_str(&format!(
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
     ));
     output.push_str(
-        "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n            if let Some(data_time_ms) = scheduler_events.take_data_time_ms() {\n                scheduler_now_ms = scheduler_now_ms.max(data_time_ms);\n            }\n            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
+        "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n",
+    );
+    output.push_str(&rust_scheduler_data_time_update(contract, "            "));
+    output.push_str(
+        "            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
     );
     output.push_str(&task_health_init);
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
@@ -303,14 +308,13 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         emit_rust_task_admission_health_update(&scheduler_plan.dataflow_tasks);
     output.push_str(&format!(
         "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}                    if task_result.status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() && pending_task_order.is_empty() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{
-                        if let Some(data_time_ms) = scheduler_events.take_data_time_ms() {{
-                            scheduler_now_ms = scheduler_now_ms.max(data_time_ms);
-                        }}
+{data_event_update}
                     }}\n                }}\n            }}\n        }}\n",
         next_deadline_expr = rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
         fairness_check = emit_rust_fairness_check(&lane_ids),
         task_admission_health_update = task_admission_health_update,
         task_result_health_update = emit_rust_task_result_health_update(&scheduler_plan.dataflow_tasks),
+        data_event_update = rust_scheduler_data_time_update(contract, "                        "),
     ));
     output
 }
@@ -652,6 +656,31 @@ fn scheduler_clock_source(contract: &ContractIr) -> &'static str {
         "simulated_replay"
     } else {
         "realtime"
+    }
+}
+
+fn rust_scheduler_uses_data_time(contract: &ContractIr) -> bool {
+    contract.artifact.temporary_overlay.is_some()
+}
+
+fn rust_scheduler_clock_init(contract: &ContractIr) -> String {
+    if rust_scheduler_uses_data_time(contract) {
+        String::new()
+    } else {
+        "        let scheduler_started_at = std::time::Instant::now();\n        let scheduler_runtime_now_ms = || -> u64 {\n            scheduler_started_at\n                .elapsed()\n                .as_millis()\n                .min(u128::from(u64::MAX)) as u64\n        };\n"
+            .to_string()
+    }
+}
+
+fn rust_scheduler_data_time_update(contract: &ContractIr, indent: &str) -> String {
+    if rust_scheduler_uses_data_time(contract) {
+        format!(
+            "{indent}if let Some(data_time_ms) = scheduler_events.take_data_time_ms() {{\n{indent}    scheduler_now_ms = scheduler_now_ms.max(data_time_ms);\n{indent}}}\n"
+        )
+    } else {
+        format!(
+            "{indent}scheduler_now_ms = scheduler_now_ms.max(scheduler_runtime_now_ms());\n{indent}let _ = scheduler_events.take_data_time_ms();\n"
+        )
     }
 }
 
