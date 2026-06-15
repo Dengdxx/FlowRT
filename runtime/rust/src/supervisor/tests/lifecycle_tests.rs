@@ -168,7 +168,7 @@ fn restart_waits_when_dependency_exits_in_same_monitor_iteration() {
     children[1].readiness = ReadinessGate::RuntimeReady;
     children[1].dependencies = vec!["driver".to_string()];
     children[1].next_restart_unix_ms = Some(unix_time_ms());
-    std::thread::sleep(Duration::from_millis(20));
+    wait_for_child_exit(&mut children[0].child);
     let supervisor_state = IntrospectionState::new();
     let shutdown = ShutdownToken::new_for_test();
     let shutdown_clone = shutdown.clone();

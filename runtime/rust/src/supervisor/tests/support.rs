@@ -255,3 +255,19 @@ pub(super) fn assert_process_exits(pid: u32) {
     }
     panic!("process {pid} should have exited");
 }
+
+#[cfg(unix)]
+pub(super) fn wait_for_child_exit(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if child
+            .try_wait()
+            .expect("test child status should be readable")
+            .is_some()
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("test child should have exited");
+}
