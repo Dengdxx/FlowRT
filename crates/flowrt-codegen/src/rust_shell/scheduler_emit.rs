@@ -210,6 +210,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n",
     );
     output.push_str(&rust_scheduler_clock_init(contract));
+    output.push_str(&rust_scheduler_replay_driver_init(contract, boundaries));
     output.push_str(&format!("        let clock_source = {clock_source:?};\n"));
     output.push_str(&format!(
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
@@ -307,14 +308,13 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let task_admission_health_update =
         emit_rust_task_admission_health_update(&scheduler_plan.dataflow_tasks);
     output.push_str(&format!(
-        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}                    if task_result.status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n                if run_ticks.is_some() && pending_task_order.is_empty() {{\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }}\n{wake_block}            }}\n        }}\n",
+        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}                    if task_result.status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
         fairness_check = emit_rust_fairness_check(&lane_ids),
         task_admission_health_update = task_admission_health_update,
         task_result_health_update = emit_rust_task_result_health_update(&scheduler_plan.dataflow_tasks),
-        wake_block = rust_scheduler_wake_block(
+        advance_block = rust_scheduler_advance_block(
             contract,
             &rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
-            &rust_scheduler_data_time_update(contract, "                        "),
         ),
     ));
     output
@@ -671,9 +671,8 @@ fn rust_scheduler_clock_init(contract: &ContractIr) -> String {
 
 fn rust_scheduler_data_time_update(contract: &ContractIr, indent: &str) -> String {
     if rust_scheduler_uses_data_time(contract) {
-        format!(
-            "{indent}if let Some(data_time_ms) = scheduler_events.take_data_time_ms() {{\n{indent}    scheduler_now_ms = scheduler_now_ms.max(data_time_ms);\n{indent}}}\n"
-        )
+        // replay 由 advance block 的 time driver 推进 scheduler_now_ms，loop 顶部不再读 data_time。
+        String::new()
     } else {
         format!(
             "{indent}scheduler_now_ms = scheduler_now_ms.max(scheduler_runtime_now_ms());\n{indent}let _ = scheduler_events.take_data_time_ms();\n"
@@ -709,6 +708,89 @@ fn rust_scheduler_wake_block(
         format!(
             "                let next_periodic_deadline_ms = {next_deadline_expr};\n                let next_wake_deadline = next_periodic_deadline_ms.map(|deadline_ms| {{\n                    std::time::Instant::now()\n                        + std::time::Duration::from_millis(deadline_ms.saturating_sub(scheduler_now_ms))\n                }});\n                match scheduler_events.wait_until_after(observed_data_generation, next_wake_deadline, &shutdown) {{\n                    flowrt::ScheduleEvent::Shutdown => break,\n                    flowrt::ScheduleEvent::Timer => {{\n                        scheduler_now_ms = next_periodic_deadline_ms\n                            .unwrap_or_else(|| scheduler_now_ms.saturating_add(scheduler_base_period_ms));\n                    }}\n                    flowrt::ScheduleEvent::Data => {{\n{data_event_update}                    }}\n                }}\n"
         )
+    }
+}
+
+/// 为 replay 时钟源生成运行时原生回放驱动初始化。
+///
+/// 读取 `FLOWRT_REPLAY_SOURCE` 指向的 MCAP，只装配目标在本图 input boundary 名集合内的外部
+/// 激励事件。缺少环境变量或加载失败时 `eprintln` 并把 `status` 置 `Error`（不 panic），while
+/// 循环因此不进入，run 返回 `Error`。realtime 时钟源不生成本块。
+fn rust_scheduler_replay_driver_init(
+    contract: &ContractIr,
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
+    if !rust_scheduler_uses_data_time(contract) {
+        return String::new();
+    }
+    let names = boundaries
+        .iter()
+        .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
+        .map(|boundary| format!("{:?}", boundary.endpoint_name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let template = r#"        let replay_boundary_inputs: std::collections::BTreeSet<String> = [__NAMES__].into_iter().map(::std::string::String::from).collect();
+        let mut replay_time_driver = match std::env::var("FLOWRT_REPLAY_SOURCE") {
+            Ok(replay_source) if !replay_source.is_empty() => {
+                match flowrt::replay_driver_from_mcap(std::path::Path::new(&replay_source), &replay_boundary_inputs) {
+                    Ok(replay_driver) => Some(replay_driver),
+                    Err(error) => {
+                        eprintln!("FlowRT: 无法加载 FLOWRT_REPLAY_SOURCE `{replay_source}`: {error}");
+                        status = flowrt::Status::Error;
+                        None
+                    }
+                }
+            }
+            _ => {
+                eprintln!("FlowRT: simulated_replay 运行时需要设置 FLOWRT_REPLAY_SOURCE");
+                status = flowrt::Status::Error;
+                None
+            }
+        };
+"#;
+    template.replace("__NAMES__", &names)
+}
+
+/// 生成 scheduler 每个 tick 之后推进逻辑时钟的块。
+///
+/// realtime：保持既有行为——run_ticks 有界且无 pending 时按 base period 推进并 continue，否则
+/// 按 wall-clock deadline 等待下一个 periodic deadline 或数据事件。replay：由 runtime 原生
+/// [`flowrt::TimeDriver`] 在「下一个事件时间」与「下一个 periodic 网格点」间逐步推进逻辑
+/// 时钟，命中事件时把暂存的边界激励经 `publish_boundary_input` 注入，时间线耗尽即结束。
+fn rust_scheduler_advance_block(contract: &ContractIr, next_deadline_expr: &str) -> String {
+    if rust_scheduler_uses_data_time(contract) {
+        let template = r#"                let Some(replay_driver) = replay_time_driver.as_mut() else {
+                    break;
+                };
+                let next_periodic_deadline_ms = __NEXT_DEADLINE__;
+                match replay_driver.next_step(next_periodic_deadline_ms, &shutdown) {
+                    flowrt::Step::Shutdown => break,
+                    flowrt::Step::Timer => {
+                        scheduler_now_ms = replay_driver.now_ms();
+                    }
+                    flowrt::Step::Data => {
+                        scheduler_now_ms = replay_driver.now_ms();
+                        for replay_event in replay_driver.take_pending_events() {
+                            let _ = introspection_state.publish_boundary_input(
+                                &replay_event.target,
+                                replay_event.payload,
+                                Some(replay_event.time_ms),
+                            );
+                        }
+                    }
+                }
+"#;
+        template.replace("__NEXT_DEADLINE__", next_deadline_expr)
+    } else {
+        let mut block = String::from(
+            "                if run_ticks.is_some() && pending_task_order.is_empty() {\n                    scheduler_now_ms = scheduler_now_ms.saturating_add(scheduler_base_period_ms);\n                    continue;\n                }\n",
+        );
+        block.push_str(&rust_scheduler_wake_block(
+            contract,
+            next_deadline_expr,
+            &rust_scheduler_data_time_update(contract, "                        "),
+        ));
+        block
     }
 }
 

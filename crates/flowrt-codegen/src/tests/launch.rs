@@ -1029,18 +1029,19 @@ backend = "inproc"
     assert_eq!(selfdesc["artifact"]["clock"]["field"], "tick_time_ms");
     assert!(rust_shell.contains("let clock_source = \"simulated_replay\";"));
     assert!(!rust_shell.contains("let scheduler_started_at = std::time::Instant::now();"));
-    assert!(
-        rust_shell.contains("if let Some(data_time_ms) = scheduler_events.take_data_time_ms()")
-    );
-    assert!(rust_shell.contains("scheduler_now_ms = scheduler_now_ms.max(data_time_ms);"));
-    // T3：simulated_replay 调度逻辑时钟由注入事件驱动，唤醒只等下一个数据事件或关停，
-    // 不计算 wall-clock deadline、不被节拍绑死，回放结果只取决于事件序列。
-    assert!(
-        rust_shell.contains(
-            "scheduler_events.wait_until_after(observed_data_generation, None, &shutdown)"
-        )
-    );
+    // v0.17.0：simulated_replay 调度由 runtime 原生回放驱动推进，不再读外部注入的 data_time，
+    // 也不计算 wall-clock deadline；逐周期步进与事件注入都由 ReplayDriver 在进程内完成。
+    assert!(!rust_shell.contains("scheduler_events.take_data_time_ms()"));
+    assert!(!rust_shell.contains("scheduler_events.wait_until_after("));
     assert!(!rust_shell.contains("let next_wake_deadline ="));
+    // runtime 从 FLOWRT_REPLAY_SOURCE 装配回放时间线，只重放本图 boundary 激励。
+    assert!(rust_shell.contains("std::env::var(\"FLOWRT_REPLAY_SOURCE\")"));
+    assert!(rust_shell.contains("flowrt::replay_driver_from_mcap("));
+    assert!(rust_shell.contains("[\"sample_in\"]"));
+    // 逐步推进逻辑时钟，命中事件时把边界激励经 publish_boundary_input 注入回 boundary input。
+    assert!(rust_shell.contains("replay_driver.next_step(next_periodic_deadline_ms, &shutdown)"));
+    assert!(rust_shell.contains("for replay_event in replay_driver.take_pending_events()"));
+    assert!(rust_shell.contains("introspection_state.publish_boundary_input("));
 }
 
 #[test]
