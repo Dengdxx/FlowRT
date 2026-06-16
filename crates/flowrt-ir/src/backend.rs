@@ -119,6 +119,7 @@ enum Capability {
     TriggerOnMessage,
     TriggerStartup,
     TriggerShutdown,
+    TriggerOnSynchronized,
     TimingDeadlineAware,
     ChannelLatest,
     ChannelFifo,
@@ -158,6 +159,7 @@ impl Capability {
             Capability::TriggerOnMessage => "trigger:on_message",
             Capability::TriggerStartup => "trigger:startup",
             Capability::TriggerShutdown => "trigger:shutdown",
+            Capability::TriggerOnSynchronized => "trigger:on_synchronized",
             Capability::TimingDeadlineAware => "timing:deadline_aware",
             Capability::ChannelLatest => "channel:latest",
             Capability::ChannelFifo => "channel:fifo",
@@ -280,7 +282,7 @@ const BASE_DEPLOYMENT_CAPABILITIES: [Capability; 4] = [
     Capability::GraphStaticGraph,
 ];
 
-const COMMON_BACKEND_CAPABILITIES: [Capability; 16] = [
+const COMMON_BACKEND_CAPABILITIES: [Capability; 17] = [
     Capability::AbiFixedSizePlainData,
     Capability::LayoutNativeLayout,
     Capability::AllocationBounded,
@@ -289,6 +291,7 @@ const COMMON_BACKEND_CAPABILITIES: [Capability; 16] = [
     Capability::TriggerOnMessage,
     Capability::TriggerStartup,
     Capability::TriggerShutdown,
+    Capability::TriggerOnSynchronized,
     Capability::TimingDeadlineAware,
     Capability::ChannelLatest,
     Capability::ChannelFifo,
@@ -452,6 +455,7 @@ fn trigger_capability_kind(trigger: TriggerKind) -> Capability {
         TriggerKind::OnMessage => Capability::TriggerOnMessage,
         TriggerKind::Startup => Capability::TriggerStartup,
         TriggerKind::Shutdown => Capability::TriggerShutdown,
+        TriggerKind::OnSynchronized => Capability::TriggerOnSynchronized,
     }
 }
 
@@ -822,6 +826,7 @@ mod tests {
                 Capability::TriggerOnMessage.atom(),
                 Capability::TriggerStartup.atom(),
                 Capability::TriggerShutdown.atom(),
+                Capability::TriggerOnSynchronized.atom(),
                 Capability::TimingDeadlineAware.atom(),
                 Capability::ChannelLatest.atom(),
                 Capability::ChannelFifo.atom(),
@@ -865,6 +870,7 @@ mod tests {
                 Capability::TriggerOnMessage.atom(),
                 Capability::TriggerStartup.atom(),
                 Capability::TriggerShutdown.atom(),
+                Capability::TriggerOnSynchronized.atom(),
                 Capability::TimingDeadlineAware.atom(),
                 Capability::ChannelLatest.atom(),
                 Capability::ChannelFifo.atom(),
@@ -997,6 +1003,7 @@ mod tests {
                     priority: None,
                     inputs: vec![],
                     outputs: vec![],
+                    sync_group: None,
                 },
                 crate::TaskIr {
                     id: crate::EntityId("task_0000000000000002".to_string()),
@@ -1012,6 +1019,7 @@ mod tests {
                     priority: None,
                     inputs: vec![],
                     outputs: vec![],
+                    sync_group: None,
                 },
             ],
             binds: vec![
@@ -1052,6 +1060,7 @@ mod tests {
             operations: vec![],
             boundary_endpoints: vec![],
             ros2_bridges: vec![],
+            sync_groups: vec![],
         };
         let types = [test_type(
             "WideIntegers",

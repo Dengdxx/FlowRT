@@ -492,6 +492,7 @@ pub(super) fn parse_trigger(context: &str, value: &str) -> Result<crate::Trigger
         "on_message" => Ok(crate::TriggerKind::OnMessage),
         "startup" => Ok(crate::TriggerKind::Startup),
         "shutdown" => Ok(crate::TriggerKind::Shutdown),
+        "on_synchronized" => Ok(crate::TriggerKind::OnSynchronized),
         _ => Err(invalid_enum(context, "trigger", value)),
     }
 }

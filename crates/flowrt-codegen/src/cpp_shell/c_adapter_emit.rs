@@ -503,6 +503,7 @@ pub(super) fn c_task_callback_field(task: &flowrt_ir::TaskIr) -> &'static str {
         flowrt_ir::TriggerKind::OnMessage => "run_on_message",
         flowrt_ir::TriggerKind::Startup => "run_startup",
         flowrt_ir::TriggerKind::Shutdown => "run_shutdown",
+        flowrt_ir::TriggerKind::OnSynchronized => "run_on_synchronized",
     }
 }
 

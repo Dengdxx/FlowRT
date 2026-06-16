@@ -164,5 +164,6 @@ fn normalize_default_graph(
         operations: operation_edges,
         boundary_endpoints,
         ros2_bridges,
+        sync_groups: Vec::new(),
     })
 }

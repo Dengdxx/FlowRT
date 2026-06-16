@@ -516,6 +516,8 @@ pub struct GraphIr {
     #[serde(default)]
     pub boundary_endpoints: Vec<BoundaryEndpointIr>,
     pub ros2_bridges: Vec<Ros2BridgeIr>,
+    #[serde(default)]
+    pub sync_groups: Vec<SyncGroupIr>,
 }
 
 /// graph 级抽象 resource provider。
@@ -847,6 +849,29 @@ pub struct TaskIr {
     pub priority: Option<u32>,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_group: Option<EntityRef>,
+}
+
+/// 多传感器同步组：按 event-time（0.18.0 sample-time）把 N 路输入对齐成同步集，供
+/// `on_synchronized` task 消费。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncGroupIr {
+    pub id: EntityId,
+    pub name: String,
+    pub instance: EntityRef,
+    pub inputs: Vec<String>,
+    pub tolerance_ms: u64,
+    #[serde(default)]
+    pub late_policy: SyncLatePolicy,
+}
+
+/// 同步组迟到样本策略。v1 仅 `DropLate`（丢弃早于已发窗口的样本）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncLatePolicy {
+    #[default]
+    DropLate,
 }
 
 /// 两个端口之间的 typed channel edge。
@@ -1077,6 +1102,7 @@ pub enum TriggerKind {
     OnMessage,
     Startup,
     Shutdown,
+    OnSynchronized,
 }
 
 /// on_message task 的 readiness 聚合语义。

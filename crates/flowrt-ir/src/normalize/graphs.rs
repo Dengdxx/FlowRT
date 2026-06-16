@@ -131,6 +131,7 @@ pub(super) fn normalize_instances(
                 priority: raw_task.priority,
                 inputs: raw_task.input.clone(),
                 outputs: raw_task.output.clone(),
+                sync_group: None,
             });
         }
 

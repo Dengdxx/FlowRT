@@ -1768,6 +1768,7 @@ fn c_task_callback_field(trigger: TriggerKind) -> &'static str {
         TriggerKind::OnMessage => "run_on_message",
         TriggerKind::Startup => "run_startup",
         TriggerKind::Shutdown => "run_shutdown",
+        TriggerKind::OnSynchronized => "run_on_synchronized",
     }
 }
 
@@ -1858,6 +1859,7 @@ fn trigger_name(trigger: TriggerKind) -> &'static str {
         TriggerKind::OnMessage => "on_message",
         TriggerKind::Startup => "startup",
         TriggerKind::Shutdown => "shutdown",
+        TriggerKind::OnSynchronized => "on_synchronized",
     }
 }
 

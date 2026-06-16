@@ -986,6 +986,7 @@ fn trigger_name(trigger: TriggerKind) -> &'static str {
         TriggerKind::OnMessage => "on_message",
         TriggerKind::Startup => "startup",
         TriggerKind::Shutdown => "shutdown",
+        TriggerKind::OnSynchronized => "on_synchronized",
     }
 }
 
