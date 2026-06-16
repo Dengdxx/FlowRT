@@ -5,7 +5,16 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.18.0`；当前发布线为 `v0.18.0 Sensor Event-Time`，在确定性回放内核之上引入
+当前 workspace 版本为 `0.18.1`；当前发布线为 `v0.18.1 Codegen 验证加固`，是一次纯内部质量/验证
+版本（零用户语义变更）：
+
+- codegen golden 等价 harness 锁定整份生成输出，配合生成工程真编译网（C++ `g++ -fsyntax-only`、
+  Rust `cargo check`）纳入开发回路与 CI，堵 v0.17.0/v0.18.0 连续两版漏发的 codegen 编译错类缺口；
+- overflow/stale/trigger 的 enum→string 映射去重收敛到 `runtime_plan` 共享函数（golden 证零行为变更）；
+- `[workspace.lints.clippy]` 现代化 forward-guard（uninlined_format_args 等，清理约 40 处）。C++
+  clang-tidy 门禁因本地无工具验证暂缓后续。
+
+上一发布线为 `v0.18.0 Sensor Event-Time`，在确定性回放内核之上引入
 sensor 采集时刻（event-time）作为回放时间轴。RSDL 消息可用 `[type.<Name>.timestamp]` 子表声明承载
 sample 时间戳的字段及时钟语义（`field` + `unit` ns/us/ms + `epoch` monotonic/unix + `clock_domain`），
 归一化进 Contract IR（`TypeIr.timestamp`），validator 校验该字段为本消息的 unsigned 整数标量并拒绝未知
@@ -466,6 +475,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.17.0` | Deterministic Replay (Runtime-Native)：runtime 自己拥有回放事件时间线并逐周期确定性步进，闭合 record→replay，回放结果与物理快慢无关；Rust 侧内核，C++ parity 在 `v0.17.1`。 |
 | `v0.17.1` | Deterministic Replay C++ Parity：把 v0.17.0 的运行时原生回放内核镜像到 C++（`flowrt/replay.hpp` ReplayDriver、boundary 激励录制、生成 C++ shell 走原生回放），与 Rust 字节级对齐；C++ 经 JSONL 回放源消费（CLI 把 MCAP 规范化为 JSONL）。 |
 | `v0.18.0` | Sensor Event-Time：RSDL 声明 sensor sample-time 源（`[type.<Name>.timestamp]`），record→replay 按 sensor 采集时刻（event-time）确定性步进而非到达时刻；生成 Rust/C++ shell 对此类 boundary 注册 typed sample-time 提取器，两语言一致。 |
+| `v0.18.1` | Codegen 验证加固（纯内部质量版本，零用户语义变更）：codegen golden 等价 harness 锁定整份生成输出 + 生成工程真编译网（C++ `g++ -fsyntax-only`、Rust `cargo check`）纳入开发回路与 CI，堵 v0.17/v0.18 连续两版漏发的 codegen 编译错类缺口；overflow/stale/trigger 映射去重至 `runtime_plan`；`[workspace.lints.clippy]` 现代化 forward-guard。C++ clang-tidy 门禁暂缓。 |
 | `v0.19.0` | Multi-Sensor Synchronization：`[[sync]]` 同步组（exact/approx、window/tolerance、late policy）→ codegen synchronizer 与 `on_synchronized` 触发；event-time 作可驱动 clock domain。external_stepped 点亮与跨机 drift capability 各自另立后续版本。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 

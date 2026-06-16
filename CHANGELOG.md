@@ -4,6 +4,36 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.18.1 - 2026-06-16
+
+纯内部质量/验证版本，零用户语义变更（RSDL / Contract IR / runtime 行为不变）。
+
+### 新增
+
+- codegen golden 等价 harness（`crates/flowrt-codegen/tests/golden/`）：每个 corpus case 跑
+  `emit_artifacts` 后逐 artifact 与基线比字节，`FLOWRT_UPDATE_GOLDEN=1` 重生。锁定整份生成输出作
+  codegen 改动的回归 oracle（字符串断言只查片段，golden 锁全文）。6 个 case 覆盖两语言 shell、
+  on_message/periodic、latest/fifo + overflow/stale、service、sample-time boundary。
+- 生成工程真编译网 `scripts/test-codegen-compile.sh`（接入 CI 与 release-gate registry）：对 corpus
+  子集真编译生成 shell——C++ 经 `g++ -fsyntax-only`、Rust 经 `cargo check`（每 case 独立
+  `CARGO_TARGET_DIR`，避免仓库共享 target 命中旧 fingerprint 造成假绿）。把「生成代码真编译」纳入
+  开发回路与 CI，堵 v0.17.0/v0.18.0 连续两版漏发的 codegen 编译错类缺口；取代按版本散落的
+  per-version smoke，作分支完整、单一、可扩展的编译门禁。
+- 现代化 lint 门禁 `[workspace.lints.clippy]`（uninlined_format_args、manual_string_new、
+  explicit_iter_loop、redundant_else）：forward-guard，防未来写法退化。
+
+### 变更
+
+- codegen 去重：overflow/stale policy 路径与 trigger 诊断名的 enum→string 映射收敛到 `runtime_plan`
+  共享函数，删除 rust/cpp shell 两侧 6 处孪生（输出字符串两语言本就一致）。golden 逐字节一致证明
+  零行为变更。
+- 清理约 40 处 `uninlined_format_args`（`format!("{}", x)` → `format!("{x}")`），纯机械内联。
+
+### 测试
+
+- golden harness 自证能捕获生成输出漂移；编译网自证能捕获注入的 codegen 编译错（emitter trait 名
+  改为不存在符号即转 RED）。
+
 ## v0.18.0 - 2026-06-16
 
 ### 新增
