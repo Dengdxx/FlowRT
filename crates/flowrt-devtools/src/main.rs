@@ -86,10 +86,7 @@ fn find_repo_root() -> Result<PathBuf> {
             return Ok(dir);
         }
         if !dir.pop() {
-            bail!(
-                "无法找到 {}；请在 FlowRT 仓库内运行 flowrt-devtools",
-                REGISTRY_RELATIVE_PATH
-            );
+            bail!("无法找到 {REGISTRY_RELATIVE_PATH}；请在 FlowRT 仓库内运行 flowrt-devtools");
         }
     }
 }

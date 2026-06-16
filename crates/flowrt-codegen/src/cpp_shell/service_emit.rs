@@ -109,7 +109,7 @@ pub(super) fn cpp_service_handler_methods(
 
         output.push_str(&format!(
             "    /**\n\
-             * @brief 处理 `{port}` service request。\n\
+             * @brief 处理 `{port_name}` service request。\n\
              *\n\
              * runtime shell 在 hidden service task 中调用该方法。用户业务逻辑\n\
              * 实现具体的 request -> response 转换。\n\
@@ -118,7 +118,6 @@ pub(super) fn cpp_service_handler_methods(
              * @return 成功返回 `ServiceResult::ok(response)`，业务错误返回\n\
              *         `ServiceResult::err(error_code, message)`。\n\
              */\n",
-            port = port_name,
         ));
         output.push_str(&format!(
             "    virtual flowrt::ServiceResult<{resp_ty}> {method_name}(const {req_ty}& request) {{\n\

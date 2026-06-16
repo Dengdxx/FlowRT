@@ -2156,7 +2156,7 @@ pub(crate) fn remote_params_list(
     )?;
     let response = flowrt::request_remote_param_list(&session, &runtime.key_expr, timeout_ms)
         .map_err(|error| {
-            anyhow::anyhow!("failed to list remote params from `{}`: {error}", runtime)
+            anyhow::anyhow!("failed to list remote params from `{runtime}`: {error}")
         })?;
     let params = match response {
         flowrt::IntrospectionResponse::ParamList { handshake, params } => {

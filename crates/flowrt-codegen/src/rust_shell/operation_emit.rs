@@ -45,11 +45,10 @@ pub(crate) fn rust_operation_handler_methods(
         let result_ty = rust_type(&plan.result_type);
         let port_name = &plan.server_port;
         output.push_str(&format!(
-            "    /// 处理 `{port}` Operation goal。\n\
+            "    /// 处理 `{port_name}` Operation goal。\n\
              ///\n\
              /// runtime shell 在 hidden operation task 中调用该方法。用户业务逻辑\n\
              /// 负责长任务执行，在安全边界检查 cancel token，并通过 progress 发布 typed feedback。\n",
-            port = port_name,
         ));
         output.push_str(&format!(
             "    fn {method_name}(\n\

@@ -23,8 +23,7 @@ pub(super) fn emit_cmake(contract: &ContractIr) -> String {
     let has_ros2_bridge = contract_has_ros2_bridge(contract);
     let has_cpp_runtime = has_cpp_shell_components || has_ros2_bridge;
     let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.22)\nproject({}_flowrt_app LANGUAGES C CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({}_flowrt_app INTERFACE)\ntarget_compile_features({}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n",
-        package_name, package_name, package_name, package_name
+        "# FlowRT 管理产物。不要手工修改。\ncmake_minimum_required(VERSION 3.22)\nproject({package_name}_flowrt_app LANGUAGES C CXX)\n\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_library({package_name}_flowrt_app INTERFACE)\ntarget_compile_features({package_name}_flowrt_app INTERFACE cxx_std_20)\ntarget_include_directories({package_name}_flowrt_app INTERFACE ${{CMAKE_CURRENT_LIST_DIR}}/../cpp/include)\n"
     );
 
     if has_cpp_runtime {
@@ -204,8 +203,7 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
         || contract_has_ros2_bridge(contract)
         || contract_has_external_process(contract);
     let mut output = format!(
-        "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[dependencies]\n",
-        package_name
+        "# FlowRT 管理产物。不要手工修改。\n[package]\nname = \"{package_name}-flowrt-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n[lib]\nname = \"flowrt_app\"\npath = \"../rust/src/lib.rs\"\n\n[dependencies]\n"
     );
     let mut bins = String::new();
 
@@ -223,8 +221,7 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
         }
         output.push('\n');
         bins.push_str(&format!(
-            "\n[[bin]]\nname = \"{}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n",
-            package_name
+            "\n[[bin]]\nname = \"{package_name}-flowrt-app\"\npath = \"../rust/src/main.rs\"\n"
         ));
     } else if has_supervisor {
         output.push_str(&flowrt_dependency(None));
@@ -235,8 +232,7 @@ pub(super) fn emit_cargo_manifest(contract: &ContractIr) -> String {
         output
             .push_str("serde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\n");
         bins.push_str(&format!(
-            "\n[[bin]]\nname = \"{}-flowrt-supervisor\"\npath = \"../rust/src/supervisor_main.rs\"\n",
-            package_name
+            "\n[[bin]]\nname = \"{package_name}-flowrt-supervisor\"\npath = \"../rust/src/supervisor_main.rs\"\n"
         ));
     }
     output.push_str(&bins);

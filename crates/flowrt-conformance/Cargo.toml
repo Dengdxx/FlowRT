@@ -11,3 +11,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 flowrt-rsdl = { path = "../flowrt-rsdl" }
+
+[lints]
+workspace = true

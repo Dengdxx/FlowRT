@@ -57,14 +57,13 @@ pub(crate) fn rust_service_handler_methods(
         let port_name = &plan.server_port;
 
         output.push_str(&format!(
-            "    /// 处理 `{port}` service request。\n\
+            "    /// 处理 `{port_name}` service request。\n\
              ///\n\
              /// runtime shell 在 hidden service task 中调用该方法。用户业务逻辑\n\
              /// 实现具体的 request -> response 转换。\n\
              ///\n\
              /// 返回 `flowrt::ServiceResult::Ok(response)` 表示成功，\n\
              /// `flowrt::ServiceResult::Err(error, message)` 表示业务错误。\n",
-            port = port_name,
         ));
         output.push_str(&format!(
             "    fn {method_name}(\n\
@@ -274,7 +273,7 @@ pub(crate) fn emit_rust_service_new(
         let _server_lane = service_server_lane(plan);
         let server_instance = &plan.server_instance;
         let method_name = service_handler_method_name(&plan.server_port);
-        let component_var = format!("{}_handler", server_instance);
+        let component_var = format!("{server_instance}_handler");
         let server_instance_ir = graph
             .instances
             .iter()

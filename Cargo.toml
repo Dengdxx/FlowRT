@@ -31,3 +31,11 @@ thiserror = "2"
 toml = { version = "0.8", features = ["preserve_order"] }
 object = { version = "0.39.1", default-features = false, features = ["read_core", "elf", "macho", "pe"] }
 mcap = { version = "0.24.0", default-features = false }
+
+# 现代化 lint 门禁（forward-guard）：当前代码已全部满足（0 backlog），故仅防未来写法退化，
+# 不产生改动。CI 的 clippy -D warnings 把这些 warn 升为硬错。
+[workspace.lints.clippy]
+uninlined_format_args = "warn"
+manual_string_new = "warn"
+explicit_iter_loop = "warn"
+redundant_else = "warn"

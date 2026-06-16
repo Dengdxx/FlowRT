@@ -347,11 +347,11 @@ fn rust_param_literal(param: &ParamIr, value: &ParamValue) -> String {
         (ParamType::F32, ParamValue::Float(value)) => {
             format!("{}f32", crate::float_literal(*value))
         }
-        (ParamType::F32, ParamValue::Integer(value)) => format!("{}f32", value),
+        (ParamType::F32, ParamValue::Integer(value)) => format!("{value}f32"),
         (ParamType::F64, ParamValue::Float(value)) => {
             format!("{}f64", crate::float_literal(*value))
         }
-        (ParamType::F64, ParamValue::Integer(value)) => format!("{}f64", value),
+        (ParamType::F64, ParamValue::Integer(value)) => format!("{value}f64"),
         (ParamType::String, ParamValue::String(value)) => {
             format!("{}.to_string()", crate::rust_string_literal(value))
         }

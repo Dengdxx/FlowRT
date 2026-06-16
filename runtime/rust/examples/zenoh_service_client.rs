@@ -78,7 +78,7 @@ fn main() {
 
     let client = ZenohServiceClient::<AddRequest, AddResponse>::open(&name, session.clone());
 
-    eprintln!("[rust-client] calling service '{}'...", name);
+    eprintln!("[rust-client] calling service '{name}'...");
 
     let result = client.call(AddRequest { a: 10, b: 20 }, 5000);
     match result {
@@ -88,7 +88,7 @@ fn main() {
             eprintln!("[rust-client] PASS");
         }
         ServiceResult::Err(code, msg) => {
-            eprintln!("[rust-client] FAIL: code={:?} msg={:?}", code, msg);
+            eprintln!("[rust-client] FAIL: code={code:?} msg={msg:?}");
             std::process::exit(1);
         }
     }

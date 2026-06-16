@@ -161,8 +161,8 @@ impl<T> std::fmt::Display for ServiceResult<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ok(_) => write!(f, "Ok"),
-            Self::Err(code, Some(msg)) => write!(f, "{}: {}", code, msg),
-            Self::Err(code, None) => write!(f, "{}", code),
+            Self::Err(code, Some(msg)) => write!(f, "{code}: {msg}"),
+            Self::Err(code, None) => write!(f, "{code}"),
         }
     }
 }

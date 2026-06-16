@@ -527,7 +527,7 @@ pub(crate) fn emit_rust_message_abi_tests(
             "    assert_eq!(std::mem::align_of::<{}>(), {});\n",
             ty, expectation.align_bytes
         ));
-        output.push_str(&format!("    assert_default_bytes_zero::<{}>();\n", ty));
+        output.push_str(&format!("    assert_default_bytes_zero::<{ty}>();\n"));
         for field in &expectation.fields {
             output.push_str(&format!(
                 "    assert_eq!(std::mem::offset_of!({}, {}), {});\n",
@@ -636,15 +636,13 @@ pub(crate) fn emit_cpp_message_abi_tests(
             snake_identifier(&expectation.type_name)
         ));
         output.push_str(&format!(
-            "    static_assert(std::is_standard_layout_v<{}>);\n",
-            ty
+            "    static_assert(std::is_standard_layout_v<{ty}>);\n"
         ));
         output.push_str(&format!(
-            "    static_assert(std::is_trivially_copyable_v<{}>);\n",
-            ty
+            "    static_assert(std::is_trivially_copyable_v<{ty}>);\n"
         ));
         if expectation.size_bytes == 0 && expectation.fields.is_empty() {
-            output.push_str(&format!("    static_assert({}::wire_size() == 0);\n", ty));
+            output.push_str(&format!("    static_assert({ty}::wire_size() == 0);\n"));
             output.push_str(&format!(
                 "    write_fixture(\"{}.bin\", {});\n",
                 snake_identifier(&expectation.type_name),
@@ -659,7 +657,7 @@ pub(crate) fn emit_cpp_message_abi_tests(
                 "    static_assert(alignof({}) == {});\n",
                 ty, expectation.align_bytes
             ));
-            output.push_str(&format!("    assert_default_bytes_zero<{}>();\n", ty));
+            output.push_str(&format!("    assert_default_bytes_zero<{ty}>();\n"));
             for field in &expectation.fields {
                 output.push_str(&format!(
                     "    static_assert(offsetof({}, {}) == {});\n",
@@ -1545,8 +1543,7 @@ fn rust_wire_decode_expr(expr: &TypeExpr, local: &str, input: &str, indent: usiz
         TypeExpr::Array { element, len } => {
             let element_ty = rust_type(element);
             let mut code = format!(
-                "{pad}let mut {local} = [{}::default(); {len}];\n{pad}for element in &mut {local} {{\n",
-                element_ty
+                "{pad}let mut {local} = [{element_ty}::default(); {len}];\n{pad}for element in &mut {local} {{\n"
             );
             code.push_str(&rust_wire_decode_expr(
                 element,

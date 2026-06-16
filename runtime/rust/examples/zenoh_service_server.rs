@@ -85,7 +85,7 @@ fn main() {
     )
     .expect("server should open");
 
-    eprintln!("[rust-server] listening on service '{}'", name);
+    eprintln!("[rust-server] listening on service '{name}'");
     eprintln!("[rust-server] waiting for requests... (Ctrl+C to quit)");
 
     loop {

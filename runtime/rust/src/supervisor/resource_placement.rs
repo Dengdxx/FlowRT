@@ -230,16 +230,15 @@ fn apply_rt_policy_linux(policy: RtPolicy, priority: u32, pid: Option<u32>) -> A
         if ret == 0 {
             ApplyResult {
                 success: true,
-                message: format!("已设置 RT policy={:?} priority={clamped_priority}", policy),
+                message: format!("已设置 RT policy={policy:?} priority={clamped_priority}"),
             }
         } else {
             let err = std::io::Error::last_os_error();
             ApplyResult {
                 success: false,
                 message: format!(
-                    "sched_setscheduler({:?}, {clamped_priority}) 失败: {err} \
-                     (通常需要 CAP_SYS_NICE 或 root 权限)",
-                    policy
+                    "sched_setscheduler({policy:?}, {clamped_priority}) 失败: {err} \
+                     (通常需要 CAP_SYS_NICE 或 root 权限)"
                 ),
             }
         }

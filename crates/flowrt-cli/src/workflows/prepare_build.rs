@@ -2198,7 +2198,7 @@ pub(crate) fn cargo_internal_names(contract: &ContractIr) -> Result<CargoInterna
     Ok(CargoInternalNames {
         app_internal: format!("{app_stable}-{suffix}"),
         supervisor_internal: format!("{supervisor_stable}-{suffix}"),
-        package_internal: format!("{}-{suffix}", app_stable),
+        package_internal: format!("{app_stable}-{suffix}"),
         app_stable,
         supervisor_stable,
     })

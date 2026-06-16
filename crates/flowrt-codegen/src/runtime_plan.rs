@@ -360,7 +360,7 @@ pub(crate) fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<Process
             let base = snake_identifier(&name);
             let mut suffix = base.clone();
             if !used_suffixes.insert(suffix.clone()) {
-                suffix = format!("{}_{}", base, index);
+                suffix = format!("{base}_{index}");
                 while !used_suffixes.insert(suffix.clone()) {
                     suffix.push('_');
                 }

@@ -27,3 +27,6 @@ toml.workspace = true
 zenoh = { version = "1.9", default-features = false, features = ["transport_tcp"] }
 
 [dev-dependencies]
+
+[lints]
+workspace = true

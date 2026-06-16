@@ -168,9 +168,7 @@ pub(super) fn emit_cpp_app_step(
             let lane_name = cpp_task_lane_name(task);
             let task_health = cpp_task_health_name(task);
             output.push_str(&format!(
-                "        health_map[\"{task_health}\"].name = \"{task_health}\";\n        health_map[\"{task_health}\"].lane = \"{lane}\";\n",
-                task_health = task_health,
-                lane = lane_name,
+                "        health_map[\"{task_health}\"].name = \"{task_health}\";\n        health_map[\"{task_health}\"].lane = \"{lane_name}\";\n",
             ));
 
             if let Some(guard) = &trigger_guard {
@@ -191,8 +189,7 @@ pub(super) fn emit_cpp_app_step(
             if task.deadline_ms.is_some() {
                 let task_local = cpp_task_local_name(task);
                 output.push_str(&format!(
-                    "{body_indent}const auto {instance}_deadline_started_at = std::chrono::steady_clock::now();\n",
-                    instance = task_local
+                    "{body_indent}const auto {task_local}_deadline_started_at = std::chrono::steady_clock::now();\n"
                 ));
             }
 
@@ -255,12 +252,10 @@ pub(super) fn emit_cpp_app_step(
                 let task_local = cpp_task_local_name(task);
                 let task_health = cpp_task_health_name(task);
                 output.push_str(&format!(
-                    "{body_indent}const bool {instance}_deadline_exceeded = (std::chrono::steady_clock::now() - {instance}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}});\n\
-                     {body_indent}if ({instance}_deadline_exceeded) {{\n\
+                    "{body_indent}const bool {task_local}_deadline_exceeded = (std::chrono::steady_clock::now() - {task_local}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}});\n\
+                     {body_indent}if ({task_local}_deadline_exceeded) {{\n\
                      {body_inner_indent}health_map[\"{task_health}\"].deadline_missed += 1;\n\
                      {body_indent}}}\n",
-                    instance = task_local,
-                    task_health = task_health,
                 ));
             }
 
@@ -269,8 +264,7 @@ pub(super) fn emit_cpp_app_step(
             if has_deadline {
                 let task_local = cpp_task_local_name(task);
                 output.push_str(&format!(
-                    "{body_indent}if (!{instance}_deadline_exceeded) {{\n",
-                    instance = task_local
+                    "{body_indent}if (!{task_local}_deadline_exceeded) {{\n"
                 ));
             }
             for port in &component.outputs {
@@ -304,8 +298,7 @@ pub(super) fn emit_cpp_app_step(
                 };
                 let mut commit_index = 0usize;
                 output.push_str(&format!(
-                    "{publish_indent}if (const auto* value = {local}.as_ref()) {{\n",
-                    local = output_local
+                    "{publish_indent}if (const auto* value = {output_local}.as_ref()) {{\n"
                 ));
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
@@ -828,18 +821,13 @@ pub(super) fn cpp_runtime_stale_error_guard(local_name: &str, bind: &BindRuntime
         return String::new();
     }
 
-    format!(
-        "    if ({local}.stale()) {{\n        return flowrt::Status::Error;\n    }}\n",
-        local = local_name
-    )
+    format!("    if ({local_name}.stale()) {{\n        return flowrt::Status::Error;\n    }}\n")
 }
 
 /// 生成 stale input 健康计数器记录代码（C++）。
 pub(super) fn cpp_runtime_stale_health_record(local_name: &str, task_health_name: &str) -> String {
     format!(
-        "    if ({local}.stale()) {{\n        health_map[\"{task_health}\"].stale_input += 1;\n    }}\n",
-        local = local_name,
-        task_health = task_health_name,
+        "    if ({local_name}.stale()) {{\n        health_map[\"{task_health_name}\"].stale_input += 1;\n    }}\n",
     )
 }
 

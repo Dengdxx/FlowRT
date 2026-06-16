@@ -309,9 +309,7 @@ pub(super) fn emit_rust_app_step(
             let lane_name = task_lane_name(task);
             let task_health = task_health_name(task);
             output.push_str(&format!(
-                "            {{\n                let __h = health_map.entry({task_health:?}.to_string()).or_default();\n                __h.name = {task_health:?}.to_string();\n                __h.lane = {lane:?}.to_string();\n            }}\n",
-                task_health = task_health,
-                lane = lane_name,
+                "            {{\n                let __h = health_map.entry({task_health:?}.to_string()).or_default();\n                __h.name = {task_health:?}.to_string();\n                __h.lane = {lane_name:?}.to_string();\n            }}\n",
             ));
 
             if let Some(guard) = &trigger_guard {
@@ -414,12 +412,10 @@ pub(super) fn emit_rust_app_step(
                 let task_local = task_local_name(task);
                 let task_health = task_health_name(task);
                 output.push_str(&format!(
-                    "{body_indent}let {name}_deadline_exceeded = {name}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms});\n\
-                     {body_indent}if {name}_deadline_exceeded {{\n\
+                    "{body_indent}let {task_local}_deadline_exceeded = {task_local}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms});\n\
+                     {body_indent}if {task_local}_deadline_exceeded {{\n\
                      {body_inner_indent}health_map.entry({task_health:?}.to_string()).or_default().deadline_missed += 1;\n\
                      {body_indent}}}\n",
-                    name = task_local,
-                    task_health = task_health,
                 ));
             }
 

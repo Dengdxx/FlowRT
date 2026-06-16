@@ -26,3 +26,6 @@ required-features = ["zenoh"]
 [[example]]
 name = "zenoh_service_server"
 required-features = ["zenoh"]
+
+[lints]
+workspace = true

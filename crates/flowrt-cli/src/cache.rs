@@ -789,9 +789,9 @@ fn scan_temp_candidates() -> Result<Vec<TempCandidate>> {
                         CacheEntryPolicy::DefaultClean
                     },
                     detail: if live {
-                        format!("pid={} is still alive", pid)
+                        format!("pid={pid} is still alive")
                     } else {
-                        format!("pid={} is gone", pid)
+                        format!("pid={pid} is gone")
                     },
                 });
             }
@@ -825,7 +825,7 @@ fn scan_temp_candidates() -> Result<Vec<TempCandidate>> {
             } else {
                 (
                     CacheEntryPolicy::DefaultClean,
-                    format!("关联 pid {:?} 均已退出", pids),
+                    format!("关联 pid {pids:?} 均已退出"),
                 )
             };
             entries.push(TempCandidate {

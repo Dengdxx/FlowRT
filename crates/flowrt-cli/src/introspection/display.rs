@@ -232,7 +232,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                 instance.name, instance.component, instance.process, instance.runtime
             ));
             if let Some(target) = &instance.target {
-                output.push_str(&format!(" target={}", target));
+                output.push_str(&format!(" target={target}"));
             }
 
             // 该 instance 的 tasks。
@@ -246,10 +246,10 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         output.push_str(&format!(" lane={}", task.lane));
                     }
                     if let Some(period) = task.period_ms {
-                        output.push_str(&format!(" period_ms={}", period));
+                        output.push_str(&format!(" period_ms={period}"));
                     }
                     if let Some(deadline) = task.deadline_ms {
-                        output.push_str(&format!(" deadline_ms={}", deadline));
+                        output.push_str(&format!(" deadline_ms={deadline}"));
                     }
                 }
             }
@@ -1000,8 +1000,7 @@ pub(crate) fn format_hz_summary_from_status_pair(
                     second_route.overflow_count,
                 ));
             line.push_str(&format!(
-                " dropped_delta={} backpressure_delta={} overflow_delta={}",
-                dropped_delta, backpressure_delta, overflow_delta
+                " dropped_delta={dropped_delta} backpressure_delta={backpressure_delta} overflow_delta={overflow_delta}"
             ));
             emitted_routes.insert(second_channel.name.as_str());
         } else {
