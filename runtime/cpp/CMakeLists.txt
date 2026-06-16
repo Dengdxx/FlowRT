@@ -97,6 +97,11 @@ target_link_libraries(flowrt_replay_smoke PRIVATE flowrt_runtime)
 flowrt_keep_asserts_enabled(flowrt_replay_smoke)
 add_test(NAME flowrt_replay_smoke COMMAND flowrt_replay_smoke)
 
+add_executable(flowrt_synchronizer_smoke tests/synchronizer_smoke.cpp)
+target_link_libraries(flowrt_synchronizer_smoke PRIVATE flowrt_runtime)
+flowrt_keep_asserts_enabled(flowrt_synchronizer_smoke)
+add_test(NAME flowrt_synchronizer_smoke COMMAND flowrt_synchronizer_smoke)
+
 option(FLOWRT_CPP_ENABLE_IOX2_TESTS "Build FlowRT C++ runtime tests that require iceoryx2-cxx" OFF)
 option(FLOWRT_CPP_ENABLE_ZENOH_TESTS "Build FlowRT C++ runtime tests that require zenoh-cpp" OFF)
 

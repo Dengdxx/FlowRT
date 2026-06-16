@@ -21,6 +21,7 @@ pub mod replay;
 pub mod service;
 pub mod shutdown;
 pub mod supervisor;
+pub mod synchronizer;
 pub mod time_driver;
 pub mod wire;
 #[cfg(feature = "zenoh")]
