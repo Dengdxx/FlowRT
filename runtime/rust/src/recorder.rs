@@ -575,6 +575,7 @@ impl RecorderTap {
             runtime_pid: config.metadata.runtime_pid,
             selfdesc_hash: config.metadata.selfdesc_hash,
             monotonic_ns: monotonic_ns.unwrap_or(0),
+            sample_time_ns: None,
             wall_unix_ns: wall_unix_ns(),
             sequence,
             entity,

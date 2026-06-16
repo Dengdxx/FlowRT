@@ -227,6 +227,10 @@ pub struct RecordEnvelope {
     pub runtime_pid: u32,
     pub selfdesc_hash: String,
     pub monotonic_ns: u64,
+    /// sensor sample-time（纳秒）。声明了 timestamp 源的 channel sample 在录制时填充，用作
+    /// event-time 回放时钟；其余事件为空。v0.18.0 引入，跨语言可选字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_time_ns: Option<u64>,
     pub wall_unix_ns: u64,
     pub sequence: u64,
     pub entity: RecordEntity,
@@ -287,18 +291,17 @@ pub fn read_replay_timeline(data: &[u8]) -> RecordResult<Vec<ReplayTimelineEntry
         if envelope.event_kind != RecordEventKind::ChannelSample {
             continue;
         }
-        ordered.push((
-            envelope.monotonic_ns,
-            envelope.sequence,
-            ReplayTimelineEntry {
-                time_ms: envelope.monotonic_ns / 1_000_000,
-                target: envelope.entity.name,
-                payload: envelope.payload,
-                sample_time_ms: None,
-            },
-        ));
+        let entry = ReplayTimelineEntry {
+            time_ms: envelope.monotonic_ns / 1_000_000,
+            target: envelope.entity.name,
+            payload: envelope.payload,
+            sample_time_ms: envelope.sample_time_ns.map(|ns| ns / 1_000_000),
+        };
+        // 按 effective time（sample-time 优先，否则 receive-time）稳定排序，使 event-time 回放
+        // 时间线按 sensor 采集时刻有序。
+        ordered.push((entry.effective_time_ms(), envelope.sequence, entry));
     }
-    ordered.sort_by_key(|(monotonic_ns, sequence, _)| (*monotonic_ns, *sequence));
+    ordered.sort_by_key(|(effective_ms, sequence, _)| (*effective_ms, *sequence));
     Ok(ordered.into_iter().map(|(_, _, entry)| entry).collect())
 }
 

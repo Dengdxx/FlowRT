@@ -72,6 +72,7 @@ mod tests {
             runtime_pid: 1,
             selfdesc_hash: "h".to_string(),
             monotonic_ns: monotonic_ms * 1_000_000,
+            sample_time_ns: None,
             wall_unix_ns: 0,
             sequence: monotonic_ms,
             entity: RecordEntity {

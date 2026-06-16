@@ -18,6 +18,7 @@ fn sample_envelope(kind: RecordEventKind) -> RecordEnvelope {
         runtime_pid: 4242,
         selfdesc_hash: "sha256:abc123".to_string(),
         monotonic_ns: 100,
+        sample_time_ns: None,
         wall_unix_ns: 1_700_000_000_000_000_000,
         sequence: 7,
         entity: RecordEntity {
@@ -114,6 +115,39 @@ fn read_replay_timeline_extracts_sorted_channel_samples() -> TestResult {
             },
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn read_replay_timeline_uses_sample_time_when_present() -> TestResult {
+    let mut writer = FlowrtMcapWriter::new(Cursor::new(Vec::new()))?;
+    let samples = writer.register_channel("samples", RecordEventKind::ChannelSample)?;
+    // receive-time(monotonic) 顺序 a 早于 b，但 sample-time 相反 → 时间线按 sample-time 排序。
+    let mut a = sample_envelope(RecordEventKind::ChannelSample);
+    a.monotonic_ns = 5_000_000;
+    a.sample_time_ns = Some(200_000_000);
+    a.sequence = 1;
+    a.entity.name = "sensor.a".to_string();
+    a.payload = vec![1];
+    let mut b = sample_envelope(RecordEventKind::ChannelSample);
+    b.monotonic_ns = 9_000_000;
+    b.sample_time_ns = Some(100_000_000);
+    b.sequence = 2;
+    b.entity.name = "sensor.b".to_string();
+    b.payload = vec![2];
+    writer.write_event(samples, &a)?;
+    writer.write_event(samples, &b)?;
+    writer.flush()?;
+    let bytes = writer.finish_into_inner()?.into_inner();
+
+    let timeline = read_replay_timeline(&bytes)?;
+    assert_eq!(timeline.len(), 2);
+    // 按 sample-time（event-time）排序：b(100ms) 在 a(200ms) 之前。
+    assert_eq!(timeline[0].target, "sensor.b");
+    assert_eq!(timeline[0].sample_time_ms, Some(100));
+    assert_eq!(timeline[0].effective_time_ms(), 100);
+    assert_eq!(timeline[1].target, "sensor.a");
+    assert_eq!(timeline[1].sample_time_ms, Some(200));
     Ok(())
 }
 
