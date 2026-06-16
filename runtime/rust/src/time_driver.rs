@@ -20,9 +20,16 @@ pub struct ReplayEvent {
     pub target: String,
     /// 注入的 wire payload 字节。
     pub payload: Vec<u8>,
-    /// 传感器 sample-time（毫秒）。v0.17.0 恒为 `None`；为后续 sensor event-time 与多传感器
-    /// 同步预留，确保回放时间线格式向前兼容。
+    /// 传感器 sample-time（毫秒）。v0.18.0 起由声明 timestamp 源的消息在录制时填充；为空时
+    /// event-time 回放回退到 `time_ms` receive-time，确保回放时间线格式向前兼容。
     pub sample_time_ms: Option<u64>,
+}
+
+impl ReplayEvent {
+    /// event-time 回放使用的有效逻辑时间：有 sample-time 用之，否则回退 receive-time。
+    pub fn effective_time_ms(&self) -> u64 {
+        self.sample_time_ms.unwrap_or(self.time_ms)
+    }
 }
 
 /// 一次步进的分类结果。
@@ -66,7 +73,8 @@ impl ReplayDriver {
     /// 取走）；命中 periodic 网格点返回 [`Step::Timer`]；时间线耗尽返回 [`Step::Shutdown`]。
     /// 逻辑时钟单调不退；同一时刻的多个事件一次性暂存。
     pub fn step(&mut self, next_periodic_deadline_ms: Option<u64>) -> Step {
-        let Some(next_event_ms) = self.timeline.front().map(|event| event.time_ms) else {
+        let Some(next_event_ms) = self.timeline.front().map(|event| event.effective_time_ms())
+        else {
             return Step::Shutdown;
         };
         let target = match next_periodic_deadline_ms {
@@ -78,7 +86,7 @@ impl ReplayDriver {
             while self
                 .timeline
                 .front()
-                .is_some_and(|event| event.time_ms == target)
+                .is_some_and(|event| event.effective_time_ms() == target)
             {
                 if let Some(event) = self.timeline.pop_front() {
                     self.pending.push(event);
@@ -338,5 +346,30 @@ mod tests {
         shutdown.request();
         // 无预算但 shutdown 已请求：不应阻塞，直接结束。
         assert_eq!(driver.next_step(Some(0), &shutdown), Step::Shutdown);
+    }
+
+    #[test]
+    fn replay_driver_steps_by_sample_time_when_present() {
+        // 事件 receive-time 5/6，但 sample-time 100/200 → 按 sample-time（event-time）步进。
+        let mut driver = ReplayDriver::new(vec![
+            ReplayEvent {
+                time_ms: 5,
+                target: "a".to_string(),
+                payload: vec![],
+                sample_time_ms: Some(100),
+            },
+            ReplayEvent {
+                time_ms: 6,
+                target: "b".to_string(),
+                payload: vec![],
+                sample_time_ms: Some(200),
+            },
+        ]);
+        assert_eq!(driver.step(Some(1000)), Step::Data);
+        assert_eq!(driver.now_ms(), 100);
+        assert_eq!(driver.take_pending_events().len(), 1);
+        assert_eq!(driver.step(Some(1000)), Step::Data);
+        assert_eq!(driver.now_ms(), 200);
+        assert_eq!(driver.step(Some(1000)), Step::Shutdown);
     }
 }

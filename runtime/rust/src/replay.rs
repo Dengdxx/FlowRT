@@ -30,7 +30,7 @@ pub fn boundary_replay_events(
             time_ms: entry.time_ms,
             target: entry.target,
             payload: entry.payload,
-            sample_time_ms: None,
+            sample_time_ms: entry.sample_time_ms,
         })
         .collect()
 }
@@ -94,16 +94,19 @@ mod tests {
                 time_ms: 5,
                 target: "sample_in".to_string(),
                 payload: vec![1],
+                sample_time_ms: Some(50),
             },
             ReplayTimelineEntry {
                 time_ms: 6,
                 target: "internal.channel".to_string(),
                 payload: vec![2],
+                sample_time_ms: None,
             },
             ReplayTimelineEntry {
                 time_ms: 7,
                 target: "sample_in".to_string(),
                 payload: vec![3],
+                sample_time_ms: None,
             },
         ];
         let events = boundary_replay_events(entries, &boundary_set(&["sample_in"]));
@@ -111,8 +114,11 @@ mod tests {
         assert_eq!(events[0].time_ms, 5);
         assert_eq!(events[0].target, "sample_in");
         assert_eq!(events[0].payload, vec![1]);
+        // sample-time 透传：event-time 回放按 sample-time 而非 receive-time 步进。
+        assert_eq!(events[0].sample_time_ms, Some(50));
+        assert_eq!(events[0].effective_time_ms(), 50);
         assert_eq!(events[1].time_ms, 7);
-        assert!(events.iter().all(|event| event.sample_time_ms.is_none()));
+        assert_eq!(events[1].effective_time_ms(), 7);
     }
 
     #[test]

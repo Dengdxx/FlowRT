@@ -168,19 +168,26 @@ struct ReplayTimelineEntry {
     std::uint64_t time_ms = 0;
     std::string target;
     std::vector<std::uint8_t> payload;
+    /// sensor sample-time（毫秒），声明 timestamp 源的消息录制时填充；为空回退 receive-time。
+    std::optional<std::uint64_t> sample_time_ms;
 };
 
 /**
  * @brief 单条回放事件：在某逻辑毫秒把一段 wire payload 注入某个 boundary input 或 channel。
  *
- * 与 Rust `flowrt::ReplayEvent` 对应。`sample_time_ms` 在 v0.17.1 恒为 nullopt，为后续 sensor
- * event-time 与多传感器同步预留，确保回放时间线格式向前兼容。
+ * 与 Rust `flowrt::ReplayEvent` 对应。`sample_time_ms` 由声明 timestamp 源的消息在录制时填充
+ * （v0.18.0 起）；为空时 event-time 回放回退到 `time_ms` receive-time。
  */
 struct ReplayEvent {
     std::uint64_t time_ms = 0;
     std::string target;
     std::vector<std::uint8_t> payload;
     std::optional<std::uint64_t> sample_time_ms;
+
+    /// event-time 回放使用的有效逻辑时间：有 sample-time 用之，否则回退 receive-time。
+    [[nodiscard]] std::uint64_t effective_time_ms() const noexcept {
+        return sample_time_ms.value_or(time_ms);
+    }
 };
 
 /// 一次步进的分类结果，与 Rust `flowrt::Step` 对应。
@@ -220,7 +227,7 @@ class ReplayDriver {
         if (timeline_.empty()) {
             return Step::Shutdown;
         }
-        const std::uint64_t next_event_ms = timeline_.front().time_ms;
+        const std::uint64_t next_event_ms = timeline_.front().effective_time_ms();
         const std::uint64_t target = next_periodic_deadline_ms.has_value()
                                          ? std::min(next_event_ms, *next_periodic_deadline_ms)
                                          : next_event_ms;
@@ -228,7 +235,7 @@ class ReplayDriver {
         if (target != next_event_ms) {
             return Step::Timer;
         }
-        while (!timeline_.empty() && timeline_.front().time_ms == target) {
+        while (!timeline_.empty() && timeline_.front().effective_time_ms() == target) {
             pending_.push_back(std::move(timeline_.front()));
             timeline_.pop_front();
         }
@@ -272,7 +279,7 @@ inline std::vector<ReplayEvent> boundary_replay_events(
             .time_ms = entry.time_ms,
             .target = entry.target,
             .payload = entry.payload,
-            .sample_time_ms = std::nullopt,
+            .sample_time_ms = entry.sample_time_ms,
         });
     }
     return events;
@@ -309,6 +316,7 @@ inline std::variant<ReplayDriver, std::string> replay_driver_from_timeline_file(
             .time_ms = *time_ms,
             .target = std::move(*target),
             .payload = std::move(*payload),
+            .sample_time_ms = replay_detail::parse_u64_field(line, "sample_time_ms"),
         });
     }
     return ReplayDriver{boundary_replay_events(entries, boundary_inputs)};

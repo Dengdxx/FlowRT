@@ -104,11 +104,13 @@ fn read_replay_timeline_extracts_sorted_channel_samples() -> TestResult {
                 time_ms: 5,
                 target: "sensor.a".to_string(),
                 payload: vec![1],
+                sample_time_ms: None,
             },
             ReplayTimelineEntry {
                 time_ms: 20,
                 target: "sensor.b".to_string(),
                 payload: vec![2, 2],
+                sample_time_ms: None,
             },
         ]
     );

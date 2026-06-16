@@ -256,12 +256,23 @@ impl RecordEnvelope {
 /// 当前 reader 默认忽略未知字段。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayTimelineEntry {
-    /// 事件的逻辑毫秒时间（由 envelope `monotonic_ns` 推导）。
+    /// 事件进入 runtime 的逻辑毫秒时间（由 envelope `monotonic_ns` 推导，即 receive-time）。
     pub time_ms: u64,
     /// 注入目标的 canonical 名称（envelope `entity.name`）。
     pub target: String,
     /// 注入的 wire payload 字节。
     pub payload: Vec<u8>,
+    /// sensor sample-time（毫秒）。声明了 timestamp 源的消息在录制时填充；用作 event-time
+    /// 回放的逻辑时钟（缺省回退到 `time_ms` receive-time）。v0.18.0 引入。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_time_ms: Option<u64>,
+}
+
+impl ReplayTimelineEntry {
+    /// event-time 回放使用的有效逻辑时间：有 sample-time 用之，否则回退 receive-time。
+    pub fn effective_time_ms(&self) -> u64 {
+        self.sample_time_ms.unwrap_or(self.time_ms)
+    }
 }
 
 /// 从 MCAP 字节读出按时间升序的回放时间线（只取 `ChannelSample` 事件）。
@@ -283,6 +294,7 @@ pub fn read_replay_timeline(data: &[u8]) -> RecordResult<Vec<ReplayTimelineEntry
                 time_ms: envelope.monotonic_ns / 1_000_000,
                 target: envelope.entity.name,
                 payload: envelope.payload,
+                sample_time_ms: None,
             },
         ));
     }
@@ -470,11 +482,13 @@ mod tests {
                 time_ms: 5,
                 target: "sample_in".to_string(),
                 payload: vec![1, 2, 3],
+                sample_time_ms: Some(50),
             },
             ReplayTimelineEntry {
                 time_ms: 7,
                 target: "imu_in".to_string(),
                 payload: vec![],
+                sample_time_ms: None,
             },
         ];
         let mut buffer = Vec::new();

@@ -113,6 +113,26 @@ void replay_driver_from_timeline_file_reports_open_failure() {
     assert(std::holds_alternative<std::string>(loaded));
 }
 
+// 镜像 Rust：事件 receive-time 5/6，但 sample-time 100/200 → 按 sample-time（event-time）步进。
+void replay_driver_steps_by_sample_time_when_present() {
+    flowrt::ReplayDriver driver{std::vector<flowrt::ReplayEvent>{
+        flowrt::ReplayEvent{.time_ms = 5,
+                            .target = "a",
+                            .payload = {},
+                            .sample_time_ms = std::optional<std::uint64_t>{100}},
+        flowrt::ReplayEvent{.time_ms = 6,
+                            .target = "b",
+                            .payload = {},
+                            .sample_time_ms = std::optional<std::uint64_t>{200}},
+    }};
+    assert(driver.step(std::optional<std::uint64_t>{1000U}) == flowrt::Step::Data);
+    assert(driver.now_ms() == 100U);
+    assert(driver.take_pending_events().size() == 1U);
+    assert(driver.step(std::optional<std::uint64_t>{1000U}) == flowrt::Step::Data);
+    assert(driver.now_ms() == 200U);
+    assert(driver.step(std::optional<std::uint64_t>{1000U}) == flowrt::Step::Shutdown);
+}
+
 }  // namespace
 
 int main() {
@@ -122,5 +142,6 @@ int main() {
     boundary_replay_events_keeps_only_boundary_targets();
     replay_driver_from_timeline_file_reads_and_filters_boundary_stimuli();
     replay_driver_from_timeline_file_reports_open_failure();
+    replay_driver_steps_by_sample_time_when_present();
     return 0;
 }
