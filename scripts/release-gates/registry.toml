@@ -33,3 +33,7 @@ script = "scripts/test-v0171-cpp-replay-parity-smoke.sh"
 [[focused_smoke]]
 version = "0.18.0"
 script = "scripts/test-v0180-event-time-smoke.sh"
+
+[[focused_smoke]]
+version = "0.18.1"
+script = "scripts/test-codegen-compile.sh"
