@@ -21,7 +21,11 @@ fn first_diff(want: &str, got: &str) -> String {
             return format!("line {}:\n  want: {a}\n  got : {b}", i + 1);
         }
     }
-    format!("行内容一致但长度不同：want={} got={}", want.len(), got.len())
+    format!(
+        "行内容一致但长度不同：want={} got={}",
+        want.len(),
+        got.len()
+    )
 }
 
 /// 对一个 corpus case：读 `input.rsdl` → 归一化 → `emit_artifacts` → 逐 artifact 比对 `expected/`。
