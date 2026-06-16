@@ -1,0 +1,37 @@
+[package]
+name = "island_rust_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.consumer]
+language = "rust"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "Sample"
+
+[[boundary.output]]
+name = "echo_out"
+port = "consumer.echo"
+type = "Sample"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]

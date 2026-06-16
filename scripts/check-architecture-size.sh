@@ -70,7 +70,8 @@ done < <(
         '*.hh' \
         '*.hpp' \
         '*.hxx' \
-        '*.sh'
+        '*.sh' \
+        ':(exclude)crates/flowrt-codegen/tests/golden/**'
 )
 
 if [[ "$errors" -gt 0 ]]; then
