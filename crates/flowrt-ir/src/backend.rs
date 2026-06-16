@@ -696,6 +696,7 @@ mod tests {
             generated_name: name.to_string(),
             empty: false,
             fields,
+            timestamp: None,
         }
     }
 

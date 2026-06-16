@@ -197,10 +197,46 @@ pub struct TypeIr {
     #[serde(default, skip_serializing_if = "is_false")]
     pub empty: bool,
     pub fields: Vec<FieldIr>,
+    /// sample-time 源（sensor event-time），归一化自 `[type.<Name>.timestamp]`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<TimestampSourceIr>,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// sample-time 源声明：消息中承载 sample 时间戳的字段及其时钟语义。
+///
+/// 这是 sensor event-time 的建模基线：回放、同步与调度从用户消息字段读取 sample-time，
+/// 不引入隐藏 wall-clock 或外部时间源。`field` 必须指向本消息的一个 unsigned 整数标量字段。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimestampSourceIr {
+    /// 承载 sample-time 的消息字段名。
+    pub field: String,
+    /// 时间单位。
+    pub unit: TimestampUnit,
+    /// 时间基准。
+    pub epoch: TimestampEpoch,
+    /// 所属逻辑时钟域名。
+    pub clock_domain: String,
+}
+
+/// sample-time 时间单位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampUnit {
+    Ns,
+    Us,
+    Ms,
+}
+
+/// sample-time 时间基准。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampEpoch {
+    Monotonic,
+    Unix,
 }
 
 /// 消息字段声明。

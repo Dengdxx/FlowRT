@@ -112,6 +112,21 @@ pub struct RawModule {
 pub struct RawType {
     pub empty: bool,
     pub fields: Vec<RawField>,
+    /// `[type.<Name>.timestamp]` 声明的 sample-time 源（sensor event-time）。
+    pub timestamp: Option<RawTimestampSource>,
+}
+
+/// `[type.<Name>.timestamp]` 表：声明该消息携带 sample 时间戳的字段与时钟语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTimestampSource {
+    /// 承载 sample-time 的消息字段名。
+    pub field: String,
+    /// 时间单位：`ns` / `us` / `ms`，缺省 `ns`。
+    pub unit: Option<String>,
+    /// 时间基准：`monotonic` / `unix`，缺省 `monotonic`。
+    pub epoch: Option<String>,
+    /// 所属逻辑时钟域名，缺省 `sensor`。
+    pub clock_domain: Option<String>,
 }
 
 /// 消息字段声明。

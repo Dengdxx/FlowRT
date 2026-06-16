@@ -93,10 +93,19 @@ pub(super) fn parse_module(table: &Table) -> Result<RawModule> {
 pub(super) fn parse_type(name: &str, table: &Table) -> Result<RawType> {
     let mut fields = Vec::with_capacity(table.len());
     let mut empty = false;
+    let mut timestamp = None;
     for (field_name, value) in table {
         if field_name == "empty" {
             if let Some(flag) = value.as_bool() {
                 empty = flag;
+                continue;
+            }
+        }
+        if field_name == "timestamp" {
+            // `[type.X.timestamp]` 子表声明 sample-time 源；`timestamp = "<type>"` 仍是普通字段。
+            // 按值类型区分（与 `empty` 同样的回退策略），保持 `timestamp` 可用作字段名。
+            if let Some(timestamp_table) = value.as_table() {
+                timestamp = Some(parse_timestamp_source(name, timestamp_table)?);
                 continue;
             }
         }
@@ -106,7 +115,23 @@ pub(super) fn parse_type(name: &str, table: &Table) -> Result<RawType> {
             ty,
         });
     }
-    Ok(RawType { empty, fields })
+    Ok(RawType {
+        empty,
+        fields,
+        timestamp,
+    })
+}
+
+/// 解析 `[type.<Name>.timestamp]` 子表：sample-time 字段及时钟语义（单位/基准/时钟域）。
+fn parse_timestamp_source(type_name: &str, table: &Table) -> Result<RawTimestampSource> {
+    let context = format!("type.{type_name}.timestamp");
+    validate_known_fields(table, &context, &["field", "unit", "epoch", "clock_domain"])?;
+    Ok(RawTimestampSource {
+        field: required_string(table, &context, "field")?,
+        unit: optional_string(table, &context, "unit")?,
+        epoch: optional_string(table, &context, "epoch")?,
+        clock_domain: optional_string(table, &context, "clock_domain")?,
+    })
 }
 
 pub(super) fn parse_component(name: &str, table: &Table) -> Result<RawComponent> {

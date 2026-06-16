@@ -1792,4 +1792,55 @@ component = "imu_sim"
         );
         std::env::temp_dir().join(suffix)
     }
+
+    #[test]
+    fn parses_type_timestamp_source() {
+        let source = r#"
+[package]
+name = "sensor"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_ns = "u64"
+
+[type.ImuSample.timestamp]
+field = "stamp_ns"
+unit = "us"
+
+[type.Legacy]
+timestamp = "u64"
+"#;
+        let raw = parse_str(source).unwrap();
+        let imu = &raw.types["ImuSample"];
+        let timestamp = imu.timestamp.as_ref().expect("timestamp source parsed");
+        assert_eq!(timestamp.field, "stamp_ns");
+        assert_eq!(timestamp.unit.as_deref(), Some("us"));
+        assert!(imu.fields.iter().all(|field| field.name != "timestamp"));
+        // 普通 `timestamp = "<type>"` 字段不被误解析为 sample-time 源，保持向后兼容。
+        let legacy = &raw.types["Legacy"];
+        assert!(legacy.timestamp.is_none());
+        assert!(
+            legacy
+                .fields
+                .iter()
+                .any(|field| field.name == "timestamp" && field.ty == "u64")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_timestamp_subkey() {
+        let source = r#"
+[package]
+name = "sensor"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_ns = "u64"
+
+[type.ImuSample.timestamp]
+field = "stamp_ns"
+bogus = "x"
+"#;
+        assert!(parse_str(source).is_err());
+    }
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use flowrt_rsdl::{
     RawComponent, RawDocument, RawModuleDocument, RawOperationPort, RawPort, RawResourceDescriptor,
-    RawResourceRequirement, RawServicePort,
+    RawResourceRequirement, RawServicePort, RawTimestampSource,
 };
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     LanguageKind, LifecycleSurface, ModuleIr, OperationPortIr, PortIr, ResourceAccess,
     ResourceDescriptorKind, ResourceDescriptorSchemaIr, ResourceFailurePolicy,
     ResourceHealthPolicy, ResourceReadinessGate, ResourceRequirementIr, Result, ServicePortIr,
-    TaskConcurrency, TypeIr, parse_type_expr,
+    TaskConcurrency, TimestampEpoch, TimestampSourceIr, TimestampUnit, TypeIr, parse_type_expr,
 };
 
 use super::ids::entity_id;
@@ -70,6 +70,11 @@ pub(super) fn normalize_types(
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
+                timestamp: raw
+                    .timestamp
+                    .as_ref()
+                    .map(normalize_timestamp_source)
+                    .transpose()?,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -77,6 +82,45 @@ pub(super) fn normalize_types(
             types.sort_by(|left, right| left.qualified_name.cmp(&right.qualified_name));
             types
         })
+}
+
+/// 归一化 `[type.<Name>.timestamp]`：unit/epoch 字符串映射为枚举（未知值拒绝），
+/// 缺省 unit=ns、epoch=monotonic、clock_domain=sensor。
+fn normalize_timestamp_source(raw: &RawTimestampSource) -> Result<TimestampSourceIr> {
+    let context = || format!("type.timestamp field `{}`", raw.field);
+    let unit = match raw.unit.as_deref() {
+        None | Some("ns") => TimestampUnit::Ns,
+        Some("us") => TimestampUnit::Us,
+        Some("ms") => TimestampUnit::Ms,
+        Some(value) => {
+            return Err(IrError::InvalidEnum {
+                context: context(),
+                kind: "timestamp unit",
+                value: value.to_string(),
+            });
+        }
+    };
+    let epoch = match raw.epoch.as_deref() {
+        None | Some("monotonic") => TimestampEpoch::Monotonic,
+        Some("unix") => TimestampEpoch::Unix,
+        Some(value) => {
+            return Err(IrError::InvalidEnum {
+                context: context(),
+                kind: "timestamp epoch",
+                value: value.to_string(),
+            });
+        }
+    };
+    let clock_domain = raw
+        .clock_domain
+        .clone()
+        .unwrap_or_else(|| "sensor".to_string());
+    Ok(TimestampSourceIr {
+        field: raw.field.clone(),
+        unit,
+        epoch,
+        clock_domain,
+    })
 }
 
 pub(super) fn normalize_components(

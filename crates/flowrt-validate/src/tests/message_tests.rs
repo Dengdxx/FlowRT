@@ -213,3 +213,95 @@ value = "u8"
             .contains("type `Empty` declares `empty = true` and fields at the same time")
     }));
 }
+
+#[test]
+fn accepts_valid_type_timestamp_source() {
+    let source = r#"
+[package]
+name = "sensor"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_ns = "u64"
+ax = "f32"
+
+[type.ImuSample.timestamp]
+field = "stamp_ns"
+clock_domain = "imu"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let ty = ir.types.iter().find(|ty| ty.name == "ImuSample").unwrap();
+    let timestamp = ty.timestamp.as_ref().expect("timestamp normalized");
+    // 归一化填充缺省 unit=ns、epoch=monotonic。
+    assert_eq!(timestamp.unit, flowrt_ir::TimestampUnit::Ns);
+    assert_eq!(timestamp.epoch, flowrt_ir::TimestampEpoch::Monotonic);
+    assert_eq!(timestamp.clock_domain, "imu");
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_timestamp_source_unknown_field() {
+    let source = r#"
+[package]
+name = "sensor"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_ns = "u64"
+
+[type.ImuSample.timestamp]
+field = "missing"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("unknown timestamp field should fail");
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("timestamp source references unknown field")
+    }));
+}
+
+#[test]
+fn rejects_timestamp_source_non_unsigned_field() {
+    let source = r#"
+[package]
+name = "sensor"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp = "f32"
+
+[type.ImuSample.timestamp]
+field = "stamp"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("non-unsigned timestamp field should fail");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("must be an unsigned integer scalar"))
+    );
+}
+
+#[test]
+fn rejects_unknown_timestamp_unit_during_normalization() {
+    let source = r#"
+[package]
+name = "sensor"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_ns = "u64"
+
+[type.ImuSample.timestamp]
+field = "stamp_ns"
+unit = "minutes"
+"#;
+    let raw = parse_str(source).unwrap();
+    // 未知 unit 在归一化阶段即被拒绝（不进入 validate）。
+    assert!(normalize_document(&raw, hash_source(source)).is_err());
+}

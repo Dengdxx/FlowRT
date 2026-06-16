@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_conformance::{AbiError, message_abi_expectations};
-use flowrt_ir::{ContractIr, TypeExpr};
+use flowrt_ir::{ContractIr, PrimitiveType, TypeExpr};
 
 use crate::ValidationError;
 
@@ -53,7 +53,33 @@ pub(crate) fn validate_message_types(
                 errors,
             );
         }
+
+        if let Some(timestamp) = &ty.timestamp {
+            match ty.fields.iter().find(|field| field.name == timestamp.field) {
+                None => errors.push(ValidationError::new(format!(
+                    "type `{}` timestamp source references unknown field `{}`",
+                    ty.name, timestamp.field
+                ))),
+                Some(field) if !is_unsigned_integer_scalar(&field.ty) => {
+                    errors.push(ValidationError::new(format!(
+                        "type `{}` timestamp field `{}` must be an unsigned integer scalar (u8/u16/u32/u64)",
+                        ty.name, timestamp.field
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
     }
+}
+
+/// 判断字段类型是否为 unsigned 整数标量，作为合法 sample-time 字段的结构约束。
+fn is_unsigned_integer_scalar(expr: &TypeExpr) -> bool {
+    matches!(
+        expr,
+        TypeExpr::Primitive {
+            name: PrimitiveType::U8 | PrimitiveType::U16 | PrimitiveType::U32 | PrimitiveType::U64
+        }
+    )
 }
 
 pub(crate) fn validate_variable_frame_shapes(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
