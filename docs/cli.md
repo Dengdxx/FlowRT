@@ -262,8 +262,9 @@ graph default
 逐周期回放步进（与 `realtime` 完全对齐的积分粒度）与 record/replay 由 runtime 原生确定性
 驱动，已在 `v0.17.0`（Rust）与 `v0.17.1`（C++）补齐：`simulated_replay` 下 runtime 自己拥有
 回放事件时间线并逐周期步进，`--replay <mcap>` 注入录制的边界激励（C++ 由 CLI 先把 MCAP
-规范化为 JSONL）。sensor timestamp、event-time、clock domain、PTP、NTP 与 approximate sync
-语义留待 `v0.18.0`。
+规范化为 JSONL）。`v0.18.0` 起，声明了 sensor sample-time 源（`[type.<Name>.timestamp]`）的消息
+在录制时携带采集时刻，回放按 sample-time（event-time，缺失则回退 receive-time）确定性步进。
+多传感器同步、clock domain 同步、PTP、NTP 与 approximate sync 语义留待 `v0.19.0` 起。
 
 ## `prepare`
 

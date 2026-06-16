@@ -5,26 +5,30 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.17.1`；当前发布线为 `v0.17.1 Deterministic Replay C++ Parity`，在
-`v0.17.0` 的 Rust 运行时回放内核上补齐 C++ 跨语言 parity。运行时原生确定性回放把 simulated_replay
-回放从「外部经 introspection socket 由 wall-clock 节奏逐事件注入」改为「runtime 自己拥有回放事件
-时间线、确定性逐周期步进」，闭合 record→replay 往返，使回放结果只取决于事件序列、与物理快慢无关，
-且周期 task 在两事件之间逐周期触发（积分粒度与 realtime 对齐）。
+当前 workspace 版本为 `0.18.0`；当前发布线为 `v0.18.0 Sensor Event-Time`，在确定性回放内核之上引入
+sensor 采集时刻（event-time）作为回放时间轴。RSDL 消息可用 `[type.<Name>.timestamp]` 子表声明承载
+sample 时间戳的字段及时钟语义（`field` + `unit` ns/us/ms + `epoch` monotonic/unix + `clock_domain`），
+归一化进 Contract IR（`TypeIr.timestamp`），validator 校验该字段为本消息的 unsigned 整数标量并拒绝未知
+枚举值；`timestamp` 仍可作普通字段名（按值类型区分子表与字段，向后兼容）。
 
-`v0.17.1` 把该回放内核镜像到 C++ runtime：新增 `flowrt/replay.hpp`（`ReplayDriver` / `ReplayEvent` /
-`Step`），语义与字节级步进行为与 Rust `flowrt::ReplayDriver` 对齐，由两侧 conformance 测试用同一
-事件序列断言一致；C++ `publish_boundary_input` 在 recorder 覆盖该 endpoint 时把注入作为 canonical
-frame channel sample 记录，闭合 C++ record→replay；生成 C++ runtime shell 在 simulated_replay 下从
-`FLOWRT_REPLAY_SOURCE` 装配 `ReplayDriver` 并经 `publish_boundary_input` 进程内注入。C++ 无 MCAP
-解析能力，`flowrt-record` 新增 JSONL 回放时间线读写，`flowrt run --replay <mcap>` 启动 C++ 应用前
-把 MCAP 规范化为 JSONL（单一 MCAP 解析点保留在 Rust）。
+回放据此按 sensor 采集时刻而非录制到达时刻确定性步进：`ReplayEvent` / `ReplayTimelineEntry` 承载
+sample-time，`effective_time_ms()` 优先取 sample-time、否则回退 receive-time，`ReplayDriver`（Rust 与
+C++）按 effective time 排序并逐周期步进。录制侧 `RecordEnvelope.sample_time_ns` 承载采集时刻（无值时
+不序列化）；声明了 timestamp 源的 boundary input 被注入时，runtime 经
+`register_boundary_input_with_sample_time` 的 typed 提取器（`decode_frame` 后读 stamp 字段 × unit→ns）
+写入 envelope，生成 Rust/C++ runtime shell 对此类 boundary 自动改走该注册入口。两语言共享 sample-time
+源解析，行为一致。
 
-`v0.17.0` 是该发布线的 Rust 侧内核：`flowrt::ReplayDriver` 在「下一个事件时间」与「下一个 periodic
-网格点」间取较早者推进逻辑时钟；`TimeDriver` 抽象让调度对时间来源不可知；`SteppedDriver` +
-`StepController` 为 external_stepped 预备；`flowrt-record` 的 MCAP→回放时间线 reader 与 runtime
-`replay_driver_from_mcap` 装配只含本图 boundary 激励的时间线。realtime 调度路径不变。
+多传感器同步（`[[sync]]` / synchronizer / `on_synchronized`）、external_stepped 点亮与跨机 drift 是更大
+的独立时间语义，各自留待后续版本（`v0.19.0` Multi-Sensor Synchronization 起）。
 
-external_stepped 点亮与 sensor event-time（含多传感器同步）留待 `v0.18.0` C++/Rust 同步实现。
+上一发布线 `v0.17.1 Deterministic Replay C++ Parity` 在 `v0.17.0` 的 Rust 运行时回放内核上补齐 C++
+跨语言 parity。运行时原生确定性回放把 simulated_replay 回放从「外部经 introspection socket 由
+wall-clock 节奏逐事件注入」改为「runtime 自己拥有回放事件时间线、确定性逐周期步进」，闭合
+record→replay 往返，使回放结果只取决于事件序列、与物理快慢无关，且周期 task 在两事件之间逐周期触发
+（积分粒度与 realtime 对齐）；`v0.17.1` 把该内核镜像到 C++（`flowrt/replay.hpp` ReplayDriver、boundary
+激励录制、生成 C++ shell 走原生回放，与 Rust 字节级对齐），C++ 经 JSONL 回放源消费（CLI 把 MCAP
+规范化为 JSONL，单一 MCAP 解析点保留在 Rust）。
 
 上一发布线 `v0.16.0 Clock Model & Deterministic Replay` 把 clock source 提升为 Contract IR 一等
 概念（`realtime` / `simulated_replay` / `external_stepped`，由 normalization 派生、validator 重新
@@ -461,7 +465,8 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.16.0` | Clock Model & Deterministic Replay：clock source 成为 Contract IR 一等概念，用户经 `context.now()/dt()` 取时间，simulated_replay 调度去除 wall-clock 绑定使回放结果与物理快慢无关；逐周期回放步进与 runtime 原生确定性回放驱动留待后续。 |
 | `v0.17.0` | Deterministic Replay (Runtime-Native)：runtime 自己拥有回放事件时间线并逐周期确定性步进，闭合 record→replay，回放结果与物理快慢无关；Rust 侧内核，C++ parity 在 `v0.17.1`。 |
 | `v0.17.1` | Deterministic Replay C++ Parity：把 v0.17.0 的运行时原生回放内核镜像到 C++（`flowrt/replay.hpp` ReplayDriver、boundary 激励录制、生成 C++ shell 走原生回放），与 Rust 字节级对齐；C++ 经 JSONL 回放源消费（CLI 把 MCAP 规范化为 JSONL）。 |
-| `v0.18.0` | Sensor Time & Synchronization（C++/Rust 同步）：引入 sensor event time、跨机器同步能力声明与多传感器同步策略；同时点亮 external_stepped（C++/Rust 同步）。 |
+| `v0.18.0` | Sensor Event-Time：RSDL 声明 sensor sample-time 源（`[type.<Name>.timestamp]`），record→replay 按 sensor 采集时刻（event-time）确定性步进而非到达时刻；生成 Rust/C++ shell 对此类 boundary 注册 typed sample-time 提取器，两语言一致。 |
+| `v0.19.0` | Multi-Sensor Synchronization：`[[sync]]` 同步组（exact/approx、window/tolerance、late policy）→ codegen synchronizer 与 `on_synchronized` 触发；event-time 作可驱动 clock domain。external_stepped 点亮与跨机 drift capability 各自另立后续版本。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -593,14 +598,14 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   用同一事件序列断言一致；C++ 无 MCAP 解析能力，经 `flowrt-record` 的 JSONL 回放源消费（CLI 启动
   C++ 应用前把 MCAP 规范化为 JSONL，单一 MCAP 解析点保留在 Rust）。把 C++ parity 作为同轴 `.Z`
   补丁紧跟 `v0.17.0`，回放行为不再有跨语言分叉。
-- `v0.18.0` 在 `v0.16.0` 的 clock domain 脚手架上扩展第四种时间基准 sensor event time，并补齐多
-  传感器同步；同时把 external_stepped 点亮做到 C++/Rust parity（`v0.17.0`/`v0.17.1` 已把运行时
-  原生确定性回放在两侧做到 parity）。在 RSDL / Contract IR 建模 clock domain、timestamp
-  source、unit、epoch、同步能力和派生诊断；定义 sample time、publish time、receive time、scheduled
-  time 与 observed time 的关系；为多传感器 exact sync、approx sync、window/tolerance 和 late sample
-  policy 提供可校验语义；record/replay 同时保持 deterministic runtime time 与真实 event-time 差异，
-  status / diagnostics / record 输出 drift 和 sync 状态。validator 不得把未声明 clock domain 的
-  sensor timestamp 隐式当成同步依据，也不得把 PTP、NTP 或跨机器同步能力写成 backend 内部假设。
+- `v0.18.0` 在 `v0.16.0` 的 clock domain 脚手架上引入 sensor event-time 作为回放时间轴：RSDL
+  `[type.<Name>.timestamp]` 建模 sample-time 字段、unit、epoch 与 clock domain；record 承载
+  `sample_time_ns`，replay 按 sample-time（effective time）确定性步进；生成 Rust/C++ shell 对声明源的
+  boundary 注册 typed sample-time 提取器，两语言字节级一致。本版本只做单轴 event-time。
+- `v0.19.0` 起承接多传感器同步：`[[sync]]` 同步组（exact/approx、window/tolerance、late sample
+  policy）→ codegen synchronizer 与 `on_synchronized` 触发，event-time 作可驱动 clock domain；
+  external_stepped 点亮与跨机器 drift capability 各自另立后续版本。validator 不得把未声明 clock domain
+  的 sensor timestamp 隐式当成同步依据，也不得把 PTP、NTP 或跨机器同步能力写成 backend 内部假设。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 

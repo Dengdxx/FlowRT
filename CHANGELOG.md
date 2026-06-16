@@ -4,6 +4,40 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.18.0 - 2026-06-16
+
+### 新增
+
+- Sensor event-time 源声明：RSDL 消息可用 `[type.<Name>.timestamp]` 子表声明承载 sample 时间戳
+  的字段及时钟语义（`field` + `unit` ns/us/ms + `epoch` monotonic/unix + `clock_domain`），归一化进
+  Contract IR（`TypeIr.timestamp`）。validator 校验 `field` 指向本消息的 unsigned 整数标量字段，并
+  拒绝未知 unit/epoch 枚举值；`timestamp` 仍可作普通字段名（按值类型区分子表与字段）。
+- 回放按 sensor sample-time（event-time）确定性步进：`ReplayEvent` / `ReplayTimelineEntry` 承载
+  `sample_time`，`effective_time_ms()` 优先取 sample-time、否则回退 receive-time；`ReplayDriver`
+  按 effective time 排序与逐周期步进（Rust 与 C++ 一致）。回放结果取决于 sensor 采集时刻而非
+  录制时的到达时刻。
+- 录制承载 sample-time：`RecordEnvelope.sample_time_ns`（可选字段，无值时不序列化）；
+  `read_replay_timeline` 由 envelope 填充 `sample_time_ms` 并按 effective time 排序。声明了
+  timestamp 源的 boundary input 被注入时，runtime 从 payload 提取 sample-time 写入 envelope。
+- runtime 新增 `register_boundary_input_with_sample_time`（Rust 与 C++）：注册带 typed sample-time
+  提取器的 boundary input；`publish_boundary_input` 录制激励时填入 `sample_time_ns`，供 event-time
+  回放使用。
+
+### 变更
+
+- 生成 Rust/C++ runtime shell 对声明了 timestamp 源的 boundary input，改用
+  `register_boundary_input_with_sample_time` 注册并附带 typed 提取器闭包（`decode_frame` 后读 stamp
+  字段 × unit→ns）；未声明源的 boundary 仍走原 `register_boundary_input`。两语言共享同一 sample-time
+  源解析，行为一致。
+
+### 测试
+
+- 新增 `scripts/test-v0180-event-time-smoke.sh` focused smoke（接入 release-gate registry 与 CI）：除
+  IR/validator、record→replay、codegen 字符串断言外，真编译生成工程的 event-time 分支——C++ shell
+  经 `g++` 语法校验、Rust island 经 `flowrt build` 出终产物，关闭「字符串断言不编译生成代码」缺口。
+- 新增 codegen 双语言发射断言、Rust 录制 sample_time_ns 单测、C++ `introspection_smoke` 录制
+  sample-time ctest。
+
 ## v0.17.1 - 2026-06-16
 
 ### 新增
