@@ -2,9 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness,
-    LanguageKind, OperationConcurrencyPolicy, OperationPreemptPolicy,
-    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, PortIr,
-    Ros2BridgeDirection, StalePolicy as IrStalePolicy,
+    LanguageKind, OperationConcurrencyPolicy, OperationPreemptPolicy, ParamIr, ParamType,
+    ParamUpdatePolicy, ParamValue, PortIr, Ros2BridgeDirection, StalePolicy as IrStalePolicy,
 };
 
 mod app_constructor;

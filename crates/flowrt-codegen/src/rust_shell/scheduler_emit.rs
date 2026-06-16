@@ -348,7 +348,7 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
         task_name,
         trigger,
     } = emission;
-    let trigger = rust_trigger_name(trigger);
+    let trigger = crate::runtime_plan::runtime_trigger_name(trigger);
     let call_args = rust_collect_task_call_args_for_scheduler(contract, graph, task).join(", ");
     let capture_prelude =
         emit_rust_task_capture_prelude(contract, graph, binds, bridges, boundaries, task);
@@ -802,15 +802,6 @@ fn rust_scheduler_advance_block(contract: &ContractIr, next_deadline_expr: &str)
             &rust_scheduler_data_time_update(contract, "                        "),
         ));
         block
-    }
-}
-
-fn rust_trigger_name(trigger: TriggerKind) -> &'static str {
-    match trigger {
-        TriggerKind::Periodic => "periodic",
-        TriggerKind::OnMessage => "on_message",
-        TriggerKind::Startup => "startup",
-        TriggerKind::Shutdown => "shutdown",
     }
 }
 

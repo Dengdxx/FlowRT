@@ -311,7 +311,7 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     for task in &scheduler_plan.dataflow_tasks {
         let task_id = task.id;
         let task_name = &task.timing_name;
-        let trigger = cpp_trigger_name(task.trigger);
+        let trigger = crate::runtime_plan::runtime_trigger_name(task.trigger);
         output.push_str(&format!(
             "                            case {task_id}: return {{{}, {}}};\n",
             cpp_string_literal(task_name),
@@ -531,15 +531,6 @@ pub(super) fn cpp_task_clock_source_expr(contract: &ContractIr) -> &'static str 
         "flowrt::ClockSource::Runtime"
     } else {
         "flowrt::ClockSource::Replay"
-    }
-}
-
-pub(super) fn cpp_trigger_name(trigger: flowrt_ir::TriggerKind) -> &'static str {
-    match trigger {
-        flowrt_ir::TriggerKind::Periodic => "periodic",
-        flowrt_ir::TriggerKind::OnMessage => "on_message",
-        flowrt_ir::TriggerKind::Startup => "startup",
-        flowrt_ir::TriggerKind::Shutdown => "shutdown",
     }
 }
 

@@ -1,7 +1,4 @@
-use flowrt_ir::{
-    ChannelEdgeIr, ChannelKind, ContractIr, GraphIr, OverflowPolicy as IrOverflowPolicy,
-    StalePolicy as IrStalePolicy,
-};
+use flowrt_ir::{ChannelEdgeIr, ChannelKind, ContractIr, GraphIr, StalePolicy as IrStalePolicy};
 
 use crate::messages::rust_type;
 use crate::runtime_plan::{
@@ -369,7 +366,7 @@ fn zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
         ChannelKind::Fifo => format!(
             "flowrt::zenoh::ZenohChannelConfig::fifo({}, {}).with_stale_config({})",
             bind.depth.unwrap_or(1),
-            runtime_overflow_policy(bind.overflow),
+            crate::runtime_plan::runtime_overflow_policy_path(bind.overflow),
             runtime_stale_config_expr(bind)
         ),
     }
@@ -377,7 +374,7 @@ fn zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
 
 fn runtime_fifo_channel_initializer(bind: &BindRuntimePlan) -> String {
     let depth = bind.depth.unwrap_or(1);
-    let overflow = runtime_overflow_policy(bind.overflow);
+    let overflow = crate::runtime_plan::runtime_overflow_policy_path(bind.overflow);
     if bind.max_age_ms.is_none() && bind.stale == IrStalePolicy::Warn {
         return format!("flowrt::FifoChannel::new({depth}, {overflow})");
     }
@@ -399,7 +396,7 @@ fn iox2_channel_config_expr(bind: &BindRuntimePlan) -> String {
         ChannelKind::Fifo => format!(
             "flowrt::iox2::Iox2ChannelConfig::fifo({}, {}).with_stale_config({})",
             bind.depth.unwrap_or(1),
-            runtime_overflow_policy(bind.overflow),
+            crate::runtime_plan::runtime_overflow_policy_path(bind.overflow),
             runtime_stale_config_expr(bind)
         ),
     }
@@ -409,30 +406,12 @@ fn runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
     match bind.max_age_ms {
         Some(max_age_ms) => format!(
             "flowrt::StaleConfig::new(Some({max_age_ms}), {})",
-            runtime_stale_policy(bind.stale)
+            crate::runtime_plan::runtime_stale_policy_path(bind.stale)
         ),
         None => format!(
             "flowrt::StaleConfig::new(None, {})",
-            runtime_stale_policy(bind.stale)
+            crate::runtime_plan::runtime_stale_policy_path(bind.stale)
         ),
-    }
-}
-
-fn runtime_overflow_policy(policy: IrOverflowPolicy) -> &'static str {
-    match policy {
-        IrOverflowPolicy::DropOldest => "flowrt::OverflowPolicy::DropOldest",
-        IrOverflowPolicy::DropNewest => "flowrt::OverflowPolicy::DropNewest",
-        IrOverflowPolicy::Error => "flowrt::OverflowPolicy::Error",
-        IrOverflowPolicy::Block => "flowrt::OverflowPolicy::Block",
-    }
-}
-
-fn runtime_stale_policy(policy: IrStalePolicy) -> &'static str {
-    match policy {
-        IrStalePolicy::Warn => "flowrt::StalePolicy::Warn",
-        IrStalePolicy::Drop => "flowrt::StalePolicy::Drop",
-        IrStalePolicy::HoldLast => "flowrt::StalePolicy::HoldLast",
-        IrStalePolicy::Error => "flowrt::StalePolicy::Error",
     }
 }
 

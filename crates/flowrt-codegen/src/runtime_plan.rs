@@ -610,6 +610,37 @@ pub(crate) fn bind_backend(bind: &BindRuntimePlan) -> &str {
     bind.backend.0.as_str()
 }
 
+/// channel overflow policy 的 runtime 枚举路径。`flowrt::OverflowPolicy::X` 在 Rust 与 C++ 生成
+/// 代码中拼写一致，故两语言 shell 共用本映射，避免 enum→string 孪生漂移。
+pub(crate) fn runtime_overflow_policy_path(policy: IrOverflowPolicy) -> &'static str {
+    match policy {
+        IrOverflowPolicy::DropOldest => "flowrt::OverflowPolicy::DropOldest",
+        IrOverflowPolicy::DropNewest => "flowrt::OverflowPolicy::DropNewest",
+        IrOverflowPolicy::Error => "flowrt::OverflowPolicy::Error",
+        IrOverflowPolicy::Block => "flowrt::OverflowPolicy::Block",
+    }
+}
+
+/// channel stale policy 的 runtime 枚举路径，两语言 shell 共用，理由同上。
+pub(crate) fn runtime_stale_policy_path(policy: IrStalePolicy) -> &'static str {
+    match policy {
+        IrStalePolicy::Warn => "flowrt::StalePolicy::Warn",
+        IrStalePolicy::Drop => "flowrt::StalePolicy::Drop",
+        IrStalePolicy::HoldLast => "flowrt::StalePolicy::HoldLast",
+        IrStalePolicy::Error => "flowrt::StalePolicy::Error",
+    }
+}
+
+/// task trigger 的诊断名（launch/selfdesc 等语言无关产物），两语言 shell 共用同一拼写。
+pub(crate) fn runtime_trigger_name(trigger: TriggerKind) -> &'static str {
+    match trigger {
+        TriggerKind::Periodic => "periodic",
+        TriggerKind::OnMessage => "on_message",
+        TriggerKind::Startup => "startup",
+        TriggerKind::Shutdown => "shutdown",
+    }
+}
+
 pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> bool {
     let facts = validated_contract_derived_facts(contract);
     contract_uses_backend_with_facts(contract, &facts, backend)

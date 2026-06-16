@@ -725,7 +725,7 @@ pub(super) fn cpp_zenoh_channel_config_expr(bind: &BindRuntimePlan) -> String {
         ChannelKind::Fifo => format!(
             "flowrt::zenoh::ZenohChannelConfig::fifo({}, {}).with_stale_config({})",
             bind.depth.unwrap_or(1),
-            cpp_runtime_overflow_policy(bind.overflow),
+            crate::runtime_plan::runtime_overflow_policy_path(bind.overflow),
             cpp_runtime_stale_config_expr(bind)
         ),
     }
@@ -740,7 +740,7 @@ pub(super) fn cpp_iox2_channel_config_expr(bind: &BindRuntimePlan) -> String {
         ChannelKind::Fifo => format!(
             "flowrt::iox2::Iox2ChannelConfig::fifo({}, {}).with_stale_config({})",
             bind.depth.unwrap_or(1),
-            cpp_runtime_overflow_policy(bind.overflow),
+            crate::runtime_plan::runtime_overflow_policy_path(bind.overflow),
             cpp_runtime_stale_config_expr(bind)
         ),
     }
@@ -760,7 +760,7 @@ pub(super) fn cpp_runtime_latest_channel_initializer(bind: &BindRuntimePlan) -> 
 
 pub(super) fn cpp_runtime_fifo_channel_initializer(bind: &BindRuntimePlan) -> String {
     let depth = bind.depth.unwrap_or(1);
-    let overflow = cpp_runtime_overflow_policy(bind.overflow);
+    let overflow = crate::runtime_plan::runtime_overflow_policy_path(bind.overflow);
     if bind.max_age_ms.is_none() && bind.stale == IrStalePolicy::Warn {
         return format!("{depth}, {overflow}");
     }
@@ -778,11 +778,11 @@ pub(super) fn cpp_runtime_stale_config_expr(bind: &BindRuntimePlan) -> String {
     match bind.max_age_ms {
         Some(max_age_ms) => format!(
             "flowrt::StaleConfig{{std::chrono::milliseconds{{{max_age_ms}}}, {}}}",
-            cpp_runtime_stale_policy(bind.stale)
+            crate::runtime_plan::runtime_stale_policy_path(bind.stale)
         ),
         None => format!(
             "flowrt::StaleConfig{{{}}}",
-            cpp_runtime_stale_policy(bind.stale)
+            crate::runtime_plan::runtime_stale_policy_path(bind.stale)
         ),
     }
 }
