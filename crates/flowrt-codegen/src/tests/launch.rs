@@ -1029,19 +1029,25 @@ backend = "inproc"
     assert_eq!(selfdesc["artifact"]["clock"]["field"], "tick_time_ms");
     assert!(rust_shell.contains("let clock_source = \"simulated_replay\";"));
     assert!(!rust_shell.contains("let scheduler_started_at = std::time::Instant::now();"));
-    // v0.17.0：simulated_replay 调度由 runtime 原生回放驱动推进，不再读外部注入的 data_time，
-    // 也不计算 wall-clock deadline；逐周期步进与事件注入都由 ReplayDriver 在进程内完成。
-    assert!(!rust_shell.contains("scheduler_events.take_data_time_ms()"));
-    assert!(!rust_shell.contains("scheduler_events.wait_until_after("));
-    assert!(!rust_shell.contains("let next_wake_deadline ="));
-    // runtime 从 FLOWRT_REPLAY_SOURCE 装配回放时间线，只重放本图 boundary 激励。
+    // v0.17.1：simulated_replay 双子模式由 FLOWRT_REPLAY_SOURCE 选择。设置时 runtime 原生确定
+    // 回放从 MCAP 装配时间线、逐周期步进、命中事件经 publish_boundary_input 注入；未设置时回退
+    // 到外部 socket 注入（flowrt replay / temporary island 交互式回放）。
     assert!(rust_shell.contains("std::env::var(\"FLOWRT_REPLAY_SOURCE\")"));
     assert!(rust_shell.contains("flowrt::replay_driver_from_mcap("));
     assert!(rust_shell.contains("[\"sample_in\"]"));
-    // 逐步推进逻辑时钟，命中事件时把边界激励经 publish_boundary_input 注入回 boundary input。
-    assert!(rust_shell.contains("replay_driver.next_step(next_periodic_deadline_ms, &shutdown)"));
+    assert!(rust_shell.contains("if let Some(replay_driver) = replay_time_driver.as_mut()"));
+    assert!(rust_shell.contains("replay_driver.step(next_periodic_deadline_ms)"));
     assert!(rust_shell.contains("for replay_event in replay_driver.take_pending_events()"));
     assert!(rust_shell.contains("introspection_state.publish_boundary_input("));
+    // 回退分支：等待 socket 注入并按注入样本 data_time 推进逻辑时钟。
+    assert!(
+        rust_shell.contains(
+            "scheduler_events.wait_until_after(observed_data_generation, None, &shutdown)"
+        )
+    );
+    assert!(rust_shell.contains("scheduler_events.take_data_time_ms()"));
+    // 不计算 realtime wall-clock deadline。
+    assert!(!rust_shell.contains("let next_wake_deadline ="));
 }
 
 #[test]
@@ -1086,22 +1092,23 @@ backend = "inproc"
     let bundle = emit_artifacts(&island).unwrap();
     let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
 
-    // v0.17.1：simulated_replay 的 C++ 调度由 runtime 原生回放驱动推进，不再读外部注入的
-    // data_time、不计算 steady_clock 节拍；runtime 从 FLOWRT_REPLAY_SOURCE 装配 JSONL 回放
-    // 时间线，只重放本图 boundary 激励，命中事件经 publish_boundary_input 注入。
+    // v0.17.1：simulated_replay 的 C++ 调度双子模式由 FLOWRT_REPLAY_SOURCE 选择。设置时 runtime
+    // 原生确定回放从 JSONL 时间线装配、逐步推进、命中事件经 publish_boundary_input 注入；未设置
+    // 时回退到外部 socket 注入（flowrt replay / temporary island 交互式回放）。
     assert!(
         cpp_shell.contains("const auto clock_source = std::string_view{\"simulated_replay\"};")
     );
     assert!(cpp_shell.contains("std::getenv(\"FLOWRT_REPLAY_SOURCE\")"));
     assert!(cpp_shell.contains("flowrt::replay_driver_from_timeline_file("));
     assert!(cpp_shell.contains("replay_boundary_inputs = {\"sample_in\"}"));
+    assert!(cpp_shell.contains("if (replay_time_driver.has_value())"));
     assert!(cpp_shell.contains("replay_driver.next_step("));
     assert!(cpp_shell.contains("introspection_state.publish_boundary_input("));
-    // 回放路径不再走 wall-clock 等待外部注入，也不再从注入的 data_time 推进逻辑时钟。
-    assert!(!cpp_shell.contains(
+    // 回退分支：等待 socket 注入并按注入样本 data_time 推进逻辑时钟。
+    assert!(cpp_shell.contains(
         "scheduler_events.wait_until_after(observed_data_generation, std::nullopt, shutdown)"
     ));
-    assert!(!cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
+    assert!(cpp_shell.contains("scheduler_now_ms = std::max(scheduler_now_ms, *data_time_ms);"));
 }
 
 #[test]

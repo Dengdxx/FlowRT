@@ -713,9 +713,10 @@ fn rust_scheduler_wake_block(
 
 /// 为 replay 时钟源生成运行时原生回放驱动初始化。
 ///
-/// 读取 `FLOWRT_REPLAY_SOURCE` 指向的 MCAP，只装配目标在本图 input boundary 名集合内的外部
-/// 激励事件。缺少环境变量或加载失败时 `eprintln` 并把 `status` 置 `Error`（不 panic），while
-/// 循环因此不进入，run 返回 `Error`。realtime 时钟源不生成本块。
+/// 设置 `FLOWRT_REPLAY_SOURCE` 时读取其指向的 MCAP，只装配目标在本图 input boundary 名集合内的
+/// 外部激励事件，进入 runtime 原生确定性回放；加载失败 `eprintln` 并把 `status` 置 `Error`
+/// （不 panic）。未设置环境变量时 driver 为 `None`，调度回退到外部 socket 注入（`flowrt replay` /
+/// temporary island 交互式回放），不是错误。realtime 时钟源不生成本块。
 fn rust_scheduler_replay_driver_init(
     contract: &ContractIr,
     boundaries: &[BoundaryRuntimePlan],
@@ -741,11 +742,7 @@ fn rust_scheduler_replay_driver_init(
                     }
                 }
             }
-            _ => {
-                eprintln!("FlowRT: simulated_replay 运行时需要设置 FLOWRT_REPLAY_SOURCE");
-                status = flowrt::Status::Error;
-                None
-            }
+            _ => None,
         };
 "#;
     template.replace("__NAMES__", &names)
@@ -754,28 +751,42 @@ fn rust_scheduler_replay_driver_init(
 /// 生成 scheduler 每个 tick 之后推进逻辑时钟的块。
 ///
 /// realtime：保持既有行为——run_ticks 有界且无 pending 时按 base period 推进并 continue，否则
-/// 按 wall-clock deadline 等待下一个 periodic deadline 或数据事件。replay：由 runtime 原生
-/// [`flowrt::TimeDriver`] 在「下一个事件时间」与「下一个 periodic 网格点」间逐步推进逻辑
-/// 时钟，命中事件时把暂存的边界激励经 `publish_boundary_input` 注入，时间线耗尽即结束。
+/// 按 wall-clock deadline 等待下一个 periodic deadline 或数据事件。simulated_replay 两种子模式由
+/// `FLOWRT_REPLAY_SOURCE` 选择：设置时走 runtime 原生确定性回放（`ReplayDriver` 在「下一个事件
+/// 时间」与「下一个 periodic 网格点」间逐步推进，命中事件经 `publish_boundary_input` 注入）；
+/// 未设置时回退到外部 socket 注入（`flowrt replay` / temporary island 交互式回放），等待注入的
+/// 边界事件并按其 `published_at_ms` 推进逻辑时钟。
 fn rust_scheduler_advance_block(contract: &ContractIr, next_deadline_expr: &str) -> String {
     if rust_scheduler_uses_data_time(contract) {
-        let template = r#"                let Some(replay_driver) = replay_time_driver.as_mut() else {
-                    break;
-                };
-                let next_periodic_deadline_ms = __NEXT_DEADLINE__;
-                match replay_driver.next_step(next_periodic_deadline_ms, &shutdown) {
-                    flowrt::Step::Shutdown => break,
-                    flowrt::Step::Timer => {
-                        scheduler_now_ms = replay_driver.now_ms();
+        let template = r#"                if let Some(replay_driver) = replay_time_driver.as_mut() {
+                    if shutdown.is_requested() {
+                        break;
                     }
-                    flowrt::Step::Data => {
-                        scheduler_now_ms = replay_driver.now_ms();
-                        for replay_event in replay_driver.take_pending_events() {
-                            let _ = introspection_state.publish_boundary_input(
-                                &replay_event.target,
-                                replay_event.payload,
-                                Some(replay_event.time_ms),
-                            );
+                    let next_periodic_deadline_ms = __NEXT_DEADLINE__;
+                    match replay_driver.step(next_periodic_deadline_ms) {
+                        flowrt::Step::Shutdown => break,
+                        flowrt::Step::Timer => {
+                            scheduler_now_ms = replay_driver.now_ms();
+                        }
+                        flowrt::Step::Data => {
+                            scheduler_now_ms = replay_driver.now_ms();
+                            for replay_event in replay_driver.take_pending_events() {
+                                let _ = introspection_state.publish_boundary_input(
+                                    &replay_event.target,
+                                    replay_event.payload,
+                                    Some(replay_event.time_ms),
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    match scheduler_events.wait_until_after(observed_data_generation, None, &shutdown) {
+                        flowrt::ScheduleEvent::Shutdown => break,
+                        flowrt::ScheduleEvent::Timer => {}
+                        flowrt::ScheduleEvent::Data => {
+                            if let Some(data_time_ms) = scheduler_events.take_data_time_ms() {
+                                scheduler_now_ms = scheduler_now_ms.max(data_time_ms);
+                            }
                         }
                     }
                 }
