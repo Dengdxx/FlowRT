@@ -14,6 +14,7 @@ mod contract_tests;
 mod graph_tests;
 mod message_tests;
 mod resource_tests;
+mod sync_tests;
 
 fn variable_frame_contract(backend: &str) -> ContractIr {
     let target_backends = if backend == "iox2" {

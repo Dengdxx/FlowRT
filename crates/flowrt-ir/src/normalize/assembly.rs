@@ -149,6 +149,7 @@ fn normalize_default_graph(
         &boundary_endpoints,
         &graph_name,
     )?;
+    let sync_groups = graphs::normalize_sync_groups(document, &instance_refs, &graph_name)?;
 
     Ok(GraphIr {
         id: graph_id,
@@ -164,6 +165,6 @@ fn normalize_default_graph(
         operations: operation_edges,
         boundary_endpoints,
         ros2_bridges,
-        sync_groups: Vec::new(),
+        sync_groups,
     })
 }

@@ -112,6 +112,7 @@ pub(super) fn merge_imported_document(
     document.service_binds.extend(imported.service_binds);
     document.operation_binds.extend(imported.operation_binds);
     document.ros2_bridges.extend(imported.ros2_bridges);
+    document.sync_groups.extend(imported.sync_groups);
     merge_named_vec(
         "boundary.input",
         &mut document.boundary_inputs,

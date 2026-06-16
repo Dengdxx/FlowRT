@@ -380,6 +380,7 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
             "priority",
             "input",
             "output",
+            "sync",
         ],
     )?;
 
@@ -399,6 +400,7 @@ fn parse_task(instance_name: &str, table: &Table) -> Result<RawTask> {
         priority: optional_u32(table, &context, "priority")?,
         input: optional_string_array(table, &context, "input")?,
         output: optional_string_array(table, &context, "output")?,
+        sync: optional_string(table, &context, "sync")?,
     })
 }
 
@@ -482,6 +484,43 @@ pub(super) fn parse_processes(root: &Table) -> Result<Vec<RawProcess>> {
             nice: optional_i32(table, &context, "nice")?,
             rt_policy: optional_string(table, &context, "rt_policy")?,
             rt_priority: optional_u32(table, &context, "rt_priority")?,
+        });
+    }
+    Ok(parsed)
+}
+
+pub(super) fn parse_sync_groups(root: &Table) -> Result<Vec<RawSyncGroup>> {
+    let Some(sync_value) = root.get("sync") else {
+        return Ok(Vec::new());
+    };
+    let groups = sync_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "document".to_string(),
+            field: "sync".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(groups.len());
+    for (index, value) in groups.iter().enumerate() {
+        let context = format!("sync[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "document".to_string(),
+                field: "sync".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &["name", "instance", "inputs", "tolerance_ms"],
+        )?;
+        parsed.push(RawSyncGroup {
+            name: required_string(table, &context, "name")?,
+            instance: required_string(table, &context, "instance")?,
+            inputs: optional_string_array(table, &context, "inputs")?,
+            tolerance_ms: optional_u64(table, &context, "tolerance_ms")?,
         });
     }
     Ok(parsed)

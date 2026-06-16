@@ -12,9 +12,9 @@ use crate::{
     IrError, OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr,
     ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr,
     ResourceProviderIr, ResourceProviderScope, ResourceSatisfactionIr, Result, RtPolicy,
-    StalePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr, channel_capabilities,
-    channel_route_capabilities, deployment_capability_decision, graph_required_capabilities,
-    parse_type_expr,
+    StalePolicy, SyncGroupIr, SyncLatePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities, parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -131,7 +131,10 @@ pub(super) fn normalize_instances(
                 priority: raw_task.priority,
                 inputs: raw_task.input.clone(),
                 outputs: raw_task.output.clone(),
-                sync_group: None,
+                sync_group: raw_task.sync.as_ref().map(|group| EntityRef {
+                    id: entity_id("sync", &format!("{graph_name}.{group}")),
+                    name: group.clone(),
+                }),
             });
         }
 
@@ -823,6 +826,36 @@ fn normalize_boundary_endpoint(
         port: parse_port_ref(&raw.port, instance_refs)?,
         ty: resolver.resolve_type_expr_in_module(parse_type_expr(&raw.ty)?, None)?,
     })
+}
+
+pub(super) fn normalize_sync_groups(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    graph_name: &str,
+) -> Result<Vec<SyncGroupIr>> {
+    let mut groups =
+        document
+            .sync_groups
+            .iter()
+            .map(|raw| {
+                let instance = instance_refs.get(&raw.instance).cloned().ok_or_else(|| {
+                    IrError::InvalidValue {
+                        context: format!("sync.{}", raw.name),
+                        message: format!("unknown instance `{}`", raw.instance),
+                    }
+                })?;
+                Ok(SyncGroupIr {
+                    id: entity_id("sync", &format!("{graph_name}.{}", raw.name)),
+                    name: raw.name.clone(),
+                    instance,
+                    inputs: raw.inputs.clone(),
+                    tolerance_ms: raw.tolerance_ms.unwrap_or(0),
+                    late_policy: SyncLatePolicy::DropLate,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(groups)
 }
 
 pub(super) fn normalize_deployments(

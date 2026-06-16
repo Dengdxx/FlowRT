@@ -18,7 +18,7 @@ use tables::{
     parse_binds, parse_boundary_endpoints, parse_component, parse_external_processes,
     parse_instance, parse_module, parse_named_tables, parse_operation_binds, parse_package,
     parse_processes, parse_profile, parse_resource_providers, parse_ros2_bridges,
-    parse_service_binds, parse_target, parse_type, parse_workspace,
+    parse_service_binds, parse_sync_groups, parse_target, parse_type, parse_workspace,
 };
 use workspace::expand_workspace;
 
@@ -39,6 +39,7 @@ struct ParsedDocument {
     ros2_bridges: Vec<RawRos2Bridge>,
     boundary_inputs: Vec<RawBoundaryEndpoint>,
     boundary_outputs: Vec<RawBoundaryEndpoint>,
+    sync_groups: Vec<RawSyncGroup>,
     profiles: BTreeMap<String, RawProfile>,
     targets: BTreeMap<String, RawTarget>,
 }
@@ -153,6 +154,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         ros2_bridges: parse_ros2_bridges(root)?,
         boundary_inputs: parse_boundary_endpoints(root, "input")?,
         boundary_outputs: parse_boundary_endpoints(root, "output")?,
+        sync_groups: parse_sync_groups(root)?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
     })
@@ -174,6 +176,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         ros2_bridges: parsed.ros2_bridges,
         boundary_inputs: parsed.boundary_inputs,
         boundary_outputs: parsed.boundary_outputs,
+        sync_groups: parsed.sync_groups,
         profiles: parsed.profiles,
         targets: parsed.targets,
     })
@@ -1839,6 +1842,59 @@ stamp_ns = "u64"
 
 [type.ImuSample.timestamp]
 field = "stamp_ns"
+bogus = "x"
+"#;
+        assert!(parse_str(source).is_err());
+    }
+
+    #[test]
+    fn parses_sync_group_and_task_sync_reference() {
+        let source = r#"
+[package]
+name = "fusion"
+rsdl_version = "0.1"
+
+[component.fusion]
+language = "rust"
+input = ["imu:Imu", "odom:Odom"]
+
+[instance.fusion]
+component = "fusion"
+
+[instance.fusion.task]
+trigger = "on_synchronized"
+sync = "fused_in"
+
+[[sync]]
+name = "fused_in"
+instance = "fusion"
+inputs = ["imu", "odom"]
+tolerance_ms = 10
+"#;
+        let raw = parse_str(source).unwrap();
+        assert_eq!(raw.sync_groups.len(), 1);
+        let group = &raw.sync_groups[0];
+        assert_eq!(group.name, "fused_in");
+        assert_eq!(group.instance, "fusion");
+        assert_eq!(group.inputs, vec!["imu", "odom"]);
+        assert_eq!(group.tolerance_ms, Some(10));
+        assert_eq!(
+            raw.instances["fusion"].tasks[0].sync.as_deref(),
+            Some("fused_in")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_field_in_sync_table() {
+        let source = r#"
+[package]
+name = "fusion"
+rsdl_version = "0.1"
+
+[[sync]]
+name = "fused_in"
+instance = "fusion"
+inputs = ["imu", "odom"]
 bogus = "x"
 "#;
         assert!(parse_str(source).is_err());

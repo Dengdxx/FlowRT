@@ -38,6 +38,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_boundary_mode(ir, graph, errors);
         validate_boundary_endpoints(&components, &instances, graph, errors);
         validate_tasks(ir, &components, &instances, graph, errors);
+        validate_sync_groups(ir, &components, &instances, graph, errors);
         validate_instance_params(&components, &instances, graph, errors);
         validate_binds(&components, &instances, graph, errors);
         validate_service_binds(&components, &instances, graph, errors);
@@ -766,6 +767,42 @@ fn validate_tasks(
                 instance.name
             )));
         }
+        if task.trigger == TriggerKind::OnSynchronized {
+            if !task.inputs.is_empty() {
+                errors.push(ValidationError::new(format!(
+                    "on_synchronized task on instance `{}` must not list inputs; inputs come from its sync group",
+                    instance.name
+                )));
+            }
+            match &task.sync_group {
+                None => errors.push(ValidationError::new(format!(
+                    "on_synchronized task on instance `{}` must reference a sync group",
+                    instance.name
+                ))),
+                Some(group_ref) => match graph
+                    .sync_groups
+                    .iter()
+                    .find(|group| group.name == group_ref.name)
+                {
+                    None => errors.push(ValidationError::new(format!(
+                        "on_synchronized task on instance `{}` references unknown sync group `{}`",
+                        instance.name, group_ref.name
+                    ))),
+                    Some(group) if group.instance.name != task.instance.name => {
+                        errors.push(ValidationError::new(format!(
+                            "on_synchronized task on instance `{}` references sync group `{}` owned by instance `{}`",
+                            instance.name, group_ref.name, group.instance.name
+                        )))
+                    }
+                    Some(_) => {}
+                },
+            }
+        } else if task.sync_group.is_some() {
+            errors.push(ValidationError::new(format!(
+                "task on instance `{}` must not set sync unless trigger is on_synchronized",
+                instance.name
+            )));
+        }
         if task.concurrency == TaskConcurrency::Parallel
             && component.concurrency != TaskConcurrency::Parallel
         {
@@ -784,6 +821,94 @@ fn validate_tasks(
             island_enabled,
             errors,
         );
+    }
+}
+
+fn validate_sync_groups(
+    ir: &ContractIr,
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let types = ir
+        .types
+        .iter()
+        .map(|ty| (ty.qualified_name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let incoming_binds = graph
+        .binds
+        .iter()
+        .map(|bind| (bind.to.instance.id.clone(), bind.to.port.clone()))
+        .collect::<BTreeSet<_>>();
+
+    for group in &graph.sync_groups {
+        if group.tolerance_ms == 0 {
+            errors.push(ValidationError::new(format!(
+                "sync group `{}` must set tolerance_ms greater than zero",
+                group.name
+            )));
+        }
+        if group.inputs.len() < 2 {
+            errors.push(ValidationError::new(format!(
+                "sync group `{}` must list at least two inputs",
+                group.name
+            )));
+        }
+
+        let Some(instance) = instances.get(group.instance.name.as_str()) else {
+            errors.push(ValidationError::new(format!(
+                "sync group `{}` references unknown instance `{}`",
+                group.name, group.instance.name
+            )));
+            continue;
+        };
+        let Some(component) = components.get(instance.component.name.as_str()) else {
+            continue;
+        };
+        let input_ports = component
+            .inputs
+            .iter()
+            .map(|port| (port.name.as_str(), &port.ty))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut seen_inputs = BTreeSet::new();
+        for input in &group.inputs {
+            if !seen_inputs.insert(input.as_str()) {
+                errors.push(ValidationError::new(format!(
+                    "sync group `{}` lists input port `{}` more than once",
+                    group.name, input
+                )));
+                continue;
+            }
+            let Some(ty) = input_ports.get(input.as_str()) else {
+                errors.push(ValidationError::new(format!(
+                    "sync group `{}` references undeclared input port `{}` on instance `{}`",
+                    group.name, input, group.instance.name
+                )));
+                continue;
+            };
+            let key = (instance.id.clone(), input.clone());
+            if !incoming_binds.contains(&key) {
+                errors.push(ValidationError::new(format!(
+                    "sync group `{}` input `{}.{}` has no incoming bind",
+                    group.name, group.instance.name, input
+                )));
+            }
+            let has_timestamp = match ty {
+                TypeExpr::Named { name } => match types.get(name.as_str()) {
+                    Some(message_type) => message_type.timestamp.is_some(),
+                    None => continue,
+                },
+                _ => false,
+            };
+            if !has_timestamp {
+                errors.push(ValidationError::new(format!(
+                    "sync group `{}` input `{}.{}` message type must declare a timestamp source",
+                    group.name, group.instance.name, input
+                )));
+            }
+        }
     }
 }
 

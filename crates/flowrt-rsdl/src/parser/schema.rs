@@ -16,6 +16,7 @@ pub(super) fn validate_top_level_sections(root: &Table) -> Result<()> {
         "bind",
         "bridge",
         "boundary",
+        "sync",
         "profile",
         "target",
     ];

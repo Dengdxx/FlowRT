@@ -224,6 +224,9 @@ pub(crate) fn validate_contract_canonical_fields(
                 errors,
             );
         }
+        for group in &graph.sync_groups {
+            validate_entity_id_shape("sync group id", "sync", &group.id, errors);
+        }
     }
     for profile in &ir.profiles {
         validate_entity_id_shape("profile id", "profile", &profile.id, errors);
@@ -450,6 +453,16 @@ pub(crate) fn validate_contract_canonical_ordering(
                 graph.name
             )));
         }
+        if !graph
+            .sync_groups
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` sync groups must use canonical name order",
+                graph.name
+            )));
+        }
     }
 
     if !ir
@@ -574,6 +587,12 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
                 .resource_providers
                 .iter()
                 .map(|provider| provider.name.as_str()),
+            errors,
+        );
+        validate_unique_names(
+            &format!("graph `{}`", graph.name),
+            "sync group",
+            graph.sync_groups.iter().map(|group| group.name.as_str()),
             errors,
         );
         for direction in [BoundaryDirection::Input, BoundaryDirection::Output] {
@@ -719,6 +738,14 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
                     "resource satisfaction `{}.{}`",
                     satisfaction.instance.name, satisfaction.resource
                 ),
+                errors,
+            );
+        }
+        for group in &graph.sync_groups {
+            record_entity_id(
+                &mut seen,
+                &group.id,
+                format!("sync group `{}`", group.name),
                 errors,
             );
         }

@@ -394,3 +394,70 @@ output = ["slow"]
     );
     assert!(json.contains("\"concurrency\": \"parallel\""));
 }
+
+#[test]
+fn normalizes_sync_groups_canonically_and_links_task() {
+    let source = r#"
+[package]
+name = "fusion_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+ax = "f64"
+
+[type.Odom]
+vx = "f64"
+
+[component.fusion]
+language = "rust"
+input = ["imu:Imu", "odom:Odom"]
+
+[instance.fusion]
+component = "fusion"
+target = "linux"
+
+[instance.fusion.task]
+trigger = "on_synchronized"
+sync = "alpha"
+
+[[sync]]
+name = "zoom"
+instance = "fusion"
+inputs = ["imu", "odom"]
+tolerance_ms = 5
+
+[[sync]]
+name = "alpha"
+instance = "fusion"
+inputs = ["odom", "imu"]
+tolerance_ms = 7
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let graph = &ir.graphs[0];
+
+    // 集合按 name 归一化排序，inputs 保留声明顺序（不排序）。
+    assert_eq!(graph.sync_groups.len(), 2);
+    assert_eq!(graph.sync_groups[0].name, "alpha");
+    assert_eq!(graph.sync_groups[1].name, "zoom");
+    let alpha = &graph.sync_groups[0];
+    assert_eq!(alpha.instance.name, "fusion");
+    assert_eq!(alpha.inputs, vec!["odom", "imu"]);
+    assert_eq!(alpha.tolerance_ms, 7);
+    assert_eq!(alpha.late_policy, crate::SyncLatePolicy::DropLate);
+    assert!(alpha.id.0.starts_with("sync_"));
+
+    // on_synchronized task 的 sync_group 引用解析到同一实体（id 确定性一致）。
+    let task = &graph.tasks[0];
+    assert_eq!(task.trigger, crate::TriggerKind::OnSynchronized);
+    let task_ref = task.sync_group.as_ref().expect("sync_group linked");
+    assert_eq!(task_ref.name, "alpha");
+    assert_eq!(task_ref.id, alpha.id);
+}

@@ -59,6 +59,7 @@ pub struct RawCompositionDocument {
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub boundary_inputs: Vec<RawBoundaryEndpoint>,
     pub boundary_outputs: Vec<RawBoundaryEndpoint>,
+    pub sync_groups: Vec<RawSyncGroup>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
     pub source: PathBuf,
@@ -81,6 +82,7 @@ pub struct RawDocument {
     pub ros2_bridges: Vec<RawRos2Bridge>,
     pub boundary_inputs: Vec<RawBoundaryEndpoint>,
     pub boundary_outputs: Vec<RawBoundaryEndpoint>,
+    pub sync_groups: Vec<RawSyncGroup>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
 }
@@ -247,6 +249,8 @@ pub struct RawTask {
     pub priority: Option<u32>,
     pub input: Vec<String>,
     pub output: Vec<String>,
+    /// `on_synchronized` task 引用的 `[[sync]]` 组名；其余 trigger 必须为空。
+    pub sync: Option<String>,
 }
 
 /// `[[process]]` 表项，描述 graph 级进程编排策略。
@@ -291,6 +295,19 @@ pub struct RawDataflowBind {
     pub overflow: Option<String>,
     pub stale_policy: Option<String>,
     pub max_age_ms: Option<u64>,
+}
+
+/// `[[sync]]` 表项：声明一个多传感器同步组。
+///
+/// 将一个 instance 的 ≥2 个输入端口按 sample-time（event-time）对齐成同步集，
+/// 经 `on_synchronized` task 投递。语义校验（端口存在、唯一 incoming bind、
+/// timestamp 源、tolerance>0）在 validator 完成。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawSyncGroup {
+    pub name: String,
+    pub instance: String,
+    pub inputs: Vec<String>,
+    pub tolerance_ms: Option<u64>,
 }
 
 /// `[[bind.service]]` 表项。
