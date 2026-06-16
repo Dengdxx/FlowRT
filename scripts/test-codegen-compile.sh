@@ -80,7 +80,12 @@ compile_rust() {
     run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt"
     printf '\n[patch.crates-io]\nflowrt = { path = "%s/runtime/rust" }\n' \
         "$repo_root" >> "$proj/flowrt/build/Cargo.toml"
-    run cargo check --manifest-path "$proj/flowrt/build/Cargo.toml"
+    # 隔离 target-dir：仓库 .cargo/config.toml 把 build.target-dir 钉到共享 target/。
+    # 不隔离时，每个生成 crate 都叫 flowrt_app，会命中共享 target 的旧 fingerprint，cargo
+    # 跳过重编（"Finished" 无 "Checking"）→ 漏掉生成代码的真实编译错。每 case 独立 target
+    # 强制从零编译，真正校验本次生成的 shell。
+    run env CARGO_TARGET_DIR="$proj/cargo-target" \
+        cargo check --manifest-path "$proj/flowrt/build/Cargo.toml"
 }
 
 compile_cpp island_cpp_onmsg
