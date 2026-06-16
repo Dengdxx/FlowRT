@@ -318,6 +318,26 @@ pub(crate) struct BoundaryRuntimePlan {
     pub(crate) port: String,
 }
 
+/// 若 boundary 消息类型声明了 sample-time 源，返回（stamp 字段名, unit→ns 乘子）。
+///
+/// 仅命名消息类型可声明 timestamp 源；primitive/array/variable 表达式无源。Rust/C++ 生成 shell
+/// 共用此解析，为该 boundary 注册 typed sample-time 提取器，回放时按 sensor 采集时刻步进。
+pub(crate) fn boundary_sample_time_source(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+) -> Option<(String, u64)> {
+    let TypeExpr::Named { name } = ty else {
+        return None;
+    };
+    let source = crate::type_by_name(contract, name).timestamp.as_ref()?;
+    let unit_to_ns = match source.unit {
+        flowrt_ir::TimestampUnit::Ns => 1u64,
+        flowrt_ir::TimestampUnit::Us => 1_000,
+        flowrt_ir::TimestampUnit::Ms => 1_000_000,
+    };
+    Some((source.field.clone(), unit_to_ns))
+}
+
 pub(crate) fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<ProcessRuntimePlan<'a>> {
     let mut by_process = BTreeMap::<String, Vec<&'a InstanceIr>>::new();
     for &instance in order {

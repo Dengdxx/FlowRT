@@ -74,6 +74,66 @@ backends = ["inproc"]
 }
 
 #[test]
+fn rust_shell_wires_boundary_input_sample_time_for_timestamped_type() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "island_sensor_rust_demo"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_us = "u32"
+ax = "f32"
+
+[type.ImuSample.timestamp]
+field = "stamp_us"
+unit = "us"
+clock_domain = "imu"
+
+[component.consumer]
+language = "rust"
+input = ["sample:ImuSample"]
+output = ["echo:ImuSample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "ImuSample"
+
+[[boundary.output]]
+name = "echo_out"
+port = "consumer.echo"
+type = "ImuSample"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    // 声明了 timestamp 源的 boundary input 走 with_sample_time 注册，附带 typed 提取器闭包。
+    assert!(rust_shell.contains(
+        "introspection_state.register_boundary_input_with_sample_time::<ImuSample, _>(\"sample_in\", \"ImuSample\", app.boundary_input_sample_in.clone(), |payload| <ImuSample as flowrt::FrameCodec>::decode_frame(payload).ok().map(|value| (value.stamp_us as u64).saturating_mul(1000u64)));"
+    ));
+    // 未声明 timestamp 源时不得走 with_sample_time 路径（此契约仅 ImuSample 有源）。
+    assert!(!rust_shell.contains("register_boundary_input::<ImuSample>(\"sample_in\""));
+}
+
+#[test]
 fn cpp_shell_wires_island_boundary_endpoints() {
     let ir = contract_from_source(
         r#"
@@ -140,6 +200,66 @@ backends = ["inproc"]
     );
     assert!(cpp_shell.contains("introspection_state.record_channel_publish_bytes(\"echo_out\""));
     assert!(cpp_messages.contains("static constexpr std::size_t wire_size() noexcept"));
+}
+
+#[test]
+fn cpp_shell_wires_boundary_input_sample_time_for_timestamped_type() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "island_sensor_cpp_demo"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_us = "u32"
+ax = "f32"
+
+[type.ImuSample.timestamp]
+field = "stamp_us"
+unit = "us"
+clock_domain = "imu"
+
+[component.consumer]
+language = "cpp"
+input = ["sample:ImuSample"]
+output = ["echo:ImuSample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "ImuSample"
+
+[[boundary.output]]
+name = "echo_out"
+port = "consumer.echo"
+type = "ImuSample"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    // 声明了 timestamp 源的 boundary input 走 with_sample_time 注册 + typed 提取 lambda。
+    assert!(cpp_shell.contains(
+        "introspection_state.register_boundary_input_with_sample_time<ImuSample>(\"sample_in\", \"ImuSample\", boundary_input_sample_in_, [](std::span<const std::uint8_t> payload) -> std::optional<std::uint64_t> { try { return std::optional<std::uint64_t>{static_cast<std::uint64_t>(flowrt::detail::decode_frame<ImuSample>(payload).stamp_us) * 1000U}; } catch (const flowrt::WireCodecError&) { return std::nullopt; } });"
+    ));
+    // 未声明源时不得走 with_sample_time 路径。
+    assert!(!cpp_shell.contains("register_boundary_input(\"sample_in\", \"ImuSample\""));
 }
 
 #[test]

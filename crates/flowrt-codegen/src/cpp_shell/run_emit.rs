@@ -65,7 +65,10 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.process_name,
     ));
     output.push_str(&emit_cpp_io_boundary_registration(run.contract, run.order));
-    output.push_str(&emit_cpp_boundary_input_registration(run.boundaries));
+    output.push_str(&emit_cpp_boundary_input_registration(
+        run.contract,
+        run.boundaries,
+    ));
     output.push_str(&emit_cpp_boundary_output_probe_registration(run.boundaries));
     output.push_str(&format!(
         "    auto introspection_server = flowrt::spawn_status_server(\n        flowrt::IntrospectionIdentity{{\n            .self_description_hash = std::string{{flowrt_app::self_description_hash()}},\n            .package = {},\n            .process = {},\n            .runtime = \"cpp\",\n        }},\n        introspection_state);\n    (void)introspection_server;\n",

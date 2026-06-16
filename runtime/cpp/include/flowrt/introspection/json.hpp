@@ -761,6 +761,10 @@ inline std::string recorder_event_json(const IntrospectionRecorderEvent &event) 
     output.append(json_string(event.selfdesc_hash));
     output.append(",\"monotonic_ns\":");
     output.append(std::to_string(event.monotonic_ns));
+    if (event.sample_time_ns) {
+        output.append(",\"sample_time_ns\":");
+        output.append(std::to_string(*event.sample_time_ns));
+    }
     output.append(",\"wall_unix_ns\":");
     output.append(std::to_string(event.wall_unix_ns));
     output.append(",\"sequence\":");

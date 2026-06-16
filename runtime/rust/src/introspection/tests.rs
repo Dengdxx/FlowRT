@@ -1161,6 +1161,47 @@ fn publish_boundary_input_records_canonical_stimulus_for_replay() {
 }
 
 #[test]
+fn publish_boundary_input_records_sensor_sample_time_ns() {
+    // 声明了 timestamp 源的 boundary 经 typed 提取器注册；publish 录制的 envelope 带 sample_time_ns，
+    // 与生成 shell 调 register_boundary_input_with_sample_time 的路径一致（提取器读字段 × unit→ns）。
+    let state = IntrospectionState::new();
+    let input: crate::BoundaryInput<u32> = crate::BoundaryInput::default();
+    state.register_boundary_input_with_sample_time::<u32, _>(
+        "imu_in",
+        "ImuSample",
+        input,
+        |payload| {
+            <u32 as crate::FrameCodec>::decode_frame(payload)
+                .ok()
+                .map(|micros| (micros as u64).saturating_mul(1000))
+        },
+    );
+    state.start_recorder(IntrospectionRecorderStart {
+        output: Some("memory://sample_time.mcap".to_string()),
+        filters: vec!["channel:imu_in".to_string()],
+        queue_depth: Some(4),
+        package: "sensor".to_string(),
+        process: "main".to_string(),
+        runtime_pid: 7,
+        selfdesc_hash: "stamp".to_string(),
+    });
+
+    // 2000 微秒（LE u32）× 1000 → 2_000_000 纳秒；receive-time(published_at_ms=50) 独立。
+    state
+        .publish_boundary_input("imu_in", 2000u32.to_le_bytes().to_vec(), Some(50))
+        .expect("publish boundary input");
+
+    let events = state.drain_recorder_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].sample_time_ns, Some(2_000_000));
+    assert_eq!(events[0].monotonic_ns, 50_000_000);
+    assert_eq!(
+        events[0].payload_encoding,
+        flowrt_record::PayloadEncoding::CanonicalFrame
+    );
+}
+
+#[test]
 fn recorder_start_captures_channel_sample_and_reports_status() {
     let state = IntrospectionState::new();
     state.start_recorder(IntrospectionRecorderStart {

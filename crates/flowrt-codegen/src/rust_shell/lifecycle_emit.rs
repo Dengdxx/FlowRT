@@ -295,6 +295,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         emission.order,
     ));
     output.push_str(&run_scope_receiver(&emit_rust_boundary_input_registration(
+        emission.contract,
         emission.boundaries,
     )));
     output.push_str(&run_scope_receiver(
@@ -499,19 +500,34 @@ fn emit_rust_io_boundary_registration(contract: &ContractIr, order: &[&InstanceI
     output
 }
 
-fn emit_rust_boundary_input_registration(boundaries: &[BoundaryRuntimePlan]) -> String {
+fn emit_rust_boundary_input_registration(
+    contract: &ContractIr,
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
     let mut output = String::new();
     for boundary in boundaries
         .iter()
         .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
     {
         let ty = crate::messages::rust_type(&boundary.ty);
-        output.push_str(&format!(
-            "        introspection_state.register_boundary_input::<{ty}>({}, {}, self.{}.clone());\n",
-            crate::rust_string_literal(&boundary.endpoint_name),
-            crate::rust_string_literal(&boundary.ty.canonical_syntax()),
-            boundary.field_name,
-        ));
+        match crate::runtime_plan::boundary_sample_time_source(contract, &boundary.ty) {
+            Some((stamp_field, unit_to_ns)) => {
+                output.push_str(&format!(
+                    "        introspection_state.register_boundary_input_with_sample_time::<{ty}, _>({}, {}, self.{}.clone(), |payload| <{ty} as flowrt::FrameCodec>::decode_frame(payload).ok().map(|value| (value.{stamp_field} as u64).saturating_mul({unit_to_ns}u64)));\n",
+                    crate::rust_string_literal(&boundary.endpoint_name),
+                    crate::rust_string_literal(&boundary.ty.canonical_syntax()),
+                    boundary.field_name,
+                ));
+            }
+            None => {
+                output.push_str(&format!(
+                    "        introspection_state.register_boundary_input::<{ty}>({}, {}, self.{}.clone());\n",
+                    crate::rust_string_literal(&boundary.endpoint_name),
+                    crate::rust_string_literal(&boundary.ty.canonical_syntax()),
+                    boundary.field_name,
+                ));
+            }
+        }
     }
     output
 }

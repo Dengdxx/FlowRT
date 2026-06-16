@@ -240,18 +240,34 @@ pub(super) fn emit_cpp_io_boundary_registration(
     output
 }
 
-pub(super) fn emit_cpp_boundary_input_registration(boundaries: &[BoundaryRuntimePlan]) -> String {
+pub(super) fn emit_cpp_boundary_input_registration(
+    contract: &ContractIr,
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
     let mut output = String::new();
     for boundary in boundaries
         .iter()
         .filter(|boundary| boundary.direction == flowrt_ir::BoundaryDirection::Input)
     {
-        output.push_str(&format!(
-            "    introspection_state.register_boundary_input({}, {}, {}_);\n",
-            cpp_string_literal(&boundary.endpoint_name),
-            cpp_string_literal(&boundary.ty.canonical_syntax()),
-            boundary.field_name,
-        ));
+        match crate::runtime_plan::boundary_sample_time_source(contract, &boundary.ty) {
+            Some((stamp_field, unit_to_ns)) => {
+                let ty = cpp_type(&boundary.ty);
+                output.push_str(&format!(
+                    "    introspection_state.register_boundary_input_with_sample_time<{ty}>({}, {}, {}_, [](std::span<const std::uint8_t> payload) -> std::optional<std::uint64_t> {{ try {{ return std::optional<std::uint64_t>{{static_cast<std::uint64_t>(flowrt::detail::decode_frame<{ty}>(payload).{stamp_field}) * {unit_to_ns}U}}; }} catch (const flowrt::WireCodecError&) {{ return std::nullopt; }} }});\n",
+                    cpp_string_literal(&boundary.endpoint_name),
+                    cpp_string_literal(&boundary.ty.canonical_syntax()),
+                    boundary.field_name,
+                ));
+            }
+            None => {
+                output.push_str(&format!(
+                    "    introspection_state.register_boundary_input({}, {}, {}_);\n",
+                    cpp_string_literal(&boundary.endpoint_name),
+                    cpp_string_literal(&boundary.ty.canonical_syntax()),
+                    boundary.field_name,
+                ));
+            }
+        }
     }
     output
 }

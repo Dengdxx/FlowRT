@@ -654,6 +654,52 @@ int main() {
     assert(recorder_state.status().recorder.queued_events == 0U);
     assert(!recorder_state.stop_recorder().enabled);
 
+    // boundary input 声明 sample-time 源时，publish 录制的 envelope 带 sample_time_ns；
+    // recorder JSON 仅在有值时 emit 该字段（镜像 Rust skip_serializing_if=None）。提取器由生成
+    // shell 提供，这里手写等价逻辑（前 4 字节 LE u32 微秒 × 1000 → 纳秒）验证 runtime 接线。
+    flowrt::IntrospectionState sample_time_state;
+    sample_time_state.start_recorder(flowrt::IntrospectionRecorderStart{
+        .output = std::optional<std::string>{"memory://sample_time.mcap"},
+        .filters = {"channel"},
+        .queue_depth = 8,
+        .package = "sensor_demo",
+        .process = "main",
+        .runtime_pid = 7,
+        .self_description_hash = "stamp123",
+    });
+    sample_time_state.register_boundary_input_handler(
+        "imu_in", "ImuSample",
+        [](std::span<const std::uint8_t> payload, std::optional<std::uint64_t>)
+            -> std::variant<std::uint64_t, std::string> {
+            (void)payload;
+            return 1U;
+        },
+        [](std::span<const std::uint8_t> payload) -> std::optional<std::uint64_t> {
+            if (payload.size() < 4) {
+                return std::nullopt;
+            }
+            const std::uint64_t micros = static_cast<std::uint64_t>(payload[0]) |
+                                         (static_cast<std::uint64_t>(payload[1]) << 8) |
+                                         (static_cast<std::uint64_t>(payload[2]) << 16) |
+                                         (static_cast<std::uint64_t>(payload[3]) << 24);
+            return micros * 1000U;
+        });
+    const auto sample_time_publish = sample_time_state.publish_boundary_input(
+        "imu_in", std::vector<std::uint8_t>{0xD0U, 0x07U, 0x00U, 0x00U},
+        std::optional<std::uint64_t>{50U});
+    assert(std::holds_alternative<flowrt::IntrospectionBoundaryPublishStatus>(sample_time_publish));
+    const auto sample_time_events = sample_time_state.drain_recorder_events();
+    assert(sample_time_events.size() == 1U);
+    assert(sample_time_events.front().event_kind == "channel_sample");
+    assert(sample_time_events.front().payload_encoding == "canonical_frame");
+    // 0x000007D0 = 2000 微秒 → 2_000_000 纳秒。
+    assert(sample_time_events.front().sample_time_ns == std::optional<std::uint64_t>{2000000U});
+    // receive-time monotonic_ns 由 published_at_ms(50) × 1e6 推导，独立于 sample-time。
+    assert(sample_time_events.front().monotonic_ns == 50000000U);
+    const auto sample_time_json = flowrt::detail::recorder_event_json(sample_time_events.front());
+    assert(sample_time_json.find("\"sample_time_ns\":2000000") != std::string::npos);
+    sample_time_state.stop_recorder();
+
     flowrt::IntrospectionState descriptor_recorder_state;
     descriptor_recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
         .output = std::nullopt,

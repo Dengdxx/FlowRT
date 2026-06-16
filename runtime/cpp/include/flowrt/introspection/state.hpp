@@ -33,6 +33,10 @@ class IntrospectionState {
     using BoundaryInputHandler = std::function<std::variant<std::uint64_t, std::string>(
         std::span<const std::uint8_t>, std::optional<std::uint64_t>)>;
 
+    /// 从 canonical frame payload 提取 sensor sample-time（纳秒）；由声明 timestamp 源的 boundary
+    /// 在注册时提供（typed decode 后读字段）。返回 nullopt 表示该样本无 sample-time。
+    using SampleTimeFn = std::function<std::optional<std::uint64_t>(std::span<const std::uint8_t>)>;
+
     /**
      * @brief 构造空 live 状态。
      */
@@ -79,11 +83,14 @@ class IntrospectionState {
      * @brief 注册 island boundary input 的底层注入 handler。
      */
     void register_boundary_input_handler(std::string endpoint, std::string message_type,
-                                         BoundaryInputHandler handler) const {
+                                         BoundaryInputHandler handler,
+                                         SampleTimeFn sample_time_ns_fn = {}) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
         inner_->boundary_inputs.insert_or_assign(
-            std::move(endpoint), BoundaryInputState{.message_type = std::move(message_type),
-                                                    .handler = std::move(handler)});
+            std::move(endpoint),
+            BoundaryInputState{.message_type = std::move(message_type),
+                               .handler = std::move(handler),
+                               .sample_time_ns_fn = std::move(sample_time_ns_fn)});
     }
 
     /**
@@ -110,6 +117,35 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 注册带 sensor sample-time 提取器的 typed `BoundaryInput<T>`。
+     *
+     * `sample_time_ns_fn` 从 canonical frame payload 读出 sample-time（纳秒）——由生成 shell 对声明了
+     * timestamp 源的 boundary 提供。录制该 boundary 激励时填入 envelope.sample_time_ns，供 event-time
+     * 回放按 sensor 采集时刻步进。与 Rust register_boundary_input_with_sample_time 对齐。
+     */
+    template <CanonicalTransportMessage T>
+    void register_boundary_input_with_sample_time(std::string endpoint, std::string message_type,
+                                                  BoundaryInput<T> &input,
+                                                  SampleTimeFn sample_time_ns_fn) const {
+        const auto endpoint_for_error = endpoint;
+        register_boundary_input_handler(
+            std::move(endpoint), std::move(message_type),
+            [&input, endpoint_for_error](std::span<const std::uint8_t> payload,
+                                         std::optional<std::uint64_t> timestamp) mutable
+            -> std::variant<std::uint64_t, std::string> {
+                try {
+                    auto value = detail::decode_frame<T>(payload);
+                    return timestamp ? input.inject_at(std::move(value), *timestamp)
+                                     : input.inject(std::move(value));
+                } catch (const WireCodecError &error) {
+                    return "decode FlowRT boundary input `" + endpoint_for_error +
+                           "`: " + error.what();
+                }
+            },
+            std::move(sample_time_ns_fn));
+    }
+
+    /**
      * @brief 向已注册的 island boundary input 注入 canonical Message ABI payload。
      */
     std::variant<IntrospectionBoundaryPublishStatus, std::string> publish_boundary_input(
@@ -131,8 +167,10 @@ class IntrospectionState {
         // recorder 开启且覆盖该 endpoint 时，把注入作为 canonical frame channel sample 记录，
         // 作为确定性回放的边界激励来源——回放只重放这些外部激励，由 runtime 重新推导下游 channel。
         if (recorder_enabled_for_channel(endpoint)) {
-            (void)try_record_channel_sample_frame_bytes(endpoint, boundary.message_type, payload,
-                                                        published_at_ms);
+            const auto sample_time_ns =
+                boundary.sample_time_ns_fn ? boundary.sample_time_ns_fn(payload) : std::nullopt;
+            (void)try_record_channel_sample_frame_bytes_with_sample_time(
+                endpoint, boundary.message_type, payload, published_at_ms, sample_time_ns);
         }
         return IntrospectionBoundaryPublishStatus{
             .endpoint = std::string{endpoint},
@@ -324,6 +362,29 @@ class IntrospectionState {
                                    published_at_ms
                                        ? std::optional<std::uint64_t>{*published_at_ms * 1000000U}
                                        : std::nullopt);
+    }
+
+    /**
+     * @brief 以 canonical frame 编码记录带 sensor sample-time 的 channel 样本。
+     *
+     * `sample_time_ns` 由声明了 timestamp 源的 boundary 提取器提供，写入 envelope.sample_time_ns，
+     * 供 event-time 回放按 sensor 采集时刻步进。与 Rust
+     * try_record_channel_sample_frame_bytes_with_sample_time 对齐。
+     */
+    IntrospectionProbeRecord try_record_channel_sample_frame_bytes_with_sample_time(
+        std::string_view name, std::string_view message_type, std::span<const std::uint8_t> payload,
+        std::optional<std::uint64_t> published_at_ms,
+        std::optional<std::uint64_t> sample_time_ns) const {
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return record_event_locked("channel", name, "channel_sample", "channel", name, message_type,
+                                   "canonical_frame", message_type, payload,
+                                   published_at_ms
+                                       ? std::optional<std::uint64_t>{*published_at_ms * 1000000U}
+                                       : std::nullopt,
+                                   sample_time_ns);
     }
 
     /**
@@ -1044,6 +1105,7 @@ class IntrospectionState {
     struct BoundaryInputState {
         std::string message_type;
         BoundaryInputHandler handler;
+        SampleTimeFn sample_time_ns_fn;
     };
 
     struct RecorderState {
@@ -1204,7 +1266,8 @@ class IntrospectionState {
         std::string_view filter_kind, std::string_view filter_name, std::string_view event_kind,
         std::string_view entity_kind, std::string_view entity_name, std::string_view message_type,
         std::string_view payload_encoding, std::string_view payload_schema,
-        std::span<const std::uint8_t> payload, std::optional<std::uint64_t> monotonic_ns) const {
+        std::span<const std::uint8_t> payload, std::optional<std::uint64_t> monotonic_ns,
+        std::optional<std::uint64_t> sample_time_ns = std::nullopt) const {
         if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
             return IntrospectionProbeRecord{};
         }
@@ -1229,6 +1292,7 @@ class IntrospectionState {
             .runtime_pid = inner_->recorder.runtime_pid,
             .selfdesc_hash = inner_->recorder.self_description_hash,
             .monotonic_ns = monotonic_ns.value_or(0U),
+            .sample_time_ns = sample_time_ns,
             .wall_unix_ns = detail::unix_time_ns(),
             .sequence = sequence,
             .entity_kind = std::string{entity_kind},

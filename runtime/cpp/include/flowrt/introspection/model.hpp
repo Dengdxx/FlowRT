@@ -127,6 +127,7 @@ struct IntrospectionRecorderEvent {
     std::uint32_t runtime_pid = 0;
     std::string selfdesc_hash;
     std::uint64_t monotonic_ns = 0;
+    std::optional<std::uint64_t> sample_time_ns;
     std::uint64_t wall_unix_ns = 0;
     std::uint64_t sequence = 0;
     std::string entity_kind;
