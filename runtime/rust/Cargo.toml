@@ -27,5 +27,11 @@ required-features = ["zenoh"]
 name = "zenoh_service_server"
 required-features = ["zenoh"]
 
-[lints]
-workspace = true
+# runtime 作为 deb 独立 crate 发布（安装到 /opt/flowrt 下，无 workspace 根），不能
+# inherit workspace.lints——否则用户项目解析该 manifest 时报「failed to find a workspace
+# root」。这里内联与 [workspace.lints.clippy] 一致的现代化门禁，使独立 crate 也能解析并保门禁。
+[lints.clippy]
+uninlined_format_args = "warn"
+manual_string_new = "warn"
+explicit_iter_loop = "warn"
+redundant_else = "warn"
