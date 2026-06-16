@@ -1,0 +1,145 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "8b7f5a194f3fbb51ab2df9a08bd6d77f8415526cbad23158aba64be679ec9835",
+    "package_id": "package_84a1b1fdfccfae44"
+  },
+  "package": {
+    "name": "island_sensor_rust_demo",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "island",
+    "profile": "dev",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "consumer",
+      "qualified_name": "consumer",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "consumer"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, sample: flowrt::Latest<'_, ImuSample>, echo: &mut flowrt::Output<ImuSample>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "consumer",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "lane": "consumer_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "sample"
+          ],
+          "outputs": [
+            "echo"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "name": "sample",
+          "type": "ImuSample",
+          "handler_argument": "sample: flowrt::Latest<'_, ImuSample>",
+          "source": "boundary.sample_in"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "echo",
+          "type": "ImuSample",
+          "handler_argument": "echo: &mut flowrt::Output<ImuSample>",
+          "targets": [
+            "boundary.echo_out"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "rust",
+      "component": "consumer",
+      "path": "app/stubs/rust/consumer.rs"
+    }
+  ]
+}

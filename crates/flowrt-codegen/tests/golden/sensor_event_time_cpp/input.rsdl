@@ -1,0 +1,43 @@
+[package]
+name = "island_sensor_cpp_demo"
+rsdl_version = "0.1"
+
+[type.ImuSample]
+stamp_us = "u32"
+ax = "f32"
+
+[type.ImuSample.timestamp]
+field = "stamp_us"
+unit = "us"
+clock_domain = "imu"
+
+[component.consumer]
+language = "cpp"
+input = ["sample:ImuSample"]
+output = ["echo:ImuSample"]
+
+[instance.consumer]
+component = "consumer"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "sample_in"
+port = "consumer.sample"
+type = "ImuSample"
+
+[[boundary.output]]
+name = "echo_out"
+port = "consumer.echo"
+type = "ImuSample"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]

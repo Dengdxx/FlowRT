@@ -1,0 +1,73 @@
+[package]
+name = "graph_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+ax = "f32"
+
+[type.Odom]
+x = "f32"
+
+[component.imu_sim]
+language = "rust"
+output = ["imu:Imu"]
+
+[component.estimator]
+language = "rust"
+input = ["imu:Imu"]
+output = ["odom:Odom"]
+
+[component.monitor]
+language = "rust"
+input = ["imu:Imu", "odom:Odom"]
+
+[instance.imu_sim]
+component = "imu_sim"
+
+[instance.imu_sim.task]
+trigger = "periodic"
+period_ms = 5
+output = ["imu"]
+
+[instance.estimator]
+component = "estimator"
+
+[instance.estimator.task]
+trigger = "on_message"
+input = ["imu"]
+output = ["odom"]
+
+[instance.monitor]
+component = "monitor"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["imu", "odom"]
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "estimator.imu"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "estimator.odom"
+to = "monitor.odom"
+channel = "fifo"
+depth = 8
+overflow = "drop_oldest"
+stale_policy = "warn"
+max_age_ms = 20
+
+[[bind.dataflow]]
+from = "imu_sim.imu"
+to = "monitor.imu"
+channel = "fifo"
+depth = 8
+overflow = "drop_newest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]

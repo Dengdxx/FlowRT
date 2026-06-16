@@ -1,0 +1,162 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "island",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [
+        {
+          "canonical_id": "boundary_82eb2c6e51af3a5b",
+          "direction": "input",
+          "endpoint": "consumer.sample",
+          "instance": "consumer",
+          "message_type": "ImuSample",
+          "name": "sample_in",
+          "port": "sample"
+        },
+        {
+          "canonical_id": "boundary_bcd811ea02d297e7",
+          "direction": "output",
+          "endpoint": "consumer.echo",
+          "instance": "consumer",
+          "message_type": "ImuSample",
+          "name": "echo_out",
+          "port": "echo"
+        }
+      ],
+      "channels": [],
+      "instances": [
+        {
+          "component": "consumer",
+          "name": "consumer",
+          "process": null,
+          "runtime": "cpp",
+          "target": null
+        }
+      ],
+      "mode": "island",
+      "name": "default",
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "consumer"
+          ],
+          "io_boundaries": [],
+          "name": "main",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "cpp",
+          "runtimes": [
+            "cpp"
+          ],
+          "startup_delay_ms": 0,
+          "target": null,
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "sample"
+              ],
+              "instance": "consumer",
+              "lane": "consumer_serial",
+              "name": "main",
+              "outputs": [
+                "echo"
+              ],
+              "period_ms": null,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "on_message"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "consumer",
+            "kind": "serial",
+            "name": "consumer_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "consumer",
+            "lane": "consumer_serial",
+            "name": "main",
+            "period_ms": null,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "on_message"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "sample"
+          ],
+          "instance": "consumer",
+          "lane": "consumer_serial",
+          "name": "main",
+          "outputs": [
+            "echo"
+          ],
+          "period_ms": null,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "on_message"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "island_sensor_cpp_demo",
+  "profile_modes": [
+    {
+      "mode": "island",
+      "name": "dev"
+    }
+  ],
+  "profiles": [
+    "dev"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

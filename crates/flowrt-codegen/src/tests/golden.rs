@@ -60,3 +60,28 @@ fn check_case(case: &str) {
 fn golden_island_rust_onmsg() {
     check_case("island_rust_onmsg");
 }
+
+#[test]
+fn golden_island_cpp_onmsg() {
+    check_case("island_cpp_onmsg");
+}
+
+#[test]
+fn golden_sensor_event_time_rust() {
+    check_case("sensor_event_time_rust");
+}
+
+#[test]
+fn golden_sensor_event_time_cpp() {
+    check_case("sensor_event_time_cpp");
+}
+
+#[test]
+fn golden_graph_latest_fifo() {
+    check_case("graph_latest_fifo");
+}
+
+#[test]
+fn golden_service_rust() {
+    check_case("service_rust");
+}

@@ -1,0 +1,374 @@
+{
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "8129338cb7dc239e0d509364091a5520da2e882410504e2ee398aabb5a2423d4",
+  "artifact": {
+    "mode": "strict",
+    "temporary_island": false,
+    "test_only": false,
+    "clock": {
+      "source": "realtime",
+      "unit": "ms",
+      "field": "tick_time_ms"
+    }
+  },
+  "package": {
+    "name": "graph_demo",
+    "version": null,
+    "rsdl_version": "0.1"
+  },
+  "profiles": [
+    {
+      "name": "default",
+      "mode": "strict",
+      "backend": "inproc"
+    }
+  ],
+  "targets": [
+    {
+      "name": "linux",
+      "platform": null,
+      "runtimes": [
+        "rust"
+      ],
+      "backends": [
+        "inproc"
+      ]
+    }
+  ],
+  "deployments": [
+    {
+      "graph": "default",
+      "profile": "default",
+      "target": "linux",
+      "backend": "inproc",
+      "satisfied": true
+    }
+  ],
+  "graphs": [
+    {
+      "name": "default",
+      "mode": "strict",
+      "scheduler": {
+        "worker_threads": 1,
+        "lanes": [
+          {
+            "name": "estimator_serial",
+            "kind": "serial",
+            "instance": "estimator"
+          },
+          {
+            "name": "imu_sim_serial",
+            "kind": "serial",
+            "instance": "imu_sim"
+          },
+          {
+            "name": "monitor_serial",
+            "kind": "serial",
+            "instance": "monitor"
+          }
+        ],
+        "tasks": [
+          {
+            "name": "main",
+            "instance": "estimator",
+            "lane": "estimator_serial",
+            "trigger": "on_message",
+            "readiness": "any_ready",
+            "concurrency": "exclusive",
+            "period_ms": null,
+            "deadline_ms": null,
+            "priority": null
+          },
+          {
+            "name": "main",
+            "instance": "imu_sim",
+            "lane": "imu_sim_serial",
+            "trigger": "periodic",
+            "readiness": "any_ready",
+            "concurrency": "exclusive",
+            "period_ms": 5,
+            "deadline_ms": null,
+            "priority": null
+          },
+          {
+            "name": "main",
+            "instance": "monitor",
+            "lane": "monitor_serial",
+            "trigger": "on_message",
+            "readiness": "any_ready",
+            "concurrency": "exclusive",
+            "period_ms": null,
+            "deadline_ms": null,
+            "priority": null
+          }
+        ]
+      },
+      "resource_contract": {
+        "resource_contract_version": "0.1",
+        "requirements": [],
+        "providers": [],
+        "satisfactions": []
+      },
+      "external_processes": [],
+      "instances": [
+        {
+          "name": "estimator",
+          "component": "estimator",
+          "process": "main",
+          "target": null,
+          "runtime": "rust",
+          "params": []
+        },
+        {
+          "name": "imu_sim",
+          "component": "imu_sim",
+          "process": "main",
+          "target": null,
+          "runtime": "rust",
+          "params": []
+        },
+        {
+          "name": "monitor",
+          "component": "monitor",
+          "process": "main",
+          "target": null,
+          "runtime": "rust",
+          "params": []
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "estimator",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "concurrency": "exclusive",
+          "period_ms": null,
+          "deadline_ms": null,
+          "lane": "estimator_serial",
+          "priority": null,
+          "inputs": [
+            "imu"
+          ],
+          "outputs": [
+            "odom"
+          ]
+        },
+        {
+          "name": "main",
+          "instance": "imu_sim",
+          "trigger": "periodic",
+          "readiness": "any_ready",
+          "concurrency": "exclusive",
+          "period_ms": 5,
+          "deadline_ms": null,
+          "lane": "imu_sim_serial",
+          "priority": null,
+          "inputs": [],
+          "outputs": [
+            "imu"
+          ]
+        },
+        {
+          "name": "main",
+          "instance": "monitor",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "concurrency": "exclusive",
+          "period_ms": null,
+          "deadline_ms": null,
+          "lane": "monitor_serial",
+          "priority": null,
+          "inputs": [
+            "imu",
+            "odom"
+          ],
+          "outputs": []
+        }
+      ],
+      "channels": [
+        {
+          "from": "estimator.odom",
+          "to": "monitor.odom",
+          "message_type": "Odom",
+          "backend": "inproc",
+          "thread_affinity": "send_safe",
+          "service": null,
+          "key_expr": null,
+          "channel": "fifo",
+          "depth": 8,
+          "overflow": "drop_oldest",
+          "stale_policy": "warn",
+          "max_age_ms": 20
+        },
+        {
+          "from": "imu_sim.imu",
+          "to": "estimator.imu",
+          "message_type": "Imu",
+          "backend": "inproc",
+          "thread_affinity": "send_safe",
+          "service": null,
+          "key_expr": null,
+          "channel": "latest",
+          "depth": 1,
+          "overflow": "drop_oldest",
+          "stale_policy": "warn",
+          "max_age_ms": null
+        },
+        {
+          "from": "imu_sim.imu",
+          "to": "monitor.imu",
+          "message_type": "Imu",
+          "backend": "inproc",
+          "thread_affinity": "send_safe",
+          "service": null,
+          "key_expr": null,
+          "channel": "fifo",
+          "depth": 8,
+          "overflow": "drop_newest",
+          "stale_policy": "warn",
+          "max_age_ms": null
+        }
+      ],
+      "boundary_endpoints": [],
+      "services": [],
+      "operations": []
+    }
+  ],
+  "component_types": [
+    {
+      "name": "estimator",
+      "language": "rust",
+      "kind": "native",
+      "resources": [],
+      "io_boundary": null,
+      "inputs": [
+        {
+          "name": "imu",
+          "type": "Imu"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "odom",
+          "type": "Odom"
+        }
+      ],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [],
+      "params": []
+    },
+    {
+      "name": "imu_sim",
+      "language": "rust",
+      "kind": "native",
+      "resources": [],
+      "io_boundary": null,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "imu",
+          "type": "Imu"
+        }
+      ],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [],
+      "params": []
+    },
+    {
+      "name": "monitor",
+      "language": "rust",
+      "kind": "native",
+      "resources": [],
+      "io_boundary": null,
+      "inputs": [
+        {
+          "name": "imu",
+          "type": "Imu"
+        },
+        {
+          "name": "odom",
+          "type": "Odom"
+        }
+      ],
+      "outputs": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [],
+      "params": []
+    }
+  ],
+  "message_abi": [
+    {
+      "type_name": "Imu",
+      "size_bytes": 4,
+      "align_bytes": 4,
+      "empty": false,
+      "fields": [
+        {
+          "name": "ax",
+          "type": "f32",
+          "offset_bytes": 0,
+          "size_bytes": 4,
+          "align_bytes": 4
+        }
+      ]
+    },
+    {
+      "type_name": "Odom",
+      "size_bytes": 4,
+      "align_bytes": 4,
+      "empty": false,
+      "fields": [
+        {
+          "name": "x",
+          "type": "f32",
+          "offset_bytes": 0,
+          "size_bytes": 4,
+          "align_bytes": 4
+        }
+      ]
+    }
+  ],
+  "message_frames": [
+    {
+      "type_name": "Imu",
+      "encoding": "canonical_frame_v1",
+      "header_size_bytes": 4,
+      "max_size_bytes": 4,
+      "variable": false,
+      "fields": [
+        {
+          "name": "ax",
+          "type": "f32",
+          "header_offset_bytes": 0,
+          "header_size_bytes": 4,
+          "tail_max_bytes": null
+        }
+      ]
+    },
+    {
+      "type_name": "Odom",
+      "encoding": "canonical_frame_v1",
+      "header_size_bytes": 4,
+      "max_size_bytes": 4,
+      "variable": false,
+      "fields": [
+        {
+          "name": "x",
+          "type": "f32",
+          "header_offset_bytes": 0,
+          "header_size_bytes": 4,
+          "tail_max_bytes": null
+        }
+      ]
+    }
+  ]
+}
