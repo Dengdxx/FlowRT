@@ -4,6 +4,10 @@ dist/
 .worktrees/
 /flowrt/
 examples/*/flowrt/
+
+# golden codegen fixtures 整棵入库（含 build/ 子目录的生成构建文件快照），覆盖上方全局 build/ 忽略。
+!crates/flowrt-codegen/tests/golden/**/build/
+!crates/flowrt-codegen/tests/golden/**/build/**
 .agents/*
 !.agents/skills/
 .agents/skills/*
