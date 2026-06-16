@@ -19,10 +19,15 @@ use super::probe::{
 type BoundaryInputHandler =
     Arc<dyn Fn(&[u8], Option<u64>) -> std::result::Result<u64, String> + Send + Sync + 'static>;
 
+/// 从 boundary input 的 canonical frame payload 读出 sensor sample-time（纳秒）的提取器。
+/// 由生成 shell 对声明了 timestamp 源的 boundary 提供（typed decode 后读字段，无需 offset 数学）。
+type SampleTimeFn = Arc<dyn Fn(&[u8]) -> Option<u64> + Send + Sync + 'static>;
+
 #[derive(Clone)]
 struct BoundaryInputState {
     message_type: String,
     handler: BoundaryInputHandler,
+    sample_time_ns_fn: Option<SampleTimeFn>,
 }
 
 impl std::fmt::Debug for BoundaryInputState {
@@ -145,6 +150,7 @@ impl IntrospectionState {
             BoundaryInputState {
                 message_type: message_type.into(),
                 handler: Arc::new(handler),
+                sample_time_ns_fn: None,
             },
         );
     }
@@ -171,6 +177,43 @@ impl IntrospectionState {
         });
     }
 
+    /// 注册带 sensor sample-time 提取器的 typed boundary input。
+    ///
+    /// `sample_time_fn` 从 canonical frame payload 读出 sample-time（纳秒）——由生成 shell 对声明了
+    /// timestamp 源的 boundary 提供（typed decode 后读字段，无需 frame offset 数学）。录制该 boundary
+    /// 激励时填入 envelope.sample_time_ns，供 event-time 回放按 sensor 采集时刻步进。
+    pub fn register_boundary_input_with_sample_time<T, S>(
+        &self,
+        endpoint: impl Into<String>,
+        message_type: impl Into<String>,
+        input: crate::BoundaryInput<T>,
+        sample_time_fn: S,
+    ) where
+        T: FrameCodec + Send + Sync + 'static,
+        S: Fn(&[u8]) -> Option<u64> + Send + Sync + 'static,
+    {
+        let endpoint = endpoint.into();
+        let endpoint_for_error = endpoint.clone();
+        let handler = move |payload: &[u8], timestamp: Option<u64>| {
+            let value = T::decode_frame(payload).map_err(|error| {
+                format!("decode FlowRT boundary input `{endpoint_for_error}`: {error}")
+            })?;
+            Ok(match timestamp {
+                Some(timestamp) => input.inject_at(value, timestamp),
+                None => input.inject(value),
+            })
+        };
+        let mut inner = self.lock_inner();
+        inner.boundary_inputs.insert(
+            endpoint,
+            BoundaryInputState {
+                message_type: message_type.into(),
+                handler: Arc::new(handler),
+                sample_time_ns_fn: Some(Arc::new(sample_time_fn)),
+            },
+        );
+    }
+
     /// 向已注册的 island boundary input 注入 canonical Message ABI payload。
     ///
     /// recorder 开启且覆盖该 endpoint 时，注入会作为 canonical frame channel sample 记录，
@@ -188,11 +231,16 @@ impl IntrospectionState {
         .ok_or_else(|| format!("unknown FlowRT boundary input `{endpoint}`"))?;
         let revision = (boundary.handler)(&payload, published_at_ms)?;
         if self.recorder_enabled_for_channel(endpoint) {
-            let _ = self.try_record_channel_sample_frame_bytes(
+            let sample_time_ns = boundary
+                .sample_time_ns_fn
+                .as_ref()
+                .and_then(|extract| extract(&payload));
+            let _ = self.try_record_channel_sample_frame_bytes_with_sample_time(
                 endpoint,
                 &boundary.message_type,
                 &payload,
                 published_at_ms,
+                sample_time_ns,
             );
         }
         Ok(IntrospectionBoundaryPublishStatus {
@@ -324,6 +372,25 @@ impl IntrospectionState {
             payload,
             published_at_ms,
         )
+    }
+
+    /// 按需记录带 sensor sample-time（纳秒）的 canonical frame channel sample。
+    pub fn try_record_channel_sample_frame_bytes_with_sample_time(
+        &self,
+        name: &str,
+        message_type: impl AsRef<str>,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+        sample_time_ns: Option<u64>,
+    ) -> RecorderTapOutcome {
+        self.recorder
+            .record_channel_sample_frame_bytes_with_sample_time(
+                name,
+                message_type.as_ref(),
+                payload,
+                published_at_ms,
+                sample_time_ns,
+            )
     }
 
     /// 记录 channel 发布的 latest raw ABI payload。

@@ -183,6 +183,7 @@ impl RecorderTap {
             PayloadEncoding::RawAbi,
             payload,
             published_at_ms,
+            None,
         )
     }
 
@@ -199,6 +200,30 @@ impl RecorderTap {
             PayloadEncoding::CanonicalFrame,
             payload,
             published_at_ms,
+            None,
+        )
+    }
+
+    /// 录制带 sensor sample-time（纳秒）的 canonical frame channel sample。
+    ///
+    /// boundary input 注入是确定性回放的边界激励来源；声明了 timestamp 源的 boundary 由
+    /// `publish_boundary_input` 经此入口提供从消息字段读出的 sample-time，使录制样本带采集时刻
+    /// → event-time 回放按 sensor 时间步进。
+    pub fn record_channel_sample_frame_bytes_with_sample_time(
+        &self,
+        name: &str,
+        type_name: &str,
+        payload: &[u8],
+        published_at_ms: Option<u64>,
+        sample_time_ns: Option<u64>,
+    ) -> RecorderTapOutcome {
+        self.record_channel_sample_with_encoding(
+            name,
+            type_name,
+            PayloadEncoding::CanonicalFrame,
+            payload,
+            published_at_ms,
+            sample_time_ns,
         )
     }
 
@@ -209,6 +234,7 @@ impl RecorderTap {
         payload_encoding: PayloadEncoding,
         payload: &[u8],
         published_at_ms: Option<u64>,
+        sample_time_ns: Option<u64>,
     ) -> RecorderTapOutcome {
         if !self.enabled() {
             return RecorderTapOutcome::default();
@@ -220,7 +246,7 @@ impl RecorderTap {
             task: None,
             type_name: Some(type_name.to_string()),
         };
-        self.record_bytes(
+        self.record_bytes_inner(
             "channel",
             name,
             RecordEventKind::ChannelSample,
@@ -229,6 +255,7 @@ impl RecorderTap {
             type_name,
             payload,
             published_at_ms.map(|value| value.saturating_mul(1_000_000)),
+            sample_time_ns,
         )
     }
 
@@ -539,7 +566,7 @@ impl RecorderTap {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record_bytes(
+    fn record_bytes_inner(
         &self,
         filter_kind: &str,
         filter_name: &str,
@@ -549,6 +576,7 @@ impl RecorderTap {
         payload_schema: &str,
         payload: &[u8],
         monotonic_ns: Option<u64>,
+        sample_time_ns: Option<u64>,
     ) -> RecorderTapOutcome {
         let mut inner = self.lock_inner();
         let Some(config) = inner.config.clone() else {
@@ -575,7 +603,7 @@ impl RecorderTap {
             runtime_pid: config.metadata.runtime_pid,
             selfdesc_hash: config.metadata.selfdesc_hash,
             monotonic_ns: monotonic_ns.unwrap_or(0),
-            sample_time_ns: None,
+            sample_time_ns,
             wall_unix_ns: wall_unix_ns(),
             sequence,
             entity,
@@ -591,6 +619,32 @@ impl RecorderTap {
             recorded: true,
             dropped: false,
         }
+    }
+
+    /// 非 channel-sample 事件的录制入口：sample-time 恒空（只有 sensor channel sample 携带）。
+    #[allow(clippy::too_many_arguments)]
+    fn record_bytes(
+        &self,
+        filter_kind: &str,
+        filter_name: &str,
+        event_kind: RecordEventKind,
+        entity: RecordEntity,
+        payload_encoding: PayloadEncoding,
+        payload_schema: &str,
+        payload: &[u8],
+        monotonic_ns: Option<u64>,
+    ) -> RecorderTapOutcome {
+        self.record_bytes_inner(
+            filter_kind,
+            filter_name,
+            event_kind,
+            entity,
+            payload_encoding,
+            payload_schema,
+            payload,
+            monotonic_ns,
+            None,
+        )
     }
 
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, RecorderInner> {
