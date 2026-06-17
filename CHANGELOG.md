@@ -4,6 +4,31 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.21.4 - 2026-06-18
+
+跨进程反馈环（0.21.x 图级容错主题第五/最后一片）：放行跨进程反馈边，让控制环可跨进程闭合。语义为 seeded latest-snapshot——source 进程启动期把 init 播过 transport，消费进程读最近到达样本，非严格 z⁻¹。
+
+### 新增
+
+- validator 放行**跨进程** `[[bind.dataflow]] feedback = true`（`channel = "latest"`），走支持跨进程的 transport backend（zenoh/iox2）；环闭合与 init 类型校验保留。
+- 跨进程反馈边语义为 seeded latest-snapshot：source 进程启动期对反馈 channel 播 init 过 transport（复用既有反馈播种 + 跨进程 route 发布），消费进程经既有 latest 缓存接收；codegen/runtime 无需新增——既有按所属进程播种的逻辑对跨进程 zenoh channel 即真实 transport 发布。
+
+### 变更
+
+- 跨进程反馈边仅允许 `channel = "latest"`：进程间无共享 scheduler tick，fifo 的 N 拍延迟无支撑，跨进程 fifo 反馈拒绝（同进程 fifo 反馈不变）。`validate_feedback_fifo_periods`（两端同周期）仅适用于同进程 fifo 反馈。
+
+### 测试
+
+- 覆盖 validator 放行跨进程 latest feedback、拒绝跨进程 fifo feedback；同进程 latest/fifo 反馈仍正常。
+- 新 golden `cross_process_feedback_{rust,cpp}`（controller/plant 分进程 + zenoh + init）锁定两语言生成输出：source 进程播种 init、消费进程不播种、消费端经 transport 接收。
+- focused smoke 断言生成 shell 的源进程播种 / 消费进程不播种接线。既有同进程 feedback golden 字节不漂移。
+
+### 已知限制
+
+- 严格 z⁻¹（恒 1 拍、tick-0 读到 present 的初值）仍**仅同进程**成立（依赖共享 scheduler tick）。跨进程为 seeded latest-snapshot：延迟由 transport + tick skew 决定，tick-0 在 init 到达前为 absent（与一切跨进程输入冷启动一致）。
+- 跨进程反馈不新增全局 tick lockstep 或跨进程 determinism 机制；replay determinism 继承既有 per-process 跨进程输入回放。
+- 跨进程反馈走 transport（zenoh/iox2），其生成 shell 不纳入 inproc-only 编译网（需 transport SDK）；以 golden 文本与 smoke 接线断言把关。
+
 ## v0.21.3 - 2026-06-18
 
 图级 health 聚合 + 受控停机（0.21.x 图级容错主题第四切片）：把每实例 lifecycle 聚合成单一 graph health 作为图级一等观测，并在其上提供一个图级反应策略——图内出现终态不可恢复故障时受控停机。

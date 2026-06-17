@@ -5,33 +5,32 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.21.3`；当前发布线为 `v0.21.3 Graph Health Aggregation + Controlled Stop`，
-是 `0.21.x 图级容错 / 生命周期` 主题（patch 线）的第四切片：把每实例 lifecycle 聚合成单一
-graph health 作为图级一等观测，并在其上提供一个图级反应策略（受控停机）。
+当前 workspace 版本为 `0.21.4`；当前发布线为 `v0.21.4 Cross-Process Feedback Loops`，是
+`0.21.x 图级容错 / 生命周期` 主题（patch 线）的**最后一片**：放行跨进程反馈边，让控制环可跨
+进程闭合，至此本主题 5 切片（生命周期状态机 / 隔离重启 / 降级 / 图级 health / 跨进程反馈）收尾。
 
-- runtime introspection 新增 graph health 聚合：`IntrospectionStatus.graph_health` 为每实例 lifecycle
-  的 worst-of（`faulted` > `degraded` > `healthy`，`stopped`/`shut_down`/`running` 等正常态不抬升，
-  无实例即 `healthy`），并派生一条 `category=graph_health`、`entity_kind=graph` 的图级诊断
-  （faulted→error / degraded→warn / healthy→info）；always-on、纯滚动、Rust 与 C++ 位级镜像；
-- RSDL 新增顶层可选 `[graph]` 段及 `[graph.health].on_faulted`（`continue` 默认 / `stop`）；归一化进
-  `GraphIr.health`（默认 continue 跳过 canonical JSON），validator 校验取值并拒绝无 isolate/restart
-  实例的 `stop`（fail_fast 故障已直接停图、degrade 永不终态，故无可达终态时 stop 无意义）；单图单契约，
-  composition/import 合并出现重复 `[graph]` 拒绝；
-- codegen：`on_faulted = "stop"` 且图含 isolate/restart 实例时，生成 shell 在 tick 边界对终态不可恢复
-  故障（isolate 故障即终态、restart 耗尽 `max_restarts`）置 `_graph_terminal_fault` 并 `shutdown.request()`，
-  复用既有 graceful 逆序清理路径受控停机（status 仍 Ok，停因由 graph_health=faulted 诊断诚实承载）；
-  机制 gated，非 stop 图与既有 golden 字节不漂移；新 golden `graph_health_stop_{rust,cpp}` 锁定两语言
-  输出并纳入编译网真编译；
-- 刻意 defer（诚实记 CHANGELOG 已知限制）：standby failover（需冗余实例 role + 运行态 bind 重定向语义，
-  二者未定）、图停机的 critical-instance 子集粒度、跨进程健康传播（按 0.21.4 反馈环实际需要再补）、
-  graph health 转移写 replay log（由确定性实例状态重推导）、数值健康 metric；
-- 后续：跨进程反馈环（0.21.4）收尾本主题。
+- validator 放行**跨进程** `[[bind.dataflow]] feedback = true`（仅 `channel = "latest"`），走
+  支持跨进程的 transport backend；环闭合与 init 类型校验保留；跨进程 fifo 反馈拒绝（进程间无
+  共享 scheduler tick，N 拍延迟无支撑）；
+- 跨进程反馈语义为 **seeded latest-snapshot**：source 进程启动期把 init 播过 transport（复用
+  既有反馈播种——按所属进程播种的逻辑对跨进程 zenoh channel 即真实 transport 发布），消费进程
+  经既有 latest 缓存接收最近到达样本；codegen/runtime **无需新增**，仅解除 validator 限制；
+- 严格 z⁻¹（恒 1 拍、tick-0 present 初值）仍**仅同进程**成立；跨进程延迟由 transport + tick
+  skew 决定、tick-0 init 到达前 absent；不新增全局 lockstep / 跨进程 determinism，replay 继承
+  既有 per-process 跨进程输入回放；
+- 新 golden `cross_process_feedback_{rust,cpp}` 锁定两语言生成输出（source 播种 / 消费不播种 /
+  消费端 transport 接收）；其 zenoh shell 不纳入 inproc-only 编译网，以 golden 文本 + smoke 接线
+  断言把关；既有同进程 feedback golden 字节不漂移。
 
-上一发布线为 `v0.21.2 Degrade Data Semantics`，是 `0.21.x` 主题第三切片：在 0.21.1 进程内隔离/重启
-之上放行 `degrade` 策略并落地降级数据语义。degrade 命中时不挂起 task、不停图，仅把 instance 记为
-`Degraded` 并继续调度；失败那拍输出为空，下游 latest 快照保持上一份并按既有 channel stale policy 老化
-（复用而非新增传输/ABI）；该 instance 后续返 `Ok` 翻回 `Running`。纯 codegen/validate，不改 executor；
-新 golden `instance_degrade_{rust,cpp}` 锁定输出；唯一 runtime 改动是把 `degraded` 诊断派生为 `warn`。
+上一发布线为 `v0.21.3 Graph Health Aggregation + Controlled Stop`，是 `0.21.x` 主题第四切片：
+把每实例 lifecycle 聚合成单一 graph health（worst-of，always-on observable + 图级诊断），并提供
+图级受控停机策略（`[graph.health].on_faulted = "stop"` 时终态不可恢复故障 graceful 停机，gated）；
+standby failover 诚实 defer（需冗余实例 role + 运行态 bind 重定向语义）。
+
+上一发布线为 `v0.21.2 Degrade Data Semantics`，是 `0.21.x` 主题第三切片：放行 `degrade` 策略，
+故障时降级续跑而非停机或重启，下游复用既有 stale policy 老化 last-known-good 数据。纯 codegen/
+validate，不改 executor；唯一 runtime 改动是把 `degraded` 诊断派生为 `warn`。
+
 
 
 上一发布线为 `v0.21.1 Instance Fault Isolation + Restart`，在 0.21.0 显式状态机之上放行 `isolate`/
