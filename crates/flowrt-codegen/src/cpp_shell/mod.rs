@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceIr, IoBoundaryReadiness,
-    LanguageKind, OperationConcurrencyPolicy, OperationPreemptPolicy, ParamIr, ParamType,
-    ParamUpdatePolicy, ParamValue, PortIr, Ros2BridgeDirection, StalePolicy as IrStalePolicy,
+    ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphIr, InstanceFailurePolicy,
+    InstanceIr, IoBoundaryReadiness, LanguageKind, OperationConcurrencyPolicy,
+    OperationPreemptPolicy, ParamIr, ParamType, ParamUpdatePolicy, ParamValue, PortIr,
+    Ros2BridgeDirection, StalePolicy as IrStalePolicy,
 };
 
 mod app_constructor;
@@ -45,7 +46,7 @@ use crate::runtime_plan::{
     outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
     process_runtime_plans, resolved_task_lane_name, runtime_channel_message_type,
     runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name,
-    scheduler_runtime_plan, step_indent,
+    recoverable_instances, scheduler_runtime_plan, step_indent,
 };
 use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,
