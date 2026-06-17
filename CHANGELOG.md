@@ -4,6 +4,37 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## 未发布
+
+多传感器同步（Multi-Sensor Synchronization）：把 N 路 sensor 输入按 event-time（0.18.0
+sample-time）对齐成同步集，经新 `on_synchronized` trigger 投递给融合组件，是 0.18.0
+sample-time 一等概念的直接 payoff。
+
+### 新增
+
+- RSDL `[[sync]]` 顶层组：声明一个 instance 的 ≥2 路输入按 sample-time 对齐（`name` /
+  `instance` / `inputs` / `tolerance_ms`），配合 `instance.<name>.task` 的
+  `trigger = "on_synchronized"` 与 `sync = "<组名>"`。详见 `docs/examples.md` 的
+  `sync_fusion_demo` 段。
+- runtime 同步原语 `flowrt::Synchronizer`（Rust 与 C++ 各实现，共享语义）：latest-aligned
+  approx-window 匹配——所有输入最新样本落入 `tolerance` 窗口即发射对齐集并排空，否则丢弃
+  落后输入的陈旧 backlog，迟到样本丢弃。只依赖 sample-time，realtime 与 `--replay` 行为
+  一致；跨语言对同一事件序列产出位级一致的同步集序列（conformance golden 向量把关）。
+- 示例 `examples/sync_fusion_demo`：imu/odom 周期产样，`[[sync]]` 对齐后 `on_synchronized`
+  触发 fusion，结果投递 sink。
+- 生成验证网新增 sync case（`sync_fusion_rust` / `sync_fusion_cpp`）：golden 锁定两语言
+  同步器接线输出，编译网真编译（Rust `cargo check`、C++ `g++ -fsyntax-only`）。
+
+### 变更
+
+- Contract IR 增 `SyncGroupIr` 与 `TaskIr.sync_group`；validator 校验 sync 组（instance
+  存在、inputs≥2、端口已声明、唯一 incoming bind、消息类型须声明 timestamp 源、
+  `tolerance_ms > 0`），并校验 `on_synchronized` task 必须引用同实例 sync 组、不列 input，
+  非 `on_synchronized` task 不得带 `sync`。
+- codegen 把 `on_synchronized` 接入两语言生成 shell：复用 on_message 的 wake/snapshot/调度
+  机器，task body 增 synchronizer gate（按 sample-time 推样本、poll 出对齐集才调用户回调），
+  同步算法在 runtime 原语内、codegen 只实例化接线。
+
 ## v0.18.1 - 2026-06-16
 
 纯内部质量/验证版本，零用户语义变更（RSDL / Contract IR / runtime 行为不变）。
