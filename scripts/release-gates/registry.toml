@@ -53,3 +53,7 @@ script = "scripts/test-v0201-feedback-loop-v2-smoke.sh"
 [[focused_smoke]]
 version = "0.21.0"
 script = "scripts/test-v0210-lifecycle-state-machine-smoke.sh"
+
+[[focused_smoke]]
+version = "0.21.1"
+script = "scripts/test-v0211-fault-isolation-restart-smoke.sh"
