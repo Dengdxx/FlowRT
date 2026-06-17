@@ -1,0 +1,235 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "9c73bc9485ada8dbaf20ebf75b5b56847fc0ed394a326f30504955595f2a1d6d",
+    "package_id": "package_b0d0f9b2dea6066e"
+  },
+  "package": {
+    "name": "xproc_feedback_rust",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "zenoh",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "controller",
+      "qualified_name": "controller",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "controller"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, state: flowrt::Latest<'_, State>, cmd: &mut flowrt::Output<Cmd>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "controller",
+          "trigger": "periodic",
+          "period_ms": 10,
+          "readiness": "any_ready",
+          "lane": "controller_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "state"
+          ],
+          "outputs": [
+            "cmd"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "name": "state",
+          "type": "State",
+          "handler_argument": "state: flowrt::Latest<'_, State>",
+          "source": "plant.state"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "cmd",
+          "type": "Cmd",
+          "handler_argument": "cmd: &mut flowrt::Output<Cmd>",
+          "targets": [
+            "plant.cmd"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "plant",
+      "qualified_name": "plant",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "plant"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, cmd: flowrt::Latest<'_, Cmd>, state: &mut flowrt::Output<State>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "plant",
+          "trigger": "periodic",
+          "period_ms": 10,
+          "readiness": "any_ready",
+          "lane": "plant_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "cmd"
+          ],
+          "outputs": [
+            "state"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "name": "cmd",
+          "type": "Cmd",
+          "handler_argument": "cmd: flowrt::Latest<'_, Cmd>",
+          "source": "controller.cmd"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "state",
+          "type": "State",
+          "handler_argument": "state: &mut flowrt::Output<State>",
+          "targets": [
+            "controller.state"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "rust",
+      "component": "controller",
+      "path": "app/stubs/rust/controller.rs"
+    },
+    {
+      "language": "rust",
+      "component": "plant",
+      "path": "app/stubs/rust/plant.rs"
+    }
+  ]
+}

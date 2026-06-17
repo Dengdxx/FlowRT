@@ -1,0 +1,58 @@
+[package]
+name = "xproc_feedback_rust"
+rsdl_version = "0.1"
+
+[type.Cmd]
+u = "f64"
+
+[type.State]
+x = "f64"
+
+[component.controller]
+language = "rust"
+input = ["state:State"]
+output = ["cmd:Cmd"]
+
+[component.plant]
+language = "rust"
+input = ["cmd:Cmd"]
+output = ["state:State"]
+
+[instance.controller]
+component = "controller"
+process = "ctrl_proc"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+input = ["state"]
+output = ["cmd"]
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+input = ["cmd"]
+output = ["state"]
+
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "plant.cmd"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+channel = "latest"
+feedback = true
+init = { x = 0.0 }
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]

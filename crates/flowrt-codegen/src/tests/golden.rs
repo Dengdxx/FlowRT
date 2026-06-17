@@ -149,3 +149,13 @@ fn golden_graph_health_stop_rust() {
 fn golden_graph_health_stop_cpp() {
     check_case("graph_health_stop_cpp");
 }
+
+#[test]
+fn golden_cross_process_feedback_rust() {
+    check_case("cross_process_feedback_rust");
+}
+
+#[test]
+fn golden_cross_process_feedback_cpp() {
+    check_case("cross_process_feedback_cpp");
+}
