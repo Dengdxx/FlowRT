@@ -560,10 +560,10 @@ pub(super) fn derive_diagnostic_facts(
     }
 
     for instance in &status.instances {
-        let severity = if instance.lifecycle_state == "faulted" {
-            "error"
-        } else {
-            "info"
+        let severity = match instance.lifecycle_state.as_str() {
+            "faulted" => "error",
+            "degraded" => "warn",
+            _ => "info",
         };
         diagnostics.push(diagnostic(
             "lifecycle",

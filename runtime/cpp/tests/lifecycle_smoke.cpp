@@ -18,17 +18,21 @@ int main() {
     flowrt::IntrospectionState state;
     state.record_lifecycle_state("controller", flowrt::LifecycleState::Running);
     state.record_lifecycle_state("plant", flowrt::LifecycleState::Faulted);
+    state.record_lifecycle_state("monitor", flowrt::LifecycleState::Degraded);
 
     const auto status = state.status();
-    assert(status.instances.size() == 2);
+    assert(status.instances.size() == 3);
     // std::map 迭代按 key canonical 排序。
     assert(status.instances[0].instance == "controller");
     assert(status.instances[0].lifecycle_state == "running");
-    assert(status.instances[1].instance == "plant");
-    assert(status.instances[1].lifecycle_state == "faulted");
+    assert(status.instances[1].instance == "monitor");
+    assert(status.instances[1].lifecycle_state == "degraded");
+    assert(status.instances[2].instance == "plant");
+    assert(status.instances[2].lifecycle_state == "faulted");
 
     std::size_t lifecycle_diagnostics = 0;
     bool plant_error = false;
+    bool monitor_warn = false;
     for (const auto &diagnostic : status.diagnostics) {
         if (diagnostic.category != "lifecycle") {
             continue;
@@ -40,8 +44,15 @@ int main() {
             assert(diagnostic.severity == "error");
             plant_error = true;
         }
+        // degraded 降级续跑 → warn，与 Rust facts 镜像。
+        if (diagnostic.entity_id == "monitor") {
+            assert(diagnostic.state == "degraded");
+            assert(diagnostic.severity == "warn");
+            monitor_warn = true;
+        }
     }
-    assert(lifecycle_diagnostics == 2);
+    assert(lifecycle_diagnostics == 3);
     assert(plant_error);
+    assert(monitor_warn);
     return 0;
 }

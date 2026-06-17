@@ -2041,6 +2041,7 @@ fn records_instance_lifecycle_state_and_derives_diagnostic() {
     let state = IntrospectionState::new();
     state.record_lifecycle_state("controller", crate::LifecycleState::Running);
     state.record_lifecycle_state("plant", crate::LifecycleState::Faulted);
+    state.record_lifecycle_state("monitor", crate::LifecycleState::Degraded);
 
     let status = state.status();
     let names: Vec<_> = status
@@ -2048,18 +2049,24 @@ fn records_instance_lifecycle_state_and_derives_diagnostic() {
         .iter()
         .map(|i| i.instance.as_str())
         .collect();
-    assert_eq!(names, ["controller", "plant"]);
+    assert_eq!(names, ["controller", "monitor", "plant"]);
     assert_eq!(status.instances[0].lifecycle_state, "running");
-    assert_eq!(status.instances[1].lifecycle_state, "faulted");
+    assert_eq!(status.instances[1].lifecycle_state, "degraded");
+    assert_eq!(status.instances[2].lifecycle_state, "faulted");
 
     let lifecycle: Vec<_> = status
         .diagnostics
         .iter()
         .filter(|d| d.category == "lifecycle")
         .collect();
-    assert_eq!(lifecycle.len(), 2);
+    assert_eq!(lifecycle.len(), 3);
     let plant = lifecycle.iter().find(|d| d.entity_id == "plant").unwrap();
     assert_eq!(plant.entity_kind, "instance");
     assert_eq!(plant.state, "faulted");
     assert_eq!(plant.severity, "error");
+
+    // degraded 是降级续跑，介于健康与停机之间 → warn，而非误报 error 或淹没为 info。
+    let monitor = lifecycle.iter().find(|d| d.entity_id == "monitor").unwrap();
+    assert_eq!(monitor.state, "degraded");
+    assert_eq!(monitor.severity, "warn");
 }

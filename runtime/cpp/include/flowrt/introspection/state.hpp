@@ -1585,7 +1585,10 @@ class IntrospectionState {
         }
 
         for (const auto &instance : status.instances) {
-            const auto severity = instance.lifecycle_state == "faulted" ? "error" : "info";
+            const auto severity = instance.lifecycle_state == "faulted" ? "error"
+                                  : instance.lifecycle_state == "degraded"
+                                      ? "warn"
+                                      : "info";
             diagnostics.push_back(diagnostic("lifecycle", "instance", instance.instance,
                                              instance.lifecycle_state, severity, std::nullopt,
                                              std::nullopt, std::nullopt, status.clock.tick_time_ms,
