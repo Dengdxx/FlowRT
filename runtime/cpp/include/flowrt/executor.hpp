@@ -361,7 +361,7 @@ class DeterministicExecutor {
     }
 
     void wake(TaskId task) {
-        if (admission_open_ && tasks_.contains(task)) {
+        if (admission_open_ && !suspended_.contains(task) && tasks_.contains(task)) {
             ready_.insert(task);
             if (!pending_.contains(task)) {
                 pending_[task] = PendingAdmission{
@@ -370,6 +370,25 @@ class DeterministicExecutor {
             }
         }
     }
+
+    /**
+     * @brief 故障隔离：暂停某 task 的调度。
+     *
+     * 把它移出 ready/pending，后续 `wake`/periodic due 也不再让它进入 ready，直到
+     * `resume_task`。已 inflight 的提交不受影响，completion 仍会回来。
+     */
+    void suspend_task(TaskId task) {
+        suspended_.insert(task);
+        ready_.erase(task);
+        pending_.erase(task);
+    }
+
+    /**
+     * @brief 重启成功：恢复某 task 的调度资格。
+     *
+     * 下次 `wake` 或 periodic due 起重新进入 ready。
+     */
+    void resume_task(TaskId task) { suspended_.erase(task); }
 
     void close_admission() noexcept { admission_open_ = false; }
 
@@ -562,7 +581,7 @@ class DeterministicExecutor {
             periodic_it->second.missed_periods =
                 saturating_add_u64(periodic_it->second.missed_periods, additional_missed);
         }
-        if (admission_open_ && tasks_.contains(task)) {
+        if (admission_open_ && !suspended_.contains(task) && tasks_.contains(task)) {
             ready_.insert(task);
             pending_[task] = PendingAdmission{
                 .scheduled_time_ms = scheduled_time_ms,
@@ -616,7 +635,7 @@ class DeterministicExecutor {
     }
 
     [[nodiscard]] bool can_admit(TaskId task) const {
-        if (inflight_tasks_.contains(task)) {
+        if (inflight_tasks_.contains(task) || suspended_.contains(task)) {
             return false;
         }
         const auto it = tasks_.find(task);
@@ -691,6 +710,7 @@ class DeterministicExecutor {
     std::map<TaskId, PendingAdmission> pending_;
     std::map<TaskId, PeriodicState> periodic_;
     std::set<TaskId> inflight_tasks_;
+    std::set<TaskId> suspended_;
     std::set<LaneId> inflight_serial_lanes_;
     std::map<LaneId, std::uint64_t> lane_last_dispatched_tick_;
 };

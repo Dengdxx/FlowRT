@@ -787,6 +787,36 @@ int main() {
     assert(timer_executor.missed_periods(flowrt::TaskId{1}) == 2U);
     assert(timer_executor.complete_task(flowrt::TaskId{1}));
 
+    // 故障隔离：suspend 后 task 不再进入 admission，resume 后恢复。
+    flowrt::DeterministicExecutor suspend_executor{1};
+    suspend_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    suspend_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    suspend_executor.suspend_task(flowrt::TaskId{1});
+    suspend_executor.wake(flowrt::TaskId{1});
+    assert(suspend_executor.take_ready_batch().empty());
+    suspend_executor.resume_task(flowrt::TaskId{1});
+    suspend_executor.wake(flowrt::TaskId{1});
+    assert((suspend_executor.take_ready_batch().tasks() ==
+            std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    assert(suspend_executor.complete_task(flowrt::TaskId{1}));
+
+    // suspend 后 periodic due 也不准入；resume 后再 advance 才恢复。
+    flowrt::DeterministicExecutor suspend_periodic_executor{1};
+    suspend_periodic_executor.add_lane(flowrt::LaneId{1}, flowrt::LaneKind::Serial);
+    suspend_periodic_executor.add_task(
+        flowrt::TaskSpec{.id = flowrt::TaskId{1}, .lane = flowrt::LaneId{1}, .priority = 0});
+    suspend_periodic_executor.add_periodic(
+        flowrt::PeriodicSpec{.task = flowrt::TaskId{1}, .period = std::chrono::milliseconds{10}});
+    suspend_periodic_executor.suspend_task(flowrt::TaskId{1});
+    suspend_periodic_executor.advance_to(std::chrono::milliseconds{10});
+    assert(suspend_periodic_executor.take_ready_batch().empty());
+    suspend_periodic_executor.resume_task(flowrt::TaskId{1});
+    suspend_periodic_executor.advance_to(std::chrono::milliseconds{20});
+    assert((suspend_periodic_executor.take_ready_batch().tasks() ==
+            std::vector<flowrt::TaskId>{flowrt::TaskId{1}}));
+    assert(suspend_periodic_executor.complete_task(flowrt::TaskId{1}));
+
     flowrt::ManualExecutor coroutine_executor;
     bool coroutine_resumed = false;
     auto task = mark_after_schedule(coroutine_executor, coroutine_resumed);
