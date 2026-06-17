@@ -11,6 +11,7 @@ pub mod executor;
 pub mod frame;
 pub mod inproc;
 pub mod introspection;
+pub mod lifecycle;
 #[cfg(feature = "iox2")]
 pub mod iox2;
 pub mod operation;
@@ -55,6 +56,7 @@ pub use executor::{
     TaskRunOutput, TaskRunResult, TaskSpec, WorkerCompletionQueue, WorkerPool, WorkerSubmitError,
 };
 pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_tail_block};
+pub use lifecycle::LifecycleState;
 #[cfg(feature = "iox2")]
 pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{
