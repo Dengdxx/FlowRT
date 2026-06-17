@@ -378,8 +378,9 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     }
     for instance in emission.order {
         output.push_str(&format!(
-            "        let mut {name}_initialized = false;\n        let mut {name}_started = false;\n",
-            name = instance.name
+            "        let mut {name}_initialized = false;\n        let mut {name}_started = false;\n        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Uninitialized);\n",
+            name = instance.name,
+            lit = crate::rust_string_literal(&instance.name),
         ));
     }
     output.push_str(&emit_rust_io_boundary_contexts(
@@ -395,8 +396,9 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             &format!("on_init(&mut {context_name})"),
         ));
         output.push_str(&format!(
-            "        if status == flowrt::Status::Ok {{\n            status = {call};\n            {name}_initialized = status == flowrt::Status::Ok;\n        }}\n",
-            name = instance.name
+            "        if status == flowrt::Status::Ok {{\n            status = {call};\n            {name}_initialized = status == flowrt::Status::Ok;\n            introspection_state.record_lifecycle_state({lit}, if {name}_initialized {{ flowrt::LifecycleState::Initialized }} else {{ flowrt::LifecycleState::Faulted }});\n        }}\n",
+            name = instance.name,
+            lit = crate::rust_string_literal(&instance.name),
         ));
     }
     for instance in emission.order {
@@ -408,8 +410,9 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             &format!("on_start(&mut {context_name})"),
         ));
         output.push_str(&format!(
-            "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = {call};\n            {name}_started = status == flowrt::Status::Ok;\n        }}\n",
-            name = instance.name
+            "        if status == flowrt::Status::Ok && {name}_initialized {{\n            status = {call};\n            {name}_started = status == flowrt::Status::Ok;\n            introspection_state.record_lifecycle_state({lit}, if {name}_started {{ flowrt::LifecycleState::Running }} else {{ flowrt::LifecycleState::Faulted }});\n        }}\n",
+            name = instance.name,
+            lit = crate::rust_string_literal(&instance.name),
         ));
         if component
             .io_boundary
@@ -459,8 +462,9 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             &format!("on_stop(&mut {context_name})"),
         ));
         output.push_str(&format!(
-            "        if {name}_started {{\n            let stop_status = {call};\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
-            name = instance.name
+            "        if {name}_started {{\n            let stop_status = {call};\n            if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n            introspection_state.record_lifecycle_state({lit}, if stop_status == flowrt::Status::Ok {{ flowrt::LifecycleState::Stopped }} else {{ flowrt::LifecycleState::Faulted }});\n        }}\n",
+            name = instance.name,
+            lit = crate::rust_string_literal(&instance.name),
         ));
     }
     for instance in emission.order.iter().rev() {
@@ -472,8 +476,9 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             &format!("on_shutdown(&mut {context_name})"),
         ));
         output.push_str(&format!(
-            "        if {name}_initialized {{\n            let shutdown_status = {call};\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n        }}\n",
-            name = instance.name
+            "        if {name}_initialized {{\n            let shutdown_status = {call};\n            if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {{\n                status = flowrt::Status::Error;\n            }}\n            introspection_state.record_lifecycle_state({lit}, if shutdown_status == flowrt::Status::Ok {{ flowrt::LifecycleState::ShutDown }} else {{ flowrt::LifecycleState::Faulted }});\n        }}\n",
+            name = instance.name,
+            lit = crate::rust_string_literal(&instance.name),
         ));
     }
     output.push_str("        status\n    }\n");

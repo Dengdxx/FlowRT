@@ -102,12 +102,20 @@ period_ms = 5
             .contains("if status != flowrt::Status::Ok {\n            return status;\n        }")
     );
     assert!(
-        rust_shell.find("if rust_beta_started {").unwrap()
-            < rust_shell.find("if rust_alpha_started {").unwrap()
+        rust_shell
+            .find("if rust_beta_started {\n            let stop_status")
+            .unwrap()
+            < rust_shell
+                .find("if rust_alpha_started {\n            let stop_status")
+                .unwrap()
     );
     assert!(
-        rust_shell.find("if rust_beta_initialized {").unwrap()
-            < rust_shell.find("if rust_alpha_initialized {").unwrap()
+        rust_shell
+            .find("if rust_beta_initialized {\n            let shutdown_status")
+            .unwrap()
+            < rust_shell
+                .find("if rust_alpha_initialized {\n            let shutdown_status")
+                .unwrap()
     );
 }
 
@@ -1995,5 +2003,55 @@ backends = ["inproc"]
         push_count,
         run_functions * 3,
         "fifo depth=3 每个 run 函数应播种 3 次"
+    );
+}
+
+#[test]
+fn emit_records_lifecycle_states() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "lifecycle_emit"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+output = ["tick:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 10
+output = ["tick"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    assert!(
+        rust_shell.contains(
+            "introspection_state.record_lifecycle_state(\"worker\", flowrt::LifecycleState::Uninitialized);"
+        ),
+        "missing uninitialized record"
+    );
+    assert!(
+        rust_shell.contains("flowrt::LifecycleState::Initialized"),
+        "missing initialized record"
+    );
+    assert!(
+        rust_shell.contains("flowrt::LifecycleState::Running"),
+        "missing running record"
+    );
+    assert!(
+        rust_shell.contains("flowrt::LifecycleState::ShutDown"),
+        "missing shutdown record"
     );
 }
