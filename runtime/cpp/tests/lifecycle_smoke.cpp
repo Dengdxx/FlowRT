@@ -54,5 +54,20 @@ int main() {
     assert(lifecycle_diagnostics == 3);
     assert(plant_error);
     assert(monitor_warn);
+
+    // 图级 health = worst-of：存在 faulted 实例 → 图 faulted（error），与 Rust 镜像。
+    assert(status.graph_health == "faulted");
+    bool graph_faulted = false;
+    for (const auto &diagnostic : status.diagnostics) {
+        if (diagnostic.category != "graph_health") {
+            continue;
+        }
+        assert(diagnostic.entity_kind == "graph");
+        assert(diagnostic.entity_id == "graph");
+        assert(diagnostic.state == "faulted");
+        assert(diagnostic.severity == "error");
+        graph_faulted = true;
+    }
+    assert(graph_faulted);
     return 0;
 }

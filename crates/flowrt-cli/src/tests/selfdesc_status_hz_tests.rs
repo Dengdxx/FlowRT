@@ -876,6 +876,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             recorder: Default::default(),
             params: Vec::new(),
             instances: Vec::new(),
+            graph_health: "healthy".to_string(),
             diagnostics: Vec::new(),
         },
     };
@@ -912,6 +913,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             recorder: Default::default(),
             params: Vec::new(),
             instances: Vec::new(),
+            graph_health: "healthy".to_string(),
             diagnostics: Vec::new(),
         },
     };

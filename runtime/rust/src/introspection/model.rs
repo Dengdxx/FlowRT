@@ -57,6 +57,10 @@ pub enum IntrospectionRequest {
 }
 
 /// runtime introspection 响应。
+//
+// `Status` 变体本就远大于其余变体（携带完整 `IntrospectionStatus`）；boxing 会波及 28 处
+// 构造/匹配点而与本枚举语义无关，故对 large_enum_variant 显式 allow。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum IntrospectionResponse {
@@ -161,9 +165,18 @@ pub struct IntrospectionStatus {
     /// v0.21+ per-instance 生命周期状态快照（按 instance 名 canonical 排序）。
     #[serde(default)]
     pub instances: Vec<IntrospectionInstanceStatus>,
+    /// v0.21.3+ 图级 health 聚合：每实例 lifecycle 的 worst-of 滚动
+    /// （`faulted` > `degraded` > `healthy`）。始终存在。
+    #[serde(default = "default_graph_health")]
+    pub graph_health: String,
     /// v0.13+ 由 status/self-description 实体派生的结构化诊断快照。
     #[serde(default)]
     pub diagnostics: Vec<IntrospectionDiagnostic>,
+}
+
+/// graph health 默认值：无实例不健康即 `healthy`。
+fn default_graph_health() -> String {
+    "healthy".to_string()
 }
 
 /// 单个 instance 的生命周期观测项。

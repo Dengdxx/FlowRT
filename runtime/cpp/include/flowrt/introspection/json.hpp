@@ -653,7 +653,9 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(instance_status_json(status.instances[index]));
     }
-    output.append("],\"diagnostics\":[");
+    output.append("],\"graph_health\":");
+    output.append(json_string(status.graph_health));
+    output.append(",\"diagnostics\":[");
     for (std::size_t index = 0; index < status.diagnostics.size(); ++index) {
         if (index != 0) {
             output.push_back(',');

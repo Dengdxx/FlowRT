@@ -904,6 +904,7 @@ class IntrospectionState {
                 .lifecycle_state = std::string{lifecycle_state_str(state)},
             });
         }
+        snapshot.graph_health = std::string{graph_health_label(snapshot.instances)};
         snapshot.diagnostics = derive_diagnostics(snapshot);
         return snapshot;
     }
@@ -1594,7 +1595,36 @@ class IntrospectionState {
                                              std::nullopt, std::nullopt, status.clock.tick_time_ms,
                                              {}));
         }
+
+        // graph_health 诊断仅在有实例可聚合时派生（与 per-instance lifecycle 诊断一致）；
+        // graph_health 字段本身始终存在（默认 healthy）。
+        if (!status.instances.empty()) {
+            const auto graph_health = graph_health_label(status.instances);
+            const auto graph_severity = graph_health == "faulted" ? "error"
+                                        : graph_health == "degraded" ? "warn"
+                                                                     : "info";
+            diagnostics.push_back(diagnostic("graph_health", "graph", "graph",
+                                             std::string{graph_health}, graph_severity, std::nullopt,
+                                             std::nullopt, std::nullopt, status.clock.tick_time_ms,
+                                             {}));
+        }
         return diagnostics;
+    }
+
+    /// 图级 health 聚合：每实例 lifecycle 的 worst-of（`faulted` > `degraded` > `healthy`），
+    /// 与 Rust `graph_health_label` 镜像。正常态不抬升；无实例即 `healthy`。
+    static std::string_view graph_health_label(
+        const std::vector<IntrospectionInstanceStatus> &instances) {
+        bool degraded = false;
+        for (const auto &instance : instances) {
+            if (instance.lifecycle_state == "faulted") {
+                return "faulted";
+            }
+            if (instance.lifecycle_state == "degraded") {
+                degraded = true;
+            }
+        }
+        return degraded ? "degraded" : "healthy";
     }
 
     static std::optional<std::string> validate_param_json_value(const std::string &name,

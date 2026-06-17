@@ -1616,6 +1616,7 @@ fn input_read_records_presence_and_route_counters() {
 fn status_derives_structured_diagnostics_from_live_state() {
     let state = IntrospectionState::new();
     state.record_tick_at(250, "simulated_replay");
+    state.record_lifecycle_state("sink", crate::LifecycleState::Running);
     state.register_route(IntrospectionRouteStatus {
         name: "source.packet_to_sink.packet".to_string(),
         from: "source.packet".to_string(),
@@ -1736,6 +1737,7 @@ fn status_derives_structured_diagnostics_from_live_state() {
         "param",
         "operation",
         "clock",
+        "graph_health",
     ] {
         assert!(
             categories.contains(category),
@@ -1998,11 +2000,13 @@ fn health_fields_serialize_roundtrip() {
         }],
         recorder: Default::default(),
         instances: Vec::new(),
+        graph_health: "degraded".to_string(),
         diagnostics: Vec::new(),
     };
 
     let json = serde_json::to_string(&status).unwrap();
     let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.graph_health, "degraded");
     assert_eq!(parsed.clock.source, "realtime");
     assert_eq!(parsed.clock.unit, "ms");
     assert_eq!(parsed.clock.field, "tick_time_ms");
@@ -2069,4 +2073,16 @@ fn records_instance_lifecycle_state_and_derives_diagnostic() {
     let monitor = lifecycle.iter().find(|d| d.entity_id == "monitor").unwrap();
     assert_eq!(monitor.state, "degraded");
     assert_eq!(monitor.severity, "warn");
+
+    // 图级 health = worst-of：存在 faulted 实例 → 图 faulted（error），聚合到单一图级诊断。
+    assert_eq!(status.graph_health, "faulted");
+    let graph = status
+        .diagnostics
+        .iter()
+        .find(|d| d.category == "graph_health")
+        .unwrap();
+    assert_eq!(graph.entity_kind, "graph");
+    assert_eq!(graph.entity_id, "graph");
+    assert_eq!(graph.state, "faulted");
+    assert_eq!(graph.severity, "error");
 }

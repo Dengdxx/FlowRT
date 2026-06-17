@@ -31,6 +31,15 @@ impl RuntimeObservabilityFacts {
         inner: &IntrospectionStateInner,
         recorder: RecorderStatus,
     ) -> Self {
+        let instances = inner
+            .lifecycle
+            .iter()
+            .map(|(name, state)| IntrospectionInstanceStatus {
+                instance: name.clone(),
+                lifecycle_state: state.as_str().to_string(),
+            })
+            .collect::<Vec<_>>();
+        let graph_health = graph_health_label(&instances).to_string();
         let status = IntrospectionStatus {
             tick_count: inner.tick_count,
             clock: inner.clock.clone(),
@@ -54,14 +63,8 @@ impl RuntimeObservabilityFacts {
             tasks: inner.tasks.values().cloned().collect(),
             lanes: inner.lanes.values().cloned().collect(),
             recorder,
-            instances: inner
-                .lifecycle
-                .iter()
-                .map(|(name, state)| IntrospectionInstanceStatus {
-                    instance: name.clone(),
-                    lifecycle_state: state.as_str().to_string(),
-                })
-                .collect(),
+            instances,
+            graph_health,
             diagnostics: Vec::new(),
         };
         Self::from_status_snapshot(status)
@@ -579,7 +582,44 @@ pub(super) fn derive_diagnostic_facts(
         ));
     }
 
+    // graph_health 诊断仅在有实例可聚合时派生（与 per-instance lifecycle 诊断一致）；
+    // graph_health 字段本身始终存在（默认 healthy）。
+    if !status.instances.is_empty() {
+        let graph_health = graph_health_label(&status.instances);
+        let graph_severity = match graph_health {
+            "faulted" => "error",
+            "degraded" => "warn",
+            _ => "info",
+        };
+        diagnostics.push(diagnostic(
+            "graph_health",
+            "graph",
+            "graph",
+            graph_health,
+            graph_severity,
+            None,
+            None,
+            None,
+            clock_ms,
+            vec![],
+        ));
+    }
+
     diagnostics
+}
+
+/// 图级 health 聚合：每实例 lifecycle 的 worst-of（`faulted` > `degraded` > `healthy`）。
+/// `stopped`/`shut_down`/`running` 等正常态不抬升；无实例即 `healthy`。
+pub(super) fn graph_health_label(instances: &[IntrospectionInstanceStatus]) -> &'static str {
+    let mut degraded = false;
+    for instance in instances {
+        match instance.lifecycle_state.as_str() {
+            "faulted" => return "faulted",
+            "degraded" => degraded = true,
+            _ => {}
+        }
+    }
+    if degraded { "degraded" } else { "healthy" }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -375,6 +375,9 @@ struct IntrospectionStatus {
     std::vector<IntrospectionLaneHealth> lanes;
     IntrospectionRecorderStatus recorder;
     std::vector<IntrospectionInstanceStatus> instances;
+    /// v0.21.3+ 图级 health 聚合：每实例 lifecycle 的 worst-of
+    /// （`faulted` > `degraded` > `healthy`），与 Rust 镜像。
+    std::string graph_health = "healthy";
     std::vector<IntrospectionDiagnostic> diagnostics;
 };
 
