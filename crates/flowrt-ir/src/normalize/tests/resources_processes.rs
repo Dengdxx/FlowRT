@@ -536,3 +536,98 @@ backend = "inproc"
         } if value == "deadline"
     ));
 }
+
+#[test]
+fn normalizes_graph_health_default_continue() {
+    let source = r#"
+[package]
+name = "graph_health_default"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    assert_eq!(ir.graphs[0].health.on_faulted, GraphFaultReaction::Continue);
+}
+
+#[test]
+fn normalizes_graph_health_stop_reaction() {
+    let source = r#"
+[package]
+name = "graph_health_stop"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+failure_policy = "restart"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    assert_eq!(ir.graphs[0].health.on_faulted, GraphFaultReaction::Stop);
+}
+
+#[test]
+fn rejects_unknown_graph_health_reaction() {
+    let source = r#"
+[package]
+name = "graph_health_bad"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "halt"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source))
+        .expect_err("unknown on_faulted value should be rejected");
+    assert!(matches!(
+        error,
+        IrError::InvalidEnum {
+            kind: "graph fault reaction",
+            ..
+        }
+    ));
+}

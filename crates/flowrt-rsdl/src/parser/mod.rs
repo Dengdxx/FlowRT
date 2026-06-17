@@ -15,7 +15,7 @@ mod workspace;
 use imports::{canonicalize_existing, expand_imports, logical_source_path, read_source};
 use schema::validate_top_level_sections;
 use tables::{
-    parse_binds, parse_boundary_endpoints, parse_component, parse_external_processes,
+    parse_binds, parse_boundary_endpoints, parse_component, parse_external_processes, parse_graph,
     parse_instance, parse_module, parse_named_tables, parse_operation_binds, parse_package,
     parse_processes, parse_profile, parse_resource_providers, parse_ros2_bridges,
     parse_service_binds, parse_sync_groups, parse_target, parse_type, parse_workspace,
@@ -30,6 +30,7 @@ struct ParsedDocument {
     types: BTreeMap<String, RawType>,
     components: BTreeMap<String, RawComponent>,
     instances: BTreeMap<String, RawInstance>,
+    graph: Option<RawGraph>,
     processes: Vec<RawProcess>,
     external_processes: Vec<RawExternalProcess>,
     resource_providers: Vec<RawResourceProvider>,
@@ -145,6 +146,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         types: parse_named_tables(root, "type", parse_type)?,
         components: parse_named_tables(root, "component", parse_component)?,
         instances: parse_named_tables(root, "instance", parse_instance)?,
+        graph: parse_graph(root)?,
         processes: parse_processes(root)?,
         external_processes: parse_external_processes(root)?,
         resource_providers: parse_resource_providers(root)?,
@@ -167,6 +169,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         types: parsed.types,
         components: parsed.components,
         instances: parsed.instances,
+        graph: parsed.graph,
         processes: parsed.processes,
         external_processes: parsed.external_processes,
         resource_providers: parsed.resource_providers,
@@ -1997,5 +2000,91 @@ failure_polcy = "fail_fast"
 "#;
         let error = parse_str(source).expect_err("typo field must be rejected");
         assert!(error.to_string().contains("failure_polcy"), "{error}");
+    }
+
+    #[test]
+    fn parses_graph_health_on_faulted() {
+        let source = r#"
+[package]
+name = "graph_health_demo"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+"#;
+        let document = parse_str(source).expect("graph health should parse");
+        let graph = document.graph.expect("graph section present");
+        let health = graph.health.expect("health subtable present");
+        assert_eq!(health.on_faulted.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn rejects_graph_health_unknown_field() {
+        let source = r#"
+[package]
+name = "graph_health_typo"
+rsdl_version = "0.1"
+
+[graph.health]
+on_fauleted = "stop"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+"#;
+        let error = parse_str(source).expect_err("typo subfield must be rejected");
+        assert!(error.to_string().contains("on_fauleted"), "{error}");
+    }
+
+    #[test]
+    fn load_file_rejects_duplicate_graph_across_sources() {
+        let root = unique_temp_dir();
+        std::fs::create_dir_all(root.join("composition")).unwrap();
+        std::fs::write(
+            root.join("robot.rsdl"),
+            r#"
+[package]
+name = "dup_graph_demo"
+rsdl_version = "0.1"
+
+[workspace]
+compositions = ["composition/default.rsdl"]
+
+[graph.health]
+on_faulted = "stop"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composition").join("default.rsdl"),
+            r#"
+[graph.health]
+on_faulted = "continue"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+"#,
+        )
+        .unwrap();
+        let error = load_file(root.join("robot.rsdl"))
+            .expect_err("duplicate [graph] across sources should fail");
+        assert!(
+            matches!(error, RsdlError::DuplicateSymbol { kind: "graph", .. }),
+            "unexpected error: {error}"
+        );
     }
 }

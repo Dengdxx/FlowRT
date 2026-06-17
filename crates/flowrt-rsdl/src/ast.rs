@@ -50,6 +50,7 @@ pub struct RawModuleDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawCompositionDocument {
     pub instances: BTreeMap<String, RawInstance>,
+    pub graph: Option<RawGraph>,
     pub processes: Vec<RawProcess>,
     pub external_processes: Vec<RawExternalProcess>,
     pub resource_providers: Vec<RawResourceProvider>,
@@ -73,6 +74,7 @@ pub struct RawDocument {
     pub types: BTreeMap<String, RawType>,
     pub components: BTreeMap<String, RawComponent>,
     pub instances: BTreeMap<String, RawInstance>,
+    pub graph: Option<RawGraph>,
     pub processes: Vec<RawProcess>,
     pub external_processes: Vec<RawExternalProcess>,
     pub resource_providers: Vec<RawResourceProvider>,
@@ -94,6 +96,19 @@ pub struct RawPackage {
     pub version: Option<String>,
     pub rsdl_version: String,
     pub imports: BTreeMap<String, Vec<String>>,
+}
+
+/// `[graph]` 表：graph 级装配策略。当前仅承载 `[graph.health]`。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawGraph {
+    pub health: Option<RawGraphHealth>,
+}
+
+/// `[graph.health]` 表：图级 health 反应策略。取值校验在 IR/validator 阶段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawGraphHealth {
+    /// `on_faulted`：终态故障时图级动作原始字符串（`continue`/`stop`）。
+    pub on_faulted: Option<String>,
 }
 
 /// `[workspace]` 表。

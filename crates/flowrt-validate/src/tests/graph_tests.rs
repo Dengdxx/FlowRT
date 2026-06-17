@@ -1952,6 +1952,88 @@ backends = ["inproc"]
 }
 
 #[test]
+fn accepts_graph_health_stop_with_recoverable_instance() {
+    let source = r#"
+[package]
+name = "graph_health_stop_ok"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.resilient]
+component = "processor"
+failure_policy = "restart"
+
+[instance.resilient.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    assert_eq!(
+        ir.graphs[0].health.on_faulted,
+        flowrt_ir::GraphFaultReaction::Stop
+    );
+    validate_contract(&ir).expect("stop with restart instance is reachable");
+}
+
+#[test]
+fn rejects_graph_health_stop_without_recoverable_instance() {
+    let source = r#"
+[package]
+name = "graph_health_stop_meaningless"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report =
+        validate_contract(&ir).expect_err("stop without isolate/restart instance is meaningless");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("on_faulted")),
+        "unexpected errors: {:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn accepts_instance_isolate_and_restart_policies() {
     let source = r#"
 [package]

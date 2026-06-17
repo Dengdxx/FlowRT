@@ -546,11 +546,37 @@ pub enum ParamUpdatePolicy {
     OnTick,
 }
 
+/// 图级 health 反应策略：图内出现终态不可恢复故障时的图级动作。0.21.3 起放行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphFaultReaction {
+    /// 续跑：终态故障保持隔离，图继续运行（今天的行为）。
+    #[default]
+    Continue,
+    /// 受控停机：首个终态故障触发图 graceful 停机（逆序清理 on_stop/on_shutdown）。
+    Stop,
+}
+
+/// 图级 health 反应合同。聚合每实例 lifecycle 后据此驱动图级动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GraphHealthPolicyIr {
+    pub on_faulted: GraphFaultReaction,
+}
+
+impl GraphHealthPolicyIr {
+    /// 默认合同（continue）；用于 canonical JSON 跳过整段。
+    pub fn is_default(&self) -> bool {
+        self.on_faulted == GraphFaultReaction::Continue
+    }
+}
+
 /// 归一化后的 dataflow graph。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphIr {
     pub id: EntityId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "GraphHealthPolicyIr::is_default")]
+    pub health: GraphHealthPolicyIr,
     pub instances: Vec<InstanceIr>,
     pub processes: Vec<ProcessIr>,
     #[serde(default)]

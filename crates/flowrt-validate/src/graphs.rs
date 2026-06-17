@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use flowrt_ir::{
-    BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
-    GraphMode, InstanceIr, LanguageKind, OperationConcurrencyPolicy, OperationPortIr,
-    OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef, PrimitiveType,
-    ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency,
-    TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId,
+    GraphFaultReaction, GraphIr, GraphMode, InstanceFailurePolicy, InstanceIr, LanguageKind,
+    OperationConcurrencyPolicy, OperationPortIr, OperationPortRef, OperationPreemptPolicy,
+    ParamValue, PortIr, PortRef, PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection,
+    ServicePortIr, ServicePortRef, TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    TypeIr,
 };
 
 use crate::ValidationError;
@@ -46,6 +47,29 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
         validate_feedback_binds(ir, &components, &instances, graph, errors);
+        validate_graph_health(graph, errors);
+    }
+}
+
+/// 校验图级 health 反应策略的可达性。`on_faulted = "stop"` 仅当图内至少有一个
+/// isolate/restart 实例时才有意义（fail_fast 实例故障已直接停图，degrade 永不终态）；
+/// 否则该策略永不触发，按无意义配置拒绝。
+fn validate_graph_health(graph: &GraphIr, errors: &mut Vec<ValidationError>) {
+    if graph.health.on_faulted != GraphFaultReaction::Stop {
+        return;
+    }
+    let has_terminal_capable = graph.instances.iter().any(|instance| {
+        matches!(
+            instance.fault.policy,
+            InstanceFailurePolicy::Isolate | InstanceFailurePolicy::Restart
+        )
+    });
+    if !has_terminal_capable {
+        errors.push(ValidationError::new(
+            "graph health `on_faulted = \"stop\"` requires at least one isolate/restart instance; \
+             fail_fast already stops the graph and degrade never reaches a terminal fault"
+                .to_string(),
+        ));
     }
 }
 

@@ -7,7 +7,7 @@ pub(crate) use super::{
 };
 pub(crate) use crate::{
     BackendThreadAffinity, BoundaryDirection, CapabilityAtom, ChannelBackendSource, ChannelKind,
-    GraphMode, IrError, OperationBackendSource, OperationConcurrencyPolicy,
+    GraphFaultReaction, GraphMode, IrError, OperationBackendSource, OperationConcurrencyPolicy,
     OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy, ParamType, ParamUpdatePolicy,
     ParamValue, PolicyValueSource, PrimitiveType, ProcessFailurePropagation, ProcessReadinessGate,
     ProcessRestartPolicyKind, Ros2BridgeDirection, RouteTopology, RtPolicy, ServiceBackendSource,

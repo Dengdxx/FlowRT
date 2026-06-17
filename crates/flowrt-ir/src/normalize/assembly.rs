@@ -154,6 +154,7 @@ fn normalize_default_graph(
     Ok(GraphIr {
         id: graph_id,
         name: graph_name,
+        health: graphs::normalize_graph_health(document)?,
         instances,
         processes,
         external_processes,

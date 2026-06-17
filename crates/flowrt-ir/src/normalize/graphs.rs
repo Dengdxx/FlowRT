@@ -8,13 +8,13 @@ use flowrt_rsdl::{
 use crate::{
     BackendName, BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, CapabilityAtom,
     ChannelEdgeIr, ChannelKind, ChannelPolicySourceIr, ComponentIr, DeploymentIr, EntityId,
-    EntityRef, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, InstanceIr,
-    IrError, OverflowPolicy, PolicyValueSource, PortRef, ProcessFailurePropagation, ProcessIr,
-    ProcessReadinessGate, ProcessRestartPolicy, ProcessRestartPolicyKind, ProfileIr,
-    ResourceProviderIr, ResourceProviderScope, ResourceSatisfactionIr, Result, RtPolicy,
-    StalePolicy, SyncGroupIr, SyncLatePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr,
-    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
-    graph_required_capabilities, parse_type_expr,
+    EntityRef, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphFaultReaction,
+    GraphHealthPolicyIr, GraphIr, InstanceIr, IrError, OverflowPolicy, PolicyValueSource, PortRef,
+    ProcessFailurePropagation, ProcessIr, ProcessReadinessGate, ProcessRestartPolicy,
+    ProcessRestartPolicyKind, ProfileIr, ResourceProviderIr, ResourceProviderScope,
+    ResourceSatisfactionIr, Result, RtPolicy, StalePolicy, SyncGroupIr, SyncLatePolicy, TargetIr,
+    TaskConcurrency, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
+    deployment_capability_decision, graph_required_capabilities, parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -664,6 +664,28 @@ fn normalize_process_restart(
         initial_delay_ms,
         max_delay_ms,
     })
+}
+
+/// 归一化可选 `[graph.health]`。缺省得 `continue`（默认合同）；`on_faulted` 取值
+/// 仅 `continue`/`stop`，未知值拒绝。受控停机的可达性（须存在 isolate/restart 实例）
+/// 由 validator 校验。
+pub(super) fn normalize_graph_health(document: &RawDocument) -> Result<GraphHealthPolicyIr> {
+    let raw = document
+        .graph
+        .as_ref()
+        .and_then(|graph| graph.health.as_ref());
+    let on_faulted = match raw.and_then(|health| health.on_faulted.as_deref()) {
+        Some("continue") | None => GraphFaultReaction::Continue,
+        Some("stop") => GraphFaultReaction::Stop,
+        Some(value) => {
+            return Err(IrError::InvalidEnum {
+                context: "graph.health.on_faulted".to_string(),
+                kind: "graph fault reaction",
+                value: value.to_string(),
+            });
+        }
+    };
+    Ok(GraphHealthPolicyIr { on_faulted })
 }
 
 fn normalize_failure_propagation(

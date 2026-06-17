@@ -10,6 +10,7 @@ pub(super) fn validate_top_level_sections(root: &Table) -> Result<()> {
         "type",
         "component",
         "instance",
+        "graph",
         "process",
         "external_process",
         "resource",

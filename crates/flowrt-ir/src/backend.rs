@@ -983,6 +983,7 @@ mod tests {
         let mut graph = GraphIr {
             id: crate::EntityId("graph_0000000000000001".to_string()),
             name: "default".to_string(),
+            health: Default::default(),
             instances: vec![],
             processes: vec![],
             external_processes: vec![],

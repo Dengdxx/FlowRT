@@ -367,6 +367,37 @@ fn parse_instance_fault(name: &str, table: &Table) -> Result<Option<RawInstanceF
     }))
 }
 
+/// 解析可选 `[graph]` 顶层表及其 `[graph.health]` 子表；未知字段拒绝。取值校验在 IR 阶段。
+pub(super) fn parse_graph(root: &Table) -> Result<Option<RawGraph>> {
+    let Some(value) = root.get("graph") else {
+        return Ok(None);
+    };
+    let graph_table = value.as_table().ok_or_else(|| RsdlError::InvalidValue {
+        context: "graph".to_string(),
+        message: "expected a TOML table".to_string(),
+    })?;
+    validate_known_fields(graph_table, "graph", &["health"])?;
+
+    let health = match graph_table.get("health") {
+        None => None,
+        Some(health_value) => {
+            let health_table =
+                health_value
+                    .as_table()
+                    .ok_or_else(|| RsdlError::InvalidFieldType {
+                        context: "graph".to_string(),
+                        field: "health".to_string(),
+                        expected: "table",
+                    })?;
+            validate_known_fields(health_table, "graph.health", &["on_faulted"])?;
+            Some(RawGraphHealth {
+                on_faulted: optional_string(health_table, "graph.health", "on_faulted")?,
+            })
+        }
+    };
+    Ok(Some(RawGraph { health }))
+}
+
 fn parse_tasks(instance_name: &str, value: &Value) -> Result<Vec<RawTask>> {
     if let Some(table) = value.as_table() {
         return Ok(vec![parse_task(instance_name, table)?]);

@@ -127,6 +127,21 @@ pub(super) fn merge_imported_document(
     )?;
     merge_named_map("profile", &mut document.profiles, imported.profiles)?;
     merge_named_map("target", &mut document.targets, imported.targets)?;
+    merge_graph(&mut document.graph, imported.graph)?;
+    Ok(())
+}
+
+/// 合并可选 `[graph]` 段。单图单契约：两侧同时声明 `[graph]` 视为重复，拒绝。
+pub(super) fn merge_graph(target: &mut Option<RawGraph>, incoming: Option<RawGraph>) -> Result<()> {
+    if let Some(graph) = incoming {
+        if target.is_some() {
+            return Err(RsdlError::DuplicateSymbol {
+                kind: "graph",
+                name: "graph".to_string(),
+            });
+        }
+        *target = Some(graph);
+    }
     Ok(())
 }
 

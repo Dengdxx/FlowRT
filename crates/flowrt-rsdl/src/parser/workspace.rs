@@ -6,7 +6,7 @@ use crate::{Result, RsdlError};
 use super::ParsedDocument;
 use super::imports::{
     canonicalize_existing, expand_import_pattern, load_import_document, logical_source_path,
-    merge_named_map, merge_named_vec,
+    merge_graph, merge_named_map, merge_named_vec,
 };
 
 pub(super) fn expand_workspace(
@@ -66,6 +66,7 @@ pub(super) fn expand_workspace(
             }
             let composition = RawCompositionDocument {
                 instances: parsed.instances.clone(),
+                graph: parsed.graph.clone(),
                 processes: parsed.processes.clone(),
                 external_processes: parsed.external_processes.clone(),
                 resource_providers: parsed.resource_providers.clone(),
@@ -98,6 +99,7 @@ fn validate_module_document(
 ) -> Result<()> {
     let invalid = [
         (!parsed.instances.is_empty(), "instance"),
+        (parsed.graph.is_some(), "graph"),
         (!parsed.processes.is_empty(), "process"),
         (!parsed.external_processes.is_empty(), "external_process"),
         (!parsed.resource_providers.is_empty(), "resource"),
@@ -161,5 +163,6 @@ fn merge_composition_document(
     )?;
     merge_named_map("profile", &mut document.profiles, composition.profiles)?;
     merge_named_map("target", &mut document.targets, composition.targets)?;
+    merge_graph(&mut document.graph, composition.graph)?;
     Ok(())
 }
