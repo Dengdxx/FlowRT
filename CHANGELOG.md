@@ -4,6 +4,25 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## 未发布
+
+生命周期状态机底座（0.21.0 主题首切片）：instance 生命周期升为契约一等显式状态机，零恢复行为改变。
+
+### 新增
+
+- runtime 跨语言 `LifecycleState` 枚举（`Uninitialized`/`Initialized`/`Running`/`Stopped`/`ShutDown`/`Faulted`，`Degraded` 保留），Rust 与 C++ 离散值逐一镜像。
+- RSDL `instance.<name>.failure_policy` 字段与 IR `InstanceFailurePolicy` 枚举；0.21.0 仅放行 `fail_fast`（= 既有逆序清理语义），`isolate`/`restart`/`degrade` 建模保留并由 validator 拒绝（deferred 到 0.21.x）。
+- 生成 runtime shell 在 on_init/start/stop/shutdown 与失败路径记录 per-instance 生命周期状态转移。
+- `flowrt status` 暴露 per-instance 生命周期状态（`category=lifecycle`、`entity_kind=instance` diagnostic，`faulted` 为 error）。
+
+### 变更
+
+- 生成 shell 在生命周期段新增 `record_lifecycle_state` 旁路记录；调用条件、逆序清理与状态聚合逻辑不变。
+
+### 测试
+
+- 覆盖 failure_policy 解析/normalize/validator、`LifecycleState` 离散值、introspection 记录与 diagnostic 派生、两语言 codegen 记录断言、golden 锁定、C++ `lifecycle_smoke` ctest 与生成 shell 真编译。
+
 ## v0.20.1 - 2026-06-17
 
 反馈环 v2：在 0.20.0 的零初值单拍反馈之上，回边支持 literal 初值与 fifo N 拍延迟。

@@ -21,6 +21,14 @@
 - 仍未支持：反馈 `init` 仅全 primitive 字段消息（嵌套/数组字段初值留后续）；跨进程延迟环留待
   多机/容错版本。
 
+开发中线为 `0.21.x 图级容错 / 生命周期`（patch 线，dev 分支已落首切片 0.21.0 生命周期状态机底座）：
+instance 生命周期升为契约一等显式状态机，**零恢复行为改变**。runtime 新增跨语言 `LifecycleState`
+枚举（Rust/C++ 离散值逐一镜像）；RSDL `instance.<name>.failure_policy` 与 IR `InstanceFailurePolicy`
+仅放行 `fail_fast`，`isolate`/`restart`/`degrade` 建模保留并由 validator 拒绝（deferred）；生成 shell
+在 on_init/start/stop/shutdown 与失败路径记录状态转移，`flowrt status` 经 `category=lifecycle`
+diagnostic 暴露 per-instance 状态。进程内 instance 隔离/重启、降级数据语义、图级 health/failover、
+跨进程反馈环依次留 0.21.1+。
+
 上一发布线为 `v0.19.0 Multi-Sensor Synchronization`，把 N 路
 sensor 输入按 event-time（0.18.0 sample-time）对齐成同步集，经新 `on_synchronized` trigger 投递
 给融合组件，是 0.18.0 sample-time 一等概念的直接 payoff：
