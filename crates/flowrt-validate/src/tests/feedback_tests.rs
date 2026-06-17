@@ -194,19 +194,94 @@ fn rejects_feedback_fifo_without_depth() {
     );
 }
 
+/// 跨进程反馈控制环：controller（ctrl_proc）↔ plant（plant_proc）经 zenoh，回边
+/// plant.state→controller.state。`feedback_channel` 注入回边 channel 行（latest/fifo）。
+fn cross_process_feedback_source(feedback_channel: &str) -> String {
+    format!(
+        r#"
+[package]
+name = "xproc_feedback_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+u = "f64"
+
+[type.State]
+x = "f64"
+
+[component.controller]
+language = "rust"
+input = ["state:State"]
+output = ["cmd:Cmd"]
+
+[component.plant]
+language = "rust"
+input = ["cmd:Cmd"]
+output = ["state:State"]
+
+[instance.controller]
+component = "controller"
+process = "ctrl_proc"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+input = ["state"]
+output = ["cmd"]
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+input = ["cmd"]
+output = ["state"]
+
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "plant.cmd"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+{feedback_channel}
+feedback = true
+init = {{ x = 0.0 }}
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#
+    )
+}
+
 #[test]
-fn rejects_feedback_across_processes() {
-    let ir = contract_of(&feedback_source(
-        "feedback = true",
-        "process = \"ctrl_proc\"",
-        "process = \"plant_proc\"",
+fn accepts_cross_process_latest_feedback() {
+    // 跨进程 latest 反馈环：seeded latest-snapshot 语义，validator 放行。
+    let ir = contract_of(&cross_process_feedback_source("channel = \"latest\""));
+    validate_contract(&ir).expect("cross-process latest feedback should validate");
+}
+
+#[test]
+fn rejects_cross_process_fifo_feedback() {
+    // 跨进程无共享 tick，fifo 的 N 拍延迟无意义，拒绝。
+    let ir = contract_of(&cross_process_feedback_source(
+        "channel = \"fifo\"\ndepth = 2",
     ));
-    let report = validate_contract(&ir).expect_err("cross-process feedback should fail");
+    let report = validate_contract(&ir).expect_err("cross-process fifo feedback should fail");
     assert!(
         report
             .errors
             .iter()
-            .any(|error| error.message.contains("must stay within one process"))
+            .any(|error| error.message.contains("spanning processes must use")),
+        "unexpected errors: {:?}",
+        report.errors
     );
 }
 

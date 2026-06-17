@@ -1478,26 +1478,32 @@ fn validate_feedback_binds(
         let to = bind.to.instance.name.as_str();
         let edge = format!("{}.{} -> {}.{}", from, bind.from.port, to, bind.to.port);
 
-        // 反馈边 v2 支持 latest（1 拍）或 fifo（depth 拍）单位延迟。
+        // 反馈边是否跨进程：进程间无共享 scheduler tick，跨进程反馈语义为 seeded
+        // latest-snapshot（source 启动期播 init 过 transport，消费端读最近到达样本），
+        // 非严格 z⁻¹（恒 1 拍仅 inproc 成立）。
+        let cross_process = match (process_of(from), process_of(to)) {
+            (Some(from_proc), Some(to_proc)) => from_proc != to_proc,
+            _ => false,
+        };
+
+        // 反馈边 v2：同进程支持 latest（1 拍）或 fifo（depth 拍）单位延迟；跨进程仅 latest，
+        // 跨进程 fifo 的 N 拍延迟无共享 tick 支撑、语义不诚实，拒绝。
         match bind.channel {
             ChannelKind::Latest => {}
             ChannelKind::Fifo => {
-                if bind.depth.unwrap_or(0) < 1 {
+                if cross_process {
                     errors.push(ValidationError::new(format!(
-                        "feedback bind `{edge}` on fifo channel must declare `depth >= 1`"
+                        "feedback bind `{edge}` spanning processes must use `channel = \"latest\"`; cross-process feedback has no shared tick for fifo depth delay"
                     )));
+                } else {
+                    if bind.depth.unwrap_or(0) < 1 {
+                        errors.push(ValidationError::new(format!(
+                            "feedback bind `{edge}` on fifo channel must declare `depth >= 1`"
+                        )));
+                    }
+                    validate_feedback_fifo_periods(bind, graph, &edge, errors);
                 }
-                validate_feedback_fifo_periods(bind, graph, &edge, errors);
             }
-        }
-
-        // 反馈边 v2 仍只支持同一进程内（seed + 延迟读语义只在 inproc 成立）。
-        if let (Some(from_proc), Some(to_proc)) = (process_of(from), process_of(to))
-            && from_proc != to_proc
-        {
-            errors.push(ValidationError::new(format!(
-                "feedback bind `{edge}` must stay within one process (`{from_proc}` != `{to_proc}`)"
-            )));
         }
 
         // 反馈边必须真的闭合一个环：剔除反馈边后，from 仍能从 to 经前向边到达
