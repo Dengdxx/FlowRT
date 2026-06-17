@@ -136,6 +136,16 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let _ = fallback_step_function;
     let scheduler_plan = scheduler_runtime_plan(contract, graph, order);
     let recoverable = crate::runtime_plan::recoverable_instances(contract, graph, order);
+    // 受控停机仅当图声明 on_faulted=stop 且存在可达终态故障的 isolate/restart 实例时启用；
+    // 否则不 emit 任何图停机机制，fail_fast/degrade-only 图字节不变。
+    let graph_stop = graph.health.on_faulted == flowrt_ir::GraphFaultReaction::Stop
+        && recoverable.iter().any(|plan| {
+            matches!(
+                plan.policy,
+                flowrt_ir::InstanceFailurePolicy::Isolate
+                    | flowrt_ir::InstanceFailurePolicy::Restart
+            )
+        });
     let tasks = scheduler_plan
         .dataflow_tasks
         .iter()
@@ -216,7 +226,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(&format!(
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
     ));
-    output.push_str(&emit_rust_fault_state_decls(&recoverable));
+    output.push_str(&emit_rust_fault_state_decls(&recoverable, graph_stop));
     output.push_str(
         "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n",
     );
@@ -224,7 +234,12 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(
         "            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
     );
-    output.push_str(&emit_rust_restart_driver(contract, order, &recoverable));
+    output.push_str(&emit_rust_restart_driver(
+        contract,
+        order,
+        &recoverable,
+        graph_stop,
+    ));
     output.push_str(&task_health_init);
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
     let has_service_tasks = !service_tasks.is_empty();
@@ -313,11 +328,16 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let task_admission_health_update =
         emit_rust_task_admission_health_update(&scheduler_plan.dataflow_tasks);
     output.push_str(&format!(
-        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}{task_error_handling}                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
+        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}{task_error_handling}                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n{graph_stop_check}            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
         fairness_check = emit_rust_fairness_check(&lane_ids),
         task_admission_health_update = task_admission_health_update,
         task_result_health_update = emit_rust_task_result_health_update(&scheduler_plan.dataflow_tasks),
-        task_error_handling = emit_rust_task_error_handling(&recoverable),
+        task_error_handling = emit_rust_task_error_handling(&recoverable, graph_stop),
+        graph_stop_check = if graph_stop {
+            "            if _graph_terminal_fault {\n                shutdown.request();\n            }\n"
+        } else {
+            ""
+        },
         advance_block = rust_scheduler_advance_block(
             contract,
             &rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
@@ -953,8 +973,12 @@ fn rust_backoff_expr(var: &str, initial_delay_ms: u64, max_delay_ms: u64) -> Str
 /// degrade 仅用一个 `_degraded` bool 做边沿跟踪，避免每拍重复调用 `record_lifecycle_state`。
 fn emit_rust_fault_state_decls(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    graph_stop: bool,
 ) -> String {
     let mut output = String::new();
+    if graph_stop {
+        output.push_str("        let mut _graph_terminal_fault = false;\n");
+    }
     for plan in recoverable {
         let var = crate::snake_identifier(&plan.name);
         match plan.policy {
@@ -979,8 +1003,14 @@ fn emit_rust_restart_driver(
     contract: &ContractIr,
     order: &[&InstanceIr],
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    graph_stop: bool,
 ) -> String {
     let mut output = String::new();
+    let graph_terminal = if graph_stop {
+        "                            _graph_terminal_fault = true;\n"
+    } else {
+        ""
+    };
     for plan in recoverable {
         if plan.policy != flowrt_ir::InstanceFailurePolicy::Restart {
             continue;
@@ -1015,7 +1045,7 @@ fn emit_rust_restart_driver(
             .collect::<String>();
         let backoff = rust_backoff_expr(&var, restart.initial_delay_ms, restart.max_delay_ms);
         output.push_str(&format!(
-            "            if let Some({var}_due_ms) = {var}_next_restart_ms {{\n                if scheduler_now_ms >= {var}_due_ms {{\n                    {var}_next_restart_ms = None;\n                    let mut {var}_restart_status = {on_init};\n                    if {var}_restart_status == flowrt::Status::Ok {{\n                        {var}_restart_status = {on_start};\n                    }}\n                    if {var}_restart_status == flowrt::Status::Ok {{\n                        {var}_fault_consecutive = 0;\n                        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n{resume}                    }} else {{\n                        {var}_fault_consecutive += 1;\n                        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n                        if {var}_fault_consecutive >= {max_restarts} {{\n                            {var}_terminal_faulted = true;\n                        }} else {{\n                            {var}_next_restart_ms = Some(scheduler_now_ms.saturating_add({backoff}));\n                        }}\n                    }}\n                }}\n            }}\n",
+            "            if let Some({var}_due_ms) = {var}_next_restart_ms {{\n                if scheduler_now_ms >= {var}_due_ms {{\n                    {var}_next_restart_ms = None;\n                    let mut {var}_restart_status = {on_init};\n                    if {var}_restart_status == flowrt::Status::Ok {{\n                        {var}_restart_status = {on_start};\n                    }}\n                    if {var}_restart_status == flowrt::Status::Ok {{\n                        {var}_fault_consecutive = 0;\n                        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n{resume}                    }} else {{\n                        {var}_fault_consecutive += 1;\n                        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n                        if {var}_fault_consecutive >= {max_restarts} {{\n                            {var}_terminal_faulted = true;\n{graph_terminal}                        }} else {{\n                            {var}_next_restart_ms = Some(scheduler_now_ms.saturating_add({backoff}));\n                        }}\n                    }}\n                }}\n            }}\n",
             max_restarts = restart.max_restarts,
         ));
     }
@@ -1029,6 +1059,7 @@ fn emit_rust_restart_driver(
 /// 的 task 仅记 `Degraded` 不挂起、不停图，并在该 task 后续返 Ok 时翻回 `Running`；其余 task 仍 fail_fast。
 fn emit_rust_task_error_handling(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    graph_stop: bool,
 ) -> String {
     if recoverable.is_empty() {
         return "                    if task_result.status == flowrt::Status::Error {\n                        status = flowrt::Status::Error;\n                        break;\n                    }\n".to_string();
@@ -1075,8 +1106,15 @@ fn emit_rust_task_error_handling(
             }
             _ => String::new(),
         };
+        // isolate 故障即时终态：受控停机下置图级终态标记（restart 的终态在 restart_driver 置位）。
+        let graph_terminal =
+            if graph_stop && plan.policy == flowrt_ir::InstanceFailurePolicy::Isolate {
+                "                            _graph_terminal_fault = true;\n"
+            } else {
+                ""
+            };
         arms.push_str(&format!(
-            "                        {pattern} => {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{restart_schedule}                        }}\n",
+            "                        {pattern} => {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{graph_terminal}{restart_schedule}                        }}\n",
         ));
     }
     let mut output = format!(
