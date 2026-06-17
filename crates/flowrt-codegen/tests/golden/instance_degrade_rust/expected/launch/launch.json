@@ -1,0 +1,204 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [
+        {
+          "backend": "inproc",
+          "channel": "latest",
+          "depth": 1,
+          "from": "monitor.sample",
+          "key_expr": null,
+          "max_age_ms": 50,
+          "overflow": "drop_oldest",
+          "service": null,
+          "stale_policy": "hold_last",
+          "thread_affinity": "send_safe",
+          "to": "consumer.sample"
+        }
+      ],
+      "instances": [
+        {
+          "component": "sink",
+          "name": "consumer",
+          "process": null,
+          "runtime": "rust",
+          "target": null
+        },
+        {
+          "component": "producer",
+          "name": "monitor",
+          "process": null,
+          "runtime": "rust",
+          "target": null
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "consumer",
+            "monitor"
+          ],
+          "io_boundaries": [],
+          "name": "main",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "rust",
+          "runtimes": [
+            "rust"
+          ],
+          "startup_delay_ms": 0,
+          "target": null,
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "sample"
+              ],
+              "instance": "consumer",
+              "lane": "consumer_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": null,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "on_message"
+            },
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "monitor",
+              "lane": "monitor_serial",
+              "name": "main",
+              "outputs": [
+                "sample"
+              ],
+              "period_ms": 10,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "consumer",
+            "kind": "serial",
+            "name": "consumer_serial"
+          },
+          {
+            "instance": "monitor",
+            "kind": "serial",
+            "name": "monitor_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "consumer",
+            "lane": "consumer_serial",
+            "name": "main",
+            "period_ms": null,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "on_message"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "monitor",
+            "lane": "monitor_serial",
+            "name": "main",
+            "period_ms": 10,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "sample"
+          ],
+          "instance": "consumer",
+          "lane": "consumer_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": null,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "on_message"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "monitor",
+          "lane": "monitor_serial",
+          "name": "main",
+          "outputs": [
+            "sample"
+          ],
+          "period_ms": 10,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "instance_degrade_demo",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

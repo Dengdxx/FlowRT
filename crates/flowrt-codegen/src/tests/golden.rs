@@ -129,3 +129,13 @@ fn golden_instance_fault_restart_rust() {
 fn golden_instance_fault_restart_cpp() {
     check_case("instance_fault_restart_cpp");
 }
+
+#[test]
+fn golden_instance_degrade_rust() {
+    check_case("instance_degrade_rust");
+}
+
+#[test]
+fn golden_instance_degrade_cpp() {
+    check_case("instance_degrade_cpp");
+}

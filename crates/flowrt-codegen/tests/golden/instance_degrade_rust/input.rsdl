@@ -1,0 +1,44 @@
+[package]
+name = "instance_degrade_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.monitor]
+component = "producer"
+failure_policy = "degrade"
+
+[instance.monitor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.consumer]
+component = "sink"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "monitor.sample"
+to = "consumer.sample"
+channel = "latest"
+stale_policy = "hold_last"
+max_age_ms = 50
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]

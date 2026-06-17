@@ -177,6 +177,15 @@ trigger = "periodic"
 period_ms = 10
 output = ["sample"]
 
+[instance.tolerant]
+component = "worker"
+failure_policy = "degrade"
+
+[instance.tolerant.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
 [profile.default]
 backend = "inproc"
 
@@ -186,22 +195,37 @@ backends = ["inproc"]
 "#;
 
 #[test]
-fn recoverable_instances_collects_only_isolate_restart_with_task_ids() {
+fn recoverable_instances_collects_isolate_restart_degrade_with_task_ids() {
     let contract = contract_from_source(FAULT_PLAN_RSDL);
     let graph = contract.graphs.first().unwrap();
     let order = topo_order_instances_for_language(&contract, graph, LanguageKind::Rust);
 
     let recoverable = crate::runtime_plan::recoverable_instances(&contract, graph, &order);
 
-    assert_eq!(recoverable.len(), 1, "{recoverable:?}");
-    let plan = &recoverable[0];
-    assert_eq!(plan.name, "resilient");
-    assert_eq!(plan.policy, flowrt_ir::InstanceFailurePolicy::Restart);
-    let restart = plan.restart.expect("restart params");
+    // fail_fast 的 `plain` 不收录；`resilient`(restart) 与 `tolerant`(degrade) 收录，按名稳定排序。
+    assert_eq!(recoverable.len(), 2, "{recoverable:?}");
+    let resilient = recoverable
+        .iter()
+        .find(|plan| plan.name == "resilient")
+        .expect("resilient collected");
+    assert_eq!(resilient.policy, flowrt_ir::InstanceFailurePolicy::Restart);
+    let restart = resilient.restart.expect("restart params");
     assert_eq!(restart.max_restarts, 2);
     assert_eq!(restart.initial_delay_ms, 10);
     assert_eq!(restart.max_delay_ms, 40);
-    assert_eq!(plan.task_ids.len(), 1, "resilient has one dataflow task");
+    assert_eq!(
+        resilient.task_ids.len(),
+        1,
+        "resilient has one dataflow task"
+    );
+
+    let tolerant = recoverable
+        .iter()
+        .find(|plan| plan.name == "tolerant")
+        .expect("tolerant collected");
+    assert_eq!(tolerant.policy, flowrt_ir::InstanceFailurePolicy::Degrade);
+    assert!(tolerant.restart.is_none(), "degrade 不带重启参数");
+    assert_eq!(tolerant.task_ids.len(), 1, "tolerant has one dataflow task");
 }
 
 #[test]
