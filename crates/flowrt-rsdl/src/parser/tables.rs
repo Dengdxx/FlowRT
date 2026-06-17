@@ -313,7 +313,7 @@ pub(super) fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
     validate_known_fields(
         table,
         &context,
-        &["component", "process", "target", "params", "task"],
+        &["component", "process", "target", "params", "task", "failure_policy"],
     )?;
 
     let tasks = table
@@ -328,6 +328,7 @@ pub(super) fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
         target: optional_string(table, &context, "target")?,
         params: optional_param_table(table, &context, "params")?,
         tasks,
+        failure_policy: optional_string(table, &context, "failure_policy")?,
     })
 }
 

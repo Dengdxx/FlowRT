@@ -234,6 +234,8 @@ pub struct RawInstance {
     pub target: Option<String>,
     pub params: BTreeMap<String, RawValue>,
     pub tasks: Vec<RawTask>,
+    /// `instance.<name>.failure_policy`：故障策略原始字符串，取值校验在 IR/validator 阶段。
+    pub failure_policy: Option<String>,
 }
 
 /// `[instance.<name>.task]` 或 `[[instance.<name>.task]]` 表。

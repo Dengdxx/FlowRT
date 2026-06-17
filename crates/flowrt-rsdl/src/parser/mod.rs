@@ -1952,4 +1952,50 @@ init = { x = 0.5, n = 2 }
         assert_eq!(init.get("n"), Some(&RawValue::Integer(2)));
         assert_eq!(raw.binds[1].depth, Some(3));
     }
+
+    #[test]
+    fn parses_instance_failure_policy() {
+        let source = r#"
+[package]
+name = "failure_policy_demo"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+failure_policy = "fail_fast"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+"#;
+        let document = parse_str(source).expect("parse ok");
+        assert_eq!(
+            document.instances["processor"].failure_policy.as_deref(),
+            Some("fail_fast")
+        );
+    }
+
+    #[test]
+    fn rejects_instance_unknown_field() {
+        let source = r#"
+[package]
+name = "unknown_field_demo"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+failure_polcy = "fail_fast"
+"#;
+        let error = parse_str(source).expect_err("typo field must be rejected");
+        assert!(error.to_string().contains("failure_polcy"), "{error}");
+    }
 }
