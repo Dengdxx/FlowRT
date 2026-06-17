@@ -12,16 +12,6 @@ use flowrt_ir::{
 use crate::ValidationError;
 use crate::components::{validate_param_value_constraints, validate_param_value_matches_schema};
 
-/// instance failure_policy 的 canonical 字符串，用于校验诊断信息。
-fn failure_policy_str(policy: InstanceFailurePolicy) -> &'static str {
-    match policy {
-        InstanceFailurePolicy::FailFast => "fail_fast",
-        InstanceFailurePolicy::Isolate => "isolate",
-        InstanceFailurePolicy::Restart => "restart",
-        InstanceFailurePolicy::Degrade => "degrade",
-    }
-}
-
 pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     let components = ir
         .components
@@ -116,13 +106,22 @@ fn validate_external_processes(
             )));
         }
 
-        match instance.failure_policy {
-            InstanceFailurePolicy::FailFast => {}
-            other => {
+        match instance.fault.policy {
+            InstanceFailurePolicy::FailFast
+            | InstanceFailurePolicy::Isolate
+            | InstanceFailurePolicy::Restart => {}
+            InstanceFailurePolicy::Degrade => {
                 errors.push(ValidationError::new(format!(
-                    "instance `{}` failure_policy `{}` is not implemented yet; only `fail_fast` is supported in 0.21.0 (isolate/restart/degrade deferred to 0.21.x)",
+                    "instance `{}` failure_policy `degrade` is not implemented yet; supported: fail_fast/isolate/restart (degrade deferred to 0.21.2)",
                     instance.name,
-                    failure_policy_str(other),
+                )));
+            }
+        }
+        if let Some(restart) = &instance.fault.restart {
+            if restart.initial_delay_ms == 0 || restart.initial_delay_ms > restart.max_delay_ms {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` restart backoff invalid: require 0 < initial_delay_ms ({}) <= max_delay_ms ({})",
+                    instance.name, restart.initial_delay_ms, restart.max_delay_ms,
                 )));
             }
         }

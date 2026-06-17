@@ -492,16 +492,118 @@ output = ["result"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let policy = |n: &str| {
+    let fault = |n: &str| {
         ir.graphs[0]
             .instances
             .iter()
             .find(|i| i.name == n)
             .unwrap()
-            .failure_policy
+            .fault
     };
-    assert_eq!(policy("implicit"), crate::InstanceFailurePolicy::FailFast);
-    assert_eq!(policy("explicit"), crate::InstanceFailurePolicy::Isolate);
+    assert_eq!(
+        fault("implicit").policy,
+        crate::InstanceFailurePolicy::FailFast
+    );
+    assert!(fault("implicit").restart.is_none());
+    assert_eq!(
+        fault("explicit").policy,
+        crate::InstanceFailurePolicy::Isolate
+    );
+}
+
+#[test]
+fn normalizes_instance_fault_restart_table_fills_defaults() {
+    let source = r#"
+[package]
+name = "fault_table_ir"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.worker]
+component = "processor"
+
+[instance.worker.fault]
+policy = "restart"
+initial_delay_ms = 10
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let fault = &ir.graphs[0].instances[0].fault;
+    assert_eq!(fault.policy, crate::InstanceFailurePolicy::Restart);
+    let restart = fault.restart.expect("restart params");
+    assert_eq!(restart.initial_delay_ms, 10);
+    assert_eq!(
+        restart.max_restarts,
+        crate::DEFAULT_INSTANCE_RESTART.max_restarts
+    );
+    assert_eq!(
+        restart.max_delay_ms,
+        crate::DEFAULT_INSTANCE_RESTART.max_delay_ms
+    );
+}
+
+#[test]
+fn rejects_instance_fault_double_spec() {
+    let source = r#"
+[package]
+name = "fault_double_ir"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.worker]
+component = "processor"
+failure_policy = "isolate"
+
+[instance.worker.fault]
+policy = "restart"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source)).unwrap_err();
+    assert!(format!("{error}").contains("互斥"), "{error}");
+}
+
+#[test]
+fn rejects_restart_params_on_non_restart_policy() {
+    let source = r#"
+[package]
+name = "fault_params_ir"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.worker]
+component = "processor"
+
+[instance.worker.fault]
+policy = "isolate"
+max_restarts = 2
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source)).unwrap_err();
+    assert!(format!("{error}").contains("restart 参数"), "{error}");
 }
 
 #[test]

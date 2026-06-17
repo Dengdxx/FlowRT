@@ -449,20 +449,53 @@ pub struct ParamIr {
     pub choices: Vec<ParamValue>,
 }
 
-/// 实例故障策略。0.21.0 仅 `FailFast` 由 validator 放行；其余为建模保留值，
-/// 留待 0.21.x 进程内隔离/重启/降级切片实现。
+/// 实例故障策略。0.21.1 放行 `FailFast`/`Isolate`/`Restart`；`Degrade` 仍为保留值
+/// （validator 拒绝），留待 0.21.2 降级数据语义切片实现。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceFailurePolicy {
     /// 故障即按既有逆序清理停机（今天的行为）。
     #[default]
     FailFast,
-    /// 保留：进程内隔离故障 instance。
+    /// 进程内隔离故障 instance：停其全部 task，图继续跑，不恢复。
     Isolate,
-    /// 保留：进程内重启故障 instance。
+    /// 进程内重启故障 instance：先隔离，再按退避重跑 `on_init`/`on_start`（同一对象）。
     Restart,
-    /// 保留：降级续跑。
+    /// 保留：降级续跑（0.21.2 起可达）。
     Degrade,
+}
+
+/// 进程内重启参数，字段镜像 supervisor `ProcessRestartPolicy`，便于进程内/进程间语义对齐。
+///
+/// 仅 `InstanceFailurePolicy::Restart` 携带。退避按 clock-ms 度量：首次 `initial_delay_ms`，
+/// 每次连续失败翻倍封顶 `max_delay_ms`；连续失败达 `max_restarts` 进入终态 `Faulted`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceRestartParamsIr {
+    pub max_restarts: u32,
+    pub initial_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+/// 进程内重启默认参数，对齐 supervisor `DEFAULT_RESTART_POLICY`（OnFailure/3/100/1000）。
+pub const DEFAULT_INSTANCE_RESTART: InstanceRestartParamsIr = InstanceRestartParamsIr {
+    max_restarts: 3,
+    initial_delay_ms: 100,
+    max_delay_ms: 1000,
+};
+
+/// 实例故障处理合同：策略 + 仅 restart 时的退避参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InstanceFaultPolicyIr {
+    pub policy: InstanceFailurePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<InstanceRestartParamsIr>,
+}
+
+impl InstanceFaultPolicyIr {
+    /// 默认合同（fail_fast、无重启参数）；用于 canonical JSON 跳过整段。
+    pub fn is_default(&self) -> bool {
+        self.policy == InstanceFailurePolicy::FailFast && self.restart.is_none()
+    }
 }
 
 /// graph 中的组件实例。
@@ -474,8 +507,8 @@ pub struct InstanceIr {
     pub params: Vec<ParamValueIr>,
     pub process: Option<String>,
     pub target: Option<EntityRef>,
-    #[serde(default)]
-    pub failure_policy: InstanceFailurePolicy,
+    #[serde(default, skip_serializing_if = "InstanceFaultPolicyIr::is_default")]
+    pub fault: InstanceFaultPolicyIr,
 }
 
 /// 实例级参数值。
@@ -1257,6 +1290,27 @@ mod tests {
             error.to_string().contains("unexpected"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn instance_fault_policy_default_omitted_and_restart_roundtrips() {
+        let default = InstanceFaultPolicyIr::default();
+        assert!(default.is_default());
+        let restart = InstanceFaultPolicyIr {
+            policy: InstanceFailurePolicy::Restart,
+            restart: Some(DEFAULT_INSTANCE_RESTART),
+        };
+        assert!(!restart.is_default());
+        let json = serde_json::to_string(&restart).unwrap();
+        let parsed: InstanceFaultPolicyIr = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, restart);
+        // 默认整段在 InstanceIr skip_serializing_if 下不写入；isolate 无 restart 段。
+        let isolate = InstanceFaultPolicyIr {
+            policy: InstanceFailurePolicy::Isolate,
+            restart: None,
+        };
+        assert!(!isolate.is_default());
+        assert!(!serde_json::to_string(&isolate).unwrap().contains("restart"));
     }
 
     #[test]

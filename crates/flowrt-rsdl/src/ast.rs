@@ -234,8 +234,19 @@ pub struct RawInstance {
     pub target: Option<String>,
     pub params: BTreeMap<String, RawValue>,
     pub tasks: Vec<RawTask>,
-    /// `instance.<name>.failure_policy`：故障策略原始字符串，取值校验在 IR/validator 阶段。
+    /// `instance.<name>.failure_policy`：故障策略原始字符串扁平糖；取值校验在 IR/validator 阶段。
     pub failure_policy: Option<String>,
+    /// `[instance.<name>.fault]`：故障处理子表；与扁平 `failure_policy` 互斥（双写在 IR 阶段拒绝）。
+    pub fault: Option<RawInstanceFault>,
+}
+
+/// `[instance.<name>.fault]` 表。取值/范围/互斥校验在 IR/validator 阶段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawInstanceFault {
+    pub policy: Option<String>,
+    pub max_restarts: Option<u32>,
+    pub initial_delay_ms: Option<u64>,
+    pub max_delay_ms: Option<u64>,
 }
 
 /// `[instance.<name>.task]` 或 `[[instance.<name>.task]]` 表。

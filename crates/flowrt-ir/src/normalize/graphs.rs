@@ -145,29 +145,97 @@ pub(super) fn normalize_instances(
             params,
             process: raw.process.clone(),
             target,
-            failure_policy: parse_failure_policy(name, raw.failure_policy.as_deref())?,
+            fault: parse_instance_fault(name, raw)?,
         });
     }
 
     Ok((instances, tasks))
 }
 
-/// 解析 instance failure_policy 字符串为枚举；缺省 `fail_fast`，未知值拒绝。
-fn parse_failure_policy(
+/// 解析 instance 故障合同：扁平 `failure_policy` 与 `[fault]` 子表互斥，restart 填默认参数。
+///
+/// 双写两源、非 restart 策略携带 restart 参数均拒绝；退避范围校验留给 validator。
+fn parse_instance_fault(
     instance: &str,
-    value: Option<&str>,
-) -> Result<crate::InstanceFailurePolicy> {
+    raw: &flowrt_rsdl::RawInstance,
+) -> Result<crate::InstanceFaultPolicyIr> {
+    use crate::{
+        DEFAULT_INSTANCE_RESTART, InstanceFailurePolicy as P, InstanceFaultPolicyIr,
+        InstanceRestartParamsIr,
+    };
+
+    if raw.failure_policy.is_some() && raw.fault.is_some() {
+        return Err(IrError::InvalidValue {
+            context: format!("instance.{instance}"),
+            message:
+                "`failure_policy` 与 `[fault]` 互斥，二选一（`failure_policy` 是 `[fault].policy` 的扁平糖）"
+                    .to_string(),
+        });
+    }
+
+    let policy_str = raw
+        .fault
+        .as_ref()
+        .and_then(|fault| fault.policy.as_deref())
+        .or(raw.failure_policy.as_deref());
+    let policy = match policy_str {
+        None | Some("fail_fast") => P::FailFast,
+        Some("isolate") => P::Isolate,
+        Some("restart") => P::Restart,
+        Some("degrade") => P::Degrade,
+        Some(other) => {
+            return Err(IrError::InvalidEnum {
+                context: format!("instance.{instance}.fault.policy"),
+                kind: "failure_policy",
+                value: other.to_string(),
+            });
+        }
+    };
+
+    let raw_fault = raw.fault.as_ref();
+    let has_restart_params = raw_fault.is_some_and(|fault| {
+        fault.max_restarts.is_some()
+            || fault.initial_delay_ms.is_some()
+            || fault.max_delay_ms.is_some()
+    });
+
+    let restart = if policy == P::Restart {
+        let fault = raw_fault;
+        Some(InstanceRestartParamsIr {
+            max_restarts: fault
+                .and_then(|fault| fault.max_restarts)
+                .unwrap_or(DEFAULT_INSTANCE_RESTART.max_restarts),
+            initial_delay_ms: fault
+                .and_then(|fault| fault.initial_delay_ms)
+                .unwrap_or(DEFAULT_INSTANCE_RESTART.initial_delay_ms),
+            max_delay_ms: fault
+                .and_then(|fault| fault.max_delay_ms)
+                .unwrap_or(DEFAULT_INSTANCE_RESTART.max_delay_ms),
+        })
+    } else {
+        if has_restart_params {
+            return Err(IrError::InvalidValue {
+                context: format!("instance.{instance}.fault"),
+                message: format!(
+                    "restart 参数仅 `policy = \"restart\"` 可用，当前 policy 为 `{}`",
+                    failure_policy_label(policy)
+                ),
+            });
+        }
+        None
+    };
+
+    Ok(InstanceFaultPolicyIr { policy, restart })
+}
+
+/// instance failure policy 的 canonical 字符串。
+pub(crate) fn failure_policy_label(policy: crate::InstanceFailurePolicy) -> &'static str {
     use crate::InstanceFailurePolicy as P;
-    match value {
-        None | Some("fail_fast") => Ok(P::FailFast),
-        Some("isolate") => Ok(P::Isolate),
-        Some("restart") => Ok(P::Restart),
-        Some("degrade") => Ok(P::Degrade),
-        Some(other) => Err(IrError::InvalidEnum {
-            context: format!("instance.{instance}.failure_policy"),
-            kind: "failure_policy",
-            value: other.to_string(),
-        }),
+    match policy {
+        P::FailFast => "fail_fast",
+        P::Isolate => "isolate",
+        P::Restart => "restart",
+        P::Degrade => "degrade",
     }
 }
 

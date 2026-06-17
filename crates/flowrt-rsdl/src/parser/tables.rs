@@ -320,6 +320,7 @@ pub(super) fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
             "params",
             "task",
             "failure_policy",
+            "fault",
         ],
     )?;
 
@@ -336,7 +337,34 @@ pub(super) fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
         params: optional_param_table(table, &context, "params")?,
         tasks,
         failure_policy: optional_string(table, &context, "failure_policy")?,
+        fault: parse_instance_fault(name, table)?,
     })
+}
+
+/// 解析可选 `[instance.<name>.fault]` 子表；未知子键拒绝。
+fn parse_instance_fault(name: &str, table: &Table) -> Result<Option<RawInstanceFault>> {
+    let Some(value) = table.get("fault") else {
+        return Ok(None);
+    };
+    let context = format!("instance.{name}.fault");
+    let fault_table = value
+        .as_table()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: format!("instance.{name}"),
+            field: "fault".to_string(),
+            expected: "table",
+        })?;
+    validate_known_fields(
+        fault_table,
+        &context,
+        &["policy", "max_restarts", "initial_delay_ms", "max_delay_ms"],
+    )?;
+    Ok(Some(RawInstanceFault {
+        policy: optional_string(fault_table, &context, "policy")?,
+        max_restarts: optional_u32(fault_table, &context, "max_restarts")?,
+        initial_delay_ms: optional_u64(fault_table, &context, "initial_delay_ms")?,
+        max_delay_ms: optional_u64(fault_table, &context, "max_delay_ms")?,
+    }))
 }
 
 fn parse_tasks(instance_name: &str, value: &Value) -> Result<Vec<RawTask>> {

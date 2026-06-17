@@ -1916,7 +1916,7 @@ backends = ["inproc"]
 }
 
 #[test]
-fn rejects_instance_unimplemented_failure_policy() {
+fn rejects_instance_degrade_failure_policy() {
     let source = r#"
 [package]
 name = "fp_deferred"
@@ -1928,7 +1928,7 @@ output = ["result:u32"]
 
 [instance.processor]
 component = "processor"
-failure_policy = "restart"
+failure_policy = "degrade"
 
 [instance.processor.task]
 trigger = "periodic"
@@ -1944,12 +1944,101 @@ backends = ["inproc"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let report = validate_contract(&ir).expect_err("restart deferred");
+    let report = validate_contract(&ir).expect_err("degrade deferred");
     assert!(
         report
             .errors
             .iter()
-            .any(|e| e.message.contains("failure_policy") && e.message.contains("restart")),
+            .any(|e| e.message.contains("degrade") && e.message.contains("0.21.2")),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn accepts_instance_isolate_and_restart_policies() {
+    let source = r#"
+[package]
+name = "fp_recoverable"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.guarded]
+component = "processor"
+failure_policy = "isolate"
+
+[instance.guarded.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[instance.resilient]
+component = "processor"
+
+[instance.resilient.fault]
+policy = "restart"
+max_restarts = 2
+initial_delay_ms = 10
+max_delay_ms = 40
+
+[instance.resilient.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    validate_contract(&ir).expect("isolate/restart accepted");
+}
+
+#[test]
+fn rejects_restart_backoff_out_of_range() {
+    let source = r#"
+[package]
+name = "fp_range"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+
+[instance.processor.fault]
+policy = "restart"
+initial_delay_ms = 0
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("zero initial_delay rejected");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("restart backoff invalid")),
         "{:?}",
         report.errors
     );
