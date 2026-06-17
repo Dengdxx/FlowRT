@@ -143,6 +143,67 @@ backend = "inproc"
 worker_threads = 3
 "#;
 
+const FAULT_PLAN_RSDL: &str = r#"
+[package]
+name = "fault_plan_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.worker]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.plain]
+component = "worker"
+
+[instance.plain.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.resilient]
+component = "worker"
+
+[instance.resilient.fault]
+policy = "restart"
+max_restarts = 2
+initial_delay_ms = 10
+max_delay_ms = 40
+
+[instance.resilient.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+
+#[test]
+fn recoverable_instances_collects_only_isolate_restart_with_task_ids() {
+    let contract = contract_from_source(FAULT_PLAN_RSDL);
+    let graph = contract.graphs.first().unwrap();
+    let order = topo_order_instances_for_language(&contract, graph, LanguageKind::Rust);
+
+    let recoverable = crate::runtime_plan::recoverable_instances(&contract, graph, &order);
+
+    assert_eq!(recoverable.len(), 1, "{recoverable:?}");
+    let plan = &recoverable[0];
+    assert_eq!(plan.name, "resilient");
+    assert_eq!(plan.policy, flowrt_ir::InstanceFailurePolicy::Restart);
+    let restart = plan.restart.expect("restart params");
+    assert_eq!(restart.max_restarts, 2);
+    assert_eq!(restart.initial_delay_ms, 10);
+    assert_eq!(restart.max_delay_ms, 40);
+    assert_eq!(plan.task_ids.len(), 1, "resilient has one dataflow task");
+}
+
 #[test]
 fn scheduler_runtime_plan_collects_dataflow_and_hidden_tasks() {
     let contract = contract_from_source(SCHEDULER_PLAN_RSDL);

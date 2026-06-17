@@ -135,6 +135,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     } = emission;
     let _ = fallback_step_function;
     let scheduler_plan = scheduler_runtime_plan(contract, graph, order);
+    let recoverable = crate::runtime_plan::recoverable_instances(contract, graph, order);
     let tasks = scheduler_plan
         .dataflow_tasks
         .iter()
@@ -215,6 +216,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(&format!(
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
     ));
+    output.push_str(&emit_rust_fault_state_decls(&recoverable));
     output.push_str(
         "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n",
     );
@@ -222,6 +224,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(
         "            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
     );
+    output.push_str(&emit_rust_restart_driver(contract, order, &recoverable));
     output.push_str(&task_health_init);
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
     let has_service_tasks = !service_tasks.is_empty();
@@ -310,10 +313,11 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let task_admission_health_update =
         emit_rust_task_admission_health_update(&scheduler_plan.dataflow_tasks);
     output.push_str(&format!(
-        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}                    if task_result.status == flowrt::Status::Error {{\n                        status = flowrt::Status::Error;\n                        break;\n                    }}\n                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
+        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}{task_error_handling}                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
         fairness_check = emit_rust_fairness_check(&lane_ids),
         task_admission_health_update = task_admission_health_update,
         task_result_health_update = emit_rust_task_result_health_update(&scheduler_plan.dataflow_tasks),
+        task_error_handling = emit_rust_task_error_handling(&recoverable),
         advance_block = rust_scheduler_advance_block(
             contract,
             &rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
@@ -927,4 +931,130 @@ fn rust_next_periodic_deadline_expr(tasks: &[SchedulerDataflowTaskPlan<'_>]) -> 
     } else {
         format!("[{}].into_iter().flatten().min()", deadlines.join(", "))
     }
+}
+
+/// instance 重启的生命周期上下文变量名（native 用共享 `lifecycle_context`，io_boundary 用专属）。
+fn rust_restart_context_name(component: &flowrt_ir::ComponentIr, name: &str) -> String {
+    if component.kind == flowrt_ir::ComponentKind::IoBoundary {
+        format!("{}_boundary_context", crate::snake_identifier(name))
+    } else {
+        "lifecycle_context".to_string()
+    }
+}
+
+/// 退避表达式：`(initial << consecutive.min(31)).min(max)`，单位 clock-ms。
+fn rust_backoff_expr(var: &str, initial_delay_ms: u64, max_delay_ms: u64) -> String {
+    format!(
+        "({initial_delay_ms}u64 << {var}_fault_consecutive.min(31)).min({max_delay_ms}u64)"
+    )
+}
+
+/// 为 restart 策略 instance 生成故障状态局部变量声明（8 空格缩进，循环外）。
+fn emit_rust_fault_state_decls(recoverable: &[crate::runtime_plan::RecoverableInstancePlan]) -> String {
+    let mut output = String::new();
+    for plan in recoverable {
+        if plan.policy != flowrt_ir::InstanceFailurePolicy::Restart {
+            continue;
+        }
+        let var = crate::snake_identifier(&plan.name);
+        output.push_str(&format!(
+            "        let mut {var}_next_restart_ms: Option<u64> = None;\n        let mut {var}_fault_consecutive: u32 = 0;\n        let mut {var}_terminal_faulted = false;\n",
+        ));
+    }
+    output
+}
+
+/// 在调度 tick 顶部生成 restart-due 驱动：到点重跑 on_init→on_start（同一对象），成功恢复
+/// 调度并回 Running、清零退避；失败递增连续计数，达 max_restarts 进入终态 Faulted，否则按
+/// 退避排下次。退避按 clock-ms 度量，回放下重启时机确定。
+fn emit_rust_restart_driver(
+    contract: &ContractIr,
+    order: &[&InstanceIr],
+    recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+) -> String {
+    let mut output = String::new();
+    for plan in recoverable {
+        if plan.policy != flowrt_ir::InstanceFailurePolicy::Restart {
+            continue;
+        }
+        let Some(restart) = plan.restart else {
+            continue;
+        };
+        let instance = order
+            .iter()
+            .find(|instance| instance.name == plan.name)
+            .expect("recoverable instance must be in order");
+        let component = crate::component_by_name(contract, &instance.component.name);
+        let ctx = rust_restart_context_name(component, &plan.name);
+        let var = crate::snake_identifier(&plan.name);
+        let lit = crate::rust_string_literal(&plan.name);
+        let on_init = super::rust_component_method_call(
+            component,
+            &instance.name,
+            &format!("on_init(&mut {ctx})"),
+        );
+        let on_start = super::rust_component_method_call(
+            component,
+            &instance.name,
+            &format!("on_start(&mut {ctx})"),
+        );
+        let resume = plan
+            .task_ids
+            .iter()
+            .map(|id| format!("                        scheduler.resume_task(flowrt::TaskId({id}));\n"))
+            .collect::<String>();
+        let backoff = rust_backoff_expr(&var, restart.initial_delay_ms, restart.max_delay_ms);
+        output.push_str(&format!(
+            "            if let Some({var}_due_ms) = {var}_next_restart_ms {{\n                if scheduler_now_ms >= {var}_due_ms {{\n                    {var}_next_restart_ms = None;\n                    let mut {var}_restart_status = {on_init};\n                    if {var}_restart_status == flowrt::Status::Ok {{\n                        {var}_restart_status = {on_start};\n                    }}\n                    if {var}_restart_status == flowrt::Status::Ok {{\n                        {var}_fault_consecutive = 0;\n                        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n{resume}                    }} else {{\n                        {var}_fault_consecutive += 1;\n                        introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n                        if {var}_fault_consecutive >= {max_restarts} {{\n                            {var}_terminal_faulted = true;\n                        }} else {{\n                            {var}_next_restart_ms = Some(scheduler_now_ms.saturating_add({backoff}));\n                        }}\n                    }}\n                }}\n            }}\n",
+            max_restarts = restart.max_restarts,
+        ));
+    }
+    output
+}
+
+/// 生成 commit drain 段对 task Error 的处理。
+///
+/// 无 recoverable instance 时返回既有行为（status=Error;break）；否则对属于 isolate/restart
+/// instance 的 task 隔离续跑（不置 status、不 break），restart 还排下次重启；其余 task 仍 fail_fast。
+fn emit_rust_task_error_handling(
+    recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+) -> String {
+    if recoverable.is_empty() {
+        return "                    if task_result.status == flowrt::Status::Error {\n                        status = flowrt::Status::Error;\n                        break;\n                    }\n".to_string();
+    }
+    let mut arms = String::new();
+    for plan in recoverable {
+        if plan.task_ids.is_empty() {
+            continue;
+        }
+        let var = crate::snake_identifier(&plan.name);
+        let lit = crate::rust_string_literal(&plan.name);
+        let pattern = plan
+            .task_ids
+            .iter()
+            .map(|id| format!("flowrt::TaskId({id})"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let suspend = plan
+            .task_ids
+            .iter()
+            .map(|id| format!("                            scheduler.suspend_task(flowrt::TaskId({id}));\n"))
+            .collect::<String>();
+        let restart_schedule = match (plan.policy, plan.restart) {
+            (flowrt_ir::InstanceFailurePolicy::Restart, Some(restart)) => {
+                let backoff =
+                    rust_backoff_expr(&var, restart.initial_delay_ms, restart.max_delay_ms);
+                format!(
+                    "                            if !{var}_terminal_faulted {{\n                                {var}_next_restart_ms = Some(scheduler_now_ms.saturating_add({backoff}));\n                            }}\n",
+                )
+            }
+            _ => String::new(),
+        };
+        arms.push_str(&format!(
+            "                        {pattern} => {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{restart_schedule}                        }}\n",
+        ));
+    }
+    format!(
+        "                    if task_result.status == flowrt::Status::Error {{\n                        match task_result.task {{\n{arms}                            _ => {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                        }}\n                    }}\n",
+    )
 }

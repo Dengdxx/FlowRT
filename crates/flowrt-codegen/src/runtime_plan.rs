@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr, GraphIr,
-    InstanceIr, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
+    InstanceFailurePolicy, InstanceIr, InstanceRestartParamsIr, OperationConcurrencyPolicy,
+    OperationFeedbackPolicy, OperationPreemptPolicy,
     OverflowPolicy as IrOverflowPolicy, ParamIr, ParamValue, Ros2BridgeDirection, Ros2BridgeIr,
     ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
     TriggerKind, TypeExpr,
@@ -247,6 +248,55 @@ pub(crate) fn scheduler_runtime_plan<'a>(
         hidden_tasks,
         scheduler_base_period_ms,
     }
+}
+
+/// 一个 isolate/restart instance 的运行时容错计划：策略、重启参数及其全部 dataflow task id。
+///
+/// fail_fast instance 不收录。task_ids 是 scheduler dataflow task 的稳定 id（与
+/// `scheduler_runtime_plan` 一致），生成 shell 用它在隔离时 `suspend_task`、重启成功时
+/// `resume_task`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoverableInstancePlan {
+    pub(crate) name: String,
+    pub(crate) policy: InstanceFailurePolicy,
+    pub(crate) restart: Option<InstanceRestartParamsIr>,
+    pub(crate) task_ids: Vec<usize>,
+}
+
+/// 收集本进程 order 内 policy ∈ {isolate, restart} 的 instance 及其 dataflow task id。
+///
+/// 返回顺序按 instance 名称稳定排序，保证生成 shell 输出确定。fail_fast-only 图返回空 vec，
+/// 生成 shell 据此完全不 emit 容错机制（保既有 golden 不漂移）。
+pub(crate) fn recoverable_instances(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+) -> Vec<RecoverableInstancePlan> {
+    let plan = scheduler_runtime_plan(contract, graph, order);
+    let mut by_name: BTreeMap<String, RecoverableInstancePlan> = BTreeMap::new();
+    for instance in order {
+        if !matches!(
+            instance.fault.policy,
+            InstanceFailurePolicy::Isolate | InstanceFailurePolicy::Restart
+        ) {
+            continue;
+        }
+        by_name.insert(
+            instance.name.clone(),
+            RecoverableInstancePlan {
+                name: instance.name.clone(),
+                policy: instance.fault.policy,
+                restart: instance.fault.restart,
+                task_ids: Vec::new(),
+            },
+        );
+    }
+    for task in &plan.dataflow_tasks {
+        if let Some(entry) = by_name.get_mut(task.task.instance.name.as_str()) {
+            entry.task_ids.push(task.id);
+        }
+    }
+    by_name.into_values().collect()
 }
 
 fn scheduler_lane_id(
