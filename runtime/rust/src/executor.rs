@@ -175,6 +175,8 @@ pub struct DeterministicExecutor {
     periodic: BTreeMap<TaskId, PeriodicState>,
     inflight_tasks: BTreeSet<TaskId>,
     inflight_serial_lanes: BTreeSet<LaneId>,
+    /// 被故障隔离暂停的 task：不进 ready、不被 admit；resume 后恢复。
+    suspended: BTreeSet<TaskId>,
     /// 记录每个 lane 最近一次被调度执行的 tick 编号。
     lane_last_dispatched_tick: BTreeMap<LaneId, u64>,
 }
@@ -587,6 +589,7 @@ impl DeterministicExecutor {
             periodic: BTreeMap::new(),
             inflight_tasks: BTreeSet::new(),
             inflight_serial_lanes: BTreeSet::new(),
+            suspended: BTreeSet::new(),
             lane_last_dispatched_tick: BTreeMap::new(),
         }
     }
@@ -632,7 +635,8 @@ impl DeterministicExecutor {
     }
 
     pub fn wake(&mut self, task: TaskId) {
-        if self.admission_open && self.tasks.contains_key(&task) {
+        if self.admission_open && !self.suspended.contains(&task) && self.tasks.contains_key(&task)
+        {
             self.ready.insert(task);
             self.pending.entry(task).or_insert(PendingAdmission {
                 scheduled_time_ms: self.now_ms,
@@ -640,6 +644,19 @@ impl DeterministicExecutor {
                 missed_periods: 0,
             });
         }
+    }
+
+    /// 故障隔离：暂停某 task 的调度。把它移出 ready/pending，后续 `wake`/periodic due
+    /// 也不再让它进入 ready，直到 `resume_task`。已 inflight 的提交不受影响（completion 仍回来）。
+    pub fn suspend_task(&mut self, task: TaskId) {
+        self.suspended.insert(task);
+        self.ready.remove(&task);
+        self.pending.remove(&task);
+    }
+
+    /// 重启成功：恢复某 task 的调度资格。下次 `wake` 或 periodic due 起重新进入 ready。
+    pub fn resume_task(&mut self, task: TaskId) {
+        self.suspended.remove(&task);
     }
 
     pub fn close_admission(&mut self) {
@@ -763,7 +780,8 @@ impl DeterministicExecutor {
             let additional_missed = missed_periods.saturating_sub(counted_pending);
             state.missed_periods = state.missed_periods.saturating_add(additional_missed);
         }
-        if self.admission_open && self.tasks.contains_key(&task) {
+        if self.admission_open && !self.suspended.contains(&task) && self.tasks.contains_key(&task)
+        {
             self.ready.insert(task);
             self.pending.insert(
                 task,
@@ -832,7 +850,7 @@ impl DeterministicExecutor {
     }
 
     fn can_admit(&self, task: TaskId) -> bool {
-        if self.inflight_tasks.contains(&task) {
+        if self.inflight_tasks.contains(&task) || self.suspended.contains(&task) {
             return false;
         }
         let Some(state) = self.tasks.get(&task) else {
@@ -1238,6 +1256,56 @@ mod tests {
         assert_eq!(admitted_tasks(&batch), vec![TaskId(1)]);
         assert_eq!(batch.admissions()[0].scheduled_time_ms, 30);
         assert_eq!(batch.admissions()[0].missed_periods, 2);
+    }
+
+    #[test]
+    fn suspend_task_skips_admission_until_resume() {
+        let mut executor = DeterministicExecutor::new(1);
+        executor.add_lane(LaneId(1), LaneKind::Parallel);
+        add_task(&mut executor, 1, 1, 0);
+        add_task(&mut executor, 2, 1, 0);
+        executor.wake(TaskId(1));
+        executor.wake(TaskId(2));
+
+        // 隔离 task 1：本批只准入 task 2，且 task 1 不再被 wake 进 ready。
+        executor.suspend_task(TaskId(1));
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(2)]
+        );
+        assert!(executor.complete_task(TaskId(2)));
+        executor.wake(TaskId(1));
+        assert!(executor.take_ready_batch().is_empty());
+
+        // 恢复后下次 wake 正常准入。
+        executor.resume_task(TaskId(1));
+        executor.wake(TaskId(1));
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
+    }
+
+    #[test]
+    fn suspended_periodic_task_does_not_admit_on_advance() {
+        let mut executor = DeterministicExecutor::new(1);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        add_task(&mut executor, 1, 1, 0);
+        executor.add_periodic(PeriodicSpec {
+            task: TaskId(1),
+            period_ms: 10,
+        });
+        executor.suspend_task(TaskId(1));
+
+        executor.advance_to_ms(35);
+        assert!(executor.take_ready_batch().is_empty());
+
+        executor.resume_task(TaskId(1));
+        executor.advance_to_ms(45);
+        assert_eq!(
+            admitted_tasks(&executor.take_ready_batch()),
+            vec![TaskId(1)]
+        );
     }
 
     #[test]
