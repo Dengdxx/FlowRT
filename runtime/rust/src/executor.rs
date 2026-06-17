@@ -1326,6 +1326,111 @@ mod tests {
         assert!(executor.is_drained());
     }
 
+    /// 退避公式：与生成 shell 的 `rust_backoff_expr` 同一契约
+    /// `min(initial << consecutive.min(31), max)`，单位 clock-ms。
+    fn restart_backoff_ms(initial_delay_ms: u64, max_delay_ms: u64, consecutive: u32) -> u64 {
+        (initial_delay_ms << consecutive.min(31)).min(max_delay_ms)
+    }
+
+    /// 复刻生成 shell 的 restart driver，按 clock-ms 推进故障注入组件，记录每次重启尝试
+    /// 发生的 clock-ms，并返回是否终态 Faulted。`attempt_ok(n)` 决定第 n 次重启是否成功。
+    ///
+    /// 该 driver 把 executor 的 `suspend_task`/`resume_task` 与 clock 驱动退避组合起来，
+    /// 锁定生成 shell 容错时序的确定性边界：相同事件序列必产生相同重启 clock-ms。
+    fn drive_restart_sequence(
+        initial_delay_ms: u64,
+        max_delay_ms: u64,
+        max_restarts: u32,
+        fault_at_ms: u64,
+        horizon_ms: u64,
+        attempt_ok: impl Fn(u32) -> bool,
+    ) -> (Vec<u64>, bool) {
+        let mut executor = DeterministicExecutor::new(1);
+        executor.add_lane(LaneId(1), LaneKind::Serial);
+        add_task(&mut executor, 1, 1, 0);
+        executor.add_periodic(PeriodicSpec {
+            task: TaskId(1),
+            period_ms: 10,
+        });
+
+        let mut consecutive = 0u32;
+        let mut terminal = false;
+        let mut next_restart_ms: Option<u64> = None;
+        let mut attempts = 0u32;
+        let mut restart_clock_ms = Vec::new();
+
+        // 故障注入：fault_at_ms 时回调返 Error → 隔离 task 并安排首次重启。
+        executor.advance_to_ms(fault_at_ms);
+        executor.suspend_task(TaskId(1));
+        if !terminal {
+            next_restart_ms =
+                Some(fault_at_ms + restart_backoff_ms(initial_delay_ms, max_delay_ms, consecutive));
+        }
+
+        // 按 clock-ms 单步推进，命中 next_restart_ms 即重跑生命周期。
+        let mut now = fault_at_ms;
+        while now <= horizon_ms {
+            if let Some(due) = next_restart_ms {
+                if now >= due {
+                    next_restart_ms = None;
+                    restart_clock_ms.push(now);
+                    attempts += 1;
+                    if attempt_ok(attempts) {
+                        consecutive = 0;
+                        executor.resume_task(TaskId(1));
+                    } else {
+                        consecutive += 1;
+                        if consecutive >= max_restarts {
+                            terminal = true;
+                        } else {
+                            next_restart_ms = Some(
+                                now + restart_backoff_ms(
+                                    initial_delay_ms,
+                                    max_delay_ms,
+                                    consecutive,
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            now += 1;
+        }
+        (restart_clock_ms, terminal)
+    }
+
+    #[test]
+    fn restart_backoff_sequence_is_deterministic_until_terminal() {
+        // initial=10, max=40, max_restarts=3，全程失败：退避 10/20/40 → 重启 clock-ms 10/30/70，
+        // 第 3 次失败后终态 Faulted。
+        let (seq, terminal) = drive_restart_sequence(10, 40, 3, 0, 200, |_| false);
+        assert_eq!(seq, vec![10, 30, 70]);
+        assert!(terminal);
+
+        // 相同输入再跑一次：序列与终态完全一致（确定性回放边界）。
+        let (replay, replay_terminal) = drive_restart_sequence(10, 40, 3, 0, 200, |_| false);
+        assert_eq!(replay, seq);
+        assert_eq!(replay_terminal, terminal);
+    }
+
+    #[test]
+    fn restart_recovers_and_resets_consecutive_on_success() {
+        // 前两次重启失败、第 3 次成功：重启 clock-ms 10/30/70，成功后 resume、不终态。
+        let (seq, terminal) = drive_restart_sequence(10, 40, 5, 0, 200, |attempt| attempt == 3);
+        assert_eq!(seq, vec![10, 30, 70]);
+        assert!(!terminal);
+    }
+
+    #[test]
+    fn restart_backoff_saturates_at_max_delay() {
+        // 退避左移不得越过 max_delay_ms，且 consecutive 移位上限 31 防止 UB。
+        assert_eq!(restart_backoff_ms(10, 40, 0), 10);
+        assert_eq!(restart_backoff_ms(10, 40, 1), 20);
+        assert_eq!(restart_backoff_ms(10, 40, 2), 40);
+        assert_eq!(restart_backoff_ms(10, 40, 9), 40);
+        assert_eq!(restart_backoff_ms(100, 1000, 60), 1000);
+    }
+
     struct YieldOnce {
         yielded: bool,
     }
