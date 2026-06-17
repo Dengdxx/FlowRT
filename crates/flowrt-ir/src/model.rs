@@ -449,6 +449,22 @@ pub struct ParamIr {
     pub choices: Vec<ParamValue>,
 }
 
+/// 实例故障策略。0.21.0 仅 `FailFast` 由 validator 放行；其余为建模保留值，
+/// 留待 0.21.x 进程内隔离/重启/降级切片实现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceFailurePolicy {
+    /// 故障即按既有逆序清理停机（今天的行为）。
+    #[default]
+    FailFast,
+    /// 保留：进程内隔离故障 instance。
+    Isolate,
+    /// 保留：进程内重启故障 instance。
+    Restart,
+    /// 保留：降级续跑。
+    Degrade,
+}
+
 /// graph 中的组件实例。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstanceIr {
@@ -458,6 +474,8 @@ pub struct InstanceIr {
     pub params: Vec<ParamValueIr>,
     pub process: Option<String>,
     pub target: Option<EntityRef>,
+    #[serde(default)]
+    pub failure_policy: InstanceFailurePolicy,
 }
 
 /// 实例级参数值。

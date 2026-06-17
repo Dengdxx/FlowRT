@@ -461,3 +461,70 @@ backends = ["inproc"]
     assert_eq!(task_ref.name, "alpha");
     assert_eq!(task_ref.id, alpha.id);
 }
+
+#[test]
+fn normalizes_instance_failure_policy_default_and_explicit() {
+    let source = r#"
+[package]
+name = "failure_policy_ir"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.implicit]
+component = "processor"
+
+[instance.implicit.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[instance.explicit]
+component = "processor"
+failure_policy = "isolate"
+
+[instance.explicit.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let policy = |n: &str| {
+        ir.graphs[0]
+            .instances
+            .iter()
+            .find(|i| i.name == n)
+            .unwrap()
+            .failure_policy
+    };
+    assert_eq!(policy("implicit"), crate::InstanceFailurePolicy::FailFast);
+    assert_eq!(policy("explicit"), crate::InstanceFailurePolicy::Isolate);
+}
+
+#[test]
+fn rejects_instance_failure_policy_unknown_string() {
+    let source = r#"
+[package]
+name = "failure_policy_bad"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+failure_policy = "nonsense"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source)).unwrap_err();
+    assert!(format!("{error}").contains("failure_policy"), "{error}");
+}

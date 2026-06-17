@@ -145,10 +145,30 @@ pub(super) fn normalize_instances(
             params,
             process: raw.process.clone(),
             target,
+            failure_policy: parse_failure_policy(name, raw.failure_policy.as_deref())?,
         });
     }
 
     Ok((instances, tasks))
+}
+
+/// 解析 instance failure_policy 字符串为枚举；缺省 `fail_fast`，未知值拒绝。
+fn parse_failure_policy(
+    instance: &str,
+    value: Option<&str>,
+) -> Result<crate::InstanceFailurePolicy> {
+    use crate::InstanceFailurePolicy as P;
+    match value {
+        None | Some("fail_fast") => Ok(P::FailFast),
+        Some("isolate") => Ok(P::Isolate),
+        Some("restart") => Ok(P::Restart),
+        Some("degrade") => Ok(P::Degrade),
+        Some(other) => Err(IrError::InvalidEnum {
+            context: format!("instance.{instance}.failure_policy"),
+            kind: "failure_policy",
+            value: other.to_string(),
+        }),
+    }
 }
 
 fn default_task_name(index: usize) -> String {
