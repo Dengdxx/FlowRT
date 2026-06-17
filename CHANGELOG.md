@@ -4,6 +4,32 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.20.1 - 2026-06-17
+
+反馈环 v2：在 0.20.0 的零初值单拍反馈之上，回边支持 literal 初值与 fifo N 拍延迟。
+
+### 新增
+
+- RSDL `[[bind.dataflow]]` 反馈回边新增 `init`（字段名→字面值表）：按源消息类型
+  播种初值，省略 `init` 仍播零初值。详见 `docs/examples.md` 的 `feedback_loop_demo` 段。
+- 反馈回边支持 `channel = "fifo"` + `depth = N`：表达 N 拍延迟（回边 fifo 缓冲播种
+  N 个初值，每拍 pop 上游 N 拍前输出）。
+- 生成验证网新增 feedback v2 case（`feedback_v2_rust` / `feedback_v2_cpp`，fifo
+  depth=2 + literal init）：golden 锁定两语言播种输出，编译网真编译。
+
+### 变更
+
+- validator 放宽反馈边规则：允许 `latest`（1 拍）或 `fifo`（depth≥1，N 拍）；`init`
+  按源消息 `TypeIr` 递归类型校验（全 primitive 字段、字段齐、类型兼容）；fifo 反馈
+  要求两端 task `periodic` 且 `period_ms` 相等，避免 N 拍延迟随节奏漂移。
+- codegen 播种支持 literal 初值（Rust 结构字面量、C++ 默认构造后逐字段赋值）与 fifo
+  按 depth 播种 N 份，两语言一致；fifo 反馈读复用既有 fifo pop 路径。
+
+### 限制
+
+- 反馈 `init` 仅支持全 primitive 字段的消息（嵌套/数组字段初值留后续）；跨进程
+  延迟环仍未支持，留待多机/容错版本。
+
 ## v0.20.0 - 2026-06-17
 
 反馈环（Feedback Loops / Cyclic Graphs）：graph 允许显式回边构成闭环。回边标

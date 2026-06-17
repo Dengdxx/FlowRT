@@ -45,3 +45,7 @@ script = "scripts/test-v0190-multisensor-sync-smoke.sh"
 [[focused_smoke]]
 version = "0.20.0"
 script = "scripts/test-v0200-feedback-loop-smoke.sh"
+
+[[focused_smoke]]
+version = "0.20.1"
+script = "scripts/test-v0201-feedback-loop-v2-smoke.sh"
