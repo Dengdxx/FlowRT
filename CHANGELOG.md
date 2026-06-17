@@ -4,6 +4,33 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## 未发布
+
+反馈环（Feedback Loops / Cyclic Graphs）：graph 允许显式回边构成闭环。回边标
+`feedback = true` 建模为单位延迟 z⁻¹——消费者读上游上一拍输出，runtime 无需新原语。
+
+### 新增
+
+- RSDL `[[bind.dataflow]]` 增 `feedback`（bool）：标记一条回边为单位延迟。配合前向边
+  即可声明 controller↔plant 等闭环。详见 `docs/examples.md` 的 `feedback_loop_demo` 段。
+- 示例 `examples/feedback_loop_demo`：controller 读状态算控制量、plant 读控制量更新
+  状态，`plant.state→controller.state` 标 `feedback = true` 闭合反馈环。
+- 生成验证网新增 feedback case（`feedback_loop_rust` / `feedback_loop_cpp`）：golden
+  锁定两语言断环与播种输出，编译网真编译（Rust `cargo check`、C++ `g++ -fsyntax-only`）。
+
+### 变更
+
+- Contract IR 增 `ChannelEdgeIr.feedback`；validator 在无环校验中剔除 feedback 边，并新增
+  feedback 边专项校验：仅 `latest` channel、仅同进程（inproc）、且必须真正闭合一个环路
+  （剔除后源仍经前向边可达终点；自环天然闭合）。
+- codegen 把 feedback 边纳入单位延迟语义：拓扑排序剔除回边断环（图退化为 DAG），并在
+  run 启动期对回边 channel 播种零初值（消息 `default` at tick 0），两语言一致。
+
+### 限制
+
+- v1 仅零初值、`latest` 单拍延迟、同进程反馈；显式 literal 初值、fifo N 拍延迟、跨进程
+  延迟环留后续版本。
+
 ## v0.19.0 - 2026-06-17
 
 多传感器同步（Multi-Sensor Synchronization）：把 N 路 sensor 输入按 event-time（0.18.0

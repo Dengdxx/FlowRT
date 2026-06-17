@@ -1,0 +1,58 @@
+[package]
+name = "feedback_loop_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+u = "f64"
+
+[type.State]
+x = "f64"
+
+[component.controller]
+language = "rust"
+input = ["state:State"]
+output = ["cmd:Cmd"]
+
+[component.plant]
+language = "rust"
+input = ["cmd:Cmd"]
+output = ["state:State"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+input = ["state"]
+output = ["cmd"]
+
+[instance.plant]
+component = "plant"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+input = ["cmd"]
+output = ["state"]
+
+# 前向边：controller 的控制量送进 plant。
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "plant.cmd"
+channel = "latest"
+
+# 反馈回边：plant 的状态回送 controller。feedback=true 标记单位延迟 z⁻¹：
+# 拓扑剔除此边断环，启动期播种零初值；controller 每拍读到 plant 上一拍的 state。
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+channel = "latest"
+feedback = true
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]

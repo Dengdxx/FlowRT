@@ -32,6 +32,7 @@
 | `examples/ros2_bridge_demo` | Rust + ROS2 adapter | `zenoh` | `flowrt build --launcher examples/ros2_bridge_demo/rsdl/robot.rsdl` | 验证 FlowRT 输出经 zenoh-only ROS2 bridge 发布到 ROS2 topic |
 | `examples/island_demo` | Rust | `inproc` | `flowrt build --launcher examples/island_demo/rsdl/robot.rsdl` | 验证 Island Mode 下 boundary input/output 的单功能单位 IO 测试闭环 |
 | `examples/sync_fusion_demo` | Rust | `inproc` | `flowrt check examples/sync_fusion_demo/rsdl/robot.rsdl` | 验证多传感器同步：`[[sync]]` 组把 imu/odom 按 sample-time 对齐，`on_synchronized` 触发 fusion |
+| `examples/feedback_loop_demo` | Rust | `inproc` | `flowrt check examples/feedback_loop_demo/rsdl/robot.rsdl` | 验证反馈环（cyclic graph）：回边 `feedback = true` 作单位延迟 z⁻¹，拓扑断环 + 启动期零初值播种 |
 | `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 验证 `sequence<f32>` canonical frame boundary input、`flowrt pub --file --freq` 和 echo 输出摘要 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
@@ -931,6 +932,33 @@ flowrt check examples/sync_fusion_demo/rsdl/robot.rsdl
 同步算法在 runtime 原语 `flowrt::Synchronizer` 内实现（Rust/C++ 共享语义、跨语言
 位级一致），codegen 只实例化并接线；v1 为 latest-aligned approx-window，适合相近
 速率的传感器。
+
+## feedback_loop_demo
+
+反馈环（cyclic graph）示例。`controller` 读被控状态 `state` 算控制量 `cmd`，
+`plant` 读 `cmd` 更新状态 `state`，两者构成闭环。前向边 `controller.cmd→plant.cmd`
+正常连接；回边 `plant.state→controller.state` 标 `feedback = true`：
+
+```toml
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+channel = "latest"
+feedback = true
+```
+
+`feedback = true` 把回边建模为单位延迟 z⁻¹。codegen 在拓扑排序时剔除该边断环
+（图退化为 DAG，controller 排在 plant 前），并在 run 启动期对回边 channel 播种
+零初值（`State::default()` at tick 0）。于是 controller 每拍读到的是 plant **上一拍**
+的输出，tick 0 读到零初值——闭环语义显式、确定，runtime 无需新原语。
+
+```bash
+flowrt check examples/feedback_loop_demo/rsdl/robot.rsdl
+```
+
+v1 仅支持零初值、`latest` 单拍延迟、同进程（inproc）反馈；显式 literal 初值、
+fifo N 拍延迟、跨进程延迟环留后续。validator 拒绝 `feedback` 加在 `fifo` channel、
+跨进程或不真正闭合环路的回边。
 
 ## 添加新示例
 
