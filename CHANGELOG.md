@@ -4,6 +4,31 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.21.3 - 2026-06-18
+
+图级 health 聚合 + 受控停机（0.21.x 图级容错主题第四切片）：把每实例 lifecycle 聚合成单一 graph health 作为图级一等观测，并在其上提供一个图级反应策略——图内出现终态不可恢复故障时受控停机。
+
+### 新增
+
+- runtime introspection 新增图级 health 聚合：`IntrospectionStatus.graph_health` 为每实例 lifecycle 的 worst-of（`faulted` > `degraded` > `healthy`），并派生一条 `category = graph_health`、`entity_kind = graph` 的图级诊断（faulted→error / degraded→warn / healthy→info）；always-on，Rust 与 C++ 位级镜像。
+- RSDL 新增顶层可选 `[graph]` 段及 `[graph.health].on_faulted`（`continue` 默认 / `stop`），归一化进 `GraphIr.health`（默认 continue 跳过 canonical JSON）。
+- 生成 runtime shell（Rust 与 C++）在 `on_faulted = "stop"` 且图含 `isolate`/`restart` 实例时，于 tick 边界对终态不可恢复故障（`isolate` 故障即终态、`restart` 耗尽 `max_restarts`）触发图受控停机：置 `_graph_terminal_fault` 并 `shutdown.request()`，复用既有 graceful 逆序清理路径（`status` 仍 `Ok`，停机原因由 `graph_health = faulted` 诊断承载）。
+
+### 变更
+
+- validator 校验 `on_faulted` 取值，并拒绝无 `isolate`/`restart` 实例的 `stop`（`fail_fast` 故障已直接停图、`degrade` 永不终态，无可达终态时 `stop` 无意义）；单图单契约，composition/import 合并出现重复 `[graph]` 拒绝。
+- 受控停机机制 gated：仅 `on_faulted = "stop"` 且存在终态可达实例时 emit，非 stop 图与既有 golden shell 字节不漂移。
+
+### 测试
+
+- 覆盖 RSDL `[graph].health` 解析与重复拒绝、IR normalize 图级反应枚举（含未知值拒绝）、validator 放行 `stop` 并拒绝无 isolate/restart 的 `stop`、runtime graph_health worst-of 聚合与诊断（Rust facts + C++ lifecycle ctest）。
+- 新 golden `graph_health_stop_{rust,cpp}`（`restart` + `isolate` 实例 + `on_faulted = "stop"`）锁定两语言受控停机输出并纳入编译网真编译（C++ `g++ -fsyntax-only`、Rust `cargo check`）。
+
+### 已知限制
+
+- standby failover 本切片不实现：需要冗余实例 role 语义与运行态 dataflow bind 重定向，二者均未定义，半成品违反「语义未定前不堆 runtime 代码」；记录为显式 defer，留待后续切片或正式版本。
+- 图受控停机当前对任一终态故障即触发，不区分 critical 实例子集（future 可加 `critical` 标记）；graph health 转移由确定性实例状态重新推导（不写入 replay log）；跨进程健康传播按 0.21.4 跨进程反馈环实际需要再补；数值健康 metric 仍未提供。
+
 ## v0.21.2 - 2026-06-18
 
 降级数据语义（0.21.x 图级容错主题第三切片）：在 0.21.1 进程内隔离 / 重启之上放行 `degrade` 策略，让 instance 在故障时降级续跑而非停机或重启，下游复用既有 stale policy 老化 last-known-good 数据。

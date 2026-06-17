@@ -5,24 +5,34 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.21.2`；当前发布线为 `v0.21.2 Degrade Data Semantics`，是
-`0.21.x 图级容错 / 生命周期` 主题（patch 线）的第三切片：在 0.21.1 进程内隔离/重启之上放行
-`degrade` 策略并落地降级数据语义。
+当前 workspace 版本为 `0.21.3`；当前发布线为 `v0.21.3 Graph Health Aggregation + Controlled Stop`，
+是 `0.21.x 图级容错 / 生命周期` 主题（patch 线）的第四切片：把每实例 lifecycle 聚合成单一
+graph health 作为图级一等观测，并在其上提供一个图级反应策略（受控停机）。
 
-- RSDL `failure_policy`/`[instance.<name>.fault]` 现放行第四策略 `degrade`：故障触发面仍仅 task
-  回调返 `Status::Error`，degrade 命中时不挂起 task、不停图，仅把 instance 记为 `Degraded` 并继续
-  调度；失败那拍输出为空，下游 latest 快照保持上一份并按既有 channel stale policy（`hold_last`/
-  `warn`/`drop`/`error` + `max_age_ms`）老化——复用而非新增传输/ABI；该 instance 后续返 `Ok` 翻回
-  `Running`；
-- codegen：`recoverable_instances` 收录谓词加入 degrade，生成 shell 用单个 `_degraded` bool 做边沿
-  跟踪（错误记 Degraded、Ok 恢复 Running），`suspend_task` 收紧到 isolate/restart；容错机制仍 gated，
-  既有 golden 字节不漂移；新 golden `instance_degrade_{rust,cpp}`（下游 `hold_last` stale bind）锁定
-  两语言输出并纳入编译网真编译；
-- 本切片不改 runtime/executor（degrade 无需 suspend/resume），转移由确定性 task 结果驱动可回放复现；
-  沿用 0.21.1 观测姿态，以 `record_lifecycle_state` 的 `Degraded`/`Running` 循环为唯一证据，数值 metric
-  仍 deferred；多 task degrade instance 的态翻转按确定性 commit 顺序取该拍最后完成 task（单 task 为
-  语料常态，多 task 为已知粗粒度边角）；
-- 后续：图级 health/failover（0.21.3）、跨进程反馈环（0.21.4）依次推进。
+- runtime introspection 新增 graph health 聚合：`IntrospectionStatus.graph_health` 为每实例 lifecycle
+  的 worst-of（`faulted` > `degraded` > `healthy`，`stopped`/`shut_down`/`running` 等正常态不抬升，
+  无实例即 `healthy`），并派生一条 `category=graph_health`、`entity_kind=graph` 的图级诊断
+  （faulted→error / degraded→warn / healthy→info）；always-on、纯滚动、Rust 与 C++ 位级镜像；
+- RSDL 新增顶层可选 `[graph]` 段及 `[graph.health].on_faulted`（`continue` 默认 / `stop`）；归一化进
+  `GraphIr.health`（默认 continue 跳过 canonical JSON），validator 校验取值并拒绝无 isolate/restart
+  实例的 `stop`（fail_fast 故障已直接停图、degrade 永不终态，故无可达终态时 stop 无意义）；单图单契约，
+  composition/import 合并出现重复 `[graph]` 拒绝；
+- codegen：`on_faulted = "stop"` 且图含 isolate/restart 实例时，生成 shell 在 tick 边界对终态不可恢复
+  故障（isolate 故障即终态、restart 耗尽 `max_restarts`）置 `_graph_terminal_fault` 并 `shutdown.request()`，
+  复用既有 graceful 逆序清理路径受控停机（status 仍 Ok，停因由 graph_health=faulted 诊断诚实承载）；
+  机制 gated，非 stop 图与既有 golden 字节不漂移；新 golden `graph_health_stop_{rust,cpp}` 锁定两语言
+  输出并纳入编译网真编译；
+- 刻意 defer（诚实记 CHANGELOG 已知限制）：standby failover（需冗余实例 role + 运行态 bind 重定向语义，
+  二者未定）、图停机的 critical-instance 子集粒度、跨进程健康传播（按 0.21.4 反馈环实际需要再补）、
+  graph health 转移写 replay log（由确定性实例状态重推导）、数值健康 metric；
+- 后续：跨进程反馈环（0.21.4）收尾本主题。
+
+上一发布线为 `v0.21.2 Degrade Data Semantics`，是 `0.21.x` 主题第三切片：在 0.21.1 进程内隔离/重启
+之上放行 `degrade` 策略并落地降级数据语义。degrade 命中时不挂起 task、不停图，仅把 instance 记为
+`Degraded` 并继续调度；失败那拍输出为空，下游 latest 快照保持上一份并按既有 channel stale policy 老化
+（复用而非新增传输/ABI）；该 instance 后续返 `Ok` 翻回 `Running`。纯 codegen/validate，不改 executor；
+新 golden `instance_degrade_{rust,cpp}` 锁定输出；唯一 runtime 改动是把 `degraded` 诊断派生为 `warn`。
+
 
 上一发布线为 `v0.21.1 Instance Fault Isolation + Restart`，在 0.21.0 显式状态机之上放行 `isolate`/
 `restart` 策略并落地进程内恢复行为：RSDL `[instance.<name>.fault]` 子表声明策略与 restart 退避参数，
