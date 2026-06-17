@@ -8,6 +8,7 @@
 #include <flowrt/core.hpp>
 #include <flowrt/introspection/json.hpp>
 #include <flowrt/introspection/probe.hpp>
+#include <flowrt/lifecycle.hpp>
 #include <flowrt/wire.hpp>
 #include <functional>
 #include <limits>
@@ -557,6 +558,14 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 记录某 instance 的最新生命周期状态。generated shell 在各生命周期阶段调用。
+     */
+    void record_lifecycle_state(std::string instance, LifecycleState state) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->lifecycle.insert_or_assign(std::move(instance), state);
+    }
+
+    /**
      * @brief 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
      */
     void register_service(std::string name) const {
@@ -888,6 +897,13 @@ class IntrospectionState {
             snapshot.lanes.push_back(lane);
         }
         snapshot.recorder = recorder_status_locked();
+        snapshot.instances.reserve(inner_->lifecycle.size());
+        for (const auto &[name, state] : inner_->lifecycle) {
+            snapshot.instances.push_back(IntrospectionInstanceStatus{
+                .instance = name,
+                .lifecycle_state = std::string{lifecycle_state_str(state)},
+            });
+        }
         snapshot.diagnostics = derive_diagnostics(snapshot);
         return snapshot;
     }
@@ -1140,6 +1156,7 @@ class IntrospectionState {
             operation_cancel_handlers;
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
+        std::map<std::string, LifecycleState> lifecycle;
         RecorderState recorder;
     };
 
@@ -1565,6 +1582,14 @@ class IntrospectionState {
                  metric("run_count", std::to_string(task.run_count)),
                  metric("success_count", std::to_string(task.success_count)),
                  metric("consecutive_failures", std::to_string(task.consecutive_failures))}));
+        }
+
+        for (const auto &instance : status.instances) {
+            const auto severity = instance.lifecycle_state == "faulted" ? "error" : "info";
+            diagnostics.push_back(diagnostic("lifecycle", "instance", instance.instance,
+                                             instance.lifecycle_state, severity, std::nullopt,
+                                             std::nullopt, std::nullopt, status.clock.tick_time_ms,
+                                             {}));
         }
         return diagnostics;
     }

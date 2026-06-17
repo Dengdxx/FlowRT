@@ -348,6 +348,15 @@ struct IntrospectionDiagnostic {
 };
 
 /**
+ * @brief 单个 instance 的生命周期观测项。
+ */
+struct IntrospectionInstanceStatus {
+    std::string instance;
+    /// `lifecycle_state_str` 的 canonical 小写值。
+    std::string lifecycle_state;
+};
+
+/**
  * @brief 运行态 status 快照。
  */
 struct IntrospectionStatus {
@@ -365,6 +374,7 @@ struct IntrospectionStatus {
     std::vector<IntrospectionTaskHealth> tasks;
     std::vector<IntrospectionLaneHealth> lanes;
     IntrospectionRecorderStatus recorder;
+    std::vector<IntrospectionInstanceStatus> instances;
     std::vector<IntrospectionDiagnostic> diagnostics;
 };
 

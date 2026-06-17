@@ -520,6 +520,16 @@ inline std::string diagnostic_metric_json(const IntrospectionDiagnosticMetric &m
     return output;
 }
 
+inline std::string instance_status_json(const IntrospectionInstanceStatus &instance) {
+    std::string output;
+    output.append("{\"instance\":");
+    output.append(json_string(instance.instance));
+    output.append(",\"lifecycle_state\":");
+    output.append(json_string(instance.lifecycle_state));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string diagnostic_status_json(const IntrospectionDiagnostic &diagnostic) {
     std::string output;
     output.append("{\"category\":");
@@ -635,6 +645,13 @@ inline std::string status_json(const IntrospectionStatus &status) {
             output.push_back(',');
         }
         output.append(lane_health_json(status.lanes[index]));
+    }
+    output.append("],\"instances\":[");
+    for (std::size_t index = 0; index < status.instances.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(instance_status_json(status.instances[index]));
     }
     output.append("],\"diagnostics\":[");
     for (std::size_t index = 0; index < status.diagnostics.size(); ++index) {
