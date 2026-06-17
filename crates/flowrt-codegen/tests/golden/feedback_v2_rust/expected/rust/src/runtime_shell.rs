@@ -714,23 +714,29 @@ impl App {
         .ok();
         let mut controller_initialized = false;
         let mut controller_started = false;
+        introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
         let mut plant_initialized = false;
         let mut plant_started = false;
+        introspection_state.record_lifecycle_state("plant", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             controller_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("controller", if controller_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.plant.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             plant_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plant", if plant_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && controller_initialized {
             status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             controller_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("controller", if controller_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && plant_initialized {
             status = app.plant.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             plant_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plant", if plant_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -1117,24 +1123,28 @@ impl App {
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plant", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if controller_started {
             let stop_status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("controller", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if plant_initialized {
             let shutdown_status = app.plant.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plant", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if controller_initialized {
             let shutdown_status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("controller", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }
@@ -1206,23 +1216,29 @@ impl App {
         .ok();
         let mut controller_initialized = false;
         let mut controller_started = false;
+        introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
         let mut plant_initialized = false;
         let mut plant_started = false;
+        introspection_state.record_lifecycle_state("plant", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             controller_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("controller", if controller_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.plant.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             plant_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plant", if plant_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && controller_initialized {
             status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             controller_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("controller", if controller_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && plant_initialized {
             status = app.plant.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             plant_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plant", if plant_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_process_main_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -1609,24 +1625,28 @@ impl App {
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plant", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if controller_started {
             let stop_status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("controller", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if plant_initialized {
             let shutdown_status = app.plant.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plant", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if controller_initialized {
             let shutdown_status = app.controller.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("controller", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }

@@ -721,23 +721,29 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
     bind_1_.push_at([]{ State __seed{}; __seed.x = 1.0; return __seed; }(), 0);
     bool controller_initialized = false;
     bool controller_started = false;
+    introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
     bool plant_initialized = false;
     bool plant_started = false;
+    introspection_state.record_lifecycle_state("plant", flowrt::LifecycleState::Uninitialized);
     if (status == flowrt::Status::Ok && controller_) {
         status = controller_->on_init(lifecycle_context);
         controller_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("controller", controller_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && plant_) {
         status = plant_->on_init(lifecycle_context);
         plant_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("plant", plant_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && controller_initialized && controller_) {
         status = controller_->on_start(lifecycle_context);
         controller_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("controller", controller_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && plant_initialized && plant_) {
         status = plant_->on_start(lifecycle_context);
         plant_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("plant", plant_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok) {
         std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;
@@ -1076,24 +1082,28 @@ break;
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("plant", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (controller_started && controller_) {
         const auto stop_status = controller_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("controller", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (plant_initialized && plant_) {
         const auto shutdown_status = plant_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("plant", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (controller_initialized && controller_) {
         const auto shutdown_status = controller_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("controller", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     return status;
 }
@@ -1128,23 +1138,29 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
     bind_1_.push_at([]{ State __seed{}; __seed.x = 1.0; return __seed; }(), 0);
     bool controller_initialized = false;
     bool controller_started = false;
+    introspection_state.record_lifecycle_state("controller", flowrt::LifecycleState::Uninitialized);
     bool plant_initialized = false;
     bool plant_started = false;
+    introspection_state.record_lifecycle_state("plant", flowrt::LifecycleState::Uninitialized);
     if (status == flowrt::Status::Ok && controller_) {
         status = controller_->on_init(lifecycle_context);
         controller_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("controller", controller_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && plant_) {
         status = plant_->on_init(lifecycle_context);
         plant_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("plant", plant_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && controller_initialized && controller_) {
         status = controller_->on_start(lifecycle_context);
         controller_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("controller", controller_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && plant_initialized && plant_) {
         status = plant_->on_start(lifecycle_context);
         plant_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("plant", plant_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok) {
         std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;
@@ -1483,24 +1499,28 @@ break;
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("plant", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (controller_started && controller_) {
         const auto stop_status = controller_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("controller", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (plant_initialized && plant_) {
         const auto shutdown_status = plant_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("plant", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (controller_initialized && controller_) {
         const auto shutdown_status = controller_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("controller", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     return status;
 }

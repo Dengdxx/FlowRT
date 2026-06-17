@@ -506,13 +506,16 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
     (void)introspection_server;
     bool consumer_initialized = false;
     bool consumer_started = false;
+    introspection_state.record_lifecycle_state("consumer", flowrt::LifecycleState::Uninitialized);
     if (status == flowrt::Status::Ok && consumer_) {
         status = consumer_->on_init(lifecycle_context);
         consumer_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("consumer", consumer_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && consumer_initialized && consumer_) {
         status = consumer_->on_start(lifecycle_context);
         consumer_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("consumer", consumer_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok) {
         std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;
@@ -793,12 +796,14 @@ break;
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("consumer", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (consumer_initialized && consumer_) {
         const auto shutdown_status = consumer_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("consumer", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     return status;
 }
@@ -842,13 +847,16 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
     (void)introspection_server;
     bool consumer_initialized = false;
     bool consumer_started = false;
+    introspection_state.record_lifecycle_state("consumer", flowrt::LifecycleState::Uninitialized);
     if (status == flowrt::Status::Ok && consumer_) {
         status = consumer_->on_init(lifecycle_context);
         consumer_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("consumer", consumer_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && consumer_initialized && consumer_) {
         status = consumer_->on_start(lifecycle_context);
         consumer_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("consumer", consumer_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok) {
         std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;
@@ -1129,12 +1137,14 @@ break;
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("consumer", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (consumer_initialized && consumer_) {
         const auto shutdown_status = consumer_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("consumer", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     return status;
 }

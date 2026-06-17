@@ -1000,33 +1000,42 @@ impl App {
         .ok();
         let mut imu_sim_initialized = false;
         let mut imu_sim_started = false;
+        introspection_state.record_lifecycle_state("imu_sim", flowrt::LifecycleState::Uninitialized);
         let mut estimator_initialized = false;
         let mut estimator_started = false;
+        introspection_state.record_lifecycle_state("estimator", flowrt::LifecycleState::Uninitialized);
         let mut monitor_initialized = false;
         let mut monitor_started = false;
+        introspection_state.record_lifecycle_state("monitor", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             imu_sim_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("imu_sim", if imu_sim_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             estimator_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("estimator", if estimator_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             monitor_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("monitor", if monitor_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && imu_sim_initialized {
             status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             imu_sim_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("imu_sim", if imu_sim_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && estimator_initialized {
             status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             estimator_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("estimator", if estimator_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && monitor_initialized {
             status = app.monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             monitor_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("monitor", if monitor_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -1525,36 +1534,42 @@ impl App {
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("monitor", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if estimator_started {
             let stop_status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("estimator", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if imu_sim_started {
             let stop_status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("imu_sim", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if monitor_initialized {
             let shutdown_status = app.monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("monitor", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if estimator_initialized {
             let shutdown_status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("estimator", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if imu_sim_initialized {
             let shutdown_status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("imu_sim", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }
@@ -1642,33 +1657,42 @@ impl App {
         .ok();
         let mut imu_sim_initialized = false;
         let mut imu_sim_started = false;
+        introspection_state.record_lifecycle_state("imu_sim", flowrt::LifecycleState::Uninitialized);
         let mut estimator_initialized = false;
         let mut estimator_started = false;
+        introspection_state.record_lifecycle_state("estimator", flowrt::LifecycleState::Uninitialized);
         let mut monitor_initialized = false;
         let mut monitor_started = false;
+        introspection_state.record_lifecycle_state("monitor", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             imu_sim_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("imu_sim", if imu_sim_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             estimator_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("estimator", if estimator_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             monitor_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("monitor", if monitor_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && imu_sim_initialized {
             status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             imu_sim_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("imu_sim", if imu_sim_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && estimator_initialized {
             status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             estimator_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("estimator", if estimator_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && monitor_initialized {
             status = app.monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             monitor_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("monitor", if monitor_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_process_main_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -2167,36 +2191,42 @@ impl App {
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("monitor", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if estimator_started {
             let stop_status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("estimator", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if imu_sim_started {
             let stop_status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("imu_sim", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if monitor_initialized {
             let shutdown_status = app.monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("monitor", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if estimator_initialized {
             let shutdown_status = app.estimator.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("estimator", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if imu_sim_initialized {
             let shutdown_status = app.imu_sim.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("imu_sim", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }

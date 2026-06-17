@@ -892,43 +892,55 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
     (void)introspection_server;
     bool imu_src_initialized = false;
     bool imu_src_started = false;
+    introspection_state.record_lifecycle_state("imu_src", flowrt::LifecycleState::Uninitialized);
     bool odom_src_initialized = false;
     bool odom_src_started = false;
+    introspection_state.record_lifecycle_state("odom_src", flowrt::LifecycleState::Uninitialized);
     bool fusion_initialized = false;
     bool fusion_started = false;
+    introspection_state.record_lifecycle_state("fusion", flowrt::LifecycleState::Uninitialized);
     bool sink_initialized = false;
     bool sink_started = false;
+    introspection_state.record_lifecycle_state("sink", flowrt::LifecycleState::Uninitialized);
     if (status == flowrt::Status::Ok && imu_src_) {
         status = imu_src_->on_init(lifecycle_context);
         imu_src_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("imu_src", imu_src_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && odom_src_) {
         status = odom_src_->on_init(lifecycle_context);
         odom_src_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("odom_src", odom_src_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && fusion_) {
         status = fusion_->on_init(lifecycle_context);
         fusion_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("fusion", fusion_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && sink_) {
         status = sink_->on_init(lifecycle_context);
         sink_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("sink", sink_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && imu_src_initialized && imu_src_) {
         status = imu_src_->on_start(lifecycle_context);
         imu_src_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("imu_src", imu_src_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && odom_src_initialized && odom_src_) {
         status = odom_src_->on_start(lifecycle_context);
         odom_src_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("odom_src", odom_src_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && fusion_initialized && fusion_) {
         status = fusion_->on_start(lifecycle_context);
         fusion_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("fusion", fusion_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && sink_initialized && sink_) {
         status = sink_->on_start(lifecycle_context);
         sink_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("sink", sink_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok) {
         std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;
@@ -1401,48 +1413,56 @@ break;
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("sink", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (fusion_started && fusion_) {
         const auto stop_status = fusion_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("fusion", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (odom_src_started && odom_src_) {
         const auto stop_status = odom_src_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("odom_src", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (imu_src_started && imu_src_) {
         const auto stop_status = imu_src_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("imu_src", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (sink_initialized && sink_) {
         const auto shutdown_status = sink_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("sink", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (fusion_initialized && fusion_) {
         const auto shutdown_status = fusion_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("fusion", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (odom_src_initialized && odom_src_) {
         const auto shutdown_status = odom_src_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("odom_src", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (imu_src_initialized && imu_src_) {
         const auto shutdown_status = imu_src_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("imu_src", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     return status;
 }
@@ -1476,43 +1496,55 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
     (void)introspection_server;
     bool imu_src_initialized = false;
     bool imu_src_started = false;
+    introspection_state.record_lifecycle_state("imu_src", flowrt::LifecycleState::Uninitialized);
     bool odom_src_initialized = false;
     bool odom_src_started = false;
+    introspection_state.record_lifecycle_state("odom_src", flowrt::LifecycleState::Uninitialized);
     bool fusion_initialized = false;
     bool fusion_started = false;
+    introspection_state.record_lifecycle_state("fusion", flowrt::LifecycleState::Uninitialized);
     bool sink_initialized = false;
     bool sink_started = false;
+    introspection_state.record_lifecycle_state("sink", flowrt::LifecycleState::Uninitialized);
     if (status == flowrt::Status::Ok && imu_src_) {
         status = imu_src_->on_init(lifecycle_context);
         imu_src_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("imu_src", imu_src_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && odom_src_) {
         status = odom_src_->on_init(lifecycle_context);
         odom_src_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("odom_src", odom_src_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && fusion_) {
         status = fusion_->on_init(lifecycle_context);
         fusion_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("fusion", fusion_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && sink_) {
         status = sink_->on_init(lifecycle_context);
         sink_initialized = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("sink", sink_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && imu_src_initialized && imu_src_) {
         status = imu_src_->on_start(lifecycle_context);
         imu_src_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("imu_src", imu_src_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && odom_src_initialized && odom_src_) {
         status = odom_src_->on_start(lifecycle_context);
         odom_src_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("odom_src", odom_src_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && fusion_initialized && fusion_) {
         status = fusion_->on_start(lifecycle_context);
         fusion_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("fusion", fusion_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok && sink_initialized && sink_) {
         status = sink_->on_start(lifecycle_context);
         sink_started = status == flowrt::Status::Ok;
+        introspection_state.record_lifecycle_state("sink", sink_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);
     }
     if (status == flowrt::Status::Ok) {
         std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;
@@ -1985,48 +2017,56 @@ break;
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("sink", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (fusion_started && fusion_) {
         const auto stop_status = fusion_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("fusion", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (odom_src_started && odom_src_) {
         const auto stop_status = odom_src_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("odom_src", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (imu_src_started && imu_src_) {
         const auto stop_status = imu_src_->on_stop(lifecycle_context);
         if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("imu_src", stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);
     }
     if (sink_initialized && sink_) {
         const auto shutdown_status = sink_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("sink", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (fusion_initialized && fusion_) {
         const auto shutdown_status = fusion_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("fusion", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (odom_src_initialized && odom_src_) {
         const auto shutdown_status = odom_src_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("odom_src", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     if (imu_src_initialized && imu_src_) {
         const auto shutdown_status = imu_src_->on_shutdown(lifecycle_context);
         if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {
             status = flowrt::Status::Error;
         }
+        introspection_state.record_lifecycle_state("imu_src", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
     return status;
 }

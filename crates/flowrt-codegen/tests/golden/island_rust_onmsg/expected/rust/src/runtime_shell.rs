@@ -299,13 +299,16 @@ impl App {
         .ok();
         let mut consumer_initialized = false;
         let mut consumer_started = false;
+        introspection_state.record_lifecycle_state("consumer", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.consumer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             consumer_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("consumer", if consumer_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && consumer_initialized {
             status = app.consumer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             consumer_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("consumer", if consumer_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -594,12 +597,14 @@ impl App {
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("consumer", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if consumer_initialized {
             let shutdown_status = app.consumer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("consumer", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }
@@ -645,13 +650,16 @@ impl App {
         .ok();
         let mut consumer_initialized = false;
         let mut consumer_started = false;
+        introspection_state.record_lifecycle_state("consumer", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.consumer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             consumer_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("consumer", if consumer_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && consumer_initialized {
             status = app.consumer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             consumer_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("consumer", if consumer_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_process_main_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -940,12 +948,14 @@ impl App {
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("consumer", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if consumer_initialized {
             let shutdown_status = app.consumer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("consumer", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }

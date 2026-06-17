@@ -349,23 +349,29 @@ flowrt::Status::Ok
         .ok();
         let mut plan_client_initialized = false;
         let mut plan_client_started = false;
+        introspection_state.record_lifecycle_state("plan_client", flowrt::LifecycleState::Uninitialized);
         let mut plan_svc_initialized = false;
         let mut plan_svc_started = false;
+        introspection_state.record_lifecycle_state("plan_svc", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             plan_client_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_client", if plan_client_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             plan_svc_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_svc", if plan_svc_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && plan_client_initialized {
             status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             plan_client_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_client", if plan_client_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && plan_svc_initialized {
             status = app.plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             plan_svc_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_svc", if plan_svc_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -794,24 +800,28 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_svc", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if plan_client_started {
             let stop_status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_client", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if plan_svc_initialized {
             let shutdown_status = app.plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_svc", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if plan_client_initialized {
             let shutdown_status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_client", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }
@@ -846,23 +856,29 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
         .ok();
         let mut plan_client_initialized = false;
         let mut plan_client_started = false;
+        introspection_state.record_lifecycle_state("plan_client", flowrt::LifecycleState::Uninitialized);
         let mut plan_svc_initialized = false;
         let mut plan_svc_started = false;
+        introspection_state.record_lifecycle_state("plan_svc", flowrt::LifecycleState::Uninitialized);
         if status == flowrt::Status::Ok {
             status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             plan_client_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_client", if plan_client_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
             plan_svc_initialized = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_svc", if plan_svc_initialized { flowrt::LifecycleState::Initialized } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && plan_client_initialized {
             status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             plan_client_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_client", if plan_client_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok && plan_svc_initialized {
             status = app.plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
             plan_svc_started = status == flowrt::Status::Ok;
+            introspection_state.record_lifecycle_state("plan_svc", if plan_svc_started { flowrt::LifecycleState::Running } else { flowrt::LifecycleState::Faulted });
         }
         if status == flowrt::Status::Ok {
             status = app.step_process_main_startup(0, &mut lifecycle_context, &introspection_state, &scheduler_events, &mut std::collections::BTreeMap::new());
@@ -1291,24 +1307,28 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_svc", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if plan_client_started {
             let stop_status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_stop(&mut lifecycle_context);
             if status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_client", if stop_status == flowrt::Status::Ok { flowrt::LifecycleState::Stopped } else { flowrt::LifecycleState::Faulted });
         }
         if plan_svc_initialized {
             let shutdown_status = app.plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_svc", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         if plan_client_initialized {
             let shutdown_status = app.plan_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_shutdown(&mut lifecycle_context);
             if status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok {
                 status = flowrt::Status::Error;
             }
+            introspection_state.record_lifecycle_state("plan_client", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
         status
     }
