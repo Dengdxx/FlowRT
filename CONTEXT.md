@@ -5,7 +5,19 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.19.0`；当前发布线为 `v0.19.0 Multi-Sensor Synchronization`，把 N 路
+当前 workspace 版本为 `0.20.0`；当前发布线为 `v0.20.0 Feedback Loops`，让 graph 支持显式反馈环
+（cyclic graph）。`[[bind.dataflow]]` 回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游
+上一拍输出，runtime 零改动：
+
+- RSDL `[[bind.dataflow]]` 新增 `feedback`（bool）标记回边；归一化进 Contract IR
+  （`ChannelEdgeIr.feedback`），validator 在无环校验中剔除 feedback 边，并新增专项校验：仅 `latest`
+  channel、仅同进程（inproc）、且必须真正闭合环路（剔除后源仍经前向边可达终点，自环天然闭合）；
+- codegen 把 feedback 边纳入单位延迟语义：拓扑排序剔除回边断环（图退化为 DAG），run 启动期对回边
+  channel 播种零初值（消息 `default` at tick 0），两语言一致，无新 runtime 原语；
+- golden 锁定两语言断环与播种输出、编译网真编译 feedback case；示例 `examples/feedback_loop_demo`。
+- v1 仅零初值 / `latest` 单拍延迟 / 同进程反馈；literal 初值、fifo N 拍延迟、跨进程延迟环留后续。
+
+上一发布线为 `v0.19.0 Multi-Sensor Synchronization`，把 N 路
 sensor 输入按 event-time（0.18.0 sample-time）对齐成同步集，经新 `on_synchronized` trigger 投递
 给融合组件，是 0.18.0 sample-time 一等概念的直接 payoff：
 
@@ -490,6 +502,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.18.0` | Sensor Event-Time：RSDL 声明 sensor sample-time 源（`[type.<Name>.timestamp]`），record→replay 按 sensor 采集时刻（event-time）确定性步进而非到达时刻；生成 Rust/C++ shell 对此类 boundary 注册 typed sample-time 提取器，两语言一致。 |
 | `v0.18.1` | Codegen 验证加固（纯内部质量版本，零用户语义变更）：codegen golden 等价 harness 锁定整份生成输出 + 生成工程真编译网（C++ `g++ -fsyntax-only`、Rust `cargo check`）纳入开发回路与 CI，堵 v0.17/v0.18 连续两版漏发的 codegen 编译错类缺口；overflow/stale/trigger 映射去重至 `runtime_plan`；`[workspace.lints.clippy]` 现代化 forward-guard。C++ clang-tidy 门禁暂缓。 |
 | `v0.19.0` | Multi-Sensor Synchronization：RSDL `[[sync]]` 组把一个 instance 的 ≥2 路输入按 sample-time（event-time）对齐成同步集，经 `on_synchronized` trigger 投递给融合组件。runtime `flowrt::Synchronizer` 原语（Rust+C++，latest-aligned approx-window v1，DropLate）跨语言位级一致；codegen 两语言接线，golden+编译网真编译把关。最优匹配（ROS2 ApproximateTime 式）、late-policy 变体、跨机 drift 各自另立后续版本。 |
+| `v0.20.0` | Feedback Loops / Cyclic Graphs：`[[bind.dataflow]]` 回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游上一拍输出。codegen 拓扑排序剔除回边断环（图退化为 DAG）+ run 启动期对回边 channel 播种零初值，两语言一致，runtime 零改动；validator 校验 feedback 边仅 latest/同进程/必须真正闭环。golden+编译网真编译把关，示例 `examples/feedback_loop_demo`。v1 仅零初值/单拍/同进程；literal 初值、fifo N 拍、跨进程延迟环各自另立后续版本。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -629,6 +642,10 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   policy）→ codegen synchronizer 与 `on_synchronized` 触发，event-time 作可驱动 clock domain；
   external_stepped 点亮与跨机器 drift capability 各自另立后续版本。validator 不得把未声明 clock domain
   的 sensor timestamp 隐式当成同步依据，也不得把 PTP、NTP 或跨机器同步能力写成 backend 内部假设。
+- `v0.20.0` 起承接反馈环：`[[bind.dataflow]]` 回边标 `feedback = true` 作单位延迟 z⁻¹，codegen
+  拓扑剔除回边断环 + 启动期播种零初值，runtime 零改动；validator 守住 latest/同进程/必须真正闭环。
+  显式 literal 初值、fifo N 拍延迟、跨进程延迟环各自另立后续版本；codegen 不得把未标 feedback 的环
+  隐式当合法反馈。
 - `v1.0.0` 才进入正式稳定线：ABI/schema 冻结、兼容策略、故障注入、性能矩阵和
   长期 release policy。0.x 版本继续承载功能突破和 SDK 体验完善。
 

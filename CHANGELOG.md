@@ -4,7 +4,7 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
-## 未发布
+## v0.20.0 - 2026-06-17
 
 反馈环（Feedback Loops / Cyclic Graphs）：graph 允许显式回边构成闭环。回边标
 `feedback = true` 建模为单位延迟 z⁻¹——消费者读上游上一拍输出，runtime 无需新原语。
