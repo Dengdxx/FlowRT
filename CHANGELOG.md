@@ -4,6 +4,32 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.21.1 - 2026-06-18
+
+进程内 instance 故障隔离 + 重启（0.21.x 图级容错主题第二切片）：在 0.21.0 显式生命周期状态机之上，放行 `isolate`/`restart` 策略并落地运行时恢复行为。
+
+### 新增
+
+- RSDL `[instance.<name>.fault]` 子表：`policy` 取 `fail_fast`/`isolate`/`restart`，`restart` 可带 `max_restarts`/`initial_delay_ms`/`max_delay_ms`（省略填默认 `3`/`100`/`1000`）；保留扁平糖 `failure_policy = "..."`，两者互斥。
+- validator 放行 `isolate`/`restart`，校验 restart 退避范围（`0 < initial_delay_ms <= max_delay_ms`）；`degrade` 仍建模保留并被拒绝（deferred 到 0.21.2）。
+- runtime `DeterministicExecutor`（Rust 与 C++）新增 `suspend_task`/`resume_task`：隔离 task 退出调度且不被 `wake`/periodic due 准入，重启成功后恢复。
+- 生成 runtime shell 在图含 `isolate`/`restart` instance 时注入故障处理：`isolate` 挂起故障 instance 的 task、图内其余继续；`restart` 额外按 clock-ms 退避重跑 `on_init`→`on_start`，连续失败达 `max_restarts` 进入终态 `Faulted`。
+
+### 变更
+
+- 故障触发面收敛为 task 回调返回 `Status::Error`；panic 不捕获、deadline miss 不视为故障。
+- 退避按 `min(initial << consecutive.min(31), max)` 以 scheduler clock-ms 计量，保证 simulated_replay 重启时序确定。
+- 生成 Rust trait / C++ interface 的 `on_init` 文档补可重入契约提示（restart 会在同一对象上重新调用）。
+- 容错机制仅在图含 `isolate`/`restart` instance 时 emit，既有 golden shell 字节不漂移。
+
+### 测试
+
+- 覆盖 RSDL fault 解析、IR normalize（默认填充 / 双写拒绝 / 非 restart 带参拒绝）、validator 放行与越界拒绝、executor suspend/resume 与重启时序确定性、codegen `recoverable_instances` 与新 golden `instance_fault_restart_{rust,cpp}`、C++ runtime 隔离 ctest，并把新 golden case 纳入编译网真编译。
+
+### 已知限制
+
+- 本切片仅以 `record_lifecycle_state` 的 `Faulted`/`Running` 状态循环作为故障可观测证据；`restart_count`、`last_fault_reason` 等数值 metric 暂未提供，后续切片补齐。
+
 ## v0.21.0 - 2026-06-17
 
 生命周期状态机底座（0.21.x 图级容错 / 生命周期主题首切片）：instance 生命周期升为契约一等显式状态机，零恢复行为改变。

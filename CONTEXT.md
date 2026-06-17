@@ -5,19 +5,26 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.21.0`；当前发布线为 `v0.21.0 Lifecycle State Machine`，是 `0.21.x 图级容错 /
-生命周期` 主题（patch 线）的首切片：instance 生命周期升为契约一等显式状态机，**零恢复行为改变**。
+当前 workspace 版本为 `0.21.1`；当前发布线为 `v0.21.1 Instance Fault Isolation + Restart`，是
+`0.21.x 图级容错 / 生命周期` 主题（patch 线）的第二切片：在 0.21.0 显式状态机之上放行 `isolate`/
+`restart` 策略并落地进程内恢复行为。
 
-- runtime 新增跨语言 `LifecycleState` 枚举（`Uninitialized`/`Initialized`/`Running`/`Stopped`/
-  `ShutDown`/`Faulted`，`Degraded` 保留），Rust 与 C++ 离散值逐一镜像；
-- RSDL `instance.<name>.failure_policy` 与 IR `InstanceFailurePolicy`：0.21.0 仅放行 `fail_fast`（=
-  既有逆序清理语义），`isolate`/`restart`/`degrade` 建模保留并由 validator 拒绝（deferred 到 0.21.x）；
-- 生成 shell 在 on_init/start/stop/shutdown 与失败路径旁路记录 per-instance 状态转移，调用条件与
-  逆序清理不变；`flowrt status` 经 `category=lifecycle`、`entity_kind=instance` diagnostic 暴露状态
-  （`faulted` 为 error）；
-- golden 锁定两语言记录输出、编译网真编译、C++ `lifecycle_smoke` ctest 把关；
-- 后续：进程内 instance 隔离/重启（0.21.1）、降级数据语义（0.21.2）、图级 health/failover（0.21.3）、
-  跨进程反馈环（0.21.4）依次推进。
+- RSDL `[instance.<name>.fault]` 子表声明策略与 restart 退避参数（`max_restarts`/`initial_delay_ms`/
+  `max_delay_ms`，省略填默认 `3`/`100`/`1000`），保留扁平糖 `failure_policy`，两者互斥；validator 放行
+  `isolate`/`restart`、校验退避范围，`degrade` 仍拒绝（deferred 到 0.21.2）；
+- runtime `DeterministicExecutor`（Rust 与 C++）新增 `suspend_task`/`resume_task`，隔离 task 退出调度；
+  生成 shell 在图含 `isolate`/`restart` instance 时注入故障处理：故障触发面仅 task 回调返 `Status::Error`，
+  `restart` 按 clock-ms 退避（`min(initial<<consecutive.min(31), max)`）重跑 `on_init`→`on_start`，达
+  `max_restarts` 终态 `Faulted`；
+- 容错机制 gated（仅相关图 emit），既有 12 golden shell 字节不漂移；新 golden `instance_fault_restart_
+  {rust,cpp}` 锁定两策略输出并纳入编译网真编译；生成 `on_init` 文档补可重入契约；
+- 本切片仅以 `record_lifecycle_state` 的 `Faulted`/`Running` 循环作可观测证据，`restart_count`/
+  `last_fault_reason` 数值 metric 暂 deferred；
+- 后续：降级数据语义（0.21.2）、图级 health/failover（0.21.3）、跨进程反馈环（0.21.4）依次推进。
+
+上一发布线为 `v0.21.0 Lifecycle State Machine`，把 instance 生命周期升为契约一等显式状态机（零恢复
+行为改变）：runtime 新增跨语言 `LifecycleState` 枚举，生成 shell 在生命周期段旁路记录 per-instance
+状态转移，`flowrt status` 经 `category=lifecycle` diagnostic 暴露状态。
 
 上一发布线为 `v0.20.1 Feedback Loops`，让 graph 支持显式反馈环（cyclic graph）。`[[bind.dataflow]]`
 回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游上一拍输出，runtime 零改动：归一化进
