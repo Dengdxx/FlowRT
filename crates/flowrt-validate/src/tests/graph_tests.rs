@@ -1882,3 +1882,75 @@ worker_threads = 1
 
     validate_contract(&ir).expect("worker_threads=1 should not reject parallel declaration");
 }
+
+#[test]
+fn accepts_instance_fail_fast_policy() {
+    let source = r#"
+[package]
+name = "fp_ok"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+failure_policy = "fail_fast"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    validate_contract(&ir).expect("fail_fast accepted");
+}
+
+#[test]
+fn rejects_instance_unimplemented_failure_policy() {
+    let source = r#"
+[package]
+name = "fp_deferred"
+rsdl_version = "0.1"
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.processor]
+component = "processor"
+failure_policy = "restart"
+
+[instance.processor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let report = validate_contract(&ir).expect_err("restart deferred");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.message.contains("failure_policy") && e.message.contains("restart")),
+        "{:?}",
+        report.errors
+    );
+}

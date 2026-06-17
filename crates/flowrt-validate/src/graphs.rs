@@ -3,7 +3,8 @@ use std::path::{Component, Path};
 
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
-    GraphMode, InstanceIr, LanguageKind, OperationConcurrencyPolicy, OperationPortIr,
+    GraphMode, InstanceFailurePolicy, InstanceIr, LanguageKind, OperationConcurrencyPolicy,
+    OperationPortIr,
     OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef, PrimitiveType,
     ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency,
     TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
@@ -11,6 +12,16 @@ use flowrt_ir::{
 
 use crate::ValidationError;
 use crate::components::{validate_param_value_constraints, validate_param_value_matches_schema};
+
+/// instance failure_policy 的 canonical 字符串，用于校验诊断信息。
+fn failure_policy_str(policy: InstanceFailurePolicy) -> &'static str {
+    match policy {
+        InstanceFailurePolicy::FailFast => "fail_fast",
+        InstanceFailurePolicy::Isolate => "isolate",
+        InstanceFailurePolicy::Restart => "restart",
+        InstanceFailurePolicy::Degrade => "degrade",
+    }
+}
 
 pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
     let components = ir
@@ -104,6 +115,17 @@ fn validate_external_processes(
                 "native instance `{}` cannot run inside external process `{process}`",
                 instance.name
             )));
+        }
+
+        match instance.failure_policy {
+            InstanceFailurePolicy::FailFast => {}
+            other => {
+                errors.push(ValidationError::new(format!(
+                    "instance `{}` failure_policy `{}` is not implemented yet; only `fail_fast` is supported in 0.21.0 (isolate/restart/degrade deferred to 0.21.x)",
+                    instance.name,
+                    failure_policy_str(other),
+                )));
+            }
         }
     }
 
