@@ -4,10 +4,9 @@ use std::path::{Component, Path};
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
     GraphMode, InstanceFailurePolicy, InstanceIr, LanguageKind, OperationConcurrencyPolicy,
-    OperationPortIr,
-    OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef, PrimitiveType,
-    ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency,
-    TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    OperationPortIr, OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef,
+    PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef,
+    TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;

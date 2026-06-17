@@ -11,9 +11,9 @@ pub mod executor;
 pub mod frame;
 pub mod inproc;
 pub mod introspection;
-pub mod lifecycle;
 #[cfg(feature = "iox2")]
 pub mod iox2;
+pub mod lifecycle;
 pub mod operation;
 #[cfg(feature = "zenoh")]
 pub mod params_remote;
@@ -56,7 +56,6 @@ pub use executor::{
     TaskRunOutput, TaskRunResult, TaskSpec, WorkerCompletionQueue, WorkerPool, WorkerSubmitError,
 };
 pub use frame::{FrameCodec, FrameDecoder, VAR_SPAN_WIRE_SIZE, VarSpan, append_tail_block};
-pub use lifecycle::LifecycleState;
 #[cfg(feature = "iox2")]
 pub use iceoryx2::prelude::ZeroCopySend;
 pub use introspection::{
@@ -81,6 +80,7 @@ pub use introspection::{
     request_self_description_with_timeout, request_status, request_status_with_timeout,
     runtime_socket_dir, runtime_socket_path_for_pid, spawn_status_server, spawn_status_server_at,
 };
+pub use lifecycle::LifecycleState;
 pub use operation::{
     OperationCancelToken, OperationClientError, OperationConcurrencyPolicy, OperationControl,
     OperationControlError, OperationError, OperationHandlerResult, OperationHealthCounters,

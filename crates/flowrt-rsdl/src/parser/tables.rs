@@ -313,7 +313,14 @@ pub(super) fn parse_instance(name: &str, table: &Table) -> Result<RawInstance> {
     validate_known_fields(
         table,
         &context,
-        &["component", "process", "target", "params", "task", "failure_policy"],
+        &[
+            "component",
+            "process",
+            "target",
+            "params",
+            "task",
+            "failure_policy",
+        ],
     )?;
 
     let tasks = table

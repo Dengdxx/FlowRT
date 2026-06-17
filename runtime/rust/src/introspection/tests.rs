@@ -2043,7 +2043,11 @@ fn records_instance_lifecycle_state_and_derives_diagnostic() {
     state.record_lifecycle_state("plant", crate::LifecycleState::Faulted);
 
     let status = state.status();
-    let names: Vec<_> = status.instances.iter().map(|i| i.instance.as_str()).collect();
+    let names: Vec<_> = status
+        .instances
+        .iter()
+        .map(|i| i.instance.as_str())
+        .collect();
     assert_eq!(names, ["controller", "plant"]);
     assert_eq!(status.instances[0].lifecycle_state, "running");
     assert_eq!(status.instances[1].lifecycle_state, "faulted");
