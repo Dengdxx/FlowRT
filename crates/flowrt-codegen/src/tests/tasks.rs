@@ -2055,3 +2055,49 @@ backends = ["inproc"]
         "missing shutdown record"
     );
 }
+
+#[test]
+fn emit_cpp_records_lifecycle_states() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "lifecycle_emit_cpp"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "cpp"
+output = ["tick:u32"]
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 10
+output = ["tick"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+    assert!(
+        cpp_shell.contains(
+            "introspection_state.record_lifecycle_state(\"worker\", flowrt::LifecycleState::Uninitialized);"
+        ),
+        "missing uninitialized record"
+    );
+    assert!(
+        cpp_shell.contains("flowrt::LifecycleState::Running"),
+        "missing running record"
+    );
+    assert!(
+        cpp_shell.contains("flowrt::LifecycleState::ShutDown"),
+        "missing shutdown record"
+    );
+}

@@ -125,8 +125,9 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     ));
     for instance in run.order {
         output.push_str(&format!(
-            "    bool {name}_initialized = false;\n    bool {name}_started = false;\n",
-            name = instance.name
+            "    bool {name}_initialized = false;\n    bool {name}_started = false;\n    introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Uninitialized);\n",
+            name = instance.name,
+            lit = cpp_string_literal(&instance.name),
         ));
     }
     output.push_str(&emit_cpp_io_boundary_contexts(run.contract, run.order));
@@ -134,18 +135,20 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         let component = component_by_name(run.contract, &instance.component.name);
         let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if (status == flowrt::Status::Ok && {name}_) {{\n        status = {name}_->on_init({context});\n        {name}_initialized = status == flowrt::Status::Ok;\n    }}\n",
+            "    if (status == flowrt::Status::Ok && {name}_) {{\n        status = {name}_->on_init({context});\n        {name}_initialized = status == flowrt::Status::Ok;\n        introspection_state.record_lifecycle_state({lit}, {name}_initialized ? flowrt::LifecycleState::Initialized : flowrt::LifecycleState::Faulted);\n    }}\n",
             name = instance.name,
             context = context_name,
+            lit = cpp_string_literal(&instance.name),
         ));
     }
     for instance in run.order {
         let component = component_by_name(run.contract, &instance.component.name);
         let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if (status == flowrt::Status::Ok && {name}_initialized && {name}_) {{\n        status = {name}_->on_start({context});\n        {name}_started = status == flowrt::Status::Ok;\n    }}\n",
+            "    if (status == flowrt::Status::Ok && {name}_initialized && {name}_) {{\n        status = {name}_->on_start({context});\n        {name}_started = status == flowrt::Status::Ok;\n        introspection_state.record_lifecycle_state({lit}, {name}_started ? flowrt::LifecycleState::Running : flowrt::LifecycleState::Faulted);\n    }}\n",
             name = instance.name,
             context = context_name,
+            lit = cpp_string_literal(&instance.name),
         ));
         if component
             .io_boundary
@@ -172,18 +175,20 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         let component = component_by_name(run.contract, &instance.component.name);
         let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if ({name}_started && {name}_) {{\n        const auto stop_status = {name}_->on_stop({context});\n        if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
+            "    if ({name}_started && {name}_) {{\n        const auto stop_status = {name}_->on_stop({context});\n        if (status == flowrt::Status::Ok && stop_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n        introspection_state.record_lifecycle_state({lit}, stop_status == flowrt::Status::Ok ? flowrt::LifecycleState::Stopped : flowrt::LifecycleState::Faulted);\n    }}\n",
             name = instance.name,
             context = context_name,
+            lit = cpp_string_literal(&instance.name),
         ));
     }
     for instance in run.order.iter().rev() {
         let component = component_by_name(run.contract, &instance.component.name);
         let context_name = cpp_lifecycle_context_name(component, instance);
         output.push_str(&format!(
-            "    if ({name}_initialized && {name}_) {{\n        const auto shutdown_status = {name}_->on_shutdown({context});\n        if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n    }}\n",
+            "    if ({name}_initialized && {name}_) {{\n        const auto shutdown_status = {name}_->on_shutdown({context});\n        if (status == flowrt::Status::Ok && shutdown_status != flowrt::Status::Ok) {{\n            status = flowrt::Status::Error;\n        }}\n        introspection_state.record_lifecycle_state({lit}, shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);\n    }}\n",
             name = instance.name,
             context = context_name,
+            lit = cpp_string_literal(&instance.name),
         ));
     }
     output.push_str("    return status;\n}\n\n");
