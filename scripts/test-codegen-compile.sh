@@ -95,6 +95,7 @@ compile_cpp feedback_loop_cpp
 compile_cpp feedback_v2_cpp
 compile_cpp instance_fault_restart_cpp
 compile_cpp instance_degrade_cpp
+compile_cpp graph_health_stop_cpp
 compile_rust island_rust_onmsg
 compile_rust sensor_event_time_rust
 compile_rust sync_fusion_rust
@@ -102,5 +103,6 @@ compile_rust feedback_loop_rust
 compile_rust feedback_v2_rust
 compile_rust instance_fault_restart_rust
 compile_rust instance_degrade_rust
+compile_rust graph_health_stop_rust
 
 echo "codegen compile net passed"

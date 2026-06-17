@@ -1,0 +1,59 @@
+[package]
+name = "graph_health_stop_demo"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.flaky]
+component = "producer"
+
+[instance.flaky.fault]
+policy = "restart"
+max_restarts = 2
+initial_delay_ms = 10
+max_delay_ms = 40
+
+[instance.flaky.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.guard]
+component = "producer"
+failure_policy = "isolate"
+
+[instance.guard.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[instance.consumer]
+component = "sink"
+
+[instance.consumer.task]
+trigger = "on_message"
+input = ["sample"]
+
+[[bind.dataflow]]
+from = "flaky.sample"
+to = "consumer.sample"
+channel = "latest"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]

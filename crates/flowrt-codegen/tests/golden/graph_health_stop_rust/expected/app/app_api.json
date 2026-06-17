@@ -1,0 +1,228 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "c4fe8e999505110f966a88d96a3b97f50593431a646a7f3324ac922dc4d54bee",
+    "package_id": "package_4a55ee0da2be1bd8"
+  },
+  "package": {
+    "name": "graph_health_stop_demo",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "producer",
+      "qualified_name": "producer",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "flaky",
+        "guard"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, sample: &mut flowrt::Output<Sample>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "flaky",
+          "trigger": "periodic",
+          "period_ms": 10,
+          "readiness": "any_ready",
+          "lane": "flaky_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "sample"
+          ]
+        },
+        {
+          "name": "main",
+          "instance": "guard",
+          "trigger": "periodic",
+          "period_ms": 10,
+          "readiness": "any_ready",
+          "lane": "guard_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "sample"
+          ]
+        }
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "sample",
+          "type": "Sample",
+          "handler_argument": "sample: &mut flowrt::Output<Sample>",
+          "targets": [
+            "consumer.sample"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "sink",
+      "qualified_name": "sink",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "consumer"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, sample: flowrt::Latest<'_, Sample>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "consumer",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "lane": "consumer_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "sample"
+          ],
+          "outputs": []
+        }
+      ],
+      "inputs": [
+        {
+          "name": "sample",
+          "type": "Sample",
+          "handler_argument": "sample: flowrt::Latest<'_, Sample>",
+          "source": "flaky.sample"
+        }
+      ],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "rust",
+      "component": "producer",
+      "path": "app/stubs/rust/producer.rs"
+    },
+    {
+      "language": "rust",
+      "component": "sink",
+      "path": "app/stubs/rust/sink.rs"
+    }
+  ]
+}

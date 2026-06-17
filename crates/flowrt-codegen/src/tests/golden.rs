@@ -139,3 +139,13 @@ fn golden_instance_degrade_rust() {
 fn golden_instance_degrade_cpp() {
     check_case("instance_degrade_cpp");
 }
+
+#[test]
+fn golden_graph_health_stop_rust() {
+    check_case("graph_health_stop_rust");
+}
+
+#[test]
+fn golden_graph_health_stop_cpp() {
+    check_case("graph_health_stop_cpp");
+}
