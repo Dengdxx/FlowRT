@@ -680,6 +680,7 @@ pub(super) fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
                 "overflow",
                 "stale_policy",
                 "max_age_ms",
+                "feedback",
             ],
         )?;
         parsed.push(RawDataflowBind {
@@ -691,6 +692,7 @@ pub(super) fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             overflow: optional_string(table, &context, "overflow")?,
             stale_policy: optional_string(table, &context, "stale_policy")?,
             max_age_ms: optional_u64(table, &context, "max_age_ms")?,
+            feedback: optional_bool(table, &context, "feedback")?,
         });
     }
     Ok(parsed)

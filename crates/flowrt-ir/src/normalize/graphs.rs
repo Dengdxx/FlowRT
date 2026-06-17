@@ -742,6 +742,7 @@ pub(super) fn normalize_binds(
                     ),
                     None => channel_capabilities(channel, overflow, stale),
                 },
+                feedback: raw.feedback,
             })
         })
         .collect::<Result<Vec<_>>>()?;

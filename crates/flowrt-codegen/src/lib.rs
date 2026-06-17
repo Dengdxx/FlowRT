@@ -85,6 +85,9 @@ pub enum CodegenError {
 
     #[error("contract validation failed: {0}")]
     Validation(#[from] flowrt_validate::ValidationReport),
+
+    #[error("feedback dataflow bind not yet supported in codegen")]
+    UnsupportedFeedback,
 }
 
 /// 一个要写入应用 `flowrt/` 目录下的 FlowRT 管理文件。
@@ -149,6 +152,15 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     }
     ensure_generated_languages_supported(contract)?;
     ensure_generated_transport_supported(contract)?;
+    // F1: 反馈边的 codegen（拓扑剔除 + 构造期播种）尚未实现；validator 接受 feedback 边，
+    // codegen 在此显式拒绝，避免拓扑遇环 panic 或生成错误 shell。F2 接线后移除。
+    if contract
+        .graphs
+        .iter()
+        .any(|graph| graph.binds.iter().any(|bind| bind.feedback))
+    {
+        return Err(CodegenError::UnsupportedFeedback);
+    }
 
     let mut artifacts = Vec::new();
     let abi_expectations = fixed_message_abi_expectations(contract)?;

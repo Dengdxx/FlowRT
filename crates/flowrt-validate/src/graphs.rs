@@ -45,6 +45,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_operation_binds(&components, &instances, graph, errors);
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
+        validate_feedback_binds(&instances, graph, errors);
     }
 }
 
@@ -1405,6 +1406,81 @@ fn primitive_type_name(ty: PrimitiveType) -> &'static str {
     }
 }
 
+fn validate_feedback_binds(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    // 非反馈边的前向邻接，用于判断反馈边是否真的闭合一个环。
+    let mut forward = BTreeMap::<&str, Vec<&str>>::new();
+    for bind in &graph.binds {
+        if bind.feedback {
+            continue;
+        }
+        forward
+            .entry(bind.from.instance.name.as_str())
+            .or_default()
+            .push(bind.to.instance.name.as_str());
+    }
+
+    let process_of = |name: &str| -> Option<&str> {
+        instances
+            .get(name)
+            .map(|instance| instance.process.as_deref().unwrap_or("main"))
+    };
+
+    for bind in &graph.binds {
+        if !bind.feedback {
+            continue;
+        }
+        let from = bind.from.instance.name.as_str();
+        let to = bind.to.instance.name.as_str();
+        let edge = format!("{}.{} -> {}.{}", from, bind.from.port, to, bind.to.port);
+
+        // 反馈边 v1 只支持 latest 单位延迟。
+        if bind.channel != ChannelKind::Latest {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` must use `latest` channel (v1 仅支持单位延迟)"
+            )));
+        }
+
+        // 反馈边 v1 必须在同一进程内（seed + 延迟读语义只在 inproc 成立）。
+        if let (Some(from_proc), Some(to_proc)) = (process_of(from), process_of(to))
+            && from_proc != to_proc
+        {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` must stay within one process (`{from_proc}` != `{to_proc}`)"
+            )));
+        }
+
+        // 反馈边必须真的闭合一个环：剔除反馈边后，from 仍能从 to 经前向边到达
+        // （否则该标记是多余的）。自环（from == to）天然闭合。
+        if from != to && !forward_reaches(&forward, to, from) {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` does not close a cycle; remove `feedback = true`"
+            )));
+        }
+    }
+}
+
+/// 在前向邻接图中判断 `start` 是否能到达 `goal`。
+fn forward_reaches(forward: &BTreeMap<&str, Vec<&str>>, start: &str, goal: &str) -> bool {
+    let mut stack = vec![start];
+    let mut seen = BTreeSet::new();
+    while let Some(node) = stack.pop() {
+        if node == goal {
+            return true;
+        }
+        if !seen.insert(node) {
+            continue;
+        }
+        if let Some(next) = forward.get(node) {
+            stack.extend(next.iter().copied());
+        }
+    }
+    false
+}
+
 fn validate_graph_is_acyclic(
     instances: &BTreeMap<&str, &InstanceIr>,
     graph: &GraphIr,
@@ -1418,6 +1494,10 @@ fn validate_graph_is_acyclic(
     let mut self_loops = BTreeSet::<String>::new();
 
     for bind in &graph.binds {
+        // 反馈边是单位延迟回边，按 z⁻¹ 语义从拓扑图中剔除以断环。
+        if bind.feedback {
+            continue;
+        }
         let source = bind.from.instance.name.as_str();
         let target = bind.to.instance.name.as_str();
         if !instances.contains_key(source) || !instances.contains_key(target) {

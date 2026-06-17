@@ -1899,4 +1899,28 @@ bogus = "x"
 "#;
         assert!(parse_str(source).is_err());
     }
+
+    #[test]
+    fn parses_dataflow_feedback_flag() {
+        let source = r#"
+[package]
+name = "fb_parse"
+rsdl_version = "0.1"
+
+[[bind.dataflow]]
+from = "a.out"
+to = "b.in"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "b.out"
+to = "a.in"
+channel = "latest"
+feedback = true
+"#;
+        let raw = parse_str(source).unwrap();
+        assert_eq!(raw.binds.len(), 2);
+        assert!(!raw.binds[0].feedback);
+        assert!(raw.binds[1].feedback);
+    }
 }

@@ -1038,6 +1038,7 @@ mod tests {
                     max_age_ms: Some(10),
                     policy_source,
                     capability_requirements: vec![],
+                    feedback: false,
                 },
                 crate::ChannelEdgeIr {
                     id: crate::EntityId("bind_0000000000000002".to_string()),
@@ -1054,6 +1055,7 @@ mod tests {
                     max_age_ms: Some(10),
                     policy_source,
                     capability_requirements: vec![],
+                    feedback: false,
                 },
             ],
             services: vec![],

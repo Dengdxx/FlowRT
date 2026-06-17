@@ -295,6 +295,8 @@ pub struct RawDataflowBind {
     pub overflow: Option<String>,
     pub stale_policy: Option<String>,
     pub max_age_ms: Option<u64>,
+    /// 反馈边标记：true 表示这是一条单位延迟回边，允许参与 graph 环路。
+    pub feedback: bool,
 }
 
 /// `[[sync]]` 表项：声明一个多传感器同步组。

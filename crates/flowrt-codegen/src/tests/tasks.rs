@@ -1798,3 +1798,49 @@ backends = ["inproc"]
     assert!(source_step.contains("auto flowrt_payload_1 = *value;"));
     assert!(source_step.contains("auto flowrt_payload_2 = *value;"));
 }
+
+#[test]
+fn emit_rejects_feedback_bind_until_wired() {
+    // F1 阶段 codegen 尚未接线反馈边；validator 接受、codegen 必须优雅拒绝而非 panic。
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "accumulator"
+rsdl_version = "0.1"
+
+[type.State]
+x = "f64"
+
+[component.accumulator]
+language = "rust"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+channel = "latest"
+feedback = true
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    match emit_artifacts(&ir) {
+        Err(CodegenError::UnsupportedFeedback) => {}
+        other => panic!("expected UnsupportedFeedback, got {other:?}"),
+    }
+}

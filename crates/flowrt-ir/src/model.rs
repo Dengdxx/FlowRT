@@ -892,6 +892,10 @@ pub struct ChannelEdgeIr {
     pub max_age_ms: Option<u64>,
     pub policy_source: ChannelPolicySourceIr,
     pub capability_requirements: Vec<CapabilityAtom>,
+    /// 反馈边：true 表示这是一条单位延迟回边（z⁻¹）。拓扑排序剔除它以断环；
+    /// channel 构造期播种零初值，消费者读到的是上一 tick 的上游输出。
+    #[serde(default)]
+    pub feedback: bool,
 }
 
 /// route backend 字段来源。

@@ -11,6 +11,7 @@ mod bridge_tests;
 mod capability_tests;
 mod component_tests;
 mod contract_tests;
+mod feedback_tests;
 mod graph_tests;
 mod message_tests;
 mod resource_tests;
