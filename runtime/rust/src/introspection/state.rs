@@ -6,7 +6,7 @@ use flowrt_record::{RecordEntityKind, RecordEnvelope};
 use crate::recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderTap, RecorderTapOutcome,
 };
-use crate::{FrameCodec, FrameDescriptor, FrameLeaseStatus};
+use crate::{FrameCodec, FrameDescriptor, FrameLeaseStatus, LifecycleState};
 
 use super::facts::{RuntimeObservabilityFacts, input_status_key};
 use super::model::*;
@@ -78,6 +78,7 @@ pub(super) struct IntrospectionStateInner {
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
     pub(super) tasks: BTreeMap<String, IntrospectionTaskHealth>,
     pub(super) lanes: BTreeMap<String, IntrospectionLaneHealth>,
+    pub(super) lifecycle: BTreeMap<String, LifecycleState>,
 }
 
 impl IntrospectionState {
@@ -555,6 +556,12 @@ impl IntrospectionState {
         let key = input_status_key(&status);
         let mut inner = self.lock_inner();
         inner.inputs.insert(key, status);
+    }
+
+    /// 记录某 instance 的最新生命周期状态。generated shell 在各生命周期阶段调用。
+    pub fn record_lifecycle_state(&self, instance: impl Into<String>, state: LifecycleState) {
+        let mut inner = self.lock_inner();
+        inner.lifecycle.insert(instance.into(), state);
     }
 
     /// 记录一次 generated shell input 读取结果。

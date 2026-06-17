@@ -5,7 +5,7 @@ use crate::recorder::RecorderStatus;
 use super::diagnostics;
 use super::model::{
     IntrospectionChannelStatus, IntrospectionDiagnostic, IntrospectionDiagnosticMetric,
-    IntrospectionInputStatus, IntrospectionStatus,
+    IntrospectionInputStatus, IntrospectionInstanceStatus, IntrospectionStatus,
 };
 use super::params::param_status;
 use super::state::{ChannelState, IntrospectionStateInner};
@@ -54,6 +54,14 @@ impl RuntimeObservabilityFacts {
             tasks: inner.tasks.values().cloned().collect(),
             lanes: inner.lanes.values().cloned().collect(),
             recorder,
+            instances: inner
+                .lifecycle
+                .iter()
+                .map(|(name, state)| IntrospectionInstanceStatus {
+                    instance: name.clone(),
+                    lifecycle_state: state.as_str().to_string(),
+                })
+                .collect(),
             diagnostics: Vec::new(),
         };
         Self::from_status_snapshot(status)
@@ -548,6 +556,26 @@ pub(super) fn derive_diagnostic_facts(
                 metric("success_count", task.success_count),
                 metric("consecutive_failures", task.consecutive_failures),
             ],
+        ));
+    }
+
+    for instance in &status.instances {
+        let severity = if instance.lifecycle_state == "faulted" {
+            "error"
+        } else {
+            "info"
+        };
+        diagnostics.push(diagnostic(
+            "lifecycle",
+            "instance",
+            &instance.instance,
+            &instance.lifecycle_state,
+            severity,
+            None,
+            None,
+            None,
+            clock_ms,
+            vec![],
         ));
     }
 

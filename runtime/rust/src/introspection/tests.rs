@@ -1997,6 +1997,7 @@ fn health_fields_serialize_roundtrip() {
             fairness_violations: 1,
         }],
         recorder: Default::default(),
+        instances: Vec::new(),
         diagnostics: Vec::new(),
     };
 
@@ -2033,4 +2034,28 @@ fn health_fields_serialize_roundtrip() {
     assert_eq!(parsed.tasks[0].deadline_missed, 5);
     assert_eq!(parsed.lanes.len(), 1);
     assert_eq!(parsed.lanes[0].queue_depth, 3);
+}
+
+#[test]
+fn records_instance_lifecycle_state_and_derives_diagnostic() {
+    let state = IntrospectionState::new();
+    state.record_lifecycle_state("controller", crate::LifecycleState::Running);
+    state.record_lifecycle_state("plant", crate::LifecycleState::Faulted);
+
+    let status = state.status();
+    let names: Vec<_> = status.instances.iter().map(|i| i.instance.as_str()).collect();
+    assert_eq!(names, ["controller", "plant"]);
+    assert_eq!(status.instances[0].lifecycle_state, "running");
+    assert_eq!(status.instances[1].lifecycle_state, "faulted");
+
+    let lifecycle: Vec<_> = status
+        .diagnostics
+        .iter()
+        .filter(|d| d.category == "lifecycle")
+        .collect();
+    assert_eq!(lifecycle.len(), 2);
+    let plant = lifecycle.iter().find(|d| d.entity_id == "plant").unwrap();
+    assert_eq!(plant.entity_kind, "instance");
+    assert_eq!(plant.state, "faulted");
+    assert_eq!(plant.severity, "error");
 }

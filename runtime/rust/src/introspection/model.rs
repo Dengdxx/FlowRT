@@ -158,9 +158,20 @@ pub struct IntrospectionStatus {
     /// v0.6+ recorder 运行态状态。
     #[serde(default)]
     pub recorder: IntrospectionRecorderStatus,
+    /// v0.21+ per-instance 生命周期状态快照（按 instance 名 canonical 排序）。
+    #[serde(default)]
+    pub instances: Vec<IntrospectionInstanceStatus>,
     /// v0.13+ 由 status/self-description 实体派生的结构化诊断快照。
     #[serde(default)]
     pub diagnostics: Vec<IntrospectionDiagnostic>,
+}
+
+/// 单个 instance 的生命周期观测项。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionInstanceStatus {
+    pub instance: String,
+    /// `LifecycleState::as_str()` 的 canonical 小写值。
+    pub lifecycle_state: String,
 }
 
 /// 结构化诊断中的单个数值或状态指标。

@@ -875,6 +875,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             lanes: Vec::new(),
             recorder: Default::default(),
             params: Vec::new(),
+            instances: Vec::new(),
             diagnostics: Vec::new(),
         },
     };
@@ -910,6 +911,7 @@ fn live_hz_summary_formats_channel_delta_rate() {
             lanes: Vec::new(),
             recorder: Default::default(),
             params: Vec::new(),
+            instances: Vec::new(),
             diagnostics: Vec::new(),
         },
     };
