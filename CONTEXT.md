@@ -5,31 +5,27 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.20.1`；当前发布线为 `v0.20.1 Feedback Loops`，让 graph 支持显式反馈环
-（cyclic graph）。`[[bind.dataflow]]` 回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游
-上一拍输出，runtime 零改动：
+当前 workspace 版本为 `0.21.0`；当前发布线为 `v0.21.0 Lifecycle State Machine`，是 `0.21.x 图级容错 /
+生命周期` 主题（patch 线）的首切片：instance 生命周期升为契约一等显式状态机，**零恢复行为改变**。
 
-- RSDL `[[bind.dataflow]]` 新增 `feedback`（bool）标记回边；归一化进 Contract IR
-  （`ChannelEdgeIr.feedback`），validator 在无环校验中剔除 feedback 边，并新增专项校验；
-- codegen 把 feedback 边纳入单位延迟语义：拓扑排序剔除回边断环（图退化为 DAG），run 启动期对回边
-  channel 播种初值，两语言一致，无新 runtime 原语；
-- v2（0.20.1）：回边新增 `init`（按源消息类型播种 literal 初值，省略仍播零初值）与 `fifo` +
-  `depth = N`（N 拍延迟，缓冲播种 N 份）。validator 放宽为允许 `latest`(1 拍) 或 `fifo`(N 拍)，
-  按源消息 `TypeIr` 递归类型校验 init，fifo 反馈要求两端 `periodic` 等周期；仍限同进程（inproc）；
-- golden 锁定两语言断环与播种输出、编译网真编译 feedback/feedback_v2 case；示例
-  `examples/feedback_loop_demo`。
-- 仍未支持：反馈 `init` 仅全 primitive 字段消息（嵌套/数组字段初值留后续）；跨进程延迟环留待
-  多机/容错版本。
+- runtime 新增跨语言 `LifecycleState` 枚举（`Uninitialized`/`Initialized`/`Running`/`Stopped`/
+  `ShutDown`/`Faulted`，`Degraded` 保留），Rust 与 C++ 离散值逐一镜像；
+- RSDL `instance.<name>.failure_policy` 与 IR `InstanceFailurePolicy`：0.21.0 仅放行 `fail_fast`（=
+  既有逆序清理语义），`isolate`/`restart`/`degrade` 建模保留并由 validator 拒绝（deferred 到 0.21.x）；
+- 生成 shell 在 on_init/start/stop/shutdown 与失败路径旁路记录 per-instance 状态转移，调用条件与
+  逆序清理不变；`flowrt status` 经 `category=lifecycle`、`entity_kind=instance` diagnostic 暴露状态
+  （`faulted` 为 error）；
+- golden 锁定两语言记录输出、编译网真编译、C++ `lifecycle_smoke` ctest 把关；
+- 后续：进程内 instance 隔离/重启（0.21.1）、降级数据语义（0.21.2）、图级 health/failover（0.21.3）、
+  跨进程反馈环（0.21.4）依次推进。
 
-开发中线为 `0.21.x 图级容错 / 生命周期`（patch 线，dev 分支已落首切片 0.21.0 生命周期状态机底座）：
-instance 生命周期升为契约一等显式状态机，**零恢复行为改变**。runtime 新增跨语言 `LifecycleState`
-枚举（Rust/C++ 离散值逐一镜像）；RSDL `instance.<name>.failure_policy` 与 IR `InstanceFailurePolicy`
-仅放行 `fail_fast`，`isolate`/`restart`/`degrade` 建模保留并由 validator 拒绝（deferred）；生成 shell
-在 on_init/start/stop/shutdown 与失败路径记录状态转移，`flowrt status` 经 `category=lifecycle`
-diagnostic 暴露 per-instance 状态。进程内 instance 隔离/重启、降级数据语义、图级 health/failover、
-跨进程反馈环依次留 0.21.1+。
+上一发布线为 `v0.20.1 Feedback Loops`，让 graph 支持显式反馈环（cyclic graph）。`[[bind.dataflow]]`
+回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游上一拍输出，runtime 零改动：归一化进
+`ChannelEdgeIr.feedback`，validator 无环校验剔除回边并专项校验；codegen 拓扑断环 + 启动期播种；v2
+（0.20.1）回边新增 `init`（literal 初值）与 `fifo` + `depth = N`（N 拍延迟），仍限同进程（inproc）。
+跨进程延迟环留待多机 / 容错版本。
 
-上一发布线为 `v0.19.0 Multi-Sensor Synchronization`，把 N 路
+更早发布线 `v0.19.0 Multi-Sensor Synchronization` 把 N 路
 sensor 输入按 event-time（0.18.0 sample-time）对齐成同步集，经新 `on_synchronized` trigger 投递
 给融合组件，是 0.18.0 sample-time 一等概念的直接 payoff：
 
