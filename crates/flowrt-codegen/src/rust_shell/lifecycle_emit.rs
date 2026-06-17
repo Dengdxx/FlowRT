@@ -153,6 +153,29 @@ fn has_fallible_transport_startup(
             .any(|bind| matches!(bind_backend(bind), "iox2" | "zenoh"))
 }
 
+/// 为本进程内的反馈边 latest channel 播种零初值（消息 Default）。
+///
+/// 反馈边按单位延迟语义被拓扑剔除，消费者每 tick 读上游上一拍输出；tick 0 上游
+/// 尚未产出，故构造后立即播种一个零值，使首拍读到 present 的零值而非空。
+fn emit_rust_feedback_channel_seed(order: &[&InstanceIr], binds: &[BindRuntimePlan]) -> String {
+    let active = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut output = String::new();
+    for bind in binds.iter().filter(|bind| bind.feedback) {
+        if !active.contains(bind.source_instance.as_str()) {
+            continue;
+        }
+        output.push_str(&format!(
+            "        app.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at({ty}::default(), 0);\n",
+            field = bind.field_name,
+            ty = crate::messages::rust_type(&bind.source_type),
+        ));
+    }
+    output
+}
+
 pub(super) fn emit_rust_app_run(
     contract: &ContractIr,
     graph: &GraphIr,
@@ -311,6 +334,10 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     output.push_str(&service_emit::emit_rust_service_introspection_registration(
         emission.contract,
         emission.graph,
+    ));
+    output.push_str(&emit_rust_feedback_channel_seed(
+        emission.order,
+        emission.binds,
     ));
     output.push_str(&format!(
         "        let _introspection_server = flowrt::spawn_status_server(\n            flowrt::IntrospectionIdentity {{\n                self_description_hash: selfdesc::self_description_hash().to_string(),\n                package: {}.to_string(),\n                process: {}.to_string(),\n                runtime: \"rust\".to_string(),\n            }},\n            introspection_state.clone(),\n        )\n        .ok();\n",

@@ -285,6 +285,7 @@ pub(crate) struct BindRuntimePlan {
     pub(crate) source_port: String,
     pub(crate) target_instance: String,
     pub(crate) target_port: String,
+    pub(crate) feedback: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -447,6 +448,7 @@ fn bind_runtime_plans_from_facts(
                 source_port: bind.from.port.clone(),
                 target_instance: bind.to.instance.name.clone(),
                 target_port: bind.to.port.clone(),
+                feedback: bind.feedback,
             }
         })
         .collect()

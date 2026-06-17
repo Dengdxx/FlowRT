@@ -32,6 +32,27 @@ pub(super) struct CppRunEmission<'a> {
     pub(super) process_name: &'a str,
 }
 
+/// 为本进程内的反馈边 latest channel 播种零初值（消息值初始化），与 Rust 侧一致。
+/// 反馈边按单位延迟被拓扑剔除；tick 0 上游未产出，故构造后立即播种零值。
+fn emit_cpp_feedback_channel_seed(order: &[&InstanceIr], binds: &[BindRuntimePlan]) -> String {
+    let active = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut output = String::new();
+    for bind in binds.iter().filter(|bind| bind.feedback) {
+        if !active.contains(bind.source_instance.as_str()) {
+            continue;
+        }
+        output.push_str(&format!(
+            "    {field}_.publish_at({ty}{{}}, 0);\n",
+            field = bind.field_name,
+            ty = cpp_type(&bind.source_type),
+        ));
+    }
+    output
+}
+
 pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     let mut output = String::new();
     output.push_str(&format!(
@@ -75,6 +96,7 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         cpp_string_literal(run.package_name),
         cpp_string_literal(run.process_name)
     ));
+    output.push_str(&emit_cpp_feedback_channel_seed(run.order, run.binds));
     for instance in run.order {
         output.push_str(&format!(
             "    bool {name}_initialized = false;\n    bool {name}_started = false;\n",

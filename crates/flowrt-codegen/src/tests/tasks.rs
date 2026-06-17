@@ -1800,8 +1800,8 @@ backends = ["inproc"]
 }
 
 #[test]
-fn emit_rejects_feedback_bind_until_wired() {
-    // F1 阶段 codegen 尚未接线反馈边；validator 接受、codegen 必须优雅拒绝而非 panic。
+fn emit_seeds_feedback_channel_and_breaks_cycle() {
+    // 反馈自环：codegen 必须能生成（拓扑剔除反馈边断环），并在 run 启动期播种零初值。
     let ir = contract_from_source(
         r#"
 [package]
@@ -1839,8 +1839,8 @@ runtime = ["rust"]
 backends = ["inproc"]
 "#,
     );
-    match emit_artifacts(&ir) {
-        Err(CodegenError::UnsupportedFeedback) => {}
-        other => panic!("expected UnsupportedFeedback, got {other:?}"),
-    }
+    let bundle = emit_artifacts(&ir).expect("feedback contract should emit");
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    // 构造期播种零初值。
+    assert!(rust_shell.contains(".publish_at(State::default(), 0);"));
 }

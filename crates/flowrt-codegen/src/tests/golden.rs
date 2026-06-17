@@ -99,3 +99,13 @@ fn golden_sync_fusion_rust() {
 fn golden_sync_fusion_cpp() {
     check_case("sync_fusion_cpp");
 }
+
+#[test]
+fn golden_feedback_loop_rust() {
+    check_case("feedback_loop_rust");
+}
+
+#[test]
+fn golden_feedback_loop_cpp() {
+    check_case("feedback_loop_cpp");
+}
