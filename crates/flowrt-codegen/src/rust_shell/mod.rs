@@ -200,6 +200,13 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         };
         output.push_str(&format!("    {}: {},\n", boundary.field_name, field_ty));
     }
+    for task in step_emit::on_synchronized_tasks(graph, &order) {
+        output.push_str(&format!(
+            "    {}: {},\n",
+            step_emit::rust_synchronizer_field_name(task),
+            step_emit::rust_synchronizer_field_type()
+        ));
+    }
     // service client/server fields
     output.push_str(&service_emit::rust_app_service_fields(contract, graph));
     output.push_str(&operation_emit::rust_app_operation_fields(contract, graph));

@@ -1,0 +1,332 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [
+        {
+          "backend": "inproc",
+          "channel": "latest",
+          "depth": 1,
+          "from": "fusion.estimate",
+          "key_expr": null,
+          "max_age_ms": null,
+          "overflow": "drop_oldest",
+          "service": null,
+          "stale_policy": "warn",
+          "thread_affinity": "send_safe",
+          "to": "sink.estimate"
+        },
+        {
+          "backend": "inproc",
+          "channel": "latest",
+          "depth": 1,
+          "from": "imu_src.imu",
+          "key_expr": null,
+          "max_age_ms": null,
+          "overflow": "drop_oldest",
+          "service": null,
+          "stale_policy": "warn",
+          "thread_affinity": "send_safe",
+          "to": "fusion.imu"
+        },
+        {
+          "backend": "inproc",
+          "channel": "latest",
+          "depth": 1,
+          "from": "odom_src.odom",
+          "key_expr": null,
+          "max_age_ms": null,
+          "overflow": "drop_oldest",
+          "service": null,
+          "stale_policy": "warn",
+          "thread_affinity": "send_safe",
+          "to": "fusion.odom"
+        }
+      ],
+      "instances": [
+        {
+          "component": "fusion",
+          "name": "fusion",
+          "process": null,
+          "runtime": "cpp",
+          "target": null
+        },
+        {
+          "component": "imu_src",
+          "name": "imu_src",
+          "process": null,
+          "runtime": "cpp",
+          "target": null
+        },
+        {
+          "component": "odom_src",
+          "name": "odom_src",
+          "process": null,
+          "runtime": "cpp",
+          "target": null
+        },
+        {
+          "component": "sink",
+          "name": "sink",
+          "process": null,
+          "runtime": "cpp",
+          "target": null
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "fusion",
+            "imu_src",
+            "odom_src",
+            "sink"
+          ],
+          "io_boundaries": [],
+          "name": "main",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "cpp",
+          "runtimes": [
+            "cpp"
+          ],
+          "startup_delay_ms": 0,
+          "target": null,
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "fusion",
+              "lane": "fusion_serial",
+              "name": "main",
+              "outputs": [
+                "estimate"
+              ],
+              "period_ms": null,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "on_synchronized"
+            },
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "imu_src",
+              "lane": "imu_src_serial",
+              "name": "main",
+              "outputs": [
+                "imu"
+              ],
+              "period_ms": 10,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            },
+            {
+              "deadline_ms": null,
+              "inputs": [],
+              "instance": "odom_src",
+              "lane": "odom_src_serial",
+              "name": "main",
+              "outputs": [
+                "odom"
+              ],
+              "period_ms": 10,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            },
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "estimate"
+              ],
+              "instance": "sink",
+              "lane": "sink_serial",
+              "name": "main",
+              "outputs": [],
+              "period_ms": null,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "on_message"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "fusion",
+            "kind": "serial",
+            "name": "fusion_serial"
+          },
+          {
+            "instance": "imu_src",
+            "kind": "serial",
+            "name": "imu_src_serial"
+          },
+          {
+            "instance": "odom_src",
+            "kind": "serial",
+            "name": "odom_src_serial"
+          },
+          {
+            "instance": "sink",
+            "kind": "serial",
+            "name": "sink_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "fusion",
+            "lane": "fusion_serial",
+            "name": "main",
+            "period_ms": null,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "on_synchronized"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "imu_src",
+            "lane": "imu_src_serial",
+            "name": "main",
+            "period_ms": 10,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "odom_src",
+            "lane": "odom_src_serial",
+            "name": "main",
+            "period_ms": 10,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "sink",
+            "lane": "sink_serial",
+            "name": "main",
+            "period_ms": null,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "on_message"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "fusion",
+          "lane": "fusion_serial",
+          "name": "main",
+          "outputs": [
+            "estimate"
+          ],
+          "period_ms": null,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "on_synchronized"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "imu_src",
+          "lane": "imu_src_serial",
+          "name": "main",
+          "outputs": [
+            "imu"
+          ],
+          "period_ms": 10,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [],
+          "instance": "odom_src",
+          "lane": "odom_src_serial",
+          "name": "main",
+          "outputs": [
+            "odom"
+          ],
+          "period_ms": 10,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "estimate"
+          ],
+          "instance": "sink",
+          "lane": "sink_serial",
+          "name": "main",
+          "outputs": [],
+          "period_ms": null,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "on_message"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "sync_fusion_cpp_demo",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

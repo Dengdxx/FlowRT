@@ -1,0 +1,386 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "806f2e9840ac7a04ae723f0b6c56755725c7f035d37693de4b6495c32ff2b82c",
+    "package_id": "package_aeb54c5a076257d7"
+  },
+  "package": {
+    "name": "sync_fusion_rust_demo",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "fusion",
+      "qualified_name": "fusion",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "fusion"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, imu: flowrt::Latest<'_, Imu>, odom: flowrt::Latest<'_, Odom>, estimate: &mut flowrt::Output<Estimate>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "fusion",
+          "trigger": "on_synchronized",
+          "readiness": "any_ready",
+          "lane": "fusion_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "estimate"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "name": "imu",
+          "type": "Imu",
+          "handler_argument": "imu: flowrt::Latest<'_, Imu>",
+          "source": "imu_src.imu"
+        },
+        {
+          "name": "odom",
+          "type": "Odom",
+          "handler_argument": "odom: flowrt::Latest<'_, Odom>",
+          "source": "odom_src.odom"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "estimate",
+          "type": "Estimate",
+          "handler_argument": "estimate: &mut flowrt::Output<Estimate>",
+          "targets": [
+            "sink.estimate"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "imu_src",
+      "qualified_name": "imu_src",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "imu_src"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, imu: &mut flowrt::Output<Imu>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "imu_src",
+          "trigger": "periodic",
+          "period_ms": 10,
+          "readiness": "any_ready",
+          "lane": "imu_src_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "imu"
+          ]
+        }
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "imu",
+          "type": "Imu",
+          "handler_argument": "imu: &mut flowrt::Output<Imu>",
+          "targets": [
+            "fusion.imu"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "odom_src",
+      "qualified_name": "odom_src",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "odom_src"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, odom: &mut flowrt::Output<Odom>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "odom_src",
+          "trigger": "periodic",
+          "period_ms": 10,
+          "readiness": "any_ready",
+          "lane": "odom_src_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": [
+            "odom"
+          ]
+        }
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "odom",
+          "type": "Odom",
+          "handler_argument": "odom: &mut flowrt::Output<Odom>",
+          "targets": [
+            "fusion.odom"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "sink",
+      "qualified_name": "sink",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "sink"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, estimate: flowrt::Latest<'_, Estimate>) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "sink",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "lane": "sink_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "estimate"
+          ],
+          "outputs": []
+        }
+      ],
+      "inputs": [
+        {
+          "name": "estimate",
+          "type": "Estimate",
+          "handler_argument": "estimate: flowrt::Latest<'_, Estimate>",
+          "source": "fusion.estimate"
+        }
+      ],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "rust",
+      "component": "fusion",
+      "path": "app/stubs/rust/fusion.rs"
+    },
+    {
+      "language": "rust",
+      "component": "imu_src",
+      "path": "app/stubs/rust/imu_src.rs"
+    },
+    {
+      "language": "rust",
+      "component": "odom_src",
+      "path": "app/stubs/rust/odom_src.rs"
+    },
+    {
+      "language": "rust",
+      "component": "sink",
+      "path": "app/stubs/rust/sink.rs"
+    }
+  ]
+}

@@ -117,6 +117,13 @@ pub(super) fn emit_rust_app_new(
             boundary.field_name, initializer
         ));
     }
+    for task in super::step_emit::on_synchronized_tasks(graph, order) {
+        output.push_str(&format!(
+            "            {}: {},\n",
+            super::step_emit::rust_synchronizer_field_name(task),
+            super::step_emit::rust_synchronizer_new_expr(graph, task)
+        ));
+    }
     // service field initializers
     let (_service_registration, service_initializers) =
         service_emit::emit_rust_service_new(contract, graph, dataflow_lane_count);

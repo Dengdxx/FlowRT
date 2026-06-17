@@ -26,7 +26,10 @@ impl TaskEmissionPhase {
     pub(crate) fn includes(self, trigger: TriggerKind) -> bool {
         match self {
             TaskEmissionPhase::Scheduler => {
-                matches!(trigger, TriggerKind::Periodic | TriggerKind::OnMessage)
+                matches!(
+                    trigger,
+                    TriggerKind::Periodic | TriggerKind::OnMessage | TriggerKind::OnSynchronized
+                )
             }
             TaskEmissionPhase::Startup => trigger == TriggerKind::Startup,
             TaskEmissionPhase::Shutdown => trigger == TriggerKind::Shutdown,
@@ -336,6 +339,31 @@ pub(crate) fn boundary_sample_time_source(
         flowrt_ir::TimestampUnit::Ms => 1_000_000,
     };
     Some((source.field.clone(), unit_to_ns))
+}
+
+/// 返回 `on_synchronized` task 引用的 sync 组（其余 trigger 返回 None）。
+pub(crate) fn sync_group_for_task<'a>(
+    graph: &'a GraphIr,
+    task: &TaskIr,
+) -> Option<&'a flowrt_ir::SyncGroupIr> {
+    let group_ref = task.sync_group.as_ref()?;
+    graph
+        .sync_groups
+        .iter()
+        .find(|group| group.id == group_ref.id)
+}
+
+/// task 的有效输入端口列表：`on_synchronized` 取自所属 sync 组，其余取自 `task.inputs`。
+///
+/// codegen 的 wake/snapshot/revision/参数等机制统一面向有效输入，使 on_synchronized
+/// 复用 on_message 的输入机器，差异仅在 task body 的 synchronizer gate。
+pub(crate) fn effective_task_inputs(graph: &GraphIr, task: &TaskIr) -> Vec<String> {
+    if task.trigger == TriggerKind::OnSynchronized {
+        return sync_group_for_task(graph, task)
+            .map(|group| group.inputs.clone())
+            .unwrap_or_default();
+    }
+    task.inputs.clone()
 }
 
 pub(crate) fn process_runtime_plans<'a>(order: &[&'a InstanceIr]) -> Vec<ProcessRuntimePlan<'a>> {

@@ -76,8 +76,8 @@ pub(super) fn emit_cpp_app_step(
                 continue;
             }
             output.push_str("    {\n");
-            let task_inputs = task
-                .inputs
+            let effective_inputs = crate::runtime_plan::effective_task_inputs(emission.graph, task);
+            let task_inputs = effective_inputs
                 .iter()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>();
@@ -86,7 +86,10 @@ pub(super) fn emit_cpp_app_step(
                 .iter()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>();
-            let trigger_guard =
+            let is_synchronized = task.trigger == flowrt_ir::TriggerKind::OnSynchronized;
+            let non_consuming_read =
+                task.trigger == flowrt_ir::TriggerKind::OnMessage || is_synchronized;
+            let mut trigger_guard =
                 on_message_trigger_guard(task, |input| cpp_step_local_name(&instance.name, input));
 
             for input in &component.inputs {
@@ -104,7 +107,7 @@ pub(super) fn emit_cpp_app_step(
                                     input,
                                     bind,
                                     &input_local,
-                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                    non_consuming_read,
                                 ),
                                 collect_outputs,
                             ),
@@ -133,7 +136,7 @@ pub(super) fn emit_cpp_app_step(
                                     input,
                                     bridge,
                                     &input_local,
-                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                    non_consuming_read,
                                 ),
                                 collect_outputs,
                             ),
@@ -162,6 +165,39 @@ pub(super) fn emit_cpp_app_step(
                         local = input_local
                     ));
                 }
+            }
+
+            // on_synchronized：把本 tick 各路 present 样本的 sample-time 推入同步器成员，
+            // 仅在同步器发射出对齐集（poll 有值）时执行回调；typed 样本由上面的 latest
+            // view 在发射点读取（latest-aligned -> 发射集即当前 latest）。
+            if is_synchronized {
+                let sync_field = cpp_synchronizer_field_name(task);
+                for (index, input_name) in effective_inputs.iter().enumerate() {
+                    let Some(port) = component
+                        .inputs
+                        .iter()
+                        .find(|port| port.name == *input_name)
+                    else {
+                        continue;
+                    };
+                    let Some((field, unit_to_ns)) =
+                        crate::runtime_plan::boundary_sample_time_source(
+                            emission.contract,
+                            &port.ty,
+                        )
+                    else {
+                        continue;
+                    };
+                    let local = cpp_step_local_name(&instance.name, &port.name);
+                    output.push_str(&format!(
+                        "        if (const auto* __flowrt_sync_sample = {local}.get()) {{\n            {sync_field}_.push({index}, static_cast<std::uint64_t>(__flowrt_sync_sample->{field}) * {unit_to_ns}ULL, 0);\n        }}\n",
+                    ));
+                }
+                let ready_var = format!("{sync_field}_ready");
+                output.push_str(&format!(
+                    "        const bool {ready_var} = {sync_field}_.poll().has_value();\n",
+                ));
+                trigger_guard = Some(ready_var);
             }
 
             // 初始化 health_map 条目的 name 和 lane 字段。
@@ -435,11 +471,48 @@ pub(super) fn cpp_boundary_seen_revision_name(
     )
 }
 
+/// on_synchronized task 的 App 同步器成员字段基名（使用处追加 `_`）。
+pub(super) fn cpp_synchronizer_field_name(task: &flowrt_ir::TaskIr) -> String {
+    format!(
+        "__flowrt_sync_{}_{}",
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
+/// 同步器成员类型：value 用 `int`（typed 样本由 latest view 在发射点读取，value 无意义）。
+pub(super) fn cpp_synchronizer_field_type() -> &'static str {
+    "flowrt::Synchronizer<int>"
+}
+
+/// 同步器构造实参 `(input 路数, buffer 容量, tolerance_ns)`。
+pub(super) fn cpp_synchronizer_ctor_args(graph: &GraphIr, task: &flowrt_ir::TaskIr) -> String {
+    let group = crate::runtime_plan::sync_group_for_task(graph, task);
+    let input_count = group.map(|group| group.inputs.len()).unwrap_or(0);
+    let tolerance_ns = group
+        .map(|group| group.tolerance_ms.saturating_mul(1_000_000))
+        .unwrap_or(0);
+    format!("{input_count}, 8, {tolerance_ns}")
+}
+
+/// 返回 `order` 内所有 on_synchronized task。
+pub(super) fn cpp_on_synchronized_tasks<'a>(
+    graph: &'a GraphIr,
+    order: &[&'a InstanceIr],
+) -> Vec<&'a flowrt_ir::TaskIr> {
+    order
+        .iter()
+        .flat_map(|instance| tasks_for_instance(graph, instance))
+        .filter(|task| task.trigger == flowrt_ir::TriggerKind::OnSynchronized)
+        .collect()
+}
+
 pub(super) fn cpp_input_binds_for_task<'a>(
     task: &flowrt_ir::TaskIr,
+    inputs: &[String],
     binds: &'a [BindRuntimePlan],
 ) -> Vec<&'a BindRuntimePlan> {
-    task.inputs
+    inputs
         .iter()
         .filter_map(|input| {
             binds.iter().find(|bind| {
@@ -451,9 +524,10 @@ pub(super) fn cpp_input_binds_for_task<'a>(
 
 pub(super) fn cpp_input_bridges_for_task<'a>(
     task: &flowrt_ir::TaskIr,
+    inputs: &[String],
     bridges: &'a [BridgeRuntimePlan],
 ) -> Vec<&'a BridgeRuntimePlan> {
-    task.inputs
+    inputs
         .iter()
         .filter_map(|input| {
             bridges.iter().find(|bridge| {
@@ -468,9 +542,10 @@ pub(super) fn cpp_input_bridges_for_task<'a>(
 
 pub(super) fn cpp_input_boundaries_for_task<'a>(
     task: &flowrt_ir::TaskIr,
+    inputs: &[String],
     boundaries: &'a [BoundaryRuntimePlan],
 ) -> Vec<&'a BoundaryRuntimePlan> {
-    task.inputs
+    inputs
         .iter()
         .filter_map(|input| {
             boundaries.iter().find(|boundary| {
@@ -517,30 +592,33 @@ pub(super) fn emit_cpp_ros2_boundary_input_pump(
 }
 
 pub(super) fn emit_cpp_on_message_revision_state(
+    graph: &GraphIr,
     tasks: &[&flowrt_ir::TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
     boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
-    for task in tasks
-        .iter()
-        .copied()
-        .filter(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage)
-    {
-        for bind in cpp_input_binds_for_task(task, binds) {
+    for task in tasks.iter().copied().filter(|task| {
+        matches!(
+            task.trigger,
+            flowrt_ir::TriggerKind::OnMessage | flowrt_ir::TriggerKind::OnSynchronized
+        )
+    }) {
+        let inputs = crate::runtime_plan::effective_task_inputs(graph, task);
+        for bind in cpp_input_binds_for_task(task, &inputs, binds) {
             output.push_str(&format!(
                 "    std::uint64_t {seen} = 0;\n",
                 seen = cpp_task_seen_revision_name(bind, task)
             ));
         }
-        for bridge in cpp_input_bridges_for_task(task, bridges) {
+        for bridge in cpp_input_bridges_for_task(task, &inputs, bridges) {
             output.push_str(&format!(
                 "    std::uint64_t {seen} = 0;\n",
                 seen = cpp_bridge_seen_revision_name(bridge, task)
             ));
         }
-        for boundary in cpp_input_boundaries_for_task(task, boundaries) {
+        for boundary in cpp_input_boundaries_for_task(task, &inputs, boundaries) {
             output.push_str(&format!(
                 "    std::uint64_t {seen} = 0;\n",
                 seen = cpp_boundary_seen_revision_name(boundary, task)
@@ -551,6 +629,7 @@ pub(super) fn emit_cpp_on_message_revision_state(
 }
 
 pub(super) fn emit_cpp_on_message_wake_checks(
+    graph: &GraphIr,
     tasks: &[&flowrt_ir::TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
@@ -558,12 +637,16 @@ pub(super) fn emit_cpp_on_message_wake_checks(
 ) -> String {
     let mut output = String::new();
     for (index, task) in tasks.iter().enumerate() {
-        if task.trigger != flowrt_ir::TriggerKind::OnMessage {
+        if !matches!(
+            task.trigger,
+            flowrt_ir::TriggerKind::OnMessage | flowrt_ir::TriggerKind::OnSynchronized
+        ) {
             continue;
         }
-        let input_binds = cpp_input_binds_for_task(task, binds);
-        let input_bridges = cpp_input_bridges_for_task(task, bridges);
-        let input_boundaries = cpp_input_boundaries_for_task(task, boundaries);
+        let inputs = crate::runtime_plan::effective_task_inputs(graph, task);
+        let input_binds = cpp_input_binds_for_task(task, &inputs, binds);
+        let input_bridges = cpp_input_bridges_for_task(task, &inputs, bridges);
+        let input_boundaries = cpp_input_boundaries_for_task(task, &inputs, boundaries);
         if input_binds.is_empty() && input_bridges.is_empty() && input_boundaries.is_empty() {
             continue;
         }

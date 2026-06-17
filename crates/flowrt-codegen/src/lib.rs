@@ -85,9 +85,6 @@ pub enum CodegenError {
 
     #[error("contract validation failed: {0}")]
     Validation(#[from] flowrt_validate::ValidationReport),
-
-    #[error("trigger `{trigger}` not yet supported in codegen")]
-    UnsupportedTrigger { trigger: String },
 }
 
 /// 一个要写入应用 `flowrt/` 目录下的 FlowRT 管理文件。
@@ -152,19 +149,6 @@ pub fn emit_artifacts(contract: &ContractIr) -> Result<ArtifactBundle> {
     }
     ensure_generated_languages_supported(contract)?;
     ensure_generated_transport_supported(contract)?;
-    // S1: on_synchronized 的 codegen（synchronizer 接线）尚未实现；validator 接受该 trigger，
-    // codegen 在此显式拒绝，避免生成不带同步语义的错误 shell。S3 接入 synchronizer 后移除。
-    for graph in &contract.graphs {
-        if graph
-            .tasks
-            .iter()
-            .any(|task| task.trigger == flowrt_ir::TriggerKind::OnSynchronized)
-        {
-            return Err(CodegenError::UnsupportedTrigger {
-                trigger: "on_synchronized".to_string(),
-            });
-        }
-    }
 
     let mut artifacts = Vec::new();
     let abi_expectations = fixed_message_abi_expectations(contract)?;
@@ -550,7 +534,9 @@ pub(crate) fn scheduler_tasks_for_order<'a>(
         .filter(|task| {
             matches!(
                 task.trigger,
-                flowrt_ir::TriggerKind::Periodic | flowrt_ir::TriggerKind::OnMessage
+                flowrt_ir::TriggerKind::Periodic
+                    | flowrt_ir::TriggerKind::OnMessage
+                    | flowrt_ir::TriggerKind::OnSynchronized
             )
         })
         .collect()

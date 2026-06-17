@@ -89,3 +89,13 @@ fn golden_graph_latest_fifo() {
 fn golden_service_rust() {
     check_case("service_rust");
 }
+
+#[test]
+fn golden_sync_fusion_rust() {
+    check_case("sync_fusion_rust");
+}
+
+#[test]
+fn golden_sync_fusion_cpp() {
+    check_case("sync_fusion_cpp");
+}

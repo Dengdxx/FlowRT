@@ -109,8 +109,8 @@ fn rust_collect_task_parameters(emission: &RustStepEmission<'_>, task: &TaskIr) 
         ));
     }
 
-    let task_inputs = task
-        .inputs
+    let effective_inputs = crate::runtime_plan::effective_task_inputs(emission.graph, task);
+    let task_inputs = effective_inputs
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -127,6 +127,14 @@ fn rust_collect_task_parameters(emission: &RustStepEmission<'_>, task: &TaskIr) 
         params.push(format!(
             "{}: u64",
             rust_task_input_revision_name(&input.name)
+        ));
+    }
+
+    if task.trigger == flowrt_ir::TriggerKind::OnSynchronized {
+        params.push(format!(
+            "{}: {}",
+            rust_synchronizer_field_name(task),
+            rust_synchronizer_field_type()
         ));
     }
 
@@ -196,8 +204,8 @@ pub(super) fn emit_rust_app_step(
                 continue;
             }
             output.push_str("        {\n");
-            let task_inputs = task
-                .inputs
+            let effective_inputs = crate::runtime_plan::effective_task_inputs(emission.graph, task);
+            let task_inputs = effective_inputs
                 .iter()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>();
@@ -206,7 +214,10 @@ pub(super) fn emit_rust_app_step(
                 .iter()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>();
-            let trigger_guard = on_message_trigger_guard(task, |input| input.to_string());
+            let is_synchronized = task.trigger == flowrt_ir::TriggerKind::OnSynchronized;
+            let non_consuming_read =
+                task.trigger == flowrt_ir::TriggerKind::OnMessage || is_synchronized;
+            let mut trigger_guard = on_message_trigger_guard(task, |input| input.to_string());
 
             for input in &component.inputs {
                 if task_inputs.contains(input.name.as_str()) {
@@ -226,7 +237,7 @@ pub(super) fn emit_rust_app_step(
                                 &super::backend_emit::runtime_channel_read(
                                     input,
                                     bind,
-                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                    non_consuming_read,
                                 ),
                                 true,
                             ));
@@ -264,7 +275,7 @@ pub(super) fn emit_rust_app_step(
                                 &super::backend_emit::bridge_runtime_channel_read(
                                     input,
                                     bridge,
-                                    task.trigger == flowrt_ir::TriggerKind::OnMessage,
+                                    non_consuming_read,
                                 ),
                                 true,
                             ));
@@ -303,6 +314,47 @@ pub(super) fn emit_rust_app_step(
                         input = input.name
                     ));
                 }
+            }
+
+            // on_synchronized：把本 tick 各路 present 样本的 sample-time 推入同步器，
+            // 仅在同步器发射出对齐集（poll 返回 Some）时执行回调；typed 样本由上面的
+            // latest view 在发射点读取（latest-aligned -> 发射集即当前 latest）。
+            if is_synchronized {
+                let sync_handle = if collect_outputs {
+                    rust_synchronizer_field_name(task)
+                } else {
+                    format!("self.{}", rust_synchronizer_field_name(task))
+                };
+                let lock_expr = format!(
+                    "{sync_handle}.lock().unwrap_or_else(|poisoned| poisoned.into_inner())"
+                );
+                for (index, input_name) in effective_inputs.iter().enumerate() {
+                    let Some(port) = component
+                        .inputs
+                        .iter()
+                        .find(|port| port.name == *input_name)
+                    else {
+                        continue;
+                    };
+                    let Some((field, unit_to_ns)) =
+                        crate::runtime_plan::boundary_sample_time_source(
+                            emission.contract,
+                            &port.ty,
+                        )
+                    else {
+                        continue;
+                    };
+                    output.push_str(&format!(
+                        "            if let Some(__flowrt_sync_sample) = {input}.as_ref() {{\n                {lock}.push({index}, (__flowrt_sync_sample.{field} as u64).saturating_mul({unit_to_ns}), ());\n            }}\n",
+                        input = port.name,
+                        lock = lock_expr,
+                    ));
+                }
+                let ready_var = format!("{}_ready", rust_synchronizer_field_name(task));
+                output.push_str(&format!(
+                    "            let {ready_var} = {lock_expr}.poll().is_some();\n",
+                ));
+                trigger_guard = Some(ready_var);
             }
 
             // 初始化 health_map 条目的 name 和 lane 字段。
@@ -545,30 +597,33 @@ pub(super) fn runtime_step_uses_tick_time(
 }
 
 pub(super) fn emit_rust_on_message_revision_state(
+    graph: &GraphIr,
     tasks: &[&TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
     boundaries: &[BoundaryRuntimePlan],
 ) -> String {
     let mut output = String::new();
-    for task in tasks
-        .iter()
-        .copied()
-        .filter(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage)
-    {
-        for bind in input_binds_for_task(task, binds) {
+    for task in tasks.iter().copied().filter(|task| {
+        matches!(
+            task.trigger,
+            flowrt_ir::TriggerKind::OnMessage | flowrt_ir::TriggerKind::OnSynchronized
+        )
+    }) {
+        let inputs = crate::runtime_plan::effective_task_inputs(graph, task);
+        for bind in input_binds_for_task(task, &inputs, binds) {
             output.push_str(&format!(
                 "        let mut {seen}: u64 = 0;\n",
                 seen = task_seen_revision_name(bind, task)
             ));
         }
-        for bridge in input_bridges_for_task(task, bridges) {
+        for bridge in input_bridges_for_task(task, &inputs, bridges) {
             output.push_str(&format!(
                 "        let mut {seen}: u64 = 0;\n",
                 seen = bridge_seen_revision_name(bridge, task)
             ));
         }
-        for boundary in input_boundaries_for_task(task, boundaries) {
+        for boundary in input_boundaries_for_task(task, &inputs, boundaries) {
             output.push_str(&format!(
                 "        let mut {seen}: u64 = 0;\n",
                 seen = boundary_seen_revision_name(boundary, task)
@@ -579,6 +634,7 @@ pub(super) fn emit_rust_on_message_revision_state(
 }
 
 pub(super) fn emit_rust_on_message_wake_checks(
+    graph: &GraphIr,
     tasks: &[&TaskIr],
     binds: &[BindRuntimePlan],
     bridges: &[BridgeRuntimePlan],
@@ -586,12 +642,16 @@ pub(super) fn emit_rust_on_message_wake_checks(
 ) -> String {
     let mut output = String::new();
     for (index, task) in tasks.iter().enumerate() {
-        if task.trigger != flowrt_ir::TriggerKind::OnMessage {
+        if !matches!(
+            task.trigger,
+            flowrt_ir::TriggerKind::OnMessage | flowrt_ir::TriggerKind::OnSynchronized
+        ) {
             continue;
         }
-        let input_binds = input_binds_for_task(task, binds);
-        let input_bridges = input_bridges_for_task(task, bridges);
-        let input_boundaries = input_boundaries_for_task(task, boundaries);
+        let inputs = crate::runtime_plan::effective_task_inputs(graph, task);
+        let input_binds = input_binds_for_task(task, &inputs, binds);
+        let input_bridges = input_bridges_for_task(task, &inputs, bridges);
+        let input_boundaries = input_boundaries_for_task(task, &inputs, boundaries);
         if input_binds.is_empty() && input_bridges.is_empty() && input_boundaries.is_empty() {
             continue;
         }
@@ -710,6 +770,49 @@ fn task_local_name(task: &TaskIr) -> String {
     )
 }
 
+/// on_synchronized task 的 App 同步器字段（与 worker 捕获本地名同名）。
+pub(super) fn rust_synchronizer_field_name(task: &TaskIr) -> String {
+    format!(
+        "__flowrt_sync_{}_{}",
+        crate::snake_identifier(&task.instance.name),
+        crate::snake_identifier(&task.name)
+    )
+}
+
+/// 同步器字段类型：runtime 提供的时间对齐原语，value 为 `()`（typed 样本由 latest
+/// view 在发射点读取）。
+pub(super) fn rust_synchronizer_field_type() -> &'static str {
+    "std::sync::Arc<std::sync::Mutex<flowrt::synchronizer::Synchronizer<()>>>"
+}
+
+/// 同步器构造表达式：input 路数、buffer 容量、tolerance（ns）。
+pub(super) fn rust_synchronizer_new_expr(graph: &GraphIr, task: &TaskIr) -> String {
+    let group = crate::runtime_plan::sync_group_for_task(graph, task);
+    let input_count = group.map(|group| group.inputs.len()).unwrap_or(0);
+    let tolerance_ns = group
+        .map(|group| group.tolerance_ms.saturating_mul(1_000_000))
+        .unwrap_or(0);
+    let capacity = SYNCHRONIZER_BUFFER_CAPACITY;
+    format!(
+        "std::sync::Arc::new(std::sync::Mutex::new(flowrt::synchronizer::Synchronizer::<()>::new({input_count}, {capacity}, {tolerance_ns})))",
+    )
+}
+
+/// 同步器每路 buffer 默认容量。v1 固定值，足以吸收相近速率传感器的轻微抖动。
+pub(super) const SYNCHRONIZER_BUFFER_CAPACITY: usize = 8;
+
+/// 返回 `order` 内所有 on_synchronized task。
+pub(super) fn on_synchronized_tasks<'a>(
+    graph: &'a GraphIr,
+    order: &[&'a InstanceIr],
+) -> Vec<&'a TaskIr> {
+    order
+        .iter()
+        .flat_map(|instance| crate::tasks_for_instance(graph, instance))
+        .filter(|task| task.trigger == flowrt_ir::TriggerKind::OnSynchronized)
+        .collect()
+}
+
 pub(super) fn scheduler_lane_ids(tasks: &[&TaskIr]) -> std::collections::BTreeMap<String, usize> {
     let mut lanes = std::collections::BTreeMap::new();
     for task in tasks {
@@ -751,9 +854,10 @@ pub(super) fn boundary_seen_revision_name(boundary: &BoundaryRuntimePlan, task: 
 
 pub(super) fn input_binds_for_task<'a>(
     task: &TaskIr,
+    inputs: &[String],
     binds: &'a [BindRuntimePlan],
 ) -> Vec<&'a BindRuntimePlan> {
-    task.inputs
+    inputs
         .iter()
         .filter_map(|input| {
             binds.iter().find(|bind| {
@@ -765,9 +869,10 @@ pub(super) fn input_binds_for_task<'a>(
 
 pub(super) fn input_bridges_for_task<'a>(
     task: &TaskIr,
+    inputs: &[String],
     bridges: &'a [BridgeRuntimePlan],
 ) -> Vec<&'a BridgeRuntimePlan> {
-    task.inputs
+    inputs
         .iter()
         .filter_map(|input| {
             bridges.iter().find(|bridge| {
@@ -782,9 +887,10 @@ pub(super) fn input_bridges_for_task<'a>(
 
 pub(super) fn input_boundaries_for_task<'a>(
     task: &TaskIr,
+    inputs: &[String],
     boundaries: &'a [BoundaryRuntimePlan],
 ) -> Vec<&'a BoundaryRuntimePlan> {
-    task.inputs
+    inputs
         .iter()
         .filter_map(|input| {
             boundaries.iter().find(|boundary| {

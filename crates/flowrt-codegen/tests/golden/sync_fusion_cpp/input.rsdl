@@ -1,0 +1,98 @@
+[package]
+name = "sync_fusion_cpp_demo"
+rsdl_version = "0.1"
+
+[type.Imu]
+ax = "f64"
+stamp_ns = "u64"
+
+[type.Imu.timestamp]
+field = "stamp_ns"
+unit = "ns"
+
+[type.Odom]
+vx = "f64"
+stamp_ns = "u64"
+
+[type.Odom.timestamp]
+field = "stamp_ns"
+unit = "ns"
+
+[type.Estimate]
+x = "f64"
+
+[component.imu_src]
+language = "cpp"
+output = ["imu:Imu"]
+
+[component.odom_src]
+language = "cpp"
+output = ["odom:Odom"]
+
+[component.fusion]
+language = "cpp"
+input = ["imu:Imu", "odom:Odom"]
+output = ["estimate:Estimate"]
+
+[component.sink]
+language = "cpp"
+input = ["estimate:Estimate"]
+
+[instance.imu_src]
+component = "imu_src"
+
+[instance.imu_src.task]
+trigger = "periodic"
+period_ms = 10
+output = ["imu"]
+
+[instance.odom_src]
+component = "odom_src"
+
+[instance.odom_src.task]
+trigger = "periodic"
+period_ms = 10
+output = ["odom"]
+
+[instance.fusion]
+component = "fusion"
+
+[instance.fusion.task]
+trigger = "on_synchronized"
+sync = "fused_in"
+output = ["estimate"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["estimate"]
+
+[[bind.dataflow]]
+from = "imu_src.imu"
+to = "fusion.imu"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "odom_src.odom"
+to = "fusion.odom"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "fusion.estimate"
+to = "sink.estimate"
+channel = "latest"
+
+[[sync]]
+name = "fused_in"
+instance = "fusion"
+inputs = ["imu", "odom"]
+tolerance_ms = 5
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]

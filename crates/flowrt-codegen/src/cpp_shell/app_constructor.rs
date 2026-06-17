@@ -110,6 +110,13 @@ pub(super) fn emit_cpp_app_constructor(
             cpp_bridge_runtime_channel_initializer(contract, graph, bridge)
         ));
     }
+    for task in super::step_emit::cpp_on_synchronized_tasks(graph, order) {
+        initializers.push(format!(
+            "{}_({})",
+            super::step_emit::cpp_synchronizer_field_name(task),
+            super::step_emit::cpp_synchronizer_ctor_args(graph, task)
+        ));
+    }
 
     let mut output = String::new();
     if params.is_empty() {

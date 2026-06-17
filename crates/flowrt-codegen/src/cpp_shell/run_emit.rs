@@ -215,6 +215,7 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(&emit_cpp_on_message_revision_state(
+        run.graph,
         &tasks,
         run.binds,
         run.bridges,
@@ -262,10 +263,12 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     }
     let has_inproc_service = !service_tasks.is_empty();
     let has_inproc_operation = !operation_tasks.is_empty();
-    let woke_on_message_decl = if tasks
-        .iter()
-        .any(|task| task.trigger == flowrt_ir::TriggerKind::OnMessage)
-        || has_inproc_service
+    let woke_on_message_decl = if tasks.iter().any(|task| {
+        matches!(
+            task.trigger,
+            flowrt_ir::TriggerKind::OnMessage | flowrt_ir::TriggerKind::OnSynchronized
+        )
+    }) || has_inproc_service
         || has_inproc_operation
     {
         "bool woke_on_message = false;"
@@ -276,7 +279,7 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "        introspection_state.record_tick(tick_time_ms, clock_source);\n        while (true) {{\n            observed_data_generation = scheduler_events.data_generation();\n            {woke_on_message_decl}\n"
     ));
     output.push_str(&indent_generated_block_levels(
-        &emit_cpp_on_message_wake_checks(&tasks, run.binds, run.bridges, run.boundaries),
+        &emit_cpp_on_message_wake_checks(run.graph, &tasks, run.binds, run.bridges, run.boundaries),
         1,
     ));
     // service wake checks

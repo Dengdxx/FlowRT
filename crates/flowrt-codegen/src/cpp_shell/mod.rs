@@ -132,8 +132,17 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
         "#include <cstdint>\n#include <map>\n#include <optional>\n#include <string>\n#include <utility>\n\n",
     );
     output.push_str(
-        "#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n#include <flowrt/operation.hpp>\n#include <flowrt/service.hpp>\n\n",
+        "#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n#include <flowrt/operation.hpp>\n#include <flowrt/service.hpp>\n",
     );
+    if contract.graphs.iter().any(|graph| {
+        graph
+            .tasks
+            .iter()
+            .any(|task| task.trigger == flowrt_ir::TriggerKind::OnSynchronized)
+    }) {
+        output.push_str("#include <flowrt/synchronizer.hpp>\n");
+    }
+    output.push('\n');
     output.push_str("#include \"flowrt_app/messages.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
 
@@ -543,6 +552,13 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             flowrt_ir::BoundaryDirection::Output => format!("flowrt::BoundaryOutput<{ty}>"),
         };
         output.push_str(&format!("    {} {}_;\n", field_ty, boundary.field_name));
+    }
+    for task in step_emit::cpp_on_synchronized_tasks(graph, &order) {
+        output.push_str(&format!(
+            "    {} {}_;\n",
+            step_emit::cpp_synchronizer_field_type(),
+            step_emit::cpp_synchronizer_field_name(task)
+        ));
     }
     // service client/server fields
     for plan in &service_plans {

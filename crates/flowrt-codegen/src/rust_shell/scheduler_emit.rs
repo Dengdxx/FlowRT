@@ -197,7 +197,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         &operation_tasks,
     ));
     output.push_str(&emit_rust_on_message_revision_state(
-        &tasks, binds, bridges, boundaries,
+        graph, &tasks, binds, bridges, boundaries,
     ));
     output.push_str(&format!(
         "        let scheduler_base_period_ms: u64 = {};\n",
@@ -226,10 +226,12 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(&emit_rust_apply_pending_params_for_order(contract, order));
     let has_service_tasks = !service_tasks.is_empty();
     let has_operation_tasks = !operation_tasks.is_empty();
-    let woke_on_message_decl = if tasks
-        .iter()
-        .any(|task| task.trigger == TriggerKind::OnMessage)
-        || has_service_tasks
+    let woke_on_message_decl = if tasks.iter().any(|task| {
+        matches!(
+            task.trigger,
+            TriggerKind::OnMessage | TriggerKind::OnSynchronized
+        )
+    }) || has_service_tasks
         || has_operation_tasks
     {
         "let mut woke_on_message = false;"
@@ -243,7 +245,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "            introspection_state.record_tick_at(tick_time_ms, clock_source);\n            loop {{\n                observed_data_generation = scheduler_events.data_generation();\n                {woke_on_message_decl}\n"
     ));
     output.push_str(&crate::runtime_plan::indent_generated_block_levels(
-        &emit_rust_on_message_wake_checks(&tasks, binds, bridges, boundaries),
+        &emit_rust_on_message_wake_checks(graph, &tasks, binds, bridges, boundaries),
         1,
     ));
     // service wake checks
@@ -380,8 +382,8 @@ fn rust_collect_task_call_args_for_scheduler(
     if !component.params.is_empty() {
         args.push(step_emit::rust_task_params_capture_name(instance));
     }
-    let task_inputs = task
-        .inputs
+    let effective_inputs = crate::runtime_plan::effective_task_inputs(graph, task);
+    let task_inputs = effective_inputs
         .iter()
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
@@ -391,6 +393,9 @@ fn rust_collect_task_call_args_for_scheduler(
             args.push(step_emit::rust_task_input_stale_name(&input.name));
             args.push(step_emit::rust_task_input_revision_name(&input.name));
         }
+    }
+    if task.trigger == TriggerKind::OnSynchronized {
+        args.push(step_emit::rust_synchronizer_field_name(task));
     }
     args
 }
@@ -436,8 +441,8 @@ fn emit_rust_task_capture_prelude(
         ));
     }
 
-    let task_inputs = task
-        .inputs
+    let effective_inputs = crate::runtime_plan::effective_task_inputs(graph, task);
+    let task_inputs = effective_inputs
         .iter()
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
@@ -447,6 +452,12 @@ fn emit_rust_task_capture_prelude(
         }
         output.push_str(&emit_rust_input_snapshot_capture(
             input, instance, binds, bridges, boundaries, task,
+        ));
+    }
+    if task.trigger == TriggerKind::OnSynchronized {
+        output.push_str(&format!(
+            "                            let {name} = self.{name}.clone();\n",
+            name = step_emit::rust_synchronizer_field_name(task),
         ));
     }
     output
@@ -504,7 +515,10 @@ fn emit_rust_bind_snapshot_capture(
         crate::snake_identifier(&input.name)
     );
     if matches!(crate::runtime_plan::bind_backend(bind), "iox2" | "zenoh") {
-        if task.trigger == TriggerKind::OnMessage {
+        if matches!(
+            task.trigger,
+            TriggerKind::OnMessage | TriggerKind::OnSynchronized
+        ) {
             return format!(
                 "                            let ({value}, {stale}, {revision}) = {{\n                                let {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                let {view} = {guard}.cached_latest_at(tick_time_ms);\n                                ({view}.as_ref().cloned(), {view}.stale(), {guard}.revision())\n                            }};\n",
                 field = bind.field_name,
@@ -541,7 +555,10 @@ fn emit_rust_bridge_snapshot_capture(
         "__flowrt_{}_snapshot_view",
         crate::snake_identifier(&input.name)
     );
-    if task.trigger == TriggerKind::OnMessage {
+    if matches!(
+        task.trigger,
+        TriggerKind::OnMessage | TriggerKind::OnSynchronized
+    ) {
         return format!(
             "                            let ({value}, {stale}, {revision}) = {{\n                                let {guard} = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                let {view} = {guard}.cached_latest_at(tick_time_ms);\n                                ({view}.as_ref().cloned(), {view}.stale(), {guard}.revision())\n                            }};\n",
             field = bridge.field_name,
