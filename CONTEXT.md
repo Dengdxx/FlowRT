@@ -5,22 +5,30 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.21.1`；当前发布线为 `v0.21.1 Instance Fault Isolation + Restart`，是
-`0.21.x 图级容错 / 生命周期` 主题（patch 线）的第二切片：在 0.21.0 显式状态机之上放行 `isolate`/
-`restart` 策略并落地进程内恢复行为。
+当前 workspace 版本为 `0.21.2`；当前发布线为 `v0.21.2 Degrade Data Semantics`，是
+`0.21.x 图级容错 / 生命周期` 主题（patch 线）的第三切片：在 0.21.1 进程内隔离/重启之上放行
+`degrade` 策略并落地降级数据语义。
 
-- RSDL `[instance.<name>.fault]` 子表声明策略与 restart 退避参数（`max_restarts`/`initial_delay_ms`/
-  `max_delay_ms`，省略填默认 `3`/`100`/`1000`），保留扁平糖 `failure_policy`，两者互斥；validator 放行
-  `isolate`/`restart`、校验退避范围，`degrade` 仍拒绝（deferred 到 0.21.2）；
-- runtime `DeterministicExecutor`（Rust 与 C++）新增 `suspend_task`/`resume_task`，隔离 task 退出调度；
-  生成 shell 在图含 `isolate`/`restart` instance 时注入故障处理：故障触发面仅 task 回调返 `Status::Error`，
-  `restart` 按 clock-ms 退避（`min(initial<<consecutive.min(31), max)`）重跑 `on_init`→`on_start`，达
-  `max_restarts` 终态 `Faulted`；
-- 容错机制 gated（仅相关图 emit），既有 12 golden shell 字节不漂移；新 golden `instance_fault_restart_
-  {rust,cpp}` 锁定两策略输出并纳入编译网真编译；生成 `on_init` 文档补可重入契约；
-- 本切片仅以 `record_lifecycle_state` 的 `Faulted`/`Running` 循环作可观测证据，`restart_count`/
-  `last_fault_reason` 数值 metric 暂 deferred；
-- 后续：降级数据语义（0.21.2）、图级 health/failover（0.21.3）、跨进程反馈环（0.21.4）依次推进。
+- RSDL `failure_policy`/`[instance.<name>.fault]` 现放行第四策略 `degrade`：故障触发面仍仅 task
+  回调返 `Status::Error`，degrade 命中时不挂起 task、不停图，仅把 instance 记为 `Degraded` 并继续
+  调度；失败那拍输出为空，下游 latest 快照保持上一份并按既有 channel stale policy（`hold_last`/
+  `warn`/`drop`/`error` + `max_age_ms`）老化——复用而非新增传输/ABI；该 instance 后续返 `Ok` 翻回
+  `Running`；
+- codegen：`recoverable_instances` 收录谓词加入 degrade，生成 shell 用单个 `_degraded` bool 做边沿
+  跟踪（错误记 Degraded、Ok 恢复 Running），`suspend_task` 收紧到 isolate/restart；容错机制仍 gated，
+  既有 golden 字节不漂移；新 golden `instance_degrade_{rust,cpp}`（下游 `hold_last` stale bind）锁定
+  两语言输出并纳入编译网真编译；
+- 本切片不改 runtime/executor（degrade 无需 suspend/resume），转移由确定性 task 结果驱动可回放复现；
+  沿用 0.21.1 观测姿态，以 `record_lifecycle_state` 的 `Degraded`/`Running` 循环为唯一证据，数值 metric
+  仍 deferred；多 task degrade instance 的态翻转按确定性 commit 顺序取该拍最后完成 task（单 task 为
+  语料常态，多 task 为已知粗粒度边角）；
+- 后续：图级 health/failover（0.21.3）、跨进程反馈环（0.21.4）依次推进。
+
+上一发布线为 `v0.21.1 Instance Fault Isolation + Restart`，在 0.21.0 显式状态机之上放行 `isolate`/
+`restart` 策略并落地进程内恢复行为：RSDL `[instance.<name>.fault]` 子表声明策略与 restart 退避参数，
+runtime `DeterministicExecutor`（Rust 与 C++）新增 `suspend_task`/`resume_task`，生成 shell 在图含
+`isolate`/`restart` instance 时按 clock-ms 退避（`min(initial<<consecutive.min(31), max)`）重跑
+`on_init`→`on_start`，达 `max_restarts` 终态 `Faulted`；容错机制 gated，既有 golden 字节不漂移。
 
 上一发布线为 `v0.21.0 Lifecycle State Machine`，把 instance 生命周期升为契约一等显式状态机（零恢复
 行为改变）：runtime 新增跨语言 `LifecycleState` 枚举，生成 shell 在生命周期段旁路记录 per-instance

@@ -4,6 +4,30 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.21.2 - 2026-06-18
+
+降级数据语义（0.21.x 图级容错主题第三切片）：在 0.21.1 进程内隔离 / 重启之上放行 `degrade` 策略，让 instance 在故障时降级续跑而非停机或重启，下游复用既有 stale policy 老化 last-known-good 数据。
+
+### 新增
+
+- validator 放行第四故障策略 `degrade`（`failure_policy = "degrade"` 或 `[instance.<name>.fault] policy = "degrade"`）：故障触发面仍仅 task 回调返回 `Status::Error`。
+- 生成 runtime shell（Rust 与 C++）为 `degrade` instance 注入降级续跑：命中 `Error` 时不挂起 task、不停图，仅把 instance 记为 `Degraded` 并继续调度；该 instance 后续 task 返回 `Ok` 时翻回 `Running`。
+
+### 变更
+
+- `degrade` 失败那拍输出为空，下游 latest 快照保持上一份并随时间老化，由下游既有 channel stale policy（`hold_last`/`warn`/`drop`/`error` + `max_age_ms`）决定 absent vs hold-last——复用而非新增传输或 ABI。
+- `recoverable_instances` 收录谓词加入 `degrade`；生成 shell 用单个 `_degraded` bool 做边沿跟踪，`suspend_task` 收紧到 `isolate`/`restart`。容错机制仍 gated，既有 golden shell 字节不漂移。
+- 本切片不改 runtime/executor（`degrade` 无需 suspend/resume），属纯 codegen/validate 变更。
+
+### 测试
+
+- 覆盖 validator 放行 degrade、codegen `recoverable_instances` 收录 degrade、新 golden `instance_degrade_{rust,cpp}`（下游 `hold_last` stale bind），并把新 golden case 纳入编译网真编译（C++ `g++ -fsyntax-only`、Rust `cargo check`）。
+
+### 已知限制
+
+- 沿用 0.21.1 观测姿态：仅以 `record_lifecycle_state` 的 `Degraded`/`Running` 状态循环作为降级可观测证据；降级转移由确定性 task 结果重新推导（不写入 replay log），数值 metric 仍未提供。
+- 多 task degrade instance 的态翻转按确定性 commit 顺序取该拍最后完成 task 的结果（单 task 为语料常态，多 task 为已知粗粒度边角）；`degrade` 与 feedback / sync 的交互未额外约束，与 0.21.1 的 `isolate`/`restart` 保持一致，留待 0.21.3 图级 health 统一处理。
+
 ## v0.21.1 - 2026-06-18
 
 进程内 instance 故障隔离 + 重启（0.21.x 图级容错主题第二切片）：在 0.21.0 显式生命周期状态机之上，放行 `isolate`/`restart` 策略并落地运行时恢复行为。
