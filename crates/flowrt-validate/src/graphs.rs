@@ -3,10 +3,10 @@ use std::path::{Component, Path};
 
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
-    GraphMode, InstanceFailurePolicy, InstanceIr, LanguageKind, OperationConcurrencyPolicy,
-    OperationPortIr, OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef,
-    PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef,
-    TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    GraphMode, InstanceIr, LanguageKind, OperationConcurrencyPolicy, OperationPortIr,
+    OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef, PrimitiveType,
+    ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency,
+    TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -106,17 +106,6 @@ fn validate_external_processes(
             )));
         }
 
-        match instance.fault.policy {
-            InstanceFailurePolicy::FailFast
-            | InstanceFailurePolicy::Isolate
-            | InstanceFailurePolicy::Restart => {}
-            InstanceFailurePolicy::Degrade => {
-                errors.push(ValidationError::new(format!(
-                    "instance `{}` failure_policy `degrade` is not implemented yet; supported: fail_fast/isolate/restart (degrade deferred to 0.21.2)",
-                    instance.name,
-                )));
-            }
-        }
         if let Some(restart) = &instance.fault.restart {
             if restart.initial_delay_ms == 0 || restart.initial_delay_ms > restart.max_delay_ms {
                 errors.push(ValidationError::new(format!(

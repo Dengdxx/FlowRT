@@ -249,11 +249,11 @@ pub(crate) fn scheduler_runtime_plan<'a>(
     }
 }
 
-/// 一个 isolate/restart instance 的运行时容错计划：策略、重启参数及其全部 dataflow task id。
+/// 一个 isolate/restart/degrade instance 的运行时容错计划：策略、重启参数及其全部 dataflow task id。
 ///
 /// fail_fast instance 不收录。task_ids 是 scheduler dataflow task 的稳定 id（与
-/// `scheduler_runtime_plan` 一致），生成 shell 用它在隔离时 `suspend_task`、重启成功时
-/// `resume_task`。
+/// `scheduler_runtime_plan` 一致）：isolate/restart 隔离时 `suspend_task`、重启成功时
+/// `resume_task`；degrade 不挂起 task，仅用 task_ids 匹配错误/恢复以翻转 `Degraded`/`Running`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoverableInstancePlan {
     pub(crate) name: String,
@@ -262,7 +262,7 @@ pub(crate) struct RecoverableInstancePlan {
     pub(crate) task_ids: Vec<usize>,
 }
 
-/// 收集本进程 order 内 policy ∈ {isolate, restart} 的 instance 及其 dataflow task id。
+/// 收集本进程 order 内 policy ∈ {isolate, restart, degrade} 的 instance 及其 dataflow task id。
 ///
 /// 返回顺序按 instance 名称稳定排序，保证生成 shell 输出确定。fail_fast-only 图返回空 vec，
 /// 生成 shell 据此完全不 emit 容错机制（保既有 golden 不漂移）。
@@ -276,7 +276,9 @@ pub(crate) fn recoverable_instances(
     for instance in order {
         if !matches!(
             instance.fault.policy,
-            InstanceFailurePolicy::Isolate | InstanceFailurePolicy::Restart
+            InstanceFailurePolicy::Isolate
+                | InstanceFailurePolicy::Restart
+                | InstanceFailurePolicy::Degrade
         ) {
             continue;
         }

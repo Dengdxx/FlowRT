@@ -1916,10 +1916,10 @@ backends = ["inproc"]
 }
 
 #[test]
-fn rejects_instance_degrade_failure_policy() {
+fn accepts_instance_degrade_failure_policy() {
     let source = r#"
 [package]
-name = "fp_deferred"
+name = "fp_degrade"
 rsdl_version = "0.1"
 
 [component.processor]
@@ -1944,15 +1944,11 @@ backends = ["inproc"]
 "#;
     let raw = parse_str(source).unwrap();
     let ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let report = validate_contract(&ir).expect_err("degrade deferred");
-    assert!(
-        report
-            .errors
-            .iter()
-            .any(|e| e.message.contains("degrade") && e.message.contains("0.21.2")),
-        "{:?}",
-        report.errors
+    assert_eq!(
+        ir.graphs[0].instances[0].fault.policy,
+        flowrt_ir::InstanceFailurePolicy::Degrade
     );
+    validate_contract(&ir).expect("degrade accepted in 0.21.2");
 }
 
 #[test]

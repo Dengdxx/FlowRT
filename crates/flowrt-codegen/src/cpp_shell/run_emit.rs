@@ -779,19 +779,26 @@ fn cpp_backoff_expr(var: &str, initial_delay_ms: u64, max_delay_ms: u64) -> Stri
     )
 }
 
-/// 为 restart 策略 instance 生成 C++ 故障状态局部变量（4 空格缩进，循环外）。
+/// 为 restart / degrade 策略 instance 生成 C++ 故障状态局部变量（4 空格缩进，循环外）。
+///
+/// restart 用退避三件套；degrade 仅用一个 `_degraded` bool 做边沿跟踪，镜像 Rust。
 fn emit_cpp_fault_state_decls(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
 ) -> String {
     let mut output = String::new();
     for plan in recoverable {
-        if plan.policy != InstanceFailurePolicy::Restart {
-            continue;
-        }
         let var = crate::snake_identifier(&plan.name);
-        output.push_str(&format!(
-            "    std::optional<std::uint64_t> {var}_next_restart_ms;\n    std::uint32_t {var}_fault_consecutive = 0;\n    bool {var}_terminal_faulted = false;\n",
-        ));
+        match plan.policy {
+            InstanceFailurePolicy::Restart => {
+                output.push_str(&format!(
+                    "    std::optional<std::uint64_t> {var}_next_restart_ms;\n    std::uint32_t {var}_fault_consecutive = 0;\n    bool {var}_terminal_faulted = false;\n",
+                ));
+            }
+            InstanceFailurePolicy::Degrade => {
+                output.push_str(&format!("    bool {var}_degraded = false;\n"));
+            }
+            _ => {}
+        }
     }
     output
 }
@@ -838,7 +845,8 @@ fn emit_cpp_restart_driver(
 /// C++ commit drain 对 task Error 的处理（16 空格缩进）。
 ///
 /// 无 recoverable 时返回既有 status=Error;break；否则按 task id switch：isolate/restart instance
-/// 隔离续跑（依赖后续 `if (status != Ok) break;` 不触发），restart 还排下次重启；其余 fail_fast。
+/// 隔离续跑（依赖后续 `if (status != Ok) break;` 不触发），restart 还排下次重启；degrade instance
+/// 仅记 `Degraded` 不挂起、不停图，并在该 task 后续返 Ok 时翻回 `Running`；其余 fail_fast。
 fn emit_cpp_task_error_handling(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
 ) -> String {
@@ -846,6 +854,7 @@ fn emit_cpp_task_error_handling(
         return "                if (task_result.status == flowrt::Status::Error) {\n                    status = flowrt::Status::Error;\n                    break;\n                }\n".to_string();
     }
     let mut arms = String::new();
+    let mut recovery_arms = String::new();
     for plan in recoverable {
         if plan.task_ids.is_empty() {
             continue;
@@ -857,6 +866,15 @@ fn emit_cpp_task_error_handling(
             .iter()
             .map(|id| format!("                        case {id}:\n"))
             .collect::<String>();
+        if plan.policy == InstanceFailurePolicy::Degrade {
+            arms.push_str(&format!(
+                "{labels}                        {{\n                            if (!{var}_degraded) {{\n                                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Degraded);\n                                {var}_degraded = true;\n                            }}\n                            break;\n                        }}\n",
+            ));
+            recovery_arms.push_str(&format!(
+                "{labels}                        {{\n                            if ({var}_degraded) {{\n                                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n                                {var}_degraded = false;\n                            }}\n                            break;\n                        }}\n",
+            ));
+            continue;
+        }
         let suspend = plan
             .task_ids
             .iter()
@@ -880,7 +898,13 @@ fn emit_cpp_task_error_handling(
             "{labels}                        {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{restart_schedule}                            break;\n                        }}\n",
         ));
     }
-    format!(
+    let mut output = format!(
         "                if (task_result.status == flowrt::Status::Error) {{\n                    switch (task_result.task.value) {{\n{arms}                        default:\n                            status = flowrt::Status::Error;\n                            break;\n                    }}\n                }}\n",
-    )
+    );
+    if !recovery_arms.is_empty() {
+        output.push_str(&format!(
+            "                if (task_result.status == flowrt::Status::Ok) {{\n                    switch (task_result.task.value) {{\n{recovery_arms}                        default:\n                            break;\n                    }}\n                }}\n",
+        ));
+    }
+    output
 }

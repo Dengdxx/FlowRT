@@ -947,19 +947,27 @@ fn rust_backoff_expr(var: &str, initial_delay_ms: u64, max_delay_ms: u64) -> Str
     format!("({initial_delay_ms}u64 << {var}_fault_consecutive.min(31)).min({max_delay_ms}u64)")
 }
 
-/// 为 restart 策略 instance 生成故障状态局部变量声明（8 空格缩进，循环外）。
+/// 为 restart / degrade 策略 instance 生成故障状态局部变量声明（8 空格缩进，循环外）。
+///
+/// restart 用 `_next_restart_ms`/`_fault_consecutive`/`_terminal_faulted` 驱动退避重启；
+/// degrade 仅用一个 `_degraded` bool 做边沿跟踪，避免每拍重复调用 `record_lifecycle_state`。
 fn emit_rust_fault_state_decls(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
 ) -> String {
     let mut output = String::new();
     for plan in recoverable {
-        if plan.policy != flowrt_ir::InstanceFailurePolicy::Restart {
-            continue;
-        }
         let var = crate::snake_identifier(&plan.name);
-        output.push_str(&format!(
-            "        let mut {var}_next_restart_ms: Option<u64> = None;\n        let mut {var}_fault_consecutive: u32 = 0;\n        let mut {var}_terminal_faulted = false;\n",
-        ));
+        match plan.policy {
+            flowrt_ir::InstanceFailurePolicy::Restart => {
+                output.push_str(&format!(
+                    "        let mut {var}_next_restart_ms: Option<u64> = None;\n        let mut {var}_fault_consecutive: u32 = 0;\n        let mut {var}_terminal_faulted = false;\n",
+                ));
+            }
+            flowrt_ir::InstanceFailurePolicy::Degrade => {
+                output.push_str(&format!("        let mut {var}_degraded = false;\n"));
+            }
+            _ => {}
+        }
     }
     output
 }
@@ -1017,7 +1025,8 @@ fn emit_rust_restart_driver(
 /// 生成 commit drain 段对 task Error 的处理。
 ///
 /// 无 recoverable instance 时返回既有行为（status=Error;break）；否则对属于 isolate/restart
-/// instance 的 task 隔离续跑（不置 status、不 break），restart 还排下次重启；其余 task 仍 fail_fast。
+/// instance 的 task 隔离续跑（不置 status、不 break），restart 还排下次重启；degrade instance
+/// 的 task 仅记 `Degraded` 不挂起、不停图，并在该 task 后续返 Ok 时翻回 `Running`；其余 task 仍 fail_fast。
 fn emit_rust_task_error_handling(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
 ) -> String {
@@ -1025,6 +1034,7 @@ fn emit_rust_task_error_handling(
         return "                    if task_result.status == flowrt::Status::Error {\n                        status = flowrt::Status::Error;\n                        break;\n                    }\n".to_string();
     }
     let mut arms = String::new();
+    let mut recovery_arms = String::new();
     for plan in recoverable {
         if plan.task_ids.is_empty() {
             continue;
@@ -1037,6 +1047,15 @@ fn emit_rust_task_error_handling(
             .map(|id| format!("flowrt::TaskId({id})"))
             .collect::<Vec<_>>()
             .join(" | ");
+        if plan.policy == flowrt_ir::InstanceFailurePolicy::Degrade {
+            arms.push_str(&format!(
+                "                        {pattern} => {{\n                            if !{var}_degraded {{\n                                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Degraded);\n                                {var}_degraded = true;\n                            }}\n                        }}\n",
+            ));
+            recovery_arms.push_str(&format!(
+                "                        {pattern} => {{\n                            if {var}_degraded {{\n                                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n                                {var}_degraded = false;\n                            }}\n                        }}\n",
+            ));
+            continue;
+        }
         let suspend = plan
             .task_ids
             .iter()
@@ -1060,7 +1079,13 @@ fn emit_rust_task_error_handling(
             "                        {pattern} => {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{restart_schedule}                        }}\n",
         ));
     }
-    format!(
+    let mut output = format!(
         "                    if task_result.status == flowrt::Status::Error {{\n                        match task_result.task {{\n{arms}                            _ => {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                        }}\n                    }}\n",
-    )
+    );
+    if !recovery_arms.is_empty() {
+        output.push_str(&format!(
+            "                    if task_result.status == flowrt::Status::Ok {{\n                        match task_result.task {{\n{recovery_arms}                            _ => {{}}\n                        }}\n                    }}\n",
+        ));
+    }
+    output
 }
