@@ -44,9 +44,9 @@ use crate::runtime_plan::{
     incoming_boundary_index_map, incoming_bridge_index_map, indent_generated_block,
     indent_generated_block_levels, nested_step_indent, on_message_trigger_guard,
     outgoing_bind_indices_map, outgoing_boundary_indices_map, outgoing_bridge_indices_map,
-    process_runtime_plans, resolved_task_lane_name, runtime_channel_message_type,
-    runtime_channel_name, runtime_channel_probe_capacity, runtime_param_name,
-    recoverable_instances, scheduler_runtime_plan, step_indent,
+    process_runtime_plans, recoverable_instances, resolved_task_lane_name,
+    runtime_channel_message_type, runtime_channel_name, runtime_channel_probe_capacity,
+    runtime_param_name, scheduler_runtime_plan, step_indent,
 };
 use crate::{
     component_by_name, component_rust_name, float_literal, iox2_service_name, managed_header,

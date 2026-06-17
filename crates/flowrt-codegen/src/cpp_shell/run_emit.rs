@@ -305,7 +305,11 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     output.push_str(
         "        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
     );
-    output.push_str(&emit_cpp_restart_driver(run.contract, run.order, &recoverable));
+    output.push_str(&emit_cpp_restart_driver(
+        run.contract,
+        run.order,
+        &recoverable,
+    ));
     output.push_str(&task_health_init);
     output.push_str(&emit_cpp_apply_pending_params_for_order(
         run.contract,
@@ -776,7 +780,9 @@ fn cpp_backoff_expr(var: &str, initial_delay_ms: u64, max_delay_ms: u64) -> Stri
 }
 
 /// 为 restart 策略 instance 生成 C++ 故障状态局部变量（4 空格缩进，循环外）。
-fn emit_cpp_fault_state_decls(recoverable: &[crate::runtime_plan::RecoverableInstancePlan]) -> String {
+fn emit_cpp_fault_state_decls(
+    recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+) -> String {
     let mut output = String::new();
     for plan in recoverable {
         if plan.policy != InstanceFailurePolicy::Restart {
@@ -816,7 +822,9 @@ fn emit_cpp_restart_driver(
         let resume = plan
             .task_ids
             .iter()
-            .map(|id| format!("                    scheduler.resume_task(flowrt::TaskId{{{id}}});\n"))
+            .map(|id| {
+                format!("                    scheduler.resume_task(flowrt::TaskId{{{id}}});\n")
+            })
             .collect::<String>();
         let backoff = cpp_backoff_expr(&var, restart.initial_delay_ms, restart.max_delay_ms);
         output.push_str(&format!(
@@ -852,7 +860,11 @@ fn emit_cpp_task_error_handling(
         let suspend = plan
             .task_ids
             .iter()
-            .map(|id| format!("                            scheduler.suspend_task(flowrt::TaskId{{{id}}});\n"))
+            .map(|id| {
+                format!(
+                    "                            scheduler.suspend_task(flowrt::TaskId{{{id}}});\n"
+                )
+            })
             .collect::<String>();
         let restart_schedule = match (plan.policy, plan.restart) {
             (InstanceFailurePolicy::Restart, Some(restart)) => {

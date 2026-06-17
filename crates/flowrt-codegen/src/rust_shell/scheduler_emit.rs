@@ -944,13 +944,13 @@ fn rust_restart_context_name(component: &flowrt_ir::ComponentIr, name: &str) -> 
 
 /// 退避表达式：`(initial << consecutive.min(31)).min(max)`，单位 clock-ms。
 fn rust_backoff_expr(var: &str, initial_delay_ms: u64, max_delay_ms: u64) -> String {
-    format!(
-        "({initial_delay_ms}u64 << {var}_fault_consecutive.min(31)).min({max_delay_ms}u64)"
-    )
+    format!("({initial_delay_ms}u64 << {var}_fault_consecutive.min(31)).min({max_delay_ms}u64)")
 }
 
 /// 为 restart 策略 instance 生成故障状态局部变量声明（8 空格缩进，循环外）。
-fn emit_rust_fault_state_decls(recoverable: &[crate::runtime_plan::RecoverableInstancePlan]) -> String {
+fn emit_rust_fault_state_decls(
+    recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+) -> String {
     let mut output = String::new();
     for plan in recoverable {
         if plan.policy != flowrt_ir::InstanceFailurePolicy::Restart {
@@ -1001,7 +1001,9 @@ fn emit_rust_restart_driver(
         let resume = plan
             .task_ids
             .iter()
-            .map(|id| format!("                        scheduler.resume_task(flowrt::TaskId({id}));\n"))
+            .map(|id| {
+                format!("                        scheduler.resume_task(flowrt::TaskId({id}));\n")
+            })
             .collect::<String>();
         let backoff = rust_backoff_expr(&var, restart.initial_delay_ms, restart.max_delay_ms);
         output.push_str(&format!(
@@ -1038,7 +1040,11 @@ fn emit_rust_task_error_handling(
         let suspend = plan
             .task_ids
             .iter()
-            .map(|id| format!("                            scheduler.suspend_task(flowrt::TaskId({id}));\n"))
+            .map(|id| {
+                format!(
+                    "                            scheduler.suspend_task(flowrt::TaskId({id}));\n"
+                )
+            })
             .collect::<String>();
         let restart_schedule = match (plan.policy, plan.restart) {
             (flowrt_ir::InstanceFailurePolicy::Restart, Some(restart)) => {

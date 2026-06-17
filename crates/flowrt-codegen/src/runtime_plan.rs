@@ -3,10 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr, GraphIr,
     InstanceFailurePolicy, InstanceIr, InstanceRestartParamsIr, OperationConcurrencyPolicy,
-    OperationFeedbackPolicy, OperationPreemptPolicy,
-    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamValue, Ros2BridgeDirection, Ros2BridgeIr,
-    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
-    TriggerKind, TypeExpr,
+    OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ParamIr,
+    ParamValue, Ros2BridgeDirection, Ros2BridgeIr, ServiceOverflowPolicy,
+    StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
     derived::{ContractDerivedFacts, GraphDerivedFacts, derive_contract_facts},
 };
 
