@@ -119,3 +119,13 @@ fn golden_feedback_v2_rust() {
 fn golden_feedback_v2_cpp() {
     check_case("feedback_v2_cpp");
 }
+
+#[test]
+fn golden_instance_fault_restart_rust() {
+    check_case("instance_fault_restart_rust");
+}
+
+#[test]
+fn golden_instance_fault_restart_cpp() {
+    check_case("instance_fault_restart_cpp");
+}
