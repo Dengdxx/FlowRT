@@ -4,7 +4,7 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
-## 未发布
+## v0.19.0 - 2026-06-17
 
 多传感器同步（Multi-Sensor Synchronization）：把 N 路 sensor 输入按 event-time（0.18.0
 sample-time）对齐成同步集，经新 `on_synchronized` trigger 投递给融合组件，是 0.18.0

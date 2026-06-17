@@ -37,3 +37,7 @@ script = "scripts/test-v0180-event-time-smoke.sh"
 [[focused_smoke]]
 version = "0.18.1"
 script = "scripts/test-codegen-compile.sh"
+
+[[focused_smoke]]
+version = "0.19.0"
+script = "scripts/test-v0190-multisensor-sync-smoke.sh"

@@ -5,8 +5,21 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.18.1`；当前发布线为 `v0.18.1 Codegen 验证加固`，是一次纯内部质量/验证
-版本（零用户语义变更）：
+当前 workspace 版本为 `0.19.0`；当前发布线为 `v0.19.0 Multi-Sensor Synchronization`，把 N 路
+sensor 输入按 event-time（0.18.0 sample-time）对齐成同步集，经新 `on_synchronized` trigger 投递
+给融合组件，是 0.18.0 sample-time 一等概念的直接 payoff：
+
+- RSDL 新增 `[[sync]]` 顶层组（`name`/`instance`/`inputs`/`tolerance_ms`）与 task
+  `trigger = "on_synchronized"` + `sync = "<组名>"`；归一化进 Contract IR（`SyncGroupIr`、
+  `TaskIr.sync_group`），validator 校验组规则（≥2 输入、端口已声明、唯一 incoming bind、消息须声明
+  timestamp 源、tolerance>0）与 task/sync 耦合；
+- runtime 新增 `flowrt::Synchronizer` 原语（Rust + C++ 各实现，共享语义）：latest-aligned
+  approx-window 匹配，只依赖 sample-time，realtime/replay 一致，跨语言对同一事件序列产出位级一致的
+  同步集（conformance golden 向量把关）；
+- codegen 把 `on_synchronized` 接入两语言生成 shell（复用 on_message 调度机器 + synchronizer gate），
+  golden 锁定接线输出、编译网真编译 sync case；示例 `examples/sync_fusion_demo`。
+
+上一发布线为 `v0.18.1 Codegen 验证加固`，是一次纯内部质量/验证版本（零用户语义变更）：
 
 - codegen golden 等价 harness 锁定整份生成输出，配合生成工程真编译网（C++ `g++ -fsyntax-only`、
   Rust `cargo check`）纳入开发回路与 CI，堵 v0.17.0/v0.18.0 连续两版漏发的 codegen 编译错类缺口；
@@ -476,7 +489,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.17.1` | Deterministic Replay C++ Parity：把 v0.17.0 的运行时原生回放内核镜像到 C++（`flowrt/replay.hpp` ReplayDriver、boundary 激励录制、生成 C++ shell 走原生回放），与 Rust 字节级对齐；C++ 经 JSONL 回放源消费（CLI 把 MCAP 规范化为 JSONL）。 |
 | `v0.18.0` | Sensor Event-Time：RSDL 声明 sensor sample-time 源（`[type.<Name>.timestamp]`），record→replay 按 sensor 采集时刻（event-time）确定性步进而非到达时刻；生成 Rust/C++ shell 对此类 boundary 注册 typed sample-time 提取器，两语言一致。 |
 | `v0.18.1` | Codegen 验证加固（纯内部质量版本，零用户语义变更）：codegen golden 等价 harness 锁定整份生成输出 + 生成工程真编译网（C++ `g++ -fsyntax-only`、Rust `cargo check`）纳入开发回路与 CI，堵 v0.17/v0.18 连续两版漏发的 codegen 编译错类缺口；overflow/stale/trigger 映射去重至 `runtime_plan`；`[workspace.lints.clippy]` 现代化 forward-guard。C++ clang-tidy 门禁暂缓。 |
-| `v0.19.0` | Multi-Sensor Synchronization：`[[sync]]` 同步组（exact/approx、window/tolerance、late policy）→ codegen synchronizer 与 `on_synchronized` 触发；event-time 作可驱动 clock domain。external_stepped 点亮与跨机 drift capability 各自另立后续版本。 |
+| `v0.19.0` | Multi-Sensor Synchronization：RSDL `[[sync]]` 组把一个 instance 的 ≥2 路输入按 sample-time（event-time）对齐成同步集，经 `on_synchronized` trigger 投递给融合组件。runtime `flowrt::Synchronizer` 原语（Rust+C++，latest-aligned approx-window v1，DropLate）跨语言位级一致；codegen 两语言接线，golden+编译网真编译把关。最优匹配（ROS2 ApproximateTime 式）、late-policy 变体、跨机 drift 各自另立后续版本。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
