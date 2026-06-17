@@ -10,6 +10,8 @@ pub trait Fusion: Send {
     ///
     /// `context` 是 runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。
     /// 返回本次生命周期步骤的 FlowRT 执行状态。
+    ///
+    /// `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。
     fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {
         flowrt::Status::ok()
     }
@@ -62,6 +64,8 @@ pub trait ImuSrc: Send {
     ///
     /// `context` 是 runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。
     /// 返回本次生命周期步骤的 FlowRT 执行状态。
+    ///
+    /// `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。
     fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {
         flowrt::Status::ok()
     }
@@ -110,6 +114,8 @@ pub trait OdomSrc: Send {
     ///
     /// `context` 是 runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。
     /// 返回本次生命周期步骤的 FlowRT 执行状态。
+    ///
+    /// `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。
     fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {
         flowrt::Status::ok()
     }
@@ -158,6 +164,8 @@ pub trait Sink: Send {
     ///
     /// `context` 是 runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。
     /// 返回本次生命周期步骤的 FlowRT 执行状态。
+    ///
+    /// `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。
     fn on_init(&mut self, _context: &mut flowrt::Context) -> flowrt::Status {
         flowrt::Status::ok()
     }

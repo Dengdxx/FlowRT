@@ -73,6 +73,9 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
             rust_component_trait_bound(component)
         ));
         output.push_str(&rust_lifecycle_doc("组件初始化钩子"));
+        output.push_str(
+            "    ///\n    /// `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。\n",
+        );
         output.push_str(&format!(
             "    fn on_init({}self, _context: &mut flowrt::Context) -> flowrt::Status {{\n",
             rust_component_receiver(component)

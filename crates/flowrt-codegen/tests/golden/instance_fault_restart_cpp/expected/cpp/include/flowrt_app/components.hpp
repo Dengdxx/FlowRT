@@ -29,6 +29,8 @@ public:
      *
      * @param context runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。
      * @return 本次生命周期步骤的 FlowRT 执行状态。
+     *
+     * @note `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。
      */
     virtual flowrt::Status on_init(flowrt::Context& context) {
         (void)context;
@@ -89,6 +91,8 @@ public:
      *
      * @param context runtime 上下文；v0.1 暂不暴露资源句柄，后续可承载 clock、logger 和参数快照。
      * @return 本次生命周期步骤的 FlowRT 执行状态。
+     *
+     * @note `restart` 故障策略会在同一对象上重新调用本钩子，实现必须可重入：不得依赖仅首次成立的前置状态。
      */
     virtual flowrt::Status on_init(flowrt::Context& context) {
         (void)context;
