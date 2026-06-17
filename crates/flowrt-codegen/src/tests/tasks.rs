@@ -1844,3 +1844,156 @@ backends = ["inproc"]
     // 构造期播种零初值。
     assert!(rust_shell.contains(".publish_at(State::default(), 0);"));
 }
+
+#[test]
+fn emit_seeds_feedback_literal_init_both_languages() {
+    // 反馈自环带 literal 初值：两语言播种字面量而非零值。
+    let rust_ir = contract_from_source(
+        r#"
+[package]
+name = "accumulator"
+rsdl_version = "0.1"
+
+[type.State]
+x = "f64"
+
+[component.accumulator]
+language = "rust"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+channel = "latest"
+feedback = true
+init = { x = 1.5 }
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let rust_bundle = emit_artifacts(&rust_ir).expect("rust feedback init should emit");
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains(".publish_at(State { x: 1.5f64 }, 0);"));
+
+    let cpp_ir = contract_from_source(
+        r#"
+[package]
+name = "accumulator"
+rsdl_version = "0.1"
+
+[type.State]
+x = "f64"
+
+[component.accumulator]
+language = "cpp"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+channel = "latest"
+feedback = true
+init = { x = 1.5 }
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let cpp_bundle = emit_artifacts(&cpp_ir).expect("cpp feedback init should emit");
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains("__seed.x = 1.5; return __seed; }(), 0);"));
+}
+
+#[test]
+fn emit_seeds_feedback_fifo_depth_times() {
+    // fifo 反馈环按 depth 拍延迟：每个 run 函数 push 恰 depth 次。run 函数个数从同形 latest
+    // 契约（每个 run 播种 1 次）推出，避免耦合 shell 的具体 run 函数数量。
+    let fifo_body = |channel_block: &str| {
+        format!(
+            r#"
+[package]
+name = "delay_line"
+rsdl_version = "0.1"
+
+[type.State]
+x = "f64"
+
+[component.accumulator]
+language = "rust"
+input = ["prev:State"]
+output = ["next:State"]
+
+[instance.accumulator]
+component = "accumulator"
+
+[instance.accumulator.task]
+trigger = "periodic"
+period_ms = 10
+input = ["prev"]
+output = ["next"]
+
+[[bind.dataflow]]
+from = "accumulator.next"
+to = "accumulator.prev"
+{channel_block}
+feedback = true
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#
+        )
+    };
+
+    let latest_ir = contract_from_source(&fifo_body("channel = \"latest\""));
+    let latest_bundle = emit_artifacts(&latest_ir).expect("latest feedback should emit");
+    let latest_shell = artifact_content(&latest_bundle, "rust/src/runtime_shell.rs");
+    let run_functions = latest_shell
+        .matches(".publish_at(State::default(), 0);")
+        .count();
+    assert!(run_functions > 0, "latest 反馈应至少播种一次");
+
+    let fifo_ir = contract_from_source(&fifo_body(
+        "channel = \"fifo\"\ndepth = 3\noverflow = \"drop_oldest\"",
+    ));
+    let fifo_bundle = emit_artifacts(&fifo_ir).expect("fifo feedback should emit");
+    let fifo_shell = artifact_content(&fifo_bundle, "rust/src/runtime_shell.rs");
+    let push_count = fifo_shell.matches(".push_at(State::default(), 0);").count();
+    assert_eq!(
+        push_count,
+        run_functions * 3,
+        "fifo depth=3 每个 run 函数应播种 3 次"
+    );
+}

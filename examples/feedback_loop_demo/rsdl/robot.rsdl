@@ -43,12 +43,14 @@ to = "plant.cmd"
 channel = "latest"
 
 # 反馈回边：plant 的状态回送 controller。feedback=true 标记单位延迟 z⁻¹：
-# 拓扑剔除此边断环，启动期播种零初值；controller 每拍读到 plant 上一拍的 state。
+# 拓扑剔除此边断环，启动期按 init 播种初值；controller 每拍读到 plant 上一拍的 state。
+# init 省略则播零初值；fifo channel + depth=N 可表达 N 拍延迟（两端须等周期）。
 [[bind.dataflow]]
 from = "plant.state"
 to = "controller.state"
 channel = "latest"
 feedback = true
+init = { x = 1.0 }
 
 [profile.default]
 backend = "inproc"

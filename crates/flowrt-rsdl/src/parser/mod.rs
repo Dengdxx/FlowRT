@@ -1923,4 +1923,33 @@ feedback = true
         assert!(!raw.binds[0].feedback);
         assert!(raw.binds[1].feedback);
     }
+
+    #[test]
+    fn parses_dataflow_feedback_init_and_depth() {
+        let source = r#"
+[package]
+name = "fb_init_parse"
+rsdl_version = "0.1"
+
+[[bind.dataflow]]
+from = "a.out"
+to = "b.in"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "b.out"
+to = "a.in"
+channel = "fifo"
+depth = 3
+feedback = true
+init = { x = 0.5, n = 2 }
+"#;
+        let raw = parse_str(source).unwrap();
+        assert_eq!(raw.binds.len(), 2);
+        assert!(raw.binds[0].init.is_none());
+        let init = raw.binds[1].init.as_ref().expect("init present");
+        assert_eq!(init.get("x"), Some(&RawValue::Float(0.5)));
+        assert_eq!(init.get("n"), Some(&RawValue::Integer(2)));
+        assert_eq!(raw.binds[1].depth, Some(3));
+    }
 }

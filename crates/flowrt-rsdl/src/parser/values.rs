@@ -22,6 +22,22 @@ pub(super) fn optional_param_table(
     Ok(params)
 }
 
+pub(super) fn optional_value_table(
+    table: &Table,
+    context: &str,
+    field: &'static str,
+) -> Result<Option<BTreeMap<String, RawValue>>> {
+    let Some(value) = table.get(field) else {
+        return Ok(None);
+    };
+    let table = expect_table_value(context, field, value)?;
+    let mut params = BTreeMap::new();
+    for (name, value) in table {
+        params.insert(name.clone(), convert_value(value));
+    }
+    Ok(Some(params))
+}
+
 pub(super) fn convert_value(value: &Value) -> RawValue {
     match value {
         Value::String(value) => RawValue::String(value.clone()),

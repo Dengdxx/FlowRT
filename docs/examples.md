@@ -949,16 +949,34 @@ feedback = true
 
 `feedback = true` 把回边建模为单位延迟 z⁻¹。codegen 在拓扑排序时剔除该边断环
 （图退化为 DAG，controller 排在 plant 前），并在 run 启动期对回边 channel 播种
-零初值（`State::default()` at tick 0）。于是 controller 每拍读到的是 plant **上一拍**
-的输出，tick 0 读到零初值——闭环语义显式、确定，runtime 无需新原语。
+初值。于是 controller 每拍读到的是 plant **上一拍**的输出，闭环语义显式、确定，
+runtime 无需新原语。
+
+初值与延迟拍数由回边声明控制：
+
+- `init = { 字段 = 值 }`：按源消息类型播种字面量初值；省略 `init` 则播零初值。
+- `channel = "latest"`：单拍延迟（默认）。
+- `channel = "fifo"` + `depth = N`：N 拍延迟（回边 fifo 缓冲播种 N 个初值，每拍
+  pop 上游 N 拍前的输出）。fifo 反馈要求两端 task 等周期，否则 N 拍延迟会漂移。
+
+```toml
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+channel = "fifo"
+depth = 2
+overflow = "drop_oldest"
+feedback = true
+init = { x = 1.0 }
+```
 
 ```bash
 flowrt check examples/feedback_loop_demo/rsdl/robot.rsdl
 ```
 
-v1 仅支持零初值、`latest` 单拍延迟、同进程（inproc）反馈；显式 literal 初值、
-fifo N 拍延迟、跨进程延迟环留后续。validator 拒绝 `feedback` 加在 `fifo` channel、
-跨进程或不真正闭合环路的回边。
+v1 范围：仅同进程（inproc）反馈，且 init 仅支持全 primitive 字段的消息；嵌套/数组
+字段初值、跨进程延迟环留后续。validator 拒绝 `feedback` 加在不真正闭合环路的回边、
+跨进程，以及 fifo 反馈两端周期不等或缺 `depth`。
 
 ## 添加新示例
 

@@ -92,9 +92,11 @@ compile_cpp island_cpp_onmsg
 compile_cpp sensor_event_time_cpp
 compile_cpp sync_fusion_cpp
 compile_cpp feedback_loop_cpp
+compile_cpp feedback_v2_cpp
 compile_rust island_rust_onmsg
 compile_rust sensor_event_time_rust
 compile_rust sync_fusion_rust
 compile_rust feedback_loop_rust
+compile_rust feedback_v2_rust
 
 echo "codegen compile net passed"

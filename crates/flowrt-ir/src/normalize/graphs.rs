@@ -743,6 +743,10 @@ pub(super) fn normalize_binds(
                     None => channel_capabilities(channel, overflow, stale),
                 },
                 feedback: raw.feedback,
+                init: raw
+                    .init
+                    .as_ref()
+                    .map(super::params::convert_param_value_table),
             })
         })
         .collect::<Result<Vec<_>>>()?;

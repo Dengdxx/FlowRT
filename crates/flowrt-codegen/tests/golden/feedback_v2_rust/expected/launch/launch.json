@@ -1,0 +1,225 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "realtime",
+      "unit": "ms"
+    },
+    "mode": "strict",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": false
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [],
+      "channels": [
+        {
+          "backend": "inproc",
+          "channel": "latest",
+          "depth": 1,
+          "from": "controller.cmd",
+          "key_expr": null,
+          "max_age_ms": null,
+          "overflow": "drop_oldest",
+          "service": null,
+          "stale_policy": "warn",
+          "thread_affinity": "send_safe",
+          "to": "plant.cmd"
+        },
+        {
+          "backend": "inproc",
+          "channel": "fifo",
+          "depth": 2,
+          "from": "plant.state",
+          "key_expr": null,
+          "max_age_ms": null,
+          "overflow": "drop_oldest",
+          "service": null,
+          "stale_policy": "warn",
+          "thread_affinity": "send_safe",
+          "to": "controller.state"
+        }
+      ],
+      "instances": [
+        {
+          "component": "controller",
+          "name": "controller",
+          "process": null,
+          "runtime": "rust",
+          "target": null
+        },
+        {
+          "component": "plant",
+          "name": "plant",
+          "process": null,
+          "runtime": "rust",
+          "target": null
+        }
+      ],
+      "mode": "strict",
+      "name": "default",
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "controller",
+            "plant"
+          ],
+          "io_boundaries": [],
+          "name": "main",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "rust",
+          "runtimes": [
+            "rust"
+          ],
+          "startup_delay_ms": 0,
+          "target": null,
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "state"
+              ],
+              "instance": "controller",
+              "lane": "controller_serial",
+              "name": "main",
+              "outputs": [
+                "cmd"
+              ],
+              "period_ms": 10,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            },
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "cmd"
+              ],
+              "instance": "plant",
+              "lane": "plant_serial",
+              "name": "main",
+              "outputs": [
+                "state"
+              ],
+              "period_ms": 10,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "periodic"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "controller",
+            "kind": "serial",
+            "name": "controller_serial"
+          },
+          {
+            "instance": "plant",
+            "kind": "serial",
+            "name": "plant_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "controller",
+            "lane": "controller_serial",
+            "name": "main",
+            "period_ms": 10,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          },
+          {
+            "deadline_ms": null,
+            "instance": "plant",
+            "lane": "plant_serial",
+            "name": "main",
+            "period_ms": 10,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "periodic"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "state"
+          ],
+          "instance": "controller",
+          "lane": "controller_serial",
+          "name": "main",
+          "outputs": [
+            "cmd"
+          ],
+          "period_ms": 10,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        },
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "cmd"
+          ],
+          "instance": "plant",
+          "lane": "plant_serial",
+          "name": "main",
+          "outputs": [
+            "state"
+          ],
+          "period_ms": 10,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "periodic"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "feedback_v2_rust",
+  "profile_modes": [
+    {
+      "mode": "strict",
+      "name": "default"
+    }
+  ],
+  "profiles": [
+    "default"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

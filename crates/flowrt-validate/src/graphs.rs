@@ -4,9 +4,9 @@ use std::path::{Component, Path};
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId, GraphIr,
     GraphMode, InstanceIr, LanguageKind, OperationConcurrencyPolicy, OperationPortIr,
-    OperationPortRef, OperationPreemptPolicy, PortIr, PortRef, PrimitiveType, ProcessReadinessGate,
-    Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency, TaskIr, TaskReadiness,
-    TriggerKind, TypeExpr,
+    OperationPortRef, OperationPreemptPolicy, ParamValue, PortIr, PortRef, PrimitiveType,
+    ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency,
+    TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -45,7 +45,7 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_operation_binds(&components, &instances, graph, errors);
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
-        validate_feedback_binds(&instances, graph, errors);
+        validate_feedback_binds(ir, &components, &instances, graph, errors);
     }
 }
 
@@ -1407,6 +1407,8 @@ fn primitive_type_name(ty: PrimitiveType) -> &'static str {
 }
 
 fn validate_feedback_binds(
+    ir: &ContractIr,
+    components: &BTreeMap<&str, &ComponentIr>,
     instances: &BTreeMap<&str, &InstanceIr>,
     graph: &GraphIr,
     errors: &mut Vec<ValidationError>,
@@ -1429,6 +1431,12 @@ fn validate_feedback_binds(
             .map(|instance| instance.process.as_deref().unwrap_or("main"))
     };
 
+    let types_by_name = ir
+        .types
+        .iter()
+        .map(|ty| (ty.qualified_name.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+
     for bind in &graph.binds {
         if !bind.feedback {
             continue;
@@ -1437,14 +1445,20 @@ fn validate_feedback_binds(
         let to = bind.to.instance.name.as_str();
         let edge = format!("{}.{} -> {}.{}", from, bind.from.port, to, bind.to.port);
 
-        // 反馈边 v1 只支持 latest 单位延迟。
-        if bind.channel != ChannelKind::Latest {
-            errors.push(ValidationError::new(format!(
-                "feedback bind `{edge}` must use `latest` channel (v1 仅支持单位延迟)"
-            )));
+        // 反馈边 v2 支持 latest（1 拍）或 fifo（depth 拍）单位延迟。
+        match bind.channel {
+            ChannelKind::Latest => {}
+            ChannelKind::Fifo => {
+                if bind.depth.unwrap_or(0) < 1 {
+                    errors.push(ValidationError::new(format!(
+                        "feedback bind `{edge}` on fifo channel must declare `depth >= 1`"
+                    )));
+                }
+                validate_feedback_fifo_periods(bind, graph, &edge, errors);
+            }
         }
 
-        // 反馈边 v1 必须在同一进程内（seed + 延迟读语义只在 inproc 成立）。
+        // 反馈边 v2 仍只支持同一进程内（seed + 延迟读语义只在 inproc 成立）。
         if let (Some(from_proc), Some(to_proc)) = (process_of(from), process_of(to))
             && from_proc != to_proc
         {
@@ -1460,6 +1474,165 @@ fn validate_feedback_binds(
                 "feedback bind `{edge}` does not close a cycle; remove `feedback = true`"
             )));
         }
+
+        // init 初值必须与源消息类型匹配（v2 仅支持全 primitive 字段的消息）。
+        if let Some(init) = &bind.init {
+            match resolve_port(components, instances, &bind.from, PortDirection::Output) {
+                Ok(port) => {
+                    check_feedback_init(init, &port.ty, &types_by_name, &edge, errors);
+                }
+                Err(message) => {
+                    errors.push(ValidationError::new(format!(
+                        "feedback bind `{edge}` init cannot resolve source type: {message}"
+                    )));
+                }
+            }
+        }
+    }
+}
+
+/// fifo 反馈边要求生产端 task（输出 from 端口）与消费端 task（输入 to 端口）都是
+/// `periodic` 且 `period_ms` 相等，否则 N 拍延迟会随两端节奏漂移、语义不诚实。
+fn validate_feedback_fifo_periods(
+    bind: &flowrt_ir::ChannelEdgeIr,
+    graph: &GraphIr,
+    edge: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let producer = feedback_endpoint_period(
+        &graph.tasks,
+        bind.from.instance.name.as_str(),
+        &bind.from.port,
+        true,
+    );
+    let consumer = feedback_endpoint_period(
+        &graph.tasks,
+        bind.to.instance.name.as_str(),
+        &bind.to.port,
+        false,
+    );
+    match (producer, consumer) {
+        (Some(prod), Some(cons)) => {
+            if prod != cons {
+                errors.push(ValidationError::new(format!(
+                    "feedback bind `{edge}` on fifo channel requires equal periodic period \
+                     on both ends (producer={prod:?}ms, consumer={cons:?}ms)"
+                )));
+            }
+        }
+        _ => errors.push(ValidationError::new(format!(
+            "feedback bind `{edge}` on fifo channel requires both ends to be periodic tasks"
+        ))),
+    }
+}
+
+/// 在 graph tasks 中找出处理指定端口的 task，返回其周期（仅当 task 为 periodic 时返回 Some）。
+fn feedback_endpoint_period(
+    tasks: &[TaskIr],
+    instance: &str,
+    port: &str,
+    is_output: bool,
+) -> Option<u64> {
+    tasks
+        .iter()
+        .find(|task| {
+            task.instance.name == instance
+                && task.trigger == TriggerKind::Periodic
+                && if is_output {
+                    task.outputs.iter().any(|name| name == port)
+                } else {
+                    task.inputs.iter().any(|name| name == port)
+                }
+        })
+        .and_then(|task| task.period_ms)
+}
+
+/// 递归校验反馈边 init 初值与源消息类型匹配。v2 仅支持顶层 `Named` 消息且其字段全为
+/// primitive：init 必须为表、字段集合与消息完全一致、每个值与字段 primitive 类型兼容。
+fn check_feedback_init(
+    init: &ParamValue,
+    ty: &TypeExpr,
+    types_by_name: &BTreeMap<&str, &TypeIr>,
+    edge: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let TypeExpr::Named { name } = ty else {
+        errors.push(ValidationError::new(format!(
+            "feedback bind `{edge}` init is only supported for named message types (got `{}`)",
+            ty.canonical_syntax()
+        )));
+        return;
+    };
+    let Some(message) = types_by_name.get(name.as_str()) else {
+        errors.push(ValidationError::new(format!(
+            "feedback bind `{edge}` init references unknown message type `{name}`"
+        )));
+        return;
+    };
+    let ParamValue::Table(values) = init else {
+        errors.push(ValidationError::new(format!(
+            "feedback bind `{edge}` init must be a table of message fields"
+        )));
+        return;
+    };
+
+    let field_names = message
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for key in values.keys() {
+        if !field_names.contains(key.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` init has unknown field `{key}` for message `{name}`"
+            )));
+        }
+    }
+
+    for field in &message.fields {
+        let Some(value) = values.get(&field.name) else {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` init missing field `{}` for message `{name}`",
+                field.name
+            )));
+            continue;
+        };
+        let TypeExpr::Primitive { name: primitive } = &field.ty else {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` init field `{}` has non-primitive type `{}`; v2 仅支持 primitive 字段初值",
+                field.name,
+                field.ty.canonical_syntax()
+            )));
+            continue;
+        };
+        if !param_value_matches_primitive(value, *primitive) {
+            errors.push(ValidationError::new(format!(
+                "feedback bind `{edge}` init field `{}` value does not match type `{}`",
+                field.name,
+                field.ty.canonical_syntax()
+            )));
+        }
+    }
+}
+
+/// init 字面值与 primitive 字段类型是否兼容：整型字段收整数，浮点字段收浮点或整数，
+/// bool 字段收 bool。
+fn param_value_matches_primitive(value: &ParamValue, primitive: PrimitiveType) -> bool {
+    match primitive {
+        PrimitiveType::Bool => matches!(value, ParamValue::Bool(_)),
+        PrimitiveType::F32 | PrimitiveType::F64 => {
+            matches!(value, ParamValue::Float(_) | ParamValue::Integer(_))
+        }
+        PrimitiveType::U8
+        | PrimitiveType::U16
+        | PrimitiveType::U32
+        | PrimitiveType::U64
+        | PrimitiveType::U128
+        | PrimitiveType::I8
+        | PrimitiveType::I16
+        | PrimitiveType::I32
+        | PrimitiveType::I64
+        | PrimitiveType::I128 => matches!(value, ParamValue::Integer(_)),
     }
 }
 

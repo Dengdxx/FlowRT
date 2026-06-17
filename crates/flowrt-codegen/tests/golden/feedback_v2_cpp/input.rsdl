@@ -1,0 +1,58 @@
+[package]
+name = "feedback_v2_cpp"
+rsdl_version = "0.1"
+
+[type.Cmd]
+u = "f64"
+
+[type.State]
+x = "f64"
+
+[component.controller]
+language = "cpp"
+input = ["state:State"]
+output = ["cmd:Cmd"]
+
+[component.plant]
+language = "cpp"
+input = ["cmd:Cmd"]
+output = ["state:State"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+input = ["state"]
+output = ["cmd"]
+
+[instance.plant]
+component = "plant"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+input = ["cmd"]
+output = ["state"]
+
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "plant.cmd"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+channel = "fifo"
+depth = 2
+overflow = "drop_oldest"
+feedback = true
+init = { x = 1.0 }
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]

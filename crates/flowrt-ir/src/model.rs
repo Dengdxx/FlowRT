@@ -896,6 +896,10 @@ pub struct ChannelEdgeIr {
     /// channel 构造期播种零初值，消费者读到的是上一 tick 的上游输出。
     #[serde(default)]
     pub feedback: bool,
+    /// 反馈边初值：源消息字面量（`ParamValue::Table`）。`None` 表示零初值。
+    /// fifo 反馈边按 depth 拍延迟，每拍均以该初值播种。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init: Option<ParamValue>,
 }
 
 /// route backend 字段来源。

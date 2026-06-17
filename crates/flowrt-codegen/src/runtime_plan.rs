@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr, GraphIr,
     InstanceIr, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
-    OverflowPolicy as IrOverflowPolicy, ParamIr, Ros2BridgeDirection, Ros2BridgeIr,
+    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamValue, Ros2BridgeDirection, Ros2BridgeIr,
     ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
     TriggerKind, TypeExpr,
     derived::{ContractDerivedFacts, GraphDerivedFacts, derive_contract_facts},
@@ -286,6 +286,8 @@ pub(crate) struct BindRuntimePlan {
     pub(crate) target_instance: String,
     pub(crate) target_port: String,
     pub(crate) feedback: bool,
+    /// 反馈边初值（源消息字面量 `ParamValue::Table`）。`None` 表示零初值播种。
+    pub(crate) init: Option<ParamValue>,
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +451,7 @@ fn bind_runtime_plans_from_facts(
                 target_instance: bind.to.instance.name.clone(),
                 target_port: bind.to.port.clone(),
                 feedback: bind.feedback,
+                init: bind.init.clone(),
             }
         })
         .collect()

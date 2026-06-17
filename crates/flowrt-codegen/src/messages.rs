@@ -1242,6 +1242,122 @@ pub(crate) fn rust_type(expr: &TypeExpr) -> String {
     }
 }
 
+/// 反馈边播种值的 Rust 表达式。`init` 为 `None` 时回退到 `<Type>::default()`；给出时按
+/// 源消息（validator 已保证为全 primitive 字段的命名消息）构造字面量。
+pub(crate) fn rust_feedback_seed_value(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+    init: Option<&flowrt_ir::ParamValue>,
+) -> String {
+    let default = || format!("{}::default()", rust_type(ty));
+    let (Some(flowrt_ir::ParamValue::Table(values)), TypeExpr::Named { name }) = (init, ty) else {
+        return default();
+    };
+    let message = type_by_name(contract, name);
+    let mut parts = Vec::with_capacity(message.fields.len());
+    for field in &message.fields {
+        let (Some(value), TypeExpr::Primitive { name: primitive }) =
+            (values.get(&field.name), &field.ty)
+        else {
+            return default();
+        };
+        parts.push(format!(
+            "{}: {}",
+            field.name,
+            rust_primitive_literal(*primitive, value)
+        ));
+    }
+    format!("{} {{ {} }}", rust_type(ty), parts.join(", "))
+}
+
+/// 反馈边播种值的 C++ 表达式。回退到 `<Type>{}`；给出 init 时用一个 IIFE 默认构造后逐字段
+/// 赋值，避免依赖消息是否为 aggregate（带 wire codec 方法的消息非 aggregate，无法 designated
+/// init），且赋值而非 brace-init 不触发 double→float 收窄错误。
+pub(crate) fn cpp_feedback_seed_value(
+    contract: &ContractIr,
+    ty: &TypeExpr,
+    init: Option<&flowrt_ir::ParamValue>,
+) -> String {
+    let default = || format!("{}{{}}", cpp_type(ty));
+    let (Some(flowrt_ir::ParamValue::Table(values)), TypeExpr::Named { name }) = (init, ty) else {
+        return default();
+    };
+    let message = type_by_name(contract, name);
+    let mut assigns = String::new();
+    for field in &message.fields {
+        let (Some(value), TypeExpr::Primitive { name: primitive }) =
+            (values.get(&field.name), &field.ty)
+        else {
+            return default();
+        };
+        assigns.push_str(&format!(
+            "__seed.{} = {}; ",
+            field.name,
+            cpp_primitive_literal(*primitive, value)
+        ));
+    }
+    format!(
+        "[]{{ {ty} __seed{{}}; {assigns}return __seed; }}()",
+        ty = cpp_type(ty)
+    )
+}
+
+/// 单个 primitive 字段的 Rust 字面量。整型加类型后缀避免推断歧义；浮点加 `f32`/`f64` 后缀
+/// 避免默认 f64 赋给 f32 字段。
+fn rust_primitive_literal(primitive: PrimitiveType, value: &flowrt_ir::ParamValue) -> String {
+    use flowrt_ir::ParamValue;
+    match primitive {
+        PrimitiveType::Bool => match value {
+            ParamValue::Bool(value) => value.to_string(),
+            _ => "false".to_string(),
+        },
+        PrimitiveType::F32 | PrimitiveType::F64 => {
+            let suffix = rust_primitive(primitive);
+            match value {
+                ParamValue::Float(value) => format!("{value}{suffix}"),
+                ParamValue::Integer(value) => format!("{value}{suffix}"),
+                _ => format!("0{suffix}"),
+            }
+        }
+        _ => {
+            let suffix = rust_primitive(primitive);
+            match value {
+                ParamValue::Integer(value) => format!("{value}{suffix}"),
+                _ => format!("0{suffix}"),
+            }
+        }
+    }
+}
+
+/// 单个 primitive 字段的 C++ 字面量。浮点确保含小数点，f32 加 `f` 后缀。
+fn cpp_primitive_literal(primitive: PrimitiveType, value: &flowrt_ir::ParamValue) -> String {
+    use flowrt_ir::ParamValue;
+    match primitive {
+        PrimitiveType::Bool => match value {
+            ParamValue::Bool(value) => value.to_string(),
+            _ => "false".to_string(),
+        },
+        PrimitiveType::F32 | PrimitiveType::F64 => {
+            let mut repr = match value {
+                ParamValue::Float(value) => format!("{value}"),
+                ParamValue::Integer(value) => format!("{value}"),
+                _ => "0".to_string(),
+            };
+            if !repr.contains('.') && !repr.contains('e') && !repr.contains('E') {
+                repr.push_str(".0");
+            }
+            if matches!(primitive, PrimitiveType::F32) {
+                repr.push('f');
+            }
+            repr
+        }
+        _ => match value {
+            ParamValue::Integer(value) => value.to_string(),
+            _ => "0".to_string(),
+        },
+    }
+}
+
 fn rust_wire_codec_impl(contract: &ContractIr, ty: &TypeIr) -> String {
     let mut output = String::new();
     output.push_str(&format!(

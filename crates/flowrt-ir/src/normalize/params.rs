@@ -219,6 +219,16 @@ fn convert_param_value(value: &RawValue) -> ParamValue {
     }
 }
 
+/// 把反馈边 `init` 表（字段名→字面值）转成 `ParamValue::Table`，供 codegen 播种字面量。
+pub(super) fn convert_param_value_table(table: &BTreeMap<String, RawValue>) -> ParamValue {
+    ParamValue::Table(
+        table
+            .iter()
+            .map(|(name, value)| (name.clone(), convert_param_value(value)))
+            .collect(),
+    )
+}
+
 fn raw_string(value: &RawValue) -> Option<&str> {
     match value {
         RawValue::String(value) => Some(value),

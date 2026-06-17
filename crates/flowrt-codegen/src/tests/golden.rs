@@ -109,3 +109,13 @@ fn golden_feedback_loop_rust() {
 fn golden_feedback_loop_cpp() {
     check_case("feedback_loop_cpp");
 }
+
+#[test]
+fn golden_feedback_v2_rust() {
+    check_case("feedback_v2_rust");
+}
+
+#[test]
+fn golden_feedback_v2_cpp() {
+    check_case("feedback_v2_cpp");
+}

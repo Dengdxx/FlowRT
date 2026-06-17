@@ -1039,6 +1039,7 @@ mod tests {
                     policy_source,
                     capability_requirements: vec![],
                     feedback: false,
+                    init: None,
                 },
                 crate::ChannelEdgeIr {
                     id: crate::EntityId("bind_0000000000000002".to_string()),
@@ -1056,6 +1057,7 @@ mod tests {
                     policy_source,
                     capability_requirements: vec![],
                     feedback: false,
+                    init: None,
                 },
             ],
             services: vec![],

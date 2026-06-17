@@ -285,7 +285,7 @@ pub struct RawExternalProcess {
 }
 
 /// `[[bind.dataflow]]` 表项。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RawDataflowBind {
     pub from: String,
     pub to: String,
@@ -297,6 +297,9 @@ pub struct RawDataflowBind {
     pub max_age_ms: Option<u64>,
     /// 反馈边标记：true 表示这是一条单位延迟回边，允许参与 graph 环路。
     pub feedback: bool,
+    /// 反馈边初值：字段名→字面值。省略表示零初值；给出则按源消息类型播种。
+    /// fifo 反馈边按 depth 拍延迟，每拍均以该初值播种。
+    pub init: Option<BTreeMap<String, RawValue>>,
 }
 
 /// `[[sync]]` 表项：声明一个多传感器同步组。

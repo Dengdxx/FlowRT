@@ -89,19 +89,108 @@ fn rejects_cycle_without_feedback_edge() {
     );
 }
 
+/// fifo 反馈环：controller↔plant，回边 plant.state→controller.state 为 fifo depth 拍延迟。
+/// 两端周期与 depth/overflow 可注入以制造单点缺陷。
+fn fifo_feedback_source(feedback_edge: &str, controller_period: u64, plant_period: u64) -> String {
+    format!(
+        r#"
+[package]
+name = "fifo_feedback_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+u = "f64"
+
+[type.State]
+x = "f64"
+
+[component.controller]
+language = "rust"
+input = ["state:State"]
+output = ["cmd:Cmd"]
+
+[component.plant]
+language = "rust"
+input = ["cmd:Cmd"]
+output = ["state:State"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = {controller_period}
+input = ["state"]
+output = ["cmd"]
+
+[instance.plant]
+component = "plant"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = {plant_period}
+input = ["cmd"]
+output = ["state"]
+
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "plant.cmd"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+{feedback_edge}
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#
+    )
+}
+
 #[test]
-fn rejects_feedback_on_fifo_channel() {
-    let source = feedback_source("feedback = true", "", "").replace(
-        "to = \"controller.state\"\nchannel = \"latest\"\nfeedback = true",
-        "to = \"controller.state\"\nchannel = \"fifo\"\ndepth = 4\nfeedback = true",
-    );
-    let ir = contract_of(&source);
-    let report = validate_contract(&ir).expect_err("fifo feedback should fail");
+fn accepts_feedback_on_fifo_channel_equal_periods() {
+    let ir = contract_of(&fifo_feedback_source(
+        "channel = \"fifo\"\ndepth = 4\noverflow = \"drop_oldest\"\nfeedback = true",
+        10,
+        10,
+    ));
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_feedback_fifo_unequal_periods() {
+    let ir = contract_of(&fifo_feedback_source(
+        "channel = \"fifo\"\ndepth = 4\noverflow = \"drop_oldest\"\nfeedback = true",
+        10,
+        20,
+    ));
+    let report = validate_contract(&ir).expect_err("unequal-period fifo feedback should fail");
     assert!(
         report
             .errors
             .iter()
-            .any(|error| error.message.contains("must use `latest` channel"))
+            .any(|error| error.message.contains("equal periodic period"))
+    );
+}
+
+#[test]
+fn rejects_feedback_fifo_without_depth() {
+    let ir = contract_of(&fifo_feedback_source(
+        "channel = \"fifo\"\noverflow = \"drop_oldest\"\nfeedback = true",
+        10,
+        10,
+    ));
+    let report = validate_contract(&ir).expect_err("fifo feedback without depth should fail");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("depth >= 1"))
     );
 }
 
@@ -219,4 +308,46 @@ backends = ["inproc"]
 "#;
     let ir = contract_of(source);
     validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn accepts_feedback_init_matching_type() {
+    let ir = contract_of(&feedback_source(
+        "feedback = true\ninit = { x = 0.5 }",
+        "",
+        "",
+    ));
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_feedback_init_unknown_field() {
+    let ir = contract_of(&feedback_source(
+        "feedback = true\ninit = { y = 0.5 }",
+        "",
+        "",
+    ));
+    let report = validate_contract(&ir).expect_err("unknown init field should fail");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("unknown field `y`"))
+    );
+}
+
+#[test]
+fn rejects_feedback_init_type_mismatch() {
+    let ir = contract_of(&feedback_source(
+        "feedback = true\ninit = { x = true }",
+        "",
+        "",
+    ));
+    let report = validate_contract(&ir).expect_err("init type mismatch should fail");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("does not match type"))
+    );
 }

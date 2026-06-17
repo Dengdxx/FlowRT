@@ -11,7 +11,8 @@ use super::values::optional_bool;
 use super::values::{
     expect_string, expect_string_array, expect_table_value, optional_i32, optional_param_table,
     optional_port_array, optional_service_port_array, optional_string, optional_string_array,
-    optional_string_table, optional_u32, optional_u32_array, optional_u64, required_string,
+    optional_string_table, optional_u32, optional_u32_array, optional_u64, optional_value_table,
+    required_string,
 };
 
 pub(super) fn parse_named_tables<T>(
@@ -681,6 +682,7 @@ pub(super) fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
                 "stale_policy",
                 "max_age_ms",
                 "feedback",
+                "init",
             ],
         )?;
         parsed.push(RawDataflowBind {
@@ -693,6 +695,7 @@ pub(super) fn parse_binds(root: &Table) -> Result<Vec<RawDataflowBind>> {
             stale_policy: optional_string(table, &context, "stale_policy")?,
             max_age_ms: optional_u64(table, &context, "max_age_ms")?,
             feedback: optional_bool(table, &context, "feedback")?,
+            init: optional_value_table(table, &context, "init")?,
         });
     }
     Ok(parsed)

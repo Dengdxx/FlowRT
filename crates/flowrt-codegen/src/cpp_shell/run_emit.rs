@@ -32,9 +32,14 @@ pub(super) struct CppRunEmission<'a> {
     pub(super) process_name: &'a str,
 }
 
-/// 为本进程内的反馈边 latest channel 播种零初值（消息值初始化），与 Rust 侧一致。
-/// 反馈边按单位延迟被拓扑剔除；tick 0 上游未产出，故构造后立即播种零值。
-fn emit_cpp_feedback_channel_seed(order: &[&InstanceIr], binds: &[BindRuntimePlan]) -> String {
+/// 为本进程内的反馈边 channel 播种初值（消息值初始化），与 Rust 侧一致。反馈边按单位延迟
+/// 被拓扑剔除；启动期播种使首拍读到 present 初值而非空（latest 播 1 个，fifo 按 depth 播 N 个）。
+/// init 省略时播零初值，给出时按源消息类型构造字面量。
+fn emit_cpp_feedback_channel_seed(
+    contract: &ContractIr,
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+) -> String {
     let active = order
         .iter()
         .map(|instance| instance.name.as_str())
@@ -44,11 +49,28 @@ fn emit_cpp_feedback_channel_seed(order: &[&InstanceIr], binds: &[BindRuntimePla
         if !active.contains(bind.source_instance.as_str()) {
             continue;
         }
-        output.push_str(&format!(
-            "    {field}_.publish_at({ty}{{}}, 0);\n",
-            field = bind.field_name,
-            ty = cpp_type(&bind.source_type),
-        ));
+        let value = crate::messages::cpp_feedback_seed_value(
+            contract,
+            &bind.source_type,
+            bind.init.as_ref(),
+        );
+        match bind.channel {
+            flowrt_ir::ChannelKind::Latest => {
+                output.push_str(&format!(
+                    "    {field}_.publish_at({value}, 0);\n",
+                    field = bind.field_name,
+                ));
+            }
+            flowrt_ir::ChannelKind::Fifo => {
+                let depth = bind.depth.unwrap_or(1).max(1);
+                for _ in 0..depth {
+                    output.push_str(&format!(
+                        "    {field}_.push_at({value}, 0);\n",
+                        field = bind.field_name,
+                    ));
+                }
+            }
+        }
     }
     output
 }
@@ -96,7 +118,11 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         cpp_string_literal(run.package_name),
         cpp_string_literal(run.process_name)
     ));
-    output.push_str(&emit_cpp_feedback_channel_seed(run.order, run.binds));
+    output.push_str(&emit_cpp_feedback_channel_seed(
+        run.contract,
+        run.order,
+        run.binds,
+    ));
     for instance in run.order {
         output.push_str(&format!(
             "    bool {name}_initialized = false;\n    bool {name}_started = false;\n",
