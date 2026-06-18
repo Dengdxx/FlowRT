@@ -77,6 +77,7 @@ pub(super) fn expand_workspace(
                 boundary_inputs: parsed.boundary_inputs.clone(),
                 boundary_outputs: parsed.boundary_outputs.clone(),
                 sync_groups: parsed.sync_groups.clone(),
+                redundancy_groups: parsed.redundancy_groups.clone(),
                 profiles: parsed.profiles.clone(),
                 targets: parsed.targets.clone(),
                 source: logical_source_path(&path, package_root),
@@ -110,6 +111,7 @@ fn validate_module_document(
         (!parsed.boundary_inputs.is_empty(), "boundary"),
         (!parsed.boundary_outputs.is_empty(), "boundary"),
         (!parsed.sync_groups.is_empty(), "sync"),
+        (!parsed.redundancy_groups.is_empty(), "redundancy"),
         (!parsed.profiles.is_empty(), "profile"),
         (!parsed.targets.is_empty(), "target"),
         (parsed.workspace.is_some(), "workspace"),
@@ -149,6 +151,12 @@ fn merge_composition_document(
     document.operation_binds.extend(composition.operation_binds);
     document.ros2_bridges.extend(composition.ros2_bridges);
     document.sync_groups.extend(composition.sync_groups);
+    merge_named_vec(
+        "redundancy.group",
+        &mut document.redundancy_groups,
+        composition.redundancy_groups,
+        |group| &group.name,
+    )?;
     merge_named_vec(
         "boundary.input",
         &mut document.boundary_inputs,

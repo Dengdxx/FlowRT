@@ -17,8 +17,9 @@ use schema::validate_top_level_sections;
 use tables::{
     parse_binds, parse_boundary_endpoints, parse_component, parse_external_processes, parse_graph,
     parse_instance, parse_module, parse_named_tables, parse_operation_binds, parse_package,
-    parse_processes, parse_profile, parse_resource_providers, parse_ros2_bridges,
-    parse_service_binds, parse_sync_groups, parse_target, parse_type, parse_workspace,
+    parse_processes, parse_profile, parse_redundancy_groups, parse_resource_providers,
+    parse_ros2_bridges, parse_service_binds, parse_sync_groups, parse_target, parse_type,
+    parse_workspace,
 };
 use workspace::expand_workspace;
 
@@ -41,6 +42,7 @@ struct ParsedDocument {
     boundary_inputs: Vec<RawBoundaryEndpoint>,
     boundary_outputs: Vec<RawBoundaryEndpoint>,
     sync_groups: Vec<RawSyncGroup>,
+    redundancy_groups: Vec<RawRedundancyGroup>,
     profiles: BTreeMap<String, RawProfile>,
     targets: BTreeMap<String, RawTarget>,
 }
@@ -157,6 +159,7 @@ fn parse_source(source: &str, require_package: bool) -> Result<ParsedDocument> {
         boundary_inputs: parse_boundary_endpoints(root, "input")?,
         boundary_outputs: parse_boundary_endpoints(root, "output")?,
         sync_groups: parse_sync_groups(root)?,
+        redundancy_groups: parse_redundancy_groups(root)?,
         profiles: parse_named_tables(root, "profile", parse_profile)?,
         targets: parse_named_tables(root, "target", parse_target)?,
     })
@@ -180,6 +183,7 @@ fn parsed_to_raw(parsed: ParsedDocument) -> Result<RawDocument> {
         boundary_inputs: parsed.boundary_inputs,
         boundary_outputs: parsed.boundary_outputs,
         sync_groups: parsed.sync_groups,
+        redundancy_groups: parsed.redundancy_groups,
         profiles: parsed.profiles,
         targets: parsed.targets,
     })
@@ -2071,6 +2075,66 @@ component = "processor"
 "#;
         let error = parse_str(source).expect_err("typo subfield must be rejected");
         assert!(error.to_string().contains("on_fauleted"), "{error}");
+    }
+
+    #[test]
+    fn parses_redundancy_groups() {
+        let source = r#"
+[package]
+name = "redundancy_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[instance.controller_a]
+component = "controller"
+
+[instance.controller_b]
+component = "controller"
+
+[[redundancy.group]]
+name = "controller_ha"
+mode = "standby"
+primary = "controller_a"
+standby = ["controller_b"]
+trigger = "critical_fault"
+"#;
+        let document = parse_str(source).expect("redundancy group should parse");
+        assert_eq!(document.redundancy_groups.len(), 1);
+        let group = &document.redundancy_groups[0];
+        assert_eq!(group.name, "controller_ha");
+        assert_eq!(group.mode, "standby");
+        assert_eq!(group.primary, "controller_a");
+        assert_eq!(group.standby, vec!["controller_b"]);
+        assert_eq!(group.trigger, "critical_fault");
+    }
+
+    #[test]
+    fn rejects_redundancy_group_unknown_field() {
+        let source = r#"
+[package]
+name = "redundancy_typo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[instance.controller_a]
+component = "controller"
+
+[instance.controller_b]
+component = "controller"
+
+[[redundancy.group]]
+name = "controller_ha"
+mode = "standby"
+primary = "controller_a"
+standby = ["controller_b"]
+triger = "critical_fault"
+"#;
+        let error = parse_str(source).expect_err("typo field must be rejected");
+        assert!(error.to_string().contains("triger"), "{error}");
     }
 
     #[test]

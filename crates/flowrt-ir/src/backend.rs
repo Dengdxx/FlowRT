@@ -1066,6 +1066,7 @@ mod tests {
             boundary_endpoints: vec![],
             ros2_bridges: vec![],
             sync_groups: vec![],
+            redundancy_groups: vec![],
         };
         let types = [test_type(
             "WideIntegers",

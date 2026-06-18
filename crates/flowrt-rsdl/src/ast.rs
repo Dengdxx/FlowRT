@@ -61,6 +61,7 @@ pub struct RawCompositionDocument {
     pub boundary_inputs: Vec<RawBoundaryEndpoint>,
     pub boundary_outputs: Vec<RawBoundaryEndpoint>,
     pub sync_groups: Vec<RawSyncGroup>,
+    pub redundancy_groups: Vec<RawRedundancyGroup>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
     pub source: PathBuf,
@@ -85,6 +86,7 @@ pub struct RawDocument {
     pub boundary_inputs: Vec<RawBoundaryEndpoint>,
     pub boundary_outputs: Vec<RawBoundaryEndpoint>,
     pub sync_groups: Vec<RawSyncGroup>,
+    pub redundancy_groups: Vec<RawRedundancyGroup>,
     pub profiles: BTreeMap<String, RawProfile>,
     pub targets: BTreeMap<String, RawTarget>,
 }
@@ -109,6 +111,16 @@ pub struct RawGraph {
 pub struct RawGraphHealth {
     /// `on_faulted`：终态故障时图级动作原始字符串（`continue`/`stop`）。
     pub on_faulted: Option<String>,
+}
+
+/// `[[redundancy.group]]` 表项：graph 级冗余实例组。取值和成员一致性在 IR/validator 阶段校验。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawRedundancyGroup {
+    pub name: String,
+    pub mode: String,
+    pub primary: String,
+    pub standby: Vec<String>,
+    pub trigger: String,
 }
 
 /// `[workspace]` 表。

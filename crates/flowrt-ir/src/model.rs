@@ -602,6 +602,31 @@ impl GraphHealthPolicyIr {
     }
 }
 
+/// graph 级冗余组模式。v0.23.3 先建模 standby，runtime failover 在后续任务接线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RedundancyMode {
+    Standby,
+}
+
+/// 冗余切换触发源。当前只允许关键故障触发，绑定 graph health / lifecycle fault 事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RedundancyTrigger {
+    CriticalFault,
+}
+
+/// graph 级冗余实例组合同。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RedundancyGroupIr {
+    pub id: EntityId,
+    pub name: String,
+    pub mode: RedundancyMode,
+    pub primary: EntityRef,
+    pub standby: Vec<EntityRef>,
+    pub trigger: RedundancyTrigger,
+}
+
 /// 归一化后的 dataflow graph。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphIr {
@@ -627,6 +652,8 @@ pub struct GraphIr {
     pub ros2_bridges: Vec<Ros2BridgeIr>,
     #[serde(default)]
     pub sync_groups: Vec<SyncGroupIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redundancy_groups: Vec<RedundancyGroupIr>,
 }
 
 /// graph 级抽象 resource provider。

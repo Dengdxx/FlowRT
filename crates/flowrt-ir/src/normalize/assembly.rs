@@ -150,6 +150,8 @@ fn normalize_default_graph(
         &graph_name,
     )?;
     let sync_groups = graphs::normalize_sync_groups(document, &instance_refs, &graph_name)?;
+    let redundancy_groups =
+        graphs::normalize_redundancy_groups(document, &instance_refs, &graph_name)?;
 
     Ok(GraphIr {
         id: graph_id,
@@ -167,5 +169,6 @@ fn normalize_default_graph(
         boundary_endpoints,
         ros2_bridges,
         sync_groups,
+        redundancy_groups,
     })
 }

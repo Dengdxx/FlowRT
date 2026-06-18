@@ -11,10 +11,11 @@ use crate::{
     EntityRef, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphFaultReaction,
     GraphHealthPolicyIr, GraphIr, InstanceIr, IrError, OverflowPolicy, PolicyValueSource, PortRef,
     ProcessFailurePropagation, ProcessIr, ProcessReadinessGate, ProcessRestartPolicy,
-    ProcessRestartPolicyKind, ProfileIr, ResourceProviderIr, ResourceProviderScope,
-    ResourceSatisfactionIr, Result, RtPolicy, StalePolicy, SyncGroupIr, SyncLatePolicy, TargetIr,
-    TaskConcurrency, TaskIr, TypeIr, channel_capabilities, channel_route_capabilities,
-    deployment_capability_decision, graph_required_capabilities, parse_type_expr,
+    ProcessRestartPolicyKind, ProfileIr, RedundancyGroupIr, RedundancyMode, RedundancyTrigger,
+    ResourceProviderIr, ResourceProviderScope, ResourceSatisfactionIr, Result, RtPolicy,
+    StalePolicy, SyncGroupIr, SyncLatePolicy, TargetIr, TaskConcurrency, TaskIr, TypeIr,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    graph_required_capabilities, parse_type_expr,
 };
 
 use super::backends::{resolve_channel_backend, route_topology, source_port_types_by_endpoint};
@@ -971,6 +972,103 @@ pub(super) fn normalize_sync_groups(
             .collect::<Result<Vec<_>>>()?;
     groups.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(groups)
+}
+
+pub(super) fn normalize_redundancy_groups(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+    graph_name: &str,
+) -> Result<Vec<RedundancyGroupIr>> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut groups = document
+        .redundancy_groups
+        .iter()
+        .map(|raw| {
+            let context = format!("redundancy.group.{}", raw.name);
+            if !names.insert(raw.name.clone()) {
+                return Err(IrError::InvalidValue {
+                    context,
+                    message: "redundancy group is declared more than once".to_string(),
+                });
+            }
+            if raw.standby.is_empty() {
+                return Err(IrError::InvalidValue {
+                    context,
+                    message: "`standby` must contain at least one instance".to_string(),
+                });
+            }
+            let primary = instance_ref(instance_refs, &raw.primary, &context)?;
+            let mut seen_standby = std::collections::BTreeSet::new();
+            let standby = raw
+                .standby
+                .iter()
+                .map(|name| {
+                    if name == &raw.primary {
+                        return Err(IrError::InvalidValue {
+                            context: context.clone(),
+                            message: format!(
+                                "standby instance `{name}` must differ from primary instance"
+                            ),
+                        });
+                    }
+                    if !seen_standby.insert(name.clone()) {
+                        return Err(IrError::InvalidValue {
+                            context: context.clone(),
+                            message: format!("duplicate standby instance `{name}`"),
+                        });
+                    }
+                    instance_ref(instance_refs, name, &context)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            Ok(RedundancyGroupIr {
+                id: entity_id("redundancy_group", &format!("{graph_name}.{}", raw.name)),
+                name: raw.name.clone(),
+                mode: parse_redundancy_mode(&context, &raw.mode)?,
+                primary,
+                standby,
+                trigger: parse_redundancy_trigger(&context, &raw.trigger)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(groups)
+}
+
+fn instance_ref(
+    instance_refs: &BTreeMap<String, EntityRef>,
+    name: &str,
+    context: &str,
+) -> Result<EntityRef> {
+    instance_refs
+        .get(name)
+        .cloned()
+        .ok_or_else(|| IrError::InvalidValue {
+            context: context.to_string(),
+            message: format!("unknown instance `{name}`"),
+        })
+}
+
+fn parse_redundancy_mode(context: &str, value: &str) -> Result<RedundancyMode> {
+    match value {
+        "standby" => Ok(RedundancyMode::Standby),
+        value => Err(IrError::InvalidEnum {
+            context: format!("{context}.mode"),
+            kind: "redundancy mode",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn parse_redundancy_trigger(context: &str, value: &str) -> Result<RedundancyTrigger> {
+    match value {
+        "critical_fault" => Ok(RedundancyTrigger::CriticalFault),
+        value => Err(IrError::InvalidEnum {
+            context: format!("{context}.trigger"),
+            kind: "redundancy trigger",
+            value: value.to_string(),
+        }),
+    }
 }
 
 pub(super) fn normalize_deployments(

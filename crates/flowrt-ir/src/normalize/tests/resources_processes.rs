@@ -565,6 +565,84 @@ backend = "inproc"
 }
 
 #[test]
+fn normalizes_redundancy_groups_canonically() {
+    let source = r#"
+[package]
+name = "redundancy_demo"
+rsdl_version = "0.1"
+
+[type.Command]
+value = "u32"
+
+[component.controller]
+language = "rust"
+output = ["command:Command"]
+
+[instance.controller_a]
+component = "controller"
+
+[instance.controller_a.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[instance.controller_b]
+component = "controller"
+
+[instance.controller_b.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[instance.controller_c]
+component = "controller"
+
+[instance.controller_c.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[[redundancy.group]]
+name = "z_group"
+mode = "standby"
+primary = "controller_c"
+standby = ["controller_b"]
+trigger = "critical_fault"
+
+[[redundancy.group]]
+name = "controller_ha"
+mode = "standby"
+primary = "controller_a"
+standby = ["controller_b"]
+trigger = "critical_fault"
+
+[profile.default]
+backend = "inproc"
+
+[profile.default.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    let groups = &ir.graphs[0].redundancy_groups;
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].name, "controller_ha");
+    let group = &groups[0];
+    assert_eq!(group.mode, RedundancyMode::Standby);
+    assert_eq!(group.primary.name, "controller_a");
+    assert_eq!(group.standby[0].name, "controller_b");
+    assert_eq!(group.trigger, RedundancyTrigger::CriticalFault);
+    assert_eq!(groups[1].name, "z_group");
+}
+
+#[test]
 fn normalizes_graph_health_stop_reaction() {
     let source = r#"
 [package]

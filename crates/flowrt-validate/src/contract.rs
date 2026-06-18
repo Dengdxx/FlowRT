@@ -418,6 +418,9 @@ pub(crate) fn validate_contract_canonical_fields(
         for group in &graph.sync_groups {
             validate_entity_id_shape("sync group id", "sync", &group.id, errors);
         }
+        for group in &graph.redundancy_groups {
+            validate_entity_id_shape("redundancy group id", "redundancy_group", &group.id, errors);
+        }
     }
     for profile in &ir.profiles {
         validate_entity_id_shape("profile id", "profile", &profile.id, errors);
@@ -654,6 +657,16 @@ pub(crate) fn validate_contract_canonical_ordering(
                 graph.name
             )));
         }
+        if !graph
+            .redundancy_groups
+            .windows(2)
+            .all(|pair| pair[0].name <= pair[1].name)
+        {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` redundancy groups must use canonical name order",
+                graph.name
+            )));
+        }
     }
 
     if !ir
@@ -784,6 +797,15 @@ pub(crate) fn validate_entity_name_uniqueness(ir: &ContractIr, errors: &mut Vec<
             &format!("graph `{}`", graph.name),
             "sync group",
             graph.sync_groups.iter().map(|group| group.name.as_str()),
+            errors,
+        );
+        validate_unique_names(
+            &format!("graph `{}`", graph.name),
+            "redundancy group",
+            graph
+                .redundancy_groups
+                .iter()
+                .map(|group| group.name.as_str()),
             errors,
         );
         for direction in [BoundaryDirection::Input, BoundaryDirection::Output] {
@@ -937,6 +959,14 @@ pub(crate) fn validate_entity_id_uniqueness(ir: &ContractIr, errors: &mut Vec<Va
                 &mut seen,
                 &group.id,
                 format!("sync group `{}`", group.name),
+                errors,
+            );
+        }
+        for group in &graph.redundancy_groups {
+            record_entity_id(
+                &mut seen,
+                &group.id,
+                format!("redundancy group `{}`", group.name),
                 errors,
             );
         }
@@ -1203,6 +1233,25 @@ pub(crate) fn validate_entity_references(ir: &ContractIr, errors: &mut Vec<Valid
                     "resource provider",
                     provider,
                     &provider_ids,
+                    errors,
+                );
+            }
+        }
+
+        for group in &graph.redundancy_groups {
+            validate_named_entity_ref(
+                &format!("redundancy group `{}` primary reference", group.name),
+                "instance",
+                &group.primary,
+                &instance_ids,
+                errors,
+            );
+            for standby in &group.standby {
+                validate_named_entity_ref(
+                    &format!("redundancy group `{}` standby reference", group.name),
+                    "instance",
+                    standby,
+                    &instance_ids,
                     errors,
                 );
             }

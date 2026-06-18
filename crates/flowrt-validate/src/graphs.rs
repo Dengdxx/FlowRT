@@ -6,8 +6,8 @@ use flowrt_ir::{
     EntityId, GraphFaultReaction, GraphIr, GraphMode, InstanceFailurePolicy, InstanceIr,
     LanguageKind, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPortIr,
     OperationPortRef, OperationPreemptPolicy, ParamValue, PolicyValueSource, PortIr, PortRef,
-    PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef,
-    TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    PrimitiveType, ProcessReadinessGate, RedundancyMode, Ros2BridgeDirection, ServicePortIr,
+    ServicePortRef, TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -47,8 +47,164 @@ pub(crate) fn validate_graphs(ir: &ContractIr, errors: &mut Vec<ValidationError>
         validate_ros2_bridges(ir, &components, &instances, graph, errors);
         validate_graph_is_acyclic(&instances, graph, errors);
         validate_feedback_binds(ir, &components, &instances, graph, errors);
+        validate_redundancy_groups(ir, &components, &instances, graph, errors);
         validate_graph_health(graph, errors);
     }
+}
+
+fn validate_redundancy_groups(
+    ir: &ContractIr,
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    graph: &GraphIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    if graph.redundancy_groups.is_empty() {
+        return;
+    }
+
+    let global_tick_profile = ir
+        .profiles
+        .iter()
+        .any(|profile| profile.determinism.mode == DeterminismMode::GlobalTick);
+    let mut membership = BTreeMap::<&str, &str>::new();
+    let mut standby_instances = BTreeSet::<&str>::new();
+
+    for group in &graph.redundancy_groups {
+        match group.mode {
+            RedundancyMode::Standby => {
+                if !global_tick_profile {
+                    errors.push(ValidationError::new(format!(
+                        "redundancy group `{}` standby requires profile determinism mode global_tick",
+                        group.name
+                    )));
+                }
+            }
+        }
+
+        let Some(primary) = instances.get(group.primary.name.as_str()).copied() else {
+            continue;
+        };
+        let primary_component = components.get(primary.component.name.as_str()).copied();
+        let primary_shape = primary_component.map(component_port_shape);
+
+        record_redundancy_membership(&mut membership, &group.name, &primary.name, errors);
+        for standby_ref in &group.standby {
+            standby_instances.insert(standby_ref.name.as_str());
+            record_redundancy_membership(&mut membership, &group.name, &standby_ref.name, errors);
+
+            let Some(standby) = instances.get(standby_ref.name.as_str()).copied() else {
+                continue;
+            };
+            if standby.component.name != primary.component.name {
+                errors.push(ValidationError::new(format!(
+                    "redundancy group `{}` members must use the same component type; primary `{}` uses `{}`, standby `{}` uses `{}`",
+                    group.name,
+                    primary.name,
+                    primary.component.name,
+                    standby.name,
+                    standby.component.name
+                )));
+            }
+
+            let standby_shape = components
+                .get(standby.component.name.as_str())
+                .copied()
+                .map(component_port_shape);
+            if primary_shape.is_some() && standby_shape.is_some() && primary_shape != standby_shape
+            {
+                errors.push(ValidationError::new(format!(
+                    "redundancy group `{}` members must have identical port shape; `{}` and `{}` differ",
+                    group.name, primary.name, standby.name
+                )));
+            }
+        }
+    }
+
+    for bind in &graph.binds {
+        if standby_instances.contains(bind.from.instance.name.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "standby output `{}.{}` cannot be consumed directly; bind through the redundancy group output",
+                bind.from.instance.name, bind.from.port
+            )));
+        }
+    }
+}
+
+fn record_redundancy_membership<'a>(
+    membership: &mut BTreeMap<&'a str, &'a str>,
+    group: &'a str,
+    instance: &'a str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(previous) = membership.insert(instance, group) {
+        errors.push(ValidationError::new(format!(
+            "instance `{instance}` cannot join more than one active redundancy group (`{previous}` and `{group}`)"
+        )));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComponentPortShape {
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    service_clients: Vec<String>,
+    service_servers: Vec<String>,
+    operation_clients: Vec<String>,
+    operation_servers: Vec<String>,
+}
+
+fn component_port_shape(component: &ComponentIr) -> ComponentPortShape {
+    ComponentPortShape {
+        inputs: data_port_shape(&component.inputs),
+        outputs: data_port_shape(&component.outputs),
+        service_clients: service_port_shape(&component.service_clients),
+        service_servers: service_port_shape(&component.service_servers),
+        operation_clients: operation_port_shape(&component.operation_clients),
+        operation_servers: operation_port_shape(&component.operation_servers),
+    }
+}
+
+fn data_port_shape(ports: &[PortIr]) -> Vec<String> {
+    let mut shape = ports
+        .iter()
+        .map(|port| format!("{}:{}", port.name, port.ty.canonical_syntax()))
+        .collect::<Vec<_>>();
+    shape.sort();
+    shape
+}
+
+fn service_port_shape(ports: &[ServicePortIr]) -> Vec<String> {
+    let mut shape = ports
+        .iter()
+        .map(|port| {
+            format!(
+                "{}:{}->{}",
+                port.name,
+                port.request.canonical_syntax(),
+                port.response.canonical_syntax()
+            )
+        })
+        .collect::<Vec<_>>();
+    shape.sort();
+    shape
+}
+
+fn operation_port_shape(ports: &[OperationPortIr]) -> Vec<String> {
+    let mut shape = ports
+        .iter()
+        .map(|port| {
+            format!(
+                "{}:{}|{}|{}",
+                port.name,
+                port.goal.canonical_syntax(),
+                port.feedback.canonical_syntax(),
+                port.result.canonical_syntax()
+            )
+        })
+        .collect::<Vec<_>>();
+    shape.sort();
+    shape
 }
 
 /// 校验图级 health 反应策略的可达性。`on_faulted = "stop"` 仅当图内至少有一个

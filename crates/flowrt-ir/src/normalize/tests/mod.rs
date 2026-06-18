@@ -11,11 +11,11 @@ pub(crate) use crate::{
     FaultInjectionScenarioPoint, GraphFaultReaction, GraphMode, IrError, OperationBackendSource,
     OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy,
     ParamType, ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
-    ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind, Ros2BridgeDirection,
-    RouteTopology, RtPolicy, ServiceBackendSource, ServiceOverflowPolicy, StalePolicy,
-    TaskReadiness, TemporaryBoundaryMapping, TemporaryIslandOverlay, TypeExpr,
-    apply_fault_injection_overlay, apply_temporary_island_overlay, channel_route_capabilities,
-    deployment_capability_decision,
+    ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind, RedundancyMode,
+    RedundancyTrigger, Ros2BridgeDirection, RouteTopology, RtPolicy, ServiceBackendSource,
+    ServiceOverflowPolicy, StalePolicy, TaskReadiness, TemporaryBoundaryMapping,
+    TemporaryIslandOverlay, TypeExpr, apply_fault_injection_overlay,
+    apply_temporary_island_overlay, channel_route_capabilities, deployment_capability_decision,
 };
 
 mod core;

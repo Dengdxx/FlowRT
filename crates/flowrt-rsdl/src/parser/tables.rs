@@ -594,6 +594,56 @@ pub(super) fn parse_sync_groups(root: &Table) -> Result<Vec<RawSyncGroup>> {
     Ok(parsed)
 }
 
+pub(super) fn parse_redundancy_groups(root: &Table) -> Result<Vec<RawRedundancyGroup>> {
+    let Some(redundancy_value) = root.get("redundancy") else {
+        return Ok(Vec::new());
+    };
+    let redundancy_table =
+        redundancy_value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "document".to_string(),
+                field: "redundancy".to_string(),
+                expected: "table",
+            })?;
+    validate_known_fields(redundancy_table, "redundancy", &["group"])?;
+    let Some(groups_value) = redundancy_table.get("group") else {
+        return Ok(Vec::new());
+    };
+    let groups = groups_value
+        .as_array()
+        .ok_or_else(|| RsdlError::InvalidFieldType {
+            context: "redundancy".to_string(),
+            field: "group".to_string(),
+            expected: "array of tables",
+        })?;
+
+    let mut parsed = Vec::with_capacity(groups.len());
+    for (index, value) in groups.iter().enumerate() {
+        let context = format!("redundancy.group[{index}]");
+        let table = value
+            .as_table()
+            .ok_or_else(|| RsdlError::InvalidFieldType {
+                context: "redundancy".to_string(),
+                field: "group".to_string(),
+                expected: "array of tables",
+            })?;
+        validate_known_fields(
+            table,
+            &context,
+            &["name", "mode", "primary", "standby", "trigger"],
+        )?;
+        parsed.push(RawRedundancyGroup {
+            name: required_string(table, &context, "name")?,
+            mode: required_string(table, &context, "mode")?,
+            primary: required_string(table, &context, "primary")?,
+            standby: optional_string_array(table, &context, "standby")?,
+            trigger: required_string(table, &context, "trigger")?,
+        });
+    }
+    Ok(parsed)
+}
+
 pub(super) fn parse_external_processes(root: &Table) -> Result<Vec<RawExternalProcess>> {
     let Some(process_value) = root.get("external_process") else {
         return Ok(Vec::new());
