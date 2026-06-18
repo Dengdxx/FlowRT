@@ -128,6 +128,60 @@ backends = ["iox2"]
 }
 
 #[test]
+fn launch_manifest_exposes_global_tick_determinism() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "global_tick_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.plant]
+language = "rust"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+
+[[process]]
+name = "controller_proc"
+
+[[process]]
+name = "plant_proc"
+
+[profile.test]
+backend = "inproc"
+
+[profile.test.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+
+    assert_eq!(launch["determinism"]["mode"], "global_tick");
+    assert_eq!(launch["determinism"]["tick_timeout_ms"], 1000);
+    assert_eq!(launch["determinism"]["on_timeout"], "fault_graph");
+    assert_eq!(
+        launch["determinism"]["processes"],
+        serde_json::json!(["controller_proc", "plant_proc"])
+    );
+}
+
+#[test]
 fn launch_manifest_exposes_process_orchestration_policy() {
     let ir = contract_from_source(
         r#"

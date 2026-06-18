@@ -33,6 +33,7 @@ mod prelude {
 
 mod command_tests;
 mod dependency_zenoh_tests;
+mod global_tick_tests;
 mod lifecycle_tests;
 mod manifest_resource_tests;
 mod readiness_tests;

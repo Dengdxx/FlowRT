@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind,
-    ContractIr, ExternalHealthKind, ExternalProcessIr, ExternalWorkingDir, GraphIr, GraphMode,
-    InstanceIr, IoBoundaryHealth, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, ProcessIr,
-    ResourceProviderIr, ResourceRequirementIr, ResourceSatisfactionIr, ServicePortIr, TaskIr,
-    derived::GraphDerivedFacts,
+    ContractIr, DeterminismMode, DeterminismTimeoutPolicy, ExternalHealthKind, ExternalProcessIr,
+    ExternalWorkingDir, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
+    IoBoundaryShutdown, IoSideEffect, ProcessIr, ResourceProviderIr, ResourceRequirementIr,
+    ResourceSatisfactionIr, ServicePortIr, TaskIr, derived::GraphDerivedFacts,
 };
 
 use crate::resource_names::{
@@ -65,6 +65,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
             },
         },
         "profiles": contract.profiles.iter().map(|profile| &profile.name).collect::<Vec<_>>(),
+        "determinism": launch_determinism(contract),
         "profile_modes": contract.profiles.iter().map(|profile| serde_json::json!({
             "name": profile.name,
             "mode": graph_mode_name(profile.mode),
@@ -75,6 +76,41 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
     let mut output = serde_json::to_string_pretty(&launch)?;
     output.push('\n');
     Ok(output)
+}
+
+fn launch_determinism(contract: &ContractIr) -> serde_json::Value {
+    let determinism = contract
+        .profiles
+        .first()
+        .map(|profile| &profile.determinism);
+    let Some(determinism) = determinism else {
+        return serde_json::json!({
+            "mode": "process_local",
+            "tick_timeout_ms": 0,
+            "on_timeout": "fault_graph",
+            "processes": [],
+        });
+    };
+    serde_json::json!({
+        "mode": determinism_mode_name(determinism.mode),
+        "tick_timeout_ms": determinism.timeout_ms.unwrap_or(0),
+        "on_timeout": determinism_timeout_policy_name(determinism.on_timeout),
+        "processes": determinism.processes,
+    })
+}
+
+fn determinism_mode_name(mode: DeterminismMode) -> &'static str {
+    match mode {
+        DeterminismMode::ProcessLocal => "process_local",
+        DeterminismMode::GlobalTick => "global_tick",
+    }
+}
+
+fn determinism_timeout_policy_name(policy: DeterminismTimeoutPolicy) -> &'static str {
+    match policy {
+        DeterminismTimeoutPolicy::FaultGraph => "fault_graph",
+        DeterminismTimeoutPolicy::StopGraph => "stop_graph",
+    }
 }
 
 fn launch_resource_contract(graph: &GraphIr, graph_facts: &GraphDerivedFacts) -> serde_json::Value {

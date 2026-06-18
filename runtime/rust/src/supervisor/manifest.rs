@@ -21,6 +21,8 @@ pub struct LaunchManifest {
     pub profiles: Vec<String>,
     #[serde(default)]
     pub profile_modes: Vec<LaunchProfileMode>,
+    #[serde(default)]
+    pub determinism: LaunchDeterminism,
     pub targets: Vec<String>,
     pub graphs: Vec<LaunchGraph>,
 }
@@ -83,6 +85,31 @@ pub struct LaunchProfileMode {
     pub mode: String,
 }
 
+/// manifest 中的 profile 级确定性执行合同。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchDeterminism {
+    #[serde(default = "default_determinism_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub tick_timeout_ms: u64,
+    #[serde(default = "default_determinism_timeout_policy")]
+    pub on_timeout: String,
+    #[serde(default)]
+    pub processes: Vec<String>,
+}
+
+impl Default for LaunchDeterminism {
+    fn default() -> Self {
+        Self {
+            mode: default_determinism_mode(),
+            tick_timeout_ms: 0,
+            on_timeout: default_determinism_timeout_policy(),
+            processes: Vec::new(),
+        }
+    }
+}
+
 /// manifest 中的 graph 节点。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,6 +150,14 @@ fn default_clock_unit() -> String {
 
 fn default_clock_field() -> String {
     "tick_time_ms".to_string()
+}
+
+fn default_determinism_mode() -> String {
+    "process_local".to_string()
+}
+
+fn default_determinism_timeout_policy() -> String {
+    "fault_graph".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -5,6 +5,7 @@
 
 mod command;
 mod dependency;
+mod global_tick;
 mod launch_loop;
 mod manifest;
 mod readiness;
@@ -21,9 +22,10 @@ pub use dependency::{
     PropagatableChild, collect_propagated_failures, process_dependencies_satisfied,
     resolve_dependency_order,
 };
+pub use global_tick::{GlobalTickCoordinator, TickCoordinatorEvent, TickDone, TickGrant};
 pub use launch_loop::{SupervisorConfig, launch};
 pub use manifest::{
-    DEFAULT_RESTART_POLICY, LaunchArtifact, LaunchBoundaryEndpoint, LaunchClock,
+    DEFAULT_RESTART_POLICY, LaunchArtifact, LaunchBoundaryEndpoint, LaunchClock, LaunchDeterminism,
     LaunchExternalHealth, LaunchExternalProcess, LaunchExternalWorkingDir, LaunchGraph,
     LaunchIoBoundary, LaunchIoResource, LaunchManifest, LaunchProcess, LaunchProfileMode,
     LaunchResourceContract, LaunchResourceDescriptor, LaunchResourceProvider,
