@@ -2,6 +2,76 @@ use super::*;
 use flowrt_ir::TriggerKind;
 
 #[test]
+fn global_tick_rust_shell_exposes_external_tick_step() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "global_tick_runtime"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.plant]
+language = "rust"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+
+[[process]]
+name = "controller_proc"
+
+[[process]]
+name = "plant_proc"
+
+[profile.default]
+backend = "inproc"
+
+[profile.default.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains(
+        "pub fn flowrt_run_tick(grant: flowrt::ExternalTick) -> flowrt::ExternalTickReport"
+    ));
+    let tick_fn = rust_shell
+        .split("pub fn flowrt_run_tick")
+        .nth(1)
+        .expect("global_tick shell should expose tick entrypoint");
+    let tick_fn = tick_fn.split("pub fn run(").next().unwrap_or(tick_fn);
+    assert!(!tick_fn.contains("scheduler_runtime_now_ms"));
+    assert!(!tick_fn.contains("wait_until_after"));
+
+    let app_tick_fn = generated_function_block(rust_shell, "fn run_tick(");
+    assert!(app_tick_fn.contains("let mut tick_base: usize = __flowrt_external_tick_base;"));
+    assert!(app_tick_fn.contains("let mut scheduler_now_ms: u64 = grant.logical_time_ms;"));
+    assert!(!app_tick_fn.contains("scheduler_runtime_now_ms"));
+    assert!(!app_tick_fn.contains("wait_until_after"));
+}
+
+#[test]
 fn generated_shells_cleanup_entered_lifecycle_stages_in_reverse_order() {
     let ir = contract_from_source(
         r#"

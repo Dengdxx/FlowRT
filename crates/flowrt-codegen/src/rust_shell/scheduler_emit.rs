@@ -120,6 +120,7 @@ pub(super) struct RustSchedulerLoopEmission<'a> {
     pub(super) boundaries: &'a [BoundaryRuntimePlan],
     pub(super) process: Option<&'a ProcessRuntimePlan<'a>>,
     pub(super) fallback_step_function: &'a str,
+    pub(super) external_tick: Option<&'a str>,
 }
 
 pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_>) -> String {
@@ -132,6 +133,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         boundaries,
         process,
         fallback_step_function,
+        external_tick,
     } = emission;
     let _ = fallback_step_function;
     let scheduler_plan = scheduler_runtime_plan(contract, graph, order);
@@ -217,11 +219,21 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let task_health_init = emit_rust_task_health_init(&scheduler_plan.dataflow_tasks);
     let clock_source = scheduler_clock_source(contract);
     let task_clock_source = rust_task_clock_source_expr(contract);
-    output.push_str(
-        "        let mut tick_base: usize = 0;\n        let mut scheduler_now_ms: u64 = 0;\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n",
-    );
-    output.push_str(&rust_scheduler_clock_init(contract));
-    output.push_str(&rust_scheduler_replay_driver_init(contract, boundaries));
+    let tick_base_init = if external_tick.is_some() {
+        "__flowrt_external_tick_base".to_string()
+    } else {
+        "0".to_string()
+    };
+    let scheduler_now_init = external_tick
+        .map(|grant| format!("{grant}.logical_time_ms"))
+        .unwrap_or_else(|| "0".to_string());
+    output.push_str(&format!(
+        "        let mut tick_base: usize = {tick_base_init};\n        let mut scheduler_now_ms: u64 = {scheduler_now_init};\n        let mut health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();\n        const FAIRNESS_STARVATION_THRESHOLD: u64 = 10;\n",
+    ));
+    if external_tick.is_none() {
+        output.push_str(&rust_scheduler_clock_init(contract));
+        output.push_str(&rust_scheduler_replay_driver_init(contract, boundaries));
+    }
     output.push_str(&format!("        let clock_source = {clock_source:?};\n"));
     output.push_str(&format!(
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
@@ -234,7 +246,9 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     output.push_str(
         "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n",
     );
-    output.push_str(&rust_scheduler_data_time_update(contract, "            "));
+    if external_tick.is_none() {
+        output.push_str(&rust_scheduler_data_time_update(contract, "            "));
+    }
     output.push_str(
         "            let tick_time_ms = scheduler_now_ms;\n            scheduler.advance_to_ms(tick_time_ms);\n            scheduler.set_current_tick(tick_base as u64);\n",
     );
@@ -342,10 +356,14 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         } else {
             ""
         },
-        advance_block = rust_scheduler_advance_block(
-            contract,
-            &rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
-        ),
+        advance_block = if external_tick.is_some() {
+            String::new()
+        } else {
+            rust_scheduler_advance_block(
+                contract,
+                &rust_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks),
+            )
+        },
     ));
     output
 }

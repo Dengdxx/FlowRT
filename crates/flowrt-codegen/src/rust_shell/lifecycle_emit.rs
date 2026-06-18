@@ -222,6 +222,35 @@ pub(super) fn emit_rust_app_run(
         process: None,
         process_name: "main",
         public: true,
+        mode: RustRunMode::SchedulerLoop,
+    })
+}
+
+pub(super) fn emit_rust_app_run_tick(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+    binds: &[BindRuntimePlan],
+    bridges: &[BridgeRuntimePlan],
+    boundaries: &[BoundaryRuntimePlan],
+) -> String {
+    emit_rust_app_run_function(RustRunFunctionEmission {
+        contract,
+        function_name: "run_tick",
+        steps: RustRunStepFunctions {
+            scheduler: "step",
+            startup: "step_startup",
+            shutdown: "step_shutdown",
+        },
+        order,
+        binds,
+        bridges,
+        boundaries,
+        graph,
+        process: None,
+        process_name: "main",
+        public: true,
+        mode: RustRunMode::ExternalTick,
     })
 }
 
@@ -270,6 +299,7 @@ pub(super) fn emit_process_run_functions(
             process: Some(process),
             process_name: &process.name,
             public: false,
+            mode: RustRunMode::SchedulerLoop,
         }));
     }
 }
@@ -293,15 +323,38 @@ struct RustRunFunctionEmission<'a> {
     process: Option<&'a ProcessRuntimePlan<'a>>,
     process_name: &'a str,
     public: bool,
+    mode: RustRunMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RustRunMode {
+    SchedulerLoop,
+    ExternalTick,
 }
 
 fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     let mut output = String::new();
     let visibility = if emission.public { "pub " } else { "" };
     let function_name = emission.function_name;
-    output.push_str(&format!(
-        "    {visibility}fn {function_name}(self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {{\n        if self.startup_status != flowrt::Status::Ok {{\n            return self.startup_status;\n        }}\n        let app = std::sync::Arc::new(self);\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
-    ));
+    match emission.mode {
+        RustRunMode::SchedulerLoop => output.push_str(&format!(
+            "    {visibility}fn {function_name}(self, backend: &dyn flowrt::Backend, run_ticks: Option<usize>) -> flowrt::Status {{\n",
+        )),
+        RustRunMode::ExternalTick => output.push_str(&format!(
+            "    {visibility}fn {function_name}(self, backend: &dyn flowrt::Backend, grant: flowrt::ExternalTick) -> flowrt::Status {{\n",
+        )),
+    }
+    output.push_str(
+        "        if self.startup_status != flowrt::Status::Ok {\n            return self.startup_status;\n        }\n",
+    );
+    if emission.mode == RustRunMode::ExternalTick {
+        output.push_str(
+            "        let Ok(__flowrt_external_tick_base) = usize::try_from(grant.tick_id) else {\n            return flowrt::Status::Error;\n        };\n        let run_ticks = Some(__flowrt_external_tick_base.saturating_add(1));\n",
+        );
+    }
+    output.push_str(
+        "        let app = std::sync::Arc::new(self);\n        let mut lifecycle_context = flowrt::Context::default();\n        let mut status = flowrt::Status::Ok;\n",
+    );
     output.push_str("        let _ = backend;\n");
     output.push_str("        let shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
@@ -459,6 +512,10 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             boundaries: emission.boundaries,
             process: emission.process,
             fallback_step_function: emission.steps.scheduler,
+            external_tick: match emission.mode {
+                RustRunMode::SchedulerLoop => None,
+                RustRunMode::ExternalTick => Some("grant"),
+            },
         }),
     ));
     output.push_str(&format!(

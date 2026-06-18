@@ -7,7 +7,7 @@ mod scheduler_emit;
 pub(crate) mod service_emit;
 mod step_emit;
 
-use flowrt_ir::{ComponentIr, ContractIr, LanguageKind, TaskConcurrency};
+use flowrt_ir::{ComponentIr, ContractIr, DeterminismMode, LanguageKind, TaskConcurrency};
 
 use crate::runtime_plan::{
     active_boundaries_for_instances, bind_runtime_plans, boundary_runtime_plans,
@@ -19,7 +19,7 @@ use crate::{component_by_name, component_rust_name, managed_header};
 
 use backend_emit::selected_backend_name;
 use introspection_emit::emit_rust_introspection_helpers;
-use lifecycle_emit::{emit_rust_app_new, emit_rust_app_run};
+use lifecycle_emit::{emit_rust_app_new, emit_rust_app_run, emit_rust_app_run_tick};
 use operation_emit::{
     emit_rust_operation_client_handles, emit_rust_operation_step_functions,
     operation_client_handle_name, rust_operation_handler_methods,
@@ -39,6 +39,13 @@ fn rust_backend_constructor(selected_backend: &str) -> &'static str {
         "zenoh" => "flowrt::zenoh_backend()",
         _ => unreachable!("validated contract selected backend must be known"),
     }
+}
+
+fn selected_profile_uses_global_tick(contract: &ContractIr) -> bool {
+    contract
+        .profiles
+        .first()
+        .is_some_and(|profile| profile.determinism.mode == DeterminismMode::GlobalTick)
 }
 
 pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
@@ -255,6 +262,17 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         &bridge_plans,
         &boundary_plans,
     ));
+    let global_tick = selected_profile_uses_global_tick(contract);
+    if global_tick {
+        output.push_str(&emit_rust_app_run_tick(
+            contract,
+            graph,
+            &order,
+            &bind_plans,
+            &bridge_plans,
+            &boundary_plans,
+        ));
+    }
     output.push_str(&lifecycle_emit::emit_rust_app_run_process_dispatch(
         &process_plans,
     ));
@@ -270,8 +288,16 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
     output.push_str("}\n\n");
     let backend_constructor = rust_backend_constructor(&selected_backend);
     output.push_str(&format!(
-        "pub fn backend() -> Box<dyn flowrt::Backend> {{\n    Box::new({backend_constructor})\n}}\n\npub fn run(run_ticks: Option<usize>) -> flowrt::Status {{\n    let backend = backend();\n    user::build_app().run(backend.as_ref(), run_ticks)\n}}\n\npub fn run_process(process: &str, run_ticks: Option<usize>) -> flowrt::Status {{\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process, run_ticks)\n}}\n",
+        "pub fn backend() -> Box<dyn flowrt::Backend> {{\n    Box::new({backend_constructor})\n}}\n\n",
     ));
+    if global_tick {
+        output.push_str(
+            "pub fn flowrt_run_tick(grant: flowrt::ExternalTick) -> flowrt::ExternalTickReport {\n    let backend = backend();\n    let status = user::build_app().run_tick(backend.as_ref(), grant);\n    flowrt::ExternalTickReport::new(grant.tick_id, status)\n}\n\n",
+        );
+    }
+    output.push_str(
+        "pub fn run(run_ticks: Option<usize>) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run(backend.as_ref(), run_ticks)\n}\n\npub fn run_process(process: &str, run_ticks: Option<usize>) -> flowrt::Status {\n    let backend = backend();\n    user::build_app().run_process(backend.as_ref(), process, run_ticks)\n}\n",
+    );
     output
 }
 

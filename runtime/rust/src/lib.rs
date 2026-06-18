@@ -127,6 +127,36 @@ impl Status {
     }
 }
 
+/// 外部 global tick 协调器授予单进程 runtime shell 的一步执行许可。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalTick {
+    /// 全局 tick 序号，由 coordinator 分配。
+    pub tick_id: u64,
+    /// 本 tick 对应的逻辑毫秒时间。
+    pub logical_time_ms: u64,
+}
+
+/// runtime shell 完成外部 tick 后回报给 coordinator 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalTickReport {
+    /// 完成的 tick 序号。
+    pub tick_id: u64,
+    /// 本 tick 的 FlowRT 执行状态。
+    pub status: Status,
+}
+
+impl ExternalTickReport {
+    /// 构造指定状态的 tick 回报。
+    pub const fn new(tick_id: u64, status: Status) -> Self {
+        Self { tick_id, status }
+    }
+
+    /// 构造成功 tick 回报。
+    pub const fn ok(tick_id: u64) -> Self {
+        Self::new(tick_id, Status::Ok)
+    }
+}
+
 /// I/O boundary 组件可用的运行态上报上下文。
 ///
 /// 该类型只表达 FlowRT 的资源、readiness 和 health 语义，不暴露串口、SHM、网络或 backend
@@ -628,6 +658,75 @@ mod tests {
         context.set_timing(updated.clone());
 
         assert_eq!(context.timing(), Some(&updated));
+    }
+
+    #[test]
+    fn external_tick_step_reads_snapshot_before_commit() {
+        let mut channel = LatestChannel::new();
+        channel.publish_at(0u32, 0);
+        let grant = ExternalTick {
+            tick_id: 1,
+            logical_time_ms: 10,
+        };
+        let report = ExternalTickReport::ok(grant.tick_id);
+        let tick_1_input = channel.view_at(grant.logical_time_ms);
+
+        let mut output = Output::new();
+        output.write(1u32);
+        let commit = output
+            .take_commit_record(
+                TaskId(1),
+                "producer.main",
+                "value",
+                grant.logical_time_ms,
+                grant.logical_time_ms,
+            )
+            .expect("task output should form commit record");
+
+        assert_eq!(tick_1_input.as_ref(), Some(&0));
+        assert_eq!(channel.view_at(grant.logical_time_ms).as_ref(), Some(&0));
+        commit.commit_with(|payload, published_at_ms, _tick_time_ms| {
+            channel.publish_at(payload, published_at_ms);
+        });
+        assert_eq!(channel.view_at(20).as_ref(), Some(&1));
+        assert_eq!(report.tick_id, grant.tick_id);
+        assert_eq!(report.status, Status::Ok);
+    }
+
+    #[test]
+    fn tick_done_records_route_health_and_lifecycle_delta() {
+        let grant = ExternalTick {
+            tick_id: 9,
+            logical_time_ms: 90,
+        };
+        let state = IntrospectionState::new();
+        state.record_tick_at(grant.logical_time_ms, "global_tick");
+        state.record_task_health(IntrospectionTaskHealth {
+            name: "controller.main".to_string(),
+            lane: "controller_serial".to_string(),
+            run_count: 1,
+            success_count: 1,
+            scheduled_time_ms: Some(grant.logical_time_ms),
+            observed_time_ms: Some(grant.logical_time_ms),
+            last_run_ms: Some(grant.logical_time_ms),
+            last_success_ms: Some(grant.logical_time_ms),
+            ..Default::default()
+        });
+
+        let report = ExternalTickReport::new(grant.tick_id, Status::Retry);
+        let status = state.status();
+
+        assert_eq!(status.tick_count, 1);
+        assert_eq!(status.clock.source, "global_tick");
+        assert_eq!(status.clock.tick_time_ms, Some(grant.logical_time_ms));
+        assert_eq!(
+            state
+                .task_health("controller.main")
+                .and_then(|health| health.last_success_ms),
+            Some(grant.logical_time_ms)
+        );
+        assert_eq!(report.tick_id, grant.tick_id);
+        assert_eq!(report.status, Status::Retry);
     }
 
     #[test]
