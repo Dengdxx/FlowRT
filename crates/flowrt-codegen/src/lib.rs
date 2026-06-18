@@ -308,13 +308,15 @@ fn ensure_generated_languages_supported(contract: &ContractIr) -> Result<()> {
 fn ensure_generated_transport_supported(contract: &ContractIr) -> Result<()> {
     for graph in &contract.graphs {
         for service in &graph.services {
+            // v0.23.0：Rust zenoh service 已接线；C++ zenoh service 接线在跟进切片完成前
+            // 仍 fail-fast，避免生成只返回 `ServiceError::Backend` 的 C++ 占位实现。
             if service.backend.0 == "zenoh"
-                && (service_endpoint_requires_generated_code(contract, graph, &service.client)
-                    || service_endpoint_requires_generated_code(contract, graph, &service.server))
+                && (service_endpoint_is_cpp_generated(contract, graph, &service.client)
+                    || service_endpoint_is_cpp_generated(contract, graph, &service.server))
             {
                 return Err(CodegenError::UnsupportedGeneratedTransport {
                     message: format!(
-                        "service bind `{}.{}` -> `{}.{}` uses backend `zenoh`, but generated Service codegen is not wired to zenoh transport yet",
+                        "service bind `{}.{}` -> `{}.{}` uses backend `zenoh` with a C++ endpoint, but C++ Service codegen is not wired to zenoh transport yet",
                         service.client.instance.name,
                         service.client.port,
                         service.server.instance.name,
@@ -349,20 +351,30 @@ fn ensure_generated_transport_supported(contract: &ContractIr) -> Result<()> {
     Ok(())
 }
 
-fn service_endpoint_requires_generated_code(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    endpoint: &flowrt_ir::ServicePortRef,
-) -> bool {
-    endpoint_requires_generated_code(contract, graph, &endpoint.instance.name)
-}
-
 fn operation_endpoint_requires_generated_code(
     contract: &ContractIr,
     graph: &GraphIr,
     endpoint: &flowrt_ir::OperationPortRef,
 ) -> bool {
     endpoint_requires_generated_code(contract, graph, &endpoint.instance.name)
+}
+
+/// 判断 service 端点是否由 C++ 生成代码承载。仅用于在 C++ zenoh service 接线完成前
+/// 对 C++ 端点 fail-fast；Rust 端点已接线，返回 false。
+fn service_endpoint_is_cpp_generated(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    endpoint: &flowrt_ir::ServicePortRef,
+) -> bool {
+    if !endpoint_requires_generated_code(contract, graph, &endpoint.instance.name) {
+        return false;
+    }
+    graph
+        .instances
+        .iter()
+        .find(|instance| instance.name == endpoint.instance.name)
+        .map(|instance| component_by_name(contract, &instance.component.name))
+        .is_some_and(|component| component.language == LanguageKind::Cpp)
 }
 
 fn endpoint_requires_generated_code(

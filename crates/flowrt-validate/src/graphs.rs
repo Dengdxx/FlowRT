@@ -388,6 +388,25 @@ fn validate_service_binds(
             )));
         }
 
+        // zenoh service server 由 transport queryable 回调线程驱动，handler 要求
+        // `Send + Sync`。只有 `parallel` component 生成的 trait 满足该约束；`exclusive`
+        // component 在该线程上不安全，必须显式声明 `concurrency = "parallel"`。该约束只作用于
+        // FlowRT 生成 handler 的 Rust/C++ component；external component 自管线程，不受限。
+        if service.backend.0 == "zenoh"
+            && let Some(server_instance) = instances.get(service.server.instance.name.as_str())
+            && let Some(server_component) = components.get(server_instance.component.name.as_str())
+            && matches!(
+                server_component.language,
+                LanguageKind::Rust | LanguageKind::Cpp
+            )
+            && server_component.concurrency != TaskConcurrency::Parallel
+        {
+            errors.push(ValidationError::new(format!(
+                "service bind `{client_key} -> {server_key}` uses backend `zenoh`; its server component `{}` must declare `concurrency = \"parallel\"` because the zenoh service handler runs on the transport queryable thread",
+                server_instance.component.name
+            )));
+        }
+
         let client = match resolve_service_port(
             components,
             instances,

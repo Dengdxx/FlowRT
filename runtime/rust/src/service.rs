@@ -1857,6 +1857,21 @@ impl<Resp: Send + 'static> ServiceCallHandle<Resp> {
         }
     }
 
+    /// 构造一个已经持有完成结果的就绪 handle。
+    ///
+    /// 用于 generated shell 在同步完成调用（如当前 zenoh service `start_call` 先同步
+    /// `call` 再包装）后保持非阻塞 API：`poll()` 立即返回 true，`complete()` 返回该结果。
+    pub fn ready(result: ServiceResult<Resp>) -> Self {
+        let slot = ResponseSlot::new();
+        slot.fill(result);
+        Self {
+            slot,
+            deadline: Instant::now(),
+            error: None,
+            stats: None,
+        }
+    }
+
     /// 轮询响应是否已就绪。
     pub fn poll(&self) -> bool {
         if self.error.is_some() {

@@ -1247,6 +1247,108 @@ backends = ["inproc", "zenoh"]
 }
 
 #[test]
+fn rejects_zenoh_service_with_exclusive_server_component() {
+    let source = r#"
+[package]
+name = "zenoh_service_exclusive"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    let report =
+        validate_contract(&ir).expect_err("zenoh service with exclusive server must be rejected");
+
+    assert!(
+        report.errors.iter().any(|error| {
+            error.message.contains(
+                "uses backend `zenoh`; its server component `server` must declare `concurrency = \"parallel\"`",
+            )
+        }),
+        "expected zenoh-service parallel-server error, got: {:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn accepts_zenoh_service_with_parallel_server_component() {
+    let source = r#"
+[package]
+name = "zenoh_service_parallel"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+concurrency = "parallel"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    if let Err(report) = validate_contract(&ir) {
+        assert!(
+            !report.errors.iter().any(|error| {
+                error
+                    .message
+                    .contains("must declare `concurrency = \"parallel\"`")
+            }),
+            "parallel server must not trigger the zenoh-service concurrency gate: {:?}",
+            report.errors
+        );
+    }
+}
+
+#[test]
 fn rejects_service_bind_with_unknown_backend() {
     let source = r#"
 [package]

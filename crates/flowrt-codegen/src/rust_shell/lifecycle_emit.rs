@@ -437,6 +437,18 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         output.push_str(&service_ready_marks);
         output.push_str("        }\n");
     }
+    // zenoh service 端点在组件 on_start 之后、调度循环之前按进程构造：
+    // client 填充 transport，server 打开 queryable（此时 server 组件已 started）。
+    let zenoh_service_endpoints = service_emit::emit_rust_zenoh_service_endpoints(
+        emission.contract,
+        emission.graph,
+        emission.order,
+    );
+    if !zenoh_service_endpoints.is_empty() {
+        output.push_str("        if status == flowrt::Status::Ok {\n");
+        output.push_str(&zenoh_service_endpoints);
+        output.push_str("        }\n");
+    }
     output.push_str(&run_scope_receiver(
         &scheduler_emit::emit_rust_scheduler_v2_loop(scheduler_emit::RustSchedulerLoopEmission {
             contract: emission.contract,

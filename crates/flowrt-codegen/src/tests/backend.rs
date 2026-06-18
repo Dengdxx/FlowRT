@@ -99,7 +99,7 @@ backends = ["iox2"]
 }
 
 #[test]
-fn rejects_native_zenoh_service_before_placeholder_codegen() {
+fn wires_rust_zenoh_service_endpoints() {
     let ir = contract_from_source(
         r#"
 [package]
@@ -112,6 +112,7 @@ service_client = ["plan:u32->bool"]
 
 [component.server]
 language = "rust"
+concurrency = "parallel"
 service_server = ["plan:u32->bool"]
 
 [instance.client]
@@ -136,11 +137,20 @@ runtime = ["rust"]
 backends = ["inproc", "zenoh"]
 "#,
     );
-    let error = emit_artifacts(&ir).expect_err("native zenoh service codegen must fail fast");
+    let bundle = emit_artifacts(&ir).expect("rust zenoh service codegen must succeed");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(
-        error.to_string().contains("generated Service codegen"),
-        "unexpected error: {error}"
+        shell.contains("flowrt::zenoh::open_session_from_environment()"),
+        "zenoh service process must open a transport session.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceClient::open"),
+        "client process must fill the zenoh service client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceServer::open"),
+        "server process must open the zenoh service queryable.\n\n{shell}"
     );
 }
 

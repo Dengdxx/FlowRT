@@ -104,9 +104,10 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
         // struct 定义
         if is_zenoh {
             output.push_str(&format!(
-                "/// `{client}.{port}` service client typed handle（zenoh backend，未实现）。\n\
+                "/// `{client}.{port}` service client typed handle（zenoh backend）。\n\
                  ///\n\
-                 /// 当前版本不支持 zenoh service transport。所有调用返回 `ServiceError::Backend`。\n",
+                 /// `inner` 在所属进程启动时由 runtime shell 用 `ZenohServiceClient` 填充；\n\
+                 /// 其它进程不会填充，调用返回 `ServiceError::Unavailable`。\n",
                 client = plan.client_instance,
                 port = plan.client_port,
             ));
@@ -123,7 +124,9 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
         output.push_str("#[allow(non_camel_case_types)]\n#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
         if is_zenoh {
-            output.push_str("    pub(crate) _marker: std::marker::PhantomData<()>,\n");
+            output.push_str(&format!(
+                "    pub(crate) inner: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>>>,\n",
+            ));
         } else {
             output.push_str(&format!(
                 "    pub(crate) inner: flowrt::InprocServiceClient<{req_ty}, {resp_ty}>,\n",
@@ -135,25 +138,35 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
         output.push_str(&format!("impl {handle_name} {{\n"));
 
         if is_zenoh {
-            // zenoh backend: 返回 Unsupported
+            // zenoh backend: 经 transport client 同步 query；未填充时 Unavailable
             output.push_str(&format!(
-                "    /// zenoh service transport 尚未实现。\n\
+                "    /// 发起同步阻塞 zenoh service 调用。\n\
+                 ///\n\
+                 /// 所属进程未填充 transport client 时返回 `ServiceError::Unavailable`。\n\
                  pub fn call(\n\
                      &self,\n\
-                     _request: {req_ty},\n\
-                     _timeout: std::time::Duration,\n\
+                     request: {req_ty},\n\
+                     timeout: std::time::Duration,\n\
                  ) -> flowrt::ServiceResult<{resp_ty}> {{\n\
-                     flowrt::ServiceResult::err(flowrt::ServiceError::Backend)\n\
+                     match self.inner.get() {{\n\
+                         Some(client) => client.call(request, timeout.as_millis().min(u64::MAX as u128) as u64),\n\
+                         None => flowrt::ServiceResult::err(flowrt::ServiceError::Unavailable),\n\
+                     }}\n\
                  }}\n\n",
             ));
             output.push_str(&format!(
-                "    /// zenoh service transport 尚未实现。\n\
+                "    /// 发起 zenoh service 调用并返回就绪 `ServiceCallHandle`。\n\
+                 ///\n\
+                 /// v1 实现先同步完成 query 再包装结果；transport client 未填充时返回就绪错误。\n\
                  pub fn start_call(\n\
                      &self,\n\
-                     _request: {req_ty},\n\
-                     _timeout: std::time::Duration,\n\
+                     request: {req_ty},\n\
+                     timeout: std::time::Duration,\n\
                  ) -> flowrt::ServiceCallHandle<{resp_ty}> {{\n\
-                     flowrt::ServiceCallHandle::ready_error(flowrt::ServiceError::Backend)\n\
+                     match self.inner.get() {{\n\
+                         Some(client) => flowrt::ServiceCallHandle::ready(client.call(request, timeout.as_millis().min(u64::MAX as u128) as u64)),\n\
+                         None => flowrt::ServiceCallHandle::ready_error(flowrt::ServiceError::Unavailable),\n\
+                     }}\n\
                  }}\n\n",
             ));
         } else {
@@ -253,12 +266,13 @@ pub(crate) fn emit_rust_service_new(
         let resp_ty = rust_type(&plan.response_type);
 
         if is_zenoh {
-            // zenoh backend: skip inproc registration, generate placeholder initializers
+            // zenoh backend: skip inproc registration, generate placeholder initializers.
+            // transport client 在所属进程启动时填充（emit_rust_zenoh_service_endpoints）。
             let client_field = client_field_name(plan);
             let handle_name = client_handle_name(plan);
 
             initializers.push_str(&format!(
-                "            {client_field}: {handle_name} {{ _marker: std::marker::PhantomData }},\n",
+                "            {client_field}: {handle_name} {{ inner: std::sync::Arc::new(std::sync::OnceLock::new()) }},\n",
             ));
             continue;
         }
@@ -519,4 +533,91 @@ fn service_step_fn_name(plan: &ServiceRuntimePlan) -> String {
 /// server handler trait 方法名。
 pub(crate) fn service_handler_method_name(port_name: &str) -> String {
     format!("on_{}_request", crate::snake_identifier(port_name))
+}
+
+/// 生成进程级 zenoh service 端点构造代码，注入 `run_process_*` 函数体。
+///
+/// 在所属进程为 zenoh service client 填充 transport client、为 server 打开 queryable，
+/// 并登记/标记 server service ready。必须在 `app`（`Arc<Self>`）、`status` 和
+/// `introspection_state` 可见的作用域注入；返回字符串直接使用这些名字，不经
+/// `run_scope_receiver` 改写。server component 由 validator 保证为 `parallel`
+/// （`Arc<Box<dyn Trait + Send + Sync>>`），handler 可在 queryable 回调线程安全调用。
+pub(crate) fn emit_rust_zenoh_service_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&flowrt_ir::InstanceIr],
+) -> String {
+    let plans = service_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let zenoh_plans: Vec<&ServiceRuntimePlan> = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "zenoh")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect();
+    if zenoh_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str(
+        "        let zenoh_service_session = match flowrt::zenoh::open_session_from_environment() {\n\
+         \x20           Ok(session) => Some(session),\n\
+         \x20           Err(error) => {\n\
+         \x20               eprintln!(\"FlowRT: failed to open zenoh service session: {error}\");\n\
+         \x20               status = flowrt::Status::Error;\n\
+         \x20               None\n\
+         \x20           }\n\
+         \x20       };\n",
+    );
+
+    for plan in &zenoh_plans {
+        let service_name_literal = rust_string_literal(&plan.service_name);
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = client_field_name(plan);
+            output.push_str(&format!(
+                "        if let Some(session) = zenoh_service_session.as_ref() {{\n\
+                 \x20           let _ = app.{client_field}.inner.set(flowrt::zenoh::ZenohServiceClient::open({service_name_literal}, session.clone()));\n\
+                 \x20       }}\n",
+            ));
+        }
+        if active.contains(plan.server_instance.as_str()) {
+            let server_instance = &plan.server_instance;
+            let method_name = service_handler_method_name(&plan.server_port);
+            let server_var = format!(
+                "_zenoh_service_server_{}_{}",
+                crate::snake_identifier(server_instance),
+                crate::snake_identifier(&plan.server_port)
+            );
+            output.push_str(&format!(
+                "        let {server_var} = if let Some(session) = zenoh_service_session.as_ref() {{\n\
+                 \x20           let handler_component = app.{server_instance}.clone();\n\
+                 \x20           match flowrt::zenoh::ZenohServiceServer::open(\n\
+                 \x20               {service_name_literal},\n\
+                 \x20               session.clone(),\n\
+                 \x20               move |request| handler_component.as_ref().as_ref().{method_name}(&request),\n\
+                 \x20           ) {{\n\
+                 \x20               Ok(server) => {{\n\
+                 \x20                   introspection_state.register_service({service_name_literal});\n\
+                 \x20                   introspection_state.mark_service_ready({service_name_literal});\n\
+                 \x20                   Some(server)\n\
+                 \x20               }}\n\
+                 \x20               Err(error) => {{\n\
+                 \x20                   eprintln!(\"FlowRT: failed to open zenoh service server: {{error}}\");\n\
+                 \x20                   status = flowrt::Status::Error;\n\
+                 \x20                   None\n\
+                 \x20               }}\n\
+                 \x20           }}\n\
+                 \x20       }} else {{\n\
+                 \x20           None\n\
+                 \x20       }};\n",
+            ));
+        }
+    }
+    output
 }

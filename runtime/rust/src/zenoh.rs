@@ -551,6 +551,16 @@ fn open_zenoh_parts(
     })
 }
 
+/// 从 `FLOWRT_ZENOH_*` 环境变量打开一个 zenoh session。
+///
+/// 供生成 runtime shell 在进程内为 zenoh service client/server 创建一个共享 session；
+/// 网络配置由 FlowRT runtime 环境注入，不进入用户组件 API。
+pub fn open_session_from_environment() -> Result<Session, ZenohError> {
+    zenoh::open(config_from_environment()?)
+        .wait()
+        .map_err(|error| ZenohError::transport("open Zenoh session", error))
+}
+
 fn overflow_policy_name(policy: OverflowPolicy) -> &'static str {
     match policy {
         OverflowPolicy::DropOldest => "drop_oldest",

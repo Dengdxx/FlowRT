@@ -434,18 +434,28 @@ backend = "inproc"
     );
 }
 
-/// zenoh service transport runtime 已存在，但 generated app 尚未接线；codegen 必须 fail-fast，
-/// 不能生成只会返回 Backend 的 placeholder。
+/// zenoh service transport 已接线：client handle 持有按进程填充的 transport client，
+/// server 进程打开 queryable。
 #[test]
-fn zenoh_service_codegen_rejects_placeholder_output() {
-    let source = SERVICE_RSDL.replace("backend = \"inproc\"", "backend = \"zenoh\"");
+fn zenoh_service_codegen_wires_transport() {
+    let source = SERVICE_RSDL
+        .replace("backend = \"inproc\"", "backend = \"zenoh\"")
+        .replace(
+            "[component.plan_service]\nlanguage = \"rust\"",
+            "[component.plan_service]\nlanguage = \"rust\"\nconcurrency = \"parallel\"",
+        );
     let contract = contract_from_source(&source);
 
-    let error = emit_artifacts(&contract).expect_err("zenoh service codegen must fail fast");
+    let bundle = emit_artifacts(&contract).expect("zenoh service codegen must succeed");
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(
-        error.to_string().contains("generated Service codegen"),
-        "unexpected error: {error}"
+        components.contains("std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient"),
+        "zenoh client handle must hold a per-process transport client.\n\n{components}"
     );
-    assert!(error.to_string().contains("backend `zenoh`"));
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceServer::open"),
+        "server process must open the zenoh service queryable.\n\n{shell}"
+    );
 }
