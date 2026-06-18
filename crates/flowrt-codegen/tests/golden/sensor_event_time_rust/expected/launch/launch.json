@@ -10,6 +10,12 @@
     "temporary_overlay": null,
     "test_only": false
   },
+  "determinism": {
+    "mode": "process_local",
+    "on_timeout": "fault_graph",
+    "processes": [],
+    "tick_timeout_ms": 0
+  },
   "graphs": [
     {
       "boundary_endpoints": [
