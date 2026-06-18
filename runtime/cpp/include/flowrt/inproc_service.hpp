@@ -346,6 +346,24 @@ class InprocServiceHandle {
         return InprocServiceHandle(std::move(state));
     }
 
+    /**
+     * @brief 构造一个已经持有完成结果的就绪 handle。
+     *
+     * 用于 generated shell 在同步完成调用（如当前 zenoh service `start_call` 先同步
+     * `call` 再包装）后保持非阻塞 API：`poll()` 立即返回 true，`complete()` 返回该结果。
+     */
+    static InprocServiceHandle ready(ServiceResult<Resp> result) {
+        auto state = std::make_shared<State>();
+        state->done = true;
+        if (result.is_ok()) {
+            state->response = std::move(result).take_value();
+        } else {
+            state->error = result.error_code();
+            state->error_message = result.error_message();
+        }
+        return InprocServiceHandle(std::move(state));
+    }
+
    private:
     explicit InprocServiceHandle(std::shared_ptr<State> state) : state_(std::move(state)) {}
 

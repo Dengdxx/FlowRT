@@ -575,6 +575,11 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             output.push_str(&format!(
                 "    std::optional<flowrt::InprocServiceServer<{req_ty}, {resp_ty}>> {server_field}_;\n"
             ));
+        } else {
+            // zenoh server queryable 在所属进程 run 时打开并存活于该字段。
+            output.push_str(&format!(
+                "    std::optional<flowrt::zenoh::ZenohServiceServer<{req_ty}, {resp_ty}>> {server_field}_;\n"
+            ));
         }
     }
     for plan in &operation_plans {

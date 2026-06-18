@@ -166,6 +166,11 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> startup_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, startup_health_map);\n    }}\n",
         run.startup_function_name
     ));
+    output.push_str(&emit_cpp_zenoh_service_endpoints(
+        run.contract,
+        run.graph,
+        run.order,
+    ));
     output.push_str(&emit_cpp_scheduler_v2_loop(run));
     output.push_str(&format!(
         "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> shutdown_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, shutdown_health_map);\n    }}\n",
@@ -192,6 +197,60 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str("    return status;\n}\n\n");
+    output
+}
+
+/// 生成进程级 zenoh service 端点构造代码，注入 `App::run_process_*` 函数体（on_start 之后、
+/// 调度循环之前）。在所属进程为 client 填充 transport client、为 server 打开 queryable
+/// 并登记/标记 ready。server component 由 validator 保证 `parallel`，handler 在 queryable
+/// 回调线程调用。无本进程 zenoh service 时返回空串，inproc 产物字节不漂移。
+fn emit_cpp_zenoh_service_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+) -> String {
+    let plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let zenoh_plans: Vec<&crate::runtime_plan::ServiceRuntimePlan> = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "zenoh")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect();
+    if zenoh_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str("    if (status == flowrt::Status::Ok) {\n");
+    output.push_str(
+        "        auto zenoh_service_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());\n",
+    );
+    for plan in &zenoh_plans {
+        let name = cpp_string_literal(&plan.service_name);
+        let req_ty = cpp_type(&plan.request_type);
+        let resp_ty = cpp_type(&plan.response_type);
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = cpp_service_client_field_name(plan);
+            output.push_str(&format!(
+                "        this->{client_field}_.bind(flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>::open({name}, zenoh_service_session));\n",
+            ));
+        }
+        if active.contains(plan.server_instance.as_str()) {
+            let server_field = cpp_service_server_field_name(plan);
+            let server_instance = &plan.server_instance;
+            let port = crate::snake_identifier(&plan.server_port);
+            output.push_str(&format!(
+                "        this->{server_field}_ = flowrt::zenoh::ZenohServiceServer<{req_ty}, {resp_ty}>::open(\n            {name}, zenoh_service_session,\n            [this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n                if (!this->{server_instance}_) {{\n                    return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n                }}\n                return this->{server_instance}_->on_{port}_request(request);\n            }});\n        if (this->{server_field}_ && this->{server_field}_->ready()) {{\n            introspection_state.register_service({name});\n            introspection_state.mark_service_ready({name});\n        }} else {{\n            status = flowrt::Status::Error;\n        }}\n",
+            ));
+        }
+    }
+    output.push_str("    }\n");
     output
 }
 
