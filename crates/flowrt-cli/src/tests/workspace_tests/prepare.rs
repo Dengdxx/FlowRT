@@ -413,11 +413,11 @@ value = "u32"
 
 [component.producer]
 language = "rust"
-output = ["defaulted:Sample", "explicit:Sample"]
+output = ["defaulted:Sample", "selected:Sample"]
 
 [component.consumer]
 language = "rust"
-input = ["defaulted:Sample", "explicit:Sample"]
+input = ["defaulted:Sample", "selected:Sample"]
 
 [instance.producer]
 component = "producer"
@@ -427,7 +427,7 @@ target = "linux"
 [instance.producer.task]
 trigger = "periodic"
 period_ms = 1
-output = ["defaulted", "explicit"]
+output = ["defaulted", "selected"]
 
 [instance.consumer]
 component = "consumer"
@@ -436,7 +436,7 @@ target = "linux"
 
 [instance.consumer.task]
 trigger = "on_message"
-input = ["defaulted", "explicit"]
+input = ["defaulted", "selected"]
 
 [[bind.dataflow]]
 from = "producer.defaulted"
@@ -445,8 +445,8 @@ channel = "fifo"
 depth = 2
 
 [[bind.dataflow]]
-from = "producer.explicit"
-to = "consumer.explicit"
+from = "producer.selected"
+to = "consumer.selected"
 channel = "latest"
 overflow = "drop_newest"
 stale_policy = "hold_last"
@@ -483,18 +483,18 @@ backends = ["inproc"]
         .iter()
         .find(|bind| bind.to.port == "defaulted")
         .unwrap();
-    let explicit_ir = prepared_ir.graphs[0]
+    let selected_ir = prepared_ir.graphs[0]
         .binds
         .iter()
-        .find(|bind| bind.to.port == "explicit")
+        .find(|bind| bind.to.port == "selected")
         .unwrap();
 
     assert_eq!(defaulted_ir.overflow, flowrt_ir::OverflowPolicy::Error);
     assert_eq!(defaulted_ir.stale, flowrt_ir::StalePolicy::Drop);
     assert_eq!(defaulted_ir.max_age_ms, Some(25));
-    assert_eq!(explicit_ir.overflow, flowrt_ir::OverflowPolicy::DropNewest);
-    assert_eq!(explicit_ir.stale, flowrt_ir::StalePolicy::HoldLast);
-    assert_eq!(explicit_ir.max_age_ms, Some(7));
+    assert_eq!(selected_ir.overflow, flowrt_ir::OverflowPolicy::DropNewest);
+    assert_eq!(selected_ir.stale, flowrt_ir::StalePolicy::HoldLast);
+    assert_eq!(selected_ir.max_age_ms, Some(7));
 
     let launch: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out_dir.join("launch/launch.json")).unwrap())
@@ -504,17 +504,17 @@ backends = ["inproc"]
         .iter()
         .find(|channel| channel["to"] == "consumer.defaulted")
         .unwrap();
-    let explicit_launch = channels
+    let selected_launch = channels
         .iter()
-        .find(|channel| channel["to"] == "consumer.explicit")
+        .find(|channel| channel["to"] == "consumer.selected")
         .unwrap();
 
     assert_eq!(defaulted_launch["overflow"], "error");
     assert_eq!(defaulted_launch["stale_policy"], "drop");
     assert_eq!(defaulted_launch["max_age_ms"], 25);
-    assert_eq!(explicit_launch["overflow"], "drop_newest");
-    assert_eq!(explicit_launch["stale_policy"], "hold_last");
-    assert_eq!(explicit_launch["max_age_ms"], 7);
+    assert_eq!(selected_launch["overflow"], "drop_newest");
+    assert_eq!(selected_launch["stale_policy"], "hold_last");
+    assert_eq!(selected_launch["max_age_ms"], 7);
 
     let _ = std::fs::remove_dir_all(&rsdl_dir);
 }

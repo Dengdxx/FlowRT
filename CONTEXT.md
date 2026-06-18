@@ -5,10 +5,25 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.22.0`；当前发布线为 `v0.22.0 Deterministic Fault Injection`，开启
-`0.22.x 容错验证` 主题：提供 test-only 确定性故障注入，在 `(instance, task, 第 N 次调用)` 锚点
-强制 `Status::Error`，让用户无需手写「按时崩的组件」即可跑遍 0.21.x 全部故障反应策略并验证可复现，
-也为 v1.0.0 故障注入矩阵去风险。
+当前 workspace 版本为 `0.22.1`；当前发布线为 `v0.22.1 Reserved Keyword Naming`，是
+`0.22.x 容错验证` 主题之后的验证加固 patch：validator 拒绝会被 codegen 直接生成为
+Rust/C++ 标识符、且与任一目标语言保留关键字冲突的 RSDL 名称，避免用户契约在验证阶段通过、
+却在生成的 Rust/C++ shell 编译时报 `in`、`type`、`class`、`delete` 等关键字错误。
+
+- 关键字拒绝只作用于 identifier-emitting 名称：message field、data port、service port、
+  operation port、instance 和 task；这些名称会进入生成结构体字段、函数参数、局部变量或
+  task 函数/分支标识。
+- `profile.default`、target、process、lane、bridge、package 和 component source name 保持
+  原有 `snake_case` 规则：它们用于 Contract IR/manifest/key lookup，不直接成为 lowercase
+  Rust/C++ 标识符，不能误伤既有合法契约。
+- 选择 validator 拒绝而不是 codegen escape：Rust 可用 raw identifier，但 C++ 没有等价机制；
+  name-mangling 会破坏跨语言 API / 字段名一致性。FlowRT 契约应在进入 codegen 前就是双语言可生成的。
+- 新增 `v0.22.1 Reserved Keyword Naming` focused smoke，覆盖关键字拒绝与 `profile.default`
+  继续合法，并接入 release gate registry 与 CI。
+
+上一发布线为 `v0.22.0 Deterministic Fault Injection`，开启 `0.22.x 容错验证` 主题：提供 test-only
+确定性故障注入，在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，让用户无需手写
+「按时崩的组件」即可跑遍 0.21.x 全部故障反应策略并验证可复现，也为 v1.0.0 故障注入矩阵去风险。
 
 - 注入是 **test-only codegen-time overlay**（不改 RSDL 契约结构），镜像 `temporary_island`：场景为
   独立 TOML（`[[inject]]`，按名引用 `instance`/`task`，`invocations` 显式集合或 `from_invocation`
@@ -562,6 +577,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.20.1` | Feedback Loops v2：回边新增 `init`（按源消息类型播种 literal 初值）与 `fifo` + `depth = N`（N 拍延迟）。validator 放宽为允许 latest(1 拍) 或 fifo(N 拍)，按源消息 TypeIr 递归类型校验 init，fifo 反馈要求两端 periodic 等周期；codegen 两语言播种 literal/N 份。golden `feedback_v2_rust/cpp`+编译网真编译。init 仅支持全 primitive 字段消息；跨进程延迟环仍留待多机/容错版本。 |
 | `v0.21.x` | 图级容错 / 生命周期（patch 线 5 切片）：生命周期状态机底座 / 进程内隔离重启 / 降级数据语义 / 图级 health 聚合 + 受控停机 / 跨进程反馈环。 |
 | `v0.22.0` | Deterministic Fault Injection：test-only 注入 overlay 在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，跑遍 0.21.x 全部故障反应策略并验证可复现。codegen 两语言 per-task 计数器 + 注入门（gated，非注入字节不漂移）；validator 守 scheduled-only / ≥1 boundary input(island) / 单进程 / canonical；golden + 编译网 + focused smoke。确定性经 golden 锁定的计数驱动门 ∘ v0.17/v0.18 回放内核证明，不另做 CLI MCAP 往返。Error-only、单进程、startup/shutdown 与跨进程注入留待后续。 |
+| `v0.22.1` | Reserved Keyword Naming：validator 拒绝 field / port / service port / operation port / instance / task 等生成代码标识符撞 Rust 2024 或 C++ 保留关键字，保留 `profile.default` 等非标识符名称合法。focused smoke 接入 release gate。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：

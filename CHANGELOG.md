@@ -4,6 +4,20 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.22.1 - 2026-06-18
+
+RSDL identifier 命名加固：validator 拒绝会被 codegen 直接生成为 Rust/C++ 标识符、且与任一目标语言保留关键字冲突的名称，避免合法契约在生成阶段产出无法编译的 shell。
+
+### 修复
+
+- `field`、data port、service port、operation port、instance 和 task 名称新增跨语言关键字检查，拒绝 `in`、`type`、`match`、`class`、`new`、`delete` 等 Rust 2024 或 C++ 保留关键字；错误在 Contract IR validator 阶段给出，而不是等到 Rust/C++ 编译报错。
+- 保持 `profile.default`、target、process、lane、bridge、package 和 component source name 等非标识符用途名称的原有 `snake_case` 规则，避免把 manifest 字符串或 profile key 误判为生成代码标识符。
+
+### 测试
+
+- 覆盖 field / data-port / service-port / operation-port / instance / task 的关键字拒绝，以及 `profile.default` 继续合法。
+- 新增 `v0.22.1 Reserved Keyword Naming` focused smoke，并接入 CI 与 release gate registry。
+
 ## v0.22.0 - 2026-06-18
 
 确定性故障注入 + determinism 验证：提供一种 test-only 机制，在确定的 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，让用户无需手写「按时崩的组件」即可跑遍 0.21.x 全部故障反应策略（fail_fast / isolate / restart / degrade / 受控停机）并验证可复现。这是 0.21.x 图级容错主题的直接兑现，也为 v1.0.0 故障注入矩阵去风险。

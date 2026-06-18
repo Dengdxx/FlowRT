@@ -42,7 +42,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 "field",
                 "field name",
                 &field.name,
-                NameStyle::SnakeCase,
+                NameStyle::SnakeCaseIdentifier,
                 errors,
             );
         }
@@ -83,7 +83,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 "port",
                 "port name",
                 &port.name,
-                NameStyle::SnakeCase,
+                NameStyle::SnakeCaseIdentifier,
                 errors,
             );
         }
@@ -96,7 +96,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 "service",
                 "service port name",
                 &port.name,
-                NameStyle::SnakeCase,
+                NameStyle::SnakeCaseIdentifier,
                 errors,
             );
         }
@@ -109,7 +109,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 "operation",
                 "operation port name",
                 &port.name,
-                NameStyle::SnakeCase,
+                NameStyle::SnakeCaseIdentifier,
                 errors,
             );
         }
@@ -148,7 +148,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 "instance",
                 "instance name",
                 &instance.name,
-                NameStyle::SnakeCase,
+                NameStyle::SnakeCaseIdentifier,
                 errors,
             );
             if let Some(process) = &instance.process {
@@ -184,7 +184,7 @@ pub(crate) fn validate_names(ir: &ContractIr, errors: &mut Vec<ValidationError>)
                 "task",
                 "task name",
                 &task.name,
-                NameStyle::SnakeCase,
+                NameStyle::SnakeCaseIdentifier,
                 errors,
             );
             if let Some(lane) = &task.lane {
@@ -233,6 +233,10 @@ fn validate_canonical_generated_name(
 #[derive(Debug, Clone, Copy)]
 enum NameStyle {
     SnakeCase,
+    /// snake_case 且会被 codegen 直接 emit 为 Rust/C++ 标识符的名称（字段、端口、
+    /// instance、task）。除 snake_case 外，还必须不与任一目标语言的保留关键字冲突，
+    /// 否则生成 shell 会出现 `in:`、`class;` 之类无法编译的标识符。
+    SnakeCaseIdentifier,
     PascalCase,
     GeneratedSymbol,
 }
@@ -240,7 +244,7 @@ enum NameStyle {
 impl NameStyle {
     fn label(self) -> &'static str {
         match self {
-            NameStyle::SnakeCase => "snake_case",
+            NameStyle::SnakeCase | NameStyle::SnakeCaseIdentifier => "snake_case",
             NameStyle::PascalCase => "PascalCase",
             NameStyle::GeneratedSymbol => "a non-empty generated identifier",
         }
@@ -248,10 +252,15 @@ impl NameStyle {
 
     fn accepts(self, name: &str) -> bool {
         match self {
-            NameStyle::SnakeCase => is_snake_case(name),
+            NameStyle::SnakeCase | NameStyle::SnakeCaseIdentifier => is_snake_case(name),
             NameStyle::PascalCase => is_pascal_case(name),
             NameStyle::GeneratedSymbol => is_generated_symbol(name),
         }
+    }
+
+    /// 该 name style 是否要求名称同时是合法的跨语言标识符（拒绝保留关键字）。
+    fn requires_identifier(self) -> bool {
+        matches!(self, NameStyle::SnakeCaseIdentifier)
     }
 }
 
@@ -262,10 +271,16 @@ fn validate_name(
     style: NameStyle,
     errors: &mut Vec<ValidationError>,
 ) {
-    if !style.accepts(name) {
+    let style_accepts = style.accepts(name);
+    if !style_accepts {
         errors.push(ValidationError::new(format!(
             "{label} `{name}` must be {}",
             style.label()
+        )));
+    }
+    if style_accepts && style.requires_identifier() && is_reserved_cross_language_keyword(name) {
+        errors.push(ValidationError::new(format!(
+            "{label} `{name}` collides with a reserved Rust/C++ keyword"
         )));
     }
     if name
@@ -276,6 +291,143 @@ fn validate_name(
             "{entity_kind} name `{name}` uses reserved `flowrt` prefix"
         )));
     }
+}
+
+fn is_reserved_cross_language_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "abstract"
+            | "alignas"
+            | "alignof"
+            | "and"
+            | "and_eq"
+            | "as"
+            | "asm"
+            | "async"
+            | "atomic_cancel"
+            | "atomic_commit"
+            | "atomic_noexcept"
+            | "auto"
+            | "await"
+            | "become"
+            | "bitand"
+            | "bitor"
+            | "bool"
+            | "box"
+            | "break"
+            | "case"
+            | "catch"
+            | "char"
+            | "char16_t"
+            | "char32_t"
+            | "char8_t"
+            | "class"
+            | "co_await"
+            | "co_return"
+            | "co_yield"
+            | "compl"
+            | "concept"
+            | "const"
+            | "const_cast"
+            | "consteval"
+            | "constexpr"
+            | "constinit"
+            | "continue"
+            | "crate"
+            | "decltype"
+            | "default"
+            | "delete"
+            | "do"
+            | "double"
+            | "dyn"
+            | "dynamic_cast"
+            | "else"
+            | "enum"
+            | "explicit"
+            | "export"
+            | "extern"
+            | "false"
+            | "final"
+            | "float"
+            | "fn"
+            | "for"
+            | "friend"
+            | "gen"
+            | "goto"
+            | "if"
+            | "impl"
+            | "import"
+            | "in"
+            | "inline"
+            | "int"
+            | "let"
+            | "long"
+            | "loop"
+            | "macro"
+            | "match"
+            | "mod"
+            | "module"
+            | "move"
+            | "mut"
+            | "mutable"
+            | "namespace"
+            | "new"
+            | "noexcept"
+            | "not"
+            | "not_eq"
+            | "nullptr"
+            | "operator"
+            | "or"
+            | "or_eq"
+            | "override"
+            | "priv"
+            | "private"
+            | "protected"
+            | "pub"
+            | "public"
+            | "ref"
+            | "register"
+            | "reinterpret_cast"
+            | "requires"
+            | "return"
+            | "self"
+            | "short"
+            | "signed"
+            | "sizeof"
+            | "static"
+            | "static_assert"
+            | "static_cast"
+            | "struct"
+            | "super"
+            | "switch"
+            | "template"
+            | "this"
+            | "thread_local"
+            | "throw"
+            | "trait"
+            | "true"
+            | "try"
+            | "type"
+            | "typedef"
+            | "typeid"
+            | "typename"
+            | "typeof"
+            | "union"
+            | "unsafe"
+            | "unsigned"
+            | "unsized"
+            | "use"
+            | "using"
+            | "virtual"
+            | "void"
+            | "volatile"
+            | "wchar_t"
+            | "where"
+            | "while"
+            | "xor"
+            | "xor_eq"
+            | "yield"
+    )
 }
 
 fn is_snake_case(name: &str) -> bool {

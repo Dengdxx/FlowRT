@@ -246,7 +246,7 @@ value = "u32"
 
 [component.feeder]
 language = "rust"
-input = ["in:Tick"]
+input = ["sample:Tick"]
 
 [component.flaky]
 language = "rust"
@@ -257,7 +257,7 @@ component = "feeder"
 
 [instance.feeder.task]
 trigger = "on_message"
-input = ["in"]
+input = ["sample"]
 
 [instance.flaky]
 component = "flaky"
@@ -273,7 +273,7 @@ backend = "inproc"
 
 [[boundary.input]]
 name = "feed"
-port = "feeder.in"
+port = "feeder.sample"
 type = "Tick"
 "#,
         period = if trigger == "periodic" {

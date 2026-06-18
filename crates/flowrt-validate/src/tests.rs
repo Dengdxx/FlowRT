@@ -14,6 +14,7 @@ mod contract_tests;
 mod feedback_tests;
 mod graph_tests;
 mod message_tests;
+mod name_tests;
 mod resource_tests;
 mod sync_tests;
 
