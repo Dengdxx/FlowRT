@@ -5,10 +5,21 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.23.1`；当前发布收口为
-`v0.23.1 Backend Route Health Unification`：dataflow route 的 backend health
-进入统一 introspection route facts，`iox2` / `zenoh` endpoint 的恢复状态不再只停留在
-独立 `BackendHealthTracker` 内部。
+当前 workspace 版本为 `0.23.2`；当前发布收口为
+`v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++ runtime shell
+进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量债闭合。
+
+- 新增仓库级 `.clang-tidy`，采用低噪声 C++20 checks，避免 `modernize-use-trailing-return-type`、
+  `readability-magic-numbers`、`modernize-avoid-c-arrays` 等高噪声或 ABI 不适配规则。
+- 新增 `v0.23.2 C++ clang-tidy Smoke`，CI 安装 clang-tidy 后通过 release gate registry 运行，
+  覆盖 `runtime/cpp` 默认 CMake translation units 与 `cpp_counter_demo` generated C++
+  `runtime_shell.cpp`。
+- 修复 C++ runtime `OperationCancelToken` 冗余默认成员初始化，保持 C++ runtime ctest 与
+  generated shell 编译路径不退化。
+
+上一发布线为 `v0.23.1 Backend Route Health Unification`：dataflow route 的 backend health
+进入统一 introspection route facts，`iox2` / `zenoh` endpoint 的恢复状态不再只停留在独立
+`BackendHealthTracker` 内部。
 
 - `IntrospectionRouteStatus` 新增 `backend_health_state`、`backend_health_error`、
   `backend_reconnect_attempt`、`backend_next_retry_unix_ms` 和 `backend_recoverable`；
@@ -62,9 +73,9 @@ ABI/schema 冻结后被绑死。每债还时口径不变：要么完整端到端
 - debt 6 backend route health 统一：已在 `v0.23.1` 收口。route-level publish
   error、backpressure、recovery state 归并进 `introspection/facts.rs` 同一事实源，
   `status` / diagnostics 统一暴露，并由 focused smoke 把关。
-- debt 4 C++ `clang-tidy` gate：卡在本机无 clang-tidy 工具。还法是 CI 容器装
-  clang-tidy → 接一个 C++ 生成工程 lint job → 修 findings（数量未知，可能 1-2 轮）。
-  设计为零，工程量取决于 findings；不单独占大版本。
+- debt 4 C++ `clang-tidy` gate：已在 `v0.23.2` 收口。CI 安装 clang-tidy，通过 focused
+  smoke 覆盖 C++ runtime headers/tests 与 generated C++ runtime shell。首版只启用低噪声
+  checks，避免把 ABI/POD 风格或 generated generic capture 策略误判为发布阻塞。
 
 **波次 2 — 基础大活（各占一条 minor 线）**：有依赖，pre-1.0 大胆重写不留兼容层。
 
@@ -654,6 +665,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.22.1` | Reserved Keyword Naming：validator 拒绝 field / port / service port / operation port / instance / task 等生成代码标识符撞 Rust 2024 或 C++ 保留关键字，保留 `profile.default` 等非标识符名称合法。focused smoke 接入 release gate。 |
 | `v0.23.0` | Zenoh Service Transport：native Rust/C++ generated Service 支持跨进程 zenoh request/response，生成 typed `ZenohServiceClient` / `ZenohServiceServer` 接线；validator 要求 zenoh server component `concurrency = "parallel"`；manifest/self-description 暴露 service `key_expr`；新增 `zenoh_service_{rust,cpp}` golden、`examples/zenoh_service_demo` 和 focused smoke。Operation zenoh 仍 fail-fast。 |
 | `v0.23.1` | Backend Route Health Unification：`iox2` / `zenoh` dataflow route 的 endpoint `BackendHealthSnapshot` 进入 introspection route facts，`flowrt status` route 行展示 `backend_health_state`、错误、重连 attempt、下一次 retry 和 recoverable 状态；Rust generated shell 在 transport publish 后记录 route backend health，C++ runtime JSON / diagnostics 镜像字段；新增 route health focused smoke。 |
+| `v0.23.2` | C++ clang-tidy Gate：新增仓库级 `.clang-tidy` 与 focused smoke，CI 安装 clang-tidy 后 lint C++ runtime 默认 translation units 和 generated `cpp_counter_demo` runtime shell；首版启用低噪声 checks，关闭高噪声 ABI/POD/generic generated capture 不适配项。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -1341,6 +1353,8 @@ service validator server parallel gate、Rust/C++ generated endpoint 接线、go
 self-description service `key_expr` 展示、示例 `check/prepare` 和 manifest/self-description
 `key_expr`。`v0.23.1 Route Health Smoke` 覆盖 Rust route backend health facts、CLI
 route health 输出、Rust codegen transport publish health 接线和 C++ introspection parity。
+`v0.23.2 C++ clang-tidy Smoke` 覆盖 C++ runtime headers/tests 和 generated C++
+runtime shell lint。
 发布前应运行
 `scripts/check-architecture-contract.sh`、`scripts/check-release-readiness.sh <version>` 和
 `scripts/check-release-candidate.sh <version> --wait --ref dev/v<version>`；
@@ -1348,7 +1362,7 @@ route health 输出、Rust codegen transport publish health 接线和 C++ intros
 release evidence 门禁和
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 / v0.9.x / v0.10.2 /
 v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 / v0.15.1 / v0.15.2 / v0.23.0 /
-v0.23.1
+v0.23.1 / v0.23.2
 focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、

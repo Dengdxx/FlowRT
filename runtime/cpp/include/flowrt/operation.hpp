@@ -611,7 +611,7 @@ class OperationLifecycle {
     OperationPolicy policy_{};
     bool valid_policy_ = true;
     OperationState state_{OperationState::Starting};
-    OperationCancelToken cancel_token_{};
+    OperationCancelToken cancel_token_;
     OperationHealthCounters health_{};
 };
 
