@@ -232,7 +232,8 @@ fn rejects_external_stepped_clock_source() {
     }));
 }
 
-/// 把含单 task 的 strict 合同投影并叠加故障注入，trigger 由参数决定。
+/// 构造一个 island 合同（feeder 提供 boundary input 以满足注入可驱动要求），并对 flaky 叠加
+/// 故障注入；flaky task trigger 由参数决定，用于覆盖 scheduled / 非 scheduled 校验。
 fn fault_injection_fixture(trigger: &str) -> flowrt_ir::ContractIr {
     let source = format!(
         r#"
@@ -243,9 +244,20 @@ rsdl_version = "0.1"
 [type.Tick]
 value = "u32"
 
+[component.feeder]
+language = "rust"
+input = ["in:Tick"]
+
 [component.flaky]
 language = "rust"
 output = ["out:Tick"]
+
+[instance.feeder]
+component = "feeder"
+
+[instance.feeder.task]
+trigger = "on_message"
+input = ["in"]
 
 [instance.flaky]
 component = "flaky"
@@ -255,8 +267,14 @@ trigger = "{trigger}"
 {period}
 output = ["out"]
 
-[profile.default]
+[profile.dev]
+mode = "island"
 backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "feeder.in"
+type = "Tick"
 "#,
         period = if trigger == "periodic" {
             "period_ms = 10"
@@ -331,6 +349,58 @@ fn rejects_fault_injection_clock_tampered_to_realtime() {
         error.message.contains(
             "artifact clock source `realtime` is inconsistent with derived `simulated_replay`",
         )
+    }));
+}
+
+#[test]
+fn rejects_fault_injection_without_boundary_input() {
+    // strict 合同（无 boundary input）叠加注入：simulated_replay 时间线为空、无从驱动，拒绝。
+    let source = r#"
+[package]
+name = "fault_injection_no_boundary_demo"
+rsdl_version = "0.1"
+
+[type.Tick]
+value = "u32"
+
+[component.flaky]
+language = "rust"
+output = ["out:Tick"]
+
+[instance.flaky]
+component = "flaky"
+
+[instance.flaky.task]
+trigger = "periodic"
+period_ms = 10
+output = ["out"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    let injected = flowrt_ir::apply_fault_injection_overlay(
+        &projected,
+        &flowrt_ir::FaultInjectionScenario {
+            points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                instance: "flaky".to_string(),
+                task: "main".to_string(),
+                invocations: vec![],
+                from_invocation: Some(1),
+                reason: String::new(),
+            }],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap();
+    let report = validate_contract(&injected)
+        .expect_err("fault injection without a boundary input should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("fault injection requires at least one boundary input")
     }));
 }
 

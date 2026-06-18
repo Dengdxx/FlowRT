@@ -246,12 +246,13 @@ rsdl_version = "0.1"
 [type.Sample]
 value = "u32"
 
-[component.producer]
+[component.flaky]
 language = "rust"
-output = ["sample:Sample"]
+input = ["sample:Sample"]
+output = ["echo:Sample"]
 
 [instance.flaky]
-component = "producer"
+component = "flaky"
 
 [instance.flaky.fault]
 policy = "restart"
@@ -260,12 +261,18 @@ initial_delay_ms = 10
 max_delay_ms = 40
 
 [instance.flaky.task]
-trigger = "periodic"
-period_ms = 10
-output = ["sample"]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
 
-[profile.default]
+[profile.dev]
+mode = "island"
 backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "flaky.sample"
+type = "Sample"
 "#;
     let rsdl_dir = temp_test_dir("prepare-fault-injection");
     let rsdl_path = rsdl_dir.join("robot.rsdl");

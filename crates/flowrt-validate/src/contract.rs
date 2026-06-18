@@ -196,6 +196,23 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
         ));
     }
 
+    // 注入产物运行在 simulated_replay 时钟下；该时钟由回放事件时间线步进，缺 boundary input 时
+    // 时间线为空、运行立即 shutdown，注入无从触发。要求 ≥1 boundary input（island），给出可执行
+    // 错误而非生成不可驱动/不可编译的产物。
+    let has_boundary_input = ir.graphs.iter().any(|graph| {
+        graph
+            .boundary_endpoints
+            .iter()
+            .any(|endpoint| endpoint.direction == BoundaryDirection::Input)
+    });
+    if !has_boundary_input {
+        errors.push(ValidationError::new(
+            "fault injection requires at least one boundary input (island) to drive the \
+             simulated_replay timeline; declare an island profile with `[[boundary.input]]` or \
+             apply `--temporary-island --boundary-input`",
+        ));
+    }
+
     for point in &fault.points {
         let target = format!("{}.{}", point.instance.name, point.task.name);
         if point.invocations.is_empty() && point.from_invocation.is_none() {
