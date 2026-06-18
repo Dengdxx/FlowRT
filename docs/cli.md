@@ -11,7 +11,7 @@ flowrt add module <Name>
 flowrt add component <Name> --lang <rust|cpp|c> [--input name:Type]... [--output name:Type]...
 flowrt check [path/to/robot.rsdl]
 flowrt explain [path/to/robot.rsdl] [--format <text|json>]
-flowrt prepare [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
+flowrt prepare [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--inject <path/to/scenario.toml>]
 flowrt deps [path/to/robot.rsdl] [--backend <inproc|iox2|zenoh|all>] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--check]
 flowrt cache status
 flowrt cache clean [--target <linux-amd64|linux-arm64>] [--build-mode <release|debug>] [--dry-run] [--flowrt-deps] [--project-build] [--incremental] [--stale-temp]
@@ -20,8 +20,8 @@ flowrt toolchain show --target <linux-amd64|linux-arm64>
 flowrt toolchain init --target <linux-arm64> [--sdk-overlay <path>] [--force]
 flowrt external check <path/to/external-package>
 flowrt external list --path <path/to/search-root>
-flowrt build [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>]
-flowrt run [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--replay <path/to/recording.mcap>]
+flowrt build [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--inject <path/to/scenario.toml>]
+flowrt run [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--inject <path/to/scenario.toml>] [--replay <path/to/recording.mcap>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
 flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>] [--allow-island]
 flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run] [--allow-island]
@@ -265,6 +265,28 @@ graph default
 规范化为 JSONL）。`v0.18.0` 起，声明了 sensor sample-time 源（`[type.<Name>.timestamp]`）的消息
 在录制时携带采集时刻，回放按 sample-time（event-time，缺失则回退 receive-time）确定性步进。
 多传感器同步、clock domain 同步、PTP、NTP 与 approximate sync 语义留待 `v0.19.0` 起。
+
+### `--inject`：test-only 确定性故障注入（v0.22.0）
+
+`prepare` / `build` / `run` 支持 `--inject <scenario.toml>`，用于在不改源 RSDL 的前提下，在确定的
+`(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，验证 0.21.x 故障反应策略（`fail_fast` /
+`isolate` / `restart` / `degrade` / 受控停机）的恢复路径可复现。场景为 TOML 表数组，按名引用契约
+实体：
+
+```toml
+[[inject]]
+instance = "flaky"
+task = "main"          # 归一化后的 task 名；匿名 [instance.<name>.task] 归一化为 "main"
+invocations = [1, 2]   # 命中的 1-based 调用序号；或：
+# from_invocation = 1  # 从第 N 次调用起对所有后续调用注入（驱动 restart→terminal / 持续降级）
+reason = "drive restart to terminal"
+```
+
+注入命中调用序号时跳过用户回调、直接合成 `error`（与回调真实返回 `Status::Error` 字节等价），
+交既有故障反应机器处理。注入是 test-only overlay（置 `test_only`、`clock_source=simulated_replay`，
+与 `--temporary-island` 并列可叠加），`bundle` / `deploy` 默认拒绝（需 `--allow-island`）。约束：注入
+只允许命中 scheduled task（`periodic` / `on_message` / `on_synchronized`，拒 `startup` / `shutdown`），
+要求契约含 ≥1 boundary input（island）以驱动 simulated_replay 时间线，且限单进程。
 
 ## `prepare`
 

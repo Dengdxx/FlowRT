@@ -4,6 +4,33 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.22.0 - 2026-06-18
+
+确定性故障注入 + determinism 验证：提供一种 test-only 机制，在确定的 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，让用户无需手写「按时崩的组件」即可跑遍 0.21.x 全部故障反应策略（fail_fast / isolate / restart / degrade / 受控停机）并验证可复现。这是 0.21.x 图级容错主题的直接兑现，也为 v1.0.0 故障注入矩阵去风险。
+
+### 新增
+
+- RSDL/契约之外的 **test-only 故障注入 overlay**：场景为独立 TOML 文件（`[[inject]]` 表数组，按名引用 `instance`/`task`，支持 `invocations` 显式调用序号集合与 `from_invocation` 起点），经 CLI `flowrt prepare/build/run --inject <场景>` 投影进 `ContractArtifactIr.fault_injection`，与既有 `temporary_overlay` 并列、可叠加；投影置 `test_only = true`、`clock_source = simulated_replay`，`bundle`/`deploy` 默认拒绝（与 island 脚手架一致，需显式 `--allow-island`）。
+- codegen 为每个注入目标 task 生成 per-task pre-execution 调用计数器（scheduler 线程自增）与注入门：命中调用序号时跳过用户回调、直接合成 `error` outcome（与回调真实返回 `Status::Error` 的空输出字节等价），交既有 0.21.x 故障反应机器处理。Rust 与 C++ 生成 shell 镜像，门 gated 于 `fault_injection.is_some()`，非注入产物字节不漂移。
+
+### 变更
+
+- 注入只在 simulated_replay 时钟下运行（确定性回放）；该时钟由 boundary 激励时间线步进，故 validator 要求注入契约 **≥1 boundary input（island）**，否则给出可执行错误而非生成不可驱动/不可编译产物。
+- 注入只允许命中 **scheduled task**（`periodic` / `on_message` / `on_synchronized`）——0.21.x 故障反应机器只对这些 task 的回调 `Status::Error` 反应；`startup` / `shutdown` 不走该错误分发路径，被拒。
+
+### 测试
+
+- 覆盖 IR overlay 解析/canonical、validator 门（scheduled-only / 单进程 / 需 boundary input / canonical 调用序号 / EntityRef 一致）、CLI `--inject` 场景解析与接线。
+- 新 golden `fault_injection_{restart,degrade_recover}_{rust,cpp}`（island 契约 + 同源 `inject.toml`）锁定两语言注入 shell 整份输出；纳入编译网真编译（C++ `g++ -fsyntax-only`、Rust `cargo check`）。
+- 新增 `v0.22.0 Fault Injection Determinism` focused smoke 并接入 CI 与 release gate registry。
+- determinism 验证策略：注入门纯调用计数驱动（同输入 → 同注入点）由 golden 锁定，底层 record→replay / executor 确定性由 v0.17/v0.18 内核测试证明，注入在其上确定性叠加；既有 golden 因版本钉版 0.21→0.22 机械重生，无行为漂移。
+
+### 已知限制
+
+- 确定性 v1 限**单进程**（无全局 tick lockstep，继承 v0.21.4）；多进程图的注入目标被拒，跨进程注入 determinism 留待后续。
+- 注入只合成 `Status::Error`：panic（0.21.1 起不捕获）、deadline 超时、backend drop 不在范围（触发语义不同）；startup/shutdown task 注入留待后续。
+- 注入事件不写 replay log（由确定性调用计数 + 既有回放重推导）；真实随机 / chaos 生产注入与性能矩阵不在本版。
+
 ## v0.21.4 - 2026-06-18
 
 跨进程反馈环（0.21.x 图级容错主题第五/最后一片）：放行跨进程反馈边，让控制环可跨进程闭合。语义为 seeded latest-snapshot——source 进程启动期把 init 播过 transport，消费进程读最近到达样本，非严格 z⁻¹。

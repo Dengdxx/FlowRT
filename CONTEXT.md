@@ -5,7 +5,31 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.21.4`；当前发布线为 `v0.21.4 Cross-Process Feedback Loops`，是
+当前 workspace 版本为 `0.22.0`；当前发布线为 `v0.22.0 Deterministic Fault Injection`，开启
+`0.22.x 容错验证` 主题：提供 test-only 确定性故障注入，在 `(instance, task, 第 N 次调用)` 锚点
+强制 `Status::Error`，让用户无需手写「按时崩的组件」即可跑遍 0.21.x 全部故障反应策略并验证可复现，
+也为 v1.0.0 故障注入矩阵去风险。
+
+- 注入是 **test-only codegen-time overlay**（不改 RSDL 契约结构），镜像 `temporary_island`：场景为
+  独立 TOML（`[[inject]]`，按名引用 `instance`/`task`，`invocations` 显式集合或 `from_invocation`
+  起点），经 `flowrt prepare/build/run --inject <场景>` 投影进 `ContractArtifactIr.fault_injection`，
+  与 `temporary_overlay` 并列可叠加；置 `test_only=true`、`clock_source=simulated_replay`，
+  `bundle`/`deploy` 默认拒绝（需 `--allow-island`）；
+- codegen 为每个注入目标 task 生成 per-task pre-execution 计数器（scheduler 线程自增）+ 注入门：
+  命中调用序号时跳过用户回调、合成 `error` outcome（与真实回调返 `Status::Error` 空输出字节等价），
+  交既有 0.21.x 故障反应机器处理；Rust/C++ 镜像，gated 于 `fault_injection.is_some()`，非注入产物
+  字节不漂移；
+- validator 守门：注入只允许命中 **scheduled task**（periodic / on_message / on_synchronized，拒
+  startup/shutdown），要求 **≥1 boundary input（island）** 以驱动 simulated_replay 时间线，调用序号
+  canonical、EntityRef 一致、单进程（多进程图注入目标拒绝）；
+- determinism 验证：注入门纯调用计数驱动（同输入 → 同注入点）由 golden 锁定，底层 record→replay /
+  executor 确定性由 v0.17/v0.18 内核测试证明，注入在其上确定性叠加；新 golden
+  `fault_injection_{restart,degrade_recover}_{rust,cpp}` + 编译网 + focused smoke 把关。
+- **已知限制**：确定性限单进程（无全局 tick lockstep）；注入只合成 `Status::Error`（panic/deadline/
+  backend drop 不在范围）；startup/shutdown 注入、跨进程注入 determinism、真实随机/chaos 注入与性能
+  矩阵留待后续。
+
+上一发布线为 `v0.21.4 Cross-Process Feedback Loops`，是
 `0.21.x 图级容错 / 生命周期` 主题（patch 线）的**最后一片**：放行跨进程反馈边，让控制环可跨
 进程闭合，至此本主题 5 切片（生命周期状态机 / 隔离重启 / 降级 / 图级 health / 跨进程反馈）收尾。
 
@@ -536,6 +560,8 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.19.0` | Multi-Sensor Synchronization：RSDL `[[sync]]` 组把一个 instance 的 ≥2 路输入按 sample-time（event-time）对齐成同步集，经 `on_synchronized` trigger 投递给融合组件。runtime `flowrt::Synchronizer` 原语（Rust+C++，latest-aligned approx-window v1，DropLate）跨语言位级一致；codegen 两语言接线，golden+编译网真编译把关。最优匹配（ROS2 ApproximateTime 式）、late-policy 变体、跨机 drift 各自另立后续版本。 |
 | `v0.20.0` | Feedback Loops / Cyclic Graphs：`[[bind.dataflow]]` 回边标 `feedback = true` 建模为单位延迟 z⁻¹，消费者读上游上一拍输出。codegen 拓扑排序剔除回边断环（图退化为 DAG）+ run 启动期对回边 channel 播种零初值，两语言一致，runtime 零改动；validator 校验 feedback 边仅 latest/同进程/必须真正闭环。golden+编译网真编译把关，示例 `examples/feedback_loop_demo`。v1 仅零初值/单拍/同进程；literal 初值、fifo N 拍、跨进程延迟环各自另立后续版本。 |
 | `v0.20.1` | Feedback Loops v2：回边新增 `init`（按源消息类型播种 literal 初值）与 `fifo` + `depth = N`（N 拍延迟）。validator 放宽为允许 latest(1 拍) 或 fifo(N 拍)，按源消息 TypeIr 递归类型校验 init，fifo 反馈要求两端 periodic 等周期；codegen 两语言播种 literal/N 份。golden `feedback_v2_rust/cpp`+编译网真编译。init 仅支持全 primitive 字段消息；跨进程延迟环仍留待多机/容错版本。 |
+| `v0.21.x` | 图级容错 / 生命周期（patch 线 5 切片）：生命周期状态机底座 / 进程内隔离重启 / 降级数据语义 / 图级 health 聚合 + 受控停机 / 跨进程反馈环。 |
+| `v0.22.0` | Deterministic Fault Injection：test-only 注入 overlay 在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，跑遍 0.21.x 全部故障反应策略并验证可复现。codegen 两语言 per-task 计数器 + 注入门（gated，非注入字节不漂移）；validator 守 scheduled-only / ≥1 boundary input(island) / 单进程 / canonical；golden + 编译网 + focused smoke。确定性经 golden 锁定的计数驱动门 ∘ v0.17/v0.18 回放内核证明，不另做 CLI MCAP 往返。Error-only、单进程、startup/shutdown 与跨进程注入留待后续。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：

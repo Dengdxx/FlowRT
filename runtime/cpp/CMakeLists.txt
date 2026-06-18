@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(flowrt_runtime_cpp LANGUAGES CXX)
 
-set(FLOWRT_RUNTIME_CPP_VERSION "0.21.4")
+set(FLOWRT_RUNTIME_CPP_VERSION "0.22.0")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
