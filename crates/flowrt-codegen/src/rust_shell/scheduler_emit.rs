@@ -400,7 +400,8 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
         trigger,
     } = emission;
     let trigger = crate::runtime_plan::runtime_trigger_name(trigger);
-    let call_args = rust_collect_task_call_args_for_scheduler(contract, graph, task).join(", ");
+    let call_args =
+        rust_collect_task_call_args_for_scheduler(contract, graph, task, task_id).join(", ");
     let capture_prelude =
         emit_rust_task_capture_prelude(contract, graph, binds, bridges, boundaries, task);
     let worker_ctx = emit_rust_worker_closure_context(task_name, trigger);
@@ -414,7 +415,7 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
     let (inject_decl, task_outcome_expr) = match fault_injection_point_for(contract, task) {
         Some(point) => {
             let counter = format!("__inject_count_{task_id}");
-            let flag = format!("__inject_fault_{task_id}");
+            let flag = rust_injection_decision_var(point, task_id);
             let hit = fault_injection_hit_expr(point, &counter);
             let decl = format!(
                 "                            {counter} += 1;\n                            let {flag} = {hit};\n",
@@ -442,6 +443,7 @@ fn rust_collect_task_call_args_for_scheduler(
     contract: &ContractIr,
     graph: &GraphIr,
     task: &TaskIr,
+    task_id: usize,
 ) -> Vec<String> {
     let instance = crate::instance_by_name(graph, &task.instance.name);
     let component = crate::component_by_name(contract, &instance.component.name);
@@ -478,6 +480,15 @@ fn rust_collect_task_call_args_for_scheduler(
         crate::runtime_plan::standby_failover_plan_for_instance_in_graph(graph, &task.instance.name)
     {
         args.push(plan.active_field_name);
+    }
+    if let Some(point) = crate::runtime_plan::scheduler_fault_injection_point_for(contract, task) {
+        match point.kind {
+            flowrt_ir::FaultInjectionKind::DeadlineMiss
+            | flowrt_ir::FaultInjectionKind::BackendDrop => {
+                args.push(rust_injection_decision_var(point, task_id));
+            }
+            _ => {}
+        }
     }
     args
 }
@@ -1118,6 +1129,18 @@ fn fault_injection_point_for<'a>(
     task: &TaskIr,
 ) -> Option<&'a flowrt_ir::FaultInjectionPointIr> {
     crate::runtime_plan::scheduler_fault_injection_point_for(contract, task)
+}
+
+fn rust_injection_decision_var(point: &flowrt_ir::FaultInjectionPointIr, task_id: usize) -> String {
+    match point.kind {
+        flowrt_ir::FaultInjectionKind::DeadlineMiss => {
+            format!("__flowrt_inject_deadline_miss_{task_id}")
+        }
+        flowrt_ir::FaultInjectionKind::BackendDrop => {
+            format!("__flowrt_inject_backend_drop_{task_id}")
+        }
+        _ => format!("__inject_fault_{task_id}"),
+    }
 }
 
 /// 注入命中布尔表达式：调用计数命中显式集合或达到 from_invocation 起点即触发。

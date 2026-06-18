@@ -31,9 +31,15 @@ pub(super) fn emit_cpp_app_step(
     let task_active_param = task_filter
         .filter(|_| collect_outputs)
         .and_then(|task| cpp_redundancy_active_param_decl(emission.graph, task));
+    let task_injection_param = task_filter
+        .filter(|_| collect_outputs)
+        .and_then(|task| cpp_fault_injection_task_parameter(emission.contract, task));
     output.push_str(&format!(
-        "{return_type} App::{function_name}(std::size_t tick{task_active_param}, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
+        "{return_type} App::{function_name}(std::size_t tick{task_active_param}{task_injection_param}, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
         task_active_param = task_active_param
+            .map(|param| format!(", {param}"))
+            .unwrap_or_default(),
+        task_injection_param = task_injection_param
             .map(|param| format!(", {param}"))
             .unwrap_or_default(),
     ));
@@ -53,6 +59,11 @@ pub(super) fn emit_cpp_app_step(
     output.push_str("    (void)introspection_state;\n");
     output.push_str("    (void)scheduler_events;\n");
     output.push_str("    (void)health_map;\n");
+    if collect_outputs {
+        if let Some(task) = task_filter {
+            output.push_str(&cpp_backend_drop_fault_injection_guard(emission, task));
+        }
+    }
     output.push_str(&adapt_cpp_status_returns_for_collect(
         &emit_cpp_ros2_boundary_input_pump(emission, order),
         collect_outputs,
@@ -303,8 +314,10 @@ pub(super) fn emit_cpp_app_step(
             if let Some(deadline_ms) = task.deadline_ms {
                 let task_local = cpp_task_local_name(task);
                 let task_health = cpp_task_health_name(task);
+                let deadline_expr =
+                    cpp_deadline_exceeded_expr(emission.contract, task, &task_local, deadline_ms);
                 output.push_str(&format!(
-                    "{body_indent}const bool {task_local}_deadline_exceeded = (std::chrono::steady_clock::now() - {task_local}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}});\n\
+                    "{body_indent}const bool {task_local}_deadline_exceeded = {deadline_expr};\n\
                      {body_indent}if ({task_local}_deadline_exceeded) {{\n\
                      {body_inner_indent}health_map[\"{task_health}\"].deadline_missed += 1;\n\
                      {body_indent}}}\n",
@@ -447,6 +460,75 @@ pub(super) fn emit_cpp_app_step(
         output.push_str("    return flowrt::Status::Ok;\n}\n\n");
     }
     output
+}
+
+fn cpp_fault_injection_task_parameter(
+    contract: &ContractIr,
+    task: &flowrt_ir::TaskIr,
+) -> Option<&'static str> {
+    match crate::runtime_plan::scheduler_fault_injection_point_for(contract, task)?.kind {
+        flowrt_ir::FaultInjectionKind::DeadlineMiss => Some("bool __flowrt_inject_deadline_miss"),
+        flowrt_ir::FaultInjectionKind::BackendDrop => Some("bool __flowrt_inject_backend_drop"),
+        _ => None,
+    }
+}
+
+fn cpp_deadline_exceeded_expr(
+    contract: &ContractIr,
+    task: &flowrt_ir::TaskIr,
+    task_local: &str,
+    deadline_ms: u64,
+) -> String {
+    let elapsed_expr = format!(
+        "(std::chrono::steady_clock::now() - {task_local}_deadline_started_at > std::chrono::milliseconds{{{deadline_ms}}})"
+    );
+    match crate::runtime_plan::scheduler_fault_injection_point_for(contract, task) {
+        Some(point) if point.kind == flowrt_ir::FaultInjectionKind::DeadlineMiss => {
+            format!("__flowrt_inject_deadline_miss || {elapsed_expr}")
+        }
+        _ => elapsed_expr,
+    }
+}
+
+fn cpp_backend_drop_fault_injection_guard(
+    emission: &CppStepEmission<'_>,
+    task: &flowrt_ir::TaskIr,
+) -> String {
+    let Some(point) =
+        crate::runtime_plan::scheduler_fault_injection_point_for(emission.contract, task)
+    else {
+        return String::new();
+    };
+    if point.kind != flowrt_ir::FaultInjectionKind::BackendDrop {
+        return String::new();
+    }
+
+    let output_ports = task
+        .outputs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut route_updates = String::new();
+    for bind in emission.binds.iter().filter(|bind| {
+        bind.source_instance == task.instance.name
+            && output_ports.contains(bind.source_port.as_str())
+            && bind_backend(bind) != "inproc"
+    }) {
+        let route = cpp_string_literal(&runtime_channel_name(bind));
+        route_updates.push_str(&format!(
+            "        introspection_state.record_route_backend_health({route}, flowrt::BackendHealthSnapshot::fault_injection_backend_drop());\n\
+             introspection_state.record_route_drop({route});\n",
+        ));
+    }
+    if route_updates.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "    if (__flowrt_inject_backend_drop) {{\n\
+{route_updates}        return FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}});\n\
+    }}\n"
+    )
 }
 
 fn cpp_lifecycle_fault_injection_guard(

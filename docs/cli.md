@@ -290,11 +290,13 @@ reason = "drive restart to terminal"
 | `panic` | `periodic` / `on_message` / `on_synchronized` | 命中时触发 generated worker 的 Rust panic / C++ exception 路径。 |
 | `startup_error` | `startup` | 命中时在 startup task 调用前返回 `Status::Error`。 |
 | `shutdown_error` | `shutdown` | 命中时在 shutdown task 调用前返回 `Status::Error`。 |
+| `deadline_miss` | 声明 `deadline_ms` 的 `periodic` / `on_message` / `on_synchronized` | 命中时复用 deadline 守门，累计 `deadline_missed` 并阻止 late output 发布。 |
+| `backend_drop` | 有非 `inproc` outgoing route 的 `periodic` / `on_message` / `on_synchronized` | 命中时将 route backend health 标为 `degraded`，记录 `fault_injection_backend_drop` 并合成 error outcome。 |
 
-`deadline_miss` 与 `backend_drop` 是保留 kind，当前 validator 拒绝，待 runtime 路径接线后放行。注入是
-test-only overlay（置 `test_only`、`clock_source=simulated_replay`，与 `--temporary-island` 并列可叠加），
-`bundle` / `deploy` 默认拒绝（需 `--allow-island`）。约束：要求契约含 ≥1 boundary input（island）以驱动
-simulated_replay 时间线，且限单进程。
+注入是 test-only overlay（置 `test_only`、`clock_source=simulated_replay`，与
+`--temporary-island` 并列可叠加），`bundle` / `deploy` 默认拒绝（需 `--allow-island`）。约束：要求契约含
+≥1 boundary input（island）以驱动 simulated_replay 时间线；跨 process graph 只在选中 profile
+声明 `determinism.mode = "global_tick"` 时放行。
 
 ## `prepare`
 

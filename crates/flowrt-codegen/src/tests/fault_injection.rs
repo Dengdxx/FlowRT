@@ -131,6 +131,135 @@ backends = ["inproc"]
     .unwrap()
 }
 
+fn injected_deadline_contract(language: &str, runtime: &str) -> ContractIr {
+    let source = format!(
+        r#"
+[package]
+name = "fault_injection_deadline_{language}"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.flaky]
+language = "{language}"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[instance.flaky]
+component = "flaky"
+
+[instance.flaky.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+deadline_ms = 5
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "flaky.sample"
+type = "Sample"
+
+[target.linux]
+runtime = ["{runtime}"]
+backends = ["inproc"]
+"#,
+    );
+    let ir = contract_from_source(&source);
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    flowrt_ir::apply_fault_injection_overlay(
+        &projected,
+        &flowrt_ir::FaultInjectionScenario {
+            points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind: flowrt_ir::FaultInjectionKind::DeadlineMiss,
+                instance: "flaky".to_string(),
+                task: "main".to_string(),
+                invocations: vec![1],
+                from_invocation: None,
+                reason: "force deadline".to_string(),
+            }],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap()
+}
+
+fn injected_backend_drop_contract(language: &str, runtime: &str) -> ContractIr {
+    let source = format!(
+        r#"
+[package]
+name = "fault_injection_backend_drop_{language}"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "{language}"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[component.sink]
+language = "{language}"
+input = ["echo:Sample"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["echo"]
+
+[[bind.dataflow]]
+from = "source.echo"
+to = "sink.echo"
+channel = "latest"
+
+[profile.dev]
+mode = "island"
+backend = "zenoh"
+
+[[boundary.input]]
+name = "feed"
+port = "source.sample"
+type = "Sample"
+
+[target.linux]
+runtime = ["{runtime}"]
+backends = ["zenoh"]
+"#,
+    );
+    let ir = contract_from_source(&source);
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    flowrt_ir::apply_fault_injection_overlay(
+        &projected,
+        &flowrt_ir::FaultInjectionScenario {
+            points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind: flowrt_ir::FaultInjectionKind::BackendDrop,
+                instance: "source".to_string(),
+                task: "main".to_string(),
+                invocations: vec![1],
+                from_invocation: None,
+                reason: "drop route backend".to_string(),
+            }],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn rust_shell_emits_injection_gate() {
     let ir = injected_restart_contract("rust", "inproc", "rust");
@@ -209,6 +338,50 @@ fn rust_and_cpp_shell_emit_panic_injection_gates() {
     assert!(cpp_shell.contains(
         "throw std::runtime_error(\"FlowRT fault injection panic: drive restart to terminal\")"
     ));
+}
+
+#[test]
+fn rust_and_cpp_shell_emit_deadline_miss_injection_gates() {
+    let rust_ir = injected_deadline_contract("rust", "rust");
+    let rust_bundle = emit_artifacts(&rust_ir).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("__flowrt_inject_deadline_miss: bool"));
+    assert!(rust_shell.contains("let __flowrt_inject_deadline_miss_"));
+    assert!(rust_shell.contains("_deadline_exceeded = __flowrt_inject_deadline_miss ||"));
+    assert!(rust_shell.contains(".deadline_missed += 1;"));
+
+    let cpp_ir = injected_deadline_contract("cpp", "cpp");
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains("bool __flowrt_inject_deadline_miss"));
+    assert!(cpp_shell.contains("const bool __flowrt_inject_deadline_miss_"));
+    assert!(cpp_shell.contains("_deadline_exceeded = __flowrt_inject_deadline_miss ||"));
+    assert!(cpp_shell.contains(".deadline_missed += 1;"));
+}
+
+#[test]
+fn backend_drop_injection_updates_route_backend_health() {
+    let rust_ir = injected_backend_drop_contract("rust", "rust");
+    let rust_bundle = emit_artifacts(&rust_ir).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains("flowrt::BackendHealthSnapshot::fault_injection_backend_drop()"));
+    assert!(rust_shell.contains(
+        "introspection_state.record_route_backend_health(\"source.echo_to_sink.echo\", flowrt::BackendHealthSnapshot::fault_injection_backend_drop());"
+    ));
+    assert!(
+        rust_shell.contains("introspection_state.record_route_drop(\"source.echo_to_sink.echo\");")
+    );
+
+    let cpp_ir = injected_backend_drop_contract("cpp", "cpp");
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains("flowrt::BackendHealthSnapshot::fault_injection_backend_drop()"));
+    assert!(cpp_shell.contains(
+        "introspection_state.record_route_backend_health(\"source.echo_to_sink.echo\", flowrt::BackendHealthSnapshot::fault_injection_backend_drop());"
+    ));
+    assert!(
+        cpp_shell.contains("introspection_state.record_route_drop(\"source.echo_to_sink.echo\");")
+    );
 }
 
 #[test]

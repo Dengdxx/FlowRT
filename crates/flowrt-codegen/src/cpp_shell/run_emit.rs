@@ -557,7 +557,10 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         .map(|plan| format!("{}, ", plan.active_field_name))
         .unwrap_or_default();
         let call_expr = format!(
-            "{function_name}(static_cast<std::size_t>(tick_time_ms), {active_arg}local_context, introspection_state, scheduler_events, local_health_map)"
+            "{function_name}(static_cast<std::size_t>(tick_time_ms), {active_arg}{injection_arg}local_context, introspection_state, scheduler_events, local_health_map)",
+            injection_arg = cpp_task_injection_call_arg(run.contract, task)
+                .map(|arg| format!("{arg}, "))
+                .unwrap_or_default(),
         );
         let task_outcome_expr = if let Some(point) =
             crate::runtime_plan::scheduler_fault_injection_point_for(run.contract, task)
@@ -1097,23 +1100,60 @@ fn emit_cpp_injection_decision(
     dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
 ) -> String {
     let mut arms = String::new();
+    let mut needs_fault = false;
+    let mut needs_deadline_miss = false;
+    let mut needs_backend_drop = false;
     for plan in dataflow_tasks {
         if let Some(point) =
             crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task)
         {
             let counter = format!("__inject_count_{}", plan.id);
             let hit = cpp_fault_injection_hit_expr(point, &counter);
-            arms.push_str(&format!(
-                "                    case {}: {{ ++{counter}; flowrt_inject_fault = {hit}; break; }}\n",
-                plan.id
-            ));
+            match point.kind {
+                flowrt_ir::FaultInjectionKind::DeadlineMiss => {
+                    needs_deadline_miss = true;
+                    arms.push_str(&format!(
+                        "                    case {}: {{ ++{counter}; const bool __flowrt_inject_deadline_miss_{} = {hit}; __flowrt_inject_deadline_miss = __flowrt_inject_deadline_miss_{}; break; }}\n",
+                        plan.id, plan.id, plan.id
+                    ));
+                }
+                flowrt_ir::FaultInjectionKind::BackendDrop => {
+                    needs_backend_drop = true;
+                    arms.push_str(&format!(
+                        "                    case {}: {{ ++{counter}; const bool __flowrt_inject_backend_drop_{} = {hit}; __flowrt_inject_backend_drop = __flowrt_inject_backend_drop_{}; break; }}\n",
+                        plan.id, plan.id, plan.id
+                    ));
+                }
+                _ => {
+                    needs_fault = true;
+                    arms.push_str(&format!(
+                        "                    case {}: {{ ++{counter}; flowrt_inject_fault = {hit}; break; }}\n",
+                        plan.id
+                    ));
+                }
+            }
         }
     }
     if arms.is_empty() {
         return String::new();
     }
+    if needs_fault && !needs_deadline_miss && !needs_backend_drop {
+        return format!(
+            "                bool flowrt_inject_fault = false;\n                switch (admission.task.value) {{\n{arms}                    default: break;\n                }}\n"
+        );
+    }
+    let mut decls = String::new();
+    if needs_fault {
+        decls.push_str("                bool flowrt_inject_fault = false;\n");
+    }
+    if needs_deadline_miss {
+        decls.push_str("                bool __flowrt_inject_deadline_miss = false;\n");
+    }
+    if needs_backend_drop {
+        decls.push_str("                bool __flowrt_inject_backend_drop = false;\n");
+    }
     format!(
-        "                bool flowrt_inject_fault = false;\n                switch (admission.task.value) {{\n{arms}                    default: break;\n                }}\n"
+        "{decls}                switch (admission.task.value) {{\n{arms}                    default: break;\n                }}\n"
     )
 }
 
@@ -1122,13 +1162,47 @@ fn cpp_injection_capture(
     contract: &ContractIr,
     dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
 ) -> String {
-    let has_injection = dataflow_tasks.iter().any(|plan| {
-        crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task).is_some()
-    });
-    if has_injection {
-        ", flowrt_inject_fault".to_string()
-    } else {
+    let mut captures = Vec::new();
+    if dataflow_tasks.iter().any(|plan| {
+        crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task).is_some_and(
+            |point| {
+                matches!(
+                    point.kind,
+                    flowrt_ir::FaultInjectionKind::StatusError
+                        | flowrt_ir::FaultInjectionKind::Panic
+                )
+            },
+        )
+    }) {
+        captures.push("flowrt_inject_fault");
+    }
+    if dataflow_tasks.iter().any(|plan| {
+        crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task)
+            .is_some_and(|point| point.kind == flowrt_ir::FaultInjectionKind::DeadlineMiss)
+    }) {
+        captures.push("__flowrt_inject_deadline_miss");
+    }
+    if dataflow_tasks.iter().any(|plan| {
+        crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task)
+            .is_some_and(|point| point.kind == flowrt_ir::FaultInjectionKind::BackendDrop)
+    }) {
+        captures.push("__flowrt_inject_backend_drop");
+    }
+    if captures.is_empty() {
         String::new()
+    } else {
+        format!(", {}", captures.join(", "))
+    }
+}
+
+fn cpp_task_injection_call_arg(
+    contract: &ContractIr,
+    task: &flowrt_ir::TaskIr,
+) -> Option<&'static str> {
+    match crate::runtime_plan::scheduler_fault_injection_point_for(contract, task)?.kind {
+        flowrt_ir::FaultInjectionKind::DeadlineMiss => Some("__flowrt_inject_deadline_miss"),
+        flowrt_ir::FaultInjectionKind::BackendDrop => Some("__flowrt_inject_backend_drop"),
+        _ => None,
     }
 }
 

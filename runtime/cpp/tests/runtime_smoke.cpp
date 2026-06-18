@@ -655,6 +655,14 @@ int main() {
     assert(tracker.snapshot().last_error == std::optional<std::string>{"retry budget exhausted"});
     assert(!tracker.snapshot().recoverable);
 
+    const auto injected_drop = flowrt::BackendHealthSnapshot::fault_injection_backend_drop();
+    assert(injected_drop.state == flowrt::BackendHealthState::Degraded);
+    assert(injected_drop.last_error ==
+           std::optional<std::string>{"fault_injection_backend_drop"});
+    assert(injected_drop.attempt == 0U);
+    assert(!injected_drop.next_retry_unix_ms.has_value());
+    assert(injected_drop.recoverable);
+
     assert(zenoh_backend.health().state == flowrt::BackendHealthState::Ready);
     assert(zenoh_backend.reconnect_policy().initial_delay_ms == 100U);
     assert(zenoh_backend.reconnect_policy().max_delay_ms == 5000U);

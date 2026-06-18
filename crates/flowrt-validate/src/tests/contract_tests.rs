@@ -402,6 +402,89 @@ type = "Tick"
     .unwrap()
 }
 
+fn backend_drop_fault_injection_fixture(backend: &str, determinism: &str) -> flowrt_ir::ContractIr {
+    let source = format!(
+        r#"
+[package]
+name = "backend_drop_validate_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["echo:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["echo"]
+
+[[process]]
+name = "source_proc"
+
+[[process]]
+name = "sink_proc"
+
+[[bind.dataflow]]
+from = "source.echo"
+to = "sink.echo"
+channel = "latest"
+
+[profile.dev]
+mode = "island"
+backend = "{backend}"
+
+{determinism}
+
+[[boundary.input]]
+name = "feed"
+port = "source.sample"
+type = "Sample"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["{backend}"]
+"#
+    );
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    flowrt_ir::apply_fault_injection_overlay(
+        &projected,
+        &flowrt_ir::FaultInjectionScenario {
+            points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind: flowrt_ir::FaultInjectionKind::BackendDrop,
+                instance: "source".to_string(),
+                task: "main".to_string(),
+                invocations: vec![1],
+                from_invocation: None,
+                reason: "drop route".to_string(),
+            }],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn accepts_fault_injection_on_scheduled_task() {
     let injected = fault_injection_fixture("periodic");
@@ -440,17 +523,71 @@ fn rejects_status_error_fault_injection_on_non_scheduled_task() {
 }
 
 #[test]
-fn rejects_fault_injection_kind_not_wired_yet() {
+fn deadline_miss_injection_requires_declared_deadline() {
     let injected =
         fault_injection_fixture_with_kind("periodic", flowrt_ir::FaultInjectionKind::DeadlineMiss);
     let report = validate_contract(&injected)
-        .expect_err("deadline_miss injection should stay rejected until scheduler support lands");
+        .expect_err("deadline_miss injection without deadline_ms should fail validation");
     assert!(
         report
             .errors
             .iter()
-            .any(|error| { error.message.contains("deadline_miss") })
+            .any(|error| { error.message.contains("requires `deadline_ms`") })
     );
+
+    let mut declared =
+        fault_injection_fixture_with_kind("periodic", flowrt_ir::FaultInjectionKind::DeadlineMiss);
+    declared.graphs[0]
+        .tasks
+        .iter_mut()
+        .find(|task| task.instance.name == "flaky" && task.name == "main")
+        .expect("flaky task exists")
+        .deadline_ms = Some(5);
+    validate_contract(&declared)
+        .expect("deadline_miss injection on a task with deadline_ms should validate");
+}
+
+#[test]
+fn backend_drop_injection_requires_route_backend() {
+    let inproc = backend_drop_fault_injection_fixture("inproc", "");
+    let report = validate_contract(&inproc)
+        .expect_err("backend_drop injection on inproc route should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("backend_drop fault injection target `source.main` requires a non-inproc outgoing route")
+    }));
+
+    let zenoh = backend_drop_fault_injection_fixture(
+        "zenoh",
+        r#"[profile.dev.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph""#,
+    );
+    validate_contract(&zenoh).expect("backend_drop injection on a transport route should validate");
+}
+
+#[test]
+fn cross_process_injection_requires_global_tick() {
+    let process_local = backend_drop_fault_injection_fixture("zenoh", "");
+    let report = validate_contract(&process_local)
+        .expect_err("cross-process injection without global_tick should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("multi-process fault injection requires profile determinism mode global_tick")
+    }));
+
+    let global_tick = backend_drop_fault_injection_fixture(
+        "zenoh",
+        r#"[profile.dev.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph""#,
+    );
+    validate_contract(&global_tick)
+        .expect("cross-process injection should validate under global_tick determinism");
 }
 
 #[test]

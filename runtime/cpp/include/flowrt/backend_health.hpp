@@ -70,6 +70,19 @@ struct BackendHealthSnapshot {
      */
     static BackendHealthSnapshot ready() { return BackendHealthSnapshot{}; }
 
+    /**
+     * @brief 构造 test-only backend_drop 故障注入快照。
+     */
+    static BackendHealthSnapshot fault_injection_backend_drop() {
+        return BackendHealthSnapshot{
+            .state = BackendHealthState::Degraded,
+            .last_error = std::string{"fault_injection_backend_drop"},
+            .attempt = 0,
+            .next_retry_unix_ms = std::nullopt,
+            .recoverable = true,
+        };
+    }
+
     friend bool operator==(const BackendHealthSnapshot &, const BackendHealthSnapshot &) = default;
 };
 

@@ -871,7 +871,10 @@ pub(crate) fn scheduler_fault_injection_point_for<'a>(
     fault_injection_point_for(contract, task).filter(|point| {
         matches!(
             point.kind,
-            flowrt_ir::FaultInjectionKind::StatusError | flowrt_ir::FaultInjectionKind::Panic
+            flowrt_ir::FaultInjectionKind::StatusError
+                | flowrt_ir::FaultInjectionKind::Panic
+                | flowrt_ir::FaultInjectionKind::DeadlineMiss
+                | flowrt_ir::FaultInjectionKind::BackendDrop
         )
     })
 }

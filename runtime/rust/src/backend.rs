@@ -67,6 +67,17 @@ impl BackendHealthSnapshot {
             recoverable: false,
         }
     }
+
+    /// 构造 test-only backend_drop 故障注入快照。
+    pub fn fault_injection_backend_drop() -> Self {
+        Self {
+            state: BackendHealthState::Degraded,
+            last_error: Some("fault_injection_backend_drop".to_string()),
+            attempt: 0,
+            next_retry_unix_ms: None,
+            recoverable: true,
+        }
+    }
 }
 
 /// backend endpoint 的重连策略。
@@ -637,6 +648,20 @@ mod tests {
             Some("backend SDK unavailable")
         );
         assert!(!tracker.snapshot().recoverable);
+    }
+
+    #[test]
+    fn backend_drop_injection_health_snapshot_is_degraded() {
+        let snapshot = BackendHealthSnapshot::fault_injection_backend_drop();
+
+        assert_eq!(snapshot.state, BackendHealthState::Degraded);
+        assert_eq!(
+            snapshot.last_error.as_deref(),
+            Some("fault_injection_backend_drop")
+        );
+        assert_eq!(snapshot.attempt, 0);
+        assert_eq!(snapshot.next_retry_unix_ms, None);
+        assert!(snapshot.recoverable);
     }
 
     #[test]

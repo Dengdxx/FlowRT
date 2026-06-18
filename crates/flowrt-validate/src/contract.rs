@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
     ChannelEdgeIr, ClockSourceKind, ContractIr, DeterminismMode, EntityId, EntityRef,
-    FaultInjectionKind, GraphMode, LanguageKind, OperationEdgeIr, RSDL_VERSION,
-    ResourceSatisfactionIr, TaskIr, TriggerKind,
+    FaultInjectionKind, GraphDerivedFacts, GraphIr, GraphMode, LanguageKind, OperationEdgeIr,
+    RSDL_VERSION, ResourceSatisfactionIr, TaskIr, TriggerKind, derive_contract_facts,
 };
 
 use crate::ValidationError;
@@ -234,6 +234,26 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
     let Some(fault) = ir.artifact.fault_injection.as_ref() else {
         return;
     };
+    let derived_facts = match derive_contract_facts(ir) {
+        Ok(facts) => Some(facts),
+        Err(error) => {
+            errors.push(ValidationError::new(format!(
+                "contract derived facts could not be recomputed for fault injection: {error}",
+            )));
+            None
+        }
+    };
+    let graph_facts = derived_facts.as_ref().map(|facts| {
+        facts
+            .graphs
+            .iter()
+            .map(|facts| (facts.graph.id.clone(), facts))
+            .collect::<BTreeMap<_, _>>()
+    });
+    let global_tick_profile = ir
+        .profiles
+        .iter()
+        .any(|profile| profile.determinism.mode == DeterminismMode::GlobalTick);
 
     if fault.generated_by.command.trim().is_empty() {
         errors.push(ValidationError::new(
@@ -304,11 +324,17 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
                         "fault injection instance ref for `{target}` does not match task owner",
                     )));
                 }
-                validate_fault_injection_kind_for_task(point.kind, task.trigger, &target, errors);
-                if graph.processes.len() > 1 {
+                let facts = graph_facts
+                    .as_ref()
+                    .and_then(|facts| facts.get(&graph.id).copied());
+                validate_fault_injection_kind_for_task(
+                    point.kind, graph, facts, task, &target, errors,
+                );
+                if graph.processes.len() > 1 && !global_tick_profile {
                     errors.push(ValidationError::new(format!(
-                        "fault injection is single-process only; target `{target}` is in graph \
-                         `{}` with multiple process groups",
+                        "multi-process fault injection requires profile determinism mode \
+                         global_tick; target `{target}` is in graph `{}` with multiple process \
+                         groups",
                         graph.name
                     )));
                 }
@@ -319,13 +345,15 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
 
 fn validate_fault_injection_kind_for_task(
     kind: FaultInjectionKind,
-    trigger: TriggerKind,
+    graph: &GraphIr,
+    graph_facts: Option<&GraphDerivedFacts>,
+    task: &TaskIr,
     target: &str,
     errors: &mut Vec<ValidationError>,
 ) {
     match kind {
         FaultInjectionKind::StatusError => {
-            if !is_scheduled_trigger(trigger) {
+            if !is_scheduled_trigger(task.trigger) {
                 errors.push(ValidationError::new(format!(
                     "status_error fault injection target `{target}` must be a scheduled task \
                      (periodic / on_message / on_synchronized)",
@@ -333,7 +361,7 @@ fn validate_fault_injection_kind_for_task(
             }
         }
         FaultInjectionKind::Panic => {
-            if !is_scheduled_trigger(trigger) {
+            if !is_scheduled_trigger(task.trigger) {
                 errors.push(ValidationError::new(format!(
                     "panic fault injection target `{target}` must be a scheduled task with \
                      worker panic/exception handling",
@@ -341,26 +369,74 @@ fn validate_fault_injection_kind_for_task(
             }
         }
         FaultInjectionKind::StartupError => {
-            if trigger != TriggerKind::Startup {
+            if task.trigger != TriggerKind::Startup {
                 errors.push(ValidationError::new(format!(
                     "startup_error fault injection target `{target}` must be a startup task",
                 )));
             }
         }
         FaultInjectionKind::ShutdownError => {
-            if trigger != TriggerKind::Shutdown {
+            if task.trigger != TriggerKind::Shutdown {
                 errors.push(ValidationError::new(format!(
                     "shutdown_error fault injection target `{target}` must be a shutdown task",
                 )));
             }
         }
-        FaultInjectionKind::DeadlineMiss | FaultInjectionKind::BackendDrop => {
-            errors.push(ValidationError::new(format!(
-                "{} fault injection is not supported by generated runtime yet",
-                kind.as_str()
-            )));
+        FaultInjectionKind::DeadlineMiss => {
+            if !is_scheduled_trigger(task.trigger) {
+                errors.push(ValidationError::new(format!(
+                    "deadline_miss fault injection target `{target}` must be a scheduled task \
+                     (periodic / on_message / on_synchronized)",
+                )));
+            }
+            if task.deadline_ms.is_none() {
+                errors.push(ValidationError::new(format!(
+                    "deadline_miss fault injection target `{target}` requires `deadline_ms`",
+                )));
+            }
+        }
+        FaultInjectionKind::BackendDrop => {
+            if !is_scheduled_trigger(task.trigger) {
+                errors.push(ValidationError::new(format!(
+                    "backend_drop fault injection target `{target}` must be a scheduled task \
+                     (periodic / on_message / on_synchronized)",
+                )));
+            }
+            if !task_has_transport_outgoing_route(graph, graph_facts, task) {
+                errors.push(ValidationError::new(format!(
+                    "backend_drop fault injection target `{target}` requires a non-inproc \
+                     outgoing route",
+                )));
+            }
         }
     }
+}
+
+fn task_has_transport_outgoing_route(
+    graph: &GraphIr,
+    graph_facts: Option<&GraphDerivedFacts>,
+    task: &TaskIr,
+) -> bool {
+    let output_ports = task
+        .outputs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if output_ports.is_empty() {
+        return false;
+    }
+    if let Some(facts) = graph_facts {
+        return facts.routes.iter().any(|route| {
+            route.from.instance.name == task.instance.name
+                && output_ports.contains(route.from.port.as_str())
+                && route.backend.0 != "inproc"
+        });
+    }
+    graph.binds.iter().any(|bind| {
+        bind.from.instance.name == task.instance.name
+            && output_ports.contains(bind.from.port.as_str())
+            && bind.backend.0 != "inproc"
+    })
 }
 
 fn is_scheduled_trigger(trigger: TriggerKind) -> bool {

@@ -144,6 +144,9 @@ fn rust_collect_task_parameters(emission: &RustStepEmission<'_>, task: &TaskIr) 
     ) {
         params.push(format!("{}: String", plan.active_field_name));
     }
+    if let Some(param) = rust_fault_injection_task_parameter(emission.contract, task) {
+        params.push(param.to_string());
+    }
 
     params
 }
@@ -180,6 +183,11 @@ pub(super) fn emit_rust_app_step(
     output.push_str("        let _ = health_map;\n");
     if runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries) {
         output.push_str("        let tick_time_ms = tick as u64;\n        let _ = tick_time_ms;\n");
+    }
+    if collect_outputs {
+        if let Some(task) = task_filter {
+            output.push_str(&rust_backend_drop_fault_injection_guard(emission, task));
+        }
     }
     if !collect_outputs {
         output.push_str(&emit_rust_ros2_boundary_input_pump(emission, order));
@@ -480,8 +488,10 @@ pub(super) fn emit_rust_app_step(
             if let Some(deadline_ms) = task.deadline_ms {
                 let task_local = task_local_name(task);
                 let task_health = task_health_name(task);
+                let deadline_expr =
+                    rust_deadline_exceeded_expr(emission.contract, task, &task_local, deadline_ms);
                 output.push_str(&format!(
-                    "{body_indent}let {task_local}_deadline_exceeded = {task_local}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms});\n\
+                    "{body_indent}let {task_local}_deadline_exceeded = {deadline_expr};\n\
                      {body_indent}if {task_local}_deadline_exceeded {{\n\
                      {body_inner_indent}health_map.entry({task_health:?}.to_string()).or_default().deadline_missed += 1;\n\
                      {body_indent}}}\n",
@@ -616,6 +626,75 @@ pub(super) fn emit_rust_app_step(
         output.push_str("        flowrt::Status::Ok\n    }\n");
     }
     output
+}
+
+fn rust_fault_injection_task_parameter(
+    contract: &ContractIr,
+    task: &TaskIr,
+) -> Option<&'static str> {
+    match crate::runtime_plan::scheduler_fault_injection_point_for(contract, task)?.kind {
+        flowrt_ir::FaultInjectionKind::DeadlineMiss => Some("__flowrt_inject_deadline_miss: bool"),
+        flowrt_ir::FaultInjectionKind::BackendDrop => Some("__flowrt_inject_backend_drop: bool"),
+        _ => None,
+    }
+}
+
+fn rust_deadline_exceeded_expr(
+    contract: &ContractIr,
+    task: &TaskIr,
+    task_local: &str,
+    deadline_ms: u64,
+) -> String {
+    let elapsed_expr = format!(
+        "{task_local}_deadline_started_at.elapsed() > std::time::Duration::from_millis({deadline_ms})"
+    );
+    match crate::runtime_plan::scheduler_fault_injection_point_for(contract, task) {
+        Some(point) if point.kind == flowrt_ir::FaultInjectionKind::DeadlineMiss => {
+            format!("__flowrt_inject_deadline_miss || {elapsed_expr}")
+        }
+        _ => elapsed_expr,
+    }
+}
+
+fn rust_backend_drop_fault_injection_guard(
+    emission: &RustStepEmission<'_>,
+    task: &TaskIr,
+) -> String {
+    let Some(point) =
+        crate::runtime_plan::scheduler_fault_injection_point_for(emission.contract, task)
+    else {
+        return String::new();
+    };
+    if point.kind != flowrt_ir::FaultInjectionKind::BackendDrop {
+        return String::new();
+    }
+
+    let output_ports = task
+        .outputs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut route_updates = String::new();
+    for bind in emission.binds.iter().filter(|bind| {
+        bind.source_instance == task.instance.name
+            && output_ports.contains(bind.source_port.as_str())
+            && bind_backend(bind) != "inproc"
+    }) {
+        let route = crate::rust_string_literal(&crate::runtime_plan::runtime_channel_name(bind));
+        route_updates.push_str(&format!(
+            "            introspection_state.record_route_backend_health({route}, flowrt::BackendHealthSnapshot::fault_injection_backend_drop());\n\
+             introspection_state.record_route_drop({route});\n",
+        ));
+    }
+    if route_updates.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "        if __flowrt_inject_backend_drop {{\n\
+{route_updates}            return flowrt::TaskRunOutcome::error(Vec::new());\n\
+        }}\n"
+    )
 }
 
 fn rust_lifecycle_fault_injection_guard(
