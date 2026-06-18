@@ -288,6 +288,9 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         service.response_type,
                         service.backend
                     ));
+                    if let Some(key_expr) = service.key_expr.as_deref() {
+                        output.push_str(&format!(" key_expr={key_expr}"));
+                    }
                 }
             }
 
@@ -344,6 +347,9 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     service.response_type,
                     service.backend
                 ));
+                if let Some(key_expr) = service.key_expr.as_deref() {
+                    output.push_str(&format!(" key_expr={key_expr}"));
+                }
             }
         }
         for operation in &graph.operations {

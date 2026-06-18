@@ -53,4 +53,3 @@ pub trait Consumer: Send {
         echo: &mut flowrt::Output<ImuSample>,
     ) -> flowrt::Status;
 }
-

@@ -869,7 +869,7 @@ overflow = "busy"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `backend` | string | auto | 传输后端：native generated Service 当前支持 `inproc`；`zenoh` runtime 已实现但 generated Service/Operation 尚未接线，native endpoint 会在 codegen fail-fast；external endpoint 可在 manifest 中选择 `zenoh` |
+| `backend` | string | auto | 传输后端：native generated Service 支持 `inproc` 与 `zenoh`；Operation 的 zenoh generated runtime 尚未接线，会在 codegen fail-fast；external endpoint 可在 manifest 中选择 `zenoh` |
 | `timeout_ms` | u64 | 5000 | 请求超时毫秒 |
 | `queue_depth` | u32 | 32 | pending request 队列深度 |
 | `overflow` | string | "busy" | 队列满策略：`busy` 或 `error` |
@@ -923,6 +923,12 @@ validator 会要求：
 - `server` 指向 component 的 `service_server` 端口。
 - request 和 response 类型完全匹配。
 - 同一个 client service 端口只能绑定一次。
+- `backend = "zenoh"` 的 server component 必须声明 `concurrency = "parallel"`，
+  因为 generated handler 会由 zenoh queryable 回调线程驱动。
+
+zenoh service 的 launch manifest 和 self-description 会暴露 request key expression，
+格式为 `flowrt/service/<escaped service-name>/request`，其中 service name 使用
+`<client_instance>.<client_port>`。
 
 ### 错误语义
 

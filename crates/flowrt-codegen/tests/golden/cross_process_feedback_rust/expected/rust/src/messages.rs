@@ -81,4 +81,3 @@ impl flowrt::WireCodec for State {
         })
     }
 }
-

@@ -53,8 +53,15 @@ pub use signature_summary::handler_signature_summary;
 // Re-export functions moved to rust_shell that other modules depend on.
 pub(crate) use rust_shell::backend_emit::{
     iox2_service_name, iox2_service_name_for_edge, ros2_bridge_key_expr, selected_backend_name,
-    zenoh_key_expr, zenoh_key_expr_for_edge,
+    zenoh_key_expr, zenoh_key_expr_for_edge, zenoh_service_key_expr,
 };
+
+pub(crate) fn normalize_text_eof_newline(output: &mut String) {
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    output.push('\n');
+}
 
 /// artifact emission 返回的结果类型。
 pub type Result<T> = std::result::Result<T, CodegenError>;

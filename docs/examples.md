@@ -35,6 +35,7 @@
 | `examples/feedback_loop_demo` | Rust | `inproc` | `flowrt check examples/feedback_loop_demo/rsdl/robot.rsdl` | 验证反馈环（cyclic graph）：回边 `feedback = true` 作单位延迟 z⁻¹，拓扑断环 + 启动期零初值播种 |
 | `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 验证 `sequence<f32>` canonical frame boundary input、`flowrt pub --file --freq` 和 echo 输出摘要 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
+| `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 验证 generated Service over zenoh 的跨进程 request/response、typed API 和 service key expression |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor-only 观测 |
@@ -761,6 +762,42 @@ flowrt run examples/service_demo/service_demo.rsdl --process main --run-steps 50
 flowrt list examples/service_demo/flowrt/selfdesc/selfdesc.json
 flowrt status
 ```
+
+## `zenoh_service_demo`
+
+入口文件：
+
+```text
+examples/zenoh_service_demo/rsdl/robot.rsdl
+examples/zenoh_service_demo/app/rust/mod.rs
+```
+
+该示例把 `service_demo` 的 request/response 语义切到跨进程 `zenoh` backend：
+`plan_client` 和 `plan_svc` 分属 `client_proc` / `server_proc`，`[[bind.service]]`
+显式声明 `backend = "zenoh"`。server component 声明 `concurrency = "parallel"`，
+因为 generated zenoh service server 通过 transport queryable 回调线程调用
+`on_plan_request`。
+
+运行路径：
+
+```bash
+flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 50 examples/zenoh_service_demo/rsdl/robot.rsdl
+```
+
+`flowrt list` 可看到 service endpoint 的 backend 与 key expression：
+
+```bash
+flowrt list examples/zenoh_service_demo/flowrt/selfdesc/selfdesc.json
+```
+
+该示例验证：
+
+- auto/process 投影后的 generated shell 在 client 进程填充 `ZenohServiceClient`。
+- server 进程打开 `ZenohServiceServer` 并在运行态 introspection 中标记 service ready。
+- `launch/launch.json` 与 self-description 同步暴露
+  `flowrt/service/plan_x5F_client.plan/request`，与 runtime 实际 queryable key expression
+  一致。
 
 ## `operation_demo`
 

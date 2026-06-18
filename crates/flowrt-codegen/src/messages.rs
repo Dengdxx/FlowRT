@@ -175,6 +175,7 @@ pub(crate) fn emit_rust_messages(contract: &ContractIr) -> String {
             output.push_str(&rust_wire_codec_impl(contract, ty));
         }
     }
+    crate::normalize_text_eof_newline(&mut output);
     output
 }
 
@@ -577,6 +578,7 @@ pub(crate) fn emit_rust_message_abi_tests(
         }
     }
 
+    crate::normalize_text_eof_newline(&mut output);
     output
 }
 

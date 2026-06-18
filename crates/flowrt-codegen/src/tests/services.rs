@@ -459,3 +459,28 @@ fn zenoh_service_codegen_wires_transport() {
         "server process must open the zenoh service queryable.\n\n{shell}"
     );
 }
+
+/// zenoh service 的静态拓扑必须暴露 runtime 实际 queryable 使用的 key expression。
+#[test]
+fn zenoh_service_manifest_and_selfdesc_expose_key_expr() {
+    let source = SERVICE_RSDL
+        .replace("backend = \"inproc\"", "backend = \"zenoh\"")
+        .replace(
+            "[component.plan_service]\nlanguage = \"rust\"",
+            "[component.plan_service]\nlanguage = \"rust\"\nconcurrency = \"parallel\"",
+        );
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).expect("zenoh service codegen must succeed");
+    let launch = artifact_content(&bundle, "launch/launch.json");
+    let selfdesc = artifact_content(&bundle, "selfdesc/selfdesc.json");
+
+    assert!(
+        launch.contains("\"key_expr\": \"flowrt/service/plan_x5F_client.plan/request\""),
+        "launch manifest service endpoint must expose zenoh service key_expr.\n\n{launch}"
+    );
+    assert!(
+        selfdesc.contains("\"key_expr\": \"flowrt/service/plan_x5F_client.plan/request\""),
+        "self-description service endpoint must expose zenoh service key_expr.\n\n{selfdesc}"
+    );
+}

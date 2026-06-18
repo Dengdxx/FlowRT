@@ -91,4 +91,3 @@ fn odom_message_abi() {
     assert_byte_roundtrip(sample_odom());
     assert_sample_bytes(sample_odom(), EXPECTED_ODOM_BYTES);
 }
-

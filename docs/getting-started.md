@@ -523,6 +523,17 @@ flowrt status
 `flowrt list` 展示 service endpoint 的 client/server 绑定和 request/response 类型；
 `flowrt status` 展示每个 service 的 ready、in_flight、queued、timeout、busy 等运行态指标。
 
+跨进程 service 使用 `zenoh` backend，示例为：
+
+```bash
+flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl
+FLOWRT_TICK_SLEEP_MS=5 flowrt launch --run-steps 50 examples/zenoh_service_demo/rsdl/robot.rsdl
+```
+
+该路径会在 client 进程生成 `ZenohServiceClient`，在 server 进程生成
+`ZenohServiceServer`；self-description 和 launch manifest 会暴露对应 service
+`key_expr`。
+
 Service 与 channel 的区别：channel 是 publish/subscribe，生产者写入后不等消费者处理；
 Service 是 call/response，client 阻塞或轮询等待 server 返回。Service 与参数热更新的区别：
 参数是 runtime control-plane 的配置值，Service 是 graph 业务逻辑的一部分。

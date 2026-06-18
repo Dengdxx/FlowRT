@@ -70,4 +70,3 @@ fn state_message_abi() {
     assert_byte_roundtrip(sample_state());
     assert_sample_bytes(sample_state(), EXPECTED_STATE_BYTES);
 }
-

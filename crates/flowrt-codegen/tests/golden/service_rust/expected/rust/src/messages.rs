@@ -25,4 +25,3 @@ impl Default for PlanResponse {
         unsafe { std::mem::zeroed() }
     }
 }
-

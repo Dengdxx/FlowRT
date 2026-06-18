@@ -101,4 +101,3 @@ pub trait Sink: Send {
         sample: flowrt::Latest<'_, Sample>,
     ) -> flowrt::Status;
 }
-

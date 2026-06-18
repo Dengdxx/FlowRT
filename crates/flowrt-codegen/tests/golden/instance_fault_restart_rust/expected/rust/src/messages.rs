@@ -12,4 +12,3 @@ impl Default for Sample {
         unsafe { std::mem::zeroed() }
     }
 }
-

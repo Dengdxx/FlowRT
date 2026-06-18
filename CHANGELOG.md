@@ -4,6 +4,43 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## v0.23.0 - 2026-06-18
+
+Generated Service over zenoh：native Rust/C++ generated Service 不再只支持 inproc，同一
+Contract IR 的 request/response bind 现在可以跨进程走 zenoh transport，并在
+self-description 与 launch manifest 中暴露真实 request key expression。
+
+### 新增
+
+- Rust codegen 为 `backend = "zenoh"` 的 service client 生成按进程填充的
+  `ZenohServiceClient` typed handle；server 进程在组件启动后打开
+  `ZenohServiceServer`，handler 调用用户 `on_<port>_request`，并在 introspection 中
+  `register_service` / `mark_service_ready`。
+- C++ codegen 镜像 Rust 接线：生成 typed client wrapper 的 transport slot，server 进程
+  打开 `flowrt::zenoh::ZenohServiceServer`，保持 mixed/language boundary 诚实，不为另一语言
+  component 伪造接口。
+- `launch/launch.json` 与 self-description 的 service endpoint 对 zenoh backend 暴露
+  `key_expr = "flowrt/service/<escaped service-name>/request"`，与 runtime 实际 queryable
+  key expression 一致。
+- 新增 `examples/zenoh_service_demo`，覆盖 Rust client/server 分进程、generated Service over
+  zenoh、typed API 和 service key expression 观测。
+
+### 变更
+
+- validator 要求 zenoh service server component 声明 `concurrency = "parallel"`，因为 server
+  handler 由 transport queryable 回调线程驱动；exclusive server 会在 Contract IR validator
+  阶段 fail-fast。
+- Operation 的 zenoh generated runtime 仍未接线，继续 fail-fast；本版本只放行 native
+  Service request/response。
+
+### 测试
+
+- 新增 `zenoh_service_{rust,cpp}` codegen golden，锁定两语言 generated endpoint 构造、
+  manifest/selfdesc `key_expr` 和 service ready 标记。
+- 新增 `v0.23.0 Zenoh Service Smoke` focused smoke，覆盖 validator 门、codegen 断言、
+  golden、CLI `flowrt list` service `key_expr` 展示、示例 `check/prepare` 和 service
+  `key_expr`。
+
 ## v0.22.1 - 2026-06-18
 
 RSDL identifier 命名加固：validator 拒绝会被 codegen 直接生成为 Rust/C++ 标识符、且与任一目标语言保留关键字冲突的名称，避免合法契约在生成阶段产出无法编译的 shell。

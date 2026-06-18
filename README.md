@@ -78,7 +78,7 @@ fixed-size plain data message、普通 `build/run` 和 `build --launcher` 后的
 推荐使用 GitHub Release 中的 Debian 包：
 
 ```bash
-version=v0.22.1  # 替换为要安装的 release tag
+version=v0.23.0  # 替换为要安装的 release tag
 arch="$(dpkg --print-architecture)"  # amd64 或 arm64，以 release 页面实际资产为准
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/flowrt_${version#v}_${arch}.deb"
 curl -LO "https://github.com/Dengdxx/FlowRT/releases/download/${version}/SHA256SUMS"
@@ -550,14 +550,15 @@ overflow = "busy"
 
 codegen 为 client 生成 `ServiceClient_{instance}_{port}` typed handle，暴露同步
 `call()` 和非阻塞 `start_call()`；为 server 生成 `on_{port}_request` handler
-方法，用户实现具体的 request -> response 转换。Service 通过 hidden task 集成到
-scheduler，request arrival 直接唤醒 server 处理。
+方法，用户实现具体的 request -> response 转换。`inproc` Service 通过 hidden task 集成到
+scheduler；`zenoh` Service 由 server 进程打开 queryable，transport 回调线程调用 handler。
 
-**Service policy：** `backend`（native generated Service 当前支持 `inproc`；`zenoh`
-运行时已实现，但 native Service / Operation codegen 尚未接线，因此会 fail-fast，
-不生成 placeholder）、`timeout_ms`（默认 5000）、`queue_depth`（默认 32）、
-`overflow`（`busy` 或 `error`，默认 `busy`）、`max_in_flight`（默认 64）。auto
-backend resolver 默认同进程选择 `inproc`，跨进程或 external endpoint 选择 `zenoh`。
+**Service policy：** `backend`（native generated Service 支持 `inproc` 与 `zenoh`；
+Operation 的 zenoh generated runtime 尚未接线，仍 fail-fast）、`timeout_ms`（默认 5000）、
+`queue_depth`（默认 32）、`overflow`（`busy` 或 `error`，默认 `busy`）、
+`max_in_flight`（默认 64）。auto backend resolver 默认同进程选择 `inproc`，跨进程或
+external endpoint 选择 `zenoh`；zenoh service server component 必须声明
+`concurrency = "parallel"`，因为 handler 由 transport queryable 回调线程驱动。
 
 **错误语义：** `Timeout`（超时）、`Busy`（队列满）、`Unavailable`（server 未注册）、
 `WouldDeadlock`（同 lane 阻塞调用）、`HandlerError`（用户业务错误）。
@@ -865,6 +866,7 @@ env = { FLOWRT_LOG_LEVEL = "info", MY_ROBOT_MODE = "production" }
 | `examples/island_demo` | Rust | `inproc` | `flowrt build --launcher examples/island_demo/rsdl/robot.rsdl` | Island Mode 下通过 boundary input/output 做单功能单位 IO 测试。 |
 | `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 通过 JSONL 注入 `sequence<f32>` canonical frame 并观察 fixed summary。 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | Service request/response、typed API、inproc call、service policy 和健康观测。 |
+| `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 跨进程 generated Service over zenoh、typed client/server API 和 service key expression 观测。 |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | Operation client/server typed API、自描述和 `flowrt op list`。 |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | I/O boundary 只发布固定 FrameDescriptor，真实 payload 由 side-channel 管理。 |
 

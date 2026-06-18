@@ -205,4 +205,3 @@ pub trait Sink: Send {
         estimate: flowrt::Latest<'_, Estimate>,
     ) -> flowrt::Status;
 }
-

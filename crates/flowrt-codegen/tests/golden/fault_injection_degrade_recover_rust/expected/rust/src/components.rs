@@ -53,4 +53,3 @@ pub trait Monitor: Send {
         echo: &mut flowrt::Output<Sample>,
     ) -> flowrt::Status;
 }
-

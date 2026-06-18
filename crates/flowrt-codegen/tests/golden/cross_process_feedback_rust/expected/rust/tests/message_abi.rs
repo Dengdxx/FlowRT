@@ -88,4 +88,3 @@ fn state_wire_codec_omits_native_padding() {
     assert_eq!(wire, vec![0, 0, 0, 0, 0, 0, 2, 64]);
     assert_eq!(flowrt_app::messages::State::decode_wire(&wire).unwrap(), value);
 }
-

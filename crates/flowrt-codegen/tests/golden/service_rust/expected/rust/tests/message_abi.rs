@@ -70,4 +70,3 @@ fn plan_response_message_abi() {
     assert_byte_roundtrip(sample_plan_response());
     assert_sample_bytes(sample_plan_response(), EXPECTED_PLAN_RESPONSE_BYTES);
 }
-

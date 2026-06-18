@@ -40,4 +40,3 @@ impl Default for Odom {
         unsafe { std::mem::zeroed() }
     }
 }
-

@@ -53,4 +53,3 @@ fn sample_message_abi() {
     assert_byte_roundtrip(sample_sample());
     assert_sample_bytes(sample_sample(), EXPECTED_SAMPLE_BYTES);
 }
-

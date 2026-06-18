@@ -1,0 +1,223 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "bfc001a8e3472abcd25f2136350dc8b7c972fa089402a409bf0a5a14f11a6794",
+    "package_id": "package_ca16cfb391fd69b7"
+  },
+  "package": {
+    "name": "zenoh_service_rust",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "plan_service",
+      "qualified_name": "plan_service",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "parallel",
+      "instances": [
+        "plan_svc"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&self) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_plan_request",
+          "signature": "fn on_plan_request(&self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse>",
+          "required": false,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "plan_svc",
+          "trigger": "periodic",
+          "period_ms": 1000,
+          "readiness": "any_ready",
+          "lane": "plan_svc_serial",
+          "concurrency": "parallel",
+          "inputs": [],
+          "outputs": []
+        }
+      ],
+      "inputs": [],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [
+        {
+          "name": "plan",
+          "request_type": "PlanRequest",
+          "response_type": "PlanResponse",
+          "handler_name": "on_plan_request",
+          "handler_signature": "fn on_plan_request(&self, request: &PlanRequest) -> flowrt::ServiceResult<PlanResponse>",
+          "backend": "zenoh",
+          "clients": [
+            "plan_client.plan"
+          ]
+        }
+      ],
+      "operation_clients": [],
+      "operation_servers": []
+    },
+    {
+      "name": "planner",
+      "qualified_name": "planner",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "plan_client"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, plan: &ServiceClient_planner_plan) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "plan_client",
+          "trigger": "periodic",
+          "period_ms": 100,
+          "readiness": "any_ready",
+          "lane": "plan_client_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": []
+        }
+      ],
+      "inputs": [],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [
+        {
+          "name": "plan",
+          "request_type": "PlanRequest",
+          "response_type": "PlanResponse",
+          "handle_type": "ServiceClient_planner_plan",
+          "handler_argument": "plan: &ServiceClient_planner_plan",
+          "backend": "zenoh",
+          "server": "plan_svc.plan"
+        }
+      ],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "rust",
+      "component": "plan_service",
+      "path": "app/stubs/rust/plan_service.rs"
+    },
+    {
+      "language": "rust",
+      "component": "planner",
+      "path": "app/stubs/rust/planner.rs"
+    }
+  ]
+}

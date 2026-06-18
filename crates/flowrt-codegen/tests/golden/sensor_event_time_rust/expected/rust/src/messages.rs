@@ -46,4 +46,3 @@ impl flowrt::WireCodec for ImuSample {
         })
     }
 }
-

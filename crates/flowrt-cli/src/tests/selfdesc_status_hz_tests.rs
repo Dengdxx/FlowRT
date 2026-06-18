@@ -1208,7 +1208,9 @@ fn self_description_summary_displays_service_endpoints() {
       "server_instance": "executor",
       "server_port": "execute",
       "request_type": "PlanRequest",
-      "response_type": "PlanResponse"
+      "response_type": "PlanResponse",
+      "backend": "zenoh",
+      "key_expr": "flowrt/service/planner.plan/request"
     }]
   }],
   "message_abi": []
@@ -1228,6 +1230,8 @@ fn self_description_summary_displays_service_endpoints() {
     assert!(list.contains("server=executor.execute"));
     assert!(list.contains("request=PlanRequest"));
     assert!(list.contains("response=PlanResponse"));
+    assert!(list.contains("backend=zenoh"));
+    assert!(list.contains("key_expr=flowrt/service/planner.plan/request"));
 
     let _ = std::fs::remove_dir_all(&root);
 }

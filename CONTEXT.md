@@ -5,24 +5,27 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.22.1`；当前发布线为 `v0.22.1 Reserved Keyword Naming`，是
-`0.22.x 容错验证` 主题之后的验证加固 patch：validator 拒绝会被 codegen 直接生成为
-Rust/C++ 标识符、且与任一目标语言保留关键字冲突的 RSDL 名称，避免用户契约在验证阶段通过、
-却在生成的 Rust/C++ shell 编译时报 `in`、`type`、`class`、`delete` 等关键字错误。
+当前 workspace 版本为 `0.23.0`；当前发布线为 `v0.23.0 Zenoh Service Transport`：
+native Rust/C++ generated Service 不再只支持 inproc，同一 Contract IR 的 request/response
+bind 可以跨进程走 zenoh transport，并在 self-description 与 launch manifest 中暴露
+真实 request key expression。
 
-- 关键字拒绝只作用于 identifier-emitting 名称：message field、data port、service port、
-  operation port、instance 和 task；这些名称会进入生成结构体字段、函数参数、局部变量或
-  task 函数/分支标识。
-- `profile.default`、target、process、lane、bridge、package 和 component source name 保持
-  原有 `snake_case` 规则：它们用于 Contract IR/manifest/key lookup，不直接成为 lowercase
-  Rust/C++ 标识符，不能误伤既有合法契约。
-- 选择 validator 拒绝而不是 codegen escape：Rust 可用 raw identifier，但 C++ 没有等价机制；
-  name-mangling 会破坏跨语言 API / 字段名一致性。FlowRT 契约应在进入 codegen 前就是双语言可生成的。
-- validator 同步拒绝当前 generated runtime 尚未实现的显式 opt-in：Operation
-  `feedback = "fifo"`、显式 `result_retention_ms` 和 FrameDescriptor `record_payload = true`。
-  self-description 不再输出未生效的 Operation result retention 时间，避免 exposed-but-fake 语义。
-- 新增 `v0.22.1 Reserved Keyword Naming` focused smoke，覆盖关键字拒绝、`profile.default`
-  继续合法，以及上述未实现显式 opt-in 的 validator 拒绝，并接入 release gate registry 与 CI。
+- Rust codegen 为 `backend = "zenoh"` 的 service client 生成按进程填充的
+  `ZenohServiceClient` typed handle；server 进程在组件启动后打开 `ZenohServiceServer`，
+  handler 调用用户 `on_<port>_request`，并向 introspection 标记 service ready。
+- C++ codegen 镜像 Rust 接线：typed client wrapper 持有 transport slot，server 进程打开
+  `flowrt::zenoh::ZenohServiceServer`；mixed contract 仍保持语言边界诚实，不为另一语言
+  component 伪造接口。
+- validator 要求 zenoh service server component 声明 `concurrency = "parallel"`，因为
+  handler 由 transport queryable 回调线程驱动；exclusive server fail-fast。
+- `launch/launch.json` 与 self-description 的 service endpoint 对 zenoh backend 暴露
+  `key_expr = "flowrt/service/<escaped service-name>/request"`，与 runtime 实际 queryable
+  key expression 一致。
+- Operation 的 zenoh generated runtime 仍未接线，继续 fail-fast；本版本只放行 native
+  Service request/response。
+- 新增 `examples/zenoh_service_demo` 和 `v0.23.0 Zenoh Service Smoke` focused smoke，覆盖
+  validator 门、codegen 断言、`zenoh_service_{rust,cpp}` golden、CLI `flowrt list`
+  service `key_expr` 展示、示例 `check/prepare` 和 service `key_expr`。
 
 ### 当前已核对的待收口问题
 
@@ -70,6 +73,14 @@ ABI/schema 冻结后被绑死。每债还时口径不变：要么完整端到端
   outcome）。startup/shutdown task、panic、deadline 超时、backend drop、随机/chaos
   注入与性能矩阵仍未覆盖。roadmap 已把故障注入矩阵 + 性能矩阵钉在 v1.0.0；可切片增量，
   单进程 kind 不需 debt 2，跨进程注入 determinism 骑在 debt 2 上。
+
+上一发布线为 `v0.22.1 Reserved Keyword Naming`，是 `0.22.x 容错验证` 主题之后的验证
+加固 patch：validator 拒绝会被 codegen 直接生成为 Rust/C++ 标识符、且与任一目标语言
+保留关键字冲突的 RSDL 名称，避免用户契约在验证阶段通过、却在生成的 Rust/C++ shell
+编译时报 `in`、`type`、`class`、`delete` 等关键字错误。同时 validator 拒绝 generated
+runtime 尚未实现的显式 opt-in（Operation `feedback = "fifo"`、显式
+`result_retention_ms` 和 FrameDescriptor `record_payload = true`），避免 exposed-but-fake
+语义继续外露；focused smoke 已接入 release gate registry 与 CI。
 
 上一发布线为 `v0.22.0 Deterministic Fault Injection`，开启 `0.22.x 容错验证` 主题：提供 test-only
 确定性故障注入，在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，让用户无需手写
@@ -628,6 +639,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.21.x` | 图级容错 / 生命周期（patch 线 5 切片）：生命周期状态机底座 / 进程内隔离重启 / 降级数据语义 / 图级 health 聚合 + 受控停机 / 跨进程反馈环。 |
 | `v0.22.0` | Deterministic Fault Injection：test-only 注入 overlay 在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，跑遍 0.21.x 全部故障反应策略并验证可复现。codegen 两语言 per-task 计数器 + 注入门（gated，非注入字节不漂移）；validator 守 scheduled-only / ≥1 boundary input(island) / 单进程 / canonical；golden + 编译网 + focused smoke。确定性经 golden 锁定的计数驱动门 ∘ v0.17/v0.18 回放内核证明，不另做 CLI MCAP 往返。Error-only、单进程、startup/shutdown 与跨进程注入留待后续。 |
 | `v0.22.1` | Reserved Keyword Naming：validator 拒绝 field / port / service port / operation port / instance / task 等生成代码标识符撞 Rust 2024 或 C++ 保留关键字，保留 `profile.default` 等非标识符名称合法。focused smoke 接入 release gate。 |
+| `v0.23.0` | Zenoh Service Transport：native Rust/C++ generated Service 支持跨进程 zenoh request/response，生成 typed `ZenohServiceClient` / `ZenohServiceServer` 接线；validator 要求 zenoh server component `concurrency = "parallel"`；manifest/self-description 暴露 service `key_expr`；新增 `zenoh_service_{rust,cpp}` golden、`examples/zenoh_service_demo` 和 focused smoke。Operation zenoh 仍 fail-fast。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -1310,14 +1322,18 @@ focused smoke，并串联 architecture size guard 和 `scripts/check-architectur
 release 只消费同一 commit SHA 的 push CI release evidence，以及本地 helper 不再触发远端 CI。
 `v0.15.2 Scheduler Clock Smoke` 覆盖 realtime generated scheduler 清空 boundary/replay
 样本时间戳但不推进 runtime scheduling time，并确认 temporary island overlay 继续使用
-fixture 时间驱动 simulated replay clock。
+fixture 时间驱动 simulated replay clock。`v0.23.0 Zenoh Service Smoke` 覆盖 zenoh
+service validator server parallel gate、Rust/C++ generated endpoint 接线、golden、CLI
+self-description service `key_expr` 展示、示例 `check/prepare` 和 manifest/self-description
+`key_expr`。
 发布前应运行
 `scripts/check-architecture-contract.sh`、`scripts/check-release-readiness.sh <version>` 和
 `scripts/check-release-candidate.sh <version> --wait --ref dev/v<version>`；
 脚本会汇总版本来源、CHANGELOG 段、release notes 抽取、release gate registry、
 release evidence 门禁和
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 / v0.9.x / v0.10.2 /
-v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 / v0.15.1 / v0.15.2 focused gate 覆盖状态。
+v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 / v0.15.1 / v0.15.2 / v0.23.0
+focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、
 C ABI layout、C codegen adapter、C reference stub、C v0 fail-fast，以及

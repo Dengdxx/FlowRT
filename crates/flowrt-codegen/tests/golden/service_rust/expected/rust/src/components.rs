@@ -147,4 +147,3 @@ pub trait Planner: Send {
         plan: &ServiceClient_planner_plan,
     ) -> flowrt::Status;
 }
-

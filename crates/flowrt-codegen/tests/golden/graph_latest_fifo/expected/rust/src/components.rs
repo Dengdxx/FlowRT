@@ -155,4 +155,3 @@ pub trait Monitor: Send {
         odom: flowrt::Latest<'_, Odom>,
     ) -> flowrt::Status;
 }
-

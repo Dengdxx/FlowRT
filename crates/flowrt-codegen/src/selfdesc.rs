@@ -39,7 +39,7 @@ use crate::{
     frame_header_size_for_type, frame_max_size_for_type, language_name, managed_header,
     param_type_name, param_update_name, param_value_for_instance, param_value_json,
     runtime_plan::{contract_derived_facts, graph_derived_facts},
-    type_contains_variable_data, variable_tail_max_size,
+    type_contains_variable_data, variable_tail_max_size, zenoh_service_key_expr,
 };
 
 pub(super) fn emit_self_description(contract: &ContractIr) -> Result<String> {
@@ -521,6 +521,7 @@ fn self_description_service_endpoint(
         service.server.instance.name,
         service.server.port
     );
+    let service_name = format!("{}.{}", service.client.instance.name, service.client.port);
 
     SelfDescriptionServiceEndpoint {
         name,
@@ -532,6 +533,7 @@ fn self_description_service_endpoint(
         request_type,
         response_type,
         backend: service.backend.0.clone(),
+        key_expr: (service.backend.0 == "zenoh").then(|| zenoh_service_key_expr(&service_name)),
         timeout_ms: Some(service.policy.timeout_ms),
         queue_depth: Some(service.policy.queue_depth),
         overflow: service_overflow_name(service.policy.overflow).to_string(),

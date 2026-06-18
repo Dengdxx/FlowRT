@@ -116,6 +116,7 @@ pub(crate) fn emit_rust_components(contract: &ContractIr) -> String {
         ));
         output.push_str("}\n\n");
     }
+    crate::normalize_text_eof_newline(&mut output);
     output
 }
 

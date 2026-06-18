@@ -105,4 +105,3 @@ pub trait Plant: Send {
         state: &mut flowrt::Output<State>,
     ) -> flowrt::Status;
 }
-

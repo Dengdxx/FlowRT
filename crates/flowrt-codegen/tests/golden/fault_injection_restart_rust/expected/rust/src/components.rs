@@ -53,4 +53,3 @@ pub trait Flaky: Send {
         echo: &mut flowrt::Output<Sample>,
     ) -> flowrt::Status;
 }
-

@@ -852,6 +852,7 @@ fn emit_implementation_md(manifest: &AppApiManifest) -> String {
         }
         output.push('\n');
     }
+    crate::normalize_text_eof_newline(&mut output);
     output
 }
 

@@ -282,6 +282,27 @@ pub(crate) fn zenoh_key_expr_for_edge(
     )
 }
 
+pub(crate) fn zenoh_service_key_expr(service_name: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(service_name.len());
+    for byte in service_name.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('_');
+                encoded.push('x');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0F) as usize] as char);
+                encoded.push('_');
+            }
+        }
+    }
+    format!("flowrt/service/{encoded}/request")
+}
+
 pub(crate) fn ros2_bridge_key_expr(
     contract: &ContractIr,
     graph: &GraphIr,

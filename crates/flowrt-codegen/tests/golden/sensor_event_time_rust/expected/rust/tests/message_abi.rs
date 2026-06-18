@@ -55,4 +55,3 @@ fn imu_sample_message_abi() {
     assert_byte_roundtrip(sample_imu_sample());
     assert_sample_bytes(sample_imu_sample(), EXPECTED_IMU_SAMPLE_BYTES);
 }
-
