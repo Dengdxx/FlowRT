@@ -362,6 +362,18 @@ struct IntrospectionInstanceStatus {
 };
 
 /**
+ * @brief 单次 standby redundancy failover 事件。
+ */
+struct IntrospectionFailoverEvent {
+    std::string event;
+    std::string group;
+    std::string old_active;
+    std::string new_active;
+    std::uint64_t tick_id = 0;
+    std::string reason;
+};
+
+/**
  * @brief 运行态 status 快照。
  */
 struct IntrospectionStatus {
@@ -380,6 +392,7 @@ struct IntrospectionStatus {
     std::vector<IntrospectionLaneHealth> lanes;
     IntrospectionRecorderStatus recorder;
     std::vector<IntrospectionInstanceStatus> instances;
+    std::vector<IntrospectionFailoverEvent> failovers;
     /// v0.21.3+ 图级 health 聚合：每实例 lifecycle 的 worst-of
     /// （`faulted` > `degraded` > `healthy`），与 Rust 镜像。
     std::string graph_health = "healthy";

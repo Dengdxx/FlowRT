@@ -290,6 +290,8 @@ fn emit_cpp_zenoh_service_endpoints(
 pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     let scheduler_plan = scheduler_runtime_plan(run.contract, run.graph, run.order);
     let recoverable = recoverable_instances(run.contract, run.graph, run.order);
+    let standby_failover =
+        crate::runtime_plan::standby_failover_plans_for_order(run.graph, run.order);
     // 受控停机仅当图声明 on_faulted=stop 且存在 isolate/restart 实例时启用，镜像 Rust。
     let graph_stop = run.graph.health.on_faulted == GraphFaultReaction::Stop
         && recoverable.iter().any(|plan| {
@@ -414,6 +416,7 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         output.push_str("    (void)scheduler_base_period_ms;\n");
     }
     output.push_str(&emit_cpp_fault_state_decls(&recoverable, graph_stop));
+    output.push_str(&emit_cpp_failover_state_decls(&standby_failover));
     output.push_str(&emit_cpp_injection_counter_decls(
         run.contract,
         &scheduler_plan.dataflow_tasks,
@@ -501,6 +504,7 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     output.push_str(
         "                const auto submitted = worker_pool.submit_collect(admission.task, task_completion_queue, [this, &introspection_state, &scheduler_events, &task_health_mutex, &task_health_from_workers, admission, scheduled_delta_ms, observed_delta_ms, task_clock_source, tick_base, tick_time_ms",
     );
+    output.push_str(&cpp_failover_capture(&standby_failover));
     output.push_str(&cpp_injection_capture(
         run.contract,
         &scheduler_plan.dataflow_tasks,
@@ -531,8 +535,14 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         };
         // test-only 故障注入门：命中时三元短路跳过用户回调，直接合成 error outcome（与回调返
         // Status::Error 等价），不影响非注入产物字节。
+        let active_arg = crate::runtime_plan::standby_failover_plan_for_instance_in_graph(
+            run.graph,
+            &task.instance.name,
+        )
+        .map(|plan| format!("{}, ", plan.active_field_name))
+        .unwrap_or_default();
         let call_expr = format!(
-            "{function_name}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map)"
+            "{function_name}(static_cast<std::size_t>(tick_time_ms), {active_arg}local_context, introspection_state, scheduler_events, local_health_map)"
         );
         let task_outcome_expr = if crate::runtime_plan::fault_injection_point_for(
             run.contract,
@@ -611,10 +621,11 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         cpp_scheduler_data_time_update(run.contract, "                    ")
     );
     output.push_str(&format!(
-        "                }}\n                }});\n                if (submitted.accepted) {{\n                    pending_task_order.push_back(admission.task);\n                    pending_task_admissions.insert_or_assign(admission.task, admission);\n{task_admission_health_update}                }} else {{\n                    (void)scheduler.complete_task(admission.task);\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            std::size_t committed_task_count = 0;\n            while (!pending_task_order.empty()) {{\n                const auto task = pending_task_order.front();\n                const auto result_it = pending_task_results.find(task);\n                if (result_it == pending_task_results.end()) {{\n                    break;\n                }}\n                auto task_result = std::move(result_it->second);\n                pending_task_results.erase(result_it);\n                pending_task_order.pop_front();\n                (void)scheduler.complete_task(task_result.task);\n                ++committed_task_count;\n{task_result_health_update}{task_error_handling}                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            if (committed_task_count == 0U || (!woke_on_message && submitted_task_count == 0U)) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n{graph_stop_check}        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n{advance_block}        }}\n    }}\n",
+        "                }}\n                }});\n                if (submitted.accepted) {{\n                    pending_task_order.push_back(admission.task);\n                    pending_task_admissions.insert_or_assign(admission.task, admission);\n{task_admission_health_update}                }} else {{\n                    (void)scheduler.complete_task(admission.task);\n                    status = flowrt::Status::Error;\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            std::size_t committed_task_count = 0;\n            while (!pending_task_order.empty()) {{\n                const auto task = pending_task_order.front();\n                const auto result_it = pending_task_results.find(task);\n                if (result_it == pending_task_results.end()) {{\n                    break;\n                }}\n                auto task_result = std::move(result_it->second);\n                pending_task_results.erase(result_it);\n                pending_task_order.pop_front();\n                (void)scheduler.complete_task(task_result.task);\n                ++committed_task_count;\n{task_result_health_update}{task_error_handling}                if (task_result.outputs.has_value()) {{\n                    for (auto& commit : *task_result.outputs) {{\n                        const auto commit_status = commit(*this, introspection_state, scheduler_events, health_map);\n                        if (commit_status == flowrt::Status::Error) {{\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                        if (commit_status == flowrt::Status::Retry) {{\n                            status = flowrt::Status::Retry;\n                            break;\n                        }}\n                    }}\n                }}\n                if (status != flowrt::Status::Ok) {{\n                    break;\n                }}\n            }}\n            if (status != flowrt::Status::Ok) {{\n                break;\n            }}\n            if (committed_task_count == 0U || (!woke_on_message && submitted_task_count == 0U)) {{\n                break;\n            }}\n        }}\n        // 公平性检测：检查 lane 饥饿。\n{fairness_check}        // 将本轮健康快照写入 introspection。\n        for (auto &[name, health] : health_map) {{\n            introspection_state.record_task_health(std::move(health));\n        }}\n        health_map.clear();\n{failover_boundary}{graph_stop_check}        if (status == flowrt::Status::Ok) {{\n            ++tick_base;\n{advance_block}        }}\n    }}\n",
         task_result_health_update = task_result_health_update,
         task_admission_health_update = task_admission_health_update,
-        task_error_handling = emit_cpp_task_error_handling(&recoverable, graph_stop),
+        task_error_handling = emit_cpp_task_error_handling(&recoverable, &standby_failover, graph_stop),
+        failover_boundary = emit_cpp_failover_boundary(&standby_failover),
             graph_stop_check = if graph_stop {
                 "        if (_graph_terminal_fault) {\n            shutdown.request();\n        }\n"
             } else {
@@ -970,6 +981,64 @@ fn emit_cpp_fault_state_decls(
     output
 }
 
+fn emit_cpp_failover_state_decls(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {
+    let mut output = String::new();
+    for plan in plans.iter().filter(|plan| !plan.standby.is_empty()) {
+        output.push_str(&format!(
+            "    std::string {active} = {primary};\n    bool {pending} = false;\n",
+            active = plan.active_field_name,
+            primary = cpp_string_literal(&plan.primary),
+            pending = plan.pending_field_name,
+        ));
+    }
+    output
+}
+
+fn cpp_failover_capture(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {
+    plans
+        .iter()
+        .filter(|plan| !plan.standby.is_empty())
+        .map(|plan| format!(", {}", plan.active_field_name))
+        .collect()
+}
+
+fn emit_cpp_failover_boundary(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {
+    let mut output = String::new();
+    for plan in plans.iter().filter(|plan| !plan.standby.is_empty()) {
+        let active = &plan.active_field_name;
+        let pending = &plan.pending_field_name;
+        let old_active = format!(
+            "flowrt_old_active_redundancy_{}",
+            crate::snake_identifier(&plan.group)
+        );
+        let primary = cpp_string_literal(&plan.primary);
+        let standby = cpp_string_literal(&plan.standby[0]);
+        let group = cpp_string_literal(&plan.group);
+        output.push_str(&format!(
+            "        if ({pending}) {{\n            if ({active} == {primary}) {{\n                auto {old_active} = {active};\n                {active} = {standby};\n                introspection_state.record_failover(flowrt::IntrospectionFailoverEvent{{\n                    .event = \"failover\",\n                    .group = {group},\n                    .old_active = std::move({old_active}),\n                    .new_active = {standby},\n                    .tick_id = static_cast<std::uint64_t>(tick_base),\n                    .reason = \"critical_fault\",\n                }});\n            }}\n            {pending} = false;\n        }}\n"
+        ));
+    }
+    output
+}
+
+fn cpp_failover_pending_mark(
+    instance: &str,
+    plans: &[crate::runtime_plan::StandbyFailoverPlan],
+) -> String {
+    plans
+        .iter()
+        .filter(|plan| plan.primary == instance && !plan.standby.is_empty())
+        .map(|plan| {
+            format!(
+                "                            if ({active} == {primary}) {{\n                                {pending} = true;\n                            }}\n",
+                active = plan.active_field_name,
+                primary = cpp_string_literal(&plan.primary),
+                pending = plan.pending_field_name,
+            )
+        })
+        .collect()
+}
+
 /// C++ 注入命中布尔表达式，镜像 Rust：调用计数命中显式集合或达到 from_invocation 起点即触发。
 fn cpp_fault_injection_hit_expr(
     point: &flowrt_ir::FaultInjectionPointIr,
@@ -1094,6 +1163,7 @@ fn emit_cpp_restart_driver(
 /// 仅记 `Degraded` 不挂起、不停图，并在该 task 后续返 Ok 时翻回 `Running`；其余 fail_fast。
 fn emit_cpp_task_error_handling(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    standby_failover: &[crate::runtime_plan::StandbyFailoverPlan],
     graph_stop: bool,
 ) -> String {
     if recoverable.is_empty() {
@@ -1146,8 +1216,9 @@ fn emit_cpp_task_error_handling(
         } else {
             ""
         };
+        let failover_pending = cpp_failover_pending_mark(&plan.name, standby_failover);
         arms.push_str(&format!(
-            "{labels}                        {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{graph_terminal}{restart_schedule}                            break;\n                        }}\n",
+            "{labels}                        {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{failover_pending}{suspend}{graph_terminal}{restart_schedule}                            break;\n                        }}\n",
         ));
     }
     let mut output = format!(

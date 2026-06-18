@@ -69,5 +69,23 @@ int main() {
         graph_faulted = true;
     }
     assert(graph_faulted);
+
+    state.record_failover(flowrt::IntrospectionFailoverEvent{
+        .event = "failover",
+        .group = "controller_ha",
+        .old_active = "controller",
+        .new_active = "monitor",
+        .tick_id = 7,
+        .reason = "critical_fault",
+    });
+    const auto failover_status = state.status();
+    assert(failover_status.failovers.size() == 1);
+    assert(failover_status.failovers[0].event == "failover");
+    assert(failover_status.failovers[0].group == "controller_ha");
+    assert(failover_status.failovers[0].old_active == "controller");
+    assert(failover_status.failovers[0].new_active == "monitor");
+    assert(failover_status.failovers[0].tick_id == 7);
+    assert(failover_status.failovers[0].reason == "critical_fault");
+
     return 0;
 }

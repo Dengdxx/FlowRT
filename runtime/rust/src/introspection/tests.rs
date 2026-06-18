@@ -2081,6 +2081,7 @@ fn health_fields_serialize_roundtrip() {
         }],
         recorder: Default::default(),
         instances: Vec::new(),
+        failovers: Vec::new(),
         graph_health: "degraded".to_string(),
         diagnostics: Vec::new(),
     };
@@ -2166,4 +2167,27 @@ fn records_instance_lifecycle_state_and_derives_diagnostic() {
     assert_eq!(graph.entity_id, "graph");
     assert_eq!(graph.state, "faulted");
     assert_eq!(graph.severity, "error");
+}
+
+#[test]
+fn records_failover_events() {
+    let state = IntrospectionState::new();
+    state.record_failover(IntrospectionFailoverEvent {
+        event: "failover".to_string(),
+        group: "controller_ha".to_string(),
+        old_active: "controller_a".to_string(),
+        new_active: "controller_b".to_string(),
+        tick_id: 7,
+        reason: "critical_fault".to_string(),
+    });
+
+    let status = state.status();
+    assert_eq!(status.failovers.len(), 1);
+    let event = &status.failovers[0];
+    assert_eq!(event.event, "failover");
+    assert_eq!(event.group, "controller_ha");
+    assert_eq!(event.old_active, "controller_a");
+    assert_eq!(event.new_active, "controller_b");
+    assert_eq!(event.tick_id, 7);
+    assert_eq!(event.reason, "critical_fault");
 }

@@ -165,6 +165,9 @@ pub struct IntrospectionStatus {
     /// v0.21+ per-instance 生命周期状态快照（按 instance 名 canonical 排序）。
     #[serde(default)]
     pub instances: Vec<IntrospectionInstanceStatus>,
+    /// v0.23.3+ standby redundancy failover 事件（按记录顺序）。
+    #[serde(default)]
+    pub failovers: Vec<IntrospectionFailoverEvent>,
     /// v0.21.3+ 图级 health 聚合：每实例 lifecycle 的 worst-of 滚动
     /// （`faulted` > `degraded` > `healthy`）。始终存在。
     #[serde(default = "default_graph_health")]
@@ -185,6 +188,17 @@ pub struct IntrospectionInstanceStatus {
     pub instance: String,
     /// `LifecycleState::as_str()` 的 canonical 小写值。
     pub lifecycle_state: String,
+}
+
+/// 单次 standby redundancy failover 事件。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntrospectionFailoverEvent {
+    pub event: String,
+    pub group: String,
+    pub old_active: String,
+    pub new_active: String,
+    pub tick_id: u64,
+    pub reason: String,
 }
 
 /// 结构化诊断中的单个数值或状态指标。

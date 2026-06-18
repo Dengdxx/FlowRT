@@ -138,6 +138,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let _ = fallback_step_function;
     let scheduler_plan = scheduler_runtime_plan(contract, graph, order);
     let recoverable = crate::runtime_plan::recoverable_instances(contract, graph, order);
+    let standby_failover = crate::runtime_plan::standby_failover_plans_for_order(graph, order);
     // 受控停机仅当图声明 on_faulted=stop 且存在可达终态故障的 isolate/restart 实例时启用；
     // 否则不 emit 任何图停机机制，fail_fast/degrade-only 图字节不变。
     let graph_stop = graph.health.on_faulted == flowrt_ir::GraphFaultReaction::Stop
@@ -239,6 +240,7 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
     ));
     output.push_str(&emit_rust_fault_state_decls(&recoverable, graph_stop));
+    output.push_str(&emit_rust_failover_state_decls(&standby_failover));
     output.push_str(&emit_rust_injection_counter_decls(
         contract,
         &scheduler_plan.dataflow_tasks,
@@ -346,11 +348,12 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     let task_admission_health_update =
         emit_rust_task_admission_health_update(&scheduler_plan.dataflow_tasks);
     output.push_str(&format!(
-        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}{task_error_handling}                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n{graph_stop_check}            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
+        "                    match submitted {{\n                        Ok(()) => {{\n                            pending_task_order.push_back(admission.task);\n                            pending_task_admissions.insert(admission.task, admission);\n{task_admission_health_update}                        }}\n                        Err(_) => {{\n                            let _ = scheduler.complete_task(admission.task);\n                            status = flowrt::Status::Error;\n                            break;\n                        }}\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                let mut committed_task_count = 0usize;\n                while let Some(task) = pending_task_order.front().copied() {{\n                    let Some(task_result) = pending_task_results.remove(&task) else {{\n                        break;\n                    }};\n                    pending_task_order.pop_front();\n                    let _ = scheduler.complete_task(task_result.task);\n                    committed_task_count += 1;\n{task_result_health_update}{task_error_handling}                    if let Some(commits) = task_result.outputs {{\n                        for commit in commits {{\n                            let commit_status = commit(app.as_ref(), &introspection_state, &scheduler_events, &mut health_map);\n                            if commit_status == flowrt::Status::Error {{\n                                status = flowrt::Status::Error;\n                                break;\n                            }}\n                            if commit_status == flowrt::Status::Retry {{\n                                status = flowrt::Status::Retry;\n                                break;\n                            }}\n                        }}\n                    }}\n                    if status != flowrt::Status::Ok {{\n                        break;\n                    }}\n                }}\n                if status != flowrt::Status::Ok {{\n                    break;\n                }}\n                if committed_task_count == 0 || (!woke_on_message && submitted_task_count == 0) {{\n                    break;\n                }}\n            }}\n            // 公平性检测：检查 lane 饥饿。\n{fairness_check}            // 将本轮健康快照写入 introspection。\n            for (_, health) in health_map.iter_mut() {{\n                introspection_state.record_task_health(health.clone());\n            }}\n            health_map.clear();\n{failover_boundary}{graph_stop_check}            if status == flowrt::Status::Ok {{\n                tick_base += 1;\n{advance_block}            }}\n        }}\n",
         fairness_check = emit_rust_fairness_check(&lane_ids),
         task_admission_health_update = task_admission_health_update,
         task_result_health_update = emit_rust_task_result_health_update(&scheduler_plan.dataflow_tasks),
-        task_error_handling = emit_rust_task_error_handling(&recoverable, graph_stop),
+        task_error_handling = emit_rust_task_error_handling(&recoverable, &standby_failover, graph_stop),
+        failover_boundary = emit_rust_failover_boundary(&standby_failover),
         graph_stop_check = if graph_stop {
             "            if _graph_terminal_fault {\n                shutdown.request();\n            }\n"
         } else {
@@ -464,6 +467,11 @@ fn rust_collect_task_call_args_for_scheduler(
     if task.trigger == TriggerKind::OnSynchronized {
         args.push(step_emit::rust_synchronizer_field_name(task));
     }
+    if let Some(plan) =
+        crate::runtime_plan::standby_failover_plan_for_instance_in_graph(graph, &task.instance.name)
+    {
+        args.push(plan.active_field_name);
+    }
     args
 }
 
@@ -525,6 +533,14 @@ fn emit_rust_task_capture_prelude(
         output.push_str(&format!(
             "                            let {name} = self.{name}.clone();\n",
             name = step_emit::rust_synchronizer_field_name(task),
+        ));
+    }
+    if let Some(plan) =
+        crate::runtime_plan::standby_failover_plan_for_instance_in_graph(graph, &task.instance.name)
+    {
+        let active = plan.active_field_name;
+        output.push_str(&format!(
+            "                            let {active} = {active}.clone();\n",
         ));
     }
     output
@@ -1039,6 +1055,56 @@ fn emit_rust_fault_state_decls(
     output
 }
 
+fn emit_rust_failover_state_decls(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {
+    let mut output = String::new();
+    for plan in plans.iter().filter(|plan| !plan.standby.is_empty()) {
+        output.push_str(&format!(
+            "        let mut {active} = {primary}.to_string();\n        let mut {pending} = false;\n",
+            active = plan.active_field_name,
+            primary = crate::rust_string_literal(&plan.primary),
+            pending = plan.pending_field_name,
+        ));
+    }
+    output
+}
+
+fn emit_rust_failover_boundary(plans: &[crate::runtime_plan::StandbyFailoverPlan]) -> String {
+    let mut output = String::new();
+    for plan in plans.iter().filter(|plan| !plan.standby.is_empty()) {
+        let active = &plan.active_field_name;
+        let pending = &plan.pending_field_name;
+        let old_active = format!(
+            "flowrt_old_active_redundancy_{}",
+            crate::snake_identifier(&plan.group)
+        );
+        let primary = crate::rust_string_literal(&plan.primary);
+        let standby = crate::rust_string_literal(&plan.standby[0]);
+        let group = crate::rust_string_literal(&plan.group);
+        output.push_str(&format!(
+            "            if {pending} {{\n                if {active} == {primary} {{\n                    let {old_active} = {active}.clone();\n                    {active} = {standby}.to_string();\n                    introspection_state.record_failover(flowrt::IntrospectionFailoverEvent {{\n                        event: \"failover\".to_string(),\n                        group: {group}.to_string(),\n                        old_active: {old_active},\n                        new_active: {standby}.to_string(),\n                        tick_id: tick_base as u64,\n                        reason: \"critical_fault\".to_string(),\n                    }});\n                }}\n                {pending} = false;\n            }}\n"
+        ));
+    }
+    output
+}
+
+fn rust_failover_pending_mark(
+    instance: &str,
+    plans: &[crate::runtime_plan::StandbyFailoverPlan],
+) -> String {
+    plans
+        .iter()
+        .filter(|plan| plan.primary == instance && !plan.standby.is_empty())
+        .map(|plan| {
+            format!(
+                "                            if {active} == {primary} {{\n                                {pending} = true;\n                            }}\n",
+                active = plan.active_field_name,
+                primary = crate::rust_string_literal(&plan.primary),
+                pending = plan.pending_field_name,
+            )
+        })
+        .collect()
+}
+
 /// 查找命中给定 task 的 test-only 故障注入点（按 EntityId 匹配）。
 fn fault_injection_point_for<'a>(
     contract: &'a ContractIr,
@@ -1148,6 +1214,7 @@ fn emit_rust_restart_driver(
 /// 的 task 仅记 `Degraded` 不挂起、不停图，并在该 task 后续返 Ok 时翻回 `Running`；其余 task 仍 fail_fast。
 fn emit_rust_task_error_handling(
     recoverable: &[crate::runtime_plan::RecoverableInstancePlan],
+    standby_failover: &[crate::runtime_plan::StandbyFailoverPlan],
     graph_stop: bool,
 ) -> String {
     if recoverable.is_empty() {
@@ -1202,8 +1269,9 @@ fn emit_rust_task_error_handling(
             } else {
                 ""
             };
+        let failover_pending = rust_failover_pending_mark(&plan.name, standby_failover);
         arms.push_str(&format!(
-            "                        {pattern} => {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{suspend}{graph_terminal}{restart_schedule}                        }}\n",
+            "                        {pattern} => {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{failover_pending}{suspend}{graph_terminal}{restart_schedule}                        }}\n",
         ));
     }
     let mut output = format!(

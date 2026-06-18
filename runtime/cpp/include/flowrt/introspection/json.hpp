@@ -540,6 +540,24 @@ inline std::string instance_status_json(const IntrospectionInstanceStatus &insta
     return output;
 }
 
+inline std::string failover_event_json(const IntrospectionFailoverEvent &event) {
+    std::string output;
+    output.append("{\"event\":");
+    output.append(json_string(event.event));
+    output.append(",\"group\":");
+    output.append(json_string(event.group));
+    output.append(",\"old_active\":");
+    output.append(json_string(event.old_active));
+    output.append(",\"new_active\":");
+    output.append(json_string(event.new_active));
+    output.append(",\"tick_id\":");
+    output.append(std::to_string(event.tick_id));
+    output.append(",\"reason\":");
+    output.append(json_string(event.reason));
+    output.push_back('}');
+    return output;
+}
+
 inline std::string diagnostic_status_json(const IntrospectionDiagnostic &diagnostic) {
     std::string output;
     output.append("{\"category\":");
@@ -662,6 +680,13 @@ inline std::string status_json(const IntrospectionStatus &status) {
             output.push_back(',');
         }
         output.append(instance_status_json(status.instances[index]));
+    }
+    output.append("],\"failovers\":[");
+    for (std::size_t index = 0; index < status.failovers.size(); ++index) {
+        if (index != 0) {
+            output.push_back(',');
+        }
+        output.append(failover_event_json(status.failovers[index]));
     }
     output.append("],\"graph_health\":");
     output.append(json_string(status.graph_health));

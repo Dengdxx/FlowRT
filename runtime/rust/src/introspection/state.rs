@@ -82,6 +82,7 @@ pub(super) struct IntrospectionStateInner {
     pub(super) tasks: BTreeMap<String, IntrospectionTaskHealth>,
     pub(super) lanes: BTreeMap<String, IntrospectionLaneHealth>,
     pub(super) lifecycle: BTreeMap<String, LifecycleState>,
+    pub(super) failovers: Vec<IntrospectionFailoverEvent>,
 }
 
 impl IntrospectionState {
@@ -565,6 +566,12 @@ impl IntrospectionState {
     pub fn record_lifecycle_state(&self, instance: impl Into<String>, state: LifecycleState) {
         let mut inner = self.lock_inner();
         inner.lifecycle.insert(instance.into(), state);
+    }
+
+    /// 记录一次 standby redundancy failover。
+    pub fn record_failover(&self, event: IntrospectionFailoverEvent) {
+        let mut inner = self.lock_inner();
+        inner.failovers.push(event);
     }
 
     /// 记录一次 generated shell input 读取结果。

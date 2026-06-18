@@ -4,9 +4,9 @@ use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr,
     FaultInjectionPointIr, GraphIr, InstanceFailurePolicy, InstanceIr, InstanceRestartParamsIr,
     OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
-    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamValue, Ros2BridgeDirection, Ros2BridgeIr,
-    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
-    TriggerKind, TypeExpr,
+    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamValue, RedundancyMode, Ros2BridgeDirection,
+    Ros2BridgeIr, ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr,
+    TaskReadiness, TriggerKind, TypeExpr,
     derived::{ContractDerivedFacts, GraphDerivedFacts, derive_contract_facts},
 };
 
@@ -263,6 +263,16 @@ pub(crate) struct RecoverableInstancePlan {
     pub(crate) task_ids: Vec<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StandbyFailoverPlan {
+    pub(crate) group: String,
+    pub(crate) primary: String,
+    pub(crate) standby: Vec<String>,
+    pub(crate) members: Vec<String>,
+    pub(crate) active_field_name: String,
+    pub(crate) pending_field_name: String,
+}
+
 /// 收集本进程 order 内 policy ∈ {isolate, restart, degrade} 的 instance 及其 dataflow task id。
 ///
 /// 返回顺序按 instance 名称稳定排序，保证生成 shell 输出确定。fail_fast-only 图返回空 vec，
@@ -299,6 +309,111 @@ pub(crate) fn recoverable_instances(
         }
     }
     by_name.into_values().collect()
+}
+
+pub(crate) fn standby_failover_active_field_name(group: &str) -> String {
+    format!("flowrt_active_redundancy_{}", snake_identifier(group))
+}
+
+pub(crate) fn standby_failover_pending_field_name(group: &str) -> String {
+    format!(
+        "flowrt_pending_redundancy_failover_{}",
+        snake_identifier(group)
+    )
+}
+
+pub(crate) fn standby_failover_plans_for_order(
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+) -> Vec<StandbyFailoverPlan> {
+    let active_instances = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
+    graph
+        .redundancy_groups
+        .iter()
+        .filter(|group| group.mode == RedundancyMode::Standby)
+        .filter_map(|group| {
+            let primary = group.primary.name.clone();
+            let standby = group
+                .standby
+                .iter()
+                .map(|member| member.name.clone())
+                .collect::<Vec<_>>();
+            let mut members = Vec::with_capacity(1 + standby.len());
+            members.push(primary.clone());
+            members.extend(standby.iter().cloned());
+            if !members
+                .iter()
+                .any(|member| active_instances.contains(member.as_str()))
+            {
+                return None;
+            }
+            Some(StandbyFailoverPlan {
+                group: group.name.clone(),
+                primary,
+                standby,
+                members,
+                active_field_name: standby_failover_active_field_name(&group.name),
+                pending_field_name: standby_failover_pending_field_name(&group.name),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn standby_failover_plan_for_instance<'a>(
+    plans: &'a [StandbyFailoverPlan],
+    instance: &str,
+) -> Option<&'a StandbyFailoverPlan> {
+    plans
+        .iter()
+        .find(|plan| plan.members.iter().any(|member| member == instance))
+}
+
+pub(crate) fn standby_failover_plan_for_instance_in_graph(
+    graph: &GraphIr,
+    instance: &str,
+) -> Option<StandbyFailoverPlan> {
+    graph
+        .redundancy_groups
+        .iter()
+        .filter(|group| group.mode == RedundancyMode::Standby)
+        .find_map(|group| {
+            let primary = group.primary.name.clone();
+            let standby = group
+                .standby
+                .iter()
+                .map(|member| member.name.clone())
+                .collect::<Vec<_>>();
+            let mut members = Vec::with_capacity(1 + standby.len());
+            members.push(primary.clone());
+            members.extend(standby.iter().cloned());
+            members
+                .iter()
+                .any(|member| member == instance)
+                .then(|| StandbyFailoverPlan {
+                    group: group.name.clone(),
+                    primary,
+                    standby,
+                    members,
+                    active_field_name: standby_failover_active_field_name(&group.name),
+                    pending_field_name: standby_failover_pending_field_name(&group.name),
+                })
+        })
+}
+
+pub(crate) fn redundancy_logical_source_key(
+    plan: Option<&StandbyFailoverPlan>,
+    instance: &str,
+    port: &str,
+) -> (String, String) {
+    match plan {
+        Some(plan) if plan.members.iter().any(|member| member == instance) => {
+            (plan.primary.clone(), port.to_string())
+        }
+        _ => (instance.to_string(), port.to_string()),
+    }
 }
 
 fn scheduler_lane_id(

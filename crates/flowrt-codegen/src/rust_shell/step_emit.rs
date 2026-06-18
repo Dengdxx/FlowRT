@@ -138,6 +138,13 @@ fn rust_collect_task_parameters(emission: &RustStepEmission<'_>, task: &TaskIr) 
         ));
     }
 
+    if let Some(plan) = crate::runtime_plan::standby_failover_plan_for_instance_in_graph(
+        emission.graph,
+        &task.instance.name,
+    ) {
+        params.push(format!("{}: String", plan.active_field_name));
+    }
+
     params
 }
 
@@ -182,6 +189,8 @@ pub(super) fn emit_rust_app_step(
             "        let mut __flowrt_output_commits: Vec<FlowrtOutputCommit> = Vec::new();\n",
         );
     }
+    let standby_failover_plans =
+        crate::runtime_plan::standby_failover_plans_for_order(emission.graph, order);
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -483,19 +492,32 @@ pub(super) fn emit_rust_app_step(
                 if !task_outputs.contains(port.name.as_str()) {
                     continue;
                 }
+                let redundancy_plan = collect_outputs
+                    .then(|| {
+                        crate::runtime_plan::standby_failover_plan_for_instance(
+                            &standby_failover_plans,
+                            &instance.name,
+                        )
+                    })
+                    .flatten();
+                let logical_source = crate::runtime_plan::redundancy_logical_source_key(
+                    redundancy_plan,
+                    &instance.name,
+                    &port.name,
+                );
                 let outgoing = emission
                     .outgoing_bind_indices
-                    .get(&(instance.name.clone(), port.name.clone()))
+                    .get(&logical_source)
                     .cloned()
                     .unwrap_or_default();
                 let bridge_outgoing = emission
                     .outgoing_bridge_indices
-                    .get(&(instance.name.clone(), port.name.clone()))
+                    .get(&logical_source)
                     .cloned()
                     .unwrap_or_default();
                 let boundary_outgoing = emission
                     .outgoing_boundary_indices
-                    .get(&(instance.name.clone(), port.name.clone()))
+                    .get(&logical_source)
                     .cloned()
                     .unwrap_or_default();
                 if outgoing.is_empty() && bridge_outgoing.is_empty() && boundary_outgoing.is_empty()
@@ -511,6 +533,16 @@ pub(super) fn emit_rust_app_step(
                     "{publish_indent}if let Some(value) = {port}.as_ref().cloned() {{\n",
                     port = port.name
                 ));
+                let active_guard = redundancy_plan.map(|plan| {
+                    format!(
+                        "{} == {}",
+                        plan.active_field_name,
+                        crate::rust_string_literal(&instance.name)
+                    )
+                });
+                if let Some(guard) = &active_guard {
+                    output.push_str(&format!("{publish_indent}    if {guard} {{\n"));
+                }
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
                     let task_health = task_health_name(task);
@@ -521,7 +553,9 @@ pub(super) fn emit_rust_app_step(
                     };
                     output.push_str(&indent_generated_block_levels(
                         &write_code,
-                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                        write_indent_levels
+                            + if has_deadline { 1 } else { 0 }
+                            + usize::from(active_guard.is_some()),
                     ));
                 }
                 for bridge_index in bridge_outgoing {
@@ -533,7 +567,9 @@ pub(super) fn emit_rust_app_step(
                     };
                     output.push_str(&indent_generated_block_levels(
                         &write_code,
-                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                        write_indent_levels
+                            + if has_deadline { 1 } else { 0 }
+                            + usize::from(active_guard.is_some()),
                     ));
                 }
                 for boundary_index in boundary_outgoing {
@@ -545,8 +581,13 @@ pub(super) fn emit_rust_app_step(
                     };
                     output.push_str(&indent_generated_block_levels(
                         &write_code,
-                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                        write_indent_levels
+                            + if has_deadline { 1 } else { 0 }
+                            + usize::from(active_guard.is_some()),
                     ));
+                }
+                if active_guard.is_some() {
+                    output.push_str(&format!("{publish_indent}    }}\n"));
                 }
                 output.push_str(&format!("{publish_indent}}}\n"));
             }

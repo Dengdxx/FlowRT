@@ -64,6 +64,7 @@ impl RuntimeObservabilityFacts {
             lanes: inner.lanes.values().cloned().collect(),
             recorder,
             instances,
+            failovers: inner.failovers.clone(),
             graph_health,
             diagnostics: Vec::new(),
         };

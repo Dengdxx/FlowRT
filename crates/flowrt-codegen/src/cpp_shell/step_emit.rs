@@ -28,8 +28,14 @@ pub(super) fn emit_cpp_app_step(
     } else {
         "flowrt::Status"
     };
+    let task_active_param = task_filter
+        .filter(|_| collect_outputs)
+        .and_then(|task| cpp_redundancy_active_param_decl(emission.graph, task));
     output.push_str(&format!(
-        "{return_type} App::{function_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
+        "{return_type} App::{function_name}(std::size_t tick{task_active_param}, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n",
+        task_active_param = task_active_param
+            .map(|param| format!(", {param}"))
+            .unwrap_or_default(),
     ));
     if cpp_runtime_step_uses_tick_time(emission.binds, emission.bridges, emission.boundaries)
         || order.iter().any(|instance| {
@@ -54,6 +60,8 @@ pub(super) fn emit_cpp_app_step(
     if collect_outputs {
         output.push_str("    std::vector<FlowrtOutputCommit> flowrt_output_commits;\n");
     }
+    let standby_failover_plans =
+        crate::runtime_plan::standby_failover_plans_for_order(emission.graph, order);
 
     for instance in order {
         let component = component_by_name(emission.contract, &instance.component.name);
@@ -308,19 +316,32 @@ pub(super) fn emit_cpp_app_step(
                     continue;
                 }
                 let output_local = cpp_step_local_name(&instance.name, &port.name);
+                let redundancy_plan = collect_outputs
+                    .then(|| {
+                        crate::runtime_plan::standby_failover_plan_for_instance(
+                            &standby_failover_plans,
+                            &instance.name,
+                        )
+                    })
+                    .flatten();
+                let logical_source = crate::runtime_plan::redundancy_logical_source_key(
+                    redundancy_plan,
+                    &instance.name,
+                    &port.name,
+                );
                 let outgoing = emission
                     .outgoing_bind_indices
-                    .get(&(instance.name.clone(), port.name.clone()))
+                    .get(&logical_source)
                     .cloned()
                     .unwrap_or_default();
                 let bridge_outgoing = emission
                     .outgoing_bridge_indices
-                    .get(&(instance.name.clone(), port.name.clone()))
+                    .get(&logical_source)
                     .cloned()
                     .unwrap_or_default();
                 let boundary_outgoing = emission
                     .outgoing_boundary_indices
-                    .get(&(instance.name.clone(), port.name.clone()))
+                    .get(&logical_source)
                     .cloned()
                     .unwrap_or_default();
                 if outgoing.is_empty() && bridge_outgoing.is_empty() && boundary_outgoing.is_empty()
@@ -336,6 +357,16 @@ pub(super) fn emit_cpp_app_step(
                 output.push_str(&format!(
                     "{publish_indent}if (const auto* value = {output_local}.as_ref()) {{\n"
                 ));
+                let active_guard = redundancy_plan.map(|plan| {
+                    format!(
+                        "{} == {}",
+                        plan.active_field_name,
+                        cpp_string_literal(&instance.name)
+                    )
+                });
+                if let Some(guard) = &active_guard {
+                    output.push_str(&format!("{publish_indent}    if ({guard}) {{\n"));
+                }
                 for bind_index in outgoing {
                     let bind = &emission.binds[bind_index];
                     let task_health = cpp_task_health_name(task);
@@ -348,7 +379,9 @@ pub(super) fn emit_cpp_app_step(
                     };
                     output.push_str(&indent_generated_block_levels(
                         &write_code,
-                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                        write_indent_levels
+                            + if has_deadline { 1 } else { 0 }
+                            + usize::from(active_guard.is_some()),
                     ));
                 }
                 for bridge_index in bridge_outgoing {
@@ -362,7 +395,9 @@ pub(super) fn emit_cpp_app_step(
                     };
                     output.push_str(&indent_generated_block_levels(
                         &write_code,
-                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                        write_indent_levels
+                            + if has_deadline { 1 } else { 0 }
+                            + usize::from(active_guard.is_some()),
                     ));
                 }
                 for boundary_index in boundary_outgoing {
@@ -376,8 +411,13 @@ pub(super) fn emit_cpp_app_step(
                     };
                     output.push_str(&indent_generated_block_levels(
                         &write_code,
-                        write_indent_levels + if has_deadline { 1 } else { 0 },
+                        write_indent_levels
+                            + if has_deadline { 1 } else { 0 }
+                            + usize::from(active_guard.is_some()),
                     ));
+                }
+                if active_guard.is_some() {
+                    output.push_str(&format!("{publish_indent}    }}\n"));
                 }
                 output.push_str(&format!("{publish_indent}}}\n"));
             }
@@ -433,6 +473,14 @@ pub(super) fn cpp_process_task_step_function_name(
         crate::snake_identifier(&task.instance.name),
         crate::snake_identifier(&task.name)
     )
+}
+
+pub(super) fn cpp_redundancy_active_param_decl(
+    graph: &GraphIr,
+    task: &flowrt_ir::TaskIr,
+) -> Option<String> {
+    crate::runtime_plan::standby_failover_plan_for_instance_in_graph(graph, &task.instance.name)
+        .map(|plan| format!("std::string {}", plan.active_field_name))
 }
 
 pub(super) fn cpp_task_seen_revision_name(

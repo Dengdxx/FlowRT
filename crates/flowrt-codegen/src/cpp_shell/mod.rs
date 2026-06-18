@@ -488,8 +488,12 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str(
-        "#include <cstddef>\n#include <functional>\n#include <map>\n#include <memory>\n#include <optional>\n#include <string_view>\n#include <vector>\n\n",
+        "#include <cstddef>\n#include <functional>\n#include <map>\n#include <memory>\n#include <optional>\n",
     );
+    if !graph.redundancy_groups.is_empty() {
+        output.push_str("#include <string>\n");
+    }
+    output.push_str("#include <string_view>\n#include <vector>\n\n");
     output.push_str("#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n\n");
     output.push_str(
         "#include \"flowrt_app/components.hpp\"\n#include \"flowrt_app/messages.hpp\"\n\n",
@@ -518,9 +522,12 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         "private:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
     );
     for task in scheduler_tasks_for_order(graph, &order) {
+        let active_param = cpp_redundancy_active_param_decl(graph, task)
+            .map(|param| format!(", {param}"))
+            .unwrap_or_default();
         output.push_str(&format!(
-            "    FlowrtTaskOutcome {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
-            cpp_task_step_function_name(task)
+            "    FlowrtTaskOutcome {}(std::size_t tick{active_param}, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
+            cpp_task_step_function_name(task),
         ));
     }
     for process in &process_plans {
@@ -537,9 +544,12 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             process.method_suffix
         ));
         for task in scheduler_tasks_for_order(graph, &process.instances) {
+            let active_param = cpp_redundancy_active_param_decl(graph, task)
+                .map(|param| format!(", {param}"))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "    FlowrtTaskOutcome {}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
-                cpp_process_task_step_function_name(process, task)
+                "    FlowrtTaskOutcome {}(std::size_t tick{active_param}, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
+                cpp_process_task_step_function_name(process, task),
             ));
         }
     }

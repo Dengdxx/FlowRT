@@ -651,6 +651,14 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 记录一次 standby redundancy failover。
+     */
+    void record_failover(IntrospectionFailoverEvent event) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->failovers.push_back(std::move(event));
+    }
+
+    /**
      * @brief 预注册一个 service endpoint，使其在尚未收到请求时也出现在 status 中。
      */
     void register_service(std::string name) const {
@@ -993,6 +1001,7 @@ class IntrospectionState {
                 .lifecycle_state = std::string{lifecycle_state_str(state)},
             });
         }
+        snapshot.failovers = inner_->failovers;
         snapshot.graph_health = std::string{graph_health_label(snapshot.instances)};
         snapshot.diagnostics = derive_diagnostics(snapshot);
         return snapshot;
@@ -1248,6 +1257,7 @@ class IntrospectionState {
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
         std::map<std::string, LifecycleState> lifecycle;
+        std::vector<IntrospectionFailoverEvent> failovers;
         RecorderState recorder;
     };
 

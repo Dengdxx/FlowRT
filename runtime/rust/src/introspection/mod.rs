@@ -27,13 +27,14 @@ pub use client::{
 pub use model::{
     INTROSPECTION_PROTOCOL_VERSION, IntrospectionBoundaryPublishStatus,
     IntrospectionChannelSnapshot, IntrospectionChannelStatus, IntrospectionClockStatus,
-    IntrospectionDiagnostic, IntrospectionDiagnosticMetric, IntrospectionHandshake,
-    IntrospectionIdentity, IntrospectionInputStatus, IntrospectionIoBoundaryResourceStatus,
-    IntrospectionIoBoundaryStatus, IntrospectionLaneHealth, IntrospectionOperationStatus,
-    IntrospectionParamSchema, IntrospectionParamStatus, IntrospectionProcessStatus,
-    IntrospectionRecorderStart, IntrospectionRecorderStatus, IntrospectionRequest,
-    IntrospectionResourceStatus, IntrospectionResponse, IntrospectionRouteStatus,
-    IntrospectionServiceStatus, IntrospectionStatus, IntrospectionTaskHealth,
+    IntrospectionDiagnostic, IntrospectionDiagnosticMetric, IntrospectionFailoverEvent,
+    IntrospectionHandshake, IntrospectionIdentity, IntrospectionInputStatus,
+    IntrospectionIoBoundaryResourceStatus, IntrospectionIoBoundaryStatus, IntrospectionLaneHealth,
+    IntrospectionOperationStatus, IntrospectionParamSchema, IntrospectionParamStatus,
+    IntrospectionProcessStatus, IntrospectionRecorderStart, IntrospectionRecorderStatus,
+    IntrospectionRequest, IntrospectionResourceStatus, IntrospectionResponse,
+    IntrospectionRouteStatus, IntrospectionServiceStatus, IntrospectionStatus,
+    IntrospectionTaskHealth,
 };
 pub use paths::{discover_runtime_sockets, runtime_socket_dir, runtime_socket_path_for_pid};
 pub use probe::{IntrospectionChannelProbe, IntrospectionObserverGuard, IntrospectionProbeRecord};
