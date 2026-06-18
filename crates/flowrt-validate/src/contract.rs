@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
-    ChannelEdgeIr, ClockSourceKind, ContractIr, EntityId, EntityRef, GraphMode, LanguageKind,
-    OperationEdgeIr, RSDL_VERSION, ResourceSatisfactionIr, TaskIr, TriggerKind,
+    ChannelEdgeIr, ClockSourceKind, ContractIr, DeterminismMode, EntityId, EntityRef, GraphMode,
+    LanguageKind, OperationEdgeIr, RSDL_VERSION, ResourceSatisfactionIr, TaskIr, TriggerKind,
 };
 
 use crate::ValidationError;
@@ -41,6 +41,66 @@ pub(crate) fn validate_contract_shape(ir: &ContractIr, errors: &mut Vec<Validati
             "Contract IR v0.1 must contain at least one profile; found 0",
         ));
     }
+}
+
+pub(crate) fn validate_profile_determinism(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    for profile in &ir.profiles {
+        if profile.determinism.mode != DeterminismMode::GlobalTick {
+            continue;
+        }
+        if profile
+            .determinism
+            .timeout_ms
+            .is_none_or(|timeout_ms| timeout_ms == 0)
+        {
+            errors.push(ValidationError::new(format!(
+                "profile `{}` global_tick requires timeout_ms > 0",
+                profile.name
+            )));
+        }
+
+        let expected_processes = canonical_graph_processes(ir);
+        if profile.determinism.processes != expected_processes {
+            errors.push(ValidationError::new(format!(
+                "profile `{}` determinism processes must match graph processes",
+                profile.name
+            )));
+        }
+
+        if global_tick_launch_domains(ir) > 1 {
+            errors.push(ValidationError::new(format!(
+                "profile `{}` global_tick supports one launch domain",
+                profile.name
+            )));
+        }
+    }
+}
+
+fn canonical_graph_processes(ir: &ContractIr) -> Vec<String> {
+    let mut processes = ir
+        .graphs
+        .iter()
+        .flat_map(|graph| graph.processes.iter().map(|process| process.name.clone()))
+        .collect::<Vec<_>>();
+    processes.sort();
+    processes.dedup();
+    processes
+}
+
+fn global_tick_launch_domains(ir: &ContractIr) -> usize {
+    let mut domains = BTreeSet::new();
+    for graph in &ir.graphs {
+        for instance in &graph.instances {
+            domains.insert(
+                instance
+                    .target
+                    .as_ref()
+                    .map(|target| target.name.as_str())
+                    .unwrap_or("default"),
+            );
+        }
+    }
+    domains.len()
 }
 
 /// 返回 clock source 的 canonical 名称，用于诊断文案。

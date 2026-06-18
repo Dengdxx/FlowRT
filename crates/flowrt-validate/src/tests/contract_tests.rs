@@ -232,6 +232,99 @@ fn rejects_external_stepped_clock_source() {
     }));
 }
 
+fn global_tick_fixture(extra_profile: &str, instance_targets: &str) -> flowrt_ir::ContractIr {
+    let source = format!(
+        r#"
+[package]
+name = "global_tick_validate_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.plant]
+language = "rust"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+{controller_target}
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+{plant_target}
+
+[[process]]
+name = "controller_proc"
+
+[[process]]
+name = "plant_proc"
+
+[profile.test]
+backend = "inproc"
+
+[profile.test.determinism]
+mode = "global_tick"
+{extra_profile}
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+
+[target.arm]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+        controller_target = instance_targets.lines().next().unwrap_or_default(),
+        plant_target = instance_targets.lines().nth(1).unwrap_or_default(),
+    );
+    let raw = parse_str(&source).unwrap();
+    normalize_document(&raw, hash_source(&source)).unwrap()
+}
+
+#[test]
+fn rejects_global_tick_without_positive_timeout() {
+    let ir = global_tick_fixture("timeout_ms = 0\non_timeout = \"fault_graph\"", "");
+    let report =
+        validate_contract(&ir).expect_err("global_tick without positive timeout should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("profile `test` global_tick requires timeout_ms > 0")
+    }));
+}
+
+#[test]
+fn rejects_global_tick_across_multiple_targets() {
+    let ir = global_tick_fixture(
+        "timeout_ms = 1000\non_timeout = \"fault_graph\"",
+        "target = \"linux\"\ntarget = \"arm\"",
+    );
+    let report = validate_contract(&ir).expect_err("multi-target global_tick should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("profile `test` global_tick supports one launch domain")
+    }));
+}
+
+#[test]
+fn rejects_noncanonical_global_tick_process_set() {
+    let mut ir = global_tick_fixture("timeout_ms = 1000\non_timeout = \"fault_graph\"", "");
+    ir.profiles[0].determinism.processes = vec!["plant_proc".to_string()];
+
+    let report = validate_contract(&ir).expect_err("tampered global_tick process set should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("profile `test` determinism processes must match graph processes")
+    }));
+}
+
 /// 构造一个 island 合同（feeder 提供 boundary input 以满足注入可驱动要求），并对 flaky 叠加
 /// 故障注入；flaky task trigger 由参数决定，用于覆盖 scheduled / 非 scheduled 校验。
 fn fault_injection_fixture(trigger: &str) -> flowrt_ir::ContractIr {
