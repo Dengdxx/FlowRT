@@ -1,0 +1,7 @@
+# test-only 故障注入场景：monitor 的 periodic task 前两次调用注入 Status::Error
+# 进入 Degraded，第三次起恢复 Ok（验证 degrade 续跑后翻回 Running）。
+[[inject]]
+instance = "monitor"
+task = "main"
+invocations = [1, 2]
+reason = "degrade then recover"

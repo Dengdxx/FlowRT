@@ -1,0 +1,145 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "e0dd77387cbea0db3b2b50383b12f56aa29e07c28e2e633f0290c9a7a7bf028e",
+    "package_id": "package_b758901be015fcbd"
+  },
+  "package": {
+    "name": "fault_injection_degrade_demo",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "island",
+    "profile": "dev",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "monitor",
+      "qualified_name": "monitor",
+      "language": "cpp",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "monitor"
+      ],
+      "user_file_path": "app/cpp/components.cpp",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "flowrt::Status on_init(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_start",
+          "signature": "flowrt::Status on_start(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_stop",
+          "signature": "flowrt::Status on_stop(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "flowrt::Status on_shutdown(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_tick",
+          "signature": "flowrt::Status on_tick(const flowrt::Latest<Sample>& sample, flowrt::Output<Sample>& echo)",
+          "required": true,
+          "source": "cpp_interface"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "monitor",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "lane": "monitor_serial",
+          "concurrency": "exclusive",
+          "inputs": [
+            "sample"
+          ],
+          "outputs": [
+            "echo"
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "name": "sample",
+          "type": "Sample",
+          "handler_argument": "const flowrt::Latest<Sample>& sample",
+          "source": "boundary.feed"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "echo",
+          "type": "Sample",
+          "handler_argument": "flowrt::Output<Sample>& echo",
+          "targets": [
+            "boundary.emit"
+          ]
+        }
+      ],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": []
+    }
+  ],
+  "stubs": [
+    {
+      "language": "cpp",
+      "component": "monitor",
+      "path": "app/stubs/cpp/monitor.cpp"
+    }
+  ]
+}

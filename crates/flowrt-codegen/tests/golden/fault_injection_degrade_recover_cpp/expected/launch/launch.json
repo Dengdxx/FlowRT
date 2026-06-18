@@ -1,0 +1,162 @@
+{
+  "artifact": {
+    "clock": {
+      "field": "tick_time_ms",
+      "source": "simulated_replay",
+      "unit": "ms"
+    },
+    "mode": "island",
+    "temporary_island": false,
+    "temporary_overlay": null,
+    "test_only": true
+  },
+  "graphs": [
+    {
+      "boundary_endpoints": [
+        {
+          "canonical_id": "boundary_1781ee2eddd122f3",
+          "direction": "input",
+          "endpoint": "monitor.sample",
+          "instance": "monitor",
+          "message_type": "Sample",
+          "name": "feed",
+          "port": "sample"
+        },
+        {
+          "canonical_id": "boundary_d2f6c7298dbf5f9b",
+          "direction": "output",
+          "endpoint": "monitor.echo",
+          "instance": "monitor",
+          "message_type": "Sample",
+          "name": "emit",
+          "port": "echo"
+        }
+      ],
+      "channels": [],
+      "instances": [
+        {
+          "component": "monitor",
+          "name": "monitor",
+          "process": null,
+          "runtime": "cpp",
+          "target": null
+        }
+      ],
+      "mode": "island",
+      "name": "default",
+      "processes": [
+        {
+          "backend": "inproc",
+          "depends_on": [],
+          "env": {},
+          "external": null,
+          "failure": "propagate",
+          "instances": [
+            "monitor"
+          ],
+          "io_boundaries": [],
+          "name": "main",
+          "readiness": "process_started",
+          "resource_placement": {
+            "cpu_affinity": [],
+            "nice": null,
+            "rt_policy": null,
+            "rt_priority": null
+          },
+          "restart": {
+            "initial_delay_ms": 100,
+            "max_delay_ms": 1000,
+            "max_restarts": 3,
+            "policy": "on_failure"
+          },
+          "runtime_kind": "cpp",
+          "runtimes": [
+            "cpp"
+          ],
+          "startup_delay_ms": 0,
+          "target": null,
+          "tasks": [
+            {
+              "deadline_ms": null,
+              "inputs": [
+                "sample"
+              ],
+              "instance": "monitor",
+              "lane": "monitor_serial",
+              "name": "main",
+              "outputs": [
+                "echo"
+              ],
+              "period_ms": null,
+              "priority": null,
+              "readiness": "any_ready",
+              "trigger": "on_message"
+            }
+          ]
+        }
+      ],
+      "resource_contract": {
+        "providers": [],
+        "requirements": [],
+        "resource_contract_version": "0.1",
+        "satisfactions": []
+      },
+      "ros2_bridges": [],
+      "scheduler": {
+        "lanes": [
+          {
+            "instance": "monitor",
+            "kind": "serial",
+            "name": "monitor_serial"
+          }
+        ],
+        "tasks": [
+          {
+            "deadline_ms": null,
+            "instance": "monitor",
+            "lane": "monitor_serial",
+            "name": "main",
+            "period_ms": null,
+            "priority": null,
+            "readiness": "any_ready",
+            "trigger": "on_message"
+          }
+        ],
+        "worker_threads": 1
+      },
+      "services": [],
+      "tasks": [
+        {
+          "deadline_ms": null,
+          "inputs": [
+            "sample"
+          ],
+          "instance": "monitor",
+          "lane": "monitor_serial",
+          "name": "main",
+          "outputs": [
+            "echo"
+          ],
+          "period_ms": null,
+          "priority": null,
+          "readiness": "any_ready",
+          "trigger": "on_message"
+        }
+      ]
+    }
+  ],
+  "ir_version": "0.1",
+  "package": "fault_injection_degrade_demo",
+  "profile_modes": [
+    {
+      "mode": "island",
+      "name": "dev"
+    }
+  ],
+  "profiles": [
+    "dev"
+  ],
+  "targets": [
+    "linux"
+  ]
+}

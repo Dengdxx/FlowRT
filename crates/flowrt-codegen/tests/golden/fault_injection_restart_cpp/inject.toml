@@ -1,0 +1,7 @@
+# test-only 故障注入场景：在 flaky 的 periodic task 每次调用注入 Status::Error，
+# 驱动 restart 退避直到 max_restarts 耗尽进入终态 Faulted。
+[[inject]]
+instance = "flaky"
+task = "main"
+from_invocation = 1
+reason = "drive restart to terminal"

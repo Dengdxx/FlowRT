@@ -1,0 +1,43 @@
+[package]
+name = "fault_injection_restart_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.flaky]
+language = "rust"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[instance.flaky]
+component = "flaky"
+
+[instance.flaky.fault]
+policy = "restart"
+max_restarts = 2
+initial_delay_ms = 10
+max_delay_ms = 40
+
+[instance.flaky.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "flaky.sample"
+type = "Sample"
+
+[[boundary.output]]
+name = "emit"
+port = "flaky.echo"
+type = "Sample"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]

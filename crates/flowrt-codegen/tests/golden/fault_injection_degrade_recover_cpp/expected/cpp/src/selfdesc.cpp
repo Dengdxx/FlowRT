@@ -1,0 +1,224 @@
+// FlowRT 管理产物。不要手工修改。
+#include "flowrt_app/selfdesc.hpp"
+
+#include <string_view>
+
+namespace flowrt_app {
+namespace {
+
+#if defined(__GNUC__) || defined(__clang__)
+[[gnu::used, gnu::section(".flowrt.selfdesc")]]
+#endif
+const char kFlowrtSelfDescription[] = R"({
+  "self_description_version": "0.1",
+  "ir_version": "0.1",
+  "schema_version": "0.1",
+  "source_hash": "e0dd77387cbea0db3b2b50383b12f56aa29e07c28e2e633f0290c9a7a7bf028e",
+  "artifact": {
+    "mode": "island",
+    "temporary_island": false,
+    "test_only": true,
+    "clock": {
+      "source": "simulated_replay",
+      "unit": "ms",
+      "field": "tick_time_ms"
+    }
+  },
+  "package": {
+    "name": "fault_injection_degrade_demo",
+    "version": null,
+    "rsdl_version": "0.1"
+  },
+  "profiles": [
+    {
+      "name": "dev",
+      "mode": "island",
+      "backend": "inproc"
+    }
+  ],
+  "targets": [
+    {
+      "name": "linux",
+      "platform": null,
+      "runtimes": [
+        "cpp"
+      ],
+      "backends": [
+        "inproc"
+      ]
+    }
+  ],
+  "deployments": [
+    {
+      "graph": "default",
+      "profile": "dev",
+      "target": "linux",
+      "backend": "inproc",
+      "satisfied": true
+    }
+  ],
+  "graphs": [
+    {
+      "name": "default",
+      "mode": "island",
+      "scheduler": {
+        "worker_threads": 1,
+        "lanes": [
+          {
+            "name": "monitor_serial",
+            "kind": "serial",
+            "instance": "monitor"
+          }
+        ],
+        "tasks": [
+          {
+            "name": "main",
+            "instance": "monitor",
+            "lane": "monitor_serial",
+            "trigger": "on_message",
+            "readiness": "any_ready",
+            "concurrency": "exclusive",
+            "period_ms": null,
+            "deadline_ms": null,
+            "priority": null
+          }
+        ]
+      },
+      "resource_contract": {
+        "resource_contract_version": "0.1",
+        "requirements": [],
+        "providers": [],
+        "satisfactions": []
+      },
+      "external_processes": [],
+      "instances": [
+        {
+          "name": "monitor",
+          "component": "monitor",
+          "process": "main",
+          "target": null,
+          "runtime": "cpp",
+          "params": []
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "monitor",
+          "trigger": "on_message",
+          "readiness": "any_ready",
+          "concurrency": "exclusive",
+          "period_ms": null,
+          "deadline_ms": null,
+          "lane": "monitor_serial",
+          "priority": null,
+          "inputs": [
+            "sample"
+          ],
+          "outputs": [
+            "echo"
+          ]
+        }
+      ],
+      "channels": [],
+      "boundary_endpoints": [
+        {
+          "canonical_id": "boundary_1781ee2eddd122f3",
+          "name": "feed",
+          "direction": "input",
+          "endpoint": "monitor.sample",
+          "instance": "monitor",
+          "port": "sample",
+          "message_type": "Sample"
+        },
+        {
+          "canonical_id": "boundary_d2f6c7298dbf5f9b",
+          "name": "emit",
+          "direction": "output",
+          "endpoint": "monitor.echo",
+          "instance": "monitor",
+          "port": "echo",
+          "message_type": "Sample"
+        }
+      ],
+      "services": [],
+      "operations": []
+    }
+  ],
+  "component_types": [
+    {
+      "name": "monitor",
+      "language": "cpp",
+      "kind": "native",
+      "resources": [],
+      "io_boundary": null,
+      "inputs": [
+        {
+          "name": "sample",
+          "type": "Sample"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "echo",
+          "type": "Sample"
+        }
+      ],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [],
+      "params": []
+    }
+  ],
+  "message_abi": [
+    {
+      "type_name": "Sample",
+      "size_bytes": 4,
+      "align_bytes": 4,
+      "empty": false,
+      "fields": [
+        {
+          "name": "value",
+          "type": "u32",
+          "offset_bytes": 0,
+          "size_bytes": 4,
+          "align_bytes": 4
+        }
+      ]
+    }
+  ],
+  "message_frames": [
+    {
+      "type_name": "Sample",
+      "encoding": "canonical_frame_v1",
+      "header_size_bytes": 4,
+      "max_size_bytes": 4,
+      "variable": false,
+      "fields": [
+        {
+          "name": "value",
+          "type": "u32",
+          "header_offset_bytes": 0,
+          "header_size_bytes": 4,
+          "tail_max_bytes": null
+        }
+      ]
+    }
+  ]
+}
+)";
+
+const char kFlowrtSelfDescriptionHash[] = "5492572ef44d78b5d2a8e6e4c35726590b37511e793b1aa57a29cc278be98326";
+
+}  // namespace
+
+std::string_view self_description_json() noexcept {
+    return std::string_view{kFlowrtSelfDescription, sizeof(kFlowrtSelfDescription) - 1};
+}
+
+std::string_view self_description_hash() noexcept {
+    return std::string_view{kFlowrtSelfDescriptionHash, sizeof(kFlowrtSelfDescriptionHash) - 1};
+}
+
+}  // namespace flowrt_app

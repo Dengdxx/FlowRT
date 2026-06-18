@@ -1,6 +1,6 @@
 use super::*;
 
-/// 构造一个含 restart instance `flaky`（periodic task `main`）的契约并叠加故障注入。
+/// 构造一个 island restart 契约（boundary input 驱动 on_message task `main`）并叠加故障注入。
 fn injected_restart_contract(language: &str, backend: &str, runtime: &str) -> ContractIr {
     let source = format!(
         r#"
@@ -11,12 +11,13 @@ rsdl_version = "0.1"
 [type.Sample]
 value = "u32"
 
-[component.producer]
+[component.flaky]
 language = "{language}"
-output = ["sample:Sample"]
+input = ["sample:Sample"]
+output = ["echo:Sample"]
 
 [instance.flaky]
-component = "producer"
+component = "flaky"
 
 [instance.flaky.fault]
 policy = "restart"
@@ -25,12 +26,18 @@ initial_delay_ms = 10
 max_delay_ms = 40
 
 [instance.flaky.task]
-trigger = "periodic"
-period_ms = 10
-output = ["sample"]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
 
-[profile.default]
+[profile.dev]
+mode = "island"
 backend = "{backend}"
+
+[[boundary.input]]
+name = "feed"
+port = "flaky.sample"
+type = "Sample"
 
 [target.linux]
 runtime = ["{runtime}"]
@@ -67,7 +74,7 @@ fn rust_shell_emits_injection_gate() {
     // 命中时跳过用户回调、合成 error outcome。
     assert!(shell.contains("let __inject_fault_"));
     assert!(shell.contains(">= 1u64"));
-    assert!(shell.contains("flowrt::TaskRunOutcome::error(Vec::new())"));
+    assert!(shell.contains("flowrt::TaskRunOutcome::error(Vec::<FlowrtOutputCommit>::new())"));
 }
 
 #[test]

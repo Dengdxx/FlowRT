@@ -62,7 +62,11 @@ run bash -n scripts/test-codegen-compile.sh
 compile_cpp() {
     local case="$1" proj="$work_dir/$1"
     echo "codegen compile net: [cpp] $case"
-    run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt"
+    local inject_args=()
+    if [[ -f "$corpus/$case/inject.toml" ]]; then
+        inject_args=(--inject "$corpus/$case/inject.toml")
+    fi
+    run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt" "${inject_args[@]}"
     run g++ -std=c++20 -fsyntax-only \
         -I "$proj/flowrt/cpp/include" \
         -I runtime/cpp/include \
@@ -77,7 +81,11 @@ compile_rust() {
     echo "codegen compile net: [rust] $case"
     mkdir -p "$proj/app/rust"
     cp "$corpus/$case/stub/mod.rs" "$proj/app/rust/mod.rs"
-    run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt"
+    local inject_args=()
+    if [[ -f "$corpus/$case/inject.toml" ]]; then
+        inject_args=(--inject "$corpus/$case/inject.toml")
+    fi
+    run run_flowrt prepare "$corpus/$case/input.rsdl" --out-dir "$proj/flowrt" "${inject_args[@]}"
     printf '\n[patch.crates-io]\nflowrt = { path = "%s/runtime/rust" }\n' \
         "$repo_root" >> "$proj/flowrt/build/Cargo.toml"
     # 隔离 target-dir：仓库 .cargo/config.toml 把 build.target-dir 钉到共享 target/。
@@ -96,6 +104,8 @@ compile_cpp feedback_v2_cpp
 compile_cpp instance_fault_restart_cpp
 compile_cpp instance_degrade_cpp
 compile_cpp graph_health_stop_cpp
+compile_cpp fault_injection_restart_cpp
+compile_cpp fault_injection_degrade_recover_cpp
 compile_rust island_rust_onmsg
 compile_rust sensor_event_time_rust
 compile_rust sync_fusion_rust
@@ -104,5 +114,7 @@ compile_rust feedback_v2_rust
 compile_rust instance_fault_restart_rust
 compile_rust instance_degrade_rust
 compile_rust graph_health_stop_rust
+compile_rust fault_injection_restart_rust
+compile_rust fault_injection_degrade_recover_rust
 
 echo "codegen compile net passed"

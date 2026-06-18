@@ -1,0 +1,38 @@
+[package]
+name = "fault_injection_degrade_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.monitor]
+language = "cpp"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[instance.monitor]
+component = "monitor"
+failure_policy = "degrade"
+
+[instance.monitor.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "monitor.sample"
+type = "Sample"
+
+[[boundary.output]]
+name = "emit"
+port = "monitor.echo"
+type = "Sample"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
