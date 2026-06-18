@@ -230,6 +230,14 @@ pub(super) fn emit_cpp_app_step(
             };
             let write_indent_levels = if trigger_guard.is_some() { 2 } else { 1 };
 
+            output.push_str(&cpp_lifecycle_fault_injection_guard(
+                emission.contract,
+                task,
+                phase,
+                body_indent,
+                body_inner_indent,
+            ));
+
             if task.deadline_ms.is_some() {
                 let task_local = cpp_task_local_name(task);
                 output.push_str(&format!(
@@ -439,6 +447,46 @@ pub(super) fn emit_cpp_app_step(
         output.push_str("    return flowrt::Status::Ok;\n}\n\n");
     }
     output
+}
+
+fn cpp_lifecycle_fault_injection_guard(
+    contract: &ContractIr,
+    task: &flowrt_ir::TaskIr,
+    phase: TaskEmissionPhase,
+    body_indent: &str,
+    body_inner_indent: &str,
+) -> String {
+    let Some(point) = crate::runtime_plan::fault_injection_point_for(contract, task) else {
+        return String::new();
+    };
+    let expected_kind = match phase {
+        TaskEmissionPhase::Startup => flowrt_ir::FaultInjectionKind::StartupError,
+        TaskEmissionPhase::Shutdown => flowrt_ir::FaultInjectionKind::ShutdownError,
+        TaskEmissionPhase::Scheduler => return String::new(),
+    };
+    if point.kind != expected_kind {
+        return String::new();
+    }
+    let hit = cpp_fault_injection_first_invocation_hit_expr(point);
+    format!(
+        "{body_indent}const bool flowrt_inject_status_error = {hit};\n\
+         {body_indent}if (flowrt_inject_status_error) {{\n\
+         {body_inner_indent}return flowrt::Status::Error;\n\
+         {body_indent}}}\n"
+    )
+}
+
+fn cpp_fault_injection_first_invocation_hit_expr(
+    point: &flowrt_ir::FaultInjectionPointIr,
+) -> String {
+    let mut clauses = Vec::new();
+    for invocation in &point.invocations {
+        clauses.push(format!("1ULL == {invocation}ULL"));
+    }
+    if let Some(from) = point.from_invocation {
+        clauses.push(format!("1ULL >= {from}ULL"));
+    }
+    clauses.join(" || ")
 }
 
 pub(super) fn adapt_cpp_status_returns_for_collect(code: &str, collect_outputs: bool) -> String {

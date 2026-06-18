@@ -84,6 +84,19 @@ fn selected_profile_uses_global_tick(contract: &ContractIr) -> bool {
         .is_some_and(|profile| profile.determinism.mode == DeterminismMode::GlobalTick)
 }
 
+fn cpp_runtime_shell_needs_stdexcept(contract: &ContractIr) -> bool {
+    contract
+        .artifact
+        .fault_injection
+        .as_ref()
+        .is_some_and(|fault| {
+            fault
+                .points
+                .iter()
+                .any(|point| point.kind == flowrt_ir::FaultInjectionKind::Panic)
+        })
+}
+
 fn topo_order_instances_for_cpp_shell<'a>(
     contract: &ContractIr,
     graph: &'a GraphIr,
@@ -263,7 +276,11 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     if contract_has_c_components(contract) {
         output.push_str("#include <iostream>\n");
     }
-    output.push_str("#include <deque>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <set>\n#include <span>\n#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
+    output.push_str("#include <deque>\n#include <limits>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <set>\n#include <span>\n");
+    if cpp_runtime_shell_needs_stdexcept(contract) {
+        output.push_str("#include <stdexcept>\n");
+    }
+    output.push_str("#include <string>\n#include <string_view>\n#include <thread>\n#include <type_traits>\n#include <utility>\n#include <variant>\n#include <vector>\n\n");
     output.push_str("namespace {\n\n");
     output.push_str(
         "flowrt::Status status_from_push_result(const flowrt::ChannelPushResult& result) {\n    if (std::holds_alternative<flowrt::ChannelError>(result)) {\n        return flowrt::Status::Error;\n    }\n\n    switch (std::get<flowrt::ChannelWriteOutcome>(result)) {\n        case flowrt::ChannelWriteOutcome::Accepted:\n        case flowrt::ChannelWriteOutcome::DroppedOldest:\n        case flowrt::ChannelWriteOutcome::DroppedNewest:\n            return flowrt::Status::Ok;\n        case flowrt::ChannelWriteOutcome::Backpressured:\n            return flowrt::Status::Retry;\n    }\n\n    return flowrt::Status::Error;\n}\n\n",

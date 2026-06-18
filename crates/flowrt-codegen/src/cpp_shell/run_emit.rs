@@ -559,15 +559,19 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         let call_expr = format!(
             "{function_name}(static_cast<std::size_t>(tick_time_ms), {active_arg}local_context, introspection_state, scheduler_events, local_health_map)"
         );
-        let task_outcome_expr = if crate::runtime_plan::fault_injection_point_for(
-            run.contract,
-            task,
-        )
-        .is_some()
+        let task_outcome_expr = if let Some(point) =
+            crate::runtime_plan::scheduler_fault_injection_point_for(run.contract, task)
         {
-            format!(
-                "flowrt_inject_fault ? FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}}) : {call_expr}"
-            )
+            match point.kind {
+                flowrt_ir::FaultInjectionKind::StatusError => format!(
+                    "flowrt_inject_fault ? FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}}) : {call_expr}"
+                ),
+                flowrt_ir::FaultInjectionKind::Panic => format!(
+                    "flowrt_inject_fault ? throw std::runtime_error({}) : {call_expr}",
+                    cpp_string_literal(&cpp_fault_injection_panic_message(point))
+                ),
+                _ => call_expr,
+            }
         } else {
             call_expr
         };
@@ -1076,7 +1080,7 @@ fn emit_cpp_injection_counter_decls(
 ) -> String {
     let mut output = String::new();
     for plan in dataflow_tasks {
-        if crate::runtime_plan::fault_injection_point_for(contract, plan.task).is_some() {
+        if crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task).is_some() {
             output.push_str(&format!(
                 "    std::uint64_t __inject_count_{} = 0;\n",
                 plan.id
@@ -1094,7 +1098,9 @@ fn emit_cpp_injection_decision(
 ) -> String {
     let mut arms = String::new();
     for plan in dataflow_tasks {
-        if let Some(point) = crate::runtime_plan::fault_injection_point_for(contract, plan.task) {
+        if let Some(point) =
+            crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task)
+        {
             let counter = format!("__inject_count_{}", plan.id);
             let hit = cpp_fault_injection_hit_expr(point, &counter);
             arms.push_str(&format!(
@@ -1116,13 +1122,22 @@ fn cpp_injection_capture(
     contract: &ContractIr,
     dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
 ) -> String {
-    let has_injection = dataflow_tasks
-        .iter()
-        .any(|plan| crate::runtime_plan::fault_injection_point_for(contract, plan.task).is_some());
+    let has_injection = dataflow_tasks.iter().any(|plan| {
+        crate::runtime_plan::scheduler_fault_injection_point_for(contract, plan.task).is_some()
+    });
     if has_injection {
         ", flowrt_inject_fault".to_string()
     } else {
         String::new()
+    }
+}
+
+fn cpp_fault_injection_panic_message(point: &flowrt_ir::FaultInjectionPointIr) -> String {
+    let reason = point.reason.trim();
+    if reason.is_empty() {
+        "FlowRT fault injection panic".to_string()
+    } else {
+        format!("FlowRT fault injection panic: {reason}")
     }
 }
 

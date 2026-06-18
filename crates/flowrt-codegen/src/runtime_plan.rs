@@ -864,6 +864,18 @@ pub(crate) fn fault_injection_point_for<'a>(
         .find(|point| point.task.id == task.id)
 }
 
+pub(crate) fn scheduler_fault_injection_point_for<'a>(
+    contract: &'a ContractIr,
+    task: &TaskIr,
+) -> Option<&'a FaultInjectionPointIr> {
+    fault_injection_point_for(contract, task).filter(|point| {
+        matches!(
+            point.kind,
+            flowrt_ir::FaultInjectionKind::StatusError | flowrt_ir::FaultInjectionKind::Panic
+        )
+    })
+}
+
 pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> bool {
     let facts = validated_contract_derived_facts(contract);
     contract_uses_backend_with_facts(contract, &facts, backend)

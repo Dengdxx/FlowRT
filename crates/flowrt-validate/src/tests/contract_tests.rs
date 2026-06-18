@@ -328,6 +328,13 @@ fn rejects_noncanonical_global_tick_process_set() {
 /// 构造一个 island 合同（feeder 提供 boundary input 以满足注入可驱动要求），并对 flaky 叠加
 /// 故障注入；flaky task trigger 由参数决定，用于覆盖 scheduled / 非 scheduled 校验。
 fn fault_injection_fixture(trigger: &str) -> flowrt_ir::ContractIr {
+    fault_injection_fixture_with_kind(trigger, flowrt_ir::FaultInjectionKind::StatusError)
+}
+
+fn fault_injection_fixture_with_kind(
+    trigger: &str,
+    kind: flowrt_ir::FaultInjectionKind,
+) -> flowrt_ir::ContractIr {
     let source = format!(
         r#"
 [package]
@@ -382,6 +389,7 @@ type = "Tick"
         &projected,
         &flowrt_ir::FaultInjectionScenario {
             points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind,
                 instance: "flaky".to_string(),
                 task: "main".to_string(),
                 invocations: vec![1, 2],
@@ -406,15 +414,42 @@ fn accepts_fault_injection_on_scheduled_task() {
 }
 
 #[test]
-fn rejects_fault_injection_on_non_scheduled_task() {
+fn accepts_startup_and_shutdown_fault_injection_on_lifecycle_tasks() {
+    let startup =
+        fault_injection_fixture_with_kind("startup", flowrt_ir::FaultInjectionKind::StartupError);
+    validate_contract(&startup)
+        .expect("startup_error injection on a startup task should validate as test-only");
+
+    let shutdown =
+        fault_injection_fixture_with_kind("shutdown", flowrt_ir::FaultInjectionKind::ShutdownError);
+    validate_contract(&shutdown)
+        .expect("shutdown_error injection on a shutdown task should validate as test-only");
+}
+
+#[test]
+fn rejects_status_error_fault_injection_on_non_scheduled_task() {
     let injected = fault_injection_fixture("startup");
     let report = validate_contract(&injected)
-        .expect_err("fault injection on a startup task should fail validation");
+        .expect_err("status_error injection on a startup task should fail validation");
     assert!(
         report
             .errors
             .iter()
             .any(|error| { error.message.contains("must be a scheduled task") })
+    );
+}
+
+#[test]
+fn rejects_fault_injection_kind_not_wired_yet() {
+    let injected =
+        fault_injection_fixture_with_kind("periodic", flowrt_ir::FaultInjectionKind::DeadlineMiss);
+    let report = validate_contract(&injected)
+        .expect_err("deadline_miss injection should stay rejected until scheduler support lands");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| { error.message.contains("deadline_miss") })
     );
 }
 
@@ -478,6 +513,7 @@ backend = "inproc"
         &projected,
         &flowrt_ir::FaultInjectionScenario {
             points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind: flowrt_ir::FaultInjectionKind::StatusError,
                 instance: "flaky".to_string(),
                 task: "main".to_string(),
                 invocations: vec![],

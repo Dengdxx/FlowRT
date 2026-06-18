@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
-    ChannelEdgeIr, ClockSourceKind, ContractIr, DeterminismMode, EntityId, EntityRef, GraphMode,
-    LanguageKind, OperationEdgeIr, RSDL_VERSION, ResourceSatisfactionIr, TaskIr, TriggerKind,
+    ChannelEdgeIr, ClockSourceKind, ContractIr, DeterminismMode, EntityId, EntityRef,
+    FaultInjectionKind, GraphMode, LanguageKind, OperationEdgeIr, RSDL_VERSION,
+    ResourceSatisfactionIr, TaskIr, TriggerKind,
 };
 
 use crate::ValidationError;
@@ -234,12 +235,6 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
         return;
     };
 
-    if fault.kind != "fault_injection" {
-        errors.push(ValidationError::new(format!(
-            "fault injection kind `{}` is not supported",
-            fault.kind
-        )));
-    }
     if fault.generated_by.command.trim().is_empty() {
         errors.push(ValidationError::new(
             "fault injection generated_by.command must not be empty",
@@ -309,12 +304,7 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
                         "fault injection instance ref for `{target}` does not match task owner",
                     )));
                 }
-                if !is_scheduled_trigger(task.trigger) {
-                    errors.push(ValidationError::new(format!(
-                        "fault injection target `{target}` must be a scheduled task \
-                         (periodic / on_message / on_synchronized)",
-                    )));
-                }
+                validate_fault_injection_kind_for_task(point.kind, task.trigger, &target, errors);
                 if graph.processes.len() > 1 {
                     errors.push(ValidationError::new(format!(
                         "fault injection is single-process only; target `{target}` is in graph \
@@ -323,6 +313,52 @@ pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<Validat
                     )));
                 }
             }
+        }
+    }
+}
+
+fn validate_fault_injection_kind_for_task(
+    kind: FaultInjectionKind,
+    trigger: TriggerKind,
+    target: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    match kind {
+        FaultInjectionKind::StatusError => {
+            if !is_scheduled_trigger(trigger) {
+                errors.push(ValidationError::new(format!(
+                    "status_error fault injection target `{target}` must be a scheduled task \
+                     (periodic / on_message / on_synchronized)",
+                )));
+            }
+        }
+        FaultInjectionKind::Panic => {
+            if !is_scheduled_trigger(trigger) {
+                errors.push(ValidationError::new(format!(
+                    "panic fault injection target `{target}` must be a scheduled task with \
+                     worker panic/exception handling",
+                )));
+            }
+        }
+        FaultInjectionKind::StartupError => {
+            if trigger != TriggerKind::Startup {
+                errors.push(ValidationError::new(format!(
+                    "startup_error fault injection target `{target}` must be a startup task",
+                )));
+            }
+        }
+        FaultInjectionKind::ShutdownError => {
+            if trigger != TriggerKind::Shutdown {
+                errors.push(ValidationError::new(format!(
+                    "shutdown_error fault injection target `{target}` must be a shutdown task",
+                )));
+            }
+        }
+        FaultInjectionKind::DeadlineMiss | FaultInjectionKind::BackendDrop => {
+            errors.push(ValidationError::new(format!(
+                "{} fault injection is not supported by generated runtime yet",
+                kind.as_str()
+            )));
         }
     }
 }

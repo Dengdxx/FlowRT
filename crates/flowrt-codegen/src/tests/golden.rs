@@ -80,6 +80,8 @@ struct InjectionScenarioFile {
 
 #[derive(serde::Deserialize)]
 struct InjectionScenarioEntry {
+    #[serde(default)]
+    kind: flowrt_ir::FaultInjectionKind,
     instance: String,
     task: String,
     #[serde(default)]
@@ -99,6 +101,7 @@ fn load_injection_scenario(dir: &Path) -> Option<flowrt_ir::FaultInjectionScenar
         .inject
         .into_iter()
         .map(|entry| flowrt_ir::FaultInjectionScenarioPoint {
+            kind: entry.kind,
             instance: entry.instance,
             task: entry.task,
             invocations: entry.invocations,

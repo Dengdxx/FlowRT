@@ -388,6 +388,14 @@ pub(super) fn emit_rust_app_step(
             };
             let write_indent_levels = if trigger_guard.is_some() { 2 } else { 1 };
 
+            output.push_str(&rust_lifecycle_fault_injection_guard(
+                emission.contract,
+                task,
+                phase,
+                body_indent,
+                body_inner_indent,
+            ));
+
             if task.deadline_ms.is_some() {
                 output.push_str(&format!(
                     "{body_indent}let {name}_deadline_started_at = std::time::Instant::now();\n",
@@ -608,6 +616,50 @@ pub(super) fn emit_rust_app_step(
         output.push_str("        flowrt::Status::Ok\n    }\n");
     }
     output
+}
+
+fn rust_lifecycle_fault_injection_guard(
+    contract: &ContractIr,
+    task: &TaskIr,
+    phase: TaskEmissionPhase,
+    body_indent: &str,
+    body_inner_indent: &str,
+) -> String {
+    let Some(point) = crate::runtime_plan::fault_injection_point_for(contract, task) else {
+        return String::new();
+    };
+    let expected_kind = match phase {
+        TaskEmissionPhase::Startup => flowrt_ir::FaultInjectionKind::StartupError,
+        TaskEmissionPhase::Shutdown => flowrt_ir::FaultInjectionKind::ShutdownError,
+        TaskEmissionPhase::Scheduler => return String::new(),
+    };
+    if point.kind != expected_kind {
+        return String::new();
+    }
+    let hit = fault_injection_first_invocation_hit_expr(point);
+    format!(
+        "{body_indent}let __flowrt_inject_status_error = {hit};\n\
+         {body_indent}if __flowrt_inject_status_error {{\n\
+         {body_inner_indent}return flowrt::Status::Error;\n\
+         {body_indent}}}\n"
+    )
+}
+
+fn fault_injection_first_invocation_hit_expr(point: &flowrt_ir::FaultInjectionPointIr) -> String {
+    let mut clauses = Vec::new();
+    if !point.invocations.is_empty() {
+        let list = point
+            .invocations
+            .iter()
+            .map(|n| format!("{n}u64"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!("[{list}].contains(&1u64)"));
+    }
+    if let Some(from) = point.from_invocation {
+        clauses.push(format!("1u64 >= {from}u64"));
+    }
+    clauses.join(" || ")
 }
 
 fn adapt_rust_status_returns_for_collect(code: &str, collect_outputs: bool) -> String {

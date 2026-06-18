@@ -235,6 +235,8 @@ struct FaultScenarioFile {
 
 #[derive(Debug, Deserialize)]
 struct FaultScenarioEntry {
+    #[serde(default)]
+    kind: flowrt_ir::FaultInjectionKind,
     instance: String,
     task: String,
     #[serde(default)]
@@ -261,6 +263,7 @@ pub(crate) fn parse_fault_injection_scenario(path: &Path) -> Result<FaultInjecti
         .inject
         .into_iter()
         .map(|entry| FaultInjectionScenarioPoint {
+            kind: entry.kind,
             instance: entry.instance,
             task: entry.task,
             invocations: entry.invocations,

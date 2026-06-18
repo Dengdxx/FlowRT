@@ -111,11 +111,13 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
 - debt 5 OpenTelemetry / distributed tracing：独立线，无结构依赖。当前仅有
   observability capability/resource 命名或规划，不存在稳定 span/exporter 上报路径。
   FlowRT introspection 优先，tracing 是 additive，可较晚按需排期。
-- debt 3 fault injection 矩阵：当前限 test-only、单进程、scheduled task 和合成
-  `Status::Error`（`crates/flowrt-codegen/src/cpp_shell/run_emit.rs` 等只合成 error
-  outcome）。startup/shutdown task、panic、deadline 超时、backend drop、随机/chaos
-  注入与性能矩阵仍未覆盖。`v0.23.3` 覆盖 deterministic matrix 扩展；生产随机/chaos 和
-  性能矩阵仍不进本版。
+- debt 3 fault injection 矩阵：已扩展 deterministic kind。`[[inject]]` 支持
+  `kind = "status_error"`（默认）、`startup_error`、`shutdown_error` 和 `panic`；前者仍按
+  scheduler task 的 per-task pre-execution 计数器合成 error outcome，startup/shutdown kind
+  在对应 lifecycle task 调用前返回 `Status::Error`，panic kind 触发 Rust/C++ worker
+  panic/exception 路径。`deadline_miss` 与 `backend_drop` 已进入 IR 词表但继续由 validator
+  拒绝，待 runtime 路径接线。确定性限 test-only、单进程和 ≥1 boundary input(island)；生产
+  随机/chaos 和性能矩阵仍不进本版。
 - Operation 的 zenoh generated runtime、`feedback = "fifo"`、显式 `result_retention_ms`、
   `queue` / `cancel_running` / multi in-flight policy 进入本版；未能端到端覆盖的组合继续
   validator 拒绝。
@@ -137,23 +139,24 @@ runtime 尚未实现的显式 opt-in（Operation `feedback = "fifo"`、显式
 「按时崩的组件」即可跑遍 0.21.x 全部故障反应策略并验证可复现，也为 v1.0.0 故障注入矩阵去风险。
 
 - 注入是 **test-only codegen-time overlay**（不改 RSDL 契约结构），镜像 `temporary_island`：场景为
-  独立 TOML（`[[inject]]`，按名引用 `instance`/`task`，`invocations` 显式集合或 `from_invocation`
-  起点），经 `flowrt prepare/build/run --inject <场景>` 投影进 `ContractArtifactIr.fault_injection`，
-  与 `temporary_overlay` 并列可叠加；置 `test_only=true`、`clock_source=simulated_replay`，
-  `bundle`/`deploy` 默认拒绝（需 `--allow-island`）；
+  独立 TOML（`[[inject]]`，按名引用 `instance`/`task`，`kind` 默认 `status_error`，`invocations`
+  显式集合或 `from_invocation` 起点），经 `flowrt prepare/build/run --inject <场景>` 投影进
+  `ContractArtifactIr.fault_injection`，与 `temporary_overlay` 并列可叠加；置 `test_only=true`、
+  `clock_source=simulated_replay`，`bundle`/`deploy` 默认拒绝（需 `--allow-island`）；
 - codegen 为每个注入目标 task 生成 per-task pre-execution 计数器（scheduler 线程自增）+ 注入门：
   命中调用序号时跳过用户回调、合成 `error` outcome（与真实回调返 `Status::Error` 空输出字节等价），
   交既有 0.21.x 故障反应机器处理；Rust/C++ 镜像，gated 于 `fault_injection.is_some()`，非注入产物
   字节不漂移；
-- validator 守门：注入只允许命中 **scheduled task**（periodic / on_message / on_synchronized，拒
-  startup/shutdown），要求 **≥1 boundary input（island）** 以驱动 simulated_replay 时间线，调用序号
-  canonical、EntityRef 一致、单进程（多进程图注入目标拒绝）；
+- `status_error` 只允许命中 **scheduled task**（periodic / on_message / on_synchronized）并合成
+  error outcome；`startup_error` / `shutdown_error` 只允许命中对应 lifecycle task 并在回调前返回
+  `Status::Error`；`panic` 只允许命中 scheduled task 并触发 Rust/C++ worker panic/exception 路径；
+- validator 守门：要求 **≥1 boundary input（island）** 以驱动 simulated_replay 时间线，调用序号
+  canonical、EntityRef 一致、kind/trigger 匹配、单进程（多进程图注入目标拒绝）；
 - determinism 验证：注入门纯调用计数驱动（同输入 → 同注入点）由 golden 锁定，底层 record→replay /
   executor 确定性由 v0.17/v0.18 内核测试证明，注入在其上确定性叠加；新 golden
   `fault_injection_{restart,degrade_recover}_{rust,cpp}` + 编译网 + focused smoke 把关。
-- **已知限制**：确定性限单进程（无全局 tick lockstep）；注入只合成 `Status::Error`（panic/deadline/
-  backend drop 不在范围）；startup/shutdown 注入、跨进程注入 determinism、真实随机/chaos 注入与性能
-  矩阵留待后续。
+- **已知限制**：确定性限单进程（无全局 tick lockstep）；`deadline_miss` / `backend_drop` 暂由
+  validator 拒绝；跨进程注入 determinism、真实随机/chaos 注入与性能矩阵留待后续。
 
 上一发布线为 `v0.21.4 Cross-Process Feedback Loops`，是
 `0.21.x 图级容错 / 生命周期` 主题（patch 线）的**最后一片**：放行跨进程反馈边，让控制环可跨

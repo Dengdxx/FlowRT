@@ -1,4 +1,5 @@
 use super::*;
+use crate::FaultInjectionKind;
 
 /// 构造一个最小 strict 契约：单 periodic instance `flaky`，匿名 task 归一化名 `main`。
 fn flaky_contract() -> crate::ContractIr {
@@ -35,6 +36,7 @@ fn fault_injection_overlay_marks_test_only_and_resolves_refs() {
     let projected = flaky_contract();
     let scenario = FaultInjectionScenario {
         points: vec![FaultInjectionScenarioPoint {
+            kind: FaultInjectionKind::StatusError,
             instance: "flaky".to_string(),
             task: "main".to_string(),
             invocations: vec![3, 1, 1, 2],
@@ -56,9 +58,9 @@ fn fault_injection_overlay_marks_test_only_and_resolves_refs() {
         .fault_injection
         .as_ref()
         .expect("fault injection artifact must record scenario metadata");
-    assert_eq!(fault.kind, "fault_injection");
     assert_eq!(fault.points.len(), 1);
     let point = &fault.points[0];
+    assert_eq!(point.kind, FaultInjectionKind::StatusError);
     assert_eq!(point.instance.name, "flaky");
     assert_eq!(point.task.name, "main");
     // 调用序号 canonical 升序去重。
@@ -75,6 +77,7 @@ fn fault_injection_overlay_preserves_existing_temporary_overlay() {
     let projected = flaky_contract();
     let scenario = FaultInjectionScenario {
         points: vec![FaultInjectionScenarioPoint {
+            kind: FaultInjectionKind::StatusError,
             instance: "flaky".to_string(),
             task: "main".to_string(),
             invocations: vec![],
@@ -109,6 +112,7 @@ fn fault_injection_overlay_rejects_point_without_invocations() {
     let projected = flaky_contract();
     let scenario = FaultInjectionScenario {
         points: vec![FaultInjectionScenarioPoint {
+            kind: FaultInjectionKind::StatusError,
             instance: "flaky".to_string(),
             task: "main".to_string(),
             invocations: vec![],
@@ -126,6 +130,7 @@ fn fault_injection_overlay_rejects_zero_invocation_index() {
     let projected = flaky_contract();
     let scenario = FaultInjectionScenario {
         points: vec![FaultInjectionScenarioPoint {
+            kind: FaultInjectionKind::StatusError,
             instance: "flaky".to_string(),
             task: "main".to_string(),
             invocations: vec![0],
@@ -143,6 +148,7 @@ fn fault_injection_overlay_rejects_unknown_task() {
     let projected = flaky_contract();
     let scenario = FaultInjectionScenario {
         points: vec![FaultInjectionScenarioPoint {
+            kind: FaultInjectionKind::StatusError,
             instance: "flaky".to_string(),
             task: "on_message".to_string(),
             invocations: vec![1],

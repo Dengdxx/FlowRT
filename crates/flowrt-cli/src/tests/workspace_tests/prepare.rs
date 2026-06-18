@@ -281,7 +281,7 @@ type = "Sample"
     let scenario_path = rsdl_dir.join("inject.toml");
     std::fs::write(
         &scenario_path,
-        "[[inject]]\ninstance = \"flaky\"\ntask = \"main\"\nfrom_invocation = 1\nreason = \"drive restart to terminal\"\n",
+        "[[inject]]\nkind = \"panic\"\ninstance = \"flaky\"\ntask = \"main\"\nfrom_invocation = 1\nreason = \"drive restart to terminal\"\n",
     )
     .unwrap();
     let out_dir = rsdl_dir.join("flowrt");
@@ -311,6 +311,7 @@ type = "Sample"
         .fault_injection
         .expect("prepared contract must record fault injection scenario");
     assert_eq!(fault.points.len(), 1);
+    assert_eq!(fault.points[0].kind, flowrt_ir::FaultInjectionKind::Panic);
     assert_eq!(fault.points[0].instance.name, "flaky");
     assert_eq!(fault.points[0].from_invocation, Some(1));
 

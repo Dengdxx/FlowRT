@@ -1,11 +1,12 @@
 use crate::{
-    ClockSourceKind, ContractIr, EntityRef, FaultInjectionIr, FaultInjectionPointIr, IrError,
-    Result, TemporaryOverlayGenerationIr,
+    ClockSourceKind, ContractIr, EntityRef, FaultInjectionIr, FaultInjectionKind,
+    FaultInjectionPointIr, IrError, Result, TemporaryOverlayGenerationIr,
 };
 
 /// CLI 故障注入场景的一条注入点（投影前，按名引用契约实体）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaultInjectionScenarioPoint {
+    pub kind: FaultInjectionKind,
     pub instance: String,
     pub task: String,
     pub invocations: Vec<u64>,
@@ -63,6 +64,7 @@ pub fn apply_fault_injection_overlay(
         invocations.sort_unstable();
         invocations.dedup();
         points.push(FaultInjectionPointIr {
+            kind: point.kind,
             instance: instance_ref,
             task: task_ref,
             invocations,
@@ -80,7 +82,6 @@ pub fn apply_fault_injection_overlay(
     projected.artifact.test_only = true;
     projected.artifact.clock_source = ClockSourceKind::SimulatedReplay;
     projected.artifact.fault_injection = Some(FaultInjectionIr {
-        kind: "fault_injection".to_string(),
         generated_by: scenario.generated_by.clone(),
         points,
     });
@@ -137,4 +138,67 @@ fn reject_duplicate_points(points: &[FaultInjectionPointIr]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FaultInjectionKind, hash_source, normalize_document, project_contract_to_profile};
+    use flowrt_rsdl::parse_str;
+
+    fn fixture_contract() -> ContractIr {
+        let source = r#"
+[package]
+name = "fault_injection_kind_ir"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.flaky]
+language = "rust"
+input = ["sample:Sample"]
+
+[instance.flaky]
+component = "flaky"
+
+[instance.flaky.task]
+trigger = "on_message"
+input = ["sample"]
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "flaky.sample"
+type = "Sample"
+"#;
+        let raw = parse_str(source).unwrap();
+        let ir = normalize_document(&raw, hash_source(source)).unwrap();
+        project_contract_to_profile(&ir, None).unwrap()
+    }
+
+    #[test]
+    fn fault_injection_overlay_records_point_kind() {
+        let projected = apply_fault_injection_overlay(
+            &fixture_contract(),
+            &FaultInjectionScenario {
+                points: vec![FaultInjectionScenarioPoint {
+                    kind: FaultInjectionKind::Panic,
+                    instance: "flaky".to_string(),
+                    task: "main".to_string(),
+                    invocations: vec![1],
+                    from_invocation: None,
+                    reason: "panic on first call".to_string(),
+                }],
+                generated_by: Default::default(),
+            },
+        )
+        .unwrap();
+
+        let fault = projected.artifact.fault_injection.unwrap();
+        assert_eq!(fault.points[0].kind, FaultInjectionKind::Panic);
+    }
 }

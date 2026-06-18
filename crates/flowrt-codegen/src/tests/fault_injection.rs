@@ -50,11 +50,80 @@ backends = ["{backend}"]
         &projected,
         &flowrt_ir::FaultInjectionScenario {
             points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind: flowrt_ir::FaultInjectionKind::StatusError,
                 instance: "flaky".to_string(),
                 task: "main".to_string(),
                 invocations: vec![],
                 from_invocation: Some(1),
                 reason: "drive restart to terminal".to_string(),
+            }],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap()
+}
+
+fn injected_lifecycle_contract(
+    language: &str,
+    runtime: &str,
+    kind: flowrt_ir::FaultInjectionKind,
+    trigger: &str,
+) -> ContractIr {
+    let source = format!(
+        r#"
+[package]
+name = "fault_injection_lifecycle_{language}_{trigger}"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.driver]
+language = "{language}"
+input = ["sample:Sample"]
+
+[component.hook]
+language = "{language}"
+
+[instance.driver]
+component = "driver"
+
+[instance.driver.task]
+trigger = "on_message"
+input = ["sample"]
+
+[instance.hook]
+component = "hook"
+
+[instance.hook.task]
+trigger = "{trigger}"
+
+[profile.dev]
+mode = "island"
+backend = "inproc"
+
+[[boundary.input]]
+name = "feed"
+port = "driver.sample"
+type = "Sample"
+
+[target.linux]
+runtime = ["{runtime}"]
+backends = ["inproc"]
+"#,
+    );
+    let ir = contract_from_source(&source);
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    flowrt_ir::apply_fault_injection_overlay(
+        &projected,
+        &flowrt_ir::FaultInjectionScenario {
+            points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                kind,
+                instance: "hook".to_string(),
+                task: "main".to_string(),
+                invocations: vec![1],
+                from_invocation: None,
+                reason: "inject lifecycle hook".to_string(),
             }],
             generated_by: Default::default(),
         },
@@ -78,6 +147,34 @@ fn rust_shell_emits_injection_gate() {
 }
 
 #[test]
+fn rust_shell_emits_startup_and_shutdown_injection_gates() {
+    let startup = injected_lifecycle_contract(
+        "rust",
+        "rust",
+        flowrt_ir::FaultInjectionKind::StartupError,
+        "startup",
+    );
+    let startup_bundle = emit_artifacts(&startup).unwrap();
+    let startup_shell = artifact_content(&startup_bundle, "rust/src/runtime_shell.rs");
+    let startup_step = generated_function_block(startup_shell, "fn step_startup");
+    assert!(startup_step.contains("__flowrt_inject_status_error"));
+    assert!(startup_step.contains("return flowrt::Status::Error;"));
+    assert!(!startup_step.contains("panic!(\"FlowRT fault injection panic"));
+
+    let shutdown = injected_lifecycle_contract(
+        "rust",
+        "rust",
+        flowrt_ir::FaultInjectionKind::ShutdownError,
+        "shutdown",
+    );
+    let shutdown_bundle = emit_artifacts(&shutdown).unwrap();
+    let shutdown_shell = artifact_content(&shutdown_bundle, "rust/src/runtime_shell.rs");
+    let shutdown_step = generated_function_block(shutdown_shell, "fn step_shutdown");
+    assert!(shutdown_step.contains("__flowrt_inject_status_error"));
+    assert!(shutdown_step.contains("return flowrt::Status::Error;"));
+}
+
+#[test]
 fn cpp_shell_emits_injection_gate() {
     let ir = injected_restart_contract("cpp", "inproc", "cpp");
     let bundle = emit_artifacts(&ir).unwrap();
@@ -88,6 +185,29 @@ fn cpp_shell_emits_injection_gate() {
     assert!(shell.contains(">= 1ULL"));
     assert!(shell.contains(
         "flowrt_inject_fault ? FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{})"
+    ));
+}
+
+#[test]
+fn rust_and_cpp_shell_emit_panic_injection_gates() {
+    let rust_ir = injected_restart_contract("rust", "inproc", "rust");
+    let mut rust_panic = rust_ir.clone();
+    rust_panic.artifact.fault_injection.as_mut().unwrap().points[0].kind =
+        flowrt_ir::FaultInjectionKind::Panic;
+    let rust_bundle = emit_artifacts(&rust_panic).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(
+        rust_shell.contains("panic!(\"FlowRT fault injection panic: drive restart to terminal\")")
+    );
+
+    let cpp_ir = injected_restart_contract("cpp", "inproc", "cpp");
+    let mut cpp_panic = cpp_ir.clone();
+    cpp_panic.artifact.fault_injection.as_mut().unwrap().points[0].kind =
+        flowrt_ir::FaultInjectionKind::Panic;
+    let cpp_bundle = emit_artifacts(&cpp_panic).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains(
+        "throw std::runtime_error(\"FlowRT fault injection panic: drive restart to terminal\")"
     ));
 }
 

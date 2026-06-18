@@ -269,12 +269,12 @@ graph default
 ### `--inject`：test-only 确定性故障注入（v0.22.0）
 
 `prepare` / `build` / `run` 支持 `--inject <scenario.toml>`，用于在不改源 RSDL 的前提下，在确定的
-`(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，验证 0.21.x 故障反应策略（`fail_fast` /
-`isolate` / `restart` / `degrade` / 受控停机）的恢复路径可复现。场景为 TOML 表数组，按名引用契约
-实体：
+`(instance, task, 第 N 次调用)` 锚点注入故障，验证故障反应策略（`fail_fast` / `isolate` /
+`restart` / `degrade` / 受控停机）的恢复路径可复现。场景为 TOML 表数组，按名引用契约实体：
 
 ```toml
 [[inject]]
+kind = "status_error" # 可省略，默认 status_error
 instance = "flaky"
 task = "main"          # 归一化后的 task 名；匿名 [instance.<name>.task] 归一化为 "main"
 invocations = [1, 2]   # 命中的 1-based 调用序号；或：
@@ -282,11 +282,19 @@ invocations = [1, 2]   # 命中的 1-based 调用序号；或：
 reason = "drive restart to terminal"
 ```
 
-注入命中调用序号时跳过用户回调、直接合成 `error`（与回调真实返回 `Status::Error` 字节等价），
-交既有故障反应机器处理。注入是 test-only overlay（置 `test_only`、`clock_source=simulated_replay`，
-与 `--temporary-island` 并列可叠加），`bundle` / `deploy` 默认拒绝（需 `--allow-island`）。约束：注入
-只允许命中 scheduled task（`periodic` / `on_message` / `on_synchronized`，拒 `startup` / `shutdown`），
-要求契约含 ≥1 boundary input（island）以驱动 simulated_replay 时间线，且限单进程。
+`kind` 当前支持：
+
+| kind | 目标 task | 行为 |
+|---|---|---|
+| `status_error` | `periodic` / `on_message` / `on_synchronized` | 命中时跳过用户回调、合成 `Status::Error` task outcome。 |
+| `panic` | `periodic` / `on_message` / `on_synchronized` | 命中时触发 generated worker 的 Rust panic / C++ exception 路径。 |
+| `startup_error` | `startup` | 命中时在 startup task 调用前返回 `Status::Error`。 |
+| `shutdown_error` | `shutdown` | 命中时在 shutdown task 调用前返回 `Status::Error`。 |
+
+`deadline_miss` 与 `backend_drop` 是保留 kind，当前 validator 拒绝，待 runtime 路径接线后放行。注入是
+test-only overlay（置 `test_only`、`clock_source=simulated_replay`，与 `--temporary-island` 并列可叠加），
+`bundle` / `deploy` 默认拒绝（需 `--allow-island`）。约束：要求契约含 ≥1 boundary input（island）以驱动
+simulated_replay 时间线，且限单进程。
 
 ## `prepare`
 

@@ -419,9 +419,16 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
             let decl = format!(
                 "                            {counter} += 1;\n                            let {flag} = {hit};\n",
             );
-            let expr = format!(
-                "if {flag} {{\n                                flowrt::TaskRunOutcome::error(Vec::<FlowrtOutputCommit>::new())\n                            }} else {call_block}",
-            );
+            let expr = match point.kind {
+                flowrt_ir::FaultInjectionKind::StatusError => format!(
+                    "if {flag} {{\n                                flowrt::TaskRunOutcome::error(Vec::<FlowrtOutputCommit>::new())\n                            }} else {call_block}",
+                ),
+                flowrt_ir::FaultInjectionKind::Panic => format!(
+                    "if {flag} {{\n                                panic!({})\n                            }} else {call_block}",
+                    crate::rust_string_literal(&fault_injection_panic_message(point))
+                ),
+                _ => call_block,
+            };
             (decl, expr)
         }
         None => (String::new(), call_block),
@@ -1110,7 +1117,7 @@ fn fault_injection_point_for<'a>(
     contract: &'a ContractIr,
     task: &TaskIr,
 ) -> Option<&'a flowrt_ir::FaultInjectionPointIr> {
-    crate::runtime_plan::fault_injection_point_for(contract, task)
+    crate::runtime_plan::scheduler_fault_injection_point_for(contract, task)
 }
 
 /// 注入命中布尔表达式：调用计数命中显式集合或达到 from_invocation 起点即触发。
@@ -1129,6 +1136,15 @@ fn fault_injection_hit_expr(point: &flowrt_ir::FaultInjectionPointIr, counter_va
         clauses.push(format!("{counter_var} >= {from}u64"));
     }
     clauses.join(" || ")
+}
+
+fn fault_injection_panic_message(point: &flowrt_ir::FaultInjectionPointIr) -> String {
+    let reason = point.reason.trim();
+    if reason.is_empty() {
+        "FlowRT fault injection panic".to_string()
+    } else {
+        format!("FlowRT fault injection panic: {reason}")
+    }
 }
 
 /// 为每个故障注入目标 task 生成 per-task 调用计数器局部变量（8 空格缩进，循环外）。

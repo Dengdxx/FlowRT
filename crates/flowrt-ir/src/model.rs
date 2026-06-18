@@ -157,23 +157,49 @@ pub struct TemporaryOverlayBoundaryMappingIr {
 
 /// test-only 确定性故障注入场景（投影进 [`ContractArtifactIr::fault_injection`]）。
 ///
-/// 注入只在目标 task 调用前强制 `Status::Error`，合成 0.21.x 故障反应机器的触发器；它是
-/// test-only 投影（置 `test_only=true`、`clock_source=SimulatedReplay`），与 RSDL 契约结构
-/// 无关，`bundle`/`deploy` 默认拒绝。
+/// 注入点按目标 task 与调用序号锚定；它是 test-only 投影（置 `test_only=true`、
+/// `clock_source=SimulatedReplay`），与 RSDL 契约结构无关，`bundle`/`deploy` 默认拒绝。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FaultInjectionIr {
-    pub kind: String,
     pub generated_by: TemporaryOverlayGenerationIr,
     pub points: Vec<FaultInjectionPointIr>,
 }
 
-/// 一条故障注入点：在 `task` 命中的调用序号上强制 `Status::Error`。
+/// 故障注入种类。`deadline_miss` 与 `backend_drop` 先进入 IR 词表，运行时接线后才放行。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaultInjectionKind {
+    #[default]
+    StatusError,
+    StartupError,
+    ShutdownError,
+    Panic,
+    DeadlineMiss,
+    BackendDrop,
+}
+
+impl FaultInjectionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusError => "status_error",
+            Self::StartupError => "startup_error",
+            Self::ShutdownError => "shutdown_error",
+            Self::Panic => "panic",
+            Self::DeadlineMiss => "deadline_miss",
+            Self::BackendDrop => "backend_drop",
+        }
+    }
+}
+
+/// 一条故障注入点：在 `task` 命中的调用序号上按 `kind` 注入故障。
 ///
 /// 调用序号为该 task body 的 1-based 运行计数（per-task，pre-execution）。`invocations` 是显式
 /// 命中集合（已 canonical 升序去重）；`from_invocation` 命中其值起的所有后续调用，用于驱动
 /// restart→terminal 或持续降级。两者至少一个非空。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FaultInjectionPointIr {
+    #[serde(default)]
+    pub kind: FaultInjectionKind,
     pub instance: EntityRef,
     pub task: EntityRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
