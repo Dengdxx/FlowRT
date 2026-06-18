@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr, GraphIr,
-    InstanceFailurePolicy, InstanceIr, InstanceRestartParamsIr, OperationConcurrencyPolicy,
-    OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy as IrOverflowPolicy, ParamIr,
-    ParamValue, Ros2BridgeDirection, Ros2BridgeIr, ServiceOverflowPolicy,
-    StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr,
+    BackendName, BoundaryDirection, ChannelBackendSource, ChannelKind, ContractIr,
+    FaultInjectionPointIr, GraphIr, InstanceFailurePolicy, InstanceIr, InstanceRestartParamsIr,
+    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy,
+    OverflowPolicy as IrOverflowPolicy, ParamIr, ParamValue, Ros2BridgeDirection, Ros2BridgeIr,
+    ServiceOverflowPolicy, StalePolicy as IrStalePolicy, TaskConcurrency, TaskIr, TaskReadiness,
+    TriggerKind, TypeExpr,
     derived::{ContractDerivedFacts, GraphDerivedFacts, derive_contract_facts},
 };
 
@@ -724,6 +725,22 @@ pub(crate) fn runtime_trigger_name(trigger: TriggerKind) -> &'static str {
         TriggerKind::Shutdown => "shutdown",
         TriggerKind::OnSynchronized => "on_synchronized",
     }
+}
+
+/// 查找命中给定 task 的 test-only 故障注入点（按 EntityId 匹配），无注入或不命中返回 None。
+///
+/// 两语言 codegen 共用：注入门只在 `artifact.fault_injection` 存在且命中本 task 时生成。
+pub(crate) fn fault_injection_point_for<'a>(
+    contract: &'a ContractIr,
+    task: &TaskIr,
+) -> Option<&'a FaultInjectionPointIr> {
+    contract
+        .artifact
+        .fault_injection
+        .as_ref()?
+        .points
+        .iter()
+        .find(|point| point.task.id == task.id)
 }
 
 pub(crate) fn contract_uses_backend(contract: &ContractIr, backend: &str) -> bool {

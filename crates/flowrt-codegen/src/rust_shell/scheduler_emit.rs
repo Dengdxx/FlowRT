@@ -227,6 +227,10 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
         "        let task_clock_source = {task_clock_source};\n        let task_completion_queue = flowrt::WorkerCompletionQueue::<Vec<FlowrtOutputCommit>>::new();\n        let scheduler_events_for_task_completion = scheduler_events.clone();\n        task_completion_queue.set_wake_callback(move || scheduler_events_for_task_completion.notify_data());\n        let mut pending_task_order: std::collections::VecDeque<flowrt::TaskId> = std::collections::VecDeque::new();\n        let mut pending_task_results: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskRunOutput<Vec<FlowrtOutputCommit>>> = std::collections::BTreeMap::new();\n        let mut pending_task_admissions: std::collections::BTreeMap<flowrt::TaskId, flowrt::TaskAdmission> = std::collections::BTreeMap::new();\n        let task_health_from_workers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, flowrt::IntrospectionTaskHealth>::new()));\n        let mut task_last_scheduled_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n        let mut task_last_observed_time_ms: std::collections::BTreeMap<flowrt::TaskId, u64> = std::collections::BTreeMap::new();\n"
     ));
     output.push_str(&emit_rust_fault_state_decls(&recoverable, graph_stop));
+    output.push_str(&emit_rust_injection_counter_decls(
+        contract,
+        &scheduler_plan.dataflow_tasks,
+    ));
     output.push_str(
         "        while status == flowrt::Status::Ok\n            && !shutdown.is_requested()\n            && (run_ticks\n                .map(|limit| tick_base < limit)\n                .unwrap_or(true)\n                || !pending_task_order.is_empty())\n        {\n            let mut observed_data_generation: u64;\n",
     );
@@ -378,10 +382,31 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
     let call_args = rust_collect_task_call_args_for_scheduler(contract, graph, task).join(", ");
     let capture_prelude =
         emit_rust_task_capture_prelude(contract, graph, binds, bridges, boundaries, task);
+    let worker_ctx = emit_rust_worker_closure_context(task_name, trigger);
+    let closure_tail = emit_rust_scheduler_task_closure_tail();
+    // 真实任务调用块；非注入任务直接作为 task_outcome，字节与旧产物一致。
+    let call_block = format!(
+        "{{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                Self::{function_name}({call_args}, tick_time_ms as usize, &mut local_context, &introspection_state, &scheduler_events, &mut local_health_map)\n                            }}",
+    );
+    // test-only 故障注入门：命中调用序号时跳过用户回调、直接合成 error outcome（与真实回调返
+    // Status::Error 的 TaskRunOutcome::error(empty) 字节等价），交既有 0.21.x 故障反应机器处理。
+    let (inject_decl, task_outcome_expr) = match fault_injection_point_for(contract, task) {
+        Some(point) => {
+            let counter = format!("__inject_count_{task_id}");
+            let flag = format!("__inject_fault_{task_id}");
+            let hit = fault_injection_hit_expr(point, &counter);
+            let decl = format!(
+                "                            {counter} += 1;\n                            let {flag} = {hit};\n",
+            );
+            let expr = format!(
+                "if {flag} {{\n                                flowrt::TaskRunOutcome::error(Vec::new())\n                            }} else {call_block}",
+            );
+            (decl, expr)
+        }
+        None => (String::new(), call_block),
+    };
     format!(
-        "                        flowrt::TaskId({task_id}) => {{\n{capture_prelude}                            let introspection_state = introspection_state.clone();\n                            let scheduler_events = scheduler_events.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                Self::{function_name}({call_args}, tick_time_ms as usize, &mut local_context, &introspection_state, &scheduler_events, &mut local_health_map)\n                            }};\n{}                            }})\n                        }},\n",
-        emit_rust_worker_closure_context(task_name, trigger),
-        emit_rust_scheduler_task_closure_tail(),
+        "                        flowrt::TaskId({task_id}) => {{\n{capture_prelude}                            let introspection_state = introspection_state.clone();\n                            let scheduler_events = scheduler_events.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n{inject_decl}                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{worker_ctx}                            let task_outcome = {task_outcome_expr};\n{closure_tail}                            }})\n                        }},\n",
     )
 }
 
@@ -991,6 +1016,52 @@ fn emit_rust_fault_state_decls(
                 output.push_str(&format!("        let mut {var}_degraded = false;\n"));
             }
             _ => {}
+        }
+    }
+    output
+}
+
+/// 查找命中给定 task 的 test-only 故障注入点（按 EntityId 匹配）。
+fn fault_injection_point_for<'a>(
+    contract: &'a ContractIr,
+    task: &TaskIr,
+) -> Option<&'a flowrt_ir::FaultInjectionPointIr> {
+    crate::runtime_plan::fault_injection_point_for(contract, task)
+}
+
+/// 注入命中布尔表达式：调用计数命中显式集合或达到 from_invocation 起点即触发。
+fn fault_injection_hit_expr(point: &flowrt_ir::FaultInjectionPointIr, counter_var: &str) -> String {
+    let mut clauses = Vec::new();
+    if !point.invocations.is_empty() {
+        let list = point
+            .invocations
+            .iter()
+            .map(|n| format!("{n}u64"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!("[{list}].contains(&{counter_var})"));
+    }
+    if let Some(from) = point.from_invocation {
+        clauses.push(format!("{counter_var} >= {from}u64"));
+    }
+    clauses.join(" || ")
+}
+
+/// 为每个故障注入目标 task 生成 per-task 调用计数器局部变量（8 空格缩进，循环外）。
+///
+/// 计数器在 scheduler 线程每次 admission 自增（pre-execution），与 fault 状态同处运行循环外，
+/// 使 `(instance, task, 第 N 次调用)` 锚点在 simulated_replay 下逐次确定。
+fn emit_rust_injection_counter_decls(
+    contract: &ContractIr,
+    dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
+) -> String {
+    let mut output = String::new();
+    for plan in dataflow_tasks {
+        if fault_injection_point_for(contract, plan.task).is_some() {
+            output.push_str(&format!(
+                "        let mut __inject_count_{}: u64 = 0;\n",
+                plan.id
+            ));
         }
     }
     output

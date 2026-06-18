@@ -306,6 +306,10 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         "    const auto task_clock_source = {task_clock_source};\n    flowrt::WorkerCompletionQueue<std::vector<FlowrtOutputCommit>> task_completion_queue;\n    task_completion_queue.set_wake_callback([&scheduler_events]() {{ scheduler_events.notify_data(); }});\n    std::deque<flowrt::TaskId> pending_task_order;\n    std::map<flowrt::TaskId, flowrt::TaskRunOutput<std::vector<FlowrtOutputCommit>>> pending_task_results;\n    std::map<flowrt::TaskId, flowrt::TaskAdmission> pending_task_admissions;\n    std::mutex task_health_mutex;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> task_health_from_workers;\n    std::map<flowrt::TaskId, std::uint64_t> task_last_scheduled_time_ms;\n    std::map<flowrt::TaskId, std::uint64_t> task_last_observed_time_ms;\n"
     ));
     output.push_str(&emit_cpp_fault_state_decls(&recoverable, graph_stop));
+    output.push_str(&emit_cpp_injection_counter_decls(
+        run.contract,
+        &scheduler_plan.dataflow_tasks,
+    ));
     output.push_str(
         "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty())) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n",
     );
@@ -378,7 +382,21 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         ));
     }
     output.push_str(
-        "            for (auto task_result : task_completion_queue.drain_completed()) {\n                pending_task_results.insert_or_assign(task_result.task, std::move(task_result));\n            }\n            {\n                std::lock_guard<std::mutex> lock(task_health_mutex);\n                for (auto &[name, health] : task_health_from_workers) {\n                    health_map.insert_or_assign(name, std::move(health));\n                }\n                task_health_from_workers.clear();\n            }\n            auto ready_batch = scheduler.take_ready_batch();\n            const auto submitted_task_count = ready_batch.size();\n            for (const auto admission : ready_batch.admissions()) {\n                const auto scheduled_delta_ms = [&]() -> std::uint64_t {\n                    const auto [it, inserted] = task_last_scheduled_time_ms.insert_or_assign(admission.task, admission.scheduled_time_ms);\n                    return inserted || admission.scheduled_time_ms < it->second ? 0U : admission.scheduled_time_ms - it->second;\n                }();\n                const auto observed_delta_ms = [&]() -> std::uint64_t {\n                    const auto [it, inserted] = task_last_observed_time_ms.insert_or_assign(admission.task, admission.observed_time_ms);\n                    return inserted || admission.observed_time_ms < it->second ? 0U : admission.observed_time_ms - it->second;\n                }();\n                const auto submitted = worker_pool.submit_collect(admission.task, task_completion_queue, [this, &introspection_state, &scheduler_events, &task_health_mutex, &task_health_from_workers, admission, scheduled_delta_ms, observed_delta_ms, task_clock_source, tick_base, tick_time_ms]() {\n                    auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                    const auto [task_name, task_trigger] = [&]() -> std::pair<std::string_view, std::string_view> {\n                        switch (admission.task.value) {\n",
+        "            for (auto task_result : task_completion_queue.drain_completed()) {\n                pending_task_results.insert_or_assign(task_result.task, std::move(task_result));\n            }\n            {\n                std::lock_guard<std::mutex> lock(task_health_mutex);\n                for (auto &[name, health] : task_health_from_workers) {\n                    health_map.insert_or_assign(name, std::move(health));\n                }\n                task_health_from_workers.clear();\n            }\n            auto ready_batch = scheduler.take_ready_batch();\n            const auto submitted_task_count = ready_batch.size();\n            for (const auto admission : ready_batch.admissions()) {\n                const auto scheduled_delta_ms = [&]() -> std::uint64_t {\n                    const auto [it, inserted] = task_last_scheduled_time_ms.insert_or_assign(admission.task, admission.scheduled_time_ms);\n                    return inserted || admission.scheduled_time_ms < it->second ? 0U : admission.scheduled_time_ms - it->second;\n                }();\n                const auto observed_delta_ms = [&]() -> std::uint64_t {\n                    const auto [it, inserted] = task_last_observed_time_ms.insert_or_assign(admission.task, admission.observed_time_ms);\n                    return inserted || admission.observed_time_ms < it->second ? 0U : admission.observed_time_ms - it->second;\n                }();\n",
+    );
+    output.push_str(&emit_cpp_injection_decision(
+        run.contract,
+        &scheduler_plan.dataflow_tasks,
+    ));
+    output.push_str(
+        "                const auto submitted = worker_pool.submit_collect(admission.task, task_completion_queue, [this, &introspection_state, &scheduler_events, &task_health_mutex, &task_health_from_workers, admission, scheduled_delta_ms, observed_delta_ms, task_clock_source, tick_base, tick_time_ms",
+    );
+    output.push_str(&cpp_injection_capture(
+        run.contract,
+        &scheduler_plan.dataflow_tasks,
+    ));
+    output.push_str(
+        "]() {\n                    auto local_health_map = std::map<std::string, flowrt::IntrospectionTaskHealth>{};\n                    const auto [task_name, task_trigger] = [&]() -> std::pair<std::string_view, std::string_view> {\n                        switch (admission.task.value) {\n",
     );
     for task in &scheduler_plan.dataflow_tasks {
         let task_id = task.id;
@@ -401,11 +419,28 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             Some(process) => cpp_process_task_step_function_name(process, task),
             None => cpp_task_step_function_name(task),
         };
+        // test-only 故障注入门：命中时三元短路跳过用户回调，直接合成 error outcome（与回调返
+        // Status::Error 等价），不影响非注入产物字节。
+        let call_expr = format!(
+            "{function_name}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map)"
+        );
+        let task_outcome_expr = if crate::runtime_plan::fault_injection_point_for(
+            run.contract,
+            task,
+        )
+        .is_some()
+        {
+            format!(
+                "flowrt_inject_fault ? FlowrtTaskOutcome::error(std::vector<FlowrtOutputCommit>{{}}) : {call_expr}"
+            )
+        } else {
+            call_expr
+        };
         output.push_str(&format!(
             "                    case {task_id}: {{\n\
                          auto flowrt_lane_guard = flowrt::enter_lane({lane_id});\n\
                          (void)flowrt_lane_guard;\n\
-                         auto task_outcome = {function_name}(static_cast<std::size_t>(tick_time_ms), local_context, introspection_state, scheduler_events, local_health_map);\n\
+                         auto task_outcome = {task_outcome_expr};\n\
                          merge_local_health(std::move(local_health_map));\n\
                          return task_outcome;\n\
                      }}\n"
@@ -819,6 +854,78 @@ fn emit_cpp_fault_state_decls(
         }
     }
     output
+}
+
+/// C++ 注入命中布尔表达式，镜像 Rust：调用计数命中显式集合或达到 from_invocation 起点即触发。
+fn cpp_fault_injection_hit_expr(
+    point: &flowrt_ir::FaultInjectionPointIr,
+    counter_var: &str,
+) -> String {
+    let mut clauses = Vec::new();
+    for invocation in &point.invocations {
+        clauses.push(format!("{counter_var} == {invocation}ULL"));
+    }
+    if let Some(from) = point.from_invocation {
+        clauses.push(format!("{counter_var} >= {from}ULL"));
+    }
+    clauses.join(" || ")
+}
+
+/// 为每个故障注入目标 task 生成 per-task 调用计数器局部变量（4 空格缩进，run 函数体，循环外）。
+fn emit_cpp_injection_counter_decls(
+    contract: &ContractIr,
+    dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
+) -> String {
+    let mut output = String::new();
+    for plan in dataflow_tasks {
+        if crate::runtime_plan::fault_injection_point_for(contract, plan.task).is_some() {
+            output.push_str(&format!(
+                "    std::uint64_t __inject_count_{} = 0;\n",
+                plan.id
+            ));
+        }
+    }
+    output
+}
+
+/// scheduler 线程在 submit 前对本次 admission 计算注入决策（自增对应计数器并置 bool）。
+/// 无注入任务时返回空串，使非注入产物字节不漂移。
+fn emit_cpp_injection_decision(
+    contract: &ContractIr,
+    dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
+) -> String {
+    let mut arms = String::new();
+    for plan in dataflow_tasks {
+        if let Some(point) = crate::runtime_plan::fault_injection_point_for(contract, plan.task) {
+            let counter = format!("__inject_count_{}", plan.id);
+            let hit = cpp_fault_injection_hit_expr(point, &counter);
+            arms.push_str(&format!(
+                "                    case {}: {{ ++{counter}; flowrt_inject_fault = {hit}; break; }}\n",
+                plan.id
+            ));
+        }
+    }
+    if arms.is_empty() {
+        return String::new();
+    }
+    format!(
+        "                bool flowrt_inject_fault = false;\n                switch (admission.task.value) {{\n{arms}                    default: break;\n                }}\n"
+    )
+}
+
+/// 注入产物的 worker lambda 需按值捕获注入决策 bool；无注入任务时为空，捕获列表字节不漂移。
+fn cpp_injection_capture(
+    contract: &ContractIr,
+    dataflow_tasks: &[crate::runtime_plan::SchedulerDataflowTaskPlan<'_>],
+) -> String {
+    let has_injection = dataflow_tasks
+        .iter()
+        .any(|plan| crate::runtime_plan::fault_injection_point_for(contract, plan.task).is_some());
+    if has_injection {
+        ", flowrt_inject_fault".to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// C++ restart-due 驱动（8 空格缩进，循环内 tick 顶部），镜像 Rust 行为。

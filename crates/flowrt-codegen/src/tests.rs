@@ -8,6 +8,7 @@ mod artifacts;
 mod backend;
 mod channels;
 mod explain;
+mod fault_injection;
 mod golden;
 mod introspection;
 mod launch;
