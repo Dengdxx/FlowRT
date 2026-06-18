@@ -11,9 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use flowrt_codegen::{ArtifactBundle, emit_artifacts};
 use flowrt_ir::{
-    ContractIr, GraphMode, LanguageKind, TargetPlatform, TemporaryBoundaryMapping,
-    TemporaryIslandOverlay, apply_temporary_island_overlay, hash_source, normalize_loaded_document,
-    project_contract_to_profile,
+    ContractIr, FaultInjectionScenario, FaultInjectionScenarioPoint, GraphMode, LanguageKind,
+    TargetPlatform, TemporaryBoundaryMapping, TemporaryIslandOverlay,
+    apply_fault_injection_overlay, apply_temporary_island_overlay, hash_source,
+    normalize_loaded_document, project_contract_to_profile,
 };
 use flowrt_validate::validate_contract;
 use serde::{Deserialize, Serialize};

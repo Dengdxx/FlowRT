@@ -142,7 +142,7 @@ backend = "inproc"
         boundary_inputs: vec!["scan_in=planner.scan".to_string()],
         boundary_outputs: vec!["cmd_out=planner.cmd".to_string()],
     };
-    let prepared = prepare_workspace_with_options(&rsdl_path, &out_dir, None, &overlay)
+    let prepared = prepare_workspace_with_options(&rsdl_path, &out_dir, None, &overlay, None)
         .expect("temporary island overlay should prepare a strict source");
     let prepared_ir =
         ContractIr::from_json_str(&std::fs::read_to_string(&prepared.contract_path).unwrap())
@@ -227,11 +227,85 @@ backend = "inproc"
         boundary_outputs: vec![],
     };
 
-    let error = prepare_workspace_with_options(&rsdl_path, &out_dir, None, &overlay)
+    let error = prepare_workspace_with_options(&rsdl_path, &out_dir, None, &overlay, None)
         .expect_err("boundary flag without temporary island should fail");
 
     assert!(error.to_string().contains("require `--temporary-island`"));
     assert_eq!(std::fs::read_to_string(&rsdl_path).unwrap(), source);
+
+    let _ = std::fs::remove_dir_all(&rsdl_dir);
+}
+
+#[test]
+fn prepare_workspace_applies_fault_injection_overlay_from_scenario_file() {
+    let source = r#"
+[package]
+name = "fault_injection_cli_demo"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.producer]
+language = "rust"
+output = ["sample:Sample"]
+
+[instance.flaky]
+component = "producer"
+
+[instance.flaky.fault]
+policy = "restart"
+max_restarts = 2
+initial_delay_ms = 10
+max_delay_ms = 40
+
+[instance.flaky.task]
+trigger = "periodic"
+period_ms = 10
+output = ["sample"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let rsdl_dir = temp_test_dir("prepare-fault-injection");
+    let rsdl_path = rsdl_dir.join("robot.rsdl");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    std::fs::write(&rsdl_path, source).unwrap();
+    let scenario_path = rsdl_dir.join("inject.toml");
+    std::fs::write(
+        &scenario_path,
+        "[[inject]]\ninstance = \"flaky\"\ntask = \"main\"\nfrom_invocation = 1\nreason = \"drive restart to terminal\"\n",
+    )
+    .unwrap();
+    let out_dir = rsdl_dir.join("flowrt");
+
+    let overlay = TemporaryIslandCliOptions::default();
+    let prepared = prepare_workspace_with_options(
+        &rsdl_path,
+        &out_dir,
+        None,
+        &overlay,
+        Some(scenario_path.as_path()),
+    )
+    .expect("fault injection scenario should prepare a test-only contract");
+
+    // 源 RSDL 不被改写。
+    assert_eq!(std::fs::read_to_string(&rsdl_path).unwrap(), source);
+    let prepared_ir =
+        ContractIr::from_json_str(&std::fs::read_to_string(&prepared.contract_path).unwrap())
+            .unwrap();
+    assert!(prepared_ir.artifact.test_only);
+    assert_eq!(
+        prepared_ir.artifact.clock_source,
+        flowrt_ir::ClockSourceKind::SimulatedReplay
+    );
+    let fault = prepared_ir
+        .artifact
+        .fault_injection
+        .expect("prepared contract must record fault injection scenario");
+    assert_eq!(fault.points.len(), 1);
+    assert_eq!(fault.points[0].instance.name, "flaky");
+    assert_eq!(fault.points[0].from_invocation, Some(1));
 
     let _ = std::fs::remove_dir_all(&rsdl_dir);
 }

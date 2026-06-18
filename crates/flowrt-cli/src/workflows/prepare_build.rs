@@ -166,6 +166,7 @@ pub(crate) fn prepare_workspace(
         out_dir,
         profile,
         &TemporaryIslandCliOptions::default(),
+        None,
     )
 }
 
@@ -195,6 +196,7 @@ pub(crate) fn prepare_workspace_with_options(
     out_dir: &Path,
     profile: Option<&str>,
     temporary_island: &TemporaryIslandCliOptions,
+    inject: Option<&Path>,
 ) -> Result<PreparedWorkspace> {
     let contract = normalize_contract_from_rsdl(rsdl)?;
     let mut selected_contract = project_contract_to_profile(&contract, profile)
@@ -208,6 +210,11 @@ pub(crate) fn prepare_workspace_with_options(
     {
         anyhow::bail!("`--boundary-input` and `--boundary-output` require `--temporary-island`");
     }
+    if let Some(scenario_path) = inject {
+        let scenario = parse_fault_injection_scenario(scenario_path)?;
+        selected_contract = apply_fault_injection_overlay(&selected_contract, &scenario)
+            .context("failed to apply fault injection overlay")?;
+    }
     validate_contract(&selected_contract).context("contract validation failed")?;
     let contract_path = write_contract(&selected_contract, out_dir)?;
     let artifacts = emit_artifacts(&selected_contract).context("failed to prepare artifacts")?;
@@ -216,6 +223,57 @@ pub(crate) fn prepare_workspace_with_options(
         contract_path,
         artifact_count,
         selected_contract,
+    })
+}
+
+/// 故障注入场景文件（TOML 子集）：`[[inject]]` 表数组，按名引用契约 instance/task。
+#[derive(Debug, Deserialize)]
+struct FaultScenarioFile {
+    #[serde(default)]
+    inject: Vec<FaultScenarioEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FaultScenarioEntry {
+    instance: String,
+    task: String,
+    #[serde(default)]
+    invocations: Vec<u64>,
+    #[serde(default)]
+    from_invocation: Option<u64>,
+    #[serde(default)]
+    reason: String,
+}
+
+/// 解析 `--inject` 故障注入场景文件为归一化层可消费的 `FaultInjectionScenario`。
+pub(crate) fn parse_fault_injection_scenario(path: &Path) -> Result<FaultInjectionScenario> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read fault scenario `{}`", path.display()))?;
+    let parsed: FaultScenarioFile = toml::from_str(&text)
+        .with_context(|| format!("failed to parse fault scenario `{}`", path.display()))?;
+    if parsed.inject.is_empty() {
+        anyhow::bail!(
+            "fault scenario `{}` must declare at least one `[[inject]]` entry",
+            path.display()
+        );
+    }
+    let points = parsed
+        .inject
+        .into_iter()
+        .map(|entry| FaultInjectionScenarioPoint {
+            instance: entry.instance,
+            task: entry.task,
+            invocations: entry.invocations,
+            from_invocation: entry.from_invocation,
+            reason: entry.reason,
+        })
+        .collect();
+    Ok(FaultInjectionScenario {
+        points,
+        generated_by: flowrt_ir::TemporaryOverlayGenerationIr {
+            command: "flowrt prepare".to_string(),
+            source: path.display().to_string(),
+        },
     })
 }
 

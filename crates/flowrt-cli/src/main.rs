@@ -131,6 +131,10 @@ enum Command {
         /// 临时 boundary output 映射，格式为 `name=instance.port`。
         #[arg(long = "boundary-output")]
         boundary_output: Vec<String>,
+
+        /// test-only 故障注入场景文件（TOML）；命中 task 调用序号时强制 Status::Error。
+        #[arg(long)]
+        inject: Option<PathBuf>,
     },
 
     /// 准备并构建 FlowRT 管理的应用产物。
@@ -169,6 +173,10 @@ enum Command {
         /// 临时 boundary output 映射，格式为 `name=instance.port`。
         #[arg(long = "boundary-output")]
         boundary_output: Vec<String>,
+
+        /// test-only 故障注入场景文件（TOML）；命中 task 调用序号时强制 Status::Error。
+        #[arg(long)]
+        inject: Option<PathBuf>,
     },
 
     /// 补全并预热 FlowRT 底层依赖缓存。
@@ -315,6 +323,10 @@ enum Command {
         /// 临时 boundary output 映射，格式为 `name=instance.port`。
         #[arg(long = "boundary-output")]
         boundary_output: Vec<String>,
+
+        /// test-only 故障注入场景文件（TOML）；命中 task 调用序号时强制 Status::Error。
+        #[arg(long)]
+        inject: Option<PathBuf>,
 
         /// 运行时原生确定性回放源（MCAP 录制）。设置后以 FLOWRT_REPLAY_SOURCE 注入生成运行时；
         /// 仅 simulated_replay 时钟源（temporary island）消费，realtime 忽略。
@@ -837,14 +849,20 @@ fn main() -> Result<()> {
             temporary_island,
             boundary_input,
             boundary_output,
+            inject,
         } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let overlay =
                 TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);
-            let prepared =
-                prepare_workspace_with_options(&rsdl, &out_dir, profile.as_deref(), &overlay)?;
+            let prepared = prepare_workspace_with_options(
+                &rsdl,
+                &out_dir,
+                profile.as_deref(),
+                &overlay,
+                inject.as_deref(),
+            )?;
             println!(
                 "prepared {} and {} artifact(s)",
                 prepared.contract_path.display(),
@@ -864,14 +882,20 @@ fn main() -> Result<()> {
             temporary_island,
             boundary_input,
             boundary_output,
+            inject,
         } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let _lock = WorkspaceLock::acquire(&out_dir)?;
             let overlay =
                 TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);
-            let prepared =
-                prepare_workspace_with_options(&rsdl, &out_dir, profile.as_deref(), &overlay)?;
+            let prepared = prepare_workspace_with_options(
+                &rsdl,
+                &out_dir,
+                profile.as_deref(),
+                &overlay,
+                inject.as_deref(),
+            )?;
             let workspace_root = application_root_from_rsdl(&rsdl)?;
             let target_profile = resolve_build_toolchain_profile(
                 &prepared.selected_contract,
@@ -1025,16 +1049,22 @@ fn main() -> Result<()> {
             temporary_island,
             boundary_input,
             boundary_output,
+            inject,
             replay,
         } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let out_dir = resolve_output_dir(&rsdl, &out_dir)?;
             let overlay =
                 TemporaryIslandCliOptions::new(temporary_island, boundary_input, boundary_output);
-            let contract = if overlay.enabled {
+            let contract = if overlay.enabled || inject.is_some() {
                 let _lock = WorkspaceLock::acquire(&out_dir)?;
-                let prepared =
-                    prepare_workspace_with_options(&rsdl, &out_dir, profile.as_deref(), &overlay)?;
+                let prepared = prepare_workspace_with_options(
+                    &rsdl,
+                    &out_dir,
+                    profile.as_deref(),
+                    &overlay,
+                    inject.as_deref(),
+                )?;
                 let workspace_root = application_root_from_rsdl(&rsdl)?;
                 let target_profile = resolve_build_toolchain_profile(
                     &prepared.selected_contract,
