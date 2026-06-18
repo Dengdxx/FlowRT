@@ -399,7 +399,7 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
                 "                            {counter} += 1;\n                            let {flag} = {hit};\n",
             );
             let expr = format!(
-                "if {flag} {{\n                                flowrt::TaskRunOutcome::error(Vec::new())\n                            }} else {call_block}",
+                "if {flag} {{\n                                flowrt::TaskRunOutcome::error(Vec::<FlowrtOutputCommit>::new())\n                            }} else {call_block}",
             );
             (decl, expr)
         }
