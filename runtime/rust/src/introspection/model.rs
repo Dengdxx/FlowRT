@@ -307,7 +307,7 @@ pub struct IntrospectionInputStatus {
 }
 
 /// 单条 dataflow route 的 backend 与传输健康状态。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntrospectionRouteStatus {
     /// runtime route 名称，通常等于 channel 名。
     #[serde(default)]
@@ -345,6 +345,49 @@ pub struct IntrospectionRouteStatus {
     /// 最近一次 route/backend 错误。
     #[serde(default)]
     pub last_error: Option<String>,
+    /// route 当前 backend health 状态。
+    #[serde(default = "default_backend_health_state")]
+    pub backend_health_state: String,
+    /// route 当前 backend health 错误。
+    #[serde(default)]
+    pub backend_health_error: Option<String>,
+    /// 当前 backend reconnect attempt。
+    #[serde(default)]
+    pub backend_reconnect_attempt: u32,
+    /// 下一次 backend retry 的 Unix 毫秒时间戳。
+    #[serde(default)]
+    pub backend_next_retry_unix_ms: Option<u64>,
+    /// 当前 backend health 是否仍可恢复。
+    #[serde(default)]
+    pub backend_recoverable: bool,
+}
+
+impl Default for IntrospectionRouteStatus {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            from: String::new(),
+            to: String::new(),
+            message_type: String::new(),
+            backend: String::new(),
+            selected_reason: String::new(),
+            published_count: 0,
+            dropped_samples: 0,
+            backpressure_count: 0,
+            overflow_count: 0,
+            last_publish_ms: None,
+            last_error: None,
+            backend_health_state: default_backend_health_state(),
+            backend_health_error: None,
+            backend_reconnect_attempt: 0,
+            backend_next_retry_unix_ms: None,
+            backend_recoverable: false,
+        }
+    }
+}
+
+fn default_backend_health_state() -> String {
+    "ready".to_string()
 }
 
 /// 抽象 resource 的运行态 readiness/health 状态。

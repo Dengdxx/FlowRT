@@ -183,7 +183,12 @@ impl App {
                 flowrt::Status::Error => return flowrt::Status::Error,
             }
             if let Some(value) = cmd.as_ref().cloned() {
-                if let Err(error) = self.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = self.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -216,7 +221,12 @@ impl App {
                 flowrt::Status::Error => return flowrt::Status::Error,
             }
             if let Some(value) = state.as_ref().cloned() {
-                if let Err(error) = self.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = self.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -303,7 +313,12 @@ impl App {
             if let Some(value) = cmd.as_ref().cloned() {
                 let value = value.clone();
                 __flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events, _health_map| {
-                if let Err(error) = app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -358,7 +373,12 @@ impl App {
             if let Some(value) = state.as_ref().cloned() {
                 let value = value.clone();
                 __flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events, _health_map| {
-                if let Err(error) = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -410,7 +430,12 @@ impl App {
                 flowrt::Status::Error => return flowrt::Status::Error,
             }
             if let Some(value) = cmd.as_ref().cloned() {
-                if let Err(error) = self.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = self.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -497,7 +522,12 @@ impl App {
             if let Some(value) = cmd.as_ref().cloned() {
                 let value = value.clone();
                 __flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events, _health_map| {
-                if let Err(error) = app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = app.bind_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("controller.cmd_to_plant.cmd", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("controller.cmd_to_plant.cmd", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -549,7 +579,12 @@ impl App {
                 flowrt::Status::Error => return flowrt::Status::Error,
             }
             if let Some(value) = state.as_ref().cloned() {
-                if let Err(error) = self.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = self.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
                     return flowrt::Status::Error;
                 }
@@ -636,7 +671,12 @@ impl App {
             if let Some(value) = state.as_ref().cloned() {
                 let value = value.clone();
                 __flowrt_output_commits.push(Box::new(move |app, introspection_state, scheduler_events, _health_map| {
-                if let Err(error) = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {
+                let mut __flowrt_route = app.bind_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);
+                let __flowrt_route_health = __flowrt_route.health();
+                drop(__flowrt_route);
+                introspection_state.record_route_backend_health("plant.state_to_controller.state", __flowrt_route_health);
+                if let Err(error) = __flowrt_publish_result {
                     introspection_state.record_route_error("plant.state_to_controller.state", error.to_string());
                     return flowrt::Status::Error;
                 }

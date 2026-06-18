@@ -28,6 +28,19 @@ pub enum BackendHealthState {
     Unsupported,
 }
 
+impl BackendHealthState {
+    /// 返回 status / diagnostics 中使用的稳定小写状态名。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+            Self::Reconnecting => "reconnecting",
+            Self::Failed => "failed",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 /// backend 或 endpoint 的健康快照。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendHealthSnapshot {

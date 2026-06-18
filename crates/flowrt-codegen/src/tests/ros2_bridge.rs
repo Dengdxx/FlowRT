@@ -333,8 +333,14 @@ backends = ["zenoh"]
         rust_shell
             .contains("let request_read = self.boundary_input_request_in.read_at(tick_time_ms);")
     );
+    assert!(
+        rust_shell.contains(
+            "let mut __flowrt_route = self.ros2_bridge_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());"
+        )
+    );
+    assert!(rust_shell.contains("let __flowrt_route_health = __flowrt_route.health();"));
     assert!(rust_shell.contains(
-        "self.ros2_bridge_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms)"
+        "introspection_state.record_route_backend_health(\"ros2_bridge_1\", __flowrt_route_health);"
     ));
     assert!(rust_shell.contains("from: \"ros2:/ros2/request\".to_string()"));
     assert!(rust_shell.contains("to: \"boundary:request_in\".to_string()"));

@@ -1450,7 +1450,7 @@ pub(crate) fn live_status_summary_for_sockets(
                         .map(String::as_str)
                         .unwrap_or("none");
                     lines.push(format!(
-                        "route={} from={} to={} type={} backend={} thread_affinity={} static_thread_affinity={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} socket={}",
+                        "route={} from={} to={} type={} backend={} thread_affinity={} static_thread_affinity={} selected_reason={} published_count={} dropped_samples={} backpressure={} overflow={} last_publish_ms={} last_error={} backend_health={} backend_recoverable={} backend_reconnect_attempt={} backend_next_retry_unix_ms={} backend_health_error={} socket={}",
                         route.name,
                         route.from,
                         route.to,
@@ -1465,6 +1465,11 @@ pub(crate) fn live_status_summary_for_sockets(
                         route.overflow_count,
                         option_u64(route.last_publish_ms),
                         option_str(route.last_error.as_deref()),
+                        empty_as_none(&route.backend_health_state),
+                        route.backend_recoverable,
+                        route.backend_reconnect_attempt,
+                        option_u64(route.backend_next_retry_unix_ms),
+                        option_str(route.backend_health_error.as_deref()),
                         socket.display()
                     ));
                 }

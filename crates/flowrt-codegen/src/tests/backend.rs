@@ -428,6 +428,107 @@ backends = ["iox2"]
 }
 
 #[test]
+fn backend_route_health_is_recorded_for_rust_transport_publish() {
+    let transport_ir = contract_from_source(
+        r#"
+[package]
+name = "route_health_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+process = "producer"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+process = "consumer"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "zenoh"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#,
+    );
+    let transport_bundle = emit_artifacts(&transport_ir).unwrap();
+    let transport_shell = artifact_content(&transport_bundle, "rust/src/runtime_shell.rs");
+    assert!(transport_shell.contains("let __flowrt_route_health = __flowrt_route.health();"));
+    assert!(transport_shell.contains(
+        "introspection_state.record_route_backend_health(\"source.packet_to_sink.packet\", __flowrt_route_health);"
+    ));
+
+    let inproc_ir = contract_from_source(
+        r#"
+[package]
+name = "route_health_inproc_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+value = "u32"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+"#,
+    );
+    let inproc_bundle = emit_artifacts(&inproc_ir).unwrap();
+    let inproc_shell = artifact_content(&inproc_bundle, "rust/src/runtime_shell.rs");
+    assert!(!inproc_shell.contains("record_route_backend_health"));
+}
+
+#[test]
 fn emits_zenoh_backend_and_key_expressions_when_profile_selects_zenoh() {
     let ir = contract_from_source(
         r#"

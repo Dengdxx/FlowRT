@@ -160,6 +160,16 @@ inline std::string route_status_json(const IntrospectionRouteStatus &route) {
     output.append(optional_u64_json(route.last_publish_ms));
     output.append(",\"last_error\":");
     output.append(route.last_error ? json_string(*route.last_error) : "null");
+    output.append(",\"backend_health_state\":");
+    output.append(json_string(route.backend_health_state));
+    output.append(",\"backend_health_error\":");
+    output.append(route.backend_health_error ? json_string(*route.backend_health_error) : "null");
+    output.append(",\"backend_reconnect_attempt\":");
+    output.append(std::to_string(route.backend_reconnect_attempt));
+    output.append(",\"backend_next_retry_unix_ms\":");
+    output.append(optional_u64_json(route.backend_next_retry_unix_ms));
+    output.append(",\"backend_recoverable\":");
+    output.append(route.backend_recoverable ? "true" : "false");
     output.push_back('}');
     return output;
 }

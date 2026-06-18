@@ -295,6 +295,11 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
         overflow_count: 3,
         last_publish_ms: Some(120),
         last_error: Some("queue overflow".to_string()),
+        backend_health_state: "reconnecting".to_string(),
+        backend_health_error: Some("publish Zenoh sample: session closed".to_string()),
+        backend_reconnect_attempt: 2,
+        backend_next_retry_unix_ms: Some(4_200),
+        backend_recoverable: true,
     });
     state.record_input_status(flowrt::IntrospectionInputStatus {
         task: "sink.main".to_string(),
@@ -326,6 +331,11 @@ fn live_status_summary_displays_channel_input_and_route_diagnostics() {
     assert!(output.contains("overflow=3"));
     assert!(output.contains("last_publish_ms=120"));
     assert!(output.contains("last_error=queue overflow"));
+    assert!(output.contains("backend_health=reconnecting"));
+    assert!(output.contains("backend_recoverable=true"));
+    assert!(output.contains("backend_reconnect_attempt=2"));
+    assert!(output.contains("backend_next_retry_unix_ms=4200"));
+    assert!(output.contains("backend_health_error=publish Zenoh sample: session closed"));
     assert!(output.contains("input=sink.main.packet"));
     assert!(output.contains("present=false"));
     assert!(output.contains("stale=true"));
@@ -389,6 +399,7 @@ fn live_status_summary_labels_static_facts_and_keeps_live_route_authoritative() 
         overflow_count: 0,
         last_publish_ms: Some(512),
         last_error: None,
+        ..Default::default()
     });
     let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
         .expect("status server should start");
@@ -443,6 +454,7 @@ fn live_status_json_exposes_machine_readable_diagnostics() {
         overflow_count: 3,
         last_publish_ms: Some(120),
         last_error: Some("queue overflow".to_string()),
+        ..Default::default()
     });
     state.record_task_health(flowrt::IntrospectionTaskHealth {
         name: "control.loop".to_string(),
@@ -964,6 +976,7 @@ fn live_hz_summary_includes_route_drop_and_overflow_delta() {
                 overflow_count: 6,
                 last_publish_ms: Some(100),
                 last_error: None,
+                ..Default::default()
             }],
             ..Default::default()
         },
@@ -993,6 +1006,7 @@ fn live_hz_summary_includes_route_drop_and_overflow_delta() {
                 overflow_count: 11,
                 last_publish_ms: Some(200),
                 last_error: None,
+                ..Default::default()
             }],
             ..Default::default()
         },
@@ -1037,6 +1051,7 @@ fn live_hz_summary_includes_route_only_publish_delta() {
                 overflow_count: 0,
                 last_publish_ms: Some(100),
                 last_error: None,
+                ..Default::default()
             }],
             ..Default::default()
         },
@@ -1058,6 +1073,7 @@ fn live_hz_summary_includes_route_only_publish_delta() {
                 overflow_count: 0,
                 last_publish_ms: Some(200),
                 last_error: None,
+                ..Default::default()
             }],
             ..Default::default()
         },

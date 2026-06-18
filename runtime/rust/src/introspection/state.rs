@@ -6,7 +6,10 @@ use flowrt_record::{RecordEntityKind, RecordEnvelope};
 use crate::recorder::{
     RecorderRuntimeMetadata, RecorderStartConfig, RecorderTap, RecorderTapOutcome,
 };
-use crate::{FrameCodec, FrameDescriptor, FrameLeaseStatus, LifecycleState};
+use crate::{
+    BackendHealthSnapshot, BackendHealthState, FrameCodec, FrameDescriptor, FrameLeaseStatus,
+    LifecycleState,
+};
 
 use super::facts::{RuntimeObservabilityFacts, input_status_key};
 use super::model::*;
@@ -656,7 +659,37 @@ impl IntrospectionState {
     pub fn record_route_error(&self, name: impl AsRef<str>, error: impl Into<String>) {
         let mut inner = self.lock_inner();
         let route = route_entry(&mut inner, name.as_ref());
-        route.last_error = Some(error.into());
+        let error = error.into();
+        route.last_error = Some(error.clone());
+        if route.backend_health_state.is_empty() || route.backend_health_state == "ready" {
+            route.backend_health_state = BackendHealthState::Degraded.as_str().to_string();
+            route.backend_health_error = Some(error);
+            route.backend_reconnect_attempt = 0;
+            route.backend_next_retry_unix_ms = None;
+            route.backend_recoverable = true;
+        } else if route.backend_health_error.is_none() {
+            route.backend_health_error = Some(error);
+        }
+    }
+
+    /// 记录 route 当前 backend health 快照。
+    pub fn record_route_backend_health(
+        &self,
+        name: impl AsRef<str>,
+        health: BackendHealthSnapshot,
+    ) {
+        let mut inner = self.lock_inner();
+        let route = route_entry(&mut inner, name.as_ref());
+        route.backend_health_state = health.state.as_str().to_string();
+        route.backend_health_error = health.last_error.clone();
+        route.backend_reconnect_attempt = health.attempt;
+        route.backend_next_retry_unix_ms = health.next_retry_unix_ms;
+        route.backend_recoverable = health.recoverable;
+        if health.state == BackendHealthState::Ready {
+            route.last_error = None;
+        } else if let Some(error) = health.last_error {
+            route.last_error = Some(error);
+        }
     }
 
     /// 预注册一个 I/O boundary，使其在尚未上报 health 前也出现在 status 中。

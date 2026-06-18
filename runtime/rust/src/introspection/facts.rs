@@ -219,6 +219,11 @@ pub(super) fn derive_diagnostic_facts(
     }
 
     for route in &status.routes {
+        let backend_health_state = if route.backend_health_state.is_empty() {
+            "ready"
+        } else {
+            route.backend_health_state.as_str()
+        };
         let has_error = route.last_error.is_some();
         let has_loss =
             route.dropped_samples > 0 || route.backpressure_count > 0 || route.overflow_count > 0;
@@ -228,33 +233,37 @@ pub(super) fn derive_diagnostic_facts(
             metric("backpressure_count", route.backpressure_count),
             metric("overflow_count", route.overflow_count),
             metric("last_publish_ms", route.last_publish_ms),
+            metric("backend_health_state", backend_health_state),
+            metric("backend_health_error", route.backend_health_error.clone()),
+            metric("backend_reconnect_attempt", route.backend_reconnect_attempt),
+            metric(
+                "backend_next_retry_unix_ms",
+                route.backend_next_retry_unix_ms,
+            ),
+            metric("backend_recoverable", route.backend_recoverable),
         ];
         if let (Some(now), Some(last)) = (clock_ms, route.last_publish_ms)
             && now >= last
         {
             metrics.push(metric("latest_age_ms", now - last));
         }
+        let (route_state, severity) = match backend_health_state {
+            "failed" | "unsupported" => (backend_health_state, "error"),
+            "degraded" | "reconnecting" => (backend_health_state, "warn"),
+            _ if has_error => ("error", "error"),
+            _ if has_loss => ("degraded", "warn"),
+            _ => ("selected", "info"),
+        };
         diagnostics.push(diagnostic(
             "route",
             "route",
             &route.name,
-            if has_error {
-                "error"
-            } else if has_loss {
-                "degraded"
-            } else {
-                "selected"
-            },
-            if has_error {
-                "error"
-            } else if has_loss {
-                "warn"
-            } else {
-                "info"
-            },
+            route_state,
+            severity,
             route
-                .last_error
+                .backend_health_error
                 .clone()
+                .or_else(|| route.last_error.clone())
                 .or_else(|| Some(format!("backend selected: {}", route.selected_reason))),
             None,
             None,

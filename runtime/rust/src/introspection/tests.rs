@@ -8,6 +8,8 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+use crate::{BackendHealthSnapshot, BackendHealthState};
+
 use super::*;
 
 #[test]
@@ -1630,6 +1632,7 @@ fn status_derives_structured_diagnostics_from_live_state() {
         overflow_count: 3,
         last_publish_ms: Some(120),
         last_error: Some("queue overflow".to_string()),
+        ..Default::default()
     });
     state.record_input_status(IntrospectionInputStatus {
         task: "sink.main".to_string(),
@@ -1790,6 +1793,83 @@ fn status_derives_structured_diagnostics_from_live_state() {
 }
 
 #[test]
+fn route_backend_health_snapshot_updates_status_and_diagnostics() {
+    let state = IntrospectionState::new();
+    state.register_route(IntrospectionRouteStatus {
+        name: "source.packet_to_sink.packet".to_string(),
+        from: "source.packet".to_string(),
+        to: "sink.packet".to_string(),
+        message_type: "Packet".to_string(),
+        backend: "zenoh".to_string(),
+        selected_reason: "profile_default".to_string(),
+        ..Default::default()
+    });
+    state.record_route_backend_health(
+        "source.packet_to_sink.packet",
+        BackendHealthSnapshot {
+            state: BackendHealthState::Reconnecting,
+            last_error: Some("publish Zenoh sample: session closed".to_string()),
+            attempt: 2,
+            next_retry_unix_ms: Some(4_200),
+            recoverable: true,
+        },
+    );
+
+    let status = state.status();
+    let route = status
+        .routes
+        .iter()
+        .find(|route| route.name == "source.packet_to_sink.packet")
+        .expect("route should be present");
+    assert_eq!(route.backend_health_state, "reconnecting");
+    assert_eq!(
+        route.backend_health_error.as_deref(),
+        Some("publish Zenoh sample: session closed")
+    );
+    assert_eq!(route.backend_reconnect_attempt, 2);
+    assert_eq!(route.backend_next_retry_unix_ms, Some(4_200));
+    assert!(route.backend_recoverable);
+    assert_eq!(
+        route.last_error.as_deref(),
+        Some("publish Zenoh sample: session closed")
+    );
+
+    let route_diagnostic = status
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.category == "route")
+        .expect("route diagnostic should be derived");
+    assert_eq!(route_diagnostic.state, "reconnecting");
+    assert_eq!(route_diagnostic.severity, "warn");
+    assert_eq!(
+        route_diagnostic.reason.as_deref(),
+        Some("publish Zenoh sample: session closed")
+    );
+    assert!(route_diagnostic.metrics.iter().any(|metric| {
+        metric.name == "backend_health_state" && metric.value == serde_json::json!("reconnecting")
+    }));
+    assert!(route_diagnostic.metrics.iter().any(|metric| {
+        metric.name == "backend_recoverable" && metric.value == serde_json::json!(true)
+    }));
+}
+
+#[test]
+fn route_backend_health_ready_clears_active_error() {
+    let state = IntrospectionState::new();
+    state.record_route_error("source.packet_to_sink.packet", "queue overflow");
+    state.record_route_backend_health(
+        "source.packet_to_sink.packet",
+        BackendHealthSnapshot::ready(),
+    );
+
+    let status = state.status();
+    let route = status.routes.first().expect("route should be present");
+    assert_eq!(route.backend_health_state, "ready");
+    assert!(route.backend_health_error.is_none());
+    assert!(route.last_error.is_none());
+}
+
+#[test]
 fn recorder_captures_diagnostics_events_from_status() {
     let state = IntrospectionState::new();
     state.start_recorder(IntrospectionRecorderStart {
@@ -1938,6 +2018,7 @@ fn health_fields_serialize_roundtrip() {
             overflow_count: 3,
             last_publish_ms: Some(995),
             last_error: Some("queue overflow".to_string()),
+            ..Default::default()
         }],
         io_boundaries: vec![IntrospectionIoBoundaryStatus {
             name: "camera".to_string(),

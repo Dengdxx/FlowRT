@@ -403,6 +403,11 @@ void assert_status_json_schema_parity_fixture() {
         .overflow_count = 3,
         .last_publish_ms = std::optional<std::uint64_t>{120U},
         .last_error = std::optional<std::string>{"queue overflow"},
+        .backend_health_state = "reconnecting",
+        .backend_health_error = std::optional<std::string>{"publish Zenoh sample: session closed"},
+        .backend_reconnect_attempt = 2,
+        .backend_next_retry_unix_ms = std::optional<std::uint64_t>{4200U},
+        .backend_recoverable = true,
     });
     status.processes.push_back(flowrt::IntrospectionProcessStatus{
         .name = "sensors",
@@ -467,6 +472,11 @@ void assert_status_json_schema_parity_fixture() {
     assert_number_field(route, "overflow_count", "3");
     assert_number_field(route, "last_publish_ms", "120");
     assert_string_field(route, "last_error", "queue overflow");
+    assert_string_field(route, "backend_health_state", "reconnecting");
+    assert_string_field(route, "backend_health_error", "publish Zenoh sample: session closed");
+    assert_number_field(route, "backend_reconnect_attempt", "2");
+    assert_number_field(route, "backend_next_retry_unix_ms", "4200");
+    assert_bool_field(route, "backend_recoverable", true);
 
     const auto &process = array_item(object_field(parsed, "processes"), 0);
     assert_string_field(process, "name", "sensors");
@@ -491,10 +501,55 @@ void assert_status_json_schema_parity_fixture() {
     assert_number_field(metric, "value", "2");
 }
 
+void assert_route_backend_health_derives_diagnostics() {
+    flowrt::IntrospectionState state;
+    state.record_tick(250U, "simulated_replay");
+    state.register_route(flowrt::IntrospectionRouteStatus{
+        .name = "source.packet_to_sink.packet",
+        .from = "source.packet",
+        .to = "sink.packet",
+        .message_type = "Packet",
+        .backend = "zenoh",
+        .selected_reason = "profile_default",
+    });
+    state.record_route_backend_health(
+        "source.packet_to_sink.packet",
+        flowrt::BackendHealthSnapshot{
+            .state = flowrt::BackendHealthState::Reconnecting,
+            .last_error = std::optional<std::string>{"publish Zenoh sample: session closed"},
+            .attempt = 2,
+            .next_retry_unix_ms = std::optional<std::uint64_t>{4200U},
+            .recoverable = true,
+        });
+
+    const auto status = state.status();
+    const auto route = std::find_if(
+        status.routes.begin(), status.routes.end(),
+        [](const auto &candidate) { return candidate.name == "source.packet_to_sink.packet"; });
+    assert(route != status.routes.end());
+    assert(route->backend_health_state == "reconnecting");
+    assert(route->backend_health_error ==
+           std::optional<std::string>{"publish Zenoh sample: session closed"});
+    assert(route->backend_reconnect_attempt == 2U);
+    assert(route->backend_next_retry_unix_ms == std::optional<std::uint64_t>{4200U});
+    assert(route->backend_recoverable);
+
+    const auto diagnostic =
+        std::find_if(status.diagnostics.begin(), status.diagnostics.end(), [](const auto &item) {
+            return item.category == "route" && item.entity_id == "source.packet_to_sink.packet";
+        });
+    assert(diagnostic != status.diagnostics.end());
+    assert(diagnostic->state == "reconnecting");
+    assert(diagnostic->severity == "warn");
+    assert(diagnostic->reason ==
+           std::optional<std::string>{"publish Zenoh sample: session closed"});
+}
+
 }  // namespace
 
 int main() {
     assert_status_json_schema_parity_fixture();
+    assert_route_backend_health_derives_diagnostics();
 
     {
         auto active = std::make_shared<std::atomic_size_t>(0U);
@@ -669,8 +724,8 @@ int main() {
     });
     sample_time_state.register_boundary_input_handler(
         "imu_in", "ImuSample",
-        [](std::span<const std::uint8_t> payload, std::optional<std::uint64_t>)
-            -> std::variant<std::uint64_t, std::string> {
+        [](std::span<const std::uint8_t> payload,
+           std::optional<std::uint64_t>) -> std::variant<std::uint64_t, std::string> {
             (void)payload;
             return 1U;
         },

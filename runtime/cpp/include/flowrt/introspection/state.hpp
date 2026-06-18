@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <flowrt/backend_health.hpp>
 #include <flowrt/core.hpp>
 #include <flowrt/introspection/json.hpp>
 #include <flowrt/introspection/probe.hpp>
@@ -65,6 +66,89 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 预注册一条 route，使 backend 选择原因和传输健康进入 live status。
+     */
+    void register_route(IntrospectionRouteStatus status) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        const auto key = status.name;
+        inner_->routes.insert_or_assign(key, std::move(status));
+    }
+
+    /**
+     * @brief 记录 route 成功发布或进入传输路径。
+     */
+    void record_route_publish(std::string_view name,
+                              std::optional<std::uint64_t> published_at_ms) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        route.published_count += 1U;
+        route.last_publish_ms = published_at_ms;
+    }
+
+    /**
+     * @brief 记录 route drop。
+     */
+    void record_route_drop(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        route.dropped_samples += 1U;
+    }
+
+    /**
+     * @brief 记录 route backpressure。
+     */
+    void record_route_backpressure(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        route.backpressure_count += 1U;
+    }
+
+    /**
+     * @brief 记录 route overflow。
+     */
+    void record_route_overflow(std::string_view name) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        route.overflow_count += 1U;
+    }
+
+    /**
+     * @brief 记录 route/backend 最近错误。
+     */
+    void record_route_error(std::string_view name, std::string error) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        route.last_error = error;
+        if (route.backend_health_state.empty() || route.backend_health_state == "ready") {
+            route.backend_health_state = "degraded";
+            route.backend_health_error = std::move(error);
+            route.backend_reconnect_attempt = 0;
+            route.backend_next_retry_unix_ms = std::nullopt;
+            route.backend_recoverable = true;
+        } else if (!route.backend_health_error) {
+            route.backend_health_error = std::move(error);
+        }
+    }
+
+    /**
+     * @brief 记录 route 当前 backend health 快照。
+     */
+    void record_route_backend_health(std::string_view name, BackendHealthSnapshot health) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        auto &route = route_entry_locked(std::string{name});
+        route.backend_health_state = std::string{backend_health_state_str(health.state)};
+        route.backend_health_error = health.last_error;
+        route.backend_reconnect_attempt = health.attempt;
+        route.backend_next_retry_unix_ms = health.next_retry_unix_ms;
+        route.backend_recoverable = health.recoverable;
+        if (health.state == BackendHealthState::Ready) {
+            route.last_error = std::nullopt;
+        } else if (health.last_error) {
+            route.last_error = std::move(health.last_error);
+        }
+    }
+
+    /**
      * @brief 注册一个 runtime 参数，使 CLI 能查询并提交 pending 更新。
      */
     void register_param(IntrospectionParamSchema schema) const {
@@ -120,9 +204,10 @@ class IntrospectionState {
     /**
      * @brief 注册带 sensor sample-time 提取器的 typed `BoundaryInput<T>`。
      *
-     * `sample_time_ns_fn` 从 canonical frame payload 读出 sample-time（纳秒）——由生成 shell 对声明了
-     * timestamp 源的 boundary 提供。录制该 boundary 激励时填入 envelope.sample_time_ns，供 event-time
-     * 回放按 sensor 采集时刻步进。与 Rust register_boundary_input_with_sample_time 对齐。
+     * `sample_time_ns_fn` 从 canonical frame payload 读出 sample-time（纳秒）——由生成 shell
+     * 对声明了 timestamp 源的 boundary 提供。录制该 boundary 激励时填入 envelope.sample_time_ns，供
+     * event-time 回放按 sensor 采集时刻步进。与 Rust register_boundary_input_with_sample_time
+     * 对齐。
      */
     template <CanonicalTransportMessage T>
     void register_boundary_input_with_sample_time(std::string endpoint, std::string message_type,
@@ -868,6 +953,10 @@ class IntrospectionState {
                 .dropped_samples = channel.probe.dropped_samples(),
             });
         }
+        snapshot.routes.reserve(inner_->routes.size());
+        for (const auto &[name, route] : inner_->routes) {
+            snapshot.routes.push_back(route);
+        }
         snapshot.io_boundaries.reserve(inner_->io_boundaries.size());
         for (const auto &[name, boundary] : inner_->io_boundaries) {
             snapshot.io_boundaries.push_back(boundary);
@@ -1146,6 +1235,7 @@ class IntrospectionState {
         IntrospectionClockStatus clock;
         std::optional<std::string> self_description_json;
         std::map<std::string, ChannelState> channels;
+        std::map<std::string, IntrospectionRouteStatus> routes;
         std::map<std::string, ParamState> params;
         std::map<std::string, BoundaryInputState> boundary_inputs;
         std::map<std::string, IntrospectionResourceStatus> resources;
@@ -1174,6 +1264,29 @@ class IntrospectionState {
 
     static std::vector<std::uint8_t> string_bytes(std::string_view value) {
         return std::vector<std::uint8_t>{value.begin(), value.end()};
+    }
+
+    IntrospectionRouteStatus &route_entry_locked(std::string name) const {
+        auto [it, inserted] =
+            inner_->routes.try_emplace(name, IntrospectionRouteStatus{.name = name});
+        (void)inserted;
+        return it->second;
+    }
+
+    static std::string_view backend_health_state_str(BackendHealthState state) {
+        switch (state) {
+            case BackendHealthState::Ready:
+                return "ready";
+            case BackendHealthState::Degraded:
+                return "degraded";
+            case BackendHealthState::Reconnecting:
+                return "reconnecting";
+            case BackendHealthState::Failed:
+                return "failed";
+            case BackendHealthState::Unsupported:
+                return "unsupported";
+        }
+        return "unsupported";
     }
 
     static std::optional<std::string> instance_from_endpoint(std::string_view name) {
@@ -1443,6 +1556,63 @@ class IntrospectionState {
                  metric("dropped_samples", std::to_string(channel.dropped_samples))}));
         }
 
+        for (const auto &route : status.routes) {
+            const auto backend_health_state = route.backend_health_state.empty()
+                                                  ? std::string{"ready"}
+                                                  : route.backend_health_state;
+            const bool has_error = route.last_error.has_value();
+            const bool has_loss = route.dropped_samples != 0U || route.backpressure_count != 0U ||
+                                  route.overflow_count != 0U;
+            std::string route_state = "selected";
+            std::string severity = "info";
+            if (backend_health_state == "failed" || backend_health_state == "unsupported") {
+                route_state = backend_health_state;
+                severity = "error";
+            } else if (backend_health_state == "degraded" ||
+                       backend_health_state == "reconnecting") {
+                route_state = backend_health_state;
+                severity = "warn";
+            } else if (has_error) {
+                route_state = "error";
+                severity = "error";
+            } else if (has_loss) {
+                route_state = "degraded";
+                severity = "warn";
+            }
+            auto reason =
+                route.backend_health_error ? route.backend_health_error : route.last_error;
+            if (!reason) {
+                reason = "backend selected: " + route.selected_reason;
+            }
+            auto metrics = std::vector<IntrospectionDiagnosticMetric>{
+                metric("published_count", std::to_string(route.published_count)),
+                metric("dropped_samples", std::to_string(route.dropped_samples)),
+                metric("backpressure_count", std::to_string(route.backpressure_count)),
+                metric("overflow_count", std::to_string(route.overflow_count)),
+                metric("last_publish_ms", optional_u64_metric(route.last_publish_ms)),
+                metric("backend_health_state", detail::json_string(backend_health_state)),
+                metric("backend_health_error", optional_string_metric(route.backend_health_error)),
+                metric("backend_reconnect_attempt",
+                       std::to_string(route.backend_reconnect_attempt)),
+                metric("backend_next_retry_unix_ms",
+                       optional_u64_metric(route.backend_next_retry_unix_ms)),
+                metric("backend_recoverable", bool_metric(route.backend_recoverable)),
+                metric("backend", detail::json_string(route.backend)),
+                metric("selected_reason", detail::json_string(route.selected_reason)),
+            };
+            if (status.clock.tick_time_ms && route.last_publish_ms &&
+                *status.clock.tick_time_ms >= *route.last_publish_ms) {
+                metrics.push_back(
+                    metric("latest_age_ms",
+                           std::to_string(*status.clock.tick_time_ms - *route.last_publish_ms)));
+            }
+            diagnostics.push_back(diagnostic(
+                "route", "route", route.name, route_state, severity, reason, std::nullopt,
+                std::nullopt,
+                route.last_publish_ms ? route.last_publish_ms : status.clock.tick_time_ms,
+                std::move(metrics)));
+        }
+
         for (const auto &resource : status.resources) {
             const bool satisfied = resource.satisfied.value_or(resource.state == "ready");
             const auto severity =
@@ -1586,27 +1756,24 @@ class IntrospectionState {
         }
 
         for (const auto &instance : status.instances) {
-            const auto severity = instance.lifecycle_state == "faulted" ? "error"
-                                  : instance.lifecycle_state == "degraded"
-                                      ? "warn"
-                                      : "info";
-            diagnostics.push_back(diagnostic("lifecycle", "instance", instance.instance,
-                                             instance.lifecycle_state, severity, std::nullopt,
-                                             std::nullopt, std::nullopt, status.clock.tick_time_ms,
-                                             {}));
+            const auto severity = instance.lifecycle_state == "faulted"    ? "error"
+                                  : instance.lifecycle_state == "degraded" ? "warn"
+                                                                           : "info";
+            diagnostics.push_back(diagnostic(
+                "lifecycle", "instance", instance.instance, instance.lifecycle_state, severity,
+                std::nullopt, std::nullopt, std::nullopt, status.clock.tick_time_ms, {}));
         }
 
         // graph_health 诊断仅在有实例可聚合时派生（与 per-instance lifecycle 诊断一致）；
         // graph_health 字段本身始终存在（默认 healthy）。
         if (!status.instances.empty()) {
             const auto graph_health = graph_health_label(status.instances);
-            const auto graph_severity = graph_health == "faulted" ? "error"
+            const auto graph_severity = graph_health == "faulted"    ? "error"
                                         : graph_health == "degraded" ? "warn"
                                                                      : "info";
-            diagnostics.push_back(diagnostic("graph_health", "graph", "graph",
-                                             std::string{graph_health}, graph_severity, std::nullopt,
-                                             std::nullopt, std::nullopt, status.clock.tick_time_ms,
-                                             {}));
+            diagnostics.push_back(diagnostic(
+                "graph_health", "graph", "graph", std::string{graph_health}, graph_severity,
+                std::nullopt, std::nullopt, std::nullopt, status.clock.tick_time_ms, {}));
         }
         return diagnostics;
     }

@@ -4,6 +4,25 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
+## 未发布
+
+## v0.23.1 - 2026-06-19
+
+### 变更
+
+- route backend health 统一进入 introspection route facts：`IntrospectionRouteStatus` 新增
+  `backend_health_state`、`backend_health_error`、`backend_reconnect_attempt`、
+  `backend_next_retry_unix_ms` 和 `backend_recoverable`，`flowrt status` route 行同步展示
+  `iox2` / `zenoh` endpoint 当前恢复状态。
+- Rust generated shell 在 `iox2` / `zenoh` dataflow publish 后记录 endpoint
+  `BackendHealthSnapshot`，publish error 不再只留下粗粒度 `last_error`；C++ runtime
+  introspection JSON 和 route diagnostics 派生保持同字段 parity。
+
+### 测试
+
+- 新增 `v0.23.1 Route Health Smoke` focused smoke，覆盖 Rust route facts、CLI route health
+  输出、Rust codegen transport publish health 接线和 C++ introspection parity。
+
 ## v0.23.0 - 2026-06-18
 
 Generated Service over zenoh：native Rust/C++ generated Service 不再只支持 inproc，同一

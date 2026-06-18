@@ -5,10 +5,25 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.23.0`；当前发布线为 `v0.23.0 Zenoh Service Transport`：
-native Rust/C++ generated Service 不再只支持 inproc，同一 Contract IR 的 request/response
-bind 可以跨进程走 zenoh transport，并在 self-description 与 launch manifest 中暴露
-真实 request key expression。
+当前 workspace 版本为 `0.23.1`；当前发布收口为
+`v0.23.1 Backend Route Health Unification`：dataflow route 的 backend health
+进入统一 introspection route facts，`iox2` / `zenoh` endpoint 的恢复状态不再只停留在
+独立 `BackendHealthTracker` 内部。
+
+- `IntrospectionRouteStatus` 新增 `backend_health_state`、`backend_health_error`、
+  `backend_reconnect_attempt`、`backend_next_retry_unix_ms` 和 `backend_recoverable`；
+  `flowrt status` route 行同步展示这些字段。
+- Rust generated shell 在 `iox2` / `zenoh` dataflow publish 后读取 endpoint
+  `BackendHealthSnapshot` 并写入 route facts；publish error 继续记录 `last_error`，但不再
+  覆盖 endpoint 已推导出的 reconnect attempt / recoverable 状态。
+- C++ runtime introspection JSON 和 route diagnostics 派生镜像新增字段，保持 Rust/C++
+  status schema parity。
+- 新增 `v0.23.1 Route Health Smoke` focused smoke，覆盖 Rust route facts、CLI 输出、
+  Rust codegen transport publish health 接线和 C++ introspection parity。
+
+上一发布线为 `v0.23.0 Zenoh Service Transport`：native Rust/C++ generated Service 不再只
+支持 inproc，同一 Contract IR 的 request/response bind 可以跨进程走 zenoh transport，并在
+self-description 与 launch manifest 中暴露真实 request key expression。
 
 - Rust codegen 为 `backend = "zenoh"` 的 service client 生成按进程填充的
   `ZenohServiceClient` typed handle；server 进程在组件启动后打开 `ZenohServiceServer`，
@@ -44,11 +59,9 @@ ABI/schema 冻结后被绑死。每债还时口径不变：要么完整端到端
 
 **波次 1 — 快还硬化（下个 patch 线）**：边界清晰、无新大语义。
 
-- debt 6 backend route health 统一：当前 iox2/zenoh 走独立 `BackendHealthTracker`
-  (`runtime/rust/src/iox2.rs`)，route 计数只在 `introspection/probe.rs` 自增，两套分裂。
-  还法是把 route-level publish error、backpressure、recovery state 归并进
-  `introspection/facts.rs` 同一事实源，selfdesc/status 统一暴露。中小重构，golden +
-  status smoke 把关。
+- debt 6 backend route health 统一：已在 `v0.23.1` 收口。route-level publish
+  error、backpressure、recovery state 归并进 `introspection/facts.rs` 同一事实源，
+  `status` / diagnostics 统一暴露，并由 focused smoke 把关。
 - debt 4 C++ `clang-tidy` gate：卡在本机无 clang-tidy 工具。还法是 CI 容器装
   clang-tidy → 接一个 C++ 生成工程 lint job → 修 findings（数量未知，可能 1-2 轮）。
   设计为零，工程量取决于 findings；不单独占大版本。
@@ -640,6 +653,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.22.0` | Deterministic Fault Injection：test-only 注入 overlay 在 `(instance, task, 第 N 次调用)` 锚点强制 `Status::Error`，跑遍 0.21.x 全部故障反应策略并验证可复现。codegen 两语言 per-task 计数器 + 注入门（gated，非注入字节不漂移）；validator 守 scheduled-only / ≥1 boundary input(island) / 单进程 / canonical；golden + 编译网 + focused smoke。确定性经 golden 锁定的计数驱动门 ∘ v0.17/v0.18 回放内核证明，不另做 CLI MCAP 往返。Error-only、单进程、startup/shutdown 与跨进程注入留待后续。 |
 | `v0.22.1` | Reserved Keyword Naming：validator 拒绝 field / port / service port / operation port / instance / task 等生成代码标识符撞 Rust 2024 或 C++ 保留关键字，保留 `profile.default` 等非标识符名称合法。focused smoke 接入 release gate。 |
 | `v0.23.0` | Zenoh Service Transport：native Rust/C++ generated Service 支持跨进程 zenoh request/response，生成 typed `ZenohServiceClient` / `ZenohServiceServer` 接线；validator 要求 zenoh server component `concurrency = "parallel"`；manifest/self-description 暴露 service `key_expr`；新增 `zenoh_service_{rust,cpp}` golden、`examples/zenoh_service_demo` 和 focused smoke。Operation zenoh 仍 fail-fast。 |
+| `v0.23.1` | Backend Route Health Unification：`iox2` / `zenoh` dataflow route 的 endpoint `BackendHealthSnapshot` 进入 introspection route facts，`flowrt status` route 行展示 `backend_health_state`、错误、重连 attempt、下一次 retry 和 recoverable 状态；Rust generated shell 在 transport publish 后记录 route backend health，C++ runtime JSON / diagnostics 镜像字段；新增 route health focused smoke。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -1325,14 +1339,16 @@ release 只消费同一 commit SHA 的 push CI release evidence，以及本地 h
 fixture 时间驱动 simulated replay clock。`v0.23.0 Zenoh Service Smoke` 覆盖 zenoh
 service validator server parallel gate、Rust/C++ generated endpoint 接线、golden、CLI
 self-description service `key_expr` 展示、示例 `check/prepare` 和 manifest/self-description
-`key_expr`。
+`key_expr`。`v0.23.1 Route Health Smoke` 覆盖 Rust route backend health facts、CLI
+route health 输出、Rust codegen transport publish health 接线和 C++ introspection parity。
 发布前应运行
 `scripts/check-architecture-contract.sh`、`scripts/check-release-readiness.sh <version>` 和
 `scripts/check-release-candidate.sh <version> --wait --ref dev/v<version>`；
 脚本会汇总版本来源、CHANGELOG 段、release notes 抽取、release gate registry、
 release evidence 门禁和
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 / v0.9.x / v0.10.2 /
-v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 / v0.15.1 / v0.15.2 / v0.23.0
+v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 / v0.15.1 / v0.15.2 / v0.23.0 /
+v0.23.1
 focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、

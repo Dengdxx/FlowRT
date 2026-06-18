@@ -76,6 +76,11 @@ struct IntrospectionRouteStatus {
     std::uint64_t overflow_count = 0;
     std::optional<std::uint64_t> last_publish_ms;
     std::optional<std::string> last_error;
+    std::string backend_health_state = "ready";
+    std::optional<std::string> backend_health_error;
+    std::uint32_t backend_reconnect_attempt = 0;
+    std::optional<std::uint64_t> backend_next_retry_unix_ms;
+    bool backend_recoverable = false;
 };
 
 /**

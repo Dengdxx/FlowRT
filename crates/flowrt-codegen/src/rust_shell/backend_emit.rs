@@ -149,7 +149,7 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
     let route_name = crate::rust_string_literal(&runtime_channel_name(bind));
     if matches!(bind_backend(bind), "iox2" | "zenoh") {
         return format!(
-            "            if let Err(error) = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
+            "            let mut __flowrt_route = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n            let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);\n            let __flowrt_route_health = __flowrt_route.health();\n            drop(__flowrt_route);\n            introspection_state.record_route_backend_health({route_name}, __flowrt_route_health);\n            if let Err(error) = __flowrt_publish_result {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n            scheduler_events.notify_data();\n{introspection_record}",
             field = bind.field_name,
             route_name = route_name,
         );
@@ -185,7 +185,7 @@ fn runtime_channel_write_inner(bind: &BindRuntimePlan, task_health_name: Option<
 pub(super) fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String {
     let route_name = crate::rust_string_literal(&bridge.name);
     format!(
-        "            if let Err(error) = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n",
+        "            let mut __flowrt_route = self.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n            let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);\n            let __flowrt_route_health = __flowrt_route.health();\n            drop(__flowrt_route);\n            introspection_state.record_route_backend_health({route_name}, __flowrt_route_health);\n            if let Err(error) = __flowrt_publish_result {{\n                introspection_state.record_route_error({route_name}, error.to_string());\n                return flowrt::Status::Error;\n            }}\n            introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n",
         field = bridge.field_name,
         route_name = route_name,
     )
@@ -194,7 +194,7 @@ pub(super) fn bridge_runtime_channel_write(bridge: &BridgeRuntimePlan) -> String
 pub(super) fn bridge_runtime_channel_commit(bridge: &BridgeRuntimePlan) -> String {
     let route_name = crate::rust_string_literal(&bridge.name);
     format!(
-        "            let value = value.clone();\n            __flowrt_output_commits.push(Box::new(move |app, introspection_state, _scheduler_events, _health_map| {{\n                if let Err(error) = app.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at(value.clone(), tick_time_ms) {{\n                    introspection_state.record_route_error({route_name}, error.to_string());\n                    return flowrt::Status::Error;\n                }}\n                introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                flowrt::Status::Ok\n            }}));\n",
+        "            let value = value.clone();\n            __flowrt_output_commits.push(Box::new(move |app, introspection_state, _scheduler_events, _health_map| {{\n                let mut __flowrt_route = app.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                let __flowrt_publish_result = __flowrt_route.publish_at(value.clone(), tick_time_ms);\n                let __flowrt_route_health = __flowrt_route.health();\n                drop(__flowrt_route);\n                introspection_state.record_route_backend_health({route_name}, __flowrt_route_health);\n                if let Err(error) = __flowrt_publish_result {{\n                    introspection_state.record_route_error({route_name}, error.to_string());\n                    return flowrt::Status::Error;\n                }}\n                introspection_state.record_route_publish({route_name}, Some(tick_time_ms));\n                flowrt::Status::Ok\n            }}));\n",
         field = bridge.field_name,
         route_name = route_name,
     )
