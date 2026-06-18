@@ -53,6 +53,30 @@ struct PeriodicSpec {
 };
 
 /**
+ * @brief 外部 global tick 协调器授予单进程 runtime shell 的一步执行许可。
+ */
+struct ExternalTick {
+    std::uint64_t tick_id{0};          ///< 全局 tick 序号，由 coordinator 分配。
+    std::uint64_t logical_time_ms{0};  ///< 本 tick 对应的逻辑毫秒时间。
+};
+
+/**
+ * @brief runtime shell 完成外部 tick 后回报给 coordinator 的结果。
+ */
+struct ExternalTickReport {
+    std::uint64_t tick_id{0};   ///< 完成的 tick 序号。
+    Status status{Status::Ok};  ///< 本 tick 的 FlowRT 执行状态。
+
+    static constexpr ExternalTickReport make(std::uint64_t tick_id, Status status) noexcept {
+        return ExternalTickReport{.tick_id = tick_id, .status = status};
+    }
+
+    static constexpr ExternalTickReport ok(std::uint64_t tick_id) noexcept {
+        return make(tick_id, Status::Ok);
+    }
+};
+
+/**
  * @brief 一次 task admission 的调度元数据。
  *
  * generated shell 用这些字段构造 `TaskTiming`，并在 worker completion 回来后调用

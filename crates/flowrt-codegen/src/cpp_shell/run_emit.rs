@@ -30,6 +30,13 @@ pub(super) struct CppRunEmission<'a> {
     pub(super) process: Option<&'a ProcessRuntimePlan<'a>>,
     pub(super) package_name: &'a str,
     pub(super) process_name: &'a str,
+    pub(super) mode: CppRunMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CppRunMode {
+    SchedulerLoop,
+    ExternalTick,
 }
 
 /// 为本进程内的反馈边 channel 播种初值（消息值初始化），与 Rust 侧一致。反馈边按单位延迟
@@ -77,10 +84,24 @@ fn emit_cpp_feedback_channel_seed(
 
 pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     let mut output = String::new();
-    output.push_str(&format!(
-        "flowrt::Status App::{}(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks) {{\n    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
-        run.function_name
-    ));
+    match run.mode {
+        CppRunMode::SchedulerLoop => output.push_str(&format!(
+            "flowrt::Status App::{}(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks) {{\n",
+            run.function_name
+        )),
+        CppRunMode::ExternalTick => output.push_str(&format!(
+            "flowrt::Status App::{}(const flowrt::Backend& backend, flowrt::ExternalTick grant) {{\n",
+            run.function_name
+        )),
+    }
+    output.push_str(
+        "    flowrt::Context lifecycle_context;\n    auto status = flowrt::Status::Ok;\n",
+    );
+    if run.mode == CppRunMode::ExternalTick {
+        output.push_str(
+            "    if (grant.tick_id > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() - std::size_t{1})) {\n        return flowrt::Status::Error;\n    }\n    const auto flowrt_external_tick_base = static_cast<std::size_t>(grant.tick_id);\n    const std::optional<std::size_t> run_ticks{flowrt_external_tick_base + std::size_t{1}};\n",
+        );
+    }
     output.push_str("    (void)backend;\n");
     output.push_str("    auto shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
@@ -281,6 +302,7 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
         .filter(|task| task.kind == SchedulerHiddenTaskKind::Operation)
         .collect::<Vec<_>>();
     let mut output = String::new();
+    let external_tick = run.mode == CppRunMode::ExternalTick;
     let worker_threads = scheduler_plan.worker_threads;
     output.push_str(&format!(
         "    flowrt::DeterministicExecutor scheduler{{{worker_threads}}};\n    flowrt::WorkerPool worker_pool{{{worker_threads}}};\n",
@@ -349,14 +371,26 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     let task_health_init = emit_cpp_task_health_init(&scheduler_plan.dataflow_tasks);
     let clock_source = cpp_scheduler_clock_source(run.contract);
     let task_clock_source = cpp_task_clock_source_expr(run.contract);
-    output.push_str(
-        "    std::size_t tick_base = 0;\n    std::uint64_t scheduler_now_ms = 0;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n",
-    );
-    output.push_str(&cpp_scheduler_clock_init(run.contract));
-    output.push_str(&cpp_scheduler_replay_driver_init(
-        run.contract,
-        run.boundaries,
+    let tick_base_init = if external_tick {
+        "flowrt_external_tick_base"
+    } else {
+        "0"
+    };
+    let scheduler_now_init = if external_tick {
+        "grant.logical_time_ms"
+    } else {
+        "0"
+    };
+    output.push_str(&format!(
+        "    std::size_t tick_base = {tick_base_init};\n    std::uint64_t scheduler_now_ms = {scheduler_now_init};\n    std::map<std::string, flowrt::IntrospectionTaskHealth> health_map;\n    constexpr std::uint64_t fairness_starvation_threshold = 10;\n",
     ));
+    if !external_tick {
+        output.push_str(&cpp_scheduler_clock_init(run.contract));
+        output.push_str(&cpp_scheduler_replay_driver_init(
+            run.contract,
+            run.boundaries,
+        ));
+    }
     output.push_str(&format!(
         "    const auto clock_source = std::string_view{{{}}};\n",
         cpp_string_literal(clock_source)
@@ -364,6 +398,9 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     output.push_str(&format!(
         "    const auto task_clock_source = {task_clock_source};\n    flowrt::WorkerCompletionQueue<std::vector<FlowrtOutputCommit>> task_completion_queue;\n    task_completion_queue.set_wake_callback([&scheduler_events]() {{ scheduler_events.notify_data(); }});\n    std::deque<flowrt::TaskId> pending_task_order;\n    std::map<flowrt::TaskId, flowrt::TaskRunOutput<std::vector<FlowrtOutputCommit>>> pending_task_results;\n    std::map<flowrt::TaskId, flowrt::TaskAdmission> pending_task_admissions;\n    std::mutex task_health_mutex;\n    std::map<std::string, flowrt::IntrospectionTaskHealth> task_health_from_workers;\n    std::map<flowrt::TaskId, std::uint64_t> task_last_scheduled_time_ms;\n    std::map<flowrt::TaskId, std::uint64_t> task_last_observed_time_ms;\n"
     ));
+    if external_tick {
+        output.push_str("    (void)scheduler_base_period_ms;\n");
+    }
     output.push_str(&emit_cpp_fault_state_decls(&recoverable, graph_stop));
     output.push_str(&emit_cpp_injection_counter_decls(
         run.contract,
@@ -372,7 +409,9 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     output.push_str(
         "    while (status == flowrt::Status::Ok && !shutdown.is_requested() && ((!run_ticks.has_value() || tick_base < *run_ticks) || !pending_task_order.empty())) {\n        std::uint64_t observed_data_generation = scheduler_events.data_generation();\n",
     );
-    output.push_str(&cpp_scheduler_data_time_update(run.contract, "        "));
+    if !external_tick {
+        output.push_str(&cpp_scheduler_data_time_update(run.contract, "        "));
+    }
     output.push_str(
         "        const auto tick_time_ms = scheduler_now_ms;\n        scheduler.advance_to(std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(tick_time_ms)});\n        scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));\n",
     );
@@ -569,7 +608,11 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             } else {
                 ""
             },
-            advance_block = cpp_scheduler_advance_block(run.contract, &cpp_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks))
+            advance_block = if external_tick {
+                String::new()
+            } else {
+                cpp_scheduler_advance_block(run.contract, &cpp_next_periodic_deadline_expr(&scheduler_plan.dataflow_tasks))
+            }
         )
         .replace(
             "case flowrt::ScheduleEvent::Data:\n                    break;",

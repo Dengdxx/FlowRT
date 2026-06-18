@@ -80,6 +80,12 @@ void assert_capabilities_equal(flowrt::BackendCapabilities capabilities,
 
 int main() {
     static_assert(flowrt::ok() == flowrt::Status::Ok);
+    {
+        flowrt::ExternalTick grant{.tick_id = 1, .logical_time_ms = 1};
+        auto report = flowrt::ExternalTickReport::ok(grant.tick_id);
+        assert(report.tick_id == 1);
+        assert(report.status == flowrt::Status::Ok);
+    }
     static_assert(FLOWRT_ABI_VERSION_MAJOR == 0U);
     static_assert(FLOWRT_ABI_VERSION_MINOR == 2U);
     static_assert(sizeof(flowrt_status_t) == sizeof(std::uint32_t));

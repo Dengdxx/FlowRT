@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ChannelKind, ComponentIr, ComponentKind, ContractIr, GraphFaultReaction, GraphIr,
-    InstanceFailurePolicy, InstanceIr, IoBoundaryReadiness, LanguageKind,
+    ChannelKind, ComponentIr, ComponentKind, ContractIr, DeterminismMode, GraphFaultReaction,
+    GraphIr, InstanceFailurePolicy, InstanceIr, IoBoundaryReadiness, LanguageKind,
     OperationConcurrencyPolicy, OperationPreemptPolicy, ParamIr, ParamType, ParamUpdatePolicy,
     ParamValue, PortIr, Ros2BridgeDirection, StalePolicy as IrStalePolicy,
 };
@@ -75,6 +75,13 @@ fn contract_has_cpp_components(contract: &ContractIr) -> bool {
         .components
         .iter()
         .any(|component| component.language == LanguageKind::Cpp)
+}
+
+fn selected_profile_uses_global_tick(contract: &ContractIr) -> bool {
+    contract
+        .profiles
+        .first()
+        .is_some_and(|profile| profile.determinism.mode == DeterminismMode::GlobalTick)
 }
 
 fn topo_order_instances_for_cpp_shell<'a>(
@@ -244,6 +251,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     let outgoing_bridge_indices = outgoing_bridge_indices_map(&bridge_plans);
     let outgoing_boundary_indices = outgoing_boundary_indices_map(&boundary_plans);
     let selected_backend = selected_backend_name(contract);
+    let global_tick = selected_profile_uses_global_tick(contract);
 
     let mut output = managed_header();
     output.push_str("#include \"flowrt_app/runtime_shell.hpp\"\n\n");
@@ -400,7 +408,26 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         process: None,
         package_name: &contract.package.name,
         process_name: "main",
+        mode: CppRunMode::SchedulerLoop,
     }));
+    if global_tick {
+        output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
+            contract,
+            function_name: "run_tick",
+            step_function_name: "step",
+            startup_function_name: "step_startup",
+            shutdown_function_name: "step_shutdown",
+            order: &order,
+            binds: &bind_plans,
+            bridges: &bridge_plans,
+            boundaries: &boundary_plans,
+            graph,
+            process: None,
+            package_name: &contract.package.name,
+            process_name: "main",
+            mode: CppRunMode::ExternalTick,
+        }));
+    }
     output.push_str(&emit_cpp_app_run_process_dispatch(&process_plans));
     for process in &process_plans {
         let function_name = format!("run_process_{}", process.method_suffix);
@@ -421,6 +448,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
             process: Some(process),
             package_name: &contract.package.name,
             process_name: &process.name,
+            mode: CppRunMode::SchedulerLoop,
         }));
     }
     let backend_factory = cpp_backend_factory(&selected_backend);
@@ -429,6 +457,11 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     } else {
         "flowrt_app::App()"
     };
+    if global_tick {
+        output.push_str(&format!(
+            "flowrt::ExternalTickReport flowrt_run_tick(flowrt::ExternalTick grant) {{\n    auto backend = {backend_factory};\n    const auto status = {app_expr}.run_tick(backend, grant);\n    return flowrt::ExternalTickReport{{.tick_id = grant.tick_id, .status = status}};\n}}\n\n"
+        ));
+    }
     output.push_str(
         &format!(
         "flowrt::Status run(std::optional<std::size_t> run_ticks) {{\n    auto backend = {backend_factory};\n    return {app_expr}.run(backend, run_ticks);\n}}\n\n"
@@ -450,6 +483,7 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let bind_plans = bind_runtime_plans(contract, graph);
     let bridge_plans = bridge_runtime_plans(contract, graph);
     let boundary_plans = boundary_runtime_plans(graph);
+    let global_tick = selected_profile_uses_global_tick(contract);
 
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
@@ -473,7 +507,15 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str("class App {\npublic:\n");
     output.push_str(&emit_cpp_app_constructor_declaration(contract, &order));
     output.push_str(
-        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\nprivate:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
+        "    /**\n     * @brief 使用指定 backend 运行完整 C++ 应用图。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run(const flowrt::Backend& backend, std::optional<std::size_t> run_ticks);\n\n    /**\n     * @brief 运行指定 RSDL process group。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param process Contract IR 中声明的 process group 名称。\n     * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_process(const flowrt::Backend& backend, std::string_view process, std::optional<std::size_t> run_ticks);\n\n",
+    );
+    if global_tick {
+        output.push_str(
+            "    /**\n     * @brief 使用外部 global tick grant 推进完整 C++ 应用图一步。\n     *\n     * @param backend 提供调度器和 capability 的 FlowRT backend。\n     * @param grant 外部 coordinator 授予的 tick 序号与逻辑时间。\n     * @return 应用执行状态。\n     */\n    flowrt::Status run_tick(const flowrt::Backend& backend, flowrt::ExternalTick grant);\n\n",
+        );
+    }
+    output.push_str(
+        "private:\n    flowrt::Status step(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_startup(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n    flowrt::Status step_shutdown(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n",
     );
     for task in scheduler_tasks_for_order(graph, &order) {
         output.push_str(&format!(
@@ -630,6 +672,11 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     output.push_str(
         "/**\n * @brief 运行默认 C++ inproc 应用。\n *\n * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run(std::optional<std::size_t> run_ticks);\n\n",
     );
+    if global_tick {
+        output.push_str(
+            "/**\n * @brief 使用外部 global tick grant 推进默认 C++ inproc 应用一步。\n *\n * @param grant 外部 coordinator 授予的 tick 序号与逻辑时间。\n * @return tick 完成报告。\n */\nflowrt::ExternalTickReport flowrt_run_tick(flowrt::ExternalTick grant);\n\n",
+        );
+    }
     output.push_str(
         "/**\n * @brief 运行默认 C++ inproc 应用中的指定 process group。\n *\n * @param process process group 名称。\n * @param run_ticks 可选的显式 tick 上限；为空表示无限运行。\n * @return runtime shell 执行状态。\n */\nflowrt::Status run_process(std::string_view process, std::optional<std::size_t> run_ticks);\n\n",
     );

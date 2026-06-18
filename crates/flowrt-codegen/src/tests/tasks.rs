@@ -72,6 +72,77 @@ backends = ["inproc"]
 }
 
 #[test]
+fn global_tick_cpp_shell_exposes_external_tick_step() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "global_tick_cpp_runtime"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "cpp"
+
+[component.plant]
+language = "cpp"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+
+[[process]]
+name = "controller_proc"
+
+[[process]]
+name = "plant_proc"
+
+[profile.default]
+backend = "inproc"
+
+[profile.default.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_header = artifact_content(&bundle, "cpp/include/flowrt_app/runtime_shell.hpp");
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(cpp_header.contains(
+        "flowrt::Status run_tick(const flowrt::Backend& backend, flowrt::ExternalTick grant);"
+    ));
+    assert!(
+        cpp_header
+            .contains("flowrt::ExternalTickReport flowrt_run_tick(flowrt::ExternalTick grant);")
+    );
+    assert!(
+        cpp_shell
+            .contains("flowrt::ExternalTickReport flowrt_run_tick(flowrt::ExternalTick grant)")
+    );
+    let app_tick_fn = generated_function_block(cpp_shell, "App::run_tick");
+    assert!(app_tick_fn.contains("std::size_t tick_base = flowrt_external_tick_base;"));
+    assert!(app_tick_fn.contains("std::uint64_t scheduler_now_ms = grant.logical_time_ms;"));
+    assert!(!app_tick_fn.contains("scheduler_runtime_now_ms"));
+    assert!(!app_tick_fn.contains("wait_until_after"));
+}
+
+#[test]
 fn generated_shells_cleanup_entered_lifecycle_stages_in_reverse_order() {
     let ir = contract_from_source(
         r#"
