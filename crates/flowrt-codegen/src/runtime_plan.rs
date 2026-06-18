@@ -338,6 +338,8 @@ pub(crate) struct BindRuntimePlan {
     pub(crate) target_instance: String,
     pub(crate) target_port: String,
     pub(crate) feedback: bool,
+    /// feedback 边的确定性 tick 延迟；latest 为 1，fifo 为 depth。
+    pub(crate) deterministic_delay_ticks: Option<u32>,
     /// 反馈边初值（源消息字面量 `ParamValue::Table`）。`None` 表示零初值播种。
     pub(crate) init: Option<ParamValue>,
 }
@@ -503,6 +505,10 @@ fn bind_runtime_plans_from_facts(
                 target_instance: bind.to.instance.name.clone(),
                 target_port: bind.to.port.clone(),
                 feedback: bind.feedback,
+                deterministic_delay_ticks: bind.feedback.then(|| match bind.channel {
+                    ChannelKind::Latest => 1,
+                    ChannelKind::Fifo => bind.depth.unwrap_or(1).max(1),
+                }),
                 init: bind.init.clone(),
             }
         })

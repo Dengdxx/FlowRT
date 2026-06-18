@@ -142,6 +142,109 @@ backends = ["inproc"]
     assert!(!app_tick_fn.contains("wait_until_after"));
 }
 
+fn global_tick_fifo_feedback_source(language: &str) -> String {
+    format!(
+        r#"
+[package]
+name = "global_tick_fifo_feedback"
+rsdl_version = "0.1"
+
+[type.Cmd]
+u = "f64"
+
+[type.State]
+x = "f64"
+
+[component.controller]
+language = "{language}"
+input = ["state:State"]
+output = ["cmd:Cmd"]
+
+[component.plant]
+language = "{language}"
+input = ["cmd:Cmd"]
+output = ["state:State"]
+
+[instance.controller]
+component = "controller"
+process = "ctrl_proc"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+input = ["state"]
+output = ["cmd"]
+
+[instance.plant]
+component = "plant"
+process = "plant_proc"
+
+[instance.plant.task]
+trigger = "periodic"
+period_ms = 10
+input = ["cmd"]
+output = ["state"]
+
+[[bind.dataflow]]
+from = "controller.cmd"
+to = "plant.cmd"
+channel = "latest"
+
+[[bind.dataflow]]
+from = "plant.state"
+to = "controller.state"
+channel = "fifo"
+depth = 2
+overflow = "drop_oldest"
+feedback = true
+init = {{ x = 0.0 }}
+
+[profile.default]
+backend = "zenoh"
+
+[profile.default.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+
+[target.linux]
+runtime = ["{language}"]
+backends = ["zenoh"]
+"#,
+    )
+}
+
+#[test]
+fn global_tick_fifo_feedback_rust_uses_transport_fifo_and_seed_depth() {
+    let ir = contract_from_source(&global_tick_fifo_feedback_source("rust"));
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(rust_shell.contains(
+        "flowrt::zenoh::ZenohChannelConfig::fifo(2, flowrt::OverflowPolicy::DropOldest)"
+    ));
+    assert!(!rust_shell.contains("push_at(State { x: 0f64 }, 0)"));
+    assert!(
+        rust_shell
+            .matches("publish_at(State { x: 0f64 }, 0)")
+            .count()
+            >= 2
+    );
+}
+
+#[test]
+fn global_tick_fifo_feedback_cpp_uses_transport_fifo_and_seed_depth() {
+    let ir = contract_from_source(&global_tick_fifo_feedback_source("cpp"));
+    let bundle = emit_artifacts(&ir).unwrap();
+    let cpp_shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(cpp_shell.contains(
+        "flowrt::zenoh::ZenohChannelConfig::fifo(2, flowrt::OverflowPolicy::DropOldest)"
+    ));
+    assert!(!cpp_shell.contains("bind_1_.push_at("));
+    assert!(cpp_shell.matches("bind_1_.publish_at([]").count() >= 2);
+}
+
 #[test]
 fn generated_shells_cleanup_entered_lifecycle_stages_in_reverse_order() {
     let ir = contract_from_source(

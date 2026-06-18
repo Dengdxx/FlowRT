@@ -195,8 +195,9 @@ fn rejects_feedback_fifo_without_depth() {
 }
 
 /// 跨进程反馈控制环：controller（ctrl_proc）↔ plant（plant_proc）经 zenoh，回边
-/// plant.state→controller.state。`feedback_channel` 注入回边 channel 行（latest/fifo）。
-fn cross_process_feedback_source(feedback_channel: &str) -> String {
+/// plant.state→controller.state。`feedback_channel` 注入回边 channel 行（latest/fifo），
+/// `determinism` 可注入 `[profile.default.determinism]` 子表。
+fn cross_process_feedback_source(feedback_channel: &str, determinism: &str) -> String {
     format!(
         r#"
 [package]
@@ -254,6 +255,8 @@ init = {{ x = 0.0 }}
 [profile.default]
 backend = "zenoh"
 
+{determinism}
+
 [target.linux]
 runtime = ["rust"]
 backends = ["zenoh"]
@@ -264,25 +267,37 @@ backends = ["zenoh"]
 #[test]
 fn accepts_cross_process_latest_feedback() {
     // 跨进程 latest 反馈环：seeded latest-snapshot 语义，validator 放行。
-    let ir = contract_of(&cross_process_feedback_source("channel = \"latest\""));
+    let ir = contract_of(&cross_process_feedback_source("channel = \"latest\"", ""));
     validate_contract(&ir).expect("cross-process latest feedback should validate");
 }
 
 #[test]
-fn rejects_cross_process_fifo_feedback() {
-    // 跨进程无共享 tick，fifo 的 N 拍延迟无意义，拒绝。
+fn rejects_cross_process_fifo_feedback_without_global_tick() {
+    // 非 global_tick profile 无共享 tick，fifo 的 N 拍延迟无意义，拒绝。
     let ir = contract_of(&cross_process_feedback_source(
         "channel = \"fifo\"\ndepth = 2",
+        "",
     ));
     let report = validate_contract(&ir).expect_err("cross-process fifo feedback should fail");
     assert!(
-        report
-            .errors
-            .iter()
-            .any(|error| error.message.contains("spanning processes must use")),
+        report.errors.iter().any(|error| error
+            .message
+            .contains("cross-process fifo feedback requires profile determinism mode global_tick")),
         "unexpected errors: {:?}",
         report.errors
     );
+}
+
+#[test]
+fn allows_cross_process_fifo_feedback_only_in_global_tick_profile() {
+    let ir = contract_of(&cross_process_feedback_source(
+        "channel = \"fifo\"\ndepth = 2",
+        r#"[profile.default.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph""#,
+    ));
+    validate_contract(&ir).expect("global_tick cross-process fifo feedback should validate");
 }
 
 #[test]

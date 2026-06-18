@@ -177,6 +177,19 @@ fn emit_rust_feedback_channel_seed(
             &bind.source_type,
             bind.init.as_ref(),
         );
+        let seed_count = match bind.channel {
+            flowrt_ir::ChannelKind::Latest => 1,
+            flowrt_ir::ChannelKind::Fifo => bind.deterministic_delay_ticks.unwrap_or(1).max(1),
+        };
+        if matches!(bind_backend(bind), "iox2" | "zenoh") {
+            for _ in 0..seed_count {
+                output.push_str(&format!(
+                    "        app.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_at({value}, 0);\n",
+                    field = bind.field_name,
+                ));
+            }
+            continue;
+        }
         match bind.channel {
             flowrt_ir::ChannelKind::Latest => {
                 output.push_str(&format!(
@@ -185,8 +198,7 @@ fn emit_rust_feedback_channel_seed(
                 ));
             }
             flowrt_ir::ChannelKind::Fifo => {
-                let depth = bind.depth.unwrap_or(1).max(1);
-                for _ in 0..depth {
+                for _ in 0..seed_count {
                     output.push_str(&format!(
                         "        let _ = app.{field}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_at({value}, 0);\n",
                         field = bind.field_name,

@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use flowrt_ir::{
-    BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, EntityId,
-    GraphFaultReaction, GraphIr, GraphMode, InstanceFailurePolicy, InstanceIr, LanguageKind,
-    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPortIr, OperationPortRef,
-    OperationPreemptPolicy, ParamValue, PolicyValueSource, PortIr, PortRef, PrimitiveType,
-    ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef, TaskConcurrency,
-    TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, DeterminismMode,
+    EntityId, GraphFaultReaction, GraphIr, GraphMode, InstanceFailurePolicy, InstanceIr,
+    LanguageKind, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPortIr,
+    OperationPortRef, OperationPreemptPolicy, ParamValue, PolicyValueSource, PortIr, PortRef,
+    PrimitiveType, ProcessReadinessGate, Ros2BridgeDirection, ServicePortIr, ServicePortRef,
+    TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -1499,6 +1499,10 @@ fn validate_feedback_binds(
         .iter()
         .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
+    let global_tick_profile = ir
+        .profiles
+        .iter()
+        .any(|profile| profile.determinism.mode == DeterminismMode::GlobalTick);
 
     for bind in &graph.binds {
         if !bind.feedback {
@@ -1521,9 +1525,9 @@ fn validate_feedback_binds(
         match bind.channel {
             ChannelKind::Latest => {}
             ChannelKind::Fifo => {
-                if cross_process {
+                if cross_process && !global_tick_profile {
                     errors.push(ValidationError::new(format!(
-                        "feedback bind `{edge}` spanning processes must use `channel = \"latest\"`; cross-process feedback has no shared tick for fifo depth delay"
+                        "feedback bind `{edge}` cross-process fifo feedback requires profile determinism mode global_tick"
                     )));
                 } else {
                     if bind.depth.unwrap_or(0) < 1 {
