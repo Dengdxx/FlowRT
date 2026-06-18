@@ -27,6 +27,79 @@ backends = ["inproc"]
 }
 
 #[test]
+fn normalizes_global_tick_determinism_profile() {
+    let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+
+[[process]]
+name = "controller_proc"
+
+[profile.test]
+backend = "inproc"
+
+[profile.test.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let profile = &ir.profiles[0];
+
+    assert_eq!(profile.determinism.mode, DeterminismMode::GlobalTick);
+    assert_eq!(profile.determinism.timeout_ms, Some(1000));
+    assert_eq!(
+        profile.determinism.on_timeout,
+        DeterminismTimeoutPolicy::FaultGraph
+    );
+    assert_eq!(profile.determinism.processes, vec!["controller_proc"]);
+}
+
+#[test]
+fn omits_default_process_local_determinism_from_canonical_json() {
+    let source = r#"
+[package]
+name = "profile_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let json = ir.to_canonical_json().unwrap();
+
+    assert_eq!(
+        ir.profiles[0].determinism.mode,
+        DeterminismMode::ProcessLocal
+    );
+    assert!(
+        !json.contains("determinism"),
+        "default process_local determinism should not be serialized: {json}"
+    );
+}
+
+#[test]
 fn rejects_instance_param_overrides_with_incompatible_types() {
     let source = r#"
 [package]

@@ -1062,6 +1062,8 @@ pub struct ProfileIr {
     pub backend: BackendName,
     pub scheduler: SchedulerDefaults,
     pub defaults: PolicyDefaults,
+    #[serde(default, skip_serializing_if = "DeterminismIr::is_default")]
+    pub determinism: DeterminismIr,
 }
 
 /// profile 选择的 graph 完整性模式。
@@ -1071,6 +1073,53 @@ pub enum GraphMode {
     #[default]
     Strict,
     Island,
+}
+
+/// profile 级确定性执行模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeterminismMode {
+    #[default]
+    ProcessLocal,
+    GlobalTick,
+}
+
+/// global tick barrier 超时后的图级动作。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeterminismTimeoutPolicy {
+    #[default]
+    FaultGraph,
+    StopGraph,
+}
+
+/// profile 级确定性执行合同。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeterminismIr {
+    pub mode: DeterminismMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub on_timeout: DeterminismTimeoutPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<String>,
+}
+
+impl Default for DeterminismIr {
+    fn default() -> Self {
+        Self {
+            mode: DeterminismMode::ProcessLocal,
+            timeout_ms: None,
+            on_timeout: DeterminismTimeoutPolicy::FaultGraph,
+            processes: Vec::new(),
+        }
+    }
+}
+
+impl DeterminismIr {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 /// profile 级 scheduler 默认值。

@@ -406,6 +406,15 @@ pub struct RawProfile {
     pub default_overflow: Option<String>,
     pub default_stale_policy: Option<String>,
     pub max_age_ms: Option<u64>,
+    pub determinism: Option<RawProfileDeterminism>,
+}
+
+/// `[profile.<name>.determinism]` 表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawProfileDeterminism {
+    pub mode: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub on_timeout: Option<String>,
 }
 
 /// `[target.<name>]` 表。

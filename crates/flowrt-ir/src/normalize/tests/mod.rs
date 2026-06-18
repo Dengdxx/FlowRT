@@ -7,14 +7,15 @@ pub(crate) use super::{
 };
 pub(crate) use crate::{
     BackendThreadAffinity, BoundaryDirection, CapabilityAtom, ChannelBackendSource, ChannelKind,
-    ClockSourceKind, FaultInjectionScenario, FaultInjectionScenarioPoint, GraphFaultReaction,
-    GraphMode, IrError, OperationBackendSource, OperationConcurrencyPolicy,
-    OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy, ParamType, ParamUpdatePolicy,
-    ParamValue, PolicyValueSource, PrimitiveType, ProcessFailurePropagation, ProcessReadinessGate,
-    ProcessRestartPolicyKind, Ros2BridgeDirection, RouteTopology, RtPolicy, ServiceBackendSource,
-    ServiceOverflowPolicy, StalePolicy, TaskReadiness, TemporaryBoundaryMapping,
-    TemporaryIslandOverlay, TypeExpr, apply_fault_injection_overlay,
-    apply_temporary_island_overlay, channel_route_capabilities, deployment_capability_decision,
+    ClockSourceKind, DeterminismMode, DeterminismTimeoutPolicy, FaultInjectionScenario,
+    FaultInjectionScenarioPoint, GraphFaultReaction, GraphMode, IrError, OperationBackendSource,
+    OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPreemptPolicy, OverflowPolicy,
+    ParamType, ParamUpdatePolicy, ParamValue, PolicyValueSource, PrimitiveType,
+    ProcessFailurePropagation, ProcessReadinessGate, ProcessRestartPolicyKind, Ros2BridgeDirection,
+    RouteTopology, RtPolicy, ServiceBackendSource, ServiceOverflowPolicy, StalePolicy,
+    TaskReadiness, TemporaryBoundaryMapping, TemporaryIslandOverlay, TypeExpr,
+    apply_fault_injection_overlay, apply_temporary_island_overlay, channel_route_capabilities,
+    deployment_capability_decision,
 };
 
 mod core;

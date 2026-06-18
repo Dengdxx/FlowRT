@@ -1013,6 +1013,7 @@ pub(super) fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
             "default_overflow",
             "default_stale_policy",
             "max_age_ms",
+            "determinism",
         ],
     )?;
 
@@ -1023,7 +1024,29 @@ pub(super) fn parse_profile(name: &str, table: &Table) -> Result<RawProfile> {
         default_overflow: optional_string(table, &context, "default_overflow")?,
         default_stale_policy: optional_string(table, &context, "default_stale_policy")?,
         max_age_ms: optional_u64(table, &context, "max_age_ms")?,
+        determinism: parse_profile_determinism(table, &context)?,
     })
+}
+
+fn parse_profile_determinism(
+    table: &Table,
+    context: &str,
+) -> Result<Option<RawProfileDeterminism>> {
+    let Some(value) = table.get("determinism") else {
+        return Ok(None);
+    };
+    let determinism_table = expect_table_value(context, "determinism", value)?;
+    let determinism_context = format!("{context}.determinism");
+    validate_known_fields(
+        determinism_table,
+        &determinism_context,
+        &["mode", "timeout_ms", "on_timeout"],
+    )?;
+    Ok(Some(RawProfileDeterminism {
+        mode: optional_string(determinism_table, &determinism_context, "mode")?,
+        timeout_ms: optional_u64(determinism_table, &determinism_context, "timeout_ms")?,
+        on_timeout: optional_string(determinism_table, &determinism_context, "on_timeout")?,
+    }))
 }
 
 fn parse_graph_mode(table: &Table, context: &str) -> Result<RawGraphMode> {

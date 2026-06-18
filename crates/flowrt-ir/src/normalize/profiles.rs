@@ -1,9 +1,10 @@
-use flowrt_rsdl::{RawDocument, RawGraphMode, RawProfile};
+use flowrt_rsdl::{RawDocument, RawGraphMode, RawProfile, RawProfileDeterminism};
 
 use crate::{
-    BackendName, BackendThreadAffinity, ContractIr, GraphMode, IrError, OverflowPolicy,
-    PolicyDefaults, PolicyValueSource, ProfileIr, Result, RouteTopology, SchedulerDefaults,
-    StalePolicy, channel_capabilities, channel_route_capabilities, deployment_capability_decision,
+    BackendName, BackendThreadAffinity, ContractIr, DeterminismIr, DeterminismMode,
+    DeterminismTimeoutPolicy, GraphMode, IrError, OverflowPolicy, PolicyDefaults,
+    PolicyValueSource, ProfileIr, Result, RouteTopology, SchedulerDefaults, StalePolicy,
+    channel_capabilities, channel_route_capabilities, deployment_capability_decision,
     graph_required_capabilities,
 };
 
@@ -25,6 +26,7 @@ pub(super) fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr
                 default_stale_policy: StalePolicy::Warn,
                 max_age_ms: None,
             },
+            determinism: DeterminismIr::default(),
         }]);
     }
 
@@ -39,6 +41,7 @@ pub(super) fn normalize_profiles(document: &RawDocument) -> Result<Vec<ProfileIr
                 backend: BackendName(raw.backend.clone().unwrap_or_else(|| "inproc".to_string())),
                 scheduler: normalize_scheduler_defaults(raw, &format!("profile.{name}"))?,
                 defaults: normalize_policy_defaults(raw, &format!("profile.{name}"))?,
+                determinism: normalize_determinism(raw, document, &format!("profile.{name}"))?,
             })
         })
         .collect()
@@ -74,6 +77,81 @@ fn normalize_policy_defaults(raw: &RawProfile, context: &str) -> Result<PolicyDe
         },
         max_age_ms: raw.max_age_ms,
     })
+}
+
+fn normalize_determinism(
+    raw: &RawProfile,
+    document: &RawDocument,
+    context: &str,
+) -> Result<DeterminismIr> {
+    let Some(raw) = raw.determinism.as_ref() else {
+        return Ok(DeterminismIr::default());
+    };
+    let mode = parse_determinism_mode(context, raw)?;
+    let on_timeout = parse_determinism_timeout_policy(context, raw)?;
+    let processes = if mode == DeterminismMode::GlobalTick {
+        declared_processes(document)
+    } else {
+        Vec::new()
+    };
+    Ok(DeterminismIr {
+        mode,
+        timeout_ms: raw.timeout_ms,
+        on_timeout,
+        processes,
+    })
+}
+
+fn parse_determinism_mode(context: &str, raw: &RawProfileDeterminism) -> Result<DeterminismMode> {
+    match raw.mode.as_deref().unwrap_or("process_local") {
+        "process_local" => Ok(DeterminismMode::ProcessLocal),
+        "global_tick" => Ok(DeterminismMode::GlobalTick),
+        value => Err(IrError::InvalidEnum {
+            context: format!("{context}.determinism.mode"),
+            kind: "determinism mode",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn parse_determinism_timeout_policy(
+    context: &str,
+    raw: &RawProfileDeterminism,
+) -> Result<DeterminismTimeoutPolicy> {
+    match raw.on_timeout.as_deref().unwrap_or("fault_graph") {
+        "fault_graph" => Ok(DeterminismTimeoutPolicy::FaultGraph),
+        "stop_graph" => Ok(DeterminismTimeoutPolicy::StopGraph),
+        value => Err(IrError::InvalidEnum {
+            context: format!("{context}.determinism.on_timeout"),
+            kind: "determinism timeout policy",
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn declared_processes(document: &RawDocument) -> Vec<String> {
+    let mut processes = document
+        .instances
+        .values()
+        .map(|instance| {
+            instance
+                .process
+                .clone()
+                .unwrap_or_else(|| "main".to_string())
+        })
+        .collect::<Vec<_>>();
+    processes.extend(
+        document
+            .processes
+            .iter()
+            .map(|process| process.name.clone()),
+    );
+    if processes.is_empty() {
+        processes.push("main".to_string());
+    }
+    processes.sort();
+    processes.dedup();
+    processes
 }
 
 /// 依据 profile 名称投影出一个只包含目标 profile 的 Contract IR 副本。

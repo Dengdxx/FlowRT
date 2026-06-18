@@ -326,6 +326,33 @@ mode = "legacy"
     }
 
     #[test]
+    fn parses_profile_determinism_table() {
+        let source = r#"
+[package]
+name = "determinism_demo"
+rsdl_version = "0.1"
+
+[profile.test]
+backend = "inproc"
+
+[profile.test.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+"#;
+
+        let document = parse_str(source).expect("profile determinism should parse");
+        let determinism = document.profiles["test"]
+            .determinism
+            .as_ref()
+            .expect("determinism table should be present");
+
+        assert_eq!(determinism.mode.as_deref(), Some("global_tick"));
+        assert_eq!(determinism.timeout_ms, Some(1000));
+        assert_eq!(determinism.on_timeout.as_deref(), Some("fault_graph"));
+    }
+
+    #[test]
     fn rejects_invalid_boundary_endpoint_tables() {
         let duplicate = r#"
 [package]
