@@ -99,7 +99,15 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
   redundancy group。Rust/C++ generated shell 现在为 standby group 生成 active route 状态，
   standby 输出在 inactive 时被抑制，primary critical fault 后在 tick 边界切到首个 standby，
   并通过 introspection `failovers` 记录 old/new active、tick_id 和 reason。受益于 debt 2 的
-  跨进程确定性。图级容错 capstone 的 health metrics 与 fault matrix 后续继续收束。
+  跨进程确定性。
+- graph health metrics：已完成 critical subset 与实例故障指标收束。`[graph.health]`
+  支持 `critical = ["instance"]`，归一化为 canonical instance refs；runtime 默认 critical
+  set 为所有实例。Rust/C++ introspection status 现在同时暴露 `graph_health`
+  （全实例 worst-of）、`graph_critical_health`（critical subset worst-of）、
+  `critical_instances`、per-instance `restart_count`、`last_fault_reason`、
+  `last_fault_tick` 和 `last_transition_tick`；`flowrt status` 同步展示这些字段。
+  generated shell 在 restart 尝试和 task error 路径记录 restart/fault metrics。图级容错
+  capstone 剩余 fault matrix 后续继续收束。
 - debt 5 OpenTelemetry / distributed tracing：独立线，无结构依赖。当前仅有
   observability capability/resource 命名或规划，不存在稳定 span/exporter 上报路径。
   FlowRT introspection 优先，tracing 是 additive，可较晚按需排期。

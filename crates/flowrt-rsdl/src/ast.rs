@@ -111,6 +111,8 @@ pub struct RawGraph {
 pub struct RawGraphHealth {
     /// `on_faulted`：终态故障时图级动作原始字符串（`continue`/`stop`）。
     pub on_faulted: Option<String>,
+    /// `critical`：参与 graph critical health 聚合的 instance 名集合；空表示所有 instance。
+    pub critical: Vec<String>,
 }
 
 /// `[[redundancy.group]]` 表项：graph 级冗余实例组。取值和成员一致性在 IR/validator 阶段校验。

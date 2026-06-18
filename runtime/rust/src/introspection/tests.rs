@@ -1099,15 +1099,21 @@ fn lane_health_recording_and_status_snapshot() {
 
 #[test]
 fn health_fields_serialize_with_defaults_for_backward_compat() {
-    // 旧版 JSON 不含 operations/tasks/lanes 字段时应解析为默认空列表。
+    // 旧版 JSON 不含 operations/tasks/lanes 和新增 instance metrics 字段时应解析为默认值。
     let status: IntrospectionStatus =
-        serde_json::from_str(r#"{"tick_count":1,"channels":[],"processes":[],"services":[]}"#)
-            .unwrap();
+        serde_json::from_str(
+            r#"{"tick_count":1,"channels":[],"processes":[],"services":[],"instances":[{"instance":"controller","lifecycle_state":"running"}]}"#,
+        )
+        .unwrap();
     assert!(status.inputs.is_empty());
     assert!(status.routes.is_empty());
     assert!(status.operations.is_empty());
     assert!(status.tasks.is_empty());
     assert!(status.lanes.is_empty());
+    assert_eq!(status.instances[0].restart_count, 0);
+    assert_eq!(status.instances[0].last_fault_reason, None);
+    assert_eq!(status.instances[0].last_fault_tick, None);
+    assert_eq!(status.instances[0].last_transition_tick, None);
 }
 
 #[test]
@@ -2082,13 +2088,17 @@ fn health_fields_serialize_roundtrip() {
         recorder: Default::default(),
         instances: Vec::new(),
         failovers: Vec::new(),
+        critical_instances: vec!["controller".to_string()],
         graph_health: "degraded".to_string(),
+        graph_critical_health: "healthy".to_string(),
         diagnostics: Vec::new(),
     };
 
     let json = serde_json::to_string(&status).unwrap();
     let parsed: IntrospectionStatus = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.graph_health, "degraded");
+    assert_eq!(parsed.graph_critical_health, "healthy");
+    assert_eq!(parsed.critical_instances, ["controller"]);
     assert_eq!(parsed.clock.source, "realtime");
     assert_eq!(parsed.clock.unit, "ms");
     assert_eq!(parsed.clock.field, "tick_time_ms");
@@ -2167,6 +2177,68 @@ fn records_instance_lifecycle_state_and_derives_diagnostic() {
     assert_eq!(graph.entity_id, "graph");
     assert_eq!(graph.state, "faulted");
     assert_eq!(graph.severity, "error");
+}
+
+#[test]
+fn graph_health_tracks_critical_subset_and_instance_fault_metrics() {
+    let state = IntrospectionState::new();
+    state.register_critical_instances(["controller_a", "controller_b"]);
+    state.record_lifecycle_transition(
+        "controller_a",
+        crate::LifecycleState::Running,
+        Some(1),
+        None,
+    );
+    state.record_lifecycle_transition(
+        "controller_b",
+        crate::LifecycleState::Running,
+        Some(1),
+        None,
+    );
+    state.record_lifecycle_transition(
+        "monitor",
+        crate::LifecycleState::Faulted,
+        Some(2),
+        Some("sensor_timeout"),
+    );
+
+    let status = state.status();
+    assert_eq!(status.graph_health, "faulted");
+    assert_eq!(status.graph_critical_health, "healthy");
+    assert_eq!(status.critical_instances, ["controller_a", "controller_b"]);
+    let monitor = status
+        .instances
+        .iter()
+        .find(|instance| instance.instance == "monitor")
+        .expect("monitor instance should be present");
+    assert_eq!(monitor.restart_count, 0);
+    assert_eq!(monitor.last_fault_reason.as_deref(), Some("sensor_timeout"));
+    assert_eq!(monitor.last_fault_tick, Some(2));
+    assert_eq!(monitor.last_transition_tick, Some(2));
+
+    state.record_instance_restart("controller_a");
+    state.record_lifecycle_transition(
+        "controller_a",
+        crate::LifecycleState::Faulted,
+        Some(7),
+        Some("critical_fault"),
+    );
+
+    let status = state.status();
+    assert_eq!(status.graph_health, "faulted");
+    assert_eq!(status.graph_critical_health, "faulted");
+    let controller_a = status
+        .instances
+        .iter()
+        .find(|instance| instance.instance == "controller_a")
+        .expect("controller_a instance should be present");
+    assert_eq!(controller_a.restart_count, 1);
+    assert_eq!(
+        controller_a.last_fault_reason.as_deref(),
+        Some("critical_fault")
+    );
+    assert_eq!(controller_a.last_fault_tick, Some(7));
+    assert_eq!(controller_a.last_transition_tick, Some(7));
 }
 
 #[test]

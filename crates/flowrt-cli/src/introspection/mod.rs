@@ -1385,9 +1385,14 @@ pub(crate) fn live_status_summary_for_sockets(
                 let recorder = status.recorder.clone();
 
                 let live_counts = live_status_counts(&status);
+                let critical_instances = if status.critical_instances.is_empty() {
+                    "none".to_string()
+                } else {
+                    status.critical_instances.join(",")
+                };
                 let temporary_overlay = static_facts.artifact.temporary_overlay.is_some();
                 lines.push(format!(
-                    "pid={} package={} process={} runtime={} selfdesc={} static_selfdesc={} ticks={} clock_source={} tick_time_ms={} clock_unit={} clock_field={} channels={} inputs={} routes={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} temporary_overlay={} socket={}",
+                    "pid={} package={} process={} runtime={} selfdesc={} static_selfdesc={} ticks={} clock_source={} tick_time_ms={} clock_unit={} clock_field={} channels={} inputs={} routes={} graph_health={} graph_critical_health={} critical_instances={} observers={} dropped_samples={} artifact_mode={} temporary_island={} test_only={} temporary_overlay={} socket={}",
                     handshake.pid,
                     handshake.package,
                     handshake.process,
@@ -1402,6 +1407,9 @@ pub(crate) fn live_status_summary_for_sockets(
                     status.channels.len(),
                     status.inputs.len(),
                     status.routes.len(),
+                    status.graph_health,
+                    status.graph_critical_health,
+                    critical_instances,
                     live_counts.active_observers,
                     live_counts.dropped_samples,
                     static_facts.artifact.mode,
@@ -1488,6 +1496,18 @@ pub(crate) fn live_status_summary_for_sockets(
                         input.dropped_samples,
                         input.backpressure_count,
                         input.overflow_count,
+                        socket.display()
+                    ));
+                }
+                for instance in &status.instances {
+                    lines.push(format!(
+                        "instance={} lifecycle={} restart_count={} last_fault_reason={} last_fault_tick={} last_transition_tick={} socket={}",
+                        instance.instance,
+                        instance.lifecycle_state,
+                        instance.restart_count,
+                        option_str(instance.last_fault_reason.as_deref()),
+                        option_u64(instance.last_fault_tick),
+                        option_u64(instance.last_transition_tick),
                         socket.display()
                     ));
                 }

@@ -674,6 +674,94 @@ backend = "inproc"
 }
 
 #[test]
+fn normalizes_graph_health_critical_instances_canonically() {
+    let source = r#"
+[package]
+name = "graph_health_critical"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+critical = ["controller_b", "controller_a"]
+
+[component.controller]
+language = "rust"
+output = ["command:u32"]
+
+[instance.controller_a]
+component = "controller"
+failure_policy = "restart"
+
+[instance.controller_a.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[instance.controller_b]
+component = "controller"
+
+[instance.controller_b.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[instance.monitor]
+component = "controller"
+
+[instance.monitor.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let critical = &ir.graphs[0].health.critical_instances;
+    let names = critical
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["controller_a", "controller_b"]);
+    assert!(critical[0].id.0.starts_with("instance_"));
+}
+
+#[test]
+fn rejects_unknown_graph_health_critical_instance() {
+    let source = r#"
+[package]
+name = "graph_health_unknown_critical"
+rsdl_version = "0.1"
+
+[graph.health]
+critical = ["ghost"]
+
+[component.controller]
+language = "rust"
+output = ["command:u32"]
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[profile.default]
+backend = "inproc"
+"#;
+    let raw = parse_str(source).unwrap();
+    let error = normalize_document(&raw, hash_source(source))
+        .expect_err("unknown critical instance should be rejected");
+    assert!(
+        error.to_string().contains("unknown instance `ghost`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn rejects_unknown_graph_health_reaction() {
     let source = r#"
 [package]

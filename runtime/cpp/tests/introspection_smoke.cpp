@@ -436,6 +436,17 @@ void assert_status_json_schema_parity_fixture() {
             .value = "2",
         }},
     });
+    status.instances.push_back(flowrt::IntrospectionInstanceStatus{
+        .instance = "controller_a",
+        .lifecycle_state = "faulted",
+        .restart_count = 1,
+        .last_fault_reason = std::optional<std::string>{"critical_fault"},
+        .last_fault_tick = std::optional<std::uint64_t>{7U},
+        .last_transition_tick = std::optional<std::uint64_t>{7U},
+    });
+    status.critical_instances = {"controller_a", "controller_b"};
+    status.graph_health = "faulted";
+    status.graph_critical_health = "faulted";
 
     const auto parsed = JsonParser{flowrt::detail::status_json(status)}.parse();
     assert(parsed.kind == JsonValue::Kind::Object);
@@ -447,6 +458,10 @@ void assert_status_json_schema_parity_fixture() {
     assert(object_field(parsed, "routes").array.size() == 1U);
     assert(object_field(parsed, "processes").array.size() == 1U);
     assert(object_field(parsed, "diagnostics").array.size() == 1U);
+    assert(object_field(parsed, "instances").array.size() == 1U);
+    assert(object_field(parsed, "critical_instances").array.size() == 2U);
+    assert_string_field(parsed, "graph_health", "faulted");
+    assert_string_field(parsed, "graph_critical_health", "faulted");
 
     const auto &input = array_item(object_field(parsed, "inputs"), 0);
     assert_string_field(input, "task", "sink.main");
@@ -489,6 +504,18 @@ void assert_status_json_schema_parity_fixture() {
     assert_null_field(process, "exit_code");
     assert_string_field(process, "readiness_wait", "runtime_ready");
     assert_null_field(process, "resource_placement");
+
+    const auto &instance = array_item(object_field(parsed, "instances"), 0);
+    assert_string_field(instance, "instance", "controller_a");
+    assert_string_field(instance, "lifecycle_state", "faulted");
+    assert_number_field(instance, "restart_count", "1");
+    assert_string_field(instance, "last_fault_reason", "critical_fault");
+    assert_number_field(instance, "last_fault_tick", "7");
+    assert_number_field(instance, "last_transition_tick", "7");
+
+    const auto &critical = object_field(parsed, "critical_instances");
+    assert(array_item(critical, 0).string == "controller_a");
+    assert(array_item(critical, 1).string == "controller_b");
 
     const auto &diagnostic = array_item(object_field(parsed, "diagnostics"), 0);
     assert_string_field(diagnostic, "category", "route");

@@ -668,9 +668,12 @@ fn normalize_process_restart(
 }
 
 /// 归一化可选 `[graph.health]`。缺省得 `continue`（默认合同）；`on_faulted` 取值
-/// 仅 `continue`/`stop`，未知值拒绝。受控停机的可达性（须存在 isolate/restart 实例）
-/// 由 validator 校验。
-pub(super) fn normalize_graph_health(document: &RawDocument) -> Result<GraphHealthPolicyIr> {
+/// 仅 `continue`/`stop`，未知值拒绝。`critical` 为空表示运行时按所有 instance 聚合。
+/// 受控停机的可达性（须存在 isolate/restart 实例）由 validator 校验。
+pub(super) fn normalize_graph_health(
+    document: &RawDocument,
+    instance_refs: &BTreeMap<String, EntityRef>,
+) -> Result<GraphHealthPolicyIr> {
     let raw = document
         .graph
         .as_ref()
@@ -686,7 +689,28 @@ pub(super) fn normalize_graph_health(document: &RawDocument) -> Result<GraphHeal
             });
         }
     };
-    Ok(GraphHealthPolicyIr { on_faulted })
+    let mut seen = std::collections::BTreeSet::new();
+    let mut critical_names = raw
+        .map(|health| health.critical.clone())
+        .unwrap_or_default();
+    for name in &critical_names {
+        if !seen.insert(name.clone()) {
+            return Err(IrError::InvalidValue {
+                context: "graph.health.critical".to_string(),
+                message: format!("duplicate critical instance `{name}`"),
+            });
+        }
+    }
+    critical_names.sort();
+    let critical_instances = critical_names
+        .iter()
+        .map(|name| instance_ref(instance_refs, name, "graph.health.critical"))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(GraphHealthPolicyIr {
+        on_faulted,
+        critical_instances,
+    })
 }
 
 fn normalize_failure_propagation(

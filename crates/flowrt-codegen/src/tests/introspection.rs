@@ -1,6 +1,99 @@
 use super::*;
 
 #[test]
+fn runtime_shell_registers_graph_health_critical_instances() {
+    let rust_ir = contract_from_source(
+        r#"
+[package]
+name = "graph_health_critical_rust"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+critical = ["controller_b", "controller_a"]
+
+[component.controller]
+language = "rust"
+output = ["command:u32"]
+
+[instance.controller_a]
+component = "controller"
+failure_policy = "restart"
+
+[instance.controller_a.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[instance.controller_b]
+component = "controller"
+
+[instance.controller_b.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+    let rust_bundle = emit_artifacts(&rust_ir).unwrap();
+    let rust_shell = artifact_content(&rust_bundle, "rust/src/runtime_shell.rs");
+    assert!(rust_shell.contains(
+        "introspection_state.register_critical_instances([\"controller_a\", \"controller_b\"]);"
+    ));
+
+    let cpp_ir = contract_from_source(
+        r#"
+[package]
+name = "graph_health_critical_cpp"
+rsdl_version = "0.1"
+
+[graph.health]
+on_faulted = "stop"
+critical = ["controller_b", "controller_a"]
+
+[component.controller]
+language = "cpp"
+output = ["command:u32"]
+
+[instance.controller_a]
+component = "controller"
+failure_policy = "restart"
+
+[instance.controller_a.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[instance.controller_b]
+component = "controller"
+
+[instance.controller_b.task]
+trigger = "periodic"
+period_ms = 10
+output = ["command"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["cpp"]
+backends = ["inproc"]
+"#,
+    );
+    let cpp_bundle = emit_artifacts(&cpp_ir).unwrap();
+    let cpp_shell = artifact_content(&cpp_bundle, "cpp/src/runtime_shell.cpp");
+    assert!(cpp_shell.contains(
+        "introspection_state.register_critical_instances({\"controller_a\", \"controller_b\"});"
+    ));
+}
+
+#[test]
 fn rust_shell_registers_active_channels_and_records_publish_snapshots() {
     let ir = contract_from_source(
         r#"

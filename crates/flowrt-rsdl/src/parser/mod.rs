@@ -2042,6 +2042,7 @@ rsdl_version = "0.1"
 
 [graph.health]
 on_faulted = "stop"
+critical = ["controller_a", "controller_b"]
 
 [component.processor]
 language = "rust"
@@ -2054,6 +2055,7 @@ component = "processor"
         let graph = document.graph.expect("graph section present");
         let health = graph.health.expect("health subtable present");
         assert_eq!(health.on_faulted.as_deref(), Some("stop"));
+        assert_eq!(health.critical, ["controller_a", "controller_b"]);
     }
 
     #[test]

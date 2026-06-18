@@ -715,6 +715,7 @@ impl App {
             if let Some(flaky_due_ms) = flaky_next_restart_ms {
                 if scheduler_now_ms >= flaky_due_ms {
                     flaky_next_restart_ms = None;
+                    introspection_state.record_instance_restart("flaky");
                     let mut flaky_restart_status = app.flaky.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
                     if flaky_restart_status == flowrt::Status::Ok {
                         flaky_restart_status = app.flaky.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
@@ -725,7 +726,7 @@ impl App {
                         scheduler.resume_task(flowrt::TaskId(2));
                     } else {
                         flaky_fault_consecutive += 1;
-                        introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                        introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, Some(tick_base as u64), Some("restart_failed"));
                         if flaky_fault_consecutive >= 2 {
                             flaky_terminal_faulted = true;
                             _graph_terminal_fault = true;
@@ -1075,14 +1076,14 @@ impl App {
                     if task_result.status == flowrt::Status::Error {
                         match task_result.task {
                         flowrt::TaskId(2) => {
-                            introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, Some(tick_base as u64), Some("task_error"));
                             scheduler.suspend_task(flowrt::TaskId(2));
                             if !flaky_terminal_faulted {
                                 flaky_next_restart_ms = Some(scheduler_now_ms.saturating_add((10u64 << flaky_fault_consecutive.min(31)).min(40u64)));
                             }
                         }
                         flowrt::TaskId(3) => {
-                            introspection_state.record_lifecycle_state("guard", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("guard", flowrt::LifecycleState::Faulted, Some(tick_base as u64), Some("task_error"));
                             scheduler.suspend_task(flowrt::TaskId(3));
                             _graph_terminal_fault = true;
                         }
@@ -1364,6 +1365,7 @@ impl App {
             if let Some(flaky_due_ms) = flaky_next_restart_ms {
                 if scheduler_now_ms >= flaky_due_ms {
                     flaky_next_restart_ms = None;
+                    introspection_state.record_instance_restart("flaky");
                     let mut flaky_restart_status = app.flaky.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_init(&mut lifecycle_context);
                     if flaky_restart_status == flowrt::Status::Ok {
                         flaky_restart_status = app.flaky.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_start(&mut lifecycle_context);
@@ -1374,7 +1376,7 @@ impl App {
                         scheduler.resume_task(flowrt::TaskId(2));
                     } else {
                         flaky_fault_consecutive += 1;
-                        introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                        introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, Some(tick_base as u64), Some("restart_failed"));
                         if flaky_fault_consecutive >= 2 {
                             flaky_terminal_faulted = true;
                             _graph_terminal_fault = true;
@@ -1724,14 +1726,14 @@ impl App {
                     if task_result.status == flowrt::Status::Error {
                         match task_result.task {
                         flowrt::TaskId(2) => {
-                            introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, Some(tick_base as u64), Some("task_error"));
                             scheduler.suspend_task(flowrt::TaskId(2));
                             if !flaky_terminal_faulted {
                                 flaky_next_restart_ms = Some(scheduler_now_ms.saturating_add((10u64 << flaky_fault_consecutive.min(31)).min(40u64)));
                             }
                         }
                         flowrt::TaskId(3) => {
-                            introspection_state.record_lifecycle_state("guard", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("guard", flowrt::LifecycleState::Faulted, Some(tick_base as u64), Some("task_error"));
                             scheduler.suspend_task(flowrt::TaskId(3));
                             _graph_terminal_fault = true;
                         }

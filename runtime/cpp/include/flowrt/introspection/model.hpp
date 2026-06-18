@@ -359,6 +359,10 @@ struct IntrospectionInstanceStatus {
     std::string instance;
     /// `lifecycle_state_str` 的 canonical 小写值。
     std::string lifecycle_state;
+    std::uint64_t restart_count = 0;
+    std::optional<std::string> last_fault_reason;
+    std::optional<std::uint64_t> last_fault_tick;
+    std::optional<std::uint64_t> last_transition_tick;
 };
 
 /**
@@ -393,9 +397,12 @@ struct IntrospectionStatus {
     IntrospectionRecorderStatus recorder;
     std::vector<IntrospectionInstanceStatus> instances;
     std::vector<IntrospectionFailoverEvent> failovers;
+    std::vector<std::string> critical_instances;
     /// v0.21.3+ 图级 health 聚合：每实例 lifecycle 的 worst-of
     /// （`faulted` > `degraded` > `healthy`），与 Rust 镜像。
     std::string graph_health = "healthy";
+    /// v0.23.3+ 图级 critical subset health 聚合；未声明 critical subset 时等同 graph_health。
+    std::string graph_critical_health = "healthy";
     std::vector<IntrospectionDiagnostic> diagnostics;
 };
 

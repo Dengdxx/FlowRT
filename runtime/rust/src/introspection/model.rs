@@ -168,10 +168,16 @@ pub struct IntrospectionStatus {
     /// v0.23.3+ standby redundancy failover 事件（按记录顺序）。
     #[serde(default)]
     pub failovers: Vec<IntrospectionFailoverEvent>,
+    /// v0.23.3+ graph critical health 使用的 instance 集合；空状态默认由 runtime 展开为所有实例。
+    #[serde(default)]
+    pub critical_instances: Vec<String>,
     /// v0.21.3+ 图级 health 聚合：每实例 lifecycle 的 worst-of 滚动
     /// （`faulted` > `degraded` > `healthy`）。始终存在。
     #[serde(default = "default_graph_health")]
     pub graph_health: String,
+    /// v0.23.3+ 图级 critical subset health 聚合；未声明 critical subset 时等同 `graph_health`。
+    #[serde(default = "default_graph_health")]
+    pub graph_critical_health: String,
     /// v0.13+ 由 status/self-description 实体派生的结构化诊断快照。
     #[serde(default)]
     pub diagnostics: Vec<IntrospectionDiagnostic>,
@@ -188,6 +194,14 @@ pub struct IntrospectionInstanceStatus {
     pub instance: String,
     /// `LifecycleState::as_str()` 的 canonical 小写值。
     pub lifecycle_state: String,
+    #[serde(default)]
+    pub restart_count: u64,
+    #[serde(default)]
+    pub last_fault_reason: Option<String>,
+    #[serde(default)]
+    pub last_fault_tick: Option<u64>,
+    #[serde(default)]
+    pub last_transition_tick: Option<u64>,
 }
 
 /// 单次 standby redundancy failover 事件。

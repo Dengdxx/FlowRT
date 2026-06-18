@@ -768,6 +768,7 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));
         if (flaky_next_restart_ms.has_value() && scheduler_now_ms >= *flaky_next_restart_ms) {
             flaky_next_restart_ms.reset();
+            introspection_state.record_instance_restart("flaky");
             auto flaky_restart_status = flaky_ ? flaky_->on_init(lifecycle_context) : flowrt::Status::Error;
             if (flaky_restart_status == flowrt::Status::Ok) {
                 flaky_restart_status = flaky_->on_start(lifecycle_context);
@@ -778,7 +779,7 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
                     scheduler.resume_task(flowrt::TaskId{2});
             } else {
                 flaky_fault_consecutive += 1;
-                introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), "restart_failed");
                 if (flaky_fault_consecutive >= 2U) {
                     flaky_terminal_faulted = true;
                     _graph_terminal_fault = true;
@@ -1046,7 +1047,7 @@ break;
                     switch (task_result.task.value) {
                         case 2:
                         {
-                            introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), "task_error");
                             scheduler.suspend_task(flowrt::TaskId{2});
                             if (!flaky_terminal_faulted) {
                                 flaky_next_restart_ms = scheduler_now_ms + std::min<std::uint64_t>(10ULL << std::min<std::uint32_t>(flaky_fault_consecutive, 31U), 40ULL);
@@ -1055,7 +1056,7 @@ break;
                         }
                         case 3:
                         {
-                            introspection_state.record_lifecycle_state("guard", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("guard", flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), "task_error");
                             scheduler.suspend_task(flowrt::TaskId{3});
                             _graph_terminal_fault = true;
                             break;
@@ -1322,6 +1323,7 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
         scheduler.set_current_tick(static_cast<std::uint64_t>(tick_base));
         if (flaky_next_restart_ms.has_value() && scheduler_now_ms >= *flaky_next_restart_ms) {
             flaky_next_restart_ms.reset();
+            introspection_state.record_instance_restart("flaky");
             auto flaky_restart_status = flaky_ ? flaky_->on_init(lifecycle_context) : flowrt::Status::Error;
             if (flaky_restart_status == flowrt::Status::Ok) {
                 flaky_restart_status = flaky_->on_start(lifecycle_context);
@@ -1332,7 +1334,7 @@ flowrt::Status App::run_process_main(const flowrt::Backend& backend, std::option
                     scheduler.resume_task(flowrt::TaskId{2});
             } else {
                 flaky_fault_consecutive += 1;
-                introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), "restart_failed");
                 if (flaky_fault_consecutive >= 2U) {
                     flaky_terminal_faulted = true;
                     _graph_terminal_fault = true;
@@ -1600,7 +1602,7 @@ break;
                     switch (task_result.task.value) {
                         case 2:
                         {
-                            introspection_state.record_lifecycle_state("flaky", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("flaky", flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), "task_error");
                             scheduler.suspend_task(flowrt::TaskId{2});
                             if (!flaky_terminal_faulted) {
                                 flaky_next_restart_ms = scheduler_now_ms + std::min<std::uint64_t>(10ULL << std::min<std::uint32_t>(flaky_fault_consecutive, 31U), 40ULL);
@@ -1609,7 +1611,7 @@ break;
                         }
                         case 3:
                         {
-                            introspection_state.record_lifecycle_state("guard", flowrt::LifecycleState::Faulted);
+                            introspection_state.record_lifecycle_transition("guard", flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), "task_error");
                             scheduler.suspend_task(flowrt::TaskId{3});
                             _graph_terminal_fault = true;
                             break;

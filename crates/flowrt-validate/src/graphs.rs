@@ -211,6 +211,43 @@ fn operation_port_shape(ports: &[OperationPortIr]) -> Vec<String> {
 /// isolate/restart 实例时才有意义（fail_fast 实例故障已直接停图，degrade 永不终态）；
 /// 否则该策略永不触发，按无意义配置拒绝。
 fn validate_graph_health(graph: &GraphIr, errors: &mut Vec<ValidationError>) {
+    let instance_ids = graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), &instance.id))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen_critical = BTreeSet::<&str>::new();
+    for pair in graph.health.critical_instances.windows(2) {
+        if pair[0].name > pair[1].name {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` health critical instances must use canonical name order",
+                graph.name
+            )));
+            break;
+        }
+    }
+    for critical in &graph.health.critical_instances {
+        if !seen_critical.insert(critical.name.as_str()) {
+            errors.push(ValidationError::new(format!(
+                "graph `{}` health has duplicate critical instance `{}`",
+                graph.name, critical.name
+            )));
+        }
+        let Some(expected_id) = instance_ids.get(critical.name.as_str()) else {
+            errors.push(ValidationError::new(format!(
+                "unknown graph health critical instance `{}`",
+                critical.name
+            )));
+            continue;
+        };
+        if *expected_id != &critical.id {
+            errors.push(ValidationError::new(format!(
+                "graph health critical instance `{}` points to ID `{}`, expected ID `{}`",
+                critical.name, critical.id.0, expected_id.0
+            )));
+        }
+    }
+
     if graph.health.on_faulted != GraphFaultReaction::Stop {
         return;
     }

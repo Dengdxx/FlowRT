@@ -643,11 +643,53 @@ class IntrospectionState {
     }
 
     /**
+     * @brief 注册 graph critical health 参与聚合的 instance 名集合；空集合表示所有已观测实例。
+     */
+    void register_critical_instances(std::vector<std::string> instances) const {
+        std::sort(instances.begin(), instances.end());
+        instances.erase(std::unique(instances.begin(), instances.end()), instances.end());
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        inner_->critical_instances = std::move(instances);
+    }
+
+    /**
      * @brief 记录某 instance 的最新生命周期状态。generated shell 在各生命周期阶段调用。
      */
     void record_lifecycle_state(std::string instance, LifecycleState state) const {
+        record_lifecycle_transition(std::move(instance), state, std::nullopt, std::nullopt);
+    }
+
+    /**
+     * @brief 记录某 instance 生命周期边沿及可选故障上下文。
+     */
+    void record_lifecycle_transition(std::string instance, LifecycleState state,
+                                     std::optional<std::uint64_t> tick_id,
+                                     std::optional<std::string> reason) const {
         std::lock_guard<std::mutex> lock(inner_->mutex);
-        inner_->lifecycle.insert_or_assign(std::move(instance), state);
+        const auto transition_tick =
+            tick_id ? tick_id : std::optional<std::uint64_t>{inner_->tick_count};
+        auto &entry = inner_->instances[std::move(instance)];
+        entry.lifecycle = state;
+        entry.last_transition_tick = transition_tick;
+        if (state == LifecycleState::Faulted) {
+            entry.last_fault_tick = transition_tick;
+            entry.last_fault_reason = std::move(reason);
+        }
+    }
+
+    void record_lifecycle_transition(std::string instance, LifecycleState state,
+                                     std::uint64_t tick_id, std::string reason) const {
+        record_lifecycle_transition(std::move(instance), state,
+                                    std::optional<std::uint64_t>{tick_id},
+                                    std::optional<std::string>{std::move(reason)});
+    }
+
+    /**
+     * @brief 记录某 instance 的一次重启尝试。
+     */
+    void record_instance_restart(std::string instance) const {
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        ++inner_->instances[std::move(instance)].restart_count;
     }
 
     /**
@@ -994,15 +1036,36 @@ class IntrospectionState {
             snapshot.lanes.push_back(lane);
         }
         snapshot.recorder = recorder_status_locked();
-        snapshot.instances.reserve(inner_->lifecycle.size());
-        for (const auto &[name, state] : inner_->lifecycle) {
+        snapshot.instances.reserve(inner_->instances.size());
+        for (const auto &[name, state] : inner_->instances) {
             snapshot.instances.push_back(IntrospectionInstanceStatus{
                 .instance = name,
-                .lifecycle_state = std::string{lifecycle_state_str(state)},
+                .lifecycle_state = std::string{lifecycle_state_str(state.lifecycle)},
+                .restart_count = state.restart_count,
+                .last_fault_reason = state.last_fault_reason,
+                .last_fault_tick = state.last_fault_tick,
+                .last_transition_tick = state.last_transition_tick,
             });
         }
         snapshot.failovers = inner_->failovers;
+        if (inner_->critical_instances.empty()) {
+            snapshot.critical_instances.reserve(snapshot.instances.size());
+            for (const auto &instance : snapshot.instances) {
+                snapshot.critical_instances.push_back(instance.instance);
+            }
+        } else {
+            snapshot.critical_instances = inner_->critical_instances;
+        }
+        std::vector<IntrospectionInstanceStatus> critical_statuses;
+        critical_statuses.reserve(snapshot.instances.size());
+        for (const auto &instance : snapshot.instances) {
+            if (std::find(snapshot.critical_instances.begin(), snapshot.critical_instances.end(),
+                          instance.instance) != snapshot.critical_instances.end()) {
+                critical_statuses.push_back(instance);
+            }
+        }
         snapshot.graph_health = std::string{graph_health_label(snapshot.instances)};
+        snapshot.graph_critical_health = std::string{graph_health_label(critical_statuses)};
         snapshot.diagnostics = derive_diagnostics(snapshot);
         return snapshot;
     }
@@ -1237,6 +1300,14 @@ class IntrospectionState {
         std::string self_description_hash;
     };
 
+    struct InstanceRuntimeState {
+        LifecycleState lifecycle = LifecycleState::Uninitialized;
+        std::uint64_t restart_count = 0;
+        std::optional<std::string> last_fault_reason;
+        std::optional<std::uint64_t> last_fault_tick;
+        std::optional<std::uint64_t> last_transition_tick;
+    };
+
     struct Inner {
         std::atomic_bool recorder_enabled{false};
         std::mutex mutex;
@@ -1256,7 +1327,8 @@ class IntrospectionState {
             operation_cancel_handlers;
         std::map<std::string, IntrospectionTaskHealth> tasks;
         std::map<std::string, IntrospectionLaneHealth> lanes;
-        std::map<std::string, LifecycleState> lifecycle;
+        std::map<std::string, InstanceRuntimeState> instances;
+        std::vector<std::string> critical_instances;
         std::vector<IntrospectionFailoverEvent> failovers;
         RecorderState recorder;
     };
@@ -1771,7 +1843,12 @@ class IntrospectionState {
                                                                            : "info";
             diagnostics.push_back(diagnostic(
                 "lifecycle", "instance", instance.instance, instance.lifecycle_state, severity,
-                std::nullopt, std::nullopt, std::nullopt, status.clock.tick_time_ms, {}));
+                std::nullopt, std::nullopt, std::nullopt, status.clock.tick_time_ms,
+                {metric("restart_count", std::to_string(instance.restart_count)),
+                 metric("last_fault_reason", optional_string_metric(instance.last_fault_reason)),
+                 metric("last_fault_tick", optional_u64_metric(instance.last_fault_tick)),
+                 metric("last_transition_tick",
+                        optional_u64_metric(instance.last_transition_tick))}));
         }
 
         // graph_health 诊断仅在有实例可聚合时派生（与 per-instance lifecycle 诊断一致）；
@@ -1783,7 +1860,10 @@ class IntrospectionState {
                                                                      : "info";
             diagnostics.push_back(diagnostic(
                 "graph_health", "graph", "graph", std::string{graph_health}, graph_severity,
-                std::nullopt, std::nullopt, std::nullopt, status.clock.tick_time_ms, {}));
+                std::nullopt, std::nullopt, std::nullopt, status.clock.tick_time_ms,
+                {metric("critical_instances", detail::json_string_array(status.critical_instances)),
+                 metric("graph_critical_health",
+                        detail::json_string(status.graph_critical_health))}));
         }
         return diagnostics;
     }

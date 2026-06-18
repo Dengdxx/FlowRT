@@ -2107,6 +2107,50 @@ backends = ["inproc"]
 }
 
 #[test]
+fn rejects_graph_health_critical_instance_ref_tampering() {
+    let source = r#"
+[package]
+name = "graph_health_critical_tamper"
+rsdl_version = "0.1"
+
+[graph.health]
+critical = ["resilient"]
+
+[component.processor]
+language = "rust"
+output = ["result:u32"]
+
+[instance.resilient]
+component = "processor"
+failure_policy = "restart"
+
+[instance.resilient.task]
+trigger = "periodic"
+period_ms = 10
+output = ["result"]
+
+[profile.default]
+backend = "inproc"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["inproc"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].health.critical_instances[0].name = "ghost".to_string();
+
+    let report =
+        validate_contract(&ir).expect_err("tampered graph health critical refs should fail");
+    assert!(
+        report.errors.iter().any(|error| error
+            .message
+            .contains("unknown graph health critical instance `ghost`")),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn rejects_graph_health_stop_without_recoverable_instance() {
     let source = r#"
 [package]

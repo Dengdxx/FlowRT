@@ -16,6 +16,7 @@ int main() {
     static_assert(static_cast<std::uint8_t>(flowrt::LifecycleState::Degraded) == 6);
 
     flowrt::IntrospectionState state;
+    state.register_critical_instances({"controller", "monitor"});
     state.record_lifecycle_state("controller", flowrt::LifecycleState::Running);
     state.record_lifecycle_state("plant", flowrt::LifecycleState::Faulted);
     state.record_lifecycle_state("monitor", flowrt::LifecycleState::Degraded);
@@ -57,6 +58,10 @@ int main() {
 
     // 图级 health = worst-of：存在 faulted 实例 → 图 faulted（error），与 Rust 镜像。
     assert(status.graph_health == "faulted");
+    assert(status.graph_critical_health == "degraded");
+    assert(status.critical_instances.size() == 2);
+    assert(status.critical_instances[0] == "controller");
+    assert(status.critical_instances[1] == "monitor");
     bool graph_faulted = false;
     for (const auto &diagnostic : status.diagnostics) {
         if (diagnostic.category != "graph_health") {
@@ -69,6 +74,19 @@ int main() {
         graph_faulted = true;
     }
     assert(graph_faulted);
+
+    state.record_instance_restart("controller");
+    state.record_lifecycle_transition("controller", flowrt::LifecycleState::Faulted,
+                                      std::uint64_t{7}, "critical_fault");
+    const auto fault_status = state.status();
+    assert(fault_status.graph_critical_health == "faulted");
+    assert(fault_status.instances[0].restart_count == 1);
+    assert(fault_status.instances[0].last_fault_reason.has_value());
+    assert(*fault_status.instances[0].last_fault_reason == "critical_fault");
+    assert(fault_status.instances[0].last_fault_tick.has_value());
+    assert(*fault_status.instances[0].last_fault_tick == 7);
+    assert(fault_status.instances[0].last_transition_tick.has_value());
+    assert(*fault_status.instances[0].last_transition_tick == 7);
 
     state.record_failover(flowrt::IntrospectionFailoverEvent{
         .event = "failover",

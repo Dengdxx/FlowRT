@@ -889,7 +889,9 @@ fn live_hz_summary_formats_channel_delta_rate() {
             params: Vec::new(),
             instances: Vec::new(),
             failovers: Vec::new(),
+            critical_instances: Vec::new(),
             graph_health: "healthy".to_string(),
+            graph_critical_health: "healthy".to_string(),
             diagnostics: Vec::new(),
         },
     };
@@ -927,7 +929,9 @@ fn live_hz_summary_formats_channel_delta_rate() {
             params: Vec::new(),
             instances: Vec::new(),
             failovers: Vec::new(),
+            critical_instances: Vec::new(),
             graph_health: "healthy".to_string(),
+            graph_critical_health: "healthy".to_string(),
             diagnostics: Vec::new(),
         },
     };
@@ -2147,6 +2151,79 @@ fn live_status_summary_displays_task_and_lane_health() {
     assert!(
         output.contains("dispatched_count=500"),
         "expected dispatched_count=500 in output: {output}"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_status_summary_displays_graph_health_metrics() {
+    let root = temp_test_dir("live-status-graph-health");
+    let socket = root.join("main.sock");
+    let handshake = flowrt::IntrospectionHandshake {
+        protocol_version: flowrt::INTROSPECTION_PROTOCOL_VERSION.to_string(),
+        pid: 77,
+        started_at_unix_ms: 1234,
+        self_description_hash: "feedface".to_string(),
+        package: "robot_demo".to_string(),
+        process: "main".to_string(),
+        runtime: "rust".to_string(),
+    };
+    let state = flowrt::IntrospectionState::new();
+    state.register_critical_instances(["controller_a", "controller_b"]);
+    state.record_lifecycle_transition(
+        "controller_a",
+        flowrt::LifecycleState::Running,
+        Some(1),
+        None,
+    );
+    state.record_lifecycle_transition(
+        "controller_b",
+        flowrt::LifecycleState::Running,
+        Some(1),
+        None,
+    );
+    state.record_lifecycle_transition(
+        "monitor",
+        flowrt::LifecycleState::Faulted,
+        Some(7),
+        Some("sensor_timeout"),
+    );
+    state.record_instance_restart("monitor");
+
+    let server = flowrt::spawn_status_server_at(socket.clone(), handshake, state)
+        .expect("status server should start");
+
+    let output = live_status_summary_for_sockets(vec![socket], false).unwrap();
+
+    assert!(
+        output.contains("graph_health=faulted"),
+        "expected graph_health=faulted in output: {output}"
+    );
+    assert!(
+        output.contains("graph_critical_health=healthy"),
+        "expected graph_critical_health=healthy in output: {output}"
+    );
+    assert!(
+        output.contains("critical_instances=controller_a,controller_b"),
+        "expected critical_instances in output: {output}"
+    );
+    assert!(
+        output.contains("instance=monitor lifecycle=faulted restart_count=1"),
+        "expected monitor lifecycle metrics in output: {output}"
+    );
+    assert!(
+        output.contains("last_fault_reason=sensor_timeout"),
+        "expected last_fault_reason in output: {output}"
+    );
+    assert!(
+        output.contains("last_fault_tick=7"),
+        "expected last_fault_tick in output: {output}"
+    );
+    assert!(
+        output.contains("last_transition_tick=7"),
+        "expected last_transition_tick in output: {output}"
     );
 
     drop(server);

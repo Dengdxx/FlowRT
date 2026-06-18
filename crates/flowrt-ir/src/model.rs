@@ -590,15 +590,17 @@ pub enum GraphFaultReaction {
 }
 
 /// 图级 health 反应合同。聚合每实例 lifecycle 后据此驱动图级动作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct GraphHealthPolicyIr {
     pub on_faulted: GraphFaultReaction,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub critical_instances: Vec<EntityRef>,
 }
 
 impl GraphHealthPolicyIr {
     /// 默认合同（continue）；用于 canonical JSON 跳过整段。
     pub fn is_default(&self) -> bool {
-        self.on_faulted == GraphFaultReaction::Continue
+        self.on_faulted == GraphFaultReaction::Continue && self.critical_instances.is_empty()
     }
 }
 

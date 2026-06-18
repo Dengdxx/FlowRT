@@ -536,6 +536,14 @@ inline std::string instance_status_json(const IntrospectionInstanceStatus &insta
     output.append(json_string(instance.instance));
     output.append(",\"lifecycle_state\":");
     output.append(json_string(instance.lifecycle_state));
+    output.append(",\"restart_count\":");
+    output.append(std::to_string(instance.restart_count));
+    output.append(",\"last_fault_reason\":");
+    output.append(instance.last_fault_reason ? json_string(*instance.last_fault_reason) : "null");
+    output.append(",\"last_fault_tick\":");
+    output.append(optional_u64_json(instance.last_fault_tick));
+    output.append(",\"last_transition_tick\":");
+    output.append(optional_u64_json(instance.last_transition_tick));
     output.push_back('}');
     return output;
 }
@@ -690,6 +698,10 @@ inline std::string status_json(const IntrospectionStatus &status) {
     }
     output.append("],\"graph_health\":");
     output.append(json_string(status.graph_health));
+    output.append(",\"critical_instances\":");
+    output.append(json_string_array(status.critical_instances));
+    output.append(",\"graph_critical_health\":");
+    output.append(json_string(status.graph_critical_health));
     output.append(",\"diagnostics\":[");
     for (std::size_t index = 0; index < status.diagnostics.size(); ++index) {
         if (index != 0) {

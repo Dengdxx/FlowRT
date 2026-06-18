@@ -370,6 +370,7 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     output.push_str("        let _ = backend;\n");
     output.push_str("        let shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("        let introspection_state = flowrt::IntrospectionState::new();\n");
+    output.push_str(&emit_rust_graph_health_registration(emission.graph));
     output.push_str("        let scheduler_events = flowrt::ScheduleWaiter::new();\n");
     output.push_str(&run_scope_receiver(
         &scheduler_emit::emit_rust_scheduler_event_registration(
@@ -564,6 +565,20 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
     }
     output.push_str("        status\n    }\n");
     output
+}
+
+fn emit_rust_graph_health_registration(graph: &GraphIr) -> String {
+    if graph.health.critical_instances.is_empty() {
+        return String::new();
+    }
+    let critical = graph
+        .health
+        .critical_instances
+        .iter()
+        .map(|instance| crate::rust_string_literal(&instance.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("        introspection_state.register_critical_instances([{critical}]);\n")
 }
 
 fn run_scope_receiver(code: &str) -> String {

@@ -389,9 +389,10 @@ pub(super) fn parse_graph(root: &Table) -> Result<Option<RawGraph>> {
                         field: "health".to_string(),
                         expected: "table",
                     })?;
-            validate_known_fields(health_table, "graph.health", &["on_faulted"])?;
+            validate_known_fields(health_table, "graph.health", &["on_faulted", "critical"])?;
             Some(RawGraphHealth {
                 on_faulted: optional_string(health_table, "graph.health", "on_faulted")?,
+                critical: optional_string_array(health_table, "graph.health", "critical")?,
             })
         }
     };

@@ -48,6 +48,27 @@ pub(super) struct ChannelState {
     pub(super) probe: IntrospectionChannelProbe,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct InstanceRuntimeState {
+    pub(super) lifecycle: LifecycleState,
+    pub(super) restart_count: u64,
+    pub(super) last_fault_reason: Option<String>,
+    pub(super) last_fault_tick: Option<u64>,
+    pub(super) last_transition_tick: Option<u64>,
+}
+
+impl Default for InstanceRuntimeState {
+    fn default() -> Self {
+        Self {
+            lifecycle: LifecycleState::Uninitialized,
+            restart_count: 0,
+            last_fault_reason: None,
+            last_fault_tick: None,
+            last_transition_tick: None,
+        }
+    }
+}
+
 type OperationCancelHandler =
     Arc<dyn Fn(&str) -> std::result::Result<IntrospectionOperationStatus, String> + Send + Sync>;
 
@@ -81,7 +102,8 @@ pub(super) struct IntrospectionStateInner {
     operation_cancel_handlers: BTreeMap<String, OperationCancelHandler>,
     pub(super) tasks: BTreeMap<String, IntrospectionTaskHealth>,
     pub(super) lanes: BTreeMap<String, IntrospectionLaneHealth>,
-    pub(super) lifecycle: BTreeMap<String, LifecycleState>,
+    pub(super) instances: BTreeMap<String, InstanceRuntimeState>,
+    pub(super) critical_instances: Vec<String>,
     pub(super) failovers: Vec<IntrospectionFailoverEvent>,
 }
 
@@ -562,10 +584,51 @@ impl IntrospectionState {
         inner.inputs.insert(key, status);
     }
 
+    /// 注册 graph critical health 参与聚合的 instance 名集合；空集合表示所有已观测实例。
+    pub fn register_critical_instances<I, S>(&self, instances: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut critical = instances.into_iter().map(Into::into).collect::<Vec<_>>();
+        critical.sort();
+        critical.dedup();
+        let mut inner = self.lock_inner();
+        inner.critical_instances = critical;
+    }
+
     /// 记录某 instance 的最新生命周期状态。generated shell 在各生命周期阶段调用。
     pub fn record_lifecycle_state(&self, instance: impl Into<String>, state: LifecycleState) {
+        self.record_lifecycle_transition(instance, state, None, None);
+    }
+
+    /// 记录某 instance 生命周期边沿及可选故障上下文。
+    pub fn record_lifecycle_transition(
+        &self,
+        instance: impl Into<String>,
+        state: LifecycleState,
+        tick_id: Option<u64>,
+        reason: Option<&str>,
+    ) {
         let mut inner = self.lock_inner();
-        inner.lifecycle.insert(instance.into(), state);
+        let transition_tick = tick_id.or(Some(inner.tick_count));
+        let entry = inner.instances.entry(instance.into()).or_default();
+        entry.lifecycle = state;
+        entry.last_transition_tick = transition_tick;
+        if state == LifecycleState::Faulted {
+            entry.last_fault_tick = transition_tick;
+            entry.last_fault_reason = reason.map(ToOwned::to_owned);
+        }
+    }
+
+    /// 记录某 instance 的一次重启尝试。
+    pub fn record_instance_restart(&self, instance: impl Into<String>) {
+        let mut inner = self.lock_inner();
+        inner
+            .instances
+            .entry(instance.into())
+            .or_default()
+            .restart_count += 1;
     }
 
     /// 记录一次 standby redundancy failover。

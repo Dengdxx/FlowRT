@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 use crate::recorder::RecorderStatus;
 
@@ -32,14 +33,36 @@ impl RuntimeObservabilityFacts {
         recorder: RecorderStatus,
     ) -> Self {
         let instances = inner
-            .lifecycle
+            .instances
             .iter()
             .map(|(name, state)| IntrospectionInstanceStatus {
                 instance: name.clone(),
-                lifecycle_state: state.as_str().to_string(),
+                lifecycle_state: state.lifecycle.as_str().to_string(),
+                restart_count: state.restart_count,
+                last_fault_reason: state.last_fault_reason.clone(),
+                last_fault_tick: state.last_fault_tick,
+                last_transition_tick: state.last_transition_tick,
             })
             .collect::<Vec<_>>();
         let graph_health = graph_health_label(&instances).to_string();
+        let critical_instances = if inner.critical_instances.is_empty() {
+            instances
+                .iter()
+                .map(|instance| instance.instance.clone())
+                .collect::<Vec<_>>()
+        } else {
+            inner.critical_instances.clone()
+        };
+        let critical_set = critical_instances
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let critical_statuses = instances
+            .iter()
+            .filter(|instance| critical_set.contains(instance.instance.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let graph_critical_health = graph_health_label(&critical_statuses).to_string();
         let status = IntrospectionStatus {
             tick_count: inner.tick_count,
             clock: inner.clock.clone(),
@@ -65,7 +88,9 @@ impl RuntimeObservabilityFacts {
             recorder,
             instances,
             failovers: inner.failovers.clone(),
+            critical_instances,
             graph_health,
+            graph_critical_health,
             diagnostics: Vec::new(),
         };
         Self::from_status_snapshot(status)
@@ -588,7 +613,12 @@ pub(super) fn derive_diagnostic_facts(
             None,
             None,
             clock_ms,
-            vec![],
+            vec![
+                metric("restart_count", instance.restart_count),
+                metric("last_fault_reason", instance.last_fault_reason.clone()),
+                metric("last_fault_tick", instance.last_fault_tick),
+                metric("last_transition_tick", instance.last_transition_tick),
+            ],
         ));
     }
 
@@ -611,7 +641,13 @@ pub(super) fn derive_diagnostic_facts(
             None,
             None,
             clock_ms,
-            vec![],
+            vec![
+                metric("critical_instances", status.critical_instances.clone()),
+                metric(
+                    "graph_critical_health",
+                    status.graph_critical_health.clone(),
+                ),
+            ],
         ));
     }
 

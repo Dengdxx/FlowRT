@@ -117,6 +117,7 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     output.push_str("    (void)backend;\n");
     output.push_str("    auto shutdown = flowrt::install_signal_shutdown_token();\n");
     output.push_str("    flowrt::IntrospectionState introspection_state;\n");
+    output.push_str(&emit_cpp_graph_health_registration(run.graph));
     output.push_str("    flowrt::ScheduleWaiter scheduler_events;\n");
     output.push_str(&emit_cpp_scheduler_event_registration(
         run.binds,
@@ -231,6 +232,20 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
     }
     output.push_str("    return status;\n}\n\n");
     output
+}
+
+fn emit_cpp_graph_health_registration(graph: &GraphIr) -> String {
+    if graph.health.critical_instances.is_empty() {
+        return String::new();
+    }
+    let critical = graph
+        .health
+        .critical_instances
+        .iter()
+        .map(|instance| cpp_string_literal(&instance.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("    introspection_state.register_critical_instances({{{critical}}});\n")
 }
 
 /// 生成进程级 zenoh service 端点构造代码，注入 `App::run_process_*` 函数体（on_start 之后、
@@ -1149,7 +1164,7 @@ fn emit_cpp_restart_driver(
             .collect::<String>();
         let backoff = cpp_backoff_expr(&var, restart.initial_delay_ms, restart.max_delay_ms);
         output.push_str(&format!(
-            "        if ({var}_next_restart_ms.has_value() && scheduler_now_ms >= *{var}_next_restart_ms) {{\n            {var}_next_restart_ms.reset();\n            auto {var}_restart_status = {member}_ ? {member}_->on_init({ctx}) : flowrt::Status::Error;\n            if ({var}_restart_status == flowrt::Status::Ok) {{\n                {var}_restart_status = {member}_->on_start({ctx});\n            }}\n            if ({var}_restart_status == flowrt::Status::Ok) {{\n                {var}_fault_consecutive = 0;\n                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n{resume}            }} else {{\n                {var}_fault_consecutive += 1;\n                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n                if ({var}_fault_consecutive >= {max_restarts}U) {{\n                    {var}_terminal_faulted = true;\n{graph_terminal}                }} else {{\n                    {var}_next_restart_ms = scheduler_now_ms + {backoff};\n                }}\n            }}\n        }}\n",
+            "        if ({var}_next_restart_ms.has_value() && scheduler_now_ms >= *{var}_next_restart_ms) {{\n            {var}_next_restart_ms.reset();\n            introspection_state.record_instance_restart({lit});\n            auto {var}_restart_status = {member}_ ? {member}_->on_init({ctx}) : flowrt::Status::Error;\n            if ({var}_restart_status == flowrt::Status::Ok) {{\n                {var}_restart_status = {member}_->on_start({ctx});\n            }}\n            if ({var}_restart_status == flowrt::Status::Ok) {{\n                {var}_fault_consecutive = 0;\n                introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Running);\n{resume}            }} else {{\n                {var}_fault_consecutive += 1;\n                introspection_state.record_lifecycle_transition({lit}, flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), \"restart_failed\");\n                if ({var}_fault_consecutive >= {max_restarts}U) {{\n                    {var}_terminal_faulted = true;\n{graph_terminal}                }} else {{\n                    {var}_next_restart_ms = scheduler_now_ms + {backoff};\n                }}\n            }}\n        }}\n",
             max_restarts = restart.max_restarts,
         ));
     }
@@ -1218,7 +1233,7 @@ fn emit_cpp_task_error_handling(
         };
         let failover_pending = cpp_failover_pending_mark(&plan.name, standby_failover);
         arms.push_str(&format!(
-            "{labels}                        {{\n                            introspection_state.record_lifecycle_state({lit}, flowrt::LifecycleState::Faulted);\n{failover_pending}{suspend}{graph_terminal}{restart_schedule}                            break;\n                        }}\n",
+            "{labels}                        {{\n                            introspection_state.record_lifecycle_transition({lit}, flowrt::LifecycleState::Faulted, static_cast<std::uint64_t>(tick_base), \"task_error\");\n{failover_pending}{suspend}{graph_terminal}{restart_schedule}                            break;\n                        }}\n",
         ));
     }
     let mut output = format!(
