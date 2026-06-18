@@ -25,6 +25,7 @@ use contract::{
     validate_contract_artifact, validate_contract_canonical_fields,
     validate_contract_canonical_ordering, validate_contract_shape, validate_contract_versions,
     validate_entity_id_uniqueness, validate_entity_name_uniqueness, validate_entity_references,
+    validate_fault_injection,
 };
 use flowrt_ir::ContractIr;
 use graphs::validate_graphs;
@@ -94,6 +95,7 @@ pub fn validate_contract(ir: &ContractIr) -> Result<()> {
     validate_contract_versions(ir, &mut errors);
     validate_contract_shape(ir, &mut errors);
     validate_contract_artifact(ir, &mut errors);
+    validate_fault_injection(ir, &mut errors);
     validate_contract_canonical_fields(ir, &mut errors);
     validate_contract_canonical_ordering(ir, &mut errors);
     validate_entity_name_uniqueness(ir, &mut errors);

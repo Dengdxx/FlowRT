@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use flowrt_ir::{
     BoundaryDirection, BoundaryEndpointIr, CONTRACT_IR_VERSION, CONTRACT_SCHEMA_VERSION,
     ChannelEdgeIr, ClockSourceKind, ContractIr, EntityId, EntityRef, GraphMode, LanguageKind,
-    OperationEdgeIr, RSDL_VERSION, ResourceSatisfactionIr,
+    OperationEdgeIr, RSDL_VERSION, ResourceSatisfactionIr, TaskIr, TriggerKind,
 };
 
 use crate::ValidationError;
@@ -55,14 +55,17 @@ pub(crate) fn validate_contract_artifact(ir: &ContractIr, errors: &mut Vec<Valid
             "temporary island artifact must also be test_only",
         ));
     }
-    if artifact.test_only && artifact.temporary_overlay.is_none() {
+    if artifact.test_only
+        && artifact.temporary_overlay.is_none()
+        && artifact.fault_injection.is_none()
+    {
         errors.push(ValidationError::new(
-            "test_only artifact must identify its temporary_overlay source",
+            "test_only artifact must identify its temporary_overlay or fault_injection source",
         ));
     }
 
-    // clock source 是派生事实：按 temporary_overlay 重新推导，拒绝不一致或暂不支持的取值，
-    // 不能信任落盘 IR 中可被手工改写的来源。
+    // clock source 是派生事实：按 temporary_overlay / fault_injection 重新推导，拒绝不一致或暂不
+    // 支持的取值，不能信任落盘 IR 中可被手工改写的来源。
     match artifact.clock_source {
         ClockSourceKind::ExternalStepped => {
             errors.push(ValidationError::new(
@@ -71,11 +74,12 @@ pub(crate) fn validate_contract_artifact(ir: &ContractIr, errors: &mut Vec<Valid
             ));
         }
         clock_source => {
-            let expected = if artifact.temporary_overlay.is_some() {
-                ClockSourceKind::SimulatedReplay
-            } else {
-                ClockSourceKind::Realtime
-            };
+            let expected =
+                if artifact.temporary_overlay.is_some() || artifact.fault_injection.is_some() {
+                    ClockSourceKind::SimulatedReplay
+                } else {
+                    ClockSourceKind::Realtime
+                };
             if clock_source != expected {
                 errors.push(ValidationError::new(format!(
                     "artifact clock source `{}` is inconsistent with derived `{}`",
@@ -157,6 +161,116 @@ pub(crate) fn validate_contract_artifact(ir: &ContractIr, errors: &mut Vec<Valid
             )));
         }
     }
+}
+
+/// 校验 test-only 故障注入场景。
+///
+/// 注入是 test-only overlay：只允许命中 scheduled task（periodic / on_message / on_synchronized），
+/// 因为 0.21.x 故障反应机器只对这些 task 的回调 `Status::Error` 反应；startup / shutdown 不走该
+/// 错误分发路径。确定性验证 v1 限单进程（无全局 tick lockstep），目标所在 graph 含多进程组时拒绝。
+/// EntityRef 必须指向同一实体，调用序号 canonical（1-based、升序去重）。
+pub(crate) fn validate_fault_injection(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let Some(fault) = ir.artifact.fault_injection.as_ref() else {
+        return;
+    };
+
+    if fault.kind != "fault_injection" {
+        errors.push(ValidationError::new(format!(
+            "fault injection kind `{}` is not supported",
+            fault.kind
+        )));
+    }
+    if fault.generated_by.command.trim().is_empty() {
+        errors.push(ValidationError::new(
+            "fault injection generated_by.command must not be empty",
+        ));
+    }
+    if fault.generated_by.source.trim().is_empty() {
+        errors.push(ValidationError::new(
+            "fault injection generated_by.source must not be empty",
+        ));
+    }
+    if fault.points.is_empty() {
+        errors.push(ValidationError::new(
+            "fault injection must record at least one injection point",
+        ));
+    }
+
+    for point in &fault.points {
+        let target = format!("{}.{}", point.instance.name, point.task.name);
+        if point.invocations.is_empty() && point.from_invocation.is_none() {
+            errors.push(ValidationError::new(format!(
+                "fault injection point `{target}` must set invocations or from_invocation",
+            )));
+        }
+        if point.invocations.contains(&0) || point.from_invocation == Some(0) {
+            errors.push(ValidationError::new(format!(
+                "fault injection point `{target}` uses 1-based invocation indices; 0 is invalid",
+            )));
+        }
+        if !is_sorted_unique(&point.invocations) {
+            errors.push(ValidationError::new(format!(
+                "fault injection point `{target}` invocations must be canonical (sorted, deduped)",
+            )));
+        }
+
+        match find_task_by_id(ir, &point.task.id) {
+            None => errors.push(ValidationError::new(format!(
+                "fault injection target task `{target}` does not resolve to a contract task",
+            ))),
+            Some((graph, task)) => {
+                if task.name != point.task.name {
+                    errors.push(ValidationError::new(format!(
+                        "fault injection task ref `{}` name does not match resolved task `{}`",
+                        point.task.name, task.name
+                    )));
+                }
+                if task.instance.id != point.instance.id
+                    || task.instance.name != point.instance.name
+                {
+                    errors.push(ValidationError::new(format!(
+                        "fault injection instance ref for `{target}` does not match task owner",
+                    )));
+                }
+                if !is_scheduled_trigger(task.trigger) {
+                    errors.push(ValidationError::new(format!(
+                        "fault injection target `{target}` must be a scheduled task \
+                         (periodic / on_message / on_synchronized)",
+                    )));
+                }
+                if graph.processes.len() > 1 {
+                    errors.push(ValidationError::new(format!(
+                        "fault injection is single-process only; target `{target}` is in graph \
+                         `{}` with multiple process groups",
+                        graph.name
+                    )));
+                }
+            }
+        }
+    }
+}
+
+fn is_scheduled_trigger(trigger: TriggerKind) -> bool {
+    matches!(
+        trigger,
+        TriggerKind::Periodic | TriggerKind::OnMessage | TriggerKind::OnSynchronized
+    )
+}
+
+fn is_sorted_unique(values: &[u64]) -> bool {
+    values.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn find_task_by_id<'ir>(
+    ir: &'ir ContractIr,
+    task_id: &EntityId,
+) -> Option<(&'ir flowrt_ir::GraphIr, &'ir TaskIr)> {
+    for graph in &ir.graphs {
+        if let Some(task) = graph.tasks.iter().find(|task| &task.id == task_id) {
+            return Some((graph, task));
+        }
+    }
+    None
 }
 
 pub(crate) fn validate_contract_canonical_fields(

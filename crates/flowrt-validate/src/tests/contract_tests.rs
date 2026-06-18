@@ -232,6 +232,108 @@ fn rejects_external_stepped_clock_source() {
     }));
 }
 
+/// 把含单 task 的 strict 合同投影并叠加故障注入，trigger 由参数决定。
+fn fault_injection_fixture(trigger: &str) -> flowrt_ir::ContractIr {
+    let source = format!(
+        r#"
+[package]
+name = "fault_injection_validate_demo"
+rsdl_version = "0.1"
+
+[type.Tick]
+value = "u32"
+
+[component.flaky]
+language = "rust"
+output = ["out:Tick"]
+
+[instance.flaky]
+component = "flaky"
+
+[instance.flaky.task]
+trigger = "{trigger}"
+{period}
+output = ["out"]
+
+[profile.default]
+backend = "inproc"
+"#,
+        period = if trigger == "periodic" {
+            "period_ms = 10"
+        } else {
+            ""
+        },
+    );
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+    let projected = flowrt_ir::project_contract_to_profile(&ir, None).unwrap();
+    flowrt_ir::apply_fault_injection_overlay(
+        &projected,
+        &flowrt_ir::FaultInjectionScenario {
+            points: vec![flowrt_ir::FaultInjectionScenarioPoint {
+                instance: "flaky".to_string(),
+                task: "main".to_string(),
+                invocations: vec![1, 2],
+                from_invocation: None,
+                reason: "verify".to_string(),
+            }],
+            generated_by: Default::default(),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn accepts_fault_injection_on_scheduled_task() {
+    let injected = fault_injection_fixture("periodic");
+    assert_eq!(
+        injected.artifact.clock_source,
+        flowrt_ir::ClockSourceKind::SimulatedReplay
+    );
+    validate_contract(&injected)
+        .expect("fault injection on a periodic task should validate as test-only");
+}
+
+#[test]
+fn rejects_fault_injection_on_non_scheduled_task() {
+    let injected = fault_injection_fixture("startup");
+    let report = validate_contract(&injected)
+        .expect_err("fault injection on a startup task should fail validation");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| { error.message.contains("must be a scheduled task") })
+    );
+}
+
+#[test]
+fn rejects_fault_injection_non_canonical_invocations() {
+    let mut injected = fault_injection_fixture("periodic");
+    injected.artifact.fault_injection.as_mut().unwrap().points[0].invocations = vec![2, 1];
+    let report = validate_contract(&injected)
+        .expect_err("non-canonical fault injection invocations should fail validation");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| { error.message.contains("must be canonical") })
+    );
+}
+
+#[test]
+fn rejects_fault_injection_clock_tampered_to_realtime() {
+    let mut injected = fault_injection_fixture("periodic");
+    injected.artifact.clock_source = flowrt_ir::ClockSourceKind::Realtime;
+    let report = validate_contract(&injected)
+        .expect_err("fault injection tampered to realtime clock should fail validation");
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "artifact clock source `realtime` is inconsistent with derived `simulated_replay`",
+        )
+    }));
+}
+
 #[test]
 fn rejects_contract_with_multiple_graphs() {
     let source = r#"
