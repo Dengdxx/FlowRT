@@ -5,9 +5,19 @@
 
 ## 当前版本背景
 
-当前 workspace 版本为 `0.23.2`；当前发布收口为
-`v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++ runtime shell
-进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量债闭合。
+当前开发线为 `v0.23.3 Debt Consolidation`。本版本把当前 active debt / defer 收束在
+一个 patch 版本内，不再拆成多个 `0.23.Z`；实现按 21 个原子 commit 分，最后本地 gate
+通过后集中 push。`v0.23.3` 不纳入 Python binding、Service over `iox2`、PTP/NTP、
+cross-host exact sync 或 hard realtime。
+
+本版本目标是清掉已确认的 exposed-but-fake 或显式 defer：global tick determinism、
+cross-process FIFO feedback、standby failover、graph health metrics、fault injection
+matrix、Operation zenoh / FIFO / retention / policy、FrameDescriptor payload record、
+OpenTelemetry / tracing 最小 exporter、C v0 params 子集，以及 v0.23.3 focused smoke /
+release readiness / release gate 收尾。
+
+上一发布线为 `v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++
+runtime shell 进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量债闭合。
 
 - 新增仓库级 `.clang-tidy`，采用低噪声 C++20 checks，避免 `modernize-use-trailing-return-type`、
   `readability-magic-numbers`、`modernize-avoid-c-arrays` 等高噪声或 ABI 不适配规则。
@@ -59,16 +69,11 @@ self-description 与 launch manifest 中暴露真实 request key expression。
 这些能力当作已完整支持；应优先选择“实现完整端到端语义”或“validator/CLI 明确
 fail-fast 拒绝”，避免 exposed-but-fake 语义继续进入下一个大版本。
 
-还债按依赖与代价分三波，关键路径是 debt 2（跨进程 determinism）——它卡住 debt 3 的
-跨进程注入片与 debt 1 的稳健 failover。pre-1.0 应趁早重写 determinism，避免 v1.0.0
-ABI/schema 冻结后被绑死。每债还时口径不变：要么完整端到端实现，要么继续 fail-fast，
-不再留 exposed-but-fake。
+`v0.23.3` 还债口径：这些问题全部进入同一版本处理，按 commit 拆分，不按 patch 版本
+切碎。每项要么完整端到端实现，要么继续 validator/CLI fail-fast 并在本文档说明原因；
+不能生成 placeholder wrapper。
 
-```text
-波1(6,4 任意序)  →  波2: 2 → 1，5 可并行  →  波3: 3 + 性能矩阵 (v1.0.0)
-```
-
-**波次 1 — 快还硬化（下个 patch 线）**：边界清晰、无新大语义。
+**已收口债务**：
 
 - debt 6 backend route health 统一：已在 `v0.23.1` 收口。route-level publish
   error、backpressure、recovery state 归并进 `introspection/facts.rs` 同一事实源，
@@ -77,7 +82,7 @@ ABI/schema 冻结后被绑死。每债还时口径不变：要么完整端到端
   smoke 覆盖 C++ runtime headers/tests 与 generated C++ runtime shell。首版只启用低噪声
   checks，避免把 ABI/POD 风格或 generated generic capture 策略误判为发布阻塞。
 
-**波次 2 — 基础大活（各占一条 minor 线）**：有依赖，pre-1.0 大胆重写不留兼容层。
+**v0.23.3 active scope**：
 
 - debt 2 跨进程 strict determinism / global tick lockstep：先做。需 supervisor/transport
   协调全局 tick。当前跨进程 feedback 是 seeded latest-snapshot，跨进程 fault injection
@@ -89,14 +94,18 @@ ABI/schema 冻结后被绑死。每债还时口径不变：要么完整端到端
 - debt 5 OpenTelemetry / distributed tracing：独立线，无结构依赖。当前仅有
   observability capability/resource 命名或规划，不存在稳定 span/exporter 上报路径。
   FlowRT introspection 优先，tracing 是 additive，可较晚按需排期。
-
-**波次 3 — v1.0.0 capstone**：
-
 - debt 3 fault injection 矩阵：当前限 test-only、单进程、scheduled task 和合成
   `Status::Error`（`crates/flowrt-codegen/src/cpp_shell/run_emit.rs` 等只合成 error
   outcome）。startup/shutdown task、panic、deadline 超时、backend drop、随机/chaos
-  注入与性能矩阵仍未覆盖。roadmap 已把故障注入矩阵 + 性能矩阵钉在 v1.0.0；可切片增量，
-  单进程 kind 不需 debt 2，跨进程注入 determinism 骑在 debt 2 上。
+  注入与性能矩阵仍未覆盖。`v0.23.3` 覆盖 deterministic matrix 扩展；生产随机/chaos 和
+  性能矩阵仍不进本版。
+- Operation 的 zenoh generated runtime、`feedback = "fifo"`、显式 `result_retention_ms`、
+  `queue` / `cancel_running` / multi in-flight policy 进入本版；未能端到端覆盖的组合继续
+  validator 拒绝。
+- FrameDescriptor `record_payload = true` 进入本版；payload 只通过 payload capture
+  provider 记录 artifact ref/hash，不塞回普通 message channel。
+- C v0 只放开固定大小 params readonly snapshot；service、operation、variable frame、
+  `io_boundary`、`external`、`pkg_config`、动态加载和 Python binding 继续 fail-fast。
 
 上一发布线为 `v0.22.1 Reserved Keyword Naming`，是 `0.22.x 容错验证` 主题之后的验证
 加固 patch：validator 拒绝会被 codegen 直接生成为 Rust/C++ 标识符、且与任一目标语言
