@@ -69,3 +69,7 @@ script = "scripts/test-v0213-graph-health-smoke.sh"
 [[focused_smoke]]
 version = "0.21.4"
 script = "scripts/test-v0214-cross-process-feedback-smoke.sh"
+
+[[focused_smoke]]
+version = "0.22.0"
+script = "scripts/test-v0220-fault-injection-determinism-smoke.sh"
