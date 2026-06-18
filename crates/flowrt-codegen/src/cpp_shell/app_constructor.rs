@@ -53,7 +53,7 @@ pub(super) fn cpp_instance_needs_operation_shared_ptr(
 ) -> bool {
     operation_plans
         .iter()
-        .any(|plan| plan.backend.0 != "zenoh" && plan.server_instance == instance.name)
+        .any(|plan| plan.server_instance == instance.name)
 }
 
 pub(super) fn emit_cpp_app_constructor(
@@ -169,6 +169,16 @@ pub(super) fn emit_cpp_app_constructor(
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     for plan in &operation_plans {
         if plan.backend.0 == "zenoh" {
+            let operation_key_name = cpp_string_literal(&plan.operation_name);
+            let queue_depth = plan.queue_depth.max(1);
+            let max_in_flight = plan.max_in_flight.max(1);
+            let timeout_ms = plan.timeout_ms.max(1);
+            let concurrency = cpp_operation_concurrency(plan.concurrency);
+            let preempt = cpp_operation_preempt(plan.preempt);
+            let operation_index = plan.index;
+            output.push_str(&format!(
+                "    {{\n        const auto operation_policy_{operation_index} = flowrt::OperationPolicy::make(\n            std::chrono::milliseconds{{{timeout_ms}}},\n            {concurrency},\n            {preempt},\n            {queue_depth}U,\n            {max_in_flight}U);\n        this->operation_control_{operation_index}_ = std::make_shared<flowrt::OperationControl>(\n            flowrt::fnv1a64({operation_key_name}),\n            operation_policy_{operation_index}.value());\n    }}\n"
+            ));
             continue;
         }
         output.push_str(&cpp_operation_registration_block(plan));

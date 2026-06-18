@@ -312,59 +312,8 @@ fn ensure_generated_languages_supported(contract: &ContractIr) -> Result<()> {
     Ok(())
 }
 
-fn ensure_generated_transport_supported(contract: &ContractIr) -> Result<()> {
-    for graph in &contract.graphs {
-        for operation in &graph.operations {
-            if operation.backend.0 == "zenoh"
-                && (operation_endpoint_requires_generated_code(contract, graph, &operation.client)
-                    || operation_endpoint_requires_generated_code(
-                        contract,
-                        graph,
-                        &operation.server,
-                    ))
-            {
-                return Err(CodegenError::UnsupportedGeneratedTransport {
-                    message: format!(
-                        "operation bind `{}.{}` -> `{}.{}` uses backend `zenoh`, but generated Operation codegen is not wired to zenoh transport yet",
-                        operation.client.instance.name,
-                        operation.client.port,
-                        operation.server.instance.name,
-                        operation.server.port
-                    ),
-                });
-            }
-        }
-    }
-
+fn ensure_generated_transport_supported(_contract: &ContractIr) -> Result<()> {
     Ok(())
-}
-
-fn operation_endpoint_requires_generated_code(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    endpoint: &flowrt_ir::OperationPortRef,
-) -> bool {
-    endpoint_requires_generated_code(contract, graph, &endpoint.instance.name)
-}
-
-fn endpoint_requires_generated_code(
-    contract: &ContractIr,
-    graph: &GraphIr,
-    instance_name: &str,
-) -> bool {
-    let Some(instance) = graph
-        .instances
-        .iter()
-        .find(|instance| instance.name == instance_name)
-    else {
-        return false;
-    };
-    let component = component_by_name(contract, &instance.component.name);
-    component.kind != ComponentKind::External
-        && matches!(
-            component.language,
-            LanguageKind::C | LanguageKind::Cpp | LanguageKind::Rust
-        )
 }
 
 fn artifact(path: impl Into<PathBuf>, content: String) -> Artifact {

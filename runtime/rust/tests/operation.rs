@@ -1,10 +1,19 @@
 use std::time::Duration;
 
 use flowrt::{
-    OperationCancelToken, OperationConcurrencyPolicy, OperationError, OperationHealthCounters,
-    OperationId, OperationLifecycle, OperationPolicy, OperationPreemptPolicy, OperationProgress,
-    OperationState,
+    FrameCodec, OperationCancelToken, OperationConcurrencyPolicy, OperationError,
+    OperationHealthCounters, OperationHealthSnapshot, OperationId, OperationLifecycle,
+    OperationOwner, OperationPolicy, OperationPreemptPolicy, OperationProgress, OperationStartAck,
+    OperationStartRequest, OperationState, OperationStatusSnapshot,
 };
+
+fn frame_roundtrip<T>(value: &T)
+where
+    T: FrameCodec + PartialEq + std::fmt::Debug,
+{
+    let frame = value.to_frame_vec().unwrap();
+    assert_eq!(T::decode_frame(&frame).unwrap(), *value);
+}
 
 #[test]
 fn operation_state_machine_tracks_success_and_counters() {
@@ -151,4 +160,43 @@ fn operation_cancel_token_can_be_shared_without_blocking() {
 
     assert!(token.is_canceled());
     assert!(clone.is_canceled());
+}
+
+#[test]
+fn operation_transport_envelopes_use_canonical_frame_codec() {
+    let id = OperationId::new(
+        0x1122_3344_5566_7788,
+        0x0102_0304_0506_0708,
+        0xA0B0_C0D0_E0F0_1020,
+    );
+    let owner = OperationOwner::new(0x0A0B_0C0D_0E0F_1011, 0x2122_2324_2526_2728);
+    let ack = OperationStartAck::accepted_with_authority(id, owner, 123_456);
+    let status = OperationStatusSnapshot {
+        id,
+        owner,
+        state: OperationState::CancelRequested,
+        cancel_requested: true,
+        deadline_ms: 123_456,
+        health: OperationHealthSnapshot {
+            started: 1,
+            succeeded: 2,
+            failed: 3,
+            canceled: 4,
+            timeout: 5,
+            preempted: 6,
+        },
+    };
+    let start = OperationStartRequest::new(42u32, owner, Duration::from_millis(250));
+
+    frame_roundtrip(&id);
+    frame_roundtrip(&owner);
+    frame_roundtrip(&ack);
+    frame_roundtrip(&status);
+    frame_roundtrip(&start);
+
+    assert_eq!(id.to_frame_vec().unwrap().len(), 24);
+    assert_eq!(owner.to_frame_vec().unwrap().len(), 16);
+    assert_eq!(ack.to_frame_vec().unwrap().len(), 49);
+    assert_eq!(status.to_frame_vec().unwrap().len(), 98);
+    assert_eq!(start.to_frame_vec().unwrap().len(), 28);
 }

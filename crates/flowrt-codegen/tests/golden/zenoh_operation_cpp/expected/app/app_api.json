@@ -1,0 +1,225 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "307400b5c542f4d229f1f2484833dd129df8a62ea383c7ec26abca3be5fd3417",
+    "package_id": "package_9a85896c0810b115"
+  },
+  "package": {
+    "name": "zenoh_operation_cpp",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "controller",
+      "qualified_name": "controller",
+      "language": "cpp",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "controller"
+      ],
+      "user_file_path": "app/cpp/components.cpp",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "flowrt::Status on_init(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_start",
+          "signature": "flowrt::Status on_start(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_stop",
+          "signature": "flowrt::Status on_stop(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "flowrt::Status on_shutdown(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_tick",
+          "signature": "flowrt::Status on_tick(OperationClient_controller_plan& plan)",
+          "required": true,
+          "source": "cpp_interface"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "controller",
+          "trigger": "periodic",
+          "period_ms": 100,
+          "readiness": "any_ready",
+          "lane": "controller_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": []
+        }
+      ],
+      "inputs": [],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [
+        {
+          "name": "plan",
+          "goal_type": "PlanGoal",
+          "feedback_type": "PlanFeedback",
+          "result_type": "PlanResult",
+          "handle_type": "OperationClient_controller_plan",
+          "handler_argument": "OperationClient_controller_plan& plan",
+          "backend": "zenoh",
+          "server": "navigator.plan"
+        }
+      ],
+      "operation_servers": []
+    },
+    {
+      "name": "navigator",
+      "qualified_name": "navigator",
+      "language": "cpp",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "navigator"
+      ],
+      "user_file_path": "app/cpp/components.cpp",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "flowrt::Status on_init(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_start",
+          "signature": "flowrt::Status on_start(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_stop",
+          "signature": "flowrt::Status on_stop(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "flowrt::Status on_shutdown(flowrt::Context& context)",
+          "required": false,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_tick",
+          "signature": "flowrt::Status on_tick()",
+          "required": true,
+          "source": "cpp_interface"
+        },
+        {
+          "name": "on_plan_operation",
+          "signature": "flowrt::OperationHandlerResult<PlanResult> on_plan_operation(const PlanGoal& goal, flowrt::OperationCancelToken cancel, flowrt::OperationProgressPublisher<PlanFeedback>& progress)",
+          "required": false,
+          "source": "cpp_interface"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "navigator",
+          "trigger": "periodic",
+          "period_ms": 1000,
+          "readiness": "any_ready",
+          "lane": "navigator_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": []
+        }
+      ],
+      "inputs": [],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [
+        {
+          "name": "plan",
+          "goal_type": "PlanGoal",
+          "feedback_type": "PlanFeedback",
+          "result_type": "PlanResult",
+          "handler_name": "on_plan_operation",
+          "handler_signature": "flowrt::OperationHandlerResult<PlanResult> on_plan_operation(const PlanGoal& goal, flowrt::OperationCancelToken cancel, flowrt::OperationProgressPublisher<PlanFeedback>& progress)",
+          "backend": "zenoh",
+          "clients": [
+            "controller.plan"
+          ]
+        }
+      ]
+    }
+  ],
+  "stubs": [
+    {
+      "language": "cpp",
+      "component": "controller",
+      "path": "app/stubs/cpp/controller.cpp"
+    },
+    {
+      "language": "cpp",
+      "component": "navigator",
+      "path": "app/stubs/cpp/navigator.cpp"
+    }
+  ]
+}

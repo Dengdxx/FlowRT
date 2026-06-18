@@ -147,11 +147,24 @@ fn cpp_param_literal(param: &ParamIr, value: &ParamValue) -> String {
 }
 
 pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
+    // 预先计算 service/operation plans，components.hpp 的系统头依赖也由生成内容决定。
+    let graph = contract.graphs.first();
+    let service_plans = graph
+        .map(|g| crate::runtime_plan::service_runtime_plans(contract, g))
+        .unwrap_or_default();
+    let operation_plans = graph
+        .map(|g| crate::runtime_plan::operation_runtime_plans(contract, g))
+        .unwrap_or_default();
+
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
-    output.push_str(
-        "#include <cstdint>\n#include <map>\n#include <optional>\n#include <string>\n#include <utility>\n\n",
-    );
+    output.push_str("#include <cstdint>\n#include <map>\n");
+    if service_plans.iter().any(|plan| plan.backend.0 == "zenoh")
+        || operation_plans.iter().any(|plan| plan.backend.0 == "zenoh")
+    {
+        output.push_str("#include <memory>\n");
+    }
+    output.push_str("#include <optional>\n#include <string>\n#include <utility>\n\n");
     output.push_str(
         "#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n#include <flowrt/operation.hpp>\n#include <flowrt/service.hpp>\n",
     );
@@ -167,14 +180,6 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     output.push_str("#include \"flowrt_app/messages.hpp\"\n\n");
     output.push_str("namespace flowrt_app {\n\n");
 
-    // 预先计算 service plans
-    let graph = contract.graphs.first();
-    let service_plans = graph
-        .map(|g| crate::runtime_plan::service_runtime_plans(contract, g))
-        .unwrap_or_default();
-    let operation_plans = graph
-        .map(|g| crate::runtime_plan::operation_runtime_plans(contract, g))
-        .unwrap_or_default();
     output.push_str(&cpp_service_client_handle_classes(&service_plans));
     output.push_str(&cpp_operation_client_handle_classes(&operation_plans));
 
@@ -396,19 +401,23 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
     // operation step functions
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     for plan in &operation_plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
         let operation_name = cpp_string_literal(&plan.operation_name);
         let owner_name =
             cpp_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
         let operation_index = plan.index;
+        let pending_block = if plan.backend.0 == "zenoh" {
+            String::new()
+        } else {
+            format!(
+                "    if ({start_server}_.has_value()) {{\n        {start_server}_->process_pending();\n    }}\n    if ({cancel_server}_.has_value()) {{\n        {cancel_server}_->process_pending();\n    }}\n    if ({status_server}_.has_value()) {{\n        {status_server}_->process_pending();\n    }}\n",
+                start_server = cpp_operation_start_server_field_name(plan),
+                cancel_server = cpp_operation_cancel_server_field_name(plan),
+                status_server = cpp_operation_status_server_field_name(plan),
+            )
+        };
         output.push_str(&format!(
-            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)scheduler_events;\n    (void)health_map;\n    introspection_state.register_operation_cancel_handler({operation_name}, [this](std::string_view operation_id) -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {{\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        if (flowrt_operation_id_string(snapshot.id) != operation_id) {{\n            return std::string{{\"stale operation invocation `\"}} + std::string{{operation_id}} + \"`; current is `\" + flowrt_operation_id_string(snapshot.id) + \"`\";\n        }}\n        if (const auto error = this->operation_control_{operation_index}_->request_cancel(snapshot.id, snapshot.owner); error != flowrt::OperationControlError::Ok) {{\n            return std::string{{flowrt::to_string(error)}};\n        }}\n        return flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, this->operation_control_{operation_index}_->snapshot());\n    }});\n    if ({start_server}_.has_value()) {{\n        {start_server}_->process_pending();\n    }}\n    if ({cancel_server}_.has_value()) {{\n        {cancel_server}_->process_pending();\n    }}\n    if ({status_server}_.has_value()) {{\n        {status_server}_->process_pending();\n    }}\n    if (this->operation_control_{operation_index}_) {{\n        (void)this->operation_control_{operation_index}_->check_deadline(flowrt::monotonic_time_ms());\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        const auto events = this->operation_control_{operation_index}_->drain_events();\n        for (const auto& event : events) {{\n            const auto operation_id = flowrt_operation_id_string(event.id);\n            switch (event.kind) {{\n                case flowrt::OperationRuntimeEventKind::StateChanged:\n                    if (event.state.has_value()) {{\n                        introspection_state.record_operation_transition(\n                            {operation_name},\n                            operation_id,\n                            flowrt::to_string(*event.state),\n                            std::optional<std::string_view>{{{owner_name}}},\n                            flowrt::is_terminal(*event.state) ? std::nullopt : std::optional<std::uint64_t>{{snapshot.deadline_ms}});\n                    }}\n                    break;\n                case flowrt::OperationRuntimeEventKind::Progress:\n                    introspection_state.record_operation_progress({operation_name}, operation_id, event.sequence.value_or(0U));\n                    break;\n                case flowrt::OperationRuntimeEventKind::Result: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"succeeded\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::nullopt);\n                    break;\n                }}\n                case flowrt::OperationRuntimeEventKind::Error: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"failed\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::optional<std::string_view>{{\"handler error\"}});\n                    break;\n                }}\n            }}\n        }}\n        introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n    }}\n    return flowrt::Status::Ok;\n}}\n\n",
+            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)scheduler_events;\n    (void)health_map;\n    introspection_state.register_operation_cancel_handler({operation_name}, [this](std::string_view operation_id) -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {{\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        if (flowrt_operation_id_string(snapshot.id) != operation_id) {{\n            return std::string{{\"stale operation invocation `\"}} + std::string{{operation_id}} + \"`; current is `\" + flowrt_operation_id_string(snapshot.id) + \"`\";\n        }}\n        if (const auto error = this->operation_control_{operation_index}_->request_cancel(snapshot.id, snapshot.owner); error != flowrt::OperationControlError::Ok) {{\n            return std::string{{flowrt::to_string(error)}};\n        }}\n        return flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, this->operation_control_{operation_index}_->snapshot());\n    }});\n{pending_block}    if (this->operation_control_{operation_index}_) {{\n        (void)this->operation_control_{operation_index}_->check_deadline(flowrt::monotonic_time_ms());\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        const auto events = this->operation_control_{operation_index}_->drain_events();\n        for (const auto& event : events) {{\n            const auto operation_id = flowrt_operation_id_string(event.id);\n            switch (event.kind) {{\n                case flowrt::OperationRuntimeEventKind::StateChanged:\n                    if (event.state.has_value()) {{\n                        introspection_state.record_operation_transition(\n                            {operation_name},\n                            operation_id,\n                            flowrt::to_string(*event.state),\n                            std::optional<std::string_view>{{{owner_name}}},\n                            flowrt::is_terminal(*event.state) ? std::nullopt : std::optional<std::uint64_t>{{snapshot.deadline_ms}});\n                    }}\n                    break;\n                case flowrt::OperationRuntimeEventKind::Progress:\n                    introspection_state.record_operation_progress({operation_name}, operation_id, event.sequence.value_or(0U));\n                    break;\n                case flowrt::OperationRuntimeEventKind::Result: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"succeeded\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::nullopt);\n                    break;\n                }}\n                case flowrt::OperationRuntimeEventKind::Error: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"failed\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::optional<std::string_view>{{\"handler error\"}});\n                    break;\n                }}\n            }}\n        }}\n        introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n    }}\n    return flowrt::Status::Ok;\n}}\n\n",
             fn_name = cpp_operation_step_fn_name(plan),
-            start_server = cpp_operation_start_server_field_name(plan),
-            cancel_server = cpp_operation_cancel_server_field_name(plan),
-            status_server = cpp_operation_status_server_field_name(plan),
         ));
     }
     output.push_str(&emit_cpp_app_run_function(&CppRunEmission {
@@ -655,7 +664,24 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         let client_field = cpp_operation_client_field_name(plan);
         let handle_name = cpp_operation_client_handle_name(plan);
         output.push_str(&format!("    {handle_name} {client_field}_;\n"));
+        output.push_str(&format!(
+            "    std::shared_ptr<flowrt::OperationControl> operation_control_{}_; \n",
+            plan.index
+        ));
         if plan.backend.0 == "zenoh" {
+            let goal_ty = cpp_type(&plan.goal_type);
+            output.push_str(&format!(
+                "    std::optional<flowrt::zenoh::ZenohServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>> {}_;\n",
+                cpp_operation_start_server_field_name(plan)
+            ));
+            output.push_str(&format!(
+                "    std::optional<flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>> {}_;\n",
+                cpp_operation_cancel_server_field_name(plan)
+            ));
+            output.push_str(&format!(
+                "    std::optional<flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>> {}_;\n",
+                cpp_operation_status_server_field_name(plan)
+            ));
             continue;
         }
         let goal_ty = cpp_type(&plan.goal_type);
@@ -671,10 +697,6 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             "    std::optional<flowrt::InprocServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>> {}_;\n",
             cpp_operation_status_server_field_name(plan)
         ));
-        output.push_str(&format!(
-            "    std::shared_ptr<flowrt::OperationControl> operation_control_{}_; \n",
-            plan.index
-        ));
     }
     // service step function declarations
     for plan in &service_plans {
@@ -687,9 +709,6 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         ));
     }
     for plan in &operation_plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
         let fn_name = cpp_operation_step_fn_name(plan);
         output.push_str(&format!(
             "    flowrt::Status {fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map);\n"

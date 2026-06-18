@@ -3,9 +3,44 @@
 /// 覆盖 OperationId、policy、状态转换、cooperative cancel、进度事件和健康计数。
 
 #include <cassert>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/operation.hpp>
+#include <flowrt/wire.hpp>
+#include <span>
+#include <vector>
+
+struct TinyGoal {
+    std::uint32_t value = 0;
+
+    friend constexpr bool operator==(const TinyGoal &, const TinyGoal &) noexcept = default;
+
+    static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint32_t); }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        flowrt::ensure_wire_size(wire_size(), output.size());
+        flowrt::write_wire_le(output, 0U, value);
+    }
+
+    static TinyGoal decode_wire(std::span<const std::uint8_t> input) {
+        flowrt::ensure_wire_size(wire_size(), input.size());
+        return TinyGoal{.value = flowrt::read_wire_le<std::uint32_t>(input, 0U)};
+    }
+};
+
+static_assert(flowrt::CanonicalTransportMessage<flowrt::OperationId>);
+static_assert(flowrt::CanonicalTransportMessage<flowrt::OperationOwner>);
+static_assert(flowrt::CanonicalTransportMessage<flowrt::OperationStartAck>);
+static_assert(flowrt::CanonicalTransportMessage<flowrt::OperationStatusSnapshot>);
+static_assert(flowrt::CanonicalTransportMessage<flowrt::OperationStartRequest<TinyGoal>>);
+
+template <flowrt::CanonicalTransportMessage T>
+T frame_roundtrip(const T &value) {
+    std::vector<std::uint8_t> frame(flowrt::detail::encoded_frame_size(value));
+    flowrt::detail::encode_frame(value, std::span<std::uint8_t>{frame});
+    return flowrt::detail::decode_frame<T>(std::span<const std::uint8_t>{frame});
+}
 
 int main() {
     const flowrt::OperationId id{0xAAU, 1U, 0xBBU};
@@ -110,6 +145,54 @@ int main() {
     const auto ack = flowrt::OperationStartAck::accepted_ack(id);
     assert(ack.accepted);
     assert(ack.id == id);
+    const flowrt::OperationOwner owner{.scope_key = 0x0A0B0C0D0E0F1011U,
+                                       .owner_key = 0x2122232425262728U};
+    const auto ack_with_authority =
+        flowrt::OperationStartAck::accepted_with_authority(id, owner, 123456U);
+    const auto ack_decoded = frame_roundtrip(ack_with_authority);
+    assert(ack_decoded.id == ack_with_authority.id);
+    assert(ack_decoded.owner == ack_with_authority.owner);
+    assert(ack_decoded.deadline_ms == ack_with_authority.deadline_ms);
+    assert(ack_decoded.accepted == ack_with_authority.accepted);
+
+    const auto status = flowrt::OperationStatusSnapshot{
+        .id = id,
+        .owner = owner,
+        .state = flowrt::OperationState::CancelRequested,
+        .cancel_requested = true,
+        .deadline_ms = 123456U,
+        .health =
+            flowrt::OperationHealthSnapshot{
+                .started = 1U,
+                .succeeded = 2U,
+                .failed = 3U,
+                .canceled = 4U,
+                .timeout = 5U,
+                .preempted = 6U,
+            },
+    };
+    const auto status_decoded = frame_roundtrip(status);
+    assert(status_decoded.id == status.id);
+    assert(status_decoded.owner == status.owner);
+    assert(status_decoded.state == status.state);
+    assert(status_decoded.cancel_requested == status.cancel_requested);
+    assert(status_decoded.deadline_ms == status.deadline_ms);
+    assert(status_decoded.health.started == status.health.started);
+    assert(status_decoded.health.succeeded == status.health.succeeded);
+    assert(status_decoded.health.failed == status.health.failed);
+    assert(status_decoded.health.canceled == status.health.canceled);
+    assert(status_decoded.health.timeout == status.health.timeout);
+    assert(status_decoded.health.preempted == status.health.preempted);
+
+    const auto start = flowrt::OperationStartRequest<TinyGoal>{
+        .goal = TinyGoal{.value = 42U},
+        .owner = owner,
+        .timeout = std::chrono::milliseconds{250},
+    };
+    const auto start_decoded = frame_roundtrip(start);
+    assert(start_decoded.goal == start.goal);
+    assert(start_decoded.owner == start.owner);
+    assert(start_decoded.timeout == start.timeout);
     assert(flowrt::operation_client_error_from_service_error(flowrt::ServiceError::Backend) ==
            flowrt::OperationClientError::Backend);
     assert(flowrt::operation_client_error_from_service_error(flowrt::ServiceError::WouldDeadlock) ==

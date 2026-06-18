@@ -205,6 +205,11 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.graph,
         run.order,
     ));
+    output.push_str(&emit_cpp_zenoh_operation_endpoints(
+        run.contract,
+        run.graph,
+        run.order,
+    ));
     output.push_str(&emit_cpp_scheduler_v2_loop(run));
     output.push_str(&format!(
         "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> shutdown_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, shutdown_health_map);\n    }}\n",
@@ -297,6 +302,68 @@ fn emit_cpp_zenoh_service_endpoints(
                 "        this->{server_field}_ = flowrt::zenoh::ZenohServiceServer<{req_ty}, {resp_ty}>::open(\n            {name}, zenoh_service_session,\n            [this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n                if (!this->{server_instance}_) {{\n                    return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n                }}\n                return this->{server_instance}_->on_{port}_request(request);\n            }});\n        if (this->{server_field}_ && this->{server_field}_->ready()) {{\n            introspection_state.register_service({name});\n            introspection_state.mark_service_ready({name});\n        }} else {{\n            status = flowrt::Status::Error;\n        }}\n",
             ));
         }
+    }
+    output.push_str("    }\n");
+    output
+}
+
+fn emit_cpp_zenoh_operation_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+) -> String {
+    let plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let zenoh_plans = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "zenoh")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect::<Vec<_>>();
+    if zenoh_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str("    if (status == flowrt::Status::Ok) {\n");
+    output.push_str(
+        "        auto zenoh_operation_session = std::make_shared<::zenoh::Session>(flowrt::zenoh::open_zenoh_session_from_env());\n",
+    );
+    for plan in zenoh_plans {
+        let start_name = cpp_string_literal(&cpp_operation_start_endpoint_name(plan));
+        let cancel_name = cpp_string_literal(&cpp_operation_cancel_endpoint_name(plan));
+        let status_name = cpp_string_literal(&cpp_operation_status_endpoint_name(plan));
+        let feedback_name = cpp_string_literal(&cpp_operation_feedback_endpoint_name(plan));
+        let result_name = cpp_string_literal(&cpp_operation_result_endpoint_name(plan));
+        let goal_ty = cpp_type(&plan.goal_type);
+        let feedback_ty = cpp_type(&plan.feedback_type);
+        let result_ty = cpp_type(&plan.result_type);
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = cpp_operation_client_field_name(plan);
+            output.push_str(&format!(
+                "        this->{client_field}_.bind(\n            flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}, zenoh_operation_session),\n            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}, zenoh_operation_session),\n            flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}, zenoh_operation_session));\n",
+            ));
+        }
+        if !active.contains(plan.server_instance.as_str()) {
+            continue;
+        }
+        let server_instance = &plan.server_instance;
+        let port = crate::snake_identifier(&plan.server_port);
+        let operation_index = plan.index;
+        let start_server = cpp_operation_start_server_field_name(plan);
+        let cancel_server = cpp_operation_cancel_server_field_name(plan);
+        let status_server = cpp_operation_status_server_field_name(plan);
+        output.push_str(&format!(
+            "        (void){feedback_name};\n        (void){result_name};\n        this->{start_server}_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open(\n            {start_name}, zenoh_operation_session,\n            [this](const flowrt::OperationStartRequest<{goal_ty}>& request) -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n                auto operation_worker_server = this->{server_instance}_;\n                if (!operation_worker_server) {{\n                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Unavailable);\n                }}\n                auto operation_control = this->operation_control_{operation_index}_;\n                const auto started = operation_control->start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout);\n                if (!started.has_value()) {{\n                    return flowrt_operation_control_error<flowrt::OperationStartAck>(started.error());\n                }}\n                const auto ack = started.value();\n                const auto id = ack.id;\n                const auto cancel = operation_control->cancel_token().value();\n                if (const auto error = operation_control->mark_running(id);\n                    error != flowrt::OperationControlError::Ok) {{\n                    return flowrt_operation_control_error<flowrt::OperationStartAck>(error);\n                }}\n                auto goal_for_worker = request.goal;\n                try {{\n                    std::thread([operation_worker_server, operation_control, id, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {{\n                        auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {{\n                            operation_control->publish_progress(progress_id, sequence);\n                        }}}};\n                        flowrt::OperationState terminal_state = flowrt::OperationState::Failed;\n                        try {{\n                            const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, cancel, progress);\n                            switch (result.kind()) {{\n                                case flowrt::OperationHandlerResult<{result_ty}>::Kind::Succeeded:\n                                    terminal_state = flowrt::OperationState::Succeeded;\n                                    break;\n                                case flowrt::OperationHandlerResult<{result_ty}>::Kind::Failed:\n                                    terminal_state = flowrt::OperationState::Failed;\n                                    break;\n                                case flowrt::OperationHandlerResult<{result_ty}>::Kind::Canceled:\n                                    terminal_state = flowrt::OperationState::Cancelled;\n                                    break;\n                            }}\n                        }} catch (...) {{\n                            terminal_state = flowrt::OperationState::Failed;\n                        }}\n                        (void)operation_control->complete(id, terminal_state);\n                    }}).detach();\n                }} catch (...) {{\n                    (void)operation_control->complete(id, flowrt::OperationState::Failed);\n                    return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);\n                }}\n                return flowrt::ServiceResult<flowrt::OperationStartAck>::ok(ack);\n            }});\n        if (!this->{start_server}_ || !this->{start_server}_->ready()) {{\n            status = flowrt::Status::Error;\n        }}\n",
+        ));
+        output.push_str(&format!(
+            "        this->{cancel_server}_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(\n            {cancel_name}, zenoh_operation_session,\n            [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n                const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n                if (const auto error = this->operation_control_{operation_index}_->request_cancel(id, snapshot.owner);\n                    error != flowrt::OperationControlError::Ok) {{\n                    return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(error);\n                }}\n                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_{operation_index}_->snapshot());\n            }});\n        if (!this->{cancel_server}_ || !this->{cancel_server}_->ready()) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{status_server}_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(\n            {status_name}, zenoh_operation_session,\n            [this](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_{operation_index}_->snapshot());\n            }});\n        if (!this->{status_server}_ || !this->{status_server}_->ready()) {{\n            status = flowrt::Status::Error;\n        }}\n",
+        ));
     }
     output.push_str("    }\n");
     output
@@ -501,12 +568,19 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             .find(|plan| plan.index == task.source_index)
             .expect("scheduler operation task must reference an operation plan");
         let task_id = task.id;
-        let start_server = cpp_operation_start_server_field_name(plan);
-        let cancel_server = cpp_operation_cancel_server_field_name(plan);
-        let status_server = cpp_operation_status_server_field_name(plan);
         let operation_index = plan.index;
+        let pending_condition = if plan.backend.0 == "zenoh" {
+            String::new()
+        } else {
+            let start_server = cpp_operation_start_server_field_name(plan);
+            let cancel_server = cpp_operation_cancel_server_field_name(plan);
+            let status_server = cpp_operation_status_server_field_name(plan);
+            format!(
+                "({start_server}_.has_value() && {start_server}_->pending_count() > 0) || ({cancel_server}_.has_value() && {cancel_server}_->pending_count() > 0) || ({status_server}_.has_value() && {status_server}_->pending_count() > 0) || "
+            )
+        };
         output.push_str(&format!(
-            "            const auto flowrt_operation_snapshot_{operation_index} = this->operation_control_{operation_index}_ ? this->operation_control_{operation_index}_->snapshot() : flowrt::OperationStatusSnapshot{{}};\n            const bool flowrt_operation_active_{operation_index} = !flowrt::is_terminal(flowrt_operation_snapshot_{operation_index}.state) && flowrt_operation_snapshot_{operation_index}.state != flowrt::OperationState::Idle;\n            if (({start_server}_.has_value() && {start_server}_->pending_count() > 0) || ({cancel_server}_.has_value() && {cancel_server}_->pending_count() > 0) || ({status_server}_.has_value() && {status_server}_->pending_count() > 0) || (flowrt_operation_active_{operation_index} && !flowrt_operation_tick_driven_{operation_index})) {{\n                scheduler.wake(flowrt::TaskId{{{task_id}}});\n                if (flowrt_operation_active_{operation_index}) {{\n                    flowrt_operation_tick_driven_{operation_index} = true;\n                }}\n                woke_on_message = true;\n            }}\n"
+            "            const auto flowrt_operation_snapshot_{operation_index} = this->operation_control_{operation_index}_ ? this->operation_control_{operation_index}_->snapshot() : flowrt::OperationStatusSnapshot{{}};\n            const bool flowrt_operation_active_{operation_index} = !flowrt::is_terminal(flowrt_operation_snapshot_{operation_index}.state) && flowrt_operation_snapshot_{operation_index}.state != flowrt::OperationState::Idle;\n            if ({pending_condition}(flowrt_operation_active_{operation_index} && !flowrt_operation_tick_driven_{operation_index})) {{\n                scheduler.wake(flowrt::TaskId{{{task_id}}});\n                if (flowrt_operation_active_{operation_index}) {{\n                    flowrt_operation_tick_driven_{operation_index} = true;\n                }}\n                woke_on_message = true;\n            }}\n"
         ));
     }
     output.push_str(

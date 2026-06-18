@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::ServiceError;
+use crate::{FrameCodec, ServiceError, WireCodec, WireCodecError};
 
 /// 唯一标识一次 Operation invocation。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,6 +36,31 @@ impl OperationId {
     }
 }
 
+impl WireCodec for OperationId {
+    const WIRE_SIZE: usize = u64::WIRE_SIZE * 3;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        self.operation_key.encode_wire(&mut output[0..8])?;
+        self.client_id.encode_wire(&mut output[8..16])?;
+        self.sequence.encode_wire(&mut output[16..24])?;
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        Ok(Self {
+            operation_key: u64::decode_wire(&input[0..8])?,
+            client_id: u64::decode_wire(&input[8..16])?,
+            sequence: u64::decode_wire(&input[16..24])?,
+        })
+    }
+}
+
 /// Operation control authority owner。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OperationOwner {
@@ -52,6 +77,29 @@ impl OperationOwner {
             scope_key,
             owner_key,
         }
+    }
+}
+
+impl WireCodec for OperationOwner {
+    const WIRE_SIZE: usize = u64::WIRE_SIZE * 2;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        self.scope_key.encode_wire(&mut output[0..8])?;
+        self.owner_key.encode_wire(&mut output[8..16])?;
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        Ok(Self {
+            scope_key: u64::decode_wire(&input[0..8])?,
+            owner_key: u64::decode_wire(&input[8..16])?,
+        })
     }
 }
 
@@ -96,6 +144,40 @@ impl OperationState {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::TimedOut => "timed_out",
+        }
+    }
+}
+
+impl WireCodec for OperationState {
+    const WIRE_SIZE: usize = u8::WIRE_SIZE;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        let value = match self {
+            Self::Idle => 0u8,
+            Self::Starting => 1,
+            Self::Running => 2,
+            Self::CancelRequested => 3,
+            Self::Succeeded => 4,
+            Self::Failed => 5,
+            Self::Cancelled => 6,
+            Self::TimedOut => 7,
+        };
+        value.encode_wire(output)
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        match u8::decode_wire(input)? {
+            0 => Ok(Self::Idle),
+            1 => Ok(Self::Starting),
+            2 => Ok(Self::Running),
+            3 => Ok(Self::CancelRequested),
+            4 => Ok(Self::Succeeded),
+            5 => Ok(Self::Failed),
+            6 => Ok(Self::Cancelled),
+            7 => Ok(Self::TimedOut),
+            _ => Err(WireCodecError::invalid_frame(
+                "operation state discriminant is unknown",
+            )),
         }
     }
 }
@@ -370,6 +452,37 @@ pub struct OperationHealthSnapshot {
     pub preempted: u64,
 }
 
+impl WireCodec for OperationHealthSnapshot {
+    const WIRE_SIZE: usize = u64::WIRE_SIZE * 6;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        self.started.encode_wire(&mut output[0..8])?;
+        self.succeeded.encode_wire(&mut output[8..16])?;
+        self.failed.encode_wire(&mut output[16..24])?;
+        self.canceled.encode_wire(&mut output[24..32])?;
+        self.timeout.encode_wire(&mut output[32..40])?;
+        self.preempted.encode_wire(&mut output[40..48])?;
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        Ok(Self {
+            started: u64::decode_wire(&input[0..8])?,
+            succeeded: u64::decode_wire(&input[8..16])?,
+            failed: u64::decode_wire(&input[16..24])?,
+            canceled: u64::decode_wire(&input[24..32])?,
+            timeout: u64::decode_wire(&input[32..40])?,
+            preempted: u64::decode_wire(&input[40..48])?,
+        })
+    }
+}
+
 /// Operation 健康计数器。
 #[derive(Debug, Default)]
 pub struct OperationHealthCounters {
@@ -428,6 +541,42 @@ pub struct OperationStatusSnapshot {
     pub health: OperationHealthSnapshot,
 }
 
+impl WireCodec for OperationStatusSnapshot {
+    const WIRE_SIZE: usize = OperationId::WIRE_SIZE
+        + OperationOwner::WIRE_SIZE
+        + OperationState::WIRE_SIZE
+        + bool::WIRE_SIZE
+        + u64::WIRE_SIZE
+        + OperationHealthSnapshot::WIRE_SIZE;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        self.id.encode_wire(&mut output[0..24])?;
+        self.owner.encode_wire(&mut output[24..40])?;
+        self.state.encode_wire(&mut output[40..41])?;
+        self.cancel_requested.encode_wire(&mut output[41..42])?;
+        self.deadline_ms.encode_wire(&mut output[42..50])?;
+        self.health.encode_wire(&mut output[50..98])?;
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        Ok(Self {
+            id: OperationId::decode_wire(&input[0..24])?,
+            owner: OperationOwner::decode_wire(&input[24..40])?,
+            state: OperationState::decode_wire(&input[40..41])?,
+            cancel_requested: bool::decode_wire(&input[41..42])?,
+            deadline_ms: u64::decode_wire(&input[42..50])?,
+            health: OperationHealthSnapshot::decode_wire(&input[50..98])?,
+        })
+    }
+}
+
 /// Operation start 请求被 runtime 接受后的响应。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperationStartAck {
@@ -466,6 +615,34 @@ impl OperationStartAck {
     }
 }
 
+impl WireCodec for OperationStartAck {
+    const WIRE_SIZE: usize =
+        OperationId::WIRE_SIZE + OperationOwner::WIRE_SIZE + u64::WIRE_SIZE + bool::WIRE_SIZE;
+
+    fn encode_wire(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, output.len()));
+        }
+        self.id.encode_wire(&mut output[0..24])?;
+        self.owner.encode_wire(&mut output[24..40])?;
+        self.deadline_ms.encode_wire(&mut output[40..48])?;
+        self.accepted.encode_wire(&mut output[48..49])?;
+        Ok(())
+    }
+
+    fn decode_wire(input: &[u8]) -> Result<Self, WireCodecError> {
+        if input.len() != Self::WIRE_SIZE {
+            return Err(WireCodecError::wrong_size(Self::WIRE_SIZE, input.len()));
+        }
+        Ok(Self {
+            id: OperationId::decode_wire(&input[0..24])?,
+            owner: OperationOwner::decode_wire(&input[24..40])?,
+            deadline_ms: u64::decode_wire(&input[40..48])?,
+            accepted: bool::decode_wire(&input[48..49])?,
+        })
+    }
+}
+
 /// Operation start 内部 lowering 请求。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationStartRequest<T> {
@@ -482,6 +659,41 @@ impl<T> OperationStartRequest<T> {
             owner,
             timeout,
         }
+    }
+}
+
+impl<T> FrameCodec for OperationStartRequest<T>
+where
+    T: FrameCodec,
+{
+    fn encoded_frame_size(&self) -> usize {
+        OperationOwner::WIRE_SIZE + u64::WIRE_SIZE + self.goal.encoded_frame_size()
+    }
+
+    fn encode_frame(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+        if output.len() != self.encoded_frame_size() {
+            return Err(WireCodecError::wrong_size(
+                self.encoded_frame_size(),
+                output.len(),
+            ));
+        }
+        self.owner.encode_wire(&mut output[0..16])?;
+        (self.timeout.as_millis().min(u128::from(u64::MAX)) as u64)
+            .encode_wire(&mut output[16..24])?;
+        self.goal.encode_frame(&mut output[24..])?;
+        Ok(())
+    }
+
+    fn decode_frame(input: &[u8]) -> Result<Self, WireCodecError> {
+        let header_size = OperationOwner::WIRE_SIZE + u64::WIRE_SIZE;
+        if input.len() < header_size {
+            return Err(WireCodecError::wrong_size(header_size, input.len()));
+        }
+        Ok(Self {
+            owner: OperationOwner::decode_wire(&input[0..16])?,
+            timeout: Duration::from_millis(u64::decode_wire(&input[16..24])?),
+            goal: T::decode_frame(&input[24..])?,
+        })
     }
 }
 

@@ -159,6 +159,16 @@ fn golden_zenoh_service_cpp() {
 }
 
 #[test]
+fn golden_zenoh_operation_rust() {
+    check_case("zenoh_operation_rust");
+}
+
+#[test]
+fn golden_zenoh_operation_cpp() {
+    check_case("zenoh_operation_cpp");
+}
+
+#[test]
 fn golden_sync_fusion_rust() {
     check_case("sync_fusion_rust");
 }

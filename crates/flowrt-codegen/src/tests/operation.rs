@@ -305,19 +305,72 @@ fn self_description_contains_operation_topology_and_lowering_refs() {
     assert_eq!(component["operation_clients"][0]["goal_type"], "PlanGoal");
 }
 
-/// zenoh Operation runtime 语义未接入 generated app 时必须 fail-fast，不能生成 placeholder。
+/// zenoh Operation 必须生成真实 transport lowering，同时保持用户侧 Operation API。
 #[test]
-fn rust_zenoh_operation_codegen_rejects_placeholder_output() {
+fn rust_zenoh_operation_codegen_wires_transport() {
     let source = RUST_OPERATION_RSDL.replace("backend = \"inproc\"", "backend = \"zenoh\"");
     let contract = contract_from_source(&source);
 
-    let error = emit_artifacts(&contract).expect_err("zenoh operation codegen must fail fast");
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
 
     assert!(
-        error.to_string().contains("generated Operation codegen"),
-        "unexpected error: {error}"
+        components.contains("pub struct OperationClient_controller_plan"),
+        "zenoh Operation must still expose Operation client handle.\n\n{components}"
     );
-    assert!(error.to_string().contains("backend `zenoh`"));
+    assert!(
+        components.contains("std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>>"),
+        "zenoh Operation may use an internal start service client slot.\n\n{components}"
+    );
+    assert!(
+        components.contains("flowrt::OperationStartRequest::new(goal, owner, timeout)"),
+        "start() must map the typed goal to an OperationStartRequest carrying owner authority.\n\n{components}"
+    );
+    assert!(
+        components.contains("flowrt::OperationClientError::from_service_error(error)"),
+        "transport service errors must map back to OperationClientError.\n\n{components}"
+    );
+    assert!(
+        !components.contains("ServiceClient_controller_plan"),
+        "Operation user API must not be exposed as a generated Service client.\n\n{components}"
+    );
+    assert!(
+        !components.contains("_marker: std::marker::PhantomData"),
+        "zenoh Operation must not emit placeholder marker handles.\n\n{components}"
+    );
+    assert!(
+        !components.contains("Err(flowrt::OperationClientError::Backend)"),
+        "zenoh Operation must not emit Backend placeholder methods.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceClient::open"),
+        "runtime shell must open zenoh Operation control clients.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceServer::open"),
+        "runtime shell must open zenoh Operation control servers.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("let operation_start_handler_0"),
+        "zenoh Operation server must reuse the Operation start handler.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::OperationStartRequest<PlanGoal>"),
+        "zenoh Operation start service must carry typed Operation envelope.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("let operation_control_0"),
+        "zenoh Operation server must keep Operation control facts, not only service facts.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("__flowrt_operation_controller_plan_feedback"),
+        "feedback channel must remain an Operation lowering fact.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("__flowrt_operation_controller_plan_result"),
+        "result channel must remain an Operation lowering fact.\n\n{shell}"
+    );
 }
 
 /// C++ components 应生成和 Rust 等价的 Operation typed API。
@@ -401,19 +454,64 @@ fn cpp_operation_components_are_generated() {
     );
 }
 
-/// C++ zenoh Operation 也必须 fail-fast，不能生成 Backend placeholder。
+/// C++ zenoh Operation 也必须生成真实 transport lowering，同时保持 Operation typed API。
 #[test]
-fn cpp_zenoh_operation_codegen_rejects_placeholder_output() {
+fn cpp_zenoh_operation_codegen_wires_transport() {
     let source = RUST_OPERATION_RSDL
         .replace("language = \"rust\"", "language = \"cpp\"")
         .replace("backend = \"inproc\"", "backend = \"zenoh\"");
     let contract = contract_from_source(&source);
 
-    let error = emit_artifacts(&contract).expect_err("C++ zenoh operation codegen must fail fast");
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
 
     assert!(
-        error.to_string().contains("generated Operation codegen"),
-        "unexpected error: {error}"
+        components.contains("class OperationClient_controller_plan"),
+        "C++ zenoh Operation must expose Operation client wrapper.\n\n{components}"
     );
-    assert!(error.to_string().contains("backend `zenoh`"));
+    assert!(
+        components.contains("flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>"),
+        "C++ zenoh Operation may keep an internal start service client.\n\n{components}"
+    );
+    assert!(
+        components.contains("const auto request = flowrt::OperationStartRequest<PlanGoal>"),
+        "C++ start() must map the typed goal to OperationStartRequest.\n\n{components}"
+    );
+    assert!(
+        components.contains("flowrt::operation_client_result_from_service"),
+        "C++ transport service results must map back to OperationClientResult.\n\n{components}"
+    );
+    assert!(
+        !components.contains("ServiceClient_controller_plan"),
+        "C++ Operation user API must not be exposed as a generated Service client.\n\n{components}"
+    );
+    assert!(
+        !components.contains("未实现"),
+        "C++ zenoh Operation must not emit placeholder documentation.\n\n{components}"
+    );
+    assert!(
+        !components.contains("OperationClientError::Backend);"),
+        "C++ zenoh Operation must not emit Backend placeholder methods.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open"),
+        "C++ runtime shell must open zenoh Operation start client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open"),
+        "C++ runtime shell must open zenoh Operation start server.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("start_with_timeout(request.owner"),
+        "C++ zenoh Operation server must preserve Operation owner authority.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("__flowrt_operation_controller_plan_feedback"),
+        "C++ feedback channel must remain an Operation lowering fact.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("__flowrt_operation_controller_plan_result"),
+        "C++ result channel must remain an Operation lowering fact.\n\n{shell}"
+    );
 }

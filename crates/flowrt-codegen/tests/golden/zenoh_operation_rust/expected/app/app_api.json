@@ -1,0 +1,225 @@
+{
+  "app_api_version": "0.1",
+  "contract": {
+    "ir_version": "0.1",
+    "schema_version": "0.1",
+    "source_hash": "8af0e3d4bf0e3bb7c8a0ad1d5d3aebd3c6aa4104078c71c7b6e5e1a91acd3e3d",
+    "package_id": "package_530b17a07c93181a"
+  },
+  "package": {
+    "name": "zenoh_operation_rust",
+    "rsdl_version": "0.1"
+  },
+  "graph": {
+    "name": "default",
+    "mode": "strict",
+    "profile": "default",
+    "backend": "inproc",
+    "worker_threads": 1
+  },
+  "runtime_context": {
+    "task_timing": {
+      "access": {
+        "rust": "context.timing()",
+        "cpp": "context.timing()",
+        "c": "context->has_timing / context->timing"
+      },
+      "available_in_task_context": true,
+      "available_in_lifecycle_context": false,
+      "handler_signature_changed": false,
+      "fields": [
+        "scheduled_time_ms",
+        "observed_time_ms",
+        "scheduled_delta_ms",
+        "observed_delta_ms",
+        "lateness_ms",
+        "missed_periods",
+        "deadline_missed",
+        "overrun"
+      ],
+      "clock_sources": [
+        "runtime",
+        "replay"
+      ],
+      "realtime_semantics": "realtime 运行时读取 runtime observed scheduling time",
+      "replay_semantics": "replay / temporary island 使用 fixture 驱动的 deterministic timing",
+      "non_goals": [
+        "不承诺硬实时",
+        "不建模 sensor timestamp / event-time",
+        "不建模 clock domain / PTP / NTP / approximate sync"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "controller",
+      "qualified_name": "controller",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "controller"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self, plan: &OperationClient_controller_plan) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "controller",
+          "trigger": "periodic",
+          "period_ms": 100,
+          "readiness": "any_ready",
+          "lane": "controller_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": []
+        }
+      ],
+      "inputs": [],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [
+        {
+          "name": "plan",
+          "goal_type": "PlanGoal",
+          "feedback_type": "PlanFeedback",
+          "result_type": "PlanResult",
+          "handle_type": "OperationClient_controller_plan",
+          "handler_argument": "plan: &OperationClient_controller_plan",
+          "backend": "zenoh",
+          "server": "navigator.plan"
+        }
+      ],
+      "operation_servers": []
+    },
+    {
+      "name": "navigator",
+      "qualified_name": "navigator",
+      "language": "rust",
+      "kind": "native",
+      "concurrency": "exclusive",
+      "instances": [
+        "navigator"
+      ],
+      "user_file_path": "app/rust/mod.rs",
+      "handlers": [
+        {
+          "name": "on_init",
+          "signature": "fn on_init(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_start",
+          "signature": "fn on_start(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_stop",
+          "signature": "fn on_stop(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_shutdown",
+          "signature": "fn on_shutdown(&mut self, context: &mut flowrt::Context) -> flowrt::Status",
+          "required": false,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_tick",
+          "signature": "fn on_tick(&mut self) -> flowrt::Status",
+          "required": true,
+          "source": "rust_trait"
+        },
+        {
+          "name": "on_plan_operation",
+          "signature": "fn on_plan_operation(&mut self, goal: &PlanGoal, cancel: flowrt::OperationCancelToken, progress: &mut flowrt::OperationProgressPublisher<PlanFeedback>) -> flowrt::OperationHandlerResult<PlanResult>",
+          "required": false,
+          "source": "rust_trait"
+        }
+      ],
+      "tasks": [
+        {
+          "name": "main",
+          "instance": "navigator",
+          "trigger": "periodic",
+          "period_ms": 1000,
+          "readiness": "any_ready",
+          "lane": "navigator_serial",
+          "concurrency": "exclusive",
+          "inputs": [],
+          "outputs": []
+        }
+      ],
+      "inputs": [],
+      "outputs": [],
+      "resources": [],
+      "params": [],
+      "service_clients": [],
+      "service_servers": [],
+      "operation_clients": [],
+      "operation_servers": [
+        {
+          "name": "plan",
+          "goal_type": "PlanGoal",
+          "feedback_type": "PlanFeedback",
+          "result_type": "PlanResult",
+          "handler_name": "on_plan_operation",
+          "handler_signature": "fn on_plan_operation(&mut self, goal: &PlanGoal, cancel: flowrt::OperationCancelToken, progress: &mut flowrt::OperationProgressPublisher<PlanFeedback>) -> flowrt::OperationHandlerResult<PlanResult>",
+          "backend": "zenoh",
+          "clients": [
+            "controller.plan"
+          ]
+        }
+      ]
+    }
+  ],
+  "stubs": [
+    {
+      "language": "rust",
+      "component": "controller",
+      "path": "app/stubs/rust/controller.rs"
+    },
+    {
+      "language": "rust",
+      "component": "navigator",
+      "path": "app/stubs/rust/navigator.rs"
+    }
+  ]
+}

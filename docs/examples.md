@@ -880,9 +880,9 @@ flowrt run --run-steps 5 examples/operation_demo/rsdl/robot.rsdl --process main
 flowrt op list --image examples/operation_demo/flowrt/selfdesc/selfdesc.json
 ```
 
-当前 inproc Operation 会在生成物内部 lower 成 start/cancel/status service 与
-feedback/result endpoint；用户文档和 CLI 的主视图仍是 Operation。native generated
-`zenoh` Operation 尚未接线到真实 transport，codegen 会 fail-fast，不生成 placeholder。
+当前 Operation 会在生成物内部 lower 成 start/cancel/status service 与 feedback/result
+endpoint；用户文档和 CLI 的主视图仍是 Operation。`backend = "zenoh"` 时，
+start/cancel/status control path 走内部 zenoh service transport，不生成 placeholder API。
 
 ## record smoke
 

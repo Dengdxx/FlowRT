@@ -120,9 +120,10 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
   outgoing route，命中时写入 route backend health degraded、drop 计数和
   `fault_injection_backend_drop` reason。确定性限 test-only、≥1 boundary input(island)；跨
   process graph 只在选中 profile 声明 `global_tick` 时放行。生产随机/chaos 和性能矩阵仍不进本版。
-- Operation 的 zenoh generated runtime、`feedback = "fifo"`、显式 `result_retention_ms`、
-  `queue` / `cancel_running` / multi in-flight policy 进入本版；未能端到端覆盖的组合继续
-  validator 拒绝。
+- Operation zenoh generated runtime 已接线 start/cancel/status control path：Rust/C++
+  generated client API 仍是 Operation，内部复用 zenoh service transport；`feedback = "fifo"`、
+  显式 `result_retention_ms`、`queue` / `cancel_running` / multi in-flight policy 仍在本版后续
+  收束，未能端到端覆盖的组合继续 validator 拒绝。
 - FrameDescriptor `record_payload = true` 进入本版；payload 只通过 payload capture
   provider 记录 artifact ref/hash，不塞回普通 message channel。
 - C v0 只放开固定大小 params readonly snapshot；service、operation、variable frame、

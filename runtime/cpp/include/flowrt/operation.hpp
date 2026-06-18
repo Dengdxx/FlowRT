@@ -5,10 +5,13 @@
 #include <chrono>
 #include <cstdint>
 #include <flowrt/service.hpp>
+#include <flowrt/wire.hpp>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -24,6 +27,24 @@ struct OperationId {
     std::uint64_t sequence = 0;       ///< 发起方内单调递增序号。
 
     friend constexpr bool operator==(const OperationId &, const OperationId &) noexcept = default;
+
+    static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint64_t) * 3U; }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        ensure_wire_size(wire_size(), output.size());
+        write_wire_le(output, 0U, operation_key);
+        write_wire_le(output, 8U, client_id);
+        write_wire_le(output, 16U, sequence);
+    }
+
+    static OperationId decode_wire(std::span<const std::uint8_t> input) {
+        ensure_wire_size(wire_size(), input.size());
+        return OperationId{
+            .operation_key = read_wire_le<std::uint64_t>(input, 0U),
+            .client_id = read_wire_le<std::uint64_t>(input, 8U),
+            .sequence = read_wire_le<std::uint64_t>(input, 16U),
+        };
+    }
 };
 
 /**
@@ -35,6 +56,22 @@ struct OperationOwner {
 
     friend constexpr bool operator==(const OperationOwner &, const OperationOwner &) noexcept =
         default;
+
+    static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint64_t) * 2U; }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        ensure_wire_size(wire_size(), output.size());
+        write_wire_le(output, 0U, scope_key);
+        write_wire_le(output, 8U, owner_key);
+    }
+
+    static OperationOwner decode_wire(std::span<const std::uint8_t> input) {
+        ensure_wire_size(wire_size(), input.size());
+        return OperationOwner{
+            .scope_key = read_wire_le<std::uint64_t>(input, 0U),
+            .owner_key = read_wire_le<std::uint64_t>(input, 8U),
+        };
+    }
 };
 
 /**
@@ -50,6 +87,55 @@ enum class OperationState : std::uint8_t {
     Cancelled = 6,        ///< 用户 handler 响应 cancel 请求并结束。
     TimedOut = 7,         ///< Operation 超时。
 };
+
+namespace operation_wire_detail {
+
+inline void encode_state(OperationState state, std::span<std::uint8_t> output) {
+    ensure_wire_size(sizeof(std::uint8_t), output.size());
+    write_wire_le(output, 0U, static_cast<std::uint8_t>(state));
+}
+
+inline OperationState decode_state(std::span<const std::uint8_t> input) {
+    ensure_wire_size(sizeof(std::uint8_t), input.size());
+    const auto value = read_wire_le<std::uint8_t>(input, 0U);
+    switch (value) {
+        case 0U:
+            return OperationState::Idle;
+        case 1U:
+            return OperationState::Starting;
+        case 2U:
+            return OperationState::Running;
+        case 3U:
+            return OperationState::CancelRequested;
+        case 4U:
+            return OperationState::Succeeded;
+        case 5U:
+            return OperationState::Failed;
+        case 6U:
+            return OperationState::Cancelled;
+        case 7U:
+            return OperationState::TimedOut;
+        default:
+            throw WireCodecError("operation state discriminant is unknown");
+    }
+}
+
+inline std::uint64_t timeout_ms_from_duration(std::chrono::milliseconds timeout) noexcept {
+    if (timeout.count() <= 0) {
+        return 0U;
+    }
+    return static_cast<std::uint64_t>(timeout.count());
+}
+
+inline std::chrono::milliseconds duration_from_timeout_ms(std::uint64_t timeout_ms) noexcept {
+    using Rep = std::chrono::milliseconds::rep;
+    const auto max_timeout = static_cast<std::uint64_t>(std::numeric_limits<Rep>::max());
+    return std::chrono::milliseconds{
+        static_cast<Rep>(std::min(timeout_ms, max_timeout)),
+    };
+}
+
+}  // namespace operation_wire_detail
 
 /**
  * @brief Operation runtime 错误。
@@ -301,6 +387,30 @@ struct OperationHealthSnapshot {
     std::uint64_t canceled = 0;
     std::uint64_t timeout = 0;
     std::uint64_t preempted = 0;
+
+    static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint64_t) * 6U; }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        ensure_wire_size(wire_size(), output.size());
+        write_wire_le(output, 0U, started);
+        write_wire_le(output, 8U, succeeded);
+        write_wire_le(output, 16U, failed);
+        write_wire_le(output, 24U, canceled);
+        write_wire_le(output, 32U, timeout);
+        write_wire_le(output, 40U, preempted);
+    }
+
+    static OperationHealthSnapshot decode_wire(std::span<const std::uint8_t> input) {
+        ensure_wire_size(wire_size(), input.size());
+        return OperationHealthSnapshot{
+            .started = read_wire_le<std::uint64_t>(input, 0U),
+            .succeeded = read_wire_le<std::uint64_t>(input, 8U),
+            .failed = read_wire_le<std::uint64_t>(input, 16U),
+            .canceled = read_wire_le<std::uint64_t>(input, 24U),
+            .timeout = read_wire_le<std::uint64_t>(input, 32U),
+            .preempted = read_wire_le<std::uint64_t>(input, 40U),
+        };
+    }
 };
 
 /**
@@ -364,6 +474,36 @@ struct OperationStatusSnapshot {
     bool cancel_requested = false;
     std::uint64_t deadline_ms = 0;
     OperationHealthSnapshot health{};
+
+    static constexpr std::size_t wire_size() noexcept {
+        return OperationId::wire_size() + OperationOwner::wire_size() + sizeof(std::uint8_t) +
+               sizeof(std::uint8_t) + sizeof(std::uint64_t) +
+               OperationHealthSnapshot::wire_size();
+    }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        ensure_wire_size(wire_size(), output.size());
+        id.encode_wire(output.subspan(0U, OperationId::wire_size()));
+        owner.encode_wire(output.subspan(24U, OperationOwner::wire_size()));
+        operation_wire_detail::encode_state(state, output.subspan(40U, 1U));
+        write_wire_le(output, 41U, cancel_requested);
+        write_wire_le(output, 42U, deadline_ms);
+        health.encode_wire(output.subspan(50U, OperationHealthSnapshot::wire_size()));
+    }
+
+    static OperationStatusSnapshot decode_wire(std::span<const std::uint8_t> input) {
+        ensure_wire_size(wire_size(), input.size());
+        return OperationStatusSnapshot{
+            .id = OperationId::decode_wire(input.subspan(0U, OperationId::wire_size())),
+            .owner = OperationOwner::decode_wire(input.subspan(24U, OperationOwner::wire_size())),
+            .state = operation_wire_detail::decode_state(input.subspan(40U, 1U)),
+            .cancel_requested = read_wire_le<bool>(input, 41U),
+            .deadline_ms = read_wire_le<std::uint64_t>(input, 42U),
+            .health =
+                OperationHealthSnapshot::decode_wire(
+                    input.subspan(50U, OperationHealthSnapshot::wire_size())),
+        };
+    }
 };
 
 /**
@@ -374,6 +514,29 @@ struct OperationStartAck {
     OperationOwner owner{};
     std::uint64_t deadline_ms = 0;
     bool accepted = false;
+
+    static constexpr std::size_t wire_size() noexcept {
+        return OperationId::wire_size() + OperationOwner::wire_size() + sizeof(std::uint64_t) +
+               sizeof(std::uint8_t);
+    }
+
+    void encode_wire(std::span<std::uint8_t> output) const {
+        ensure_wire_size(wire_size(), output.size());
+        id.encode_wire(output.subspan(0U, OperationId::wire_size()));
+        owner.encode_wire(output.subspan(24U, OperationOwner::wire_size()));
+        write_wire_le(output, 40U, deadline_ms);
+        write_wire_le(output, 48U, accepted);
+    }
+
+    static OperationStartAck decode_wire(std::span<const std::uint8_t> input) {
+        ensure_wire_size(wire_size(), input.size());
+        return OperationStartAck{
+            .id = OperationId::decode_wire(input.subspan(0U, OperationId::wire_size())),
+            .owner = OperationOwner::decode_wire(input.subspan(24U, OperationOwner::wire_size())),
+            .deadline_ms = read_wire_le<std::uint64_t>(input, 40U),
+            .accepted = read_wire_le<bool>(input, 48U),
+        };
+    }
 
     static constexpr OperationStartAck accepted_ack(OperationId value) noexcept {
         return OperationStartAck{
@@ -404,6 +567,27 @@ struct OperationStartRequest {
     T goal{};
     OperationOwner owner{};
     std::chrono::milliseconds timeout{0};
+
+    std::size_t encoded_frame_size() const { return 24U + detail::encoded_frame_size(goal); }
+
+    void encode_frame(std::span<std::uint8_t> output) const {
+        ensure_wire_size(encoded_frame_size(), output.size());
+        owner.encode_wire(output.subspan(0U, OperationOwner::wire_size()));
+        write_wire_le(output, 16U, operation_wire_detail::timeout_ms_from_duration(timeout));
+        detail::encode_frame(goal, output.subspan(24U));
+    }
+
+    static OperationStartRequest decode_frame(std::span<const std::uint8_t> input) {
+        if (input.size() < 24U) {
+            throw WireCodecError(24U, input.size());
+        }
+        return OperationStartRequest{
+            .goal = detail::decode_frame<T>(input.subspan(24U)),
+            .owner = OperationOwner::decode_wire(input.subspan(0U, OperationOwner::wire_size())),
+            .timeout = operation_wire_detail::duration_from_timeout_ms(
+                read_wire_le<std::uint64_t>(input, 16U)),
+        };
+    }
 };
 
 /**

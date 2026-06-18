@@ -223,9 +223,6 @@ pub(crate) fn scheduler_runtime_plan<'a>(
         });
     }
     for plan in operation_runtime_plans(contract, graph) {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
         let lane = operation_server_lane(&plan);
         let lane_id = scheduler_lane_id(&mut lanes, &mut lane_ids, lane.clone());
         next_task_id += 1;

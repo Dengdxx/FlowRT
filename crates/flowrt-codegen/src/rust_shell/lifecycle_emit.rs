@@ -515,6 +515,16 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         output.push_str(&zenoh_service_endpoints);
         output.push_str("        }\n");
     }
+    let zenoh_operation_endpoints = operation_emit::emit_rust_zenoh_operation_endpoints(
+        emission.contract,
+        emission.graph,
+        emission.order,
+    );
+    if !zenoh_operation_endpoints.is_empty() {
+        output.push_str("        if status == flowrt::Status::Ok {\n");
+        output.push_str(&zenoh_operation_endpoints);
+        output.push_str("        }\n");
+    }
     output.push_str(&run_scope_receiver(
         &scheduler_emit::emit_rust_scheduler_v2_loop(scheduler_emit::RustSchedulerLoopEmission {
             contract: emission.contract,

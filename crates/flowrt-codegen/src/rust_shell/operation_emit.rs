@@ -90,7 +90,11 @@ pub(crate) fn emit_rust_operation_client_handles(contract: &ContractIr, graph: &
         output.push_str("#[allow(non_camel_case_types)]\n#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
         if is_zenoh {
-            output.push_str("    pub(crate) _marker: std::marker::PhantomData<()>,\n");
+            output.push_str(&format!(
+                "    pub(crate) start_client: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>>>,\n\
+                 pub(crate) cancel_client: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n\
+                 pub(crate) status_client: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n",
+            ));
         } else {
             output.push_str(&format!(
                 "    pub(crate) start_client: flowrt::InprocServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>,\n\
@@ -103,13 +107,15 @@ pub(crate) fn emit_rust_operation_client_handles(contract: &ContractIr, graph: &
         output.push_str(&format!("impl {handle_name} {{\n"));
         if is_zenoh {
             output.push_str(&format!(
-                "    pub fn start(&self, _goal: {goal_ty}, _timeout: std::time::Duration) -> Result<flowrt::OperationStartAck, flowrt::OperationClientError> {{\n        Err(flowrt::OperationClientError::Backend)\n    }}\n\n",
+                "    pub fn start(&self, goal: {goal_ty}, timeout: std::time::Duration) -> Result<flowrt::OperationStartAck, flowrt::OperationClientError> {{\n        let owner = flowrt::OperationOwner::new(flowrt::fnv1a64({owner_scope}.as_bytes()), flowrt::fnv1a64({owner_name}.as_bytes()));\n        let request = flowrt::OperationStartRequest::new(goal, owner, timeout);\n        let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64;\n        let Some(client) = self.start_client.get() else {{\n            return Err(flowrt::OperationClientError::Unavailable);\n        }};\n        flowrt_operation_result(client.call(request, timeout_ms))\n    }}\n\n",
+                owner_scope = rust_string_literal(&plan.operation_name),
+                owner_name = rust_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port)),
             ));
             output.push_str(
-                "    pub fn cancel(&self, _id: flowrt::OperationId, _timeout: std::time::Duration) -> Result<flowrt::OperationStatusSnapshot, flowrt::OperationClientError> {\n        Err(flowrt::OperationClientError::Backend)\n    }\n\n",
+                "    pub fn cancel(&self, id: flowrt::OperationId, timeout: std::time::Duration) -> Result<flowrt::OperationStatusSnapshot, flowrt::OperationClientError> {\n        let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64;\n        let Some(client) = self.cancel_client.get() else {\n            return Err(flowrt::OperationClientError::Unavailable);\n        };\n        flowrt_operation_result(client.call(id, timeout_ms))\n    }\n\n",
             );
             output.push_str(
-                "    pub fn status(&self, _id: flowrt::OperationId, _timeout: std::time::Duration) -> Result<flowrt::OperationStatusSnapshot, flowrt::OperationClientError> {\n        Err(flowrt::OperationClientError::Backend)\n    }\n",
+                "    pub fn status(&self, id: flowrt::OperationId, timeout: std::time::Duration) -> Result<flowrt::OperationStatusSnapshot, flowrt::OperationClientError> {\n        let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64;\n        let Some(client) = self.status_client.get() else {\n            return Err(flowrt::OperationClientError::Unavailable);\n        };\n        flowrt_operation_result(client.call(id, timeout_ms))\n    }\n",
             );
         } else {
             output.push_str(&format!(
@@ -143,6 +149,10 @@ pub(crate) fn rust_app_operation_fields(contract: &ContractIr, graph: &GraphIr) 
             operation_client_field_name(plan),
             operation_client_handle_name(plan)
         ));
+        output.push_str(&format!(
+            "    operation_control_{}: std::sync::Arc<std::sync::Mutex<flowrt::OperationControl>>,\n",
+            plan.index
+        ));
         if plan.backend.0 == "zenoh" {
             continue;
         }
@@ -154,10 +164,6 @@ pub(crate) fn rust_app_operation_fields(contract: &ContractIr, graph: &GraphIr) 
             operation_start_server_field_name(plan),
             operation_cancel_server_field_name(plan),
             operation_status_server_field_name(plan),
-        ));
-        output.push_str(&format!(
-            "    operation_control_{}: std::sync::Arc<std::sync::Mutex<flowrt::OperationControl>>,\n",
-            plan.index
         ));
     }
     output
@@ -186,8 +192,31 @@ pub(crate) fn emit_rust_operation_new(
         let client_field = operation_client_field_name(plan);
         let handle_name = operation_client_handle_name(plan);
         if plan.backend.0 == "zenoh" {
+            let operation_key_name = rust_string_literal(&plan.operation_name);
+            let operation_key = format!("flowrt::fnv1a64({operation_key_name}.as_bytes())");
+            let queue_depth = plan.queue_depth.max(1);
+            let max_in_flight = plan.max_in_flight.max(1);
+            let timeout_ms = plan.timeout_ms.max(1);
+            let concurrency = rust_operation_concurrency(plan.concurrency);
+            let preempt = rust_operation_preempt(plan.preempt);
+            let control_var = format!("operation_control_{}", plan.index);
+            registration.push_str(&format!(
+                "        let operation_policy_{index} = match flowrt::OperationPolicy::new(\n\
+                 std::time::Duration::from_millis({timeout_ms}),\n\
+                 {concurrency},\n\
+                 {preempt},\n\
+                 {queue_depth},\n\
+                 {max_in_flight},\n\
+             ) {{\n\
+                 Ok(policy) => policy,\n\
+                 Err(error) => panic!(\"validated operation policy rejected at runtime: {{error}}\"),\n\
+             }};\n\
+             let {control_var} = std::sync::Arc::new(std::sync::Mutex::new(flowrt::OperationControl::new({operation_key}, operation_policy_{index})));\n",
+                index = plan.index,
+            ));
             initializers.push_str(&format!(
-                "            {client_field}: {handle_name} {{ _marker: std::marker::PhantomData }},\n"
+                "            {client_field}: {handle_name} {{ start_client: std::sync::Arc::new(std::sync::OnceLock::new()), cancel_client: std::sync::Arc::new(std::sync::OnceLock::new()), status_client: std::sync::Arc::new(std::sync::OnceLock::new()) }},\n\
+                 {control_var}: {control_var}.clone(),\n"
             ));
             continue;
         }
@@ -364,13 +393,20 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
     let mut output = String::new();
     output.push_str("// ── Operation step functions ───────────────────────────────────────\n\n");
     for plan in &plans {
-        if plan.backend.0 == "zenoh" {
-            continue;
-        }
         let operation_name = rust_string_literal(&plan.operation_name);
         let owner_name =
             rust_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
         let control_var = format!("operation_control_{}", plan.index);
+        let pending_block = if plan.backend.0 == "zenoh" {
+            String::new()
+        } else {
+            format!(
+                "        self.{start_server}.process_pending_requests();\n        self.{cancel_server}.process_pending_requests();\n        self.{status_server}.process_pending_requests();\n",
+                start_server = operation_start_server_field_name(plan),
+                cancel_server = operation_cancel_server_field_name(plan),
+                status_server = operation_status_server_field_name(plan),
+            )
+        };
         output.push_str(&format!(
             "    fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
                  let operation_cancel_control = self.{control_var}.clone();\n\
@@ -383,9 +419,7 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
                      control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;\n\
                      Ok(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, control.snapshot()))\n\
                  }});\n\
-                 self.{start_server}.process_pending_requests();\n\
-                 self.{cancel_server}.process_pending_requests();\n\
-                 self.{status_server}.process_pending_requests();\n\
+                 {pending_block}\
                  let mut operation_control = self.{control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
                  let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());\n\
                  let snapshot = operation_control.snapshot();\n\
@@ -416,9 +450,197 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
                  flowrt::Status::Ok\n\
              }}\n\n",
             fn_name = operation_step_fn_name(plan),
-            start_server = operation_start_server_field_name(plan),
-            cancel_server = operation_cancel_server_field_name(plan),
-            status_server = operation_status_server_field_name(plan),
+        ));
+    }
+
+    output
+}
+
+pub(crate) fn emit_rust_zenoh_operation_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&flowrt_ir::InstanceIr],
+) -> String {
+    let plans = operation_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let zenoh_plans = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "zenoh")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect::<Vec<_>>();
+    if zenoh_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str(
+        "        let zenoh_operation_session = match flowrt::zenoh::open_session_from_environment() {\n\
+         \x20           Ok(session) => Some(session),\n\
+         \x20           Err(error) => {\n\
+         \x20               eprintln!(\"FlowRT: failed to open zenoh operation session: {error}\");\n\
+         \x20               status = flowrt::Status::Error;\n\
+         \x20               None\n\
+         \x20           }\n\
+         \x20       };\n",
+    );
+
+    for plan in zenoh_plans {
+        let goal_ty = rust_type(&plan.goal_type);
+        let feedback_ty = rust_type(&plan.feedback_type);
+        let start_name = rust_string_literal(&operation_start_endpoint_name(plan));
+        let cancel_name = rust_string_literal(&operation_cancel_endpoint_name(plan));
+        let status_name = rust_string_literal(&operation_status_endpoint_name(plan));
+        let feedback_name = rust_string_literal(&operation_feedback_endpoint_name(plan));
+        let result_name = rust_string_literal(&operation_result_endpoint_name(plan));
+
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = operation_client_field_name(plan);
+            output.push_str(&format!(
+                "        if let Some(session) = zenoh_operation_session.as_ref() {{\n\
+                 \x20           let _ = app.{client_field}.start_client.set(flowrt::zenoh::ZenohServiceClient::open({start_name}, session.clone()));\n\
+                 \x20           let _ = app.{client_field}.cancel_client.set(flowrt::zenoh::ZenohServiceClient::open({cancel_name}, session.clone()));\n\
+                 \x20           let _ = app.{client_field}.status_client.set(flowrt::zenoh::ZenohServiceClient::open({status_name}, session.clone()));\n\
+                 \x20       }}\n",
+            ));
+        }
+
+        if !active.contains(plan.server_instance.as_str()) {
+            continue;
+        }
+
+        let server_instance = &plan.server_instance;
+        let method_name = operation_handler_method_name(&plan.server_port);
+        let server_instance_ir = graph
+            .instances
+            .iter()
+            .find(|instance| instance.name == *server_instance)
+            .expect("validated operation server instance must exist");
+        let server_component =
+            crate::component_by_name(contract, &server_instance_ir.component.name);
+        let operation_handler_call = if super::rust_component_is_parallel(server_component) {
+            format!(
+                "operation_worker_server.as_ref().as_ref().{method_name}(&goal_for_worker, cancel.clone(), &mut progress)"
+            )
+        } else {
+            format!(
+                "operation_worker_server\n\
+                                     .lock()\n\
+                                     .unwrap_or_else(|poisoned| poisoned.into_inner())\n\
+                                     .{method_name}(&goal_for_worker, cancel.clone(), &mut progress)"
+            )
+        };
+        let control_field = format!("operation_control_{}", plan.index);
+        let start_handler = format!("operation_start_handler_{}", plan.index);
+        let cancel_handler = format!("operation_cancel_handler_{}", plan.index);
+        let status_handler = format!("operation_status_handler_{}", plan.index);
+        let start_server_var = format!("_zenoh_operation_start_server_{}", plan.index);
+        let cancel_server_var = format!("_zenoh_operation_cancel_server_{}", plan.index);
+        let status_server_var = format!("_zenoh_operation_status_server_{}", plan.index);
+
+        output.push_str(&format!(
+            "        let _operation_feedback_endpoint_{index} = {feedback_name};\n\
+             let _operation_result_endpoint_{index} = {result_name};\n\
+             let {start_server_var} = if let Some(session) = zenoh_operation_session.as_ref() {{\n\
+                 let {start_handler}_control = app.{control_field}.clone();\n\
+                 let operation_server_{index} = app.{server_instance}.clone();\n\
+                 let {start_handler} = move |request: flowrt::OperationStartRequest<{goal_ty}>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n\
+                     let ack = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {{\n\
+                         Ok(ack) => ack,\n\
+                         Err(error) => return flowrt_operation_control_error(error),\n\
+                     }};\n\
+                     let id = ack.id;\n\
+                     let cancel = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cancel_token() {{\n\
+                         Some(cancel) => cancel,\n\
+                         None => return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError),\n\
+                     }};\n\
+                     if let Err(error) = {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).mark_running(id) {{\n\
+                         return flowrt_operation_control_error(error);\n\
+                     }}\n\
+                     let operation_worker_server = operation_server_{index}.clone();\n\
+                     let operation_worker_control = {start_handler}_control.clone();\n\
+                     let goal_for_worker = request.goal;\n\
+                     let spawn_result = std::thread::Builder::new()\n\
+                         .name(\"flowrt-operation-{index}\".to_string())\n\
+                         .spawn(move || {{\n\
+                             let operation_progress_control = operation_worker_control.clone();\n\
+                             let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
+                                 operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
+                             }});\n\
+                             let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::with_hook(id, progress_hook);\n\
+                             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
+                                 {operation_handler_call}\n\
+                             }}));\n\
+                             let terminal_state = match result {{\n\
+                                 Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
+                                 Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,\n\
+                                 Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,\n\
+                             }};\n\
+                             let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);\n\
+                         }});\n\
+                     if spawn_result.is_err() {{\n\
+                         let _ = {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);\n\
+                         return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError);\n\
+                     }}\n\
+                     flowrt::ServiceResult::ok(ack)\n\
+                 }};\n\
+                 match flowrt::zenoh::ZenohServiceServer::open({start_name}, session.clone(), {start_handler}) {{\n\
+                     Ok(server) => Some(server),\n\
+                     Err(error) => {{\n\
+                         eprintln!(\"FlowRT: failed to open zenoh operation start server: {{error}}\");\n\
+                         status = flowrt::Status::Error;\n\
+                         None\n\
+                     }}\n\
+                 }}\n\
+             }} else {{\n\
+                 None\n\
+             }};\n",
+            index = plan.index,
+        ));
+
+        output.push_str(&format!(
+            "        let {cancel_server_var} = if let Some(session) = zenoh_operation_session.as_ref() {{\n\
+                 let {cancel_handler}_control = app.{control_field}.clone();\n\
+                 let {cancel_handler} = move |id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
+                     let mut control = {cancel_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+                     let snapshot = control.snapshot();\n\
+                     match control.request_cancel(id, snapshot.owner) {{\n\
+                         Ok(snapshot) => flowrt::ServiceResult::ok(snapshot),\n\
+                         Err(error) => flowrt_operation_control_error(error),\n\
+                     }}\n\
+                 }};\n\
+                 match flowrt::zenoh::ZenohServiceServer::open({cancel_name}, session.clone(), {cancel_handler}) {{\n\
+                     Ok(server) => Some(server),\n\
+                     Err(error) => {{\n\
+                         eprintln!(\"FlowRT: failed to open zenoh operation cancel server: {{error}}\");\n\
+                         status = flowrt::Status::Error;\n\
+                         None\n\
+                     }}\n\
+                 }}\n\
+             }} else {{\n\
+                 None\n\
+             }};\n\
+             let {status_server_var} = if let Some(session) = zenoh_operation_session.as_ref() {{\n\
+                 let {status_handler}_control = app.{control_field}.clone();\n\
+                 let {status_handler} = move |_id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
+                     flowrt::ServiceResult::ok({status_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot())\n\
+                 }};\n\
+                 match flowrt::zenoh::ZenohServiceServer::open({status_name}, session.clone(), {status_handler}) {{\n\
+                     Ok(server) => Some(server),\n\
+                     Err(error) => {{\n\
+                         eprintln!(\"FlowRT: failed to open zenoh operation status server: {{error}}\");\n\
+                         status = flowrt::Status::Error;\n\
+                         None\n\
+                     }}\n\
+                 }}\n\
+             }} else {{\n\
+                 None\n\
+             }};\n",
         ));
     }
 
@@ -479,14 +701,21 @@ pub(crate) fn emit_rust_operation_wake_checks(
         let task_id = task.id;
         let tick_driven_flag = format!("flowrt_operation_tick_driven_{}", plan.index);
         let control_var = format!("operation_control_{}", plan.index);
+        let pending_condition = if plan.backend.0 == "zenoh" {
+            String::new()
+        } else {
+            format!(
+                "self.{start_server}.pending_count() > 0\n                     || self.{cancel_server}.pending_count() > 0\n                     || self.{status_server}.pending_count() > 0\n                     || ",
+                start_server = operation_start_server_field_name(plan),
+                cancel_server = operation_cancel_server_field_name(plan),
+                status_server = operation_status_server_field_name(plan),
+            )
+        };
         output.push_str(&format!(
             "                let flowrt_operation_snapshot_{index} = self.{control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();\n\
                  let flowrt_operation_active_{index} = !flowrt_operation_snapshot_{index}.state.is_terminal()\n\
                      && flowrt_operation_snapshot_{index}.state != flowrt::OperationState::Idle;\n\
-                 if self.{start_server}.pending_count() > 0\n\
-                     || self.{cancel_server}.pending_count() > 0\n\
-                     || self.{status_server}.pending_count() > 0\n\
-                     || (flowrt_operation_active_{index} && !{tick_driven_flag}) {{\n\
+                 if {pending_condition}(flowrt_operation_active_{index} && !{tick_driven_flag}) {{\n\
                      scheduler.wake(flowrt::TaskId({task_id}));\n\
                      if flowrt_operation_active_{index} {{\n\
                          {tick_driven_flag} = true;\n\
@@ -495,9 +724,6 @@ pub(crate) fn emit_rust_operation_wake_checks(
                  }}\n",
             index = plan.index,
             control_var = control_var,
-            start_server = operation_start_server_field_name(plan),
-            cancel_server = operation_cancel_server_field_name(plan),
-            status_server = operation_status_server_field_name(plan),
         ));
     }
 
