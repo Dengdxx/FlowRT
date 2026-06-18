@@ -136,7 +136,6 @@ max_in_flight = 1
 concurrency = "reject"
 preempt = "reject"
 feedback = "latest"
-result_retention_ms = 60000
 
 [profile.default]
 backend = "inproc"

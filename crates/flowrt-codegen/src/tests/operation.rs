@@ -56,7 +56,6 @@ max_in_flight = 1
 concurrency = "reject"
 preempt = "reject"
 feedback = "latest"
-result_retention_ms = 60000
 "#;
 
 /// Rust components 应暴露 Operation typed client，而不是把 Service API 泄漏给用户。
@@ -279,7 +278,7 @@ fn self_description_contains_operation_topology_and_lowering_refs() {
     assert_eq!(operation["concurrency"], "reject");
     assert_eq!(operation["preempt"], "reject");
     assert_eq!(operation["feedback"], "latest");
-    assert_eq!(operation["result_retention_ms"], 60000);
+    assert!(operation["result_retention_ms"].is_null());
     assert_eq!(
         operation["lowering"]["start_service"],
         "__flowrt_operation_controller_plan_start"

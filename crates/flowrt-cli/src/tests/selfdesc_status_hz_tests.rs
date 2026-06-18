@@ -1271,7 +1271,7 @@ fn self_description_summary_displays_operation_endpoints() {
       "queue_depth": 4,
       "max_in_flight": 1,
       "feedback": "latest",
-      "result_retention_ms": 60000,
+      "result_retention_ms": null,
       "lowering": {
         "start_service": "__flowrt_operation_controller_plan_start",
         "cancel_service": "__flowrt_operation_controller_plan_cancel",

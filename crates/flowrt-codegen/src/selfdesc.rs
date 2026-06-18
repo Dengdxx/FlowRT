@@ -572,7 +572,7 @@ fn self_description_operation_endpoints(
                 queue_depth: Some(plan.queue_depth),
                 max_in_flight: Some(plan.max_in_flight),
                 feedback: operation_feedback_name(plan.feedback).to_string(),
-                result_retention_ms: Some(plan.result_retention_ms),
+                result_retention_ms: None,
                 lowering: SelfDescriptionOperationLowering {
                     start_service: operation_start_endpoint_name(plan),
                     cancel_service: operation_cancel_endpoint_name(plan),

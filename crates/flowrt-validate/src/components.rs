@@ -292,6 +292,13 @@ fn validate_resource_descriptor_schema(
     types_by_name: &BTreeMap<&str, &TypeIr>,
     errors: &mut Vec<ValidationError>,
 ) {
+    if descriptor.record_payload {
+        errors.push(ValidationError::new(format!(
+            "component `{}` resource `{}` descriptor record_payload=true is unsupported; flowrt record currently supports descriptor-only events",
+            component.name, resource.name
+        )));
+    }
+
     let Some(port) = component
         .outputs
         .iter()

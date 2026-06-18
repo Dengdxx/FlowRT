@@ -12,10 +12,13 @@ RSDL identifier 命名加固：validator 拒绝会被 codegen 直接生成为 Ru
 
 - `field`、data port、service port、operation port、instance 和 task 名称新增跨语言关键字检查，拒绝 `in`、`type`、`match`、`class`、`new`、`delete` 等 Rust 2024 或 C++ 保留关键字；错误在 Contract IR validator 阶段给出，而不是等到 Rust/C++ 编译报错。
 - 保持 `profile.default`、target、process、lane、bridge、package 和 component source name 等非标识符用途名称的原有 `snake_case` 规则，避免把 manifest 字符串或 profile key 误判为生成代码标识符。
+- Operation generated runtime 尚未实现 FIFO feedback channel 和 result retention；validator 现在拒绝 `feedback = "fifo"` 与显式 `result_retention_ms`，self-description 不再输出未生效的 result retention 时间。
+- FrameDescriptor 真实 payload 录制尚未建模；validator 现在拒绝 `record_payload = true`，避免 `flowrt record` 仍按 descriptor-only 写入时 self-description 宣称可录真实 payload。
 
 ### 测试
 
 - 覆盖 field / data-port / service-port / operation-port / instance / task 的关键字拒绝，以及 `profile.default` 继续合法。
+- 覆盖 Operation 未实现 policy 和 FrameDescriptor payload 录制 opt-in 的 validator 拒绝。
 - 新增 `v0.22.1 Reserved Keyword Naming` focused smoke，并接入 CI 与 release gate registry。
 
 ## v0.22.0 - 2026-06-18

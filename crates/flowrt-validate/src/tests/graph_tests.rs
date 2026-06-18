@@ -1127,6 +1127,10 @@ server = "navigator.plan"
     policy.concurrency = flowrt_ir::OperationConcurrencyPolicy::Queue;
     policy.preempt = flowrt_ir::OperationPreemptPolicy::CancelRunning;
     policy.max_in_flight = 2;
+    policy.feedback = flowrt_ir::OperationFeedbackPolicy::Fifo;
+    policy.result_retention_ms = 120_000;
+    ir.graphs[0].operations[0].policy_source.result_retention_ms =
+        flowrt_ir::PolicyValueSource::Explicit;
 
     let report =
         validate_contract(&ir).expect_err("unsupported generated operation policy should fail");
@@ -1144,6 +1148,16 @@ server = "navigator.plan"
     assert!(report.errors.iter().any(|error| {
         error.message.contains(
             "operation bind `controller.plan -> navigator.plan` uses unsupported max_in_flight `2`",
+        )
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan -> navigator.plan` uses unsupported feedback policy `fifo`",
+        )
+    }));
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan -> navigator.plan` uses unsupported result_retention_ms",
         )
     }));
 }
