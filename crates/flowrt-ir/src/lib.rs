@@ -6,6 +6,7 @@
 mod backend;
 pub mod derived;
 mod error;
+mod fault_injection;
 mod model;
 mod normalize;
 mod temporary_island;
@@ -25,6 +26,9 @@ pub use derived::{
     RouteDerivedFacts, TargetDerivedFacts, derive_contract_facts,
 };
 pub use error::{IrError, Result};
+pub use fault_injection::{
+    FaultInjectionScenario, FaultInjectionScenarioPoint, apply_fault_injection_overlay,
+};
 pub use model::*;
 pub use normalize::{
     derive_resource_satisfactions, hash_source, normalize_document, normalize_loaded_document,

@@ -103,6 +103,8 @@ pub struct ContractArtifactIr {
     pub test_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_overlay: Option<TemporaryOverlayIr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault_injection: Option<FaultInjectionIr>,
     #[serde(default, skip_serializing_if = "ClockSourceKind::is_realtime")]
     pub clock_source: ClockSourceKind,
 }
@@ -113,6 +115,7 @@ impl ContractArtifactIr {
             && !self.temporary_island
             && !self.test_only
             && self.temporary_overlay.is_none()
+            && self.fault_injection.is_none()
             && self.clock_source.is_realtime()
     }
 }
@@ -150,6 +153,35 @@ pub struct TemporaryOverlayBoundaryMappingIr {
     pub name: String,
     pub endpoint: String,
     pub source: String,
+}
+
+/// test-only 确定性故障注入场景（投影进 [`ContractArtifactIr::fault_injection`]）。
+///
+/// 注入只在目标 task 调用前强制 `Status::Error`，合成 0.21.x 故障反应机器的触发器；它是
+/// test-only 投影（置 `test_only=true`、`clock_source=SimulatedReplay`），与 RSDL 契约结构
+/// 无关，`bundle`/`deploy` 默认拒绝。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaultInjectionIr {
+    pub kind: String,
+    pub generated_by: TemporaryOverlayGenerationIr,
+    pub points: Vec<FaultInjectionPointIr>,
+}
+
+/// 一条故障注入点：在 `task` 命中的调用序号上强制 `Status::Error`。
+///
+/// 调用序号为该 task body 的 1-based 运行计数（per-task，pre-execution）。`invocations` 是显式
+/// 命中集合（已 canonical 升序去重）；`from_invocation` 命中其值起的所有后续调用，用于驱动
+/// restart→terminal 或持续降级。两者至少一个非空。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaultInjectionPointIr {
+    pub instance: EntityRef,
+    pub task: EntityRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invocations: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_invocation: Option<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// 不透明且确定性的实体标识符。

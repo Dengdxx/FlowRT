@@ -75,6 +75,7 @@ pub fn apply_temporary_island_overlay(
             generated_by: overlay.generated_by.clone(),
             boundary_mappings,
         }),
+        fault_injection: contract.artifact.fault_injection.clone(),
         clock_source: ClockSourceKind::SimulatedReplay,
     };
     for profile in &mut projected.profiles {
