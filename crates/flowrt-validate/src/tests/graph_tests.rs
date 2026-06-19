@@ -1226,6 +1226,160 @@ backends = ["iox2"]
 }
 
 #[test]
+fn tampered_service_backend_source_rejected() {
+    let source = r#"
+[package]
+name = "tampered_service_backend"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].services[0].backend_source = flowrt_ir::ServiceBackendSource::Explicit;
+
+    let report = validate_contract(&ir).expect_err("tampered service backend source should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("service bind `client.plan` -> `server.plan` backend source metadata")
+    }));
+}
+
+#[test]
+fn tampered_operation_backend_source_rejected() {
+    let source = r#"
+[package]
+name = "tampered_operation_backend"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+target = "linux"
+
+[instance.navigator]
+component = "navigator"
+process = "nav_proc"
+target = "linux"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
+    ir.graphs[0].operations[0].backend_source = flowrt_ir::OperationBackendSource::Explicit;
+
+    let report = validate_contract(&ir).expect_err("tampered operation backend source should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error.message.contains(
+            "operation bind `controller.plan` -> `navigator.plan` backend source metadata",
+        )
+    }));
+}
+
+#[test]
+fn fixed_iox2_service_requires_target_iox2_backend() {
+    let source = r#"
+[package]
+name = "iox2_missing_target_backend"
+rsdl_version = "0.1"
+
+[component.client]
+language = "rust"
+service_client = ["plan:u32->bool"]
+
+[component.server]
+language = "rust"
+service_server = ["plan:u32->bool"]
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    let report = validate_contract(&ir).expect_err("target missing iox2 should fail");
+
+    assert!(report.errors.iter().any(|error| {
+        error
+            .message
+            .contains("target `linux` does not support backend `iox2` selected by service bind")
+    }));
+}
+
+#[test]
 fn rejects_auto_resolved_inproc_service_that_spans_processes() {
     let source = r#"
 [package]

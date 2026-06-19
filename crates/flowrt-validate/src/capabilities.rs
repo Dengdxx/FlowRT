@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    BackendName, CapabilityAtom, ChannelEdgeIr, ContractIr, GraphIr, LanguageKind,
-    PolicyValueSource, backend_capabilities, deployment_capability_decision,
+    BackendName, CapabilityAtom, ChannelEdgeIr, ComponentIr, ContractIr, GraphIr, InstanceIr,
+    LanguageKind, OperationEdgeIr, PolicyValueSource, ServiceEdgeIr, TypeExpr,
+    backend_capabilities, deployment_capability_decision,
     derived::{ContractDerivedFacts, GraphDerivedFacts, derive_contract_facts},
     is_known_backend,
 };
@@ -197,6 +198,53 @@ pub(crate) fn validate_channel_backend_sources(ir: &ContractIr, errors: &mut Vec
             }
             if bind.backend.0 != route.backend.0 || bind.backend_source != route.backend_source {
                 push_backend_source_error(bind, errors);
+            }
+        }
+    }
+}
+
+pub(crate) fn validate_service_backend_sources(ir: &ContractIr, errors: &mut Vec<ValidationError>) {
+    let Some(profile) = policy_anchor_profile(ir) else {
+        return;
+    };
+
+    for graph in &ir.graphs {
+        let components = components_by_name(ir);
+        let instances = instances_by_name(graph);
+        for service in &graph.services {
+            if !service_backend_matches_resolver(
+                service,
+                profile.backend.0.as_str(),
+                &components,
+                &instances,
+                &ir.types,
+            ) {
+                push_service_backend_source_error(service, errors);
+            }
+        }
+    }
+}
+
+pub(crate) fn validate_operation_backend_sources(
+    ir: &ContractIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(profile) = policy_anchor_profile(ir) else {
+        return;
+    };
+
+    for graph in &ir.graphs {
+        let components = components_by_name(ir);
+        let instances = instances_by_name(graph);
+        for operation in &graph.operations {
+            if !operation_backend_matches_resolver(
+                operation,
+                profile.backend.0.as_str(),
+                &components,
+                &instances,
+                &ir.types,
+            ) {
+                push_operation_backend_source_error(operation, errors);
             }
         }
     }
@@ -527,6 +575,268 @@ fn push_backend_source_error(bind: &ChannelEdgeIr, errors: &mut Vec<ValidationEr
         "bind `{}.{}` -> `{}.{}` backend source metadata is inconsistent with backend resolver semantics",
         bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
     )));
+}
+
+fn push_service_backend_source_error(service: &ServiceEdgeIr, errors: &mut Vec<ValidationError>) {
+    errors.push(ValidationError::new(format!(
+        "service bind `{}.{}` -> `{}.{}` backend source metadata is inconsistent with backend resolver semantics",
+        service.client.instance.name,
+        service.client.port,
+        service.server.instance.name,
+        service.server.port
+    )));
+}
+
+fn push_operation_backend_source_error(
+    operation: &OperationEdgeIr,
+    errors: &mut Vec<ValidationError>,
+) {
+    errors.push(ValidationError::new(format!(
+        "operation bind `{}.{}` -> `{}.{}` backend source metadata is inconsistent with backend resolver semantics",
+        operation.client.instance.name,
+        operation.client.port,
+        operation.server.instance.name,
+        operation.server.port
+    )));
+}
+
+fn service_backend_matches_resolver(
+    service: &ServiceEdgeIr,
+    profile_backend: &str,
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    types: &[flowrt_ir::TypeIr],
+) -> bool {
+    let (request_type, response_type) = service_types(service, components, instances)
+        .map(|(request, response)| (Some(request), Some(response)))
+        .unwrap_or((None, None));
+    let topology = endpoint_topology(
+        &service.client.instance.name,
+        &service.server.instance.name,
+        components,
+        instances,
+    );
+
+    if service.policy_source.backend == PolicyValueSource::Explicit {
+        return service_resolution_matches(
+            flowrt_ir::resolve_service_backend(
+                service.backend.0.as_str(),
+                request_type,
+                response_type,
+                types,
+                topology,
+                true,
+            ),
+            service,
+        ) || service_resolution_matches(
+            flowrt_ir::resolve_service_backend(
+                "auto",
+                request_type,
+                response_type,
+                types,
+                topology,
+                true,
+            ),
+            service,
+        );
+    }
+
+    service_resolution_matches(
+        flowrt_ir::resolve_service_backend(
+            profile_backend,
+            request_type,
+            response_type,
+            types,
+            topology,
+            false,
+        ),
+        service,
+    )
+}
+
+fn operation_backend_matches_resolver(
+    operation: &OperationEdgeIr,
+    profile_backend: &str,
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+    types: &[flowrt_ir::TypeIr],
+) -> bool {
+    let (goal_type, feedback_type, result_type) = operation_types(operation, components, instances)
+        .map(|(goal, feedback, result)| (Some(goal), Some(feedback), Some(result)))
+        .unwrap_or((None, None, None));
+    let topology = endpoint_topology(
+        &operation.client.instance.name,
+        &operation.server.instance.name,
+        components,
+        instances,
+    );
+
+    if operation.policy_source.backend == PolicyValueSource::Explicit {
+        return operation_resolution_matches(
+            flowrt_ir::resolve_operation_backend(
+                operation.backend.0.as_str(),
+                goal_type,
+                feedback_type,
+                result_type,
+                types,
+                topology,
+                true,
+            ),
+            operation,
+        ) || operation_resolution_matches(
+            flowrt_ir::resolve_operation_backend(
+                "auto",
+                goal_type,
+                feedback_type,
+                result_type,
+                types,
+                topology,
+                true,
+            ),
+            operation,
+        );
+    }
+
+    operation_resolution_matches(
+        flowrt_ir::resolve_operation_backend(
+            profile_backend,
+            goal_type,
+            feedback_type,
+            result_type,
+            types,
+            topology,
+            false,
+        ),
+        operation,
+    )
+}
+
+fn service_resolution_matches(
+    resolution: flowrt_ir::Result<flowrt_ir::ServiceBackendResolution>,
+    service: &ServiceEdgeIr,
+) -> bool {
+    resolution
+        .map(|resolution| {
+            service.backend.0 == resolution.backend && service.backend_source == resolution.source
+        })
+        .unwrap_or(false)
+}
+
+fn operation_resolution_matches(
+    resolution: flowrt_ir::Result<flowrt_ir::OperationBackendResolution>,
+    operation: &OperationEdgeIr,
+) -> bool {
+    resolution
+        .map(|resolution| {
+            operation.backend.0 == resolution.backend
+                && operation.backend_source == resolution.source
+        })
+        .unwrap_or(false)
+}
+
+fn service_types<'a>(
+    service: &ServiceEdgeIr,
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+) -> Option<(&'a TypeExpr, &'a TypeExpr)> {
+    let client_instance = instances.get(service.client.instance.name.as_str())?;
+    let server_instance = instances.get(service.server.instance.name.as_str())?;
+    let client_component = components.get(client_instance.component.name.as_str())?;
+    let server_component = components.get(server_instance.component.name.as_str())?;
+    let client_port = client_component
+        .service_clients
+        .iter()
+        .find(|port| port.name == service.client.port)?;
+    let server_port = server_component
+        .service_servers
+        .iter()
+        .find(|port| port.name == service.server.port)?;
+    if client_port.request == server_port.request && client_port.response == server_port.response {
+        Some((&client_port.request, &client_port.response))
+    } else {
+        Some((&server_port.request, &server_port.response))
+    }
+}
+
+fn operation_types<'a>(
+    operation: &OperationEdgeIr,
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+) -> Option<(&'a TypeExpr, &'a TypeExpr, &'a TypeExpr)> {
+    let client_instance = instances.get(operation.client.instance.name.as_str())?;
+    let server_instance = instances.get(operation.server.instance.name.as_str())?;
+    let client_component = components.get(client_instance.component.name.as_str())?;
+    let server_component = components.get(server_instance.component.name.as_str())?;
+    let client_port = client_component
+        .operation_clients
+        .iter()
+        .find(|port| port.name == operation.client.port)?;
+    let server_port = server_component
+        .operation_servers
+        .iter()
+        .find(|port| port.name == operation.server.port)?;
+    if client_port.goal == server_port.goal
+        && client_port.feedback == server_port.feedback
+        && client_port.result == server_port.result
+    {
+        Some((
+            &client_port.goal,
+            &client_port.feedback,
+            &client_port.result,
+        ))
+    } else {
+        Some((
+            &server_port.goal,
+            &server_port.feedback,
+            &server_port.result,
+        ))
+    }
+}
+
+fn endpoint_topology(
+    first_instance: &str,
+    second_instance: &str,
+    components: &BTreeMap<&str, &ComponentIr>,
+    instances: &BTreeMap<&str, &InstanceIr>,
+) -> flowrt_ir::RouteTopology {
+    let first = instances.get(first_instance).copied();
+    let second = instances.get(second_instance).copied();
+    let first_process = first.and_then(|i| i.process.as_deref()).unwrap_or("main");
+    let second_process = second.and_then(|i| i.process.as_deref()).unwrap_or("main");
+    let first_target = first
+        .and_then(|i| i.target.as_ref())
+        .map(|target| target.name.as_str());
+    let second_target = second
+        .and_then(|i| i.target.as_ref())
+        .map(|target| target.name.as_str());
+    let touches_external = [first, second].iter().any(|instance| {
+        instance
+            .and_then(|instance| components.get(instance.component.name.as_str()))
+            .is_some_and(|component| component.language == LanguageKind::External)
+    });
+
+    flowrt_ir::RouteTopology {
+        crosses_process: first_process != second_process,
+        crosses_target: first_target.is_some()
+            && second_target.is_some()
+            && first_target != second_target,
+        touches_external,
+    }
+}
+
+fn components_by_name(ir: &ContractIr) -> BTreeMap<&str, &ComponentIr> {
+    ir.components
+        .iter()
+        .map(|component| (component.qualified_name.as_str(), component))
+        .collect()
+}
+
+fn instances_by_name(graph: &GraphIr) -> BTreeMap<&str, &InstanceIr> {
+    graph
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect()
 }
 
 fn capabilities_match(actual: &[CapabilityAtom], expected: &[CapabilityAtom]) -> bool {
