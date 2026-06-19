@@ -668,6 +668,9 @@ pub struct SelfDescriptionServiceEndpoint {
     /// 解析后的通信后端名称；当前 IR 尚未直接记录，由 deployment 推导。
     #[serde(default)]
     pub backend: String,
+    /// backend 选择来源；仅在发生自动 fallback 等需要解释时输出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_source: Option<String>,
     /// zenoh service request key expression；非 zenoh backend 为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_expr: Option<String>,

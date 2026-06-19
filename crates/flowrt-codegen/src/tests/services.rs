@@ -518,6 +518,91 @@ fn cpp_service_iox2_emits_client_and_scheduler_driven_server() {
     );
 }
 
+/// profile 默认 iox2 遇到变长 service payload 时必须自动 fallback 到 zenoh。
+#[test]
+fn service_iox2_dynamic_fallback_emits_zenoh_transport() {
+    let source = r#"
+[package]
+name = "service_iox2_dynamic_fallback"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+label = "string"
+samples = "sequence<u32>"
+
+[type.PlanResponse]
+accepted = "bool"
+detail = "string"
+
+[component.plan_service]
+language = "rust"
+concurrency = "parallel"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[component.planner]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[instance.plan_svc]
+component = "plan_service"
+process = "server_proc"
+target = "linux"
+
+[instance.plan_svc.task]
+trigger = "periodic"
+period_ms = 1000
+
+[instance.plan_client]
+component = "planner"
+process = "client_proc"
+target = "linux"
+
+[instance.plan_client.task]
+trigger = "periodic"
+period_ms = 100
+
+[[bind.service]]
+client = "plan_client.plan"
+server = "plan_svc.plan"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+"#;
+    let contract = contract_from_source(source);
+
+    let bundle = emit_artifacts(&contract).expect("dynamic service fallback codegen must succeed");
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let endpoint = &selfdesc["graphs"][0]["services"][0];
+
+    assert!(
+        components.contains("flowrt::zenoh::ZenohServiceClient"),
+        "dynamic service fallback must generate zenoh client.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::zenoh::ZenohServiceServer"),
+        "dynamic service fallback must generate zenoh server.\n\n{shell}"
+    );
+    assert!(
+        !components.contains("Iox2ServiceClient"),
+        "dynamic service fallback must not generate iox2 client.\n\n{components}"
+    );
+    assert_eq!(endpoint["backend"], "zenoh");
+    assert_eq!(endpoint["backend_source"], "auto_fallback");
+    assert!(endpoint["key_expr"].as_str().is_some());
+    assert!(endpoint.get("service").is_none());
+}
+
 /// zenoh service 的静态拓扑必须暴露 runtime 实际 queryable 使用的 key expression。
 #[test]
 fn zenoh_service_manifest_and_selfdesc_expose_key_expr() {

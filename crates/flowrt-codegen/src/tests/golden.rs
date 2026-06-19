@@ -169,6 +169,11 @@ fn golden_iox2_service_cpp() {
 }
 
 #[test]
+fn golden_service_iox2_dynamic_fallback() {
+    check_case("service_iox2_dynamic_fallback");
+}
+
+#[test]
 fn golden_zenoh_operation_rust() {
     check_case("zenoh_operation_rust");
 }

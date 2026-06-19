@@ -546,6 +546,8 @@ fn self_description_service_endpoint(
     let service_name = format!("{}.{}", service.client.instance.name, service.client.port);
     let transport_endpoint =
         crate::runtime_plan::transport_endpoint(&service.backend.0, &service_name);
+    let backend_source = (service.backend_source == flowrt_ir::ServiceBackendSource::AutoFallback)
+        .then(|| "auto_fallback".to_string());
 
     SelfDescriptionServiceEndpoint {
         name,
@@ -557,6 +559,7 @@ fn self_description_service_endpoint(
         request_type,
         response_type,
         backend: service.backend.0.clone(),
+        backend_source,
         key_expr: transport_endpoint.key_expr().map(ToString::to_string),
         timeout_ms: Some(service.policy.timeout_ms),
         queue_depth: Some(service.policy.queue_depth),
