@@ -48,7 +48,7 @@ pub use channel::{
 };
 pub use descriptor::{
     FrameDescriptor, FrameDescriptorError, FrameDescriptorFields, FrameLease, FrameLeaseError,
-    FrameLeaseStatus, FrameMetadata, ResourceDescriptor,
+    FrameLeaseStatus, FrameMetadata, FramePayloadArtifact, ResourceDescriptor,
 };
 pub use executor::{
     DeterministicExecutor, FutureExecutor, FutureHandle, LaneId, LaneKind, PeriodicSpec,
@@ -254,6 +254,22 @@ impl BoundaryContext {
         )
     }
 
+    /// 记录 frame descriptor / side-channel lease 事件，并附带 payload artifact 元数据。
+    pub fn record_frame_descriptor_payload_event(
+        &self,
+        name: impl AsRef<str>,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        artifact: FramePayloadArtifact,
+    ) -> RecorderTapOutcome {
+        self.state.record_frame_descriptor_payload_event(
+            name.as_ref(),
+            descriptor,
+            status,
+            artifact,
+        )
+    }
+
     /// 记录标准 fixed ABI frame descriptor 字段，不复制真实 payload。
     pub fn record_frame_descriptor_fields_event(
         &self,
@@ -264,6 +280,18 @@ impl BoundaryContext {
     ) -> Result<RecorderTapOutcome, FrameDescriptorError> {
         let descriptor = descriptor.to_descriptor()?;
         Ok(self.record_frame_descriptor_event(name, &descriptor, status, payload_recording))
+    }
+
+    /// 记录标准 fixed ABI frame descriptor 字段和 payload artifact 元数据。
+    pub fn record_frame_descriptor_fields_payload_event(
+        &self,
+        name: impl AsRef<str>,
+        descriptor: FrameDescriptorFields,
+        status: FrameLeaseStatus,
+        artifact: FramePayloadArtifact,
+    ) -> Result<RecorderTapOutcome, FrameDescriptorError> {
+        let descriptor = descriptor.to_descriptor()?;
+        Ok(self.record_frame_descriptor_payload_event(name, &descriptor, status, artifact))
     }
 
     /// 便捷记录 side-channel acquire 成功事件。

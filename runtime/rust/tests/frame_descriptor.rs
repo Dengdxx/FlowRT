@@ -1,7 +1,7 @@
 use flowrt::{
     BoundaryContext, FrameDescriptor, FrameDescriptorFields, FrameLease, FrameLeaseError,
-    FrameLeaseStatus, FrameMetadata, IntrospectionRecorderStart, IntrospectionState,
-    ResourceDescriptor,
+    FrameLeaseStatus, FrameMetadata, FramePayloadArtifact, IntrospectionRecorderStart,
+    IntrospectionState, ResourceDescriptor,
 };
 use flowrt_record::DescriptorRecordPayload;
 
@@ -121,6 +121,49 @@ fn frame_descriptor_recorder_records_descriptor_event_without_payload_copy() {
         flowrt_record::DescriptorRecordStatus::Acquired
     );
     assert!(!payload.payload_recording);
+    assert!(payload.payload_artifact.is_none());
+}
+
+#[test]
+fn frame_descriptor_recorder_records_payload_artifact_metadata() {
+    let descriptor = FrameDescriptor::new(
+        ResourceDescriptor::new("camera_frames", "slot-7", 42),
+        6,
+        "rgb8",
+        "row_major",
+        FrameMetadata::new(),
+    )
+    .unwrap();
+    let state = IntrospectionState::new();
+    state.start_recorder(IntrospectionRecorderStart {
+        output: None,
+        filters: vec!["descriptor".to_string()],
+        queue_depth: Some(4),
+        package: "robot_demo".to_string(),
+        process: "camera_proc".to_string(),
+        runtime_pid: 42,
+        selfdesc_hash: "abc123".to_string(),
+    });
+    let artifact =
+        FramePayloadArtifact::from_bytes("artifact://camera/slot-7/42", &[1, 2, 3, 4, 5, 6])
+            .unwrap();
+
+    let outcome = state.record_frame_descriptor_payload_event(
+        "camera.frame",
+        &descriptor,
+        FrameLeaseStatus::Acquired,
+        artifact,
+    );
+
+    assert!(outcome.recorded);
+    assert!(!outcome.dropped);
+    let events = state.drain_recorder_events();
+    let payload: DescriptorRecordPayload = serde_json::from_slice(&events[0].payload).unwrap();
+    assert!(payload.payload_recording);
+    let artifact = payload.payload_artifact.unwrap();
+    assert_eq!(artifact.artifact_ref, "artifact://camera/slot-7/42");
+    assert_eq!(artifact.content_hash, "fnv1a64:9746a713f3a6584a");
+    assert_eq!(artifact.size_bytes, 6);
 }
 
 #[test]
@@ -167,6 +210,59 @@ fn boundary_context_records_fixed_frame_descriptor_fields_without_payload_copy()
     assert_eq!(payload.generation, 42);
     assert_eq!(payload.metadata.get("width"), Some(&"640".to_string()));
     assert!(!payload.payload_recording);
+    assert!(payload.payload_artifact.is_none());
+}
+
+#[test]
+fn boundary_context_records_payload_artifact_metadata() {
+    let state = IntrospectionState::new();
+    state.start_recorder(IntrospectionRecorderStart {
+        output: None,
+        filters: vec!["descriptor".to_string()],
+        queue_depth: Some(4),
+        package: "robot_demo".to_string(),
+        process: "camera_proc".to_string(),
+        runtime_pid: 42,
+        selfdesc_hash: "abc123".to_string(),
+    });
+    let context = BoundaryContext::new("camera", "CameraDriver", state.clone());
+    let artifact = FramePayloadArtifact::new(
+        "artifact://camera/slot-7/42",
+        "sha256:0123456789abcdef",
+        921_600,
+    )
+    .unwrap();
+
+    let outcome = context
+        .record_frame_descriptor_fields_payload_event(
+            "camera.frame",
+            FrameDescriptorFields {
+                resource_id_hash: 0xCAFE,
+                slot: 7,
+                generation: 42,
+                size_bytes: 921_600,
+                timestamp_unix_ns: 1_700_000_000,
+                width: 640,
+                height: 480,
+                stride_bytes: 1_920,
+                format_id: 3,
+                encoding_id: 9,
+                flags: 1,
+            },
+            FrameLeaseStatus::Acquired,
+            artifact,
+        )
+        .unwrap();
+
+    assert!(outcome.recorded);
+    assert!(!outcome.dropped);
+    let events = state.drain_recorder_events();
+    let payload: DescriptorRecordPayload = serde_json::from_slice(&events[0].payload).unwrap();
+    assert!(payload.payload_recording);
+    assert_eq!(
+        payload.payload_artifact.unwrap().artifact_ref,
+        "artifact://camera/slot-7/42"
+    );
 }
 
 #[test]

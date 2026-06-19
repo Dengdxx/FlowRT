@@ -137,6 +137,15 @@ class FrameDescriptor {
 };
 
 /**
+ * @brief payload capture provider 返回给 recorder 的 artifact 元数据。
+ */
+struct FramePayloadArtifact {
+    std::string artifact_ref;
+    std::string content_hash;
+    std::uint64_t size_bytes = 0;
+};
+
+/**
  * @brief side-channel lease 当前状态。
  */
 enum class FrameLeaseStatus : std::uint8_t {
@@ -272,7 +281,8 @@ class BoundaryContext {
    public:
     using Reporter = std::function<void(BoundaryStatus)>;
     using DescriptorReporter = std::function<BoundaryRecordOutcome(
-        std::string_view, const FrameDescriptor &, FrameLeaseStatus, bool)>;
+        std::string_view, const FrameDescriptor &, FrameLeaseStatus, bool,
+        std::optional<FramePayloadArtifact>)>;
 
     BoundaryContext() = default;
 
@@ -346,7 +356,16 @@ class BoundaryContext {
         if (!descriptor_reporter_) {
             return BoundaryRecordOutcome{};
         }
-        return descriptor_reporter_(name, descriptor, status, payload_recording);
+        return descriptor_reporter_(name, descriptor, status, payload_recording, std::nullopt);
+    }
+
+    BoundaryRecordOutcome record_frame_descriptor_payload_event(
+        std::string_view name, const FrameDescriptor &descriptor, FrameLeaseStatus status,
+        FramePayloadArtifact artifact) const {
+        if (!descriptor_reporter_) {
+            return BoundaryRecordOutcome{};
+        }
+        return descriptor_reporter_(name, descriptor, status, true, std::move(artifact));
     }
 
     BoundaryRecordOutcome record_frame_descriptor_fields_event(
@@ -354,6 +373,13 @@ class BoundaryContext {
         bool payload_recording) const {
         return record_frame_descriptor_event(name, FrameDescriptor::from_fields(descriptor), status,
                                              payload_recording);
+    }
+
+    BoundaryRecordOutcome record_frame_descriptor_fields_payload_event(
+        std::string_view name, const FrameDescriptorFields &descriptor, FrameLeaseStatus status,
+        FramePayloadArtifact artifact) const {
+        return record_frame_descriptor_payload_event(name, FrameDescriptor::from_fields(descriptor),
+                                                     status, std::move(artifact));
     }
 
     BoundaryRecordOutcome record_frame_descriptor_acquired(std::string_view name,

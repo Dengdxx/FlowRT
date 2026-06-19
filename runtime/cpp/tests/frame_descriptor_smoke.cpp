@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstddef>
 #include <flowrt/runtime.hpp>
+#include <optional>
 #include <string>
 #include <type_traits>
 
@@ -92,9 +93,13 @@ int main() {
         {},
         [](flowrt::BoundaryStatus) {},
         [&state](std::string_view name, const flowrt::FrameDescriptor &descriptor,
-                 flowrt::FrameLeaseStatus status, bool payload_recording) {
-            const auto record =
-                state.record_frame_descriptor_event(name, descriptor, status, payload_recording);
+                 flowrt::FrameLeaseStatus status, bool payload_recording,
+                 std::optional<flowrt::FramePayloadArtifact> artifact) {
+            const auto record = artifact.has_value()
+                                    ? state.record_frame_descriptor_payload_event(
+                                          name, descriptor, status, std::move(*artifact))
+                                    : state.record_frame_descriptor_event(
+                                          name, descriptor, status, payload_recording);
             return flowrt::BoundaryRecordOutcome{.recorded = record.recorded,
                                                  .dropped = record.dropped};
         }};
@@ -109,6 +114,25 @@ int main() {
     assert(payload.find(R"("slot":"7")") != std::string::npos);
     assert(payload.find(R"("width":"640")") != std::string::npos);
     assert(payload.find(R"("payload_recording":false)") != std::string::npos);
+
+    const auto payload_outcome = context.record_frame_descriptor_fields_payload_event(
+        "camera.frame", fields, flowrt::FrameLeaseStatus::Acquired,
+        flowrt::FramePayloadArtifact{.artifact_ref = "artifact://camera/slot-7/42",
+                                     .content_hash = "sha256:0123456789abcdef",
+                                     .size_bytes = 921600U});
+    assert(payload_outcome.recorded);
+    assert(!payload_outcome.dropped);
+    const auto payload_events = state.drain_recorder_events();
+    assert(payload_events.size() == 1U);
+    const std::string payload_artifact_json{payload_events.front().payload.begin(),
+                                            payload_events.front().payload.end()};
+    assert(payload_artifact_json.find(R"("payload_recording":true)") != std::string::npos);
+    assert(payload_artifact_json.find(R"("payload_artifact":{)") != std::string::npos);
+    assert(payload_artifact_json.find(R"("artifact_ref":"artifact://camera/slot-7/42")") !=
+           std::string::npos);
+    assert(payload_artifact_json.find(R"("content_hash":"sha256:0123456789abcdef")") !=
+           std::string::npos);
+    assert(payload_artifact_json.find(R"("size_bytes":921600)") != std::string::npos);
 
     return 0;
 }

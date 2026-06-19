@@ -175,6 +175,16 @@ pub struct DescriptorRecordPayload {
     pub status: DescriptorRecordStatus,
     #[serde(default)]
     pub payload_recording: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_artifact: Option<DescriptorPayloadArtifact>,
+}
+
+/// descriptor payload 录制的 artifact 元数据。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DescriptorPayloadArtifact {
+    pub artifact_ref: String,
+    pub content_hash: String,
+    pub size_bytes: u64,
 }
 
 /// record payload 的编码语义。

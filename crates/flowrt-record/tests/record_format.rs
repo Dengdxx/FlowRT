@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use flowrt_record::{
-    DescriptorRecordPayload, DescriptorRecordStatus, FlowrtMcapWriter, PayloadEncoding,
-    RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope, RecordError,
-    RecordEventKind, ReplayTimelineEntry, read_replay_timeline,
+    DescriptorPayloadArtifact, DescriptorRecordPayload, DescriptorRecordStatus, FlowrtMcapWriter,
+    PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope,
+    RecordError, RecordEventKind, ReplayTimelineEntry, read_replay_timeline,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -166,6 +166,7 @@ fn descriptor_record_payload_serializes_descriptor_without_payload_bytes() -> Te
         ]),
         status: DescriptorRecordStatus::Acquired,
         payload_recording: false,
+        payload_artifact: None,
     };
     let payload = serde_json::to_vec(&descriptor)?;
     let envelope = RecordEnvelope {
@@ -198,6 +199,39 @@ fn descriptor_record_payload_serializes_descriptor_without_payload_bytes() -> Te
     assert_eq!(decoded.metadata.get("width"), Some(&"640".to_string()));
     assert_eq!(decoded.status, DescriptorRecordStatus::Acquired);
     assert!(!decoded.payload_recording);
+    assert!(decoded.payload_artifact.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn descriptor_record_payload_serializes_payload_artifact_metadata() -> TestResult {
+    let descriptor = DescriptorRecordPayload {
+        resource_id: "camera_frames".to_string(),
+        slot: "slot-7".to_string(),
+        generation: 42,
+        size_bytes: 921_600,
+        format: "rgb8".to_string(),
+        encoding: "row_major".to_string(),
+        metadata: BTreeMap::new(),
+        status: DescriptorRecordStatus::Acquired,
+        payload_recording: true,
+        payload_artifact: Some(DescriptorPayloadArtifact {
+            artifact_ref: "artifact://camera/slot-7/42".to_string(),
+            content_hash: "fnv1a64:8a70d3d1c8f3a011".to_string(),
+            size_bytes: 921_600,
+        }),
+    };
+    let payload = serde_json::to_vec(&descriptor)?;
+    let decoded: DescriptorRecordPayload = serde_json::from_slice(&payload)?;
+
+    assert!(decoded.payload_recording);
+    let artifact = decoded
+        .payload_artifact
+        .expect("payload artifact metadata should be recorded");
+    assert_eq!(artifact.artifact_ref, "artifact://camera/slot-7/42");
+    assert_eq!(artifact.content_hash, "fnv1a64:8a70d3d1c8f3a011");
+    assert_eq!(artifact.size_bytes, 921_600);
 
     Ok(())
 }

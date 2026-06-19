@@ -365,6 +365,8 @@ pub struct LaunchResourceDescriptor {
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub record_payload: bool,
+    #[serde(default)]
+    pub payload_capture: String,
 }
 
 /// manifest 中 external process package/executable 描述。

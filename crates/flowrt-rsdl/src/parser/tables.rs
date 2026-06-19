@@ -262,6 +262,7 @@ fn optional_resource_descriptor(
             "encoding",
             "metadata",
             "record_payload",
+            "payload_capture",
         ],
     )?;
     Ok(Some(RawResourceDescriptor {
@@ -275,6 +276,7 @@ fn optional_resource_descriptor(
         } else {
             false
         },
+        payload_capture: optional_string(descriptor_table, &descriptor_context, "payload_capture")?,
     }))
 }
 

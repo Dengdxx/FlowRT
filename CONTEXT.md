@@ -1016,6 +1016,9 @@ ROS2 兼容层；它要解决 fixed ABI 控制岛之外的真实阻塞点：
 - `flowrt echo` 会结构化展示标准 descriptor 字段；`flowrt status` 会展示 resource
   descriptor schema；`flowrt record` 默认记录 descriptor/event，摘要中标注
   `descriptor_payload=descriptor_only`。
+- `record_payload = true` 需要 descriptor schema 同时声明 `payload_capture = "boundary"`
+  或后续外部 provider 语义；I/O boundary 通过 `FramePayloadArtifact` 上报 artifact ref、
+  content hash 和大小，recorder 只写 artifact metadata，不把真实 payload 塞进普通 channel。
 - 新增 `examples/frame_descriptor_demo` 和 `scripts/bench-frame-descriptor.sh`；
   CI 增加 `v0.8.1 FrameDescriptor Smoke` amd64/arm64 focused gate，安装后 demo smoke
   增加 `scripts/test-v081-installed-smoke.sh`。

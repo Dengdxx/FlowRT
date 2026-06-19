@@ -82,6 +82,59 @@ fn record_writes_mcap_from_fake_runtime() {
 }
 
 #[test]
+fn record_summary_counts_descriptor_payload_artifacts() {
+    let root = temp_test_dir("record-descriptor-payload-artifacts");
+    let socket = root.join("main.sock");
+    let output = root.join("run.mcap");
+    let state = flowrt::IntrospectionState::new();
+    let server =
+        flowrt::spawn_status_server_at(socket.clone(), handshake(42, "main"), state.clone())
+            .expect("status server should start");
+    let producer_state = state.clone();
+    let producer = std::thread::spawn(move || {
+        for _ in 0..200 {
+            if producer_state.status().recorder.enabled {
+                let descriptor = flowrt::FrameDescriptor::new(
+                    flowrt::ResourceDescriptor::new("camera_frames", "slot-7", 42),
+                    921_600,
+                    "rgb8",
+                    "row_major",
+                    flowrt::FrameMetadata::new(),
+                )
+                .unwrap();
+                let artifact = flowrt::FramePayloadArtifact::new(
+                    "artifact://camera/slot-7/42",
+                    "sha256:0123456789abcdef",
+                    921_600,
+                )
+                .unwrap();
+                producer_state.record_frame_descriptor_payload_event(
+                    "camera.frame",
+                    &descriptor,
+                    flowrt::FrameLeaseStatus::Acquired,
+                    artifact,
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    let summary =
+        record::record_runtime_for_sockets(record_options(output.clone(), None), vec![socket])
+            .expect("record should write MCAP");
+
+    producer.join().expect("producer thread should finish");
+    assert!(summary.contains("descriptor_payload=artifact_ref"));
+    assert!(summary.contains("payload_artifact_count=1"));
+    let bytes = std::fs::read(&output).expect("MCAP output should exist");
+    assert!(bytes.starts_with(flowrt_record::MCAP_MAGIC));
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn record_writes_variable_frame_event_from_fake_runtime() {
     let root = temp_test_dir("record-variable-frame-event");
     let socket = root.join("main.sock");

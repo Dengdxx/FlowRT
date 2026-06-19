@@ -371,6 +371,8 @@ pub struct SelfDescriptionResourceDescriptor {
     pub metadata: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub record_payload: bool,
+    #[serde(default)]
+    pub payload_capture: String,
 }
 
 /// I/O boundary 静态策略摘要。

@@ -30,9 +30,9 @@ use flowrt_selfdesc::{
 use sha2::{Digest, Sha256};
 
 use crate::resource_names::{
-    resource_access_name, resource_descriptor_kind_name, resource_failure_name,
-    resource_health_name, resource_provider_scope_name, resource_readiness_name,
-    resource_satisfaction_status,
+    descriptor_payload_capture_name, resource_access_name, resource_descriptor_kind_name,
+    resource_failure_name, resource_health_name, resource_provider_scope_name,
+    resource_readiness_name, resource_satisfaction_status,
 };
 use crate::{
     Result, component_by_name, fixed_message_abi_expectations, frame_header_size_for_expr,
@@ -672,6 +672,10 @@ fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionCo
                         encoding: descriptor.encoding.clone().unwrap_or_default(),
                         metadata: descriptor.metadata.clone(),
                         record_payload: descriptor.record_payload,
+                        payload_capture: descriptor_payload_capture_name(
+                            descriptor.payload_capture,
+                        )
+                        .to_string(),
                     }
                 }),
             })

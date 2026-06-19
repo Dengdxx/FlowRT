@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_ir::{
-    ComponentIr, ComponentKind, ContractIr, LanguageKind, ParamIr, ParamType, ParamUpdatePolicy,
-    ParamValue, PrimitiveType, ResourceDescriptorKind, ResourceDescriptorSchemaIr,
-    ResourceRequirementIr, TypeExpr, TypeIr,
+    ComponentIr, ComponentKind, ContractIr, DescriptorPayloadCapture, LanguageKind, ParamIr,
+    ParamType, ParamUpdatePolicy, ParamValue, PrimitiveType, ResourceDescriptorKind,
+    ResourceDescriptorSchemaIr, ResourceRequirementIr, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -293,10 +293,25 @@ fn validate_resource_descriptor_schema(
     errors: &mut Vec<ValidationError>,
 ) {
     if descriptor.record_payload {
-        errors.push(ValidationError::new(format!(
-            "component `{}` resource `{}` descriptor record_payload=true is unsupported; flowrt record currently supports descriptor-only events",
-            component.name, resource.name
-        )));
+        match descriptor.payload_capture {
+            DescriptorPayloadCapture::None => errors.push(ValidationError::new(format!(
+                "component `{}` resource `{}` descriptor record_payload requires a payload capture provider",
+                component.name, resource.name
+            ))),
+            DescriptorPayloadCapture::Boundary if component.kind != ComponentKind::IoBoundary => {
+                errors.push(ValidationError::new(format!(
+                    "component `{}` resource `{}` descriptor payload_capture=boundary requires an io_boundary component",
+                    component.name, resource.name
+                )));
+            }
+            DescriptorPayloadCapture::External if component.kind != ComponentKind::External => {
+                errors.push(ValidationError::new(format!(
+                    "component `{}` resource `{}` descriptor payload_capture=external requires an external component",
+                    component.name, resource.name
+                )));
+            }
+            DescriptorPayloadCapture::Boundary | DescriptorPayloadCapture::External => {}
+        }
     }
 
     let Some(port) = component

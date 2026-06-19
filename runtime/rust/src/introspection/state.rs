@@ -8,7 +8,7 @@ use crate::recorder::{
 };
 use crate::{
     BackendHealthSnapshot, BackendHealthState, FrameCodec, FrameDescriptor, FrameLeaseStatus,
-    LifecycleState,
+    FramePayloadArtifact, LifecycleState,
 };
 
 use super::facts::{RuntimeObservabilityFacts, input_status_key};
@@ -383,6 +383,18 @@ impl IntrospectionState {
     ) -> RecorderTapOutcome {
         self.recorder
             .record_frame_descriptor_event(name, descriptor, status, payload_recording)
+    }
+
+    /// 记录 frame descriptor 事件及 payload artifact 元数据。
+    pub fn record_frame_descriptor_payload_event(
+        &self,
+        name: &str,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        artifact: FramePayloadArtifact,
+    ) -> RecorderTapOutcome {
+        self.recorder
+            .record_frame_descriptor_payload_event(name, descriptor, status, artifact)
     }
 
     /// 按需记录 canonical frame channel sample。关闭时不复制 payload。

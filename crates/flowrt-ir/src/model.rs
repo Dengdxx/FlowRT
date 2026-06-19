@@ -417,6 +417,8 @@ pub struct ResourceDescriptorSchemaIr {
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub record_payload: bool,
+    #[serde(default, skip_serializing_if = "DescriptorPayloadCapture::is_none")]
+    pub payload_capture: DescriptorPayloadCapture,
 }
 
 /// FlowRT 当前认识的 side-channel descriptor 类别。
@@ -424,6 +426,22 @@ pub struct ResourceDescriptorSchemaIr {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceDescriptorKind {
     Frame,
+}
+
+/// descriptor payload 录制的 capture provider 边界。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DescriptorPayloadCapture {
+    #[default]
+    None,
+    Boundary,
+    External,
+}
+
+impl DescriptorPayloadCapture {
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
 }
 
 /// 进程内 I/O boundary 的静态策略。

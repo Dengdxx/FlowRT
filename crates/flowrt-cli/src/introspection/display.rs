@@ -834,12 +834,13 @@ pub(crate) fn format_descriptor_schema(descriptor: &SelfDescriptionResourceDescr
             .join(",")
     };
     format!(
-        " descriptor_kind={} descriptor_port={} descriptor_format={} descriptor_encoding={} descriptor_record_payload={} descriptor_metadata=[{}]",
+        " descriptor_kind={} descriptor_port={} descriptor_format={} descriptor_encoding={} descriptor_record_payload={} descriptor_payload_capture={} descriptor_metadata=[{}]",
         empty_as_none(&descriptor.kind),
         empty_as_none(&descriptor.port),
         empty_as_none(&descriptor.format),
         empty_as_none(&descriptor.encoding),
         descriptor.record_payload,
+        empty_as_none(&descriptor.payload_capture),
         metadata
     )
 }

@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use flowrt_record::{FlowrtMcapWriter, RecordChannel, RecordEnvelope, RecordEventKind};
+use flowrt_record::{
+    DescriptorRecordPayload, FlowrtMcapWriter, RecordChannel, RecordEnvelope, RecordEventKind,
+};
 
 const LOCAL_INTROSPECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -26,6 +28,7 @@ struct RecordCounters {
     event_count: u64,
     dropped_count: u64,
     bytes_written: u64,
+    descriptor_payload_artifacts: u64,
 }
 
 struct RecordWriterChannels {
@@ -177,14 +180,21 @@ pub(crate) fn record_runtime_for_sockets(
     drop(_file);
     output_file.commit(options.force)?;
 
+    let descriptor_payload_mode = if counters.descriptor_payload_artifacts > 0 {
+        "artifact_ref"
+    } else {
+        "descriptor_only"
+    };
     Ok(format!(
-        "recorded output={} socket={} event_count={} dropped_count={} bytes_written={} active_filters=[{}] descriptor_payload=descriptor_only",
+        "recorded output={} socket={} event_count={} dropped_count={} bytes_written={} active_filters=[{}] descriptor_payload={} payload_artifact_count={}",
         options.output.display(),
         socket.display(),
         counters.event_count,
         counters.dropped_count,
         counters.bytes_written,
-        active_filters.join(",")
+        active_filters.join(","),
+        descriptor_payload_mode,
+        counters.descriptor_payload_artifacts
     ))
 }
 
@@ -423,6 +433,7 @@ fn drain_record_events(
             recorder, events, ..
         } => {
             for event in events {
+                count_descriptor_payload_artifact(&event, counters);
                 write_record_event(writer, channels, &event)?;
                 counters.event_count = counters.event_count.saturating_add(1);
             }
@@ -437,6 +448,19 @@ fn drain_record_events(
             "runtime socket `{}` returned an unexpected recorder drain response",
             socket.display()
         ),
+    }
+}
+
+fn count_descriptor_payload_artifact(event: &RecordEnvelope, counters: &mut RecordCounters) {
+    if event.event_kind != RecordEventKind::DescriptorEvent {
+        return;
+    }
+    let Ok(payload) = serde_json::from_slice::<DescriptorRecordPayload>(&event.payload) else {
+        return;
+    };
+    if payload.payload_artifact.is_some() {
+        counters.descriptor_payload_artifacts =
+            counters.descriptor_payload_artifacts.saturating_add(1);
     }
 }
 

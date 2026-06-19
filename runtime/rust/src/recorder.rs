@@ -11,14 +11,14 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowrt_record::{
-    DESCRIPTOR_RECORD_SCHEMA_NAME, DescriptorRecordPayload, DescriptorRecordStatus,
-    PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind, RecordEnvelope,
-    RecordEventKind,
+    DESCRIPTOR_RECORD_SCHEMA_NAME, DescriptorPayloadArtifact, DescriptorRecordPayload,
+    DescriptorRecordStatus, PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind,
+    RecordEnvelope, RecordEventKind,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::introspection::facts::RecorderDiagnosticFact;
-use crate::{FrameDescriptor, FrameLeaseStatus};
+use crate::{FrameDescriptor, FrameLeaseStatus, FramePayloadArtifact};
 
 /// recorder 启动时绑定的 runtime 元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,10 +266,32 @@ impl RecorderTap {
         status: FrameLeaseStatus,
         payload_recording: bool,
     ) -> RecorderTapOutcome {
+        self.record_frame_descriptor_event_inner(name, descriptor, status, payload_recording, None)
+    }
+
+    pub fn record_frame_descriptor_payload_event(
+        &self,
+        name: &str,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        artifact: FramePayloadArtifact,
+    ) -> RecorderTapOutcome {
+        self.record_frame_descriptor_event_inner(name, descriptor, status, true, Some(artifact))
+    }
+
+    fn record_frame_descriptor_event_inner(
+        &self,
+        name: &str,
+        descriptor: &FrameDescriptor,
+        status: FrameLeaseStatus,
+        payload_recording: bool,
+        payload_artifact: Option<FramePayloadArtifact>,
+    ) -> RecorderTapOutcome {
         let resource_id = descriptor.resource().resource_id();
         if !self.enabled_for_descriptor(resource_id) {
             return RecorderTapOutcome::default();
         }
+        let payload_recording = payload_recording && payload_artifact.is_some();
         let payload = DescriptorRecordPayload {
             resource_id: resource_id.to_string(),
             slot: descriptor.resource().slot().to_string(),
@@ -280,6 +302,11 @@ impl RecorderTap {
             metadata: descriptor.metadata().clone(),
             status: descriptor_status(status),
             payload_recording,
+            payload_artifact: payload_artifact.map(|artifact| DescriptorPayloadArtifact {
+                artifact_ref: artifact.artifact_ref().to_string(),
+                content_hash: artifact.content_hash().to_string(),
+                size_bytes: artifact.size_bytes(),
+            }),
         };
         let Ok(payload) = serde_json::to_vec(&payload) else {
             return RecorderTapOutcome {

@@ -735,6 +735,7 @@ fn live_status_summary_enriches_io_boundary_resource_descriptor_schema() {
     assert!(output.contains("descriptor_format=rgb8"));
     assert!(output.contains("descriptor_encoding=row_major"));
     assert!(output.contains("descriptor_record_payload=false"));
+    assert!(output.contains("descriptor_payload_capture=none"));
     assert!(output.contains("descriptor_metadata=[height:480,width:640]"));
 
     drop(server);

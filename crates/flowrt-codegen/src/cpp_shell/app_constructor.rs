@@ -322,7 +322,7 @@ pub(super) fn emit_cpp_io_boundary_contexts(
             continue;
         }
         output.push_str(&format!(
-            "    auto {context} = flowrt::Context::for_boundary(flowrt::BoundaryContext{{{}, {}, {}, [&introspection_state](flowrt::BoundaryStatus status) {{\n        introspection_state.record_io_boundary_health(std::move(status));\n    }}, [&introspection_state](std::string_view name, const flowrt::FrameDescriptor& descriptor, flowrt::FrameLeaseStatus status, bool payload_recording) {{\n        const auto record = introspection_state.record_frame_descriptor_event(name, descriptor, status, payload_recording);\n        return flowrt::BoundaryRecordOutcome{{.recorded = record.recorded, .dropped = record.dropped}};\n    }}}});\n",
+            "    auto {context} = flowrt::Context::for_boundary(flowrt::BoundaryContext{{{}, {}, {}, [&introspection_state](flowrt::BoundaryStatus status) {{\n        introspection_state.record_io_boundary_health(std::move(status));\n    }}, [&introspection_state](std::string_view name, const flowrt::FrameDescriptor& descriptor, flowrt::FrameLeaseStatus status, bool payload_recording, std::optional<flowrt::FramePayloadArtifact> artifact) {{\n        const auto record = artifact.has_value()\n            ? introspection_state.record_frame_descriptor_payload_event(name, descriptor, status, std::move(*artifact))\n            : introspection_state.record_frame_descriptor_event(name, descriptor, status, payload_recording);\n        return flowrt::BoundaryRecordOutcome{{.recorded = record.recorded, .dropped = record.dropped}};\n    }}}});\n",
             cpp_string_literal(&instance.name),
             cpp_string_literal(&component.name),
             cpp_boundary_resources_literal(component),

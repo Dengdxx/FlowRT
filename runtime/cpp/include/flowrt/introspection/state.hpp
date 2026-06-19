@@ -392,7 +392,28 @@ class IntrospectionState {
         if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
             return IntrospectionProbeRecord{};
         }
-        const auto payload = frame_descriptor_payload_json(descriptor, status, payload_recording);
+        const auto payload =
+            frame_descriptor_payload_json(descriptor, status, payload_recording, std::nullopt);
+        const auto payload_bytes = string_bytes(payload);
+        std::lock_guard<std::mutex> lock(inner_->mutex);
+        return record_event_locked("descriptor", descriptor.resource().resource_id,
+                                   "descriptor_event", "resource",
+                                   descriptor.resource().resource_id, "FrameDescriptor", "json",
+                                   "flowrt.descriptor.frame.v1", payload_bytes, std::nullopt);
+    }
+
+    /**
+     * @brief 记录 frame descriptor 事件及 payload artifact 元数据。
+     */
+    IntrospectionProbeRecord record_frame_descriptor_payload_event(
+        std::string_view name, const FrameDescriptor &descriptor, FrameLeaseStatus status,
+        FramePayloadArtifact artifact) const {
+        (void)name;
+        if (!inner_->recorder_enabled.load(std::memory_order_acquire)) {
+            return IntrospectionProbeRecord{};
+        }
+        const auto payload =
+            frame_descriptor_payload_json(descriptor, status, true, std::move(artifact));
         const auto payload_bytes = string_bytes(payload);
         std::lock_guard<std::mutex> lock(inner_->mutex);
         return record_event_locked("descriptor", descriptor.resource().resource_id,
@@ -1451,7 +1472,8 @@ class IntrospectionState {
 
     static std::string frame_descriptor_payload_json(const FrameDescriptor &descriptor,
                                                      FrameLeaseStatus status,
-                                                     bool payload_recording) {
+                                                     bool payload_recording,
+                                                     std::optional<FramePayloadArtifact> artifact) {
         std::string output;
         output.append("{\"resource_id\":");
         output.append(detail::json_string(descriptor.resource().resource_id));
@@ -1470,7 +1492,16 @@ class IntrospectionState {
         output.append(",\"status\":");
         output.append(detail::json_string(frame_lease_status_name(status)));
         output.append(",\"payload_recording\":");
-        output.append(payload_recording ? "true" : "false");
+        output.append(payload_recording && artifact.has_value() ? "true" : "false");
+        if (artifact.has_value()) {
+            output.append(",\"payload_artifact\":{\"artifact_ref\":");
+            output.append(detail::json_string(artifact->artifact_ref));
+            output.append(",\"content_hash\":");
+            output.append(detail::json_string(artifact->content_hash));
+            output.append(",\"size_bytes\":");
+            output.append(std::to_string(artifact->size_bytes));
+            output.push_back('}');
+        }
         output.push_back('}');
         return output;
     }

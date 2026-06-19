@@ -295,20 +295,32 @@ fn accepts_io_boundary_frame_descriptor_bound_to_fixed_output_port() {
 }
 
 #[test]
-fn rejects_frame_descriptor_payload_recording_until_data_plane_is_modeled() {
+fn rejects_frame_descriptor_record_payload_without_capture_provider() {
     let source = frame_descriptor_contract_source("FrameDescriptor").replace(
         "metadata = { width = \"640\", height = \"480\" }",
         "metadata = { width = \"640\", height = \"480\" }\nrecord_payload = true",
     );
     let raw = parse_str(&source).unwrap();
     let ir = normalize_document(&raw, hash_source(&source)).unwrap();
-    let report = validate_contract(&ir).expect_err("payload recording opt-in must fail");
+    let report = validate_contract(&ir).expect_err("payload recording without provider must fail");
 
     assert!(report.errors.iter().any(|error| {
         error.message.contains(
-            "component `camera` resource `frames` descriptor record_payload=true is unsupported",
+            "component `camera` resource `frames` descriptor record_payload requires a payload capture provider",
         )
     }));
+}
+
+#[test]
+fn accepts_frame_descriptor_record_payload_with_boundary_capture_provider() {
+    let source = frame_descriptor_contract_source("FrameDescriptor").replace(
+        "metadata = { width = \"640\", height = \"480\" }",
+        "metadata = { width = \"640\", height = \"480\" }\nrecord_payload = true\npayload_capture = \"boundary\"",
+    );
+    let raw = parse_str(&source).unwrap();
+    let ir = normalize_document(&raw, hash_source(&source)).unwrap();
+
+    validate_contract(&ir).unwrap();
 }
 
 #[test]

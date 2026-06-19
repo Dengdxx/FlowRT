@@ -229,6 +229,7 @@ pub struct RawResourceDescriptor {
     pub encoding: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub record_payload: bool,
+    pub payload_capture: Option<String>,
 }
 
 /// 组件端口声明。

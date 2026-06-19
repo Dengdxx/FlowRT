@@ -39,7 +39,7 @@
 | `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 验证 generated Service over zenoh 的跨进程 request/response、typed API 和 service key expression |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
-| `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor-only 观测 |
+| `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor 观测 |
 | `examples/libjpeg_cross_demo` | C++ | `inproc` | `scripts/test-v086-cross-sdk-demos.sh` | 验证公开可移植 C/C++ 库通过 pkg-config overlay 接入 amd64 到 arm64 交叉构建 |
 | `examples/kleidiai_cross_demo` | C++ | `inproc` | `scripts/test-v086-cross-sdk-demos.sh` | 验证 Arm 专用公开 SDK 通过 pkg-config overlay 接入 FlowRT C++ component 并在 arm64 运行 |
 
@@ -448,9 +448,17 @@ flowrt echo camera.frame --image examples/frame_descriptor_demo/flowrt/selfdesc/
 
 `flowrt echo` 会把 payload 识别为标准 FrameDescriptor 并按字段展示；
 `flowrt record` 默认记录 descriptor/event，摘要中输出
-`descriptor_payload=descriptor_only`。真实 payload 录制需要显式建模，不由该示例隐式
-复制图像数据；当前 validator 会拒绝 `record_payload = true`，避免 self-description
-宣称可录 payload 但 recorder 实际只写 descriptor metadata。
+`descriptor_payload=descriptor_only`。需要记录真实 payload 的 artifact 元数据时，descriptor
+schema 必须显式声明：
+
+```toml
+record_payload = true
+payload_capture = "boundary"
+```
+
+之后 I/O boundary 通过 `record_frame_descriptor_payload_event` 上报 `artifact_ref`、
+`content_hash` 和 `size_bytes`。FlowRT 仍只把 artifact 元数据写入 descriptor event，不把图像
+bytes 当作普通 channel sample 复制进 MCAP。
 
 ## ROS2 bridge 示例
 

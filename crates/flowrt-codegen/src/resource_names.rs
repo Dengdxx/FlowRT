@@ -1,11 +1,19 @@
 use flowrt_ir::{
-    ResourceAccess, ResourceDescriptorKind, ResourceFailurePolicy, ResourceHealthPolicy,
-    ResourceProviderScope, ResourceReadinessGate, ResourceSatisfactionIr,
+    DescriptorPayloadCapture, ResourceAccess, ResourceDescriptorKind, ResourceFailurePolicy,
+    ResourceHealthPolicy, ResourceProviderScope, ResourceReadinessGate, ResourceSatisfactionIr,
 };
 
 pub(crate) fn resource_descriptor_kind_name(kind: ResourceDescriptorKind) -> &'static str {
     match kind {
         ResourceDescriptorKind::Frame => "frame",
+    }
+}
+
+pub(crate) fn descriptor_payload_capture_name(kind: DescriptorPayloadCapture) -> &'static str {
+    match kind {
+        DescriptorPayloadCapture::None => "none",
+        DescriptorPayloadCapture::Boundary => "boundary",
+        DescriptorPayloadCapture::External => "external",
     }
 }
 

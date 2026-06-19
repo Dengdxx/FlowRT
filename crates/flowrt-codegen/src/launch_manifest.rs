@@ -9,9 +9,9 @@ use flowrt_ir::{
 };
 
 use crate::resource_names::{
-    resource_access_name, resource_descriptor_kind_name, resource_failure_name,
-    resource_health_name, resource_provider_scope_name, resource_readiness_name,
-    resource_satisfaction_status,
+    descriptor_payload_capture_name, resource_access_name, resource_descriptor_kind_name,
+    resource_failure_name, resource_health_name, resource_provider_scope_name,
+    resource_readiness_name, resource_satisfaction_status,
 };
 use crate::runtime_plan::{bridge_runtime_plans, contract_derived_facts, graph_derived_facts};
 use crate::{
@@ -657,6 +657,7 @@ fn launch_resource_requirement(resource: &ResourceRequirementIr) -> serde_json::
             "encoding": descriptor.encoding,
             "metadata": descriptor.metadata,
             "record_payload": descriptor.record_payload,
+            "payload_capture": descriptor_payload_capture_name(descriptor.payload_capture),
         });
     }
     value

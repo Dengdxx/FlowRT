@@ -122,6 +122,7 @@ format = "rgb8"
 encoding = "row_major"
 metadata = { width = "640", height = "480" }
 record_payload = true
+payload_capture = "boundary"
 
 [instance.camera]
 component = "camera"
@@ -152,6 +153,10 @@ output = ["frame"]
         ])
     );
     assert!(descriptor.record_payload);
+    assert_eq!(
+        descriptor.payload_capture,
+        crate::DescriptorPayloadCapture::Boundary
+    );
 }
 
 #[test]

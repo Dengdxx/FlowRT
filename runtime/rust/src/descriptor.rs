@@ -161,6 +161,59 @@ impl FrameDescriptor {
     }
 }
 
+/// payload capture provider 返回给 recorder 的 artifact 元数据。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FramePayloadArtifact {
+    artifact_ref: String,
+    content_hash: String,
+    size_bytes: u64,
+}
+
+impl FramePayloadArtifact {
+    pub fn new(
+        artifact_ref: impl Into<String>,
+        content_hash: impl Into<String>,
+        size_bytes: u64,
+    ) -> Result<Self, FrameDescriptorError> {
+        let artifact_ref = artifact_ref.into();
+        let content_hash = content_hash.into();
+        if artifact_ref.is_empty() {
+            return Err(FrameDescriptorError::InvalidField("artifact_ref"));
+        }
+        if content_hash.is_empty() {
+            return Err(FrameDescriptorError::InvalidField("content_hash"));
+        }
+        Ok(Self {
+            artifact_ref,
+            content_hash,
+            size_bytes,
+        })
+    }
+
+    pub fn from_bytes(
+        artifact_ref: impl Into<String>,
+        payload: &[u8],
+    ) -> Result<Self, FrameDescriptorError> {
+        Self::new(
+            artifact_ref,
+            format!("fnv1a64:{:016x}", crate::fnv1a64(payload)),
+            payload.len() as u64,
+        )
+    }
+
+    pub fn artifact_ref(&self) -> &str {
+        &self.artifact_ref
+    }
+
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+}
+
 /// descriptor 构造错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameDescriptorError {

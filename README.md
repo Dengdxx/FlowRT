@@ -760,8 +760,10 @@ flowrt record --output op.mcap --operation controller.plan --force
 `flowrt record` 通过 live runtime socket 按需启用 recorder tap。没有录制者时，发布热路径
 不会持续复制 payload；命令结束时会输出 event、drop 和写入字节统计。
 标准 FrameDescriptor 默认按 descriptor-only 记录，摘要中会出现
-`descriptor_payload=descriptor_only`；真实图像 payload 录制需要后续显式建模，不能由
-channel sample 隐式复制。
+`descriptor_payload=descriptor_only`。如果 descriptor schema 显式声明
+`record_payload = true` 和 `payload_capture = "boundary"`，I/O boundary 可通过
+`FramePayloadArtifact` / `record_frame_descriptor_payload_event` 把 payload artifact ref、
+content hash 和大小写入 descriptor event；真实 payload 仍不进入普通 channel sample。
 
 ### 调度健康
 

@@ -363,6 +363,7 @@ output = ["frame"]
     assert_eq!(descriptor["encoding"], "row_major");
     assert_eq!(descriptor["metadata"]["width"], "640");
     assert_eq!(descriptor["record_payload"], false);
+    assert_eq!(descriptor["payload_capture"], "none");
 }
 
 #[test]

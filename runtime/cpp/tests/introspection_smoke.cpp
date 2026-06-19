@@ -822,6 +822,25 @@ int main() {
     assert_contains(descriptor_payload, R"("status":"acquired")");
     assert_contains(descriptor_payload, R"("payload_recording":false)");
 
+    const auto descriptor_payload_record =
+        descriptor_recorder_state.record_frame_descriptor_payload_event(
+            "camera.frame", frame_descriptor, flowrt::FrameLeaseStatus::Acquired,
+            flowrt::FramePayloadArtifact{.artifact_ref = "artifact://camera/slot-7/42",
+                                         .content_hash = "sha256:0123456789abcdef",
+                                         .size_bytes = 921600U});
+    assert(descriptor_payload_record.recorded);
+    const auto descriptor_payload_events = descriptor_recorder_state.drain_recorder_events();
+    assert(descriptor_payload_events.size() == 1U);
+    const auto descriptor_payload_artifact =
+        std::string(descriptor_payload_events.front().payload.begin(),
+                    descriptor_payload_events.front().payload.end());
+    assert_contains(descriptor_payload_artifact, R"("payload_recording":true)");
+    assert_contains(descriptor_payload_artifact,
+                    R"("artifact_ref":"artifact://camera/slot-7/42")");
+    assert_contains(descriptor_payload_artifact,
+                    R"("content_hash":"sha256:0123456789abcdef")");
+    assert_contains(descriptor_payload_artifact, R"("size_bytes":921600)");
+
     flowrt::IntrospectionState service_recorder_state;
     service_recorder_state.start_recorder(flowrt::IntrospectionRecorderStart{
         .output = std::nullopt,

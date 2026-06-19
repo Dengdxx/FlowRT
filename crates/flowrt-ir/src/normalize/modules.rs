@@ -6,10 +6,10 @@ use flowrt_rsdl::{
 };
 
 use crate::{
-    CapabilityAtom, ComponentBuildIr, ComponentIr, ComponentKind, EntityId, FieldIr,
-    IoBoundaryHealth, IoBoundaryIr, IoBoundaryReadiness, IoBoundaryShutdown, IoSideEffect, IrError,
-    LanguageKind, LifecycleSurface, ModuleIr, OperationPortIr, PortIr, ResourceAccess,
-    ResourceDescriptorKind, ResourceDescriptorSchemaIr, ResourceFailurePolicy,
+    CapabilityAtom, ComponentBuildIr, ComponentIr, ComponentKind, DescriptorPayloadCapture,
+    EntityId, FieldIr, IoBoundaryHealth, IoBoundaryIr, IoBoundaryReadiness, IoBoundaryShutdown,
+    IoSideEffect, IrError, LanguageKind, LifecycleSurface, ModuleIr, OperationPortIr, PortIr,
+    ResourceAccess, ResourceDescriptorKind, ResourceDescriptorSchemaIr, ResourceFailurePolicy,
     ResourceHealthPolicy, ResourceReadinessGate, ResourceRequirementIr, Result, ServicePortIr,
     TaskConcurrency, TimestampEpoch, TimestampSourceIr, TimestampUnit, TypeIr, parse_type_expr,
 };
@@ -353,6 +353,14 @@ fn normalize_resource_descriptor(
         encoding: raw.encoding.clone(),
         metadata: raw.metadata.clone(),
         record_payload: raw.record_payload,
+        payload_capture: raw
+            .payload_capture
+            .as_deref()
+            .map(|value| {
+                parse_descriptor_payload_capture(&format!("{context}.payload_capture"), value)
+            })
+            .transpose()?
+            .unwrap_or_default(),
     }))
 }
 
@@ -447,6 +455,18 @@ fn parse_resource_descriptor_kind(context: &str, value: &str) -> Result<Resource
     match value {
         "frame" => Ok(ResourceDescriptorKind::Frame),
         _ => Err(invalid_enum(context, "resource descriptor kind", value)),
+    }
+}
+
+fn parse_descriptor_payload_capture(
+    context: &str,
+    value: &str,
+) -> Result<DescriptorPayloadCapture> {
+    match value {
+        "none" => Ok(DescriptorPayloadCapture::None),
+        "boundary" => Ok(DescriptorPayloadCapture::Boundary),
+        "external" => Ok(DescriptorPayloadCapture::External),
+        _ => Err(invalid_enum(context, "descriptor payload capture", value)),
     }
 }
 
