@@ -365,7 +365,10 @@ channel = "latest"
             "const auto context = make_c_component_context(\"controller\", \"controller\""
         )
     );
-    assert!(runtime_shell.contains("tick_context, step, tick_time_ms, 0, false);"));
+    assert!(
+        runtime_shell.contains("const auto param_snapshot = make_c_param_snapshot(nullptr, 0U);")
+    );
+    assert!(runtime_shell.contains("tick_context, step, tick_time_ms, 0, false, param_snapshot);"));
     assert!(runtime_shell.contains("flowrt_c_input_view_t controller_sample_input"));
     assert!(runtime_shell.contains("sample.present() ? std::uint8_t{1} : std::uint8_t{0}"));
     assert!(runtime_shell.contains("sample.stale() ? std::uint8_t{1} : std::uint8_t{0}"));
