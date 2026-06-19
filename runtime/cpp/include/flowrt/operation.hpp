@@ -836,7 +836,7 @@ class OperationLifecycle {
     bool valid_policy_ = true;
     OperationState state_{OperationState::Starting};
     OperationCancelToken cancel_token_;
-    OperationHealthCounters health_{};
+    OperationHealthCounters health_;
 };
 
 /**
@@ -1480,7 +1480,7 @@ class OperationControl {
     std::deque<OperationLifecycle> in_flight_;
     std::deque<OperationLifecycle> queue_;
     bool handler_active_ = false;
-    OperationHealthCounters health_{};
+    OperationHealthCounters health_;
     std::vector<RetainedOperationStatus> retained_results_;
     std::vector<OperationRuntimeEvent> events_;
     mutable std::mutex mutex_;

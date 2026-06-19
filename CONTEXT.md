@@ -17,6 +17,9 @@ cross-process FIFO feedback、standby failover、graph health metrics、fault in
 matrix、Operation zenoh / FIFO / retention / policy、FrameDescriptor payload record、
 OpenTelemetry / tracing 最小 exporter、C v0 params 子集，以及 v0.23.3 focused smoke /
 release readiness / release gate 收尾。
+发布分支 CI 曾由 v0.23.2 C++ `clang-tidy` focused gate 发现
+`OperationHealthCounters health_{}` 冗余默认成员初始化；本版本已移除该初始化，保持
+`clang-tidy` gate 在 v0.23.3 分支继续覆盖 C++ runtime。
 
 上一发布线为 `v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++
 runtime shell 进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量门禁闭合。
