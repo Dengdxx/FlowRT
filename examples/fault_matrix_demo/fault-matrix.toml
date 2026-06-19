@@ -1,0 +1,56 @@
+[matrix]
+name = "fault_matrix_demo"
+rsdl = "rsdl/robot.rsdl"
+profile = "deterministic"
+run_ticks = 6
+mode = "launch"
+
+[[case]]
+name = "status_error_restart"
+
+[[case.inject]]
+kind = "status_error"
+instance = "controller_a"
+task = "main"
+invocations = [1]
+reason = "restart path"
+
+[case.expect.graph]
+graph_health = "healthy"
+
+[[case.expect.instance]]
+name = "controller_a"
+lifecycle_state = "shutdown"
+restart_count = 1
+last_fault_reason_contains = "task_error"
+
+[[case]]
+name = "backend_drop_route"
+
+[[case.inject]]
+kind = "backend_drop"
+instance = "controller_a"
+task = "main"
+invocations = [2]
+reason = "drop active route"
+
+[[case.expect.route]]
+name = "controller_a.cmd_to_actuator.cmd"
+backend_health_state = "degraded"
+dropped_samples_min = 1
+
+[[case]]
+name = "panic_failover"
+
+[[case.inject]]
+kind = "panic"
+instance = "controller_a"
+task = "main"
+from_invocation = 1
+reason = "primary panic"
+
+[[case.expect.failover]]
+group = "controller_ha"
+old_active = "controller_a"
+new_active = "controller_b"
+reason = "critical_fault"

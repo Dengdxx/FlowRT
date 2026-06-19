@@ -16,6 +16,7 @@ pub(crate) enum RunMode {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RunExtraEnv {
     pub(crate) flowrt_status_out: Option<PathBuf>,
+    pub(crate) flowrt_replay_source: Option<PathBuf>,
 }
 
 pub(crate) fn build_steps(contract: &ContractIr, include_launcher: bool) -> Vec<BuildStep> {
@@ -620,6 +621,9 @@ pub(crate) fn run_supervisor_binary_with_env(
 fn apply_run_extra_env(command: &mut ProcessCommand, extra_env: &RunExtraEnv) {
     if let Some(path) = &extra_env.flowrt_status_out {
         command.env("FLOWRT_STATUS_OUT", path);
+    }
+    if let Some(path) = &extra_env.flowrt_replay_source {
+        command.env("FLOWRT_REPLAY_SOURCE", path);
     }
 }
 

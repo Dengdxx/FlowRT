@@ -1,6 +1,12 @@
+use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use flowrt_ir::{BoundaryDirection, ContractIr};
+use flowrt_record::{
+    FlowrtMcapWriter, PayloadEncoding, RECORD_SCHEMA_VERSION, RecordEntity, RecordEntityKind,
+    RecordEnvelope, RecordEventKind,
+};
 use serde::Serialize;
 
 use crate::build_model::BuildMode;
@@ -73,6 +79,8 @@ fn run_case(
         Some(&inject_path),
     )?;
     let workspace_root = application_root_from_rsdl(&rsdl)?;
+    sync_matrix_app_sources(&workspace_root, case_dir)?;
+    let replay_source = write_case_replay_source(case_dir, &prepared.selected_contract)?;
     let target_profile =
         resolve_build_toolchain_profile(&prepared.selected_contract, None, &workspace_root)?;
     let include_launcher = case.mode == FaultMatrixMode::Launch;
@@ -85,6 +93,7 @@ fn run_case(
     )?;
     let extra_env = RunExtraEnv {
         flowrt_status_out: Some(status_out.to_path_buf()),
+        flowrt_replay_source: Some(replay_source.clone()),
     };
     match case.mode {
         FaultMatrixMode::Run => run_workspace_with_env(
@@ -93,7 +102,7 @@ fn run_case(
             None,
             Some(case.run_ticks),
             Some(BuildMode::Release),
-            None,
+            Some(&replay_source),
             &extra_env,
         ),
         FaultMatrixMode::Launch => launch_workspace_with_env(
@@ -104,6 +113,56 @@ fn run_case(
             &extra_env,
         ),
     }
+}
+
+fn write_case_replay_source(case_dir: &Path, contract: &ContractIr) -> Result<std::path::PathBuf> {
+    let boundary = contract
+        .graphs
+        .iter()
+        .flat_map(|graph| graph.boundary_endpoints.iter())
+        .find(|endpoint| endpoint.direction == BoundaryDirection::Input)
+        .context("fault matrix run requires at least one boundary input for simulated replay")?;
+    let path = case_dir.join("replay.mcap");
+    let mut writer =
+        FlowrtMcapWriter::new(fs::File::create(&path).with_context(|| {
+            format!("failed to create matrix replay source `{}`", path.display())
+        })?)
+        .context("failed to create matrix replay MCAP writer")?;
+    let channel = writer
+        .register_channel("flowrt/fault-matrix/replay", RecordEventKind::ChannelSample)
+        .context("failed to register matrix replay MCAP channel")?;
+    let event_time_ns = 1_000_000_000_000_u64;
+    writer
+        .write_event(
+            channel,
+            &RecordEnvelope {
+                schema_version: RECORD_SCHEMA_VERSION,
+                event_kind: RecordEventKind::ChannelSample,
+                package: contract.package.name.clone(),
+                process: "fault_matrix".to_string(),
+                runtime_pid: std::process::id(),
+                selfdesc_hash: contract.source_hash.clone(),
+                monotonic_ns: event_time_ns,
+                sample_time_ns: None,
+                wall_unix_ns: 0,
+                sequence: 1,
+                entity: RecordEntity {
+                    kind: RecordEntityKind::Channel,
+                    name: boundary.name.clone(),
+                    instance: Some(boundary.port.instance.name.clone()),
+                    task: None,
+                    type_name: Some(boundary.ty.canonical_syntax()),
+                },
+                payload_encoding: PayloadEncoding::CanonicalFrame,
+                payload_schema: boundary.ty.canonical_syntax(),
+                payload: Vec::new(),
+            },
+        )
+        .context("failed to write matrix replay MCAP event")?;
+    writer
+        .finish_into_inner()
+        .context("failed to finish matrix replay MCAP")?;
+    Ok(path)
 }
 
 fn write_case_inject_file(case_dir: &Path, case: &FaultMatrixCase) -> Result<std::path::PathBuf> {
@@ -143,4 +202,59 @@ fn write_case_inject_file(case_dir: &Path, case: &FaultMatrixCase) -> Result<std
     std::fs::write(&path, text)
         .with_context(|| format!("failed to write matrix injection `{}`", path.display()))?;
     Ok(path)
+}
+
+fn sync_matrix_app_sources(workspace_root: &Path, case_dir: &Path) -> Result<()> {
+    let source = workspace_root.join("app");
+    if !source.exists() {
+        return Ok(());
+    }
+    copy_dir_recursive_for_matrix(&source, &case_dir.join("app"))
+}
+
+fn copy_dir_recursive_for_matrix(source: &Path, dest: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("failed to inspect matrix app source `{}`", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "matrix app source `{}` is a symbolic link; symlinks are not allowed",
+            source.display()
+        );
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "matrix app source `{}` is not a directory",
+            source.display()
+        );
+    }
+    fs::create_dir_all(dest)
+        .with_context(|| format!("failed to create matrix app dest `{}`", dest.display()))?;
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("failed to read matrix app source `{}`", source.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read matrix app source `{}`", source.display()))?;
+        let path = entry.path();
+        let target = dest.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect matrix app source `{}`", path.display()))?;
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "matrix app source `{}` is a symbolic link; symlinks are not allowed",
+                path.display()
+            );
+        } else if file_type.is_dir() {
+            copy_dir_recursive_for_matrix(&path, &target)?;
+        } else if file_type.is_file() {
+            fs::copy(&path, &target).with_context(|| {
+                format!(
+                    "failed to copy matrix app source `{}` to `{}`",
+                    path.display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }

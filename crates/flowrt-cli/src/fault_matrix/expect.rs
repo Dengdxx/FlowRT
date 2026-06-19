@@ -140,10 +140,12 @@ fn add_status_entries<'a>(status: &'a Value, scope: &str, merged: &mut MergedSta
                 .push(format!("{scope} status has route without `name` key"));
             continue;
         };
-        if merged.routes.insert(name.to_string(), route).is_some() {
-            merged
-                .failures
-                .push(format!("duplicate route status `{name}`"));
+        if let Some(existing) = merged.routes.get_mut(name) {
+            if route_score(route) > route_score(existing) {
+                *existing = route;
+            }
+        } else {
+            merged.routes.insert(name.to_string(), route);
         }
     }
     if let Some(failovers) = status.get("failovers").and_then(Value::as_array) {
@@ -318,6 +320,19 @@ fn health_rank(value: &str) -> u8 {
         "faulted" | "failed" | "error" => 4,
         _ => 2,
     }
+}
+
+fn route_score(route: &Value) -> u64 {
+    let dropped = route
+        .get("dropped_samples")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let health = route
+        .get("backend_health_state")
+        .and_then(Value::as_str)
+        .map(health_rank)
+        .unwrap_or(0) as u64;
+    dropped.saturating_mul(16).saturating_add(health)
 }
 
 fn format_optional_u64(value: Option<u64>) -> String {

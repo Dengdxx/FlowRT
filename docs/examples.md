@@ -34,6 +34,7 @@
 | `examples/sync_fusion_demo` | Rust | `inproc` | `flowrt check examples/sync_fusion_demo/rsdl/robot.rsdl` | 验证多传感器同步：`[[sync]]` 组把 imu/odom 按 sample-time 对齐，`on_synchronized` 触发 fusion |
 | `examples/feedback_loop_demo` | Rust | `inproc` | `flowrt check examples/feedback_loop_demo/rsdl/robot.rsdl` | 验证反馈环（cyclic graph）：回边 `feedback = true` 作单位延迟 z⁻¹，拓扑断环 + 启动期零初值播种 |
 | `examples/global_tick_demo` | Rust | `zenoh` | `scripts/test-v0233-global-tick-determinism-smoke.sh` | 验证 `global_tick` profile、跨进程 route、launch determinism 投影和 generated `flowrt_run_tick` 外部步进入口 |
+| `examples/fault_matrix_demo` | Rust | `zenoh` | `flowrt fault-matrix run examples/fault_matrix_demo/fault-matrix.toml` | 验证 fault matrix 对 restart、backend drop route health 和 standby failover 的矩阵化运行证据 |
 | `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 验证 `sequence<f32>` canonical frame boundary input、`flowrt pub --file --freq` 和 echo 输出摘要 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 验证 generated Service over zenoh 的跨进程 request/response、typed API 和 service key expression |
