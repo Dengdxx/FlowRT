@@ -75,6 +75,45 @@ fn command_build_parses_target_platform() {
 }
 
 #[test]
+fn cli_parses_fault_matrix_commands() {
+    let check = Cli::try_parse_from(["flowrt", "fault-matrix", "check", "fault-matrix.toml"])
+        .expect("fault-matrix check should parse");
+    let Command::FaultMatrix {
+        command: FaultMatrixCommand::Check { matrix },
+    } = check.command
+    else {
+        panic!("fault-matrix check parsed into unexpected command")
+    };
+    assert_eq!(matrix, PathBuf::from("fault-matrix.toml"));
+
+    let run = Cli::try_parse_from([
+        "flowrt",
+        "fault-matrix",
+        "run",
+        "fault-matrix.toml",
+        "--out-dir",
+        "target/matrix",
+        "--report",
+        "target/matrix/report.json",
+    ])
+    .expect("fault-matrix run should parse");
+    let Command::FaultMatrix {
+        command:
+            FaultMatrixCommand::Run {
+                matrix,
+                out_dir,
+                report,
+            },
+    } = run.command
+    else {
+        panic!("fault-matrix run parsed into unexpected command")
+    };
+    assert_eq!(matrix, PathBuf::from("fault-matrix.toml"));
+    assert_eq!(out_dir, PathBuf::from("target/matrix"));
+    assert_eq!(report, Some(PathBuf::from("target/matrix/report.json")));
+}
+
+#[test]
 fn cli_parses_project_commands_without_explicit_rsdl_path() {
     for command in [
         "check", "explain", "prepare", "build", "run", "deps", "doctor",

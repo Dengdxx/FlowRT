@@ -98,6 +98,12 @@ enum Command {
         rsdl: Option<PathBuf>,
     },
 
+    /// 验证或运行 test-only fault matrix。
+    FaultMatrix {
+        #[command(subcommand)]
+        command: FaultMatrixCommand,
+    },
+
     /// 展示组件实现 API、task 和 handle 详情。
     Explain {
         /// .rsdl 文件路径；省略时从 flowrt.toml 的 project.main 发现。
@@ -761,6 +767,29 @@ enum DepsBackend {
     All,
 }
 
+#[derive(Debug, Subcommand)]
+enum FaultMatrixCommand {
+    /// 验证 test-only fault matrix，不构建、不运行。
+    Check {
+        /// fault-matrix.toml 路径。
+        matrix: PathBuf,
+    },
+
+    /// 运行 test-only fault matrix 并校验最终 status 证据。
+    Run {
+        /// fault-matrix.toml 路径。
+        matrix: PathBuf,
+
+        /// 每个 case 的 FlowRT 管理产物输出根目录。
+        #[arg(long, default_value = "target/flowrt-fault-matrix")]
+        out_dir: PathBuf,
+
+        /// JSON report 输出路径；省略时打印到 stdout。
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 enum ExplainFormat {
     #[default]
@@ -828,6 +857,27 @@ fn main() -> Result<()> {
             println!("OK {}", summary(&contract));
             println!("{}", handler_signature_summary(&contract));
         }
+        Command::FaultMatrix { command } => match command {
+            FaultMatrixCommand::Check { matrix } => {
+                let report = fault_matrix::check::check_matrix(&matrix)?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            FaultMatrixCommand::Run {
+                matrix,
+                out_dir,
+                report,
+            } => {
+                let report_value = fault_matrix::runner::run_matrix(&matrix, &out_dir)?;
+                let json = serde_json::to_string_pretty(&report_value)?;
+                if let Some(report) = report {
+                    std::fs::write(&report, format!("{json}\n")).with_context(|| {
+                        format!("failed to write fault matrix report `{}`", report.display())
+                    })?;
+                } else {
+                    println!("{json}");
+                }
+            }
+        },
         Command::Explain { rsdl, format } => {
             let rsdl = resolve_required_cli_rsdl(rsdl)?;
             let contract = load_contract_from_rsdl(&rsdl)?;

@@ -11,6 +11,15 @@ pub(crate) enum FaultMatrixMode {
     Launch,
 }
 
+impl FaultMatrixMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Launch => "launch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RawFaultMatrixMode {
@@ -160,6 +169,7 @@ fn normalize_matrix(raw: RawFaultMatrixFile) -> Result<FaultMatrix> {
         if case.expect.is_empty() {
             bail!("fault matrix case `{case_name}` must define at least one expectation");
         }
+        validate_expectations(&case_name, &case.expect)?;
         let run_ticks = case.run_ticks.unwrap_or(raw.matrix.run_ticks);
         if run_ticks == 0 {
             bail!("fault matrix case `{case_name}` must set run_ticks > 0");
@@ -205,6 +215,57 @@ fn validate_inject_points(case_name: &str, inject: &[MatrixInjectPoint]) -> Resu
     Ok(())
 }
 
+fn validate_expectations(case_name: &str, expect: &MatrixExpectations) -> Result<()> {
+    if let Some(graph) = &expect.graph {
+        validate_optional_string(case_name, "expect.graph.graph_health", &graph.graph_health)?;
+        validate_optional_string(
+            case_name,
+            "expect.graph.graph_critical_health",
+            &graph.graph_critical_health,
+        )?;
+        if graph.graph_health.is_none() && graph.graph_critical_health.is_none() {
+            bail!("fault matrix case `{case_name}` graph expectation must set at least one field");
+        }
+    }
+    for instance in &expect.instance {
+        require_non_empty_ref("expect.instance.name", &instance.name)?;
+        validate_optional_string(
+            case_name,
+            "expect.instance.lifecycle_state",
+            &instance.lifecycle_state,
+        )?;
+        validate_optional_string(
+            case_name,
+            "expect.instance.last_fault_reason_contains",
+            &instance.last_fault_reason_contains,
+        )?;
+        let _ = instance.restart_count;
+    }
+    for route in &expect.route {
+        require_non_empty_ref("expect.route.name", &route.name)?;
+        validate_optional_string(
+            case_name,
+            "expect.route.backend_health_state",
+            &route.backend_health_state,
+        )?;
+        let _ = route.dropped_samples_min;
+    }
+    for failover in &expect.failover {
+        require_non_empty_ref("expect.failover.group", &failover.group)?;
+        require_non_empty_ref("expect.failover.old_active", &failover.old_active)?;
+        require_non_empty_ref("expect.failover.new_active", &failover.new_active)?;
+        validate_optional_string(case_name, "expect.failover.reason", &failover.reason)?;
+    }
+    Ok(())
+}
+
+fn validate_optional_string(case_name: &str, field: &str, value: &Option<String>) -> Result<()> {
+    if value.as_deref().is_some_and(|text| text.trim().is_empty()) {
+        bail!("fault matrix case `{case_name}` field `{field}` must not be empty");
+    }
+    Ok(())
+}
+
 fn require_non_empty(field: &str, value: String) -> Result<String> {
     if value.trim().is_empty() {
         bail!("fault matrix field `{field}` must not be empty");
@@ -225,6 +286,13 @@ impl MatrixExpectations {
             && self.instance.is_empty()
             && self.route.is_empty()
             && self.failover.is_empty()
+    }
+
+    pub(crate) fn expectation_count(&self) -> usize {
+        usize::from(self.graph.is_some())
+            + self.instance.len()
+            + self.route.len()
+            + self.failover.len()
     }
 }
 

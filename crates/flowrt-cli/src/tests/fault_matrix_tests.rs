@@ -171,3 +171,155 @@ reason = "critical"
     assert_eq!(case.expect.failover[0].new_active, "standby");
     assert_eq!(case.expect.failover[0].reason.as_deref(), Some("critical"));
 }
+
+#[test]
+fn fault_matrix_check_rejects_cross_process_without_global_tick() {
+    let dir = temp_test_dir("fault-matrix-cross-process");
+    let rsdl_dir = dir.join("rsdl");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    write_fault_matrix_cross_process_rsdl(&rsdl_dir, "");
+    let matrix = dir.join("fault-matrix.toml");
+    std::fs::write(
+        &matrix,
+        r#"
+[matrix]
+name = "cross"
+rsdl = "rsdl/robot.rsdl"
+run_ticks = 3
+mode = "launch"
+
+[[case]]
+name = "drop"
+
+[[case.inject]]
+kind = "backend_drop"
+instance = "source"
+task = "main"
+invocations = [1]
+
+[case.expect.graph]
+graph_health = "healthy"
+"#,
+    )
+    .unwrap();
+
+    let error = fault_matrix::check::check_matrix(&matrix).unwrap_err();
+    assert!(error.to_string().contains("global_tick"));
+}
+
+#[test]
+fn fault_matrix_check_accepts_global_tick_case() {
+    let dir = temp_test_dir("fault-matrix-global-tick");
+    let rsdl_dir = dir.join("rsdl");
+    std::fs::create_dir_all(&rsdl_dir).unwrap();
+    write_fault_matrix_cross_process_rsdl(
+        &rsdl_dir,
+        r#"
+[profile.default.determinism]
+mode = "global_tick"
+timeout_ms = 1000
+on_timeout = "fault_graph"
+"#,
+    );
+    let matrix = dir.join("fault-matrix.toml");
+    std::fs::write(
+        &matrix,
+        r#"
+[matrix]
+name = "cross"
+rsdl = "rsdl/robot.rsdl"
+run_ticks = 3
+mode = "launch"
+
+[[case]]
+name = "drop"
+
+[[case.inject]]
+kind = "backend_drop"
+instance = "source"
+task = "main"
+invocations = [1]
+
+[case.expect.graph]
+graph_health = "healthy"
+"#,
+    )
+    .unwrap();
+
+    let report = fault_matrix::check::check_matrix(&matrix).unwrap();
+    assert_eq!(report.matrix, "cross");
+    assert_eq!(report.cases.len(), 1);
+    assert_eq!(report.cases[0].name, "drop");
+    assert_eq!(report.cases[0].mode, "launch");
+    assert_eq!(report.cases[0].run_ticks, 3);
+    assert_eq!(report.cases[0].expectations, 1);
+    assert_eq!(report.cases[0].status, "ok");
+}
+
+fn write_fault_matrix_cross_process_rsdl(rsdl_dir: &Path, determinism: &str) {
+    std::fs::write(
+        rsdl_dir.join("robot.rsdl"),
+        format!(
+            r#"
+[package]
+name = "fault_matrix_cross_process"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.source]
+language = "rust"
+input = ["sample:Sample"]
+output = ["echo:Sample"]
+
+[component.sink]
+language = "rust"
+input = ["echo:Sample"]
+
+[instance.source]
+component = "source"
+process = "source_proc"
+
+[instance.source.task]
+trigger = "on_message"
+input = ["sample"]
+output = ["echo"]
+
+[instance.sink]
+component = "sink"
+process = "sink_proc"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["echo"]
+
+[[process]]
+name = "source_proc"
+
+[[process]]
+name = "sink_proc"
+
+[[bind.dataflow]]
+from = "source.echo"
+to = "sink.echo"
+channel = "latest"
+
+[profile.default]
+mode = "island"
+backend = "zenoh"
+{determinism}
+
+[[boundary.input]]
+name = "feed"
+port = "source.sample"
+type = "Sample"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["zenoh"]
+"#
+        ),
+    )
+    .unwrap();
+}
