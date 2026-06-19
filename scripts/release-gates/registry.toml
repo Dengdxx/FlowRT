@@ -93,3 +93,7 @@ script = "scripts/test-v0232-cpp-clang-tidy-smoke.sh"
 [[focused_smoke]]
 version = "0.23.3"
 script = "scripts/test-v0233-scope-closure-smoke.sh"
+
+[[focused_smoke]]
+version = "0.24.0"
+script = "scripts/test-v0240-fault-matrix-smoke.sh"

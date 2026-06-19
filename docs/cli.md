@@ -23,6 +23,8 @@ flowrt external list --path <path/to/search-root>
 flowrt build [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--target <linux-amd64|linux-arm64>] [--launcher] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--inject <path/to/scenario.toml>]
 flowrt run [path/to/robot.rsdl] [--out-dir flowrt] [--profile <name>] [--process <name>] [--run-steps <N>] [--build-mode <release|debug>] [--temporary-island --boundary-input <name=instance.port> --boundary-output <name=instance.port>] [--inject <path/to/scenario.toml>] [--replay <path/to/recording.mcap>]
 flowrt launch <path/to/robot.rsdl> [--out-dir flowrt] [--profile <name>] [--run-steps <N>] [--build-mode <release|debug>]
+flowrt fault-matrix check <path/to/fault-matrix.toml>
+flowrt fault-matrix run <path/to/fault-matrix.toml> [--out-dir <dir>] [--report <path/to/report.json>]
 flowrt bundle <path/to/robot.rsdl> [--out-dir flowrt] --output <path/to/bundle-dir> [--profile <name>] [--build-mode <release|debug>] [--allow-island]
 flowrt deploy <path/to/bundle-dir> --host <user@host> --target <target-name> --remote-dir <dir> [--dry-run] [--allow-island]
 flowrt inspect <path/to/flowrt/contract/contract.ir.json>
@@ -708,6 +710,40 @@ launch manifest 的关键字段包括：
 - graph `external_processes`
 - iox2 channel 的 canonical service name
 - zenoh channel 的 deterministic key expression
+
+## `fault-matrix`
+
+```bash
+flowrt fault-matrix check examples/fault_matrix_demo/fault-matrix.toml
+flowrt fault-matrix run examples/fault_matrix_demo/fault-matrix.toml \
+  --out-dir target/flowrt-fault-matrix \
+  --report target/fault-matrix-report.json
+```
+
+`fault-matrix` 是 test-only 矩阵 fixture 入口，用于把多个 deterministic fault
+injection case 投影到同一个 RSDL 契约上，运行后校验最终 status snapshot。它不新增
+RSDL 持久语法，不修改 Contract IR 的故障语义，也不会进入 `bundle` / `deploy` 主路径。
+
+### `flowrt fault-matrix check`
+
+`check` 解析矩阵文件、展开每个 case 的 `[[case.inject]]`，选择 profile，投影到
+Contract IR 并运行 validator。该命令不构建、不运行，适合在提交前检查矩阵 schema、
+profile、跨进程 `global_tick` 守门、注入目标和 expectation 拼写。
+
+矩阵顶层 `[matrix]` 提供默认 `rsdl`、`profile`、`run_ticks` 和 `mode`；每个
+`[[case]]` 可覆盖 profile、run ticks 和 mode。未知字段会 fail-fast，避免 typo 被
+静默忽略。
+
+### `flowrt fault-matrix run`
+
+`run` 逐 case 生成 test-only 产物、构建并运行 generated app 或 generated supervisor。
+CLI 会为 case 设置 `FLOWRT_STATUS_OUT` 并生成 replay source，进程退出后读取最终
+status snapshot，再校验 graph / instance / route / failover 期望。任一 case 失败时，
+命令退出非零；传入 `--report` 时写出 JSON 报告。
+
+跨进程 case 必须使用 `mode = "launch"`，且所选 profile 必须声明
+`[profile.<name>.determinism] mode = "global_tick"`。matrix runner 会把项目 `app/`
+复制到 case 工作目录，保证 generated shell 仍能按正常用户代码边界构建。
 
 ## `bundle`
 

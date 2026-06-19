@@ -5,23 +5,30 @@
 
 ## 当前版本背景
 
-当前开发线为 `v0.23.3 既有缺口收束`。本版本把当前 active scope / defer 收束在
-一个 patch 版本内，不再拆成多个 `0.23.Z`；实现按 21 个原子 commit 分，最后本地 gate
-通过后集中 push。`v0.23.3` 不纳入 Python binding、Service over `iox2`、PTP/NTP、
-cross-host exact sync 或 hard realtime。
+当前开发线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
+fault injection kind、route health、standby failover 和 graph health 组合成可运行、
+可校验、可发布把关的矩阵证据。`flowrt fault-matrix check/run` 是 test-only CLI fixture，
+不新增 RSDL 持久语法，不改变 Contract IR 故障语义，也不进入 `bundle` / `deploy` 主路径。
 
-当前 workspace 版本为 `0.23.3`。
+当前 workspace 版本仍为 `0.23.3`。版本源、runtime 版本、Cargo.lock 和 CHANGELOG
+正式 release 段只在 v0.24.0 发布收尾时统一 bump / 定版。
 
-本版本目标是清掉已确认的 exposed-but-fake 或显式 defer：global tick determinism、
-cross-process FIFO feedback、standby failover、graph health metrics、fault injection
-matrix、Operation zenoh / FIFO / retention / policy、FrameDescriptor payload record、
-OpenTelemetry / tracing 最小 exporter、C v0 params 子集，以及 v0.23.3 focused smoke /
-release readiness / release gate 收尾。
-发布分支 CI 曾由 v0.23.2 C++ `clang-tidy` focused gate 发现
-`OperationHealthCounters health_{}` 冗余默认成员初始化；本版本已移除该初始化，保持
+本版本目标是提供 fault matrix capstone：矩阵文件按 case 描述注入点、运行模式和
+graph / instance / route / failover 期望；CLI 逐 case 生成 test-only artifact，运行
+generated app 或 supervisor，采集 final status snapshot 并输出 JSON report。当前不纳入
+生产随机 / chaos 注入、性能矩阵、跨 backend 恢复时序压力测试、Python binding、
+Service over `iox2`、PTP/NTP、cross-host exact sync 或 hard realtime。
+
+上一发布线为 `v0.23.3 既有缺口收束`：该版本把 active scope / defer 收束在一个
+patch 版本内，不再拆成多个 `0.23.Z`。已收口 global tick determinism、cross-process
+FIFO feedback、standby failover、graph health metrics、fault injection kind、Operation
+zenoh / FIFO / retention / policy、FrameDescriptor payload record、OpenTelemetry /
+tracing 最小 exporter、C v0 params 子集，以及 v0.23.3 focused smoke / release readiness /
+release gate。发布分支 CI 曾由 v0.23.2 C++ `clang-tidy` focused gate 发现
+`OperationHealthCounters health_{}` 冗余默认成员初始化；v0.23.3 已移除该初始化，保持
 `clang-tidy` gate 在 v0.23.3 分支继续覆盖 C++ runtime。
 
-上一发布线为 `v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++
+再上一发布线为 `v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++
 runtime shell 进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量门禁闭合。
 
 - 新增仓库级 `.clang-tidy`，采用低噪声 C++20 checks，避免 `modernize-use-trailing-return-type`、
@@ -68,15 +75,15 @@ self-description 与 launch manifest 中暴露真实 request key expression。
   validator 门、codegen 断言、`zenoh_service_{rust,cpp}` golden、CLI `flowrt list`
   service `key_expr` 展示、示例 `check/prepare` 和 service `key_expr`。
 
-### 当前已核对的待收口问题
+### v0.23.3 既有缺口收束记录
 
-以下问题是 2026-06-18 核对历史记录与当前代码后确认的真实缺口。后续处理时不要把
-这些能力当作已完整支持；应优先选择“实现完整端到端语义”或“validator/CLI 明确
-fail-fast 拒绝”，避免 exposed-but-fake 语义继续进入下一个大版本。
+以下问题是 2026-06-18 核对历史记录与当时代码后确认的真实缺口。v0.23.3 已按
+“完整端到端语义”或“validator/CLI 明确 fail-fast 拒绝”原则收束，避免
+exposed-but-fake 语义继续进入下一个大版本。
 
 `v0.23.3` 既有缺口收束口径：这些问题全部进入同一版本处理，按 commit 拆分，不按
-patch 版本切碎。每项要么完整端到端实现，要么继续 validator/CLI fail-fast 并在
-本文档说明原因；不能生成 placeholder wrapper。
+patch 版本切碎。每项要么完整端到端实现，要么由 validator/CLI fail-fast 并在
+本文档说明原因；没有生成 placeholder wrapper。
 
 **已收口缺口**：
 
