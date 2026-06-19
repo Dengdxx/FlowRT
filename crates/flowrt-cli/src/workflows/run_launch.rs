@@ -13,6 +13,11 @@ pub(crate) enum RunMode {
     CmakeApp,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RunExtraEnv {
+    pub(crate) flowrt_status_out: Option<PathBuf>,
+}
+
 pub(crate) fn build_steps(contract: &ContractIr, include_launcher: bool) -> Vec<BuildStep> {
     let mut steps = Vec::new();
     if has_component_language(contract, LanguageKind::Rust) {
@@ -289,6 +294,26 @@ pub(crate) fn run_workspace(
     requested_build_mode: Option<BuildMode>,
     replay_source: Option<&Path>,
 ) -> Result<()> {
+    run_workspace_with_env(
+        contract,
+        out_dir,
+        process,
+        run_ticks,
+        requested_build_mode,
+        replay_source,
+        &RunExtraEnv::default(),
+    )
+}
+
+pub(crate) fn run_workspace_with_env(
+    contract: &ContractIr,
+    out_dir: &Path,
+    process: Option<&str>,
+    run_ticks: Option<usize>,
+    requested_build_mode: Option<BuildMode>,
+    replay_source: Option<&Path>,
+    extra_env: &RunExtraEnv,
+) -> Result<()> {
     ensure_direct_runtime_supported(contract, "run")?;
     ensure_backend_runtime_supported(contract, "run")?;
     ensure_run_process_boundaries_supported(contract, process)?;
@@ -309,7 +334,7 @@ pub(crate) fn run_workspace(
                     bin.display()
                 );
             }
-            run_binary(&bin, process, run_ticks, replay_source)?;
+            run_binary_with_env(&bin, process, run_ticks, replay_source, extra_env)?;
         }
         RunMode::CmakeApp => {
             let bin = executable_from_build_info(
@@ -318,7 +343,7 @@ pub(crate) fn run_workspace(
                 "C++ app",
                 "flowrt build",
             )?;
-            run_cmake_app(&bin, process, run_ticks, replay_source)?;
+            run_cmake_app_with_env(&bin, process, run_ticks, replay_source, extra_env)?;
         }
     }
     Ok(())
@@ -329,6 +354,22 @@ pub(crate) fn launch_workspace(
     out_dir: &Path,
     run_ticks: Option<usize>,
     requested_build_mode: Option<BuildMode>,
+) -> Result<()> {
+    launch_workspace_with_env(
+        contract,
+        out_dir,
+        run_ticks,
+        requested_build_mode,
+        &RunExtraEnv::default(),
+    )
+}
+
+pub(crate) fn launch_workspace_with_env(
+    contract: &ContractIr,
+    out_dir: &Path,
+    run_ticks: Option<usize>,
+    requested_build_mode: Option<BuildMode>,
+    extra_env: &RunExtraEnv,
 ) -> Result<()> {
     ensure_direct_runtime_supported(contract, "launch")?;
     ensure_backend_runtime_supported(contract, "launch")?;
@@ -346,7 +387,7 @@ pub(crate) fn launch_workspace(
             supervisor.display()
         );
     }
-    run_supervisor_binary(&supervisor, run_ticks)?;
+    run_supervisor_binary_with_env(&supervisor, run_ticks, extra_env)?;
     Ok(())
 }
 
@@ -456,11 +497,12 @@ pub(crate) fn first_cross_process_bind_matching(
     None
 }
 
-pub(crate) fn run_cmake_app(
+pub(crate) fn run_cmake_app_with_env(
     app: &Path,
     process: Option<&str>,
     run_ticks: Option<usize>,
     replay_source: Option<&Path>,
+    extra_env: &RunExtraEnv,
 ) -> Result<()> {
     if !app.exists() {
         anyhow::bail!(
@@ -484,6 +526,7 @@ pub(crate) fn run_cmake_app(
     if let Some(timeline_path) = cpp_replay_timeline.as_deref() {
         command.env("FLOWRT_REPLAY_SOURCE", timeline_path);
     }
+    apply_run_extra_env(&mut command, extra_env);
     let status = command
         .status()
         .with_context(|| format!("failed to spawn C++ app `{}`", app.display()))?;
@@ -527,11 +570,12 @@ fn cpp_replay_timeline_path(app: &Path) -> std::path::PathBuf {
     ))
 }
 
-pub(crate) fn run_binary(
+pub(crate) fn run_binary_with_env(
     binary: &Path,
     process: Option<&str>,
     run_ticks: Option<usize>,
     replay_source: Option<&Path>,
+    extra_env: &RunExtraEnv,
 ) -> Result<()> {
     let mut command = ProcessCommand::new(binary);
     if let Some(process) = process {
@@ -543,6 +587,7 @@ pub(crate) fn run_binary(
     if let Some(replay_source) = replay_source {
         command.env("FLOWRT_REPLAY_SOURCE", replay_source);
     }
+    apply_run_extra_env(&mut command, extra_env);
     let status = command
         .status()
         .with_context(|| format!("failed to spawn `{}`", binary.display()))?;
@@ -552,12 +597,17 @@ pub(crate) fn run_binary(
     Ok(())
 }
 
-pub(crate) fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> Result<()> {
+pub(crate) fn run_supervisor_binary_with_env(
+    binary: &Path,
+    run_ticks: Option<usize>,
+    extra_env: &RunExtraEnv,
+) -> Result<()> {
     let mut command = ProcessCommand::new(binary);
     inject_flowrt_launch_library_path(&mut command)?;
     if let Some(run_ticks) = run_ticks {
         command.arg("--flowrt-run-steps").arg(run_ticks.to_string());
     }
+    apply_run_extra_env(&mut command, extra_env);
     let status = command
         .status()
         .with_context(|| format!("failed to spawn `{}`", binary.display()))?;
@@ -565,6 +615,12 @@ pub(crate) fn run_supervisor_binary(binary: &Path, run_ticks: Option<usize>) -> 
         anyhow::bail!("FlowRT supervisor invocation failed with status {status}");
     }
     Ok(())
+}
+
+fn apply_run_extra_env(command: &mut ProcessCommand, extra_env: &RunExtraEnv) {
+    if let Some(path) = &extra_env.flowrt_status_out {
+        command.env("FLOWRT_STATUS_OUT", path);
+    }
 }
 
 pub(crate) fn inject_flowrt_launch_library_path(command: &mut ProcessCommand) -> Result<()> {

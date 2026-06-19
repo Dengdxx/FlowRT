@@ -256,6 +256,71 @@ graph_health = "healthy"
     assert_eq!(report.cases[0].status, "ok");
 }
 
+#[test]
+fn fault_matrix_expectation_evaluator_accepts_route_and_failover() {
+    let status = serde_json::json!({
+        "mode": "launch",
+        "processes": [{
+            "process": "controller",
+            "runtime": "rust",
+            "status": {
+                "tick_count": 6,
+                "graph_health": "healthy",
+                "graph_critical_health": "healthy",
+                "instances": [{
+                    "instance": "controller_a",
+                    "lifecycle_state": "running",
+                    "restart_count": 1,
+                    "last_fault_reason": "restart path",
+                    "last_fault_tick": 2,
+                    "last_transition_tick": 3
+                }],
+                "routes": [{
+                    "name": "controller_a.cmd_to_actuator.cmd",
+                    "backend_health_state": "degraded",
+                    "dropped_samples": 1
+                }],
+                "failovers": [{
+                    "event": "failover",
+                    "group": "controller_ha",
+                    "old_active": "controller_a",
+                    "new_active": "controller_b",
+                    "tick_id": 2,
+                    "reason": "critical_fault"
+                }]
+            }
+        }]
+    });
+    let expect = fault_matrix::model::MatrixExpectations {
+        graph: Some(fault_matrix::model::GraphExpectation {
+            graph_health: Some("healthy".to_string()),
+            graph_critical_health: Some("healthy".to_string()),
+        }),
+        instance: vec![fault_matrix::model::InstanceExpectation {
+            name: "controller_a".to_string(),
+            lifecycle_state: Some("running".to_string()),
+            restart_count: Some(1),
+            last_fault_reason_contains: Some("restart".to_string()),
+        }],
+        route: vec![fault_matrix::model::RouteExpectation {
+            name: "controller_a.cmd_to_actuator.cmd".to_string(),
+            backend_health_state: Some("degraded".to_string()),
+            dropped_samples_min: Some(1),
+        }],
+        failover: vec![fault_matrix::model::FailoverExpectation {
+            group: "controller_ha".to_string(),
+            old_active: "controller_a".to_string(),
+            new_active: "controller_b".to_string(),
+            reason: Some("critical_fault".to_string()),
+        }],
+    };
+
+    let result =
+        fault_matrix::expect::evaluate_expectations("backend_drop_failover", &status, &expect);
+
+    assert!(result.passed, "{:?}", result.failures);
+}
+
 fn write_fault_matrix_cross_process_rsdl(rsdl_dir: &Path, determinism: &str) {
     std::fs::write(
         rsdl_dir.join("robot.rsdl"),
