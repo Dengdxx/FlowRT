@@ -1046,6 +1046,18 @@ impl App {
             }
             introspection_state.record_lifecycle_state("controller", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
         }
+        if let Ok(__flowrt_status_out) = std::env::var("FLOWRT_STATUS_OUT") {
+            match serde_json::to_string_pretty(&introspection_state.status()) {
+                Ok(__flowrt_status_json) => {
+                    if let Err(error) = std::fs::write(&__flowrt_status_out, format!("{__flowrt_status_json}\n")) {
+                        eprintln!("FlowRT: failed to write FLOWRT_STATUS_OUT `{}`: {error}", __flowrt_status_out);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("FlowRT: failed to encode FLOWRT_STATUS_OUT status: {error}");
+                }
+            }
+        }
         status
     }
     pub fn run_process(self, backend: &dyn flowrt::Backend, process: &str, run_ticks: Option<usize>) -> flowrt::Status {
@@ -1545,6 +1557,18 @@ impl App {
                 status = flowrt::Status::Error;
             }
             introspection_state.record_lifecycle_state("controller", if shutdown_status == flowrt::Status::Ok { flowrt::LifecycleState::ShutDown } else { flowrt::LifecycleState::Faulted });
+        }
+        if let Ok(__flowrt_status_out) = std::env::var("FLOWRT_STATUS_OUT") {
+            match serde_json::to_string_pretty(&introspection_state.status()) {
+                Ok(__flowrt_status_json) => {
+                    if let Err(error) = std::fs::write(&__flowrt_status_out, format!("{__flowrt_status_json}\n")) {
+                        eprintln!("FlowRT: failed to write FLOWRT_STATUS_OUT `{}`: {error}", __flowrt_status_out);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("FlowRT: failed to encode FLOWRT_STATUS_OUT status: {error}");
+                }
+            }
         }
         status
     }

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <deque>
 #include <limits>
 #include <memory>
@@ -950,6 +951,15 @@ break;
         }
         introspection_state.record_lifecycle_state("plan_client", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
     }
+    if (const char* flowrt_status_out = std::getenv("FLOWRT_STATUS_OUT");
+        flowrt_status_out != nullptr && flowrt_status_out[0] != '\0') {
+        std::ofstream flowrt_status_file(flowrt_status_out);
+        if (flowrt_status_file.good()) {
+            flowrt_status_file << flowrt::introspection_status_json(introspection_state.status()) << '\n';
+        } else {
+            std::fprintf(stderr, "FlowRT: failed to write FLOWRT_STATUS_OUT `%s`\n", flowrt_status_out);
+        }
+    }
     return status;
 }
 
@@ -1280,6 +1290,15 @@ break;
             status = flowrt::Status::Error;
         }
         introspection_state.record_lifecycle_state("plan_client", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
+    }
+    if (const char* flowrt_status_out = std::getenv("FLOWRT_STATUS_OUT");
+        flowrt_status_out != nullptr && flowrt_status_out[0] != '\0') {
+        std::ofstream flowrt_status_file(flowrt_status_out);
+        if (flowrt_status_file.good()) {
+            flowrt_status_file << flowrt::introspection_status_json(introspection_state.status()) << '\n';
+        } else {
+            std::fprintf(stderr, "FlowRT: failed to write FLOWRT_STATUS_OUT `%s`\n", flowrt_status_out);
+        }
     }
     return status;
 }
@@ -1614,6 +1633,15 @@ break;
             status = flowrt::Status::Error;
         }
         introspection_state.record_lifecycle_state("plan_svc", shutdown_status == flowrt::Status::Ok ? flowrt::LifecycleState::ShutDown : flowrt::LifecycleState::Faulted);
+    }
+    if (const char* flowrt_status_out = std::getenv("FLOWRT_STATUS_OUT");
+        flowrt_status_out != nullptr && flowrt_status_out[0] != '\0') {
+        std::ofstream flowrt_status_file(flowrt_status_out);
+        if (flowrt_status_file.good()) {
+            flowrt_status_file << flowrt::introspection_status_json(introspection_state.status()) << '\n';
+        } else {
+            std::fprintf(stderr, "FlowRT: failed to write FLOWRT_STATUS_OUT `%s`\n", flowrt_status_out);
+        }
     }
     return status;
 }

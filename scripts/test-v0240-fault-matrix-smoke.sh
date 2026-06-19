@@ -19,7 +19,16 @@ if [[ "${FLOWRT_V0240_SMOKE_DRY_RUN:-0}" == "1" ]]; then
     exit 0
 fi
 
-export FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK="${FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK:-1}"
+if [[ -n "${FLOWRT_BIN:-}" ]]; then
+    flowrt_cmd=("$FLOWRT_BIN")
+else
+    flowrt_cmd=(cargo run -q -p flowrt-cli --)
+    export FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK="${FLOWRT_ALLOW_REPO_RUNTIME_FALLBACK:-1}"
+fi
+
+run_flowrt() {
+    "${flowrt_cmd[@]}" "$@"
+}
 
 echo "v0.24.0 focused smoke: script syntax"
 run bash -n scripts/test-v0240-fault-matrix-smoke.sh
@@ -35,8 +44,12 @@ run cargo test -p flowrt supervisor::tests::command_tests
 run cargo test -p flowrt supervisor::tests::lifecycle_tests
 
 echo "v0.24.0 focused smoke: demo matrix"
-run cargo run -p flowrt-cli -- fault-matrix check examples/fault_matrix_demo/fault-matrix.toml
-run cargo run -p flowrt-cli -- fault-matrix run examples/fault_matrix_demo/fault-matrix.toml \
+run run_flowrt deps examples/fault_matrix_demo/rsdl/robot.rsdl \
+    --profile deterministic \
+    --build-mode release \
+    --target linux-amd64
+run run_flowrt fault-matrix check examples/fault_matrix_demo/fault-matrix.toml
+run run_flowrt fault-matrix run examples/fault_matrix_demo/fault-matrix.toml \
     --out-dir target/flowrt-fault-matrix \
     --report target/fault-matrix-report.json
 
