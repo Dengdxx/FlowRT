@@ -5,10 +5,12 @@
 
 ## 当前版本背景
 
-当前开发线为 `v0.23.3 技术债收束`。本版本把当前 active debt / defer 收束在
+当前开发线为 `v0.23.3 既有缺口收束`。本版本把当前 active scope / defer 收束在
 一个 patch 版本内，不再拆成多个 `0.23.Z`；实现按 21 个原子 commit 分，最后本地 gate
 通过后集中 push。`v0.23.3` 不纳入 Python binding、Service over `iox2`、PTP/NTP、
 cross-host exact sync 或 hard realtime。
+
+当前 workspace 版本为 `0.23.3`。
 
 本版本目标是清掉已确认的 exposed-but-fake 或显式 defer：global tick determinism、
 cross-process FIFO feedback、standby failover、graph health metrics、fault injection
@@ -17,7 +19,7 @@ OpenTelemetry / tracing 最小 exporter、C v0 params 子集，以及 v0.23.3 fo
 release readiness / release gate 收尾。
 
 上一发布线为 `v0.23.2 C++ clang-tidy Gate`：C++ runtime headers/tests 和 generated C++
-runtime shell 进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量债闭合。
+runtime shell 进入 `clang-tidy` focused gate，波次 1 的 C++ 静态质量门禁闭合。
 
 - 新增仓库级 `.clang-tidy`，采用低噪声 C++20 checks，避免 `modernize-use-trailing-return-type`、
   `readability-magic-numbers`、`modernize-avoid-c-arrays` 等高噪声或 ABI 不适配规则。
@@ -69,22 +71,22 @@ self-description 与 launch manifest 中暴露真实 request key expression。
 这些能力当作已完整支持；应优先选择“实现完整端到端语义”或“validator/CLI 明确
 fail-fast 拒绝”，避免 exposed-but-fake 语义继续进入下一个大版本。
 
-`v0.23.3` 技术债收束口径：这些问题全部进入同一版本处理，按 commit 拆分，不按
+`v0.23.3` 既有缺口收束口径：这些问题全部进入同一版本处理，按 commit 拆分，不按
 patch 版本切碎。每项要么完整端到端实现，要么继续 validator/CLI fail-fast 并在
 本文档说明原因；不能生成 placeholder wrapper。
 
-**已收口债务**：
+**已收口缺口**：
 
-- debt 6 backend route health 统一：已在 `v0.23.1` 收口。route-level publish
+- backend route health 统一：已在 `v0.23.1` 收口。route-level publish
   error、backpressure、recovery state 归并进 `introspection/facts.rs` 同一事实源，
   `status` / diagnostics 统一暴露，并由 focused smoke 把关。
-- debt 4 C++ `clang-tidy` gate：已在 `v0.23.2` 收口。CI 安装 clang-tidy，通过 focused
+- C++ `clang-tidy` gate：已在 `v0.23.2` 收口。CI 安装 clang-tidy，通过 focused
   smoke 覆盖 C++ runtime headers/tests 与 generated C++ runtime shell。首版只启用低噪声
   checks，避免把 ABI/POD 风格或 generated generic capture 策略误判为发布阻塞。
 
 **v0.23.3 active scope**：
 
-- debt 2 跨进程 strict determinism / global tick lockstep：先做。需 supervisor/transport
+- 跨进程 strict determinism / global tick lockstep：需 supervisor/transport
   协调全局 tick。当前已完成 `profile.<name>.determinism` 的 RSDL/Contract IR/validator
   建模、launch manifest 投影、supervisor global tick coordinator，以及 Rust/C++ runtime /
   generated shell 的 `ExternalTick` / `ExternalTickReport` 和 `flowrt_run_tick` 外部步进入口；
@@ -92,13 +94,13 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
   global tick 基座与示例 prepare。跨进程 FIFO feedback 已在 `global_tick` profile 下放行，
   validator 继续拒绝非 `global_tick` profile，Rust/C++ codegen 对 zenoh/iox2 FIFO transport
   生成 depth 配置并按 depth 播种初值。跨进程 fault injection determinism 仍需后续矩阵扩展。
-  是 debt 3 跨进程片与 debt 1 的前置。
-- debt 1 standby failover：已完成语义与运行态主路径接线。`[[redundancy.group]]`
+  是跨进程 fault injection 片与 standby failover 的前置。
+- standby failover：已完成语义与运行态主路径接线。`[[redundancy.group]]`
   standby 冗余组已进入 RSDL / Contract IR，validator 校验 `global_tick` profile、成员
   component/port shape、standby 输出不得被直接消费，以及 instance 不能加入多个 active
   redundancy group。Rust/C++ generated shell 现在为 standby group 生成 active route 状态，
   standby 输出在 inactive 时被抑制，primary critical fault 后在 tick 边界切到首个 standby，
-  并通过 introspection `failovers` 记录 old/new active、tick_id 和 reason。受益于 debt 2 的
+  并通过 introspection `failovers` 记录 old/new active、tick_id 和 reason。受益于 global tick 的
   跨进程确定性。
 - graph health metrics：已完成 critical subset 与实例故障指标收束。`[graph.health]`
   支持 `critical = ["instance"]`，归一化为 canonical instance refs；runtime 默认 critical
@@ -108,14 +110,14 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
   `last_fault_tick` 和 `last_transition_tick`；`flowrt status` 同步展示这些字段。
   generated shell 在 restart 尝试和 task error 路径记录 restart/fault metrics。图级容错
   capstone 剩余 fault matrix 后续继续收束。
-- debt 5 OpenTelemetry / distributed tracing：最小 additive exporter 已落地。Rust runtime
+- OpenTelemetry / distributed tracing：最小 additive exporter 已落地。Rust runtime
   提供 `TracingExporterConfig`、`FlowrtSpan`、`FlowrtSpanSink` 和
   `derive_tracing_spans`，从 `IntrospectionStatus` 派生
   process/task/service/operation/route/failover/global_tick span；默认关闭，关闭时只做
   布尔判断，不分配 span。sink 失败只返回 tracing diagnostic，不改写 runtime status。
   `observability.trace` resource satisfied 时，launch manifest 和 self-description 的 graph
   section 输出 `tracing`；未声明或未满足时不输出。
-- debt 3 fault injection 矩阵：已扩展 deterministic kind。`[[inject]]` 支持
+- fault injection 矩阵：已扩展 deterministic kind。`[[inject]]` 支持
   `kind = "status_error"`（默认）、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop`；前者仍按 scheduler task 的 per-task pre-execution 计数器合成 error
   outcome，startup/shutdown kind 在对应 lifecycle task 调用前返回 `Status::Error`，panic
@@ -709,6 +711,7 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
 | `v0.23.0` | Zenoh Service Transport：native Rust/C++ generated Service 支持跨进程 zenoh request/response，生成 typed `ZenohServiceClient` / `ZenohServiceServer` 接线；validator 要求 zenoh server component `concurrency = "parallel"`；manifest/self-description 暴露 service `key_expr`；新增 `zenoh_service_{rust,cpp}` golden、`examples/zenoh_service_demo` 和 focused smoke。Operation zenoh 仍 fail-fast。 |
 | `v0.23.1` | Backend Route Health Unification：`iox2` / `zenoh` dataflow route 的 endpoint `BackendHealthSnapshot` 进入 introspection route facts，`flowrt status` route 行展示 `backend_health_state`、错误、重连 attempt、下一次 retry 和 recoverable 状态；Rust generated shell 在 transport publish 后记录 route backend health，C++ runtime JSON / diagnostics 镜像字段；新增 route health focused smoke。 |
 | `v0.23.2` | C++ clang-tidy Gate：新增仓库级 `.clang-tidy` 与 focused smoke，CI 安装 clang-tidy 后 lint C++ runtime 默认 translation units 和 generated `cpp_counter_demo` runtime shell；首版启用低噪声 checks，关闭高噪声 ABI/POD/generic generated capture 不适配项。 |
+| `v0.23.3` | 既有缺口收束：global tick determinism、跨进程 FIFO feedback、standby failover、graph health metrics、fault injection kind、Operation zenoh/policy/retention、FrameDescriptor payload record、tracing exporter 和 C v0 params snapshot 完成本版实现或 validator fail-fast；新增 v0.23.3 focused smoke 与 readiness adapter。 |
 | `v1.0.0` | ABI/schema 稳定、兼容策略、故障注入和性能矩阵。 |
 
 路线边界：
@@ -1401,7 +1404,9 @@ self-description service `key_expr` 展示、示例 `check/prepare` 和 manifest
 `key_expr`。`v0.23.1 Route Health Smoke` 覆盖 Rust route backend health facts、CLI
 route health 输出、Rust codegen transport publish health 接线和 C++ introspection parity。
 `v0.23.2 C++ clang-tidy Smoke` 覆盖 C++ runtime headers/tests 和 generated C++
-runtime shell lint。
+runtime shell lint。`v0.23.3 Scope Closure Smoke` 覆盖 global tick、standby failover、
+Operation zenoh、FrameDescriptor payload、tracing exporter 和 C v0 params snapshot 的发布前
+回归。
 发布前应运行
 `scripts/check-architecture-contract.sh`、`scripts/check-release-readiness.sh <version>` 和
 `scripts/check-release-candidate.sh <version> --wait --ref dev/v<version>`；
@@ -1409,7 +1414,7 @@ runtime shell lint。
 release evidence 门禁和
 v0.5.0 / v0.6.0 / v0.7.0 / v0.8.0 / v0.8.1 / v0.8.3 / v0.8.6 / v0.9.x / v0.10.2 /
 v0.12.0 / v0.13.0 / v0.14.0 / v0.14.1 / v0.15.0 / v0.15.1 / v0.15.2 / v0.23.0 /
-v0.23.1 / v0.23.2
+v0.23.1 / v0.23.2 / v0.23.3
 focused gate 覆盖状态。
 v0.12.0 当前覆盖通过既有 Rust/CLI 测试、App API 产物测试和 authoring smoke 收口：
 `init`、`add`、`check`、`prepare`、`explain`、`flowrt.toml` 发现、显式 RSDL 优先级、

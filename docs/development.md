@@ -259,10 +259,12 @@ focused smoke、amd64/arm64 v0.12.0 authoring focused smoke、amd64/arm64 v0.13.
 robot runtime completion focused smoke、amd64/arm64 v0.14.0 realtime scheduler
 focused smoke、amd64/arm64 v0.14.1 architecture focused smoke、amd64/arm64
 v0.15.0 architecture convergence focused smoke、v0.15.1 CI release evidence smoke、
-v0.15.2 scheduler clock focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb
-package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64 demo smoke、amd64/arm64
-ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，才会产出
-发布证据。
+v0.15.2 scheduler clock focused smoke、v0.23.0 Zenoh Service focused smoke、
+v0.23.1 Route Health focused smoke、v0.23.2 C++ clang-tidy focused smoke、
+v0.23.3 Scope Closure focused smoke、amd64/arm64 C++ zenoh runtime、amd64/arm64 deb
+package、v0.8.3 安装版 amd64 到 arm64 cross smoke、amd64/arm64 demo smoke、
+amd64/arm64 ROS2 Jazzy bridge smoke 和 amd64/arm64 ROS2 Lyrical bridge smoke 全部通过，
+才会产出发布证据。
 
 `v0.5.0 Runtime Smoke` 是面向新 runtime 能力的可诊断 gate，使用 `-j1` 分别覆盖
 supervisor readiness/resource、远程参数控制面、status/hz 健康展示、scheduler
