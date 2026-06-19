@@ -671,6 +671,9 @@ pub struct SelfDescriptionServiceEndpoint {
     /// backend 选择来源；仅在发生自动 fallback 等需要解释时输出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_source: Option<String>,
+    /// iox2/inproc service endpoint 名称；zenoh backend 为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
     /// zenoh service request key expression；非 zenoh backend 为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_expr: Option<String>,
@@ -751,9 +754,15 @@ pub struct SelfDescriptionOperationLowering {
     #[serde(default)]
     pub start_service: String,
     #[serde(default)]
+    pub start_key_expr: String,
+    #[serde(default)]
     pub cancel_service: String,
     #[serde(default)]
+    pub cancel_key_expr: String,
+    #[serde(default)]
     pub status_service: String,
+    #[serde(default)]
+    pub status_key_expr: String,
     #[serde(default)]
     pub feedback_channel: String,
     #[serde(default)]

@@ -50,6 +50,7 @@
       ],
       "mode": "island",
       "name": "default",
+      "operations": [],
       "processes": [
         {
           "backend": "inproc",

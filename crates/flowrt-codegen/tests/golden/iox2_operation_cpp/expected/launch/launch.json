@@ -38,6 +38,31 @@
       ],
       "mode": "strict",
       "name": "default",
+      "operations": [
+        {
+          "backend": "iox2",
+          "cancel_service": "FlowRT/service/__flowrt_operation_controller_plan_cancel",
+          "client": "controller.plan",
+          "client_instance": "controller",
+          "client_port": "plan",
+          "concurrency": "reject",
+          "feedback": "PlanFeedback",
+          "feedback_policy": "latest",
+          "goal": "PlanGoal",
+          "max_in_flight": 1,
+          "name": "controller.plan",
+          "preempt": "reject",
+          "queue_depth": 4,
+          "result": "PlanResult",
+          "result_retention_ms": 60000,
+          "server": "navigator.plan",
+          "server_instance": "navigator",
+          "server_port": "plan",
+          "start_service": "FlowRT/service/__flowrt_operation_controller_plan_start",
+          "status_service": "FlowRT/service/__flowrt_operation_controller_plan_status",
+          "timeout_ms": 5000
+        }
+      ],
       "processes": [
         {
           "backend": "inproc",

@@ -166,6 +166,7 @@ const char kFlowrtSelfDescription[] = R"({
           "request_type": "PlanRequest",
           "response_type": "PlanResponse",
           "backend": "iox2",
+          "service": "FlowRT/service/plan_client_plan",
           "timeout_ms": 1000,
           "queue_depth": 16,
           "overflow": "busy",
@@ -287,7 +288,7 @@ const char kFlowrtSelfDescription[] = R"({
 }
 )";
 
-const char kFlowrtSelfDescriptionHash[] = "3a3e0e48a17e19a699881e474b59f1d7f28801bcb61d51228e17a0399d4556d1";
+const char kFlowrtSelfDescriptionHash[] = "aaf30dd299e9b5bc6b4e8d83ff371a562ce03253235468623425a5ca1aab5afe";
 
 }  // namespace
 

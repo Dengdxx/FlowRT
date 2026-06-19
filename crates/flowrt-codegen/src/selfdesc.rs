@@ -560,6 +560,7 @@ fn self_description_service_endpoint(
         response_type,
         backend: service.backend.0.clone(),
         backend_source,
+        service: transport_endpoint.service_name().map(ToString::to_string),
         key_expr: transport_endpoint.key_expr().map(ToString::to_string),
         timeout_ms: Some(service.policy.timeout_ms),
         queue_depth: Some(service.policy.queue_depth),
@@ -603,9 +604,36 @@ fn self_description_operation_endpoints(
                 feedback: operation_feedback_name(plan.feedback).to_string(),
                 result_retention_ms: Some(plan.result_retention_ms),
                 lowering: SelfDescriptionOperationLowering {
-                    start_service: operation_start_endpoint_name(plan),
-                    cancel_service: operation_cancel_endpoint_name(plan),
-                    status_service: operation_status_endpoint_name(plan),
+                    start_service: plan
+                        .start_endpoint
+                        .service_name()
+                        .unwrap_or_default()
+                        .to_string(),
+                    start_key_expr: plan
+                        .start_endpoint
+                        .key_expr()
+                        .unwrap_or_default()
+                        .to_string(),
+                    cancel_service: plan
+                        .cancel_endpoint
+                        .service_name()
+                        .unwrap_or_default()
+                        .to_string(),
+                    cancel_key_expr: plan
+                        .cancel_endpoint
+                        .key_expr()
+                        .unwrap_or_default()
+                        .to_string(),
+                    status_service: plan
+                        .status_endpoint
+                        .service_name()
+                        .unwrap_or_default()
+                        .to_string(),
+                    status_key_expr: plan
+                        .status_endpoint
+                        .key_expr()
+                        .unwrap_or_default()
+                        .to_string(),
                     feedback_channel: operation_feedback_endpoint_name(plan),
                     result_channel: operation_result_endpoint_name(plan),
                 },
@@ -633,30 +661,6 @@ fn operation_feedback_name(policy: OperationFeedbackPolicy) -> &'static str {
         OperationFeedbackPolicy::Latest => "latest",
         OperationFeedbackPolicy::Fifo => "fifo",
     }
-}
-
-fn operation_start_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
-    format!(
-        "__flowrt_operation_{}_{}_start",
-        crate::snake_identifier(&plan.client_instance),
-        crate::snake_identifier(&plan.client_port)
-    )
-}
-
-fn operation_cancel_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
-    format!(
-        "__flowrt_operation_{}_{}_cancel",
-        crate::snake_identifier(&plan.client_instance),
-        crate::snake_identifier(&plan.client_port)
-    )
-}
-
-fn operation_status_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {
-    format!(
-        "__flowrt_operation_{}_{}_status",
-        crate::snake_identifier(&plan.client_instance),
-        crate::snake_identifier(&plan.client_port)
-    )
 }
 
 fn operation_feedback_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePlan) -> String {

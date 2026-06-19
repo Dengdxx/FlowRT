@@ -136,6 +136,7 @@
           "request_type": "PlanRequest",
           "response_type": "PlanResponse",
           "backend": "inproc",
+          "service": "plan_client.plan",
           "timeout_ms": 1000,
           "queue_depth": 16,
           "overflow": "busy",

@@ -803,13 +803,15 @@ fn emit_rust_operation_submit_cases(
                         contract,
                         graph,
                         plan,
-                        &start_var,
-                        &cancel_var,
-                        &status_var,
-                        &control_var,
-                        &server_var,
-                        "                                ",
-                        "return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());",
+                        operation_emit::RustIox2OperationPendingDrain {
+                            start_server_expr: &start_var,
+                            cancel_server_expr: &cancel_var,
+                            status_server_expr: &status_var,
+                            control_expr: &control_var,
+                            server_expr: &server_var,
+                            indent: "                                ",
+                            error_return: "return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());",
+                        },
                     ),
                 )
             }

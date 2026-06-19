@@ -176,9 +176,12 @@ const char kFlowrtSelfDescription[] = R"({
           "feedback": "latest",
           "result_retention_ms": 60000,
           "lowering": {
-            "start_service": "__flowrt_operation_controller_plan_start",
-            "cancel_service": "__flowrt_operation_controller_plan_cancel",
-            "status_service": "__flowrt_operation_controller_plan_status",
+            "start_service": "FlowRT/service/__flowrt_operation_controller_plan_start",
+            "start_key_expr": "",
+            "cancel_service": "FlowRT/service/__flowrt_operation_controller_plan_cancel",
+            "cancel_key_expr": "",
+            "status_service": "FlowRT/service/__flowrt_operation_controller_plan_status",
+            "status_key_expr": "",
             "feedback_channel": "__flowrt_operation_controller_plan_feedback",
             "result_channel": "__flowrt_operation_controller_plan_result"
           }
@@ -330,7 +333,7 @@ const char kFlowrtSelfDescription[] = R"({
 }
 )";
 
-const char kFlowrtSelfDescriptionHash[] = "b21280703a59542914cc600e6594bf1c4fb9631e7f8c5ef2f88a995d3b5a041d";
+const char kFlowrtSelfDescriptionHash[] = "a14be6140438ad7aa4c5bfe521386c983236910f9230888599cd1c60bb54f51c";
 
 }  // namespace
 

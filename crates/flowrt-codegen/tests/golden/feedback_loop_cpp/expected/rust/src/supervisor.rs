@@ -1,6 +1,6 @@
 // FlowRT 管理产物。不要手工修改。
 
-const LAUNCH_MANIFEST_HASH: &str = "59c48e0ed55f08f36923b309b11708d70e3df1f93a1f70b0686f8335d8b0df2f";
+const LAUNCH_MANIFEST_HASH: &str = "d51e80656c1b497126f0d9ac2a1cb85a673b76de7e6eefc9df50ce0cd431f340";
 const LAUNCH_MANIFEST: &str = include_str!("../../launch/launch.json");
 
 static SUPERVISOR_CONFIG: flowrt::supervisor::SupervisorConfig = flowrt::supervisor::SupervisorConfig {

@@ -38,6 +38,7 @@
       ],
       "mode": "strict",
       "name": "default",
+      "operations": [],
       "processes": [
         {
           "backend": "inproc",
@@ -190,6 +191,7 @@
           "server": "plan_svc.plan",
           "server_instance": "plan_svc",
           "server_port": "plan",
+          "service": "FlowRT/service/plan_client_plan",
           "timeout_ms": 1000
         }
       ],

@@ -329,6 +329,56 @@ fn self_description_exposes_operation_policy_values() {
     assert_eq!(operation["result_retention_ms"], 5000);
 }
 
+/// Operation lowering 必须分离 iox2 canonical service name 与 zenoh key expression。
+#[test]
+fn selfdesc_operation_lowering_separates_iox2_and_zenoh() {
+    let iox2_source = RUST_OPERATION_RSDL.replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let iox2_contract = contract_from_source(&iox2_source);
+    let iox2_bundle = emit_artifacts(&iox2_contract).unwrap();
+    let iox2_selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&iox2_bundle, "selfdesc/selfdesc.json")).unwrap();
+    let iox2_lowering = &iox2_selfdesc["graphs"][0]["operations"][0]["lowering"];
+
+    assert_eq!(
+        iox2_lowering["start_service"],
+        "FlowRT/service/__flowrt_operation_controller_plan_start"
+    );
+    assert_eq!(iox2_lowering["start_key_expr"], "");
+    assert_eq!(
+        iox2_lowering["cancel_service"],
+        "FlowRT/service/__flowrt_operation_controller_plan_cancel"
+    );
+    assert_eq!(iox2_lowering["cancel_key_expr"], "");
+    assert_eq!(
+        iox2_lowering["status_service"],
+        "FlowRT/service/__flowrt_operation_controller_plan_status"
+    );
+    assert_eq!(iox2_lowering["status_key_expr"], "");
+
+    let zenoh_source = RUST_OPERATION_RSDL.replace("backend = \"inproc\"", "backend = \"zenoh\"");
+    let zenoh_contract = contract_from_source(&zenoh_source);
+    let zenoh_bundle = emit_artifacts(&zenoh_contract).unwrap();
+    let zenoh_selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&zenoh_bundle, "selfdesc/selfdesc.json")).unwrap();
+    let zenoh_lowering = &zenoh_selfdesc["graphs"][0]["operations"][0]["lowering"];
+
+    assert_eq!(zenoh_lowering["start_service"], "");
+    assert_eq!(
+        zenoh_lowering["start_key_expr"],
+        "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_start/request"
+    );
+    assert_eq!(zenoh_lowering["cancel_service"], "");
+    assert_eq!(
+        zenoh_lowering["cancel_key_expr"],
+        "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_cancel/request"
+    );
+    assert_eq!(zenoh_lowering["status_service"], "");
+    assert_eq!(
+        zenoh_lowering["status_key_expr"],
+        "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_status/request"
+    );
+}
+
 /// zenoh Operation 必须生成真实 transport lowering，同时保持用户侧 Operation API。
 #[test]
 fn rust_zenoh_operation_codegen_wires_transport() {

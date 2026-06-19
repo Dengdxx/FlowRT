@@ -455,13 +455,21 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
                 contract,
                 graph,
                 plan,
-                &format!("self.{}", operation_start_server_field_name(plan)),
-                &format!("self.{}", operation_cancel_server_field_name(plan)),
-                &format!("self.{}", operation_status_server_field_name(plan)),
-                &format!("self.{control_var}"),
-                &format!("self.{}", plan.server_instance),
-                "        ",
-                "return flowrt::Status::Error;",
+                RustIox2OperationPendingDrain {
+                    start_server_expr: &format!("self.{}", operation_start_server_field_name(plan)),
+                    cancel_server_expr: &format!(
+                        "self.{}",
+                        operation_cancel_server_field_name(plan)
+                    ),
+                    status_server_expr: &format!(
+                        "self.{}",
+                        operation_status_server_field_name(plan)
+                    ),
+                    control_expr: &format!("self.{control_var}"),
+                    server_expr: &format!("self.{}", plan.server_instance),
+                    indent: "        ",
+                    error_return: "return flowrt::Status::Error;",
+                },
             ),
             _ => {
                 format!(
@@ -848,17 +856,21 @@ pub(crate) fn emit_rust_iox2_operation_endpoints(
     output
 }
 
+pub(crate) struct RustIox2OperationPendingDrain<'a> {
+    pub(crate) start_server_expr: &'a str,
+    pub(crate) cancel_server_expr: &'a str,
+    pub(crate) status_server_expr: &'a str,
+    pub(crate) control_expr: &'a str,
+    pub(crate) server_expr: &'a str,
+    pub(crate) indent: &'a str,
+    pub(crate) error_return: &'a str,
+}
+
 pub(crate) fn rust_iox2_operation_pending_drain(
     contract: &ContractIr,
     graph: &GraphIr,
     plan: &OperationRuntimePlan,
-    start_server_expr: &str,
-    cancel_server_expr: &str,
-    status_server_expr: &str,
-    control_expr: &str,
-    server_expr: &str,
-    indent: &str,
-    error_return: &str,
+    emit: RustIox2OperationPendingDrain<'_>,
 ) -> String {
     let goal_ty = rust_type(&plan.goal_type);
     let feedback_ty = rust_type(&plan.feedback_type);
@@ -882,6 +894,13 @@ pub(crate) fn rust_iox2_operation_pending_drain(
         )
     };
     let index = plan.index;
+    let start_server_expr = emit.start_server_expr;
+    let cancel_server_expr = emit.cancel_server_expr;
+    let status_server_expr = emit.status_server_expr;
+    let control_expr = emit.control_expr;
+    let server_expr = emit.server_expr;
+    let indent = emit.indent;
+    let error_return = emit.error_return;
     format!(
         "{indent}if let Some(start_server) = {start_server_expr}.get() {{\n\
          {indent}    let mut start_server = start_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\

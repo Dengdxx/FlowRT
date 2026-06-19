@@ -128,6 +128,8 @@ pub struct LaunchGraph {
     #[serde(default)]
     pub services: Vec<LaunchService>,
     #[serde(default)]
+    pub operations: Vec<LaunchOperation>,
+    #[serde(default)]
     pub ros2_bridges: Vec<serde_json::Value>,
     #[serde(default)]
     pub instances: Vec<serde_json::Value>,
@@ -274,6 +276,10 @@ pub struct LaunchService {
     pub request: String,
     pub response: String,
     pub backend: String,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub key_expr: Option<String>,
     pub timeout_ms: u64,
     pub queue_depth: u32,
     pub overflow: String,
@@ -281,6 +287,42 @@ pub struct LaunchService {
     pub lane: Option<String>,
     #[serde(default)]
     pub max_in_flight: u32,
+}
+
+/// manifest 中单个 operation bind 描述。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchOperation {
+    pub name: String,
+    pub client: String,
+    pub client_instance: String,
+    pub client_port: String,
+    pub server: String,
+    pub server_instance: String,
+    pub server_port: String,
+    pub goal: String,
+    pub feedback: String,
+    pub result: String,
+    pub backend: String,
+    #[serde(default)]
+    pub start_service: Option<String>,
+    #[serde(default)]
+    pub start_key_expr: Option<String>,
+    #[serde(default)]
+    pub cancel_service: Option<String>,
+    #[serde(default)]
+    pub cancel_key_expr: Option<String>,
+    #[serde(default)]
+    pub status_service: Option<String>,
+    #[serde(default)]
+    pub status_key_expr: Option<String>,
+    pub timeout_ms: u64,
+    pub concurrency: String,
+    pub preempt: String,
+    pub queue_depth: u32,
+    pub max_in_flight: u32,
+    pub feedback_policy: String,
+    pub result_retention_ms: u64,
 }
 
 /// manifest 中单个进程描述。

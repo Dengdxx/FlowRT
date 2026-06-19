@@ -38,6 +38,31 @@
       ],
       "mode": "strict",
       "name": "default",
+      "operations": [
+        {
+          "backend": "zenoh",
+          "cancel_key_expr": "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_cancel/request",
+          "client": "controller.plan",
+          "client_instance": "controller",
+          "client_port": "plan",
+          "concurrency": "reject",
+          "feedback": "PlanFeedback",
+          "feedback_policy": "latest",
+          "goal": "PlanGoal",
+          "max_in_flight": 1,
+          "name": "controller.plan",
+          "preempt": "reject",
+          "queue_depth": 4,
+          "result": "PlanResult",
+          "result_retention_ms": 60000,
+          "server": "navigator.plan",
+          "server_instance": "navigator",
+          "server_port": "plan",
+          "start_key_expr": "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_start/request",
+          "status_key_expr": "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_status/request",
+          "timeout_ms": 5000
+        }
+      ],
       "processes": [
         {
           "backend": "zenoh",

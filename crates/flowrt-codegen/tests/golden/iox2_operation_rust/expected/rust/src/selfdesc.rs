@@ -2,7 +2,7 @@
 
 #[used]
 #[unsafe(link_section = ".flowrt.selfdesc")]
-static FLOWRT_SELF_DESCRIPTION: [u8; 7651] = *br#"{
+static FLOWRT_SELF_DESCRIPTION: [u8; 7800] = *br#"{
   "self_description_version": "0.1",
   "ir_version": "0.1",
   "schema_version": "0.1",
@@ -169,9 +169,12 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 7651] = *br#"{
           "feedback": "latest",
           "result_retention_ms": 60000,
           "lowering": {
-            "start_service": "__flowrt_operation_controller_plan_start",
-            "cancel_service": "__flowrt_operation_controller_plan_cancel",
-            "status_service": "__flowrt_operation_controller_plan_status",
+            "start_service": "FlowRT/service/__flowrt_operation_controller_plan_start",
+            "start_key_expr": "",
+            "cancel_service": "FlowRT/service/__flowrt_operation_controller_plan_cancel",
+            "cancel_key_expr": "",
+            "status_service": "FlowRT/service/__flowrt_operation_controller_plan_status",
+            "status_key_expr": "",
             "feedback_channel": "__flowrt_operation_controller_plan_feedback",
             "result_channel": "__flowrt_operation_controller_plan_result"
           }
@@ -330,5 +333,5 @@ pub fn self_description_json() -> &'static str {
 
 #[allow(dead_code)]
 pub fn self_description_hash() -> &'static str {
-    "d635d2d32671b4c5a06cfedfea3a8d4d2220e249408759786450baf3e0507593"
+    "ffe1b38f17d52664ce0bed0ccede438af1e1b7a0ecf226cde8968814df1a658a"
 }

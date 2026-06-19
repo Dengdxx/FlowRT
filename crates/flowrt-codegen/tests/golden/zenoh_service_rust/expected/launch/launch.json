@@ -38,6 +38,7 @@
       ],
       "mode": "strict",
       "name": "default",
+      "operations": [],
       "processes": [
         {
           "backend": "zenoh",

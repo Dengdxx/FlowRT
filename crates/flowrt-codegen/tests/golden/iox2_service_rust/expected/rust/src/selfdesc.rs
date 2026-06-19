@@ -2,7 +2,7 @@
 
 #[used]
 #[unsafe(link_section = ".flowrt.selfdesc")]
-static FLOWRT_SELF_DESCRIPTION: [u8; 6400] = *br#"{
+static FLOWRT_SELF_DESCRIPTION: [u8; 6456] = *br#"{
   "self_description_version": "0.1",
   "ir_version": "0.1",
   "schema_version": "0.1",
@@ -159,6 +159,7 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 6400] = *br#"{
           "request_type": "PlanRequest",
           "response_type": "PlanResponse",
           "backend": "iox2",
+          "service": "FlowRT/service/plan_client_plan",
           "timeout_ms": 1000,
           "queue_depth": 16,
           "overflow": "busy",
@@ -287,5 +288,5 @@ pub fn self_description_json() -> &'static str {
 
 #[allow(dead_code)]
 pub fn self_description_hash() -> &'static str {
-    "dee3a55f99a2cf1482089220c7edd0aea48d4763e364c19aa56938bea11ce03d"
+    "9ad772d3d34573672fd2456c9beb0eaea3c7d5da336ad86ece1eaeba84896b22"
 }

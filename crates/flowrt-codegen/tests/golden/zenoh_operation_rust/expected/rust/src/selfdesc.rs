@@ -2,7 +2,7 @@
 
 #[used]
 #[unsafe(link_section = ".flowrt.selfdesc")]
-static FLOWRT_SELF_DESCRIPTION: [u8; 7676] = *br#"{
+static FLOWRT_SELF_DESCRIPTION: [u8; 7921] = *br#"{
   "self_description_version": "0.1",
   "ir_version": "0.1",
   "schema_version": "0.1",
@@ -170,9 +170,12 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 7676] = *br#"{
           "feedback": "latest",
           "result_retention_ms": 60000,
           "lowering": {
-            "start_service": "__flowrt_operation_controller_plan_start",
-            "cancel_service": "__flowrt_operation_controller_plan_cancel",
-            "status_service": "__flowrt_operation_controller_plan_status",
+            "start_service": "",
+            "start_key_expr": "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_start/request",
+            "cancel_service": "",
+            "cancel_key_expr": "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_cancel/request",
+            "status_service": "",
+            "status_key_expr": "flowrt/service/_x5F__x5F_flowrt_x5F_operation_x5F_controller_x5F_plan_x5F_status/request",
             "feedback_channel": "__flowrt_operation_controller_plan_feedback",
             "result_channel": "__flowrt_operation_controller_plan_result"
           }
@@ -331,5 +334,5 @@ pub fn self_description_json() -> &'static str {
 
 #[allow(dead_code)]
 pub fn self_description_hash() -> &'static str {
-    "d490bee349b5f75a3f8ee70d2f3ee92db447505cad1804f17cbfa97b54f49f12"
+    "6923dcb759cc185835a865bfb28def3e304a793e3c5a938d7a465ec32288db47"
 }

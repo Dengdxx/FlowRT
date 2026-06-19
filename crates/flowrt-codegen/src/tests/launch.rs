@@ -428,6 +428,101 @@ server = "server.plan"
 }
 
 #[test]
+fn launch_manifest_exposes_service_names_and_operations() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "operation_launch_demo"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[type.PlanGoal]
+target = "u32"
+
+[type.PlanFeedback]
+progress = "f32"
+
+[type.PlanResult]
+accepted = "bool"
+
+[component.client]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[component.client.operation_client.nav]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.server]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[component.server.operation_server.nav]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[instance.client]
+component = "client"
+process = "client_proc"
+target = "linux"
+
+[instance.client.task]
+trigger = "periodic"
+period_ms = 100
+
+[instance.server]
+component = "server"
+process = "server_proc"
+target = "linux"
+
+[instance.server.task]
+trigger = "periodic"
+period_ms = 100
+
+[[bind.service]]
+client = "client.plan"
+server = "server.plan"
+
+[[bind.operation]]
+client = "client.nav"
+server = "server.nav"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let graph = &launch["graphs"][0];
+    let service = &graph["services"][0];
+    let operation = &graph["operations"][0];
+
+    assert_eq!(service["backend"], "iox2");
+    assert_eq!(service["service"], "FlowRT/service/client_plan");
+    assert!(service.get("key_expr").is_none());
+
+    assert_eq!(operation["name"], "client.nav");
+    assert_eq!(operation["backend"], "iox2");
+    assert_eq!(
+        operation["start_service"],
+        "FlowRT/service/__flowrt_operation_client_nav_start"
+    );
+    assert!(operation.get("start_key_expr").is_none());
+}
+
+#[test]
 fn launch_manifest_rejects_service_type_mismatch_in_release_path() {
     let mut ir = contract_from_source(
         r#"

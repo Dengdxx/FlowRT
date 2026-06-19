@@ -4,7 +4,8 @@ use flowrt_ir::{
     BackendThreadAffinity, BoundaryDirection, BoundaryEndpointIr, ComponentIr, ComponentKind,
     ContractIr, DeterminismMode, DeterminismTimeoutPolicy, ExternalHealthKind, ExternalProcessIr,
     ExternalWorkingDir, GraphIr, GraphMode, InstanceIr, IoBoundaryHealth, IoBoundaryReadiness,
-    IoBoundaryShutdown, IoSideEffect, ProcessIr, ResourceProviderIr, ResourceRequirementIr,
+    IoBoundaryShutdown, IoSideEffect, OperationConcurrencyPolicy, OperationFeedbackPolicy,
+    OperationPreemptPolicy, ProcessIr, ResourceProviderIr, ResourceRequirementIr,
     ResourceSatisfactionIr, ServicePortIr, TaskIr, derived::GraphDerivedFacts,
 };
 
@@ -35,6 +36,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
                 "channels": launch_channels(contract, graph, graph_facts),
                 "boundary_endpoints": launch_boundary_endpoints(graph),
                 "services": launch_services(contract, graph)?,
+                "operations": launch_operations(contract, graph),
                 "ros2_bridges": launch_ros2_bridges(contract, graph),
                 "instances": graph.instances.iter().map(|instance| {
                     let component = component_by_name(contract, &instance.component.name);
@@ -296,9 +298,90 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
                     serde_json::Value::String(key_expr.to_string()),
                 );
             }
+            if let Some(service_name) = transport_endpoint.service_name() {
+                endpoint.as_object_mut().expect("service endpoint must be a JSON object").insert(
+                    "service".to_string(),
+                    serde_json::Value::String(service_name.to_string()),
+                );
+            }
             Ok(endpoint)
         })
         .collect()
+}
+
+fn launch_operations(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::Value> {
+    crate::runtime_plan::operation_runtime_plans(contract, graph)
+        .iter()
+        .map(|plan| {
+            let mut operation = serde_json::json!({
+                "name": plan.operation_name,
+                "client": format!("{}.{}", plan.client_instance, plan.client_port),
+                "client_instance": plan.client_instance,
+                "client_port": plan.client_port,
+                "server": format!("{}.{}", plan.server_instance, plan.server_port),
+                "server_instance": plan.server_instance,
+                "server_port": plan.server_port,
+                "goal": plan.goal_type.canonical_syntax(),
+                "feedback": plan.feedback_type.canonical_syntax(),
+                "result": plan.result_type.canonical_syntax(),
+                "backend": plan.backend.0,
+                "timeout_ms": plan.timeout_ms,
+                "concurrency": operation_concurrency_name(plan.concurrency),
+                "preempt": operation_preempt_name(plan.preempt),
+                "queue_depth": plan.queue_depth,
+                "max_in_flight": plan.max_in_flight,
+                "feedback_policy": operation_feedback_name(plan.feedback),
+                "result_retention_ms": plan.result_retention_ms,
+            });
+            insert_operation_endpoint(&mut operation, "start", &plan.start_endpoint);
+            insert_operation_endpoint(&mut operation, "cancel", &plan.cancel_endpoint);
+            insert_operation_endpoint(&mut operation, "status", &plan.status_endpoint);
+            operation
+        })
+        .collect()
+}
+
+fn insert_operation_endpoint(
+    operation: &mut serde_json::Value,
+    prefix: &str,
+    endpoint: &crate::runtime_plan::TransportEndpoint,
+) {
+    let object = operation
+        .as_object_mut()
+        .expect("operation endpoint must be a JSON object");
+    if let Some(service_name) = endpoint.service_name() {
+        object.insert(
+            format!("{prefix}_service"),
+            serde_json::Value::String(service_name.to_string()),
+        );
+    }
+    if let Some(key_expr) = endpoint.key_expr() {
+        object.insert(
+            format!("{prefix}_key_expr"),
+            serde_json::Value::String(key_expr.to_string()),
+        );
+    }
+}
+
+fn operation_concurrency_name(policy: OperationConcurrencyPolicy) -> &'static str {
+    match policy {
+        OperationConcurrencyPolicy::Reject => "reject",
+        OperationConcurrencyPolicy::Queue => "queue",
+    }
+}
+
+fn operation_preempt_name(policy: OperationPreemptPolicy) -> &'static str {
+    match policy {
+        OperationPreemptPolicy::Reject => "reject",
+        OperationPreemptPolicy::CancelRunning => "cancel_running",
+    }
+}
+
+fn operation_feedback_name(policy: OperationFeedbackPolicy) -> &'static str {
+    match policy {
+        OperationFeedbackPolicy::Latest => "latest",
+        OperationFeedbackPolicy::Fifo => "fifo",
+    }
 }
 
 fn launch_boundary_endpoints(graph: &GraphIr) -> Vec<serde_json::Value> {

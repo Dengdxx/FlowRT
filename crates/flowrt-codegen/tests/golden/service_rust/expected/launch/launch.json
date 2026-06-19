@@ -38,6 +38,7 @@
       ],
       "mode": "strict",
       "name": "default",
+      "operations": [],
       "processes": [
         {
           "backend": "inproc",
@@ -158,6 +159,7 @@
           "server": "plan_svc.plan",
           "server_instance": "plan_svc",
           "server_port": "plan",
+          "service": "plan_client.plan",
           "timeout_ms": 1000
         }
       ],

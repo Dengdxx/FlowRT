@@ -603,6 +603,40 @@ backends = ["iox2", "zenoh"]
     assert!(endpoint.get("service").is_none());
 }
 
+/// iox2 service selfdesc 使用 canonical service name；zenoh 使用 key expression。
+#[test]
+fn selfdesc_service_separates_iox2_service_name_and_zenoh_key_expr() {
+    let iox2_source = SERVICE_RSDL.replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let iox2_contract = contract_from_source(&iox2_source);
+    let iox2_bundle = emit_artifacts(&iox2_contract).unwrap();
+    let iox2_selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&iox2_bundle, "selfdesc/selfdesc.json")).unwrap();
+    let iox2_endpoint = &iox2_selfdesc["graphs"][0]["services"][0];
+
+    assert_eq!(iox2_endpoint["backend"], "iox2");
+    assert_eq!(iox2_endpoint["service"], "FlowRT/service/plan_client_plan");
+    assert!(iox2_endpoint.get("key_expr").is_none());
+
+    let zenoh_source = SERVICE_RSDL
+        .replace("backend = \"inproc\"", "backend = \"zenoh\"")
+        .replace(
+            "[component.plan_service]\nlanguage = \"rust\"",
+            "[component.plan_service]\nlanguage = \"rust\"\nconcurrency = \"parallel\"",
+        );
+    let zenoh_contract = contract_from_source(&zenoh_source);
+    let zenoh_bundle = emit_artifacts(&zenoh_contract).unwrap();
+    let zenoh_selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&zenoh_bundle, "selfdesc/selfdesc.json")).unwrap();
+    let zenoh_endpoint = &zenoh_selfdesc["graphs"][0]["services"][0];
+
+    assert_eq!(zenoh_endpoint["backend"], "zenoh");
+    assert_eq!(
+        zenoh_endpoint["key_expr"],
+        "flowrt/service/plan_x5F_client.plan/request"
+    );
+    assert!(zenoh_endpoint.get("service").is_none());
+}
+
 /// zenoh service 的静态拓扑必须暴露 runtime 实际 queryable 使用的 key expression。
 #[test]
 fn zenoh_service_manifest_and_selfdesc_expose_key_expr() {
