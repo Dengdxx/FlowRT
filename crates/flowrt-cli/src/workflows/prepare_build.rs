@@ -1496,13 +1496,19 @@ pub(crate) fn cargo_manifest_with_runtime_patch(
     let generated_manifest = out_dir.join("build").join("Cargo.toml");
     let generated = fs::read_to_string(&generated_manifest)
         .with_context(|| format!("failed to read `{}`", generated_manifest.display()))?;
-    if generated.contains("[patch.crates-io]") || !manifest_declares_flowrt_dependency(&generated) {
+    if !manifest_declares_flowrt_dependency(&generated) {
         return Ok(generated_manifest);
     }
     let Some(runtime_dir) = runtime_dir else {
         return Ok(generated_manifest);
     };
+    if is_repo_rust_runtime_dir(runtime_dir)? {
+        write_cargo_offline_config(out_dir)?;
+    }
     write_cargo_vendor_config(out_dir, runtime_dir)?;
+    if generated.contains("[patch.crates-io]") {
+        return Ok(generated_manifest);
+    }
     let patched = format!(
         "{generated}\n[patch.crates-io]\nflowrt = {{ path = {} }}\n",
         toml_basic_string(runtime_dir)
@@ -1537,6 +1543,15 @@ pub(crate) fn write_cargo_vendor_config(out_dir: &Path, runtime_dir: &Path) -> R
     fs::write(&config_path, config)
         .with_context(|| format!("failed to write `{}`", config_path.display()))?;
     Ok(())
+}
+
+pub(crate) fn write_cargo_offline_config(out_dir: &Path) -> Result<()> {
+    let cargo_dir = out_dir.join("build").join(".cargo");
+    fs::create_dir_all(&cargo_dir)
+        .with_context(|| format!("failed to create `{}`", cargo_dir.display()))?;
+    let config_path = cargo_dir.join("config.toml");
+    fs::write(&config_path, "[net]\noffline = true\n")
+        .with_context(|| format!("failed to write `{}`", config_path.display()))
 }
 
 pub(crate) fn flowrt_private_prefix_from_runtime_dir(runtime_dir: &Path) -> Option<PathBuf> {

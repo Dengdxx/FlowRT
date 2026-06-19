@@ -36,6 +36,127 @@ flowrt = { version = "0.1" }
 }
 
 #[test]
+fn cargo_manifest_patch_uses_offline_config_for_repo_runtime() {
+    let root = temp_test_dir("cargo-patch-repo-runtime-offline");
+    let build_dir = root.join("flowrt").join("build");
+    let runtime_dir = repo_root_dir().unwrap().join("runtime").join("rust");
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let manifest = build_dir.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        r#"[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flowrt = { version = "0.24" }
+"#,
+    )
+    .unwrap();
+
+    let patched_manifest =
+        cargo_manifest_with_runtime_patch(&root.join("flowrt"), Some(&runtime_dir))
+            .expect("repo runtime patch should force generated Cargo offline");
+    let content = std::fs::read_to_string(&patched_manifest).unwrap();
+    let config = std::fs::read_to_string(build_dir.join(".cargo").join("config.toml")).unwrap();
+    let invocation = cargo_build_invocation(
+        &patched_manifest,
+        "robot-flowrt-app",
+        BuildMode::Release,
+        &root.join("target-cache"),
+        None,
+        None,
+    )
+    .expect("cargo invocation should read generated offline config");
+
+    assert!(content.contains("[patch.crates-io]"));
+    assert!(config.contains("[net]"));
+    assert!(config.contains("offline = true"));
+    assert!(invocation.args.iter().any(|arg| arg == "--offline"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cargo_manifest_patch_backfills_offline_config_for_already_patched_repo_runtime() {
+    let root = temp_test_dir("cargo-patch-repo-runtime-backfill-offline");
+    let build_dir = root.join("flowrt").join("build");
+    let runtime_dir = repo_root_dir().unwrap().join("runtime").join("rust");
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let manifest = build_dir.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flowrt = {{ version = "0.24" }}
+
+[patch.crates-io]
+flowrt = {{ path = {} }}
+"#,
+            toml_basic_string(&runtime_dir)
+        ),
+    )
+    .unwrap();
+
+    cargo_manifest_with_runtime_patch(&root.join("flowrt"), Some(&runtime_dir))
+        .expect("already patched repo runtime should still force Cargo offline");
+    let invocation = cargo_build_invocation(
+        &manifest,
+        "robot-flowrt-app",
+        BuildMode::Release,
+        &root.join("target-cache"),
+        None,
+        None,
+    )
+    .expect("cargo invocation should read backfilled offline config");
+
+    assert!(build_dir.join(".cargo").join("config.toml").exists());
+    assert!(invocation.args.iter().any(|arg| arg == "--offline"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cargo_manifest_patch_replaces_stale_vendor_config_for_repo_runtime() {
+    let root = temp_test_dir("cargo-patch-repo-runtime-replaces-stale-vendor");
+    let build_dir = root.join("flowrt").join("build");
+    let runtime_dir = repo_root_dir().unwrap().join("runtime").join("rust");
+    std::fs::create_dir_all(build_dir.join(".cargo")).unwrap();
+    let manifest = build_dir.join("Cargo.toml");
+    std::fs::write(
+        &manifest,
+        r#"[package]
+name = "robot-flowrt-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flowrt = { version = "0.24" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        build_dir.join(".cargo").join("config.toml"),
+        "[source.crates-io]\nreplace-with = \"flowrt-vendor\"\n\n[source.flowrt-vendor]\ndirectory = \"/tmp/stale-vendor\"\n\n[net]\noffline = true\n",
+    )
+    .unwrap();
+
+    cargo_manifest_with_runtime_patch(&root.join("flowrt"), Some(&runtime_dir))
+        .expect("repo runtime patch should replace stale vendor config");
+    let config = std::fs::read_to_string(build_dir.join(".cargo").join("config.toml")).unwrap();
+
+    assert_eq!(config, "[net]\noffline = true\n");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn cargo_manifest_patch_is_skipped_when_no_runtime_dir_is_available() {
     let root = temp_test_dir("cargo-patch-no-runtime");
     let build_dir = root.join("flowrt").join("build");
