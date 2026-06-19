@@ -4,7 +4,38 @@
 
 Git 历史使用 Conventional Commits；凡涉及代码、文档、命令、接口或生成物边界的变化，都要同步维护本文件。
 
-## 未发布
+## v0.25.0 - 2026-06-19
+
+### 新增
+
+- Rust/C++ generated Service 支持 `backend = "iox2"`：client / server 通过
+  `flowrt::iox2::Iox2ServiceClient` 与 `Iox2ServiceServer` 打开本机 request/response
+  control-plane endpoint，用户 API 仍保持 typed Service 语义。
+- Rust/C++ generated Operation 支持 `backend = "iox2"`：start/cancel/status control path
+  复用内部 iox2 Service transport，用户主视图仍是 Operation。
+- 新增 `examples/iox2_service_demo`，覆盖 Service / Operation over iox2 的跨进程
+  control-plane、typed API、canonical service name 和真实 SDK build/run 路径。
+- launch manifest 新增 Operation endpoint 输出；self-description 和 CLI 展示区分
+  `service`（inproc/iox2 canonical endpoint）与 `key_expr`（zenoh request key expression）。
+
+### 变更
+
+- dataflow、Service 和 Operation 统一按 edge 解析 backend：省略 `backend` 继承
+  profile/default backend；显式 `auto` 继续按 topology 解析。
+- `iox2` fixed-only invariant 写成长期规则：iox2 永久只承载 fixed-size plain data，不承载
+  `bytes`、`string`、`sequence<T>` 或 canonical variable frame；该规则同时适用于 dataflow、
+  Service request/response 和 Operation goal/feedback/result。
+- profile/default backend 为 `iox2` 且 edge payload 为动态消息时，未显式 backend 会按该 edge
+  自动 fallback 到 `zenoh`；显式 `backend = "iox2"` 会被 validator fail-fast 拒绝。
+- Service / Operation 省略 backend 不再表示无条件 topology auto，而是与 dataflow route 一样
+  继承 profile/default backend。
+
+### 测试
+
+- 新增 `v0.25.0 Iox2 Service Operation Smoke` focused gate，覆盖 Service / Operation over
+  iox2 codegen、manifest/self-description、CLI 展示和 `iox2_service_demo`。
+- focused smoke 在设置 `FLOWRT_V0250_REQUIRE_IOX2_SDK=1` 时会要求真实 `iceoryx2` SDK
+  可用并执行 build/run；未设置时保持依赖缺失环境下的发布守门可执行。
 
 ## v0.24.0 - 2026-06-19
 

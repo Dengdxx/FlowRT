@@ -1,9 +1,6 @@
 //! Rust Operation codegen：typed client handle、server handler、内部 lowering task。
 
-use flowrt_ir::{
-    ContractIr, GraphIr, OperationConcurrencyPolicy, OperationFeedbackPolicy,
-    OperationPreemptPolicy,
-};
+use flowrt_ir::{ContractIr, GraphIr, OperationConcurrencyPolicy, OperationPreemptPolicy};
 
 use crate::messages::rust_type;
 use crate::runtime_plan::{OperationRuntimePlan, SchedulerHiddenTaskPlan, operation_runtime_plans};
@@ -1185,13 +1182,5 @@ fn rust_operation_preempt(policy: OperationPreemptPolicy) -> &'static str {
     match policy {
         OperationPreemptPolicy::Reject => "flowrt::OperationPreemptPolicy::Reject",
         OperationPreemptPolicy::CancelRunning => "flowrt::OperationPreemptPolicy::CancelRunning",
-    }
-}
-
-#[allow(dead_code)]
-fn rust_operation_feedback(policy: OperationFeedbackPolicy) -> &'static str {
-    match policy {
-        OperationFeedbackPolicy::Latest => "latest",
-        OperationFeedbackPolicy::Fifo => "fifo",
     }
 }

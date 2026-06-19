@@ -1017,7 +1017,6 @@ pub(crate) fn runtime_param_name(instance: &InstanceIr, param: &ParamIr) -> Stri
 
 /// service / operation 单个 control-plane endpoint 的 backend-specific 命名事实源。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum TransportEndpoint {
     /// inproc：仅进程内逻辑名。
     Inproc { name: String },
@@ -1029,7 +1028,6 @@ pub(crate) enum TransportEndpoint {
 
 impl TransportEndpoint {
     /// 供 selfdesc / manifest 的 `service` 字段。
-    #[allow(dead_code)]
     pub(crate) fn service_name(&self) -> Option<&str> {
         match self {
             TransportEndpoint::Inproc { name } => Some(name),
@@ -1171,7 +1169,6 @@ pub(crate) fn ir_service_overflow_name(policy: ServiceOverflowPolicy) -> &'stati
 }
 
 /// 查找指定实例作为 client 的所有 service plans。
-#[allow(dead_code)]
 pub(crate) fn client_service_plans<'a>(
     plans: &'a [ServiceRuntimePlan],
     instance_name: &str,
