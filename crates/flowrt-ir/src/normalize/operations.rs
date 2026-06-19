@@ -5,9 +5,10 @@ use flowrt_rsdl::{RawDocument, RawOperationBind};
 use crate::{
     BackendName, ComponentIr, EntityRef, InstanceIr, IrError, LanguageKind,
     OPERATION_DEFAULT_MAX_IN_FLIGHT, OPERATION_DEFAULT_QUEUE_DEPTH,
-    OPERATION_DEFAULT_RESULT_RETENTION_MS, OPERATION_DEFAULT_TIMEOUT_MS, OperationBackendSource,
+    OPERATION_DEFAULT_RESULT_RETENTION_MS, OPERATION_DEFAULT_TIMEOUT_MS,
     OperationConcurrencyPolicy, OperationEdgeIr, OperationFeedbackPolicy, OperationPolicyIr,
-    OperationPolicySourceIr, OperationPortRef, OperationPreemptPolicy, PolicyValueSource, Result,
+    OperationPolicySourceIr, OperationPortIr, OperationPortRef, OperationPreemptPolicy,
+    PolicyValueSource, ProfileIr, Result, TypeExpr, TypeIr,
 };
 
 use super::ids::entity_id;
@@ -17,8 +18,16 @@ pub(super) fn normalize_operation_binds(
     instance_refs: &BTreeMap<String, EntityRef>,
     instances: &[InstanceIr],
     components: &[ComponentIr],
+    types: &[TypeIr],
+    profiles: &[ProfileIr],
     graph_name: &str,
 ) -> Result<Vec<OperationEdgeIr>> {
+    let default_backend = profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or(profiles.first())
+        .map(|profile| profile.backend.0.as_str())
+        .unwrap_or("inproc");
     let instances_by_name = instances
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
@@ -39,8 +48,21 @@ pub(super) fn normalize_operation_binds(
 
             let topology =
                 operation_route_topology(&instances_by_name, &components_by_name, &client, &server);
-            let (backend, backend_source) =
-                resolve_operation_backend(&context, raw.backend.as_deref(), topology)?;
+            let (goal_type, feedback_type, result_type) =
+                operation_port_types(&instances_by_name, &components_by_name, &client, &server)
+                    .map(|(goal, feedback, result)| (Some(goal), Some(feedback), Some(result)))
+                    .unwrap_or((None, None, None));
+            let requested = raw.backend.as_deref().unwrap_or(default_backend);
+            let explicit = raw.backend.is_some();
+            let resolution = crate::backend::resolve_operation_backend(
+                requested,
+                goal_type,
+                feedback_type,
+                result_type,
+                types,
+                topology,
+                explicit,
+            )?;
 
             let policy = parse_operation_policy(&context, raw)?;
             let policy_source = operation_policy_source(raw);
@@ -49,8 +71,8 @@ pub(super) fn normalize_operation_binds(
                 id: entity_id("operation", &format!("{}->{}", raw.client, raw.server)),
                 client,
                 server,
-                backend: BackendName(backend),
-                backend_source,
+                backend: BackendName(resolution.backend),
+                backend_source: resolution.source,
                 policy,
                 policy_source,
             })
@@ -85,12 +107,12 @@ pub(super) fn normalize_operation_binds(
     Ok(operations)
 }
 
-fn operation_route_topology(
+pub(crate) fn operation_route_topology(
     instances: &BTreeMap<&str, &InstanceIr>,
     components: &BTreeMap<&str, &ComponentIr>,
     client: &OperationPortRef,
     server: &OperationPortRef,
-) -> (bool, bool, bool) {
+) -> crate::backend::RouteTopology {
     let client_instance = instances.get(client.instance.name.as_str());
     let server_instance = instances.get(server.instance.name.as_str());
     let client_process = client_instance
@@ -113,52 +135,62 @@ fn operation_route_topology(
             .and_then(|instance| components.get(instance.component.name.as_str()))
             .is_some_and(|component| component.language == LanguageKind::External)
     });
-    (crosses_process, crosses_target, touches_external)
+    crate::backend::RouteTopology {
+        crosses_process,
+        crosses_target,
+        touches_external,
+    }
 }
 
-fn resolve_operation_backend(
-    context: &str,
-    requested: Option<&str>,
-    (crosses_process, crosses_target, touches_external): (bool, bool, bool),
-) -> Result<(String, OperationBackendSource)> {
-    match requested {
-        None | Some("auto") => {
-            let resolved = if touches_external || crosses_process || crosses_target {
-                "zenoh"
-            } else {
-                "inproc"
-            };
-            Ok((resolved.to_string(), OperationBackendSource::AutoResolved))
-        }
-        Some("inproc") => {
-            if touches_external {
-                Err(IrError::InvalidValue {
-                    context: context.to_string(),
-                    message: "external operation route cannot use `inproc` backend".to_string(),
-                })
-            } else if crosses_process || crosses_target {
-                Err(IrError::InvalidValue {
-                    context: context.to_string(),
-                    message:
-                        "explicit `inproc` operation backend cannot span process or target boundaries"
-                            .to_string(),
-                })
-            } else {
-                Ok(("inproc".to_string(), OperationBackendSource::Explicit))
-            }
-        }
-        Some("zenoh") => Ok(("zenoh".to_string(), OperationBackendSource::Explicit)),
-        Some("iox2") => Err(IrError::InvalidEnum {
-            context: context.to_string(),
-            kind: "operation backend",
-            value: "iox2".to_string(),
-        }),
-        Some(other) => Err(IrError::InvalidEnum {
-            context: context.to_string(),
-            kind: "operation backend",
-            value: other.to_string(),
-        }),
+pub(crate) fn operation_port_types<'a>(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    client: &OperationPortRef,
+    server: &OperationPortRef,
+) -> Option<(&'a TypeExpr, &'a TypeExpr, &'a TypeExpr)> {
+    let client_port = operation_port(
+        components,
+        instances.get(client.instance.name.as_str())?,
+        client,
+        true,
+    )?;
+    let server_port = operation_port(
+        components,
+        instances.get(server.instance.name.as_str())?,
+        server,
+        false,
+    )?;
+    if client_port.goal == server_port.goal
+        && client_port.feedback == server_port.feedback
+        && client_port.result == server_port.result
+    {
+        Some((
+            &client_port.goal,
+            &client_port.feedback,
+            &client_port.result,
+        ))
+    } else {
+        Some((
+            &server_port.goal,
+            &server_port.feedback,
+            &server_port.result,
+        ))
     }
+}
+
+fn operation_port<'a>(
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    instance: &InstanceIr,
+    port_ref: &OperationPortRef,
+    client: bool,
+) -> Option<&'a OperationPortIr> {
+    let component = components.get(instance.component.name.as_str())?;
+    let ports = if client {
+        &component.operation_clients
+    } else {
+        &component.operation_servers
+    };
+    ports.iter().find(|port| port.name == port_ref.port)
 }
 
 fn parse_operation_policy(context: &str, raw: &RawOperationBind) -> Result<OperationPolicyIr> {

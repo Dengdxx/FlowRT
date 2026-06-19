@@ -49,7 +49,7 @@ backend = "inproc"
     assert_eq!(ir.graphs[0].services[0].backend.0, "zenoh");
     assert_eq!(
         ir.graphs[0].services[0].backend_source,
-        ServiceBackendSource::AutoResolved
+        ServiceBackendSource::AutoFallback
     );
 }
 
@@ -166,7 +166,7 @@ server = "server.plan"
     assert_eq!(service.server.port, "plan");
     // 默认 policy
     assert_eq!(service.backend.0, "inproc");
-    assert_eq!(service.backend_source, ServiceBackendSource::AutoResolved);
+    assert_eq!(service.backend_source, ServiceBackendSource::ProfileDefault);
     assert_eq!(service.policy.timeout_ms, 5000);
     assert_eq!(service.policy.queue_depth, 32);
     assert_eq!(service.policy.overflow, ServiceOverflowPolicy::Busy);
@@ -245,7 +245,7 @@ server = "navigator.plan"
     assert_eq!(operation.backend.0, "inproc");
     assert_eq!(
         operation.backend_source,
-        OperationBackendSource::AutoResolved
+        OperationBackendSource::ProfileDefault
     );
     assert_eq!(operation.policy.timeout_ms, 30000);
     assert_eq!(
@@ -373,7 +373,7 @@ result_retention_ms = 2000
 }
 
 #[test]
-fn rejects_operation_bind_with_iox2_backend() {
+fn operation_bind_with_fixed_iox2_backend_normalizes() {
     let source = r#"
 [package]
 name = "bad_operation"
@@ -407,17 +407,11 @@ server = "navigator.plan"
 backend = "iox2"
 "#;
     let raw = parse_str(source).unwrap();
-    let error = normalize_document(&raw, hash_source(source))
-        .expect_err("iox2 operation backend should fail");
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let operation = &ir.graphs[0].operations[0];
 
-    assert!(matches!(
-        error,
-        IrError::InvalidEnum {
-            kind: "operation backend",
-            value,
-            ..
-        } if value == "iox2"
-    ));
+    assert_eq!(operation.backend.0, "iox2");
+    assert_eq!(operation.backend_source, OperationBackendSource::Explicit);
 }
 
 #[test]
@@ -541,7 +535,7 @@ backend = "inproc"
 }
 
 #[test]
-fn rejects_service_bind_with_iox2_backend() {
+fn service_bind_with_fixed_iox2_backend_normalizes() {
     let source = r#"
 [package]
 name = "bad_service"
@@ -567,17 +561,11 @@ server = "server.plan"
 backend = "iox2"
 "#;
     let raw = parse_str(source).unwrap();
-    let error = normalize_document(&raw, hash_source(source))
-        .expect_err("iox2 service backend should fail");
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+    let service = &ir.graphs[0].services[0];
 
-    assert!(matches!(
-        error,
-        IrError::InvalidEnum {
-            kind: "service backend",
-            value,
-            ..
-        } if value == "iox2"
-    ));
+    assert_eq!(service.backend.0, "iox2");
+    assert_eq!(service.backend_source, ServiceBackendSource::Explicit);
 }
 
 #[test]
@@ -613,7 +601,7 @@ backend = "grpc"
     assert!(matches!(
         error,
         IrError::InvalidEnum {
-            kind: "service backend",
+            kind: "control-plane backend",
             value,
             ..
         } if value == "grpc"

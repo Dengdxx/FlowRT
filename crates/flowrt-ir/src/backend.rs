@@ -119,6 +119,195 @@ pub fn resolve_channel_backend(
     })
 }
 
+#[derive(Clone, Copy)]
+enum ControlPlaneSourceKind {
+    Explicit,
+    ProfileDefault,
+    AutoResolved,
+    AutoFallback,
+}
+
+/// service / operation control-plane backend 解析共享核心。
+///
+/// `requested` 为有效 backend（显式 bind backend，否则 profile/default backend，或显式
+/// `auto`）。`dynamic` 表示该 control plane 任一相关 payload 含 variable data。
+/// iox2 永不承载 variable-frame 控制面。
+fn resolve_control_plane_backend(
+    label: &str,
+    requested: &str,
+    dynamic: bool,
+    topology: RouteTopology,
+    explicit: bool,
+) -> Result<(String, ControlPlaneSourceKind)> {
+    use ControlPlaneSourceKind as Src;
+    let ctx = || format!("bind.{label}.backend");
+
+    if topology.touches_external {
+        if explicit && requested != "zenoh" {
+            return Err(IrError::InvalidValue {
+                context: ctx(),
+                message: format!("external {label} route cannot use `{requested}` backend"),
+            });
+        }
+        return Ok((
+            "zenoh".to_string(),
+            if explicit {
+                Src::Explicit
+            } else {
+                Src::AutoFallback
+            },
+        ));
+    }
+
+    match requested {
+        "inproc" => {
+            if topology.crosses_process || topology.crosses_target {
+                if explicit {
+                    return Err(IrError::InvalidValue {
+                        context: ctx(),
+                        message: format!(
+                            "explicit `inproc` {label} backend cannot span process or target boundaries"
+                        ),
+                    });
+                }
+                return Ok(("zenoh".to_string(), Src::AutoResolved));
+            }
+            Ok((
+                "inproc".to_string(),
+                if explicit {
+                    Src::Explicit
+                } else {
+                    Src::ProfileDefault
+                },
+            ))
+        }
+        "iox2" => {
+            if topology.crosses_target {
+                if explicit {
+                    return Err(IrError::InvalidValue {
+                        context: ctx(),
+                        message: format!(
+                            "explicit `iox2` {label} backend cannot span host boundaries; iox2 is single-host"
+                        ),
+                    });
+                }
+                return Ok(("zenoh".to_string(), Src::AutoFallback));
+            }
+            if dynamic {
+                if explicit {
+                    return Err(IrError::InvalidValue {
+                        context: ctx(),
+                        message: format!(
+                            "explicit `iox2` {label} backend cannot carry variable-frame control payload; iox2 is fixed-size-only by design"
+                        ),
+                    });
+                }
+                return Ok(("zenoh".to_string(), Src::AutoFallback));
+            }
+            Ok((
+                "iox2".to_string(),
+                if explicit {
+                    Src::Explicit
+                } else {
+                    Src::ProfileDefault
+                },
+            ))
+        }
+        "zenoh" => Ok((
+            "zenoh".to_string(),
+            if explicit {
+                Src::Explicit
+            } else {
+                Src::ProfileDefault
+            },
+        )),
+        "auto" => {
+            let resolved = if topology.crosses_process || topology.crosses_target {
+                "zenoh"
+            } else {
+                "inproc"
+            };
+            Ok((resolved.to_string(), Src::AutoResolved))
+        }
+        other => Err(IrError::InvalidEnum {
+            context: ctx(),
+            kind: "control-plane backend",
+            value: other.to_string(),
+        }),
+    }
+}
+
+/// 任一 TypeExpr 含 variable data 即 dynamic。
+fn any_type_is_dynamic<'a>(
+    iter: impl IntoIterator<Item = Option<&'a TypeExpr>>,
+    types: &[TypeIr],
+) -> bool {
+    iter.into_iter()
+        .flatten()
+        .any(|ty| type_expr_contains_variable_data(ty, types))
+}
+
+/// 解析 service control-plane route 实际使用的 backend。
+pub fn resolve_service_backend(
+    requested: &str,
+    request_type: Option<&TypeExpr>,
+    response_type: Option<&TypeExpr>,
+    types: &[TypeIr],
+    topology: RouteTopology,
+    explicit: bool,
+) -> Result<ServiceBackendResolution> {
+    let dynamic = any_type_is_dynamic([request_type, response_type], types);
+    let (backend, source) =
+        resolve_control_plane_backend("service", requested, dynamic, topology, explicit)?;
+    Ok(ServiceBackendResolution {
+        backend,
+        source: service_source(source),
+    })
+}
+
+/// 解析 operation control-plane route 实际使用的 backend。
+pub fn resolve_operation_backend(
+    requested: &str,
+    goal_type: Option<&TypeExpr>,
+    feedback_type: Option<&TypeExpr>,
+    result_type: Option<&TypeExpr>,
+    types: &[TypeIr],
+    topology: RouteTopology,
+    explicit: bool,
+) -> Result<OperationBackendResolution> {
+    let dynamic = any_type_is_dynamic([goal_type, feedback_type, result_type], types);
+    let (backend, source) =
+        resolve_control_plane_backend("operation", requested, dynamic, topology, explicit)?;
+    Ok(OperationBackendResolution {
+        backend,
+        source: operation_source(source),
+    })
+}
+
+fn service_source(kind: ControlPlaneSourceKind) -> crate::model::ServiceBackendSource {
+    use crate::model::ServiceBackendSource as S;
+    use ControlPlaneSourceKind as K;
+
+    match kind {
+        K::Explicit => S::Explicit,
+        K::ProfileDefault => S::ProfileDefault,
+        K::AutoResolved => S::AutoResolved,
+        K::AutoFallback => S::AutoFallback,
+    }
+}
+
+fn operation_source(kind: ControlPlaneSourceKind) -> crate::model::OperationBackendSource {
+    use crate::model::OperationBackendSource as O;
+    use ControlPlaneSourceKind as K;
+
+    match kind {
+        K::Explicit => O::Explicit,
+        K::ProfileDefault => O::ProfileDefault,
+        K::AutoResolved => O::AutoResolved,
+        K::AutoFallback => O::AutoFallback,
+    }
+}
+
 // 枚举声明顺序是所有已知 capability 的全局 canonical 顺序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Capability {
@@ -373,16 +562,16 @@ pub const OPERATION_DEFAULT_RESULT_RETENTION_MS: u64 = 60000;
 
 /// 判断某个 backend 名称是否可作为 service backend 使用。
 ///
-/// service backend 只支持 `inproc` 和 `zenoh`，不支持 `iox2`。
+/// service backend 支持 `inproc`、`iox2` 和 `zenoh`。
 pub fn is_known_service_backend(name: &str) -> bool {
-    matches!(name, "inproc" | "zenoh")
+    matches!(name, "inproc" | "iox2" | "zenoh")
 }
 
 /// 判断某个 backend 名称是否可作为 operation backend 使用。
 ///
-/// operation 控制面只支持 `inproc` 和 `zenoh`，不支持 `iox2`。
+/// operation 控制面支持 `inproc`、`iox2` 和 `zenoh`。
 pub fn is_known_operation_backend(name: &str) -> bool {
-    matches!(name, "inproc" | "zenoh")
+    matches!(name, "inproc" | "iox2" | "zenoh")
 }
 
 /// 返回某个 backend 提供的 capability atoms。
@@ -773,6 +962,165 @@ mod tests {
             serde_json::to_string(&OperationBackendSource::AutoFallback).unwrap(),
             "\"auto_fallback\""
         );
+    }
+
+    fn fixed() -> TypeExpr {
+        TypeExpr::Primitive {
+            name: PrimitiveType::U32,
+        }
+    }
+
+    fn dynamic() -> TypeExpr {
+        TypeExpr::VarString {
+            encoding: crate::StringEncoding::Utf8,
+        }
+    }
+
+    fn topo(crosses_process: bool, crosses_target: bool, touches_external: bool) -> RouteTopology {
+        RouteTopology {
+            crosses_process,
+            crosses_target,
+            touches_external,
+        }
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_iox2_fixed_same_host_keeps_iox2() {
+        use crate::ServiceBackendSource as S;
+
+        let r = resolve_service_backend(
+            "iox2",
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            true,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "iox2");
+        assert_eq!(r.source, S::Explicit);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_iox2_dynamic_explicit_fails() {
+        let err = resolve_service_backend(
+            "iox2",
+            Some(&dynamic()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            true,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_iox2_dynamic_profile_falls_back_to_zenoh() {
+        use crate::ServiceBackendSource as S;
+
+        let r = resolve_service_backend(
+            "iox2",
+            Some(&dynamic()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "zenoh");
+        assert_eq!(r.source, S::AutoFallback);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_iox2_cross_host_explicit_fails() {
+        let err = resolve_service_backend(
+            "iox2",
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, true, false),
+            true,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_profile_iox2_fixed_profile_default_source() {
+        use crate::ServiceBackendSource as S;
+
+        let r = resolve_service_backend(
+            "iox2",
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "iox2");
+        assert_eq!(r.source, S::ProfileDefault);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_external_explicit_non_zenoh_fails() {
+        let err = resolve_service_backend(
+            "iox2",
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, true),
+            true,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_inproc_cross_process_auto_upgrades_to_zenoh() {
+        use crate::ServiceBackendSource as S;
+
+        let r = resolve_service_backend(
+            "inproc",
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "zenoh");
+        assert_eq!(r.source, S::AutoResolved);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_operation_iox2_goal_dynamic_profile_fallback() {
+        use crate::OperationBackendSource as O;
+
+        let r = resolve_operation_backend(
+            "iox2",
+            Some(&dynamic()),
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "zenoh");
+        assert_eq!(r.source, O::AutoFallback);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_operation_iox2_feedback_dynamic_explicit_fails() {
+        let err = resolve_operation_backend(
+            "iox2",
+            Some(&fixed()),
+            Some(&dynamic()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            true,
+        );
+        assert!(err.is_err());
     }
 
     #[test]

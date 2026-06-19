@@ -4,10 +4,10 @@ use flowrt_rsdl::RawDocument;
 
 use crate::{
     BackendName, BoundaryDirection, BoundaryEndpointIr, ComponentIr, EntityRef, InstanceIr,
-    IrError, LanguageKind, PolicyValueSource, Result, Ros2BridgeDirection, Ros2BridgeIr,
+    IrError, LanguageKind, PolicyValueSource, ProfileIr, Result, Ros2BridgeDirection, Ros2BridgeIr,
     SERVICE_DEFAULT_MAX_IN_FLIGHT, SERVICE_DEFAULT_QUEUE_DEPTH, SERVICE_DEFAULT_TIMEOUT_MS,
-    ServiceBackendSource, ServiceEdgeIr, ServiceOverflowPolicy, ServicePolicyIr,
-    ServicePolicySourceIr, ServicePortRef,
+    ServiceEdgeIr, ServiceOverflowPolicy, ServicePolicyIr, ServicePolicySourceIr, ServicePortIr,
+    ServicePortRef, TypeExpr, TypeIr,
 };
 
 use super::ids::entity_id;
@@ -17,8 +17,16 @@ pub(super) fn normalize_service_binds(
     instance_refs: &BTreeMap<String, EntityRef>,
     instances: &[InstanceIr],
     components: &[ComponentIr],
+    types: &[TypeIr],
+    profiles: &[ProfileIr],
     graph_name: &str,
 ) -> Result<Vec<ServiceEdgeIr>> {
+    let default_backend = profiles
+        .iter()
+        .find(|profile| profile.name == "default")
+        .or(profiles.first())
+        .map(|profile| profile.backend.0.as_str())
+        .unwrap_or("inproc");
     let instances_by_name = instances
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
@@ -39,8 +47,20 @@ pub(super) fn normalize_service_binds(
 
             let topology =
                 service_route_topology(&instances_by_name, &components_by_name, &client, &server);
-            let (backend, backend_source) =
-                resolve_service_backend(&context, raw.backend.as_deref(), topology)?;
+            let (request_type, response_type) =
+                service_port_types(&instances_by_name, &components_by_name, &client, &server)
+                    .map(|(request, response)| (Some(request), Some(response)))
+                    .unwrap_or((None, None));
+            let requested = raw.backend.as_deref().unwrap_or(default_backend);
+            let explicit = raw.backend.is_some();
+            let resolution = crate::backend::resolve_service_backend(
+                requested,
+                request_type,
+                response_type,
+                types,
+                topology,
+                explicit,
+            )?;
 
             let policy = parse_service_policy(&context, raw)?;
             let policy_source = service_policy_source(raw);
@@ -49,8 +69,8 @@ pub(super) fn normalize_service_binds(
                 id: entity_id("service", &format!("{}->{}", raw.client, raw.server)),
                 client,
                 server,
-                backend: BackendName(backend),
-                backend_source,
+                backend: BackendName(resolution.backend),
+                backend_source: resolution.source,
                 policy,
                 policy_source,
             })
@@ -86,12 +106,12 @@ pub(super) fn normalize_service_binds(
 }
 
 /// 推导 service route 的拓扑边界。
-fn service_route_topology(
+pub(crate) fn service_route_topology(
     instances: &BTreeMap<&str, &InstanceIr>,
     components: &BTreeMap<&str, &ComponentIr>,
     client: &ServicePortRef,
     server: &ServicePortRef,
-) -> (bool, bool, bool) {
+) -> crate::backend::RouteTopology {
     let client_instance = instances.get(client.instance.name.as_str());
     let server_instance = instances.get(server.instance.name.as_str());
     let client_process = client_instance
@@ -114,53 +134,51 @@ fn service_route_topology(
             .and_then(|instance| components.get(instance.component.name.as_str()))
             .is_some_and(|component| component.language == LanguageKind::External)
     });
-    (crosses_process, crosses_target, touches_external)
+    crate::backend::RouteTopology {
+        crosses_process,
+        crosses_target,
+        touches_external,
+    }
 }
 
-/// 解析 service backend：auto 根据拓扑选择，显式值校验合法性。
-fn resolve_service_backend(
-    context: &str,
-    requested: Option<&str>,
-    (crosses_process, crosses_target, touches_external): (bool, bool, bool),
-) -> Result<(String, ServiceBackendSource)> {
-    match requested {
-        None | Some("auto") => {
-            let resolved = if touches_external || crosses_process || crosses_target {
-                "zenoh"
-            } else {
-                "inproc"
-            };
-            Ok((resolved.to_string(), ServiceBackendSource::AutoResolved))
-        }
-        Some("inproc") => {
-            if touches_external {
-                Err(IrError::InvalidValue {
-                    context: context.to_string(),
-                    message: "external service route cannot use `inproc` backend".to_string(),
-                })
-            } else if crosses_process || crosses_target {
-                Err(IrError::InvalidValue {
-                    context: context.to_string(),
-                    message:
-                        "explicit `inproc` service backend cannot span process or target boundaries"
-                            .to_string(),
-                })
-            } else {
-                Ok(("inproc".to_string(), ServiceBackendSource::Explicit))
-            }
-        }
-        Some("zenoh") => Ok(("zenoh".to_string(), ServiceBackendSource::Explicit)),
-        Some("iox2") => Err(IrError::InvalidEnum {
-            context: context.to_string(),
-            kind: "service backend",
-            value: "iox2".to_string(),
-        }),
-        Some(other) => Err(IrError::InvalidEnum {
-            context: context.to_string(),
-            kind: "service backend",
-            value: other.to_string(),
-        }),
+pub(crate) fn service_port_types<'a>(
+    instances: &BTreeMap<&str, &InstanceIr>,
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    client: &ServicePortRef,
+    server: &ServicePortRef,
+) -> Option<(&'a TypeExpr, &'a TypeExpr)> {
+    let client_port = service_port(
+        components,
+        instances.get(client.instance.name.as_str())?,
+        client,
+        true,
+    )?;
+    let server_port = service_port(
+        components,
+        instances.get(server.instance.name.as_str())?,
+        server,
+        false,
+    )?;
+    if client_port.request == server_port.request && client_port.response == server_port.response {
+        Some((&client_port.request, &client_port.response))
+    } else {
+        Some((&server_port.request, &server_port.response))
     }
+}
+
+fn service_port<'a>(
+    components: &BTreeMap<&str, &'a ComponentIr>,
+    instance: &InstanceIr,
+    port_ref: &ServicePortRef,
+    client: bool,
+) -> Option<&'a ServicePortIr> {
+    let component = components.get(instance.component.name.as_str())?;
+    let ports = if client {
+        &component.service_clients
+    } else {
+        &component.service_servers
+    };
+    ports.iter().find(|port| port.name == port_ref.port)
 }
 
 /// 解析 service policy 字段，使用默认值填充缺失项。

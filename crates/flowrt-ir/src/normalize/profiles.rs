@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use flowrt_rsdl::{RawDocument, RawGraphMode, RawProfile, RawProfileDeterminism};
 
 use crate::{
@@ -5,7 +7,7 @@ use crate::{
     DeterminismTimeoutPolicy, GraphMode, IrError, OverflowPolicy, PolicyDefaults,
     PolicyValueSource, ProfileIr, Result, RouteTopology, SchedulerDefaults, StalePolicy,
     channel_capabilities, channel_route_capabilities, deployment_capability_decision,
-    graph_required_capabilities,
+    graph_required_capabilities, resolve_operation_backend, resolve_service_backend,
 };
 
 use super::backends::{
@@ -236,6 +238,83 @@ fn apply_profile_defaults_to_binds(contract: &mut ContractIr, profile: &ProfileI
                 ),
                 None => channel_capabilities(bind.channel, bind.overflow, bind.stale),
             };
+        }
+
+        let instances_by_name = graph
+            .instances
+            .iter()
+            .map(|instance| (instance.name.as_str(), instance))
+            .collect::<BTreeMap<_, _>>();
+        let components_by_name = contract
+            .components
+            .iter()
+            .map(|component| (component.qualified_name.as_str(), component))
+            .collect::<BTreeMap<_, _>>();
+
+        for service in &mut graph.services {
+            if service.policy_source.backend != PolicyValueSource::Explicit {
+                let (request_type, response_type) = super::services::service_port_types(
+                    &instances_by_name,
+                    &components_by_name,
+                    &service.client,
+                    &service.server,
+                )
+                .map(|(request, response)| (Some(request), Some(response)))
+                .unwrap_or((None, None));
+                let topology = super::services::service_route_topology(
+                    &instances_by_name,
+                    &components_by_name,
+                    &service.client,
+                    &service.server,
+                );
+                let resolved = resolve_service_backend(
+                    profile.backend.0.as_str(),
+                    request_type,
+                    response_type,
+                    &contract.types,
+                    topology,
+                    false,
+                )
+                .expect(
+                    "profile default service backend resolution should not fail without explicit backend",
+                );
+                service.backend = BackendName(resolved.backend);
+                service.backend_source = resolved.source;
+            }
+        }
+
+        for operation in &mut graph.operations {
+            if operation.policy_source.backend != PolicyValueSource::Explicit {
+                let (goal_type, feedback_type, result_type) =
+                    super::operations::operation_port_types(
+                        &instances_by_name,
+                        &components_by_name,
+                        &operation.client,
+                        &operation.server,
+                    )
+                    .map(|(goal, feedback, result)| (Some(goal), Some(feedback), Some(result)))
+                    .unwrap_or((None, None, None));
+                let topology = super::operations::operation_route_topology(
+                    &instances_by_name,
+                    &components_by_name,
+                    &operation.client,
+                    &operation.server,
+                );
+                let resolved = resolve_operation_backend(
+                    profile.backend.0.as_str(),
+                    goal_type,
+                    feedback_type,
+                    result_type,
+                    &contract.types,
+                    topology,
+                    false,
+                )
+                .expect(
+                    "profile default operation backend resolution should not fail without explicit backend",
+                );
+                operation.backend = BackendName(resolved.backend);
+                operation.backend_source = resolved.source;
+            }
         }
     }
 }

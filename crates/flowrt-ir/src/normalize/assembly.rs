@@ -132,6 +132,8 @@ fn normalize_default_graph(
         &instance_refs,
         &instances,
         components,
+        types,
+        profiles,
         &graph_name,
     )?;
     let operation_edges = operations::normalize_operation_binds(
@@ -139,6 +141,8 @@ fn normalize_default_graph(
         &instance_refs,
         &instances,
         components,
+        types,
+        profiles,
         &graph_name,
     )?;
     let boundary_endpoints =
