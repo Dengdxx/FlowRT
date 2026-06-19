@@ -692,9 +692,9 @@ backends = ["inproc", "iox2", "zenoh"]
     let error = normalize_document(&raw, hash_source(source)).unwrap_err();
 
     assert!(
-        error
-            .to_string()
-            .contains("explicit `iox2` dataflow backend cannot carry variable-frame messages"),
+        error.to_string().contains(
+            "explicit `iox2` dataflow backend cannot carry unbounded variable-frame messages"
+        ),
         "unexpected error: {error}"
     );
 }

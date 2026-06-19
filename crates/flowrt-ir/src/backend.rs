@@ -95,12 +95,12 @@ pub fn resolve_channel_backend(
         });
     }
     if requested_backend == "iox2"
-        && source_type.is_some_and(|ty| type_expr_contains_variable_data(ty, types))
+        && source_type.is_some_and(|ty| type_expr_contains_unbounded_variable_data(ty, types))
     {
         if explicit {
             return Err(IrError::InvalidValue {
                 context: "bind.dataflow.backend".to_string(),
-                message: "explicit `iox2` dataflow backend cannot carry variable-frame messages"
+                message: "explicit `iox2` dataflow backend cannot carry unbounded variable-frame messages; iox2 carries fixed-size and bounded frames only"
                     .to_string(),
             });
         }
@@ -130,12 +130,12 @@ enum ControlPlaneSourceKind {
 /// service / operation control-plane backend 解析共享核心。
 ///
 /// `requested` 为有效 backend（显式 bind backend，否则 profile/default backend，或显式
-/// `auto`）。`dynamic` 表示该 control plane 任一相关 payload 含 variable data。
-/// iox2 永不承载 variable-frame 控制面。
+/// `auto`）。`unbounded` 表示该 control plane 任一相关 payload 含**无界** variable data。
+/// iox2 承载 fixed 与有界 frame（定容 slot），不承载无界 variable frame。
 fn resolve_control_plane_backend(
     label: &str,
     requested: &str,
-    dynamic: bool,
+    unbounded: bool,
     topology: RouteTopology,
     explicit: bool,
 ) -> Result<(String, ControlPlaneSourceKind)> {
@@ -193,12 +193,12 @@ fn resolve_control_plane_backend(
                 }
                 return Ok(("zenoh".to_string(), Src::AutoFallback));
             }
-            if dynamic {
+            if unbounded {
                 if explicit {
                     return Err(IrError::InvalidValue {
                         context: ctx(),
                         message: format!(
-                            "explicit `iox2` {label} backend cannot carry variable-frame control payload; iox2 is fixed-size-only by design"
+                            "explicit `iox2` {label} backend cannot carry unbounded variable-frame control payload; iox2 carries fixed-size and bounded frames only"
                         ),
                     });
                 }
@@ -237,14 +237,14 @@ fn resolve_control_plane_backend(
     }
 }
 
-/// 任一 TypeExpr 含 variable data 即 dynamic。
-fn any_type_is_dynamic<'a>(
+/// 任一 TypeExpr 含**无界** variable data 即 true（用于 iox2 可承载判定）。
+fn any_type_is_unbounded<'a>(
     iter: impl IntoIterator<Item = Option<&'a TypeExpr>>,
     types: &[TypeIr],
 ) -> bool {
     iter.into_iter()
         .flatten()
-        .any(|ty| type_expr_contains_variable_data(ty, types))
+        .any(|ty| type_expr_contains_unbounded_variable_data(ty, types))
 }
 
 /// 解析 service control-plane route 实际使用的 backend。
@@ -256,9 +256,9 @@ pub fn resolve_service_backend(
     topology: RouteTopology,
     explicit: bool,
 ) -> Result<ServiceBackendResolution> {
-    let dynamic = any_type_is_dynamic([request_type, response_type], types);
+    let unbounded = any_type_is_unbounded([request_type, response_type], types);
     let (backend, source) =
-        resolve_control_plane_backend("service", requested, dynamic, topology, explicit)?;
+        resolve_control_plane_backend("service", requested, unbounded, topology, explicit)?;
     Ok(ServiceBackendResolution {
         backend,
         source: service_source(source),
@@ -275,9 +275,9 @@ pub fn resolve_operation_backend(
     topology: RouteTopology,
     explicit: bool,
 ) -> Result<OperationBackendResolution> {
-    let dynamic = any_type_is_dynamic([goal_type, feedback_type, result_type], types);
+    let unbounded = any_type_is_unbounded([goal_type, feedback_type, result_type], types);
     let (backend, source) =
-        resolve_control_plane_backend("operation", requested, dynamic, topology, explicit)?;
+        resolve_control_plane_backend("operation", requested, unbounded, topology, explicit)?;
     Ok(OperationBackendResolution {
         backend,
         source: operation_source(source),
@@ -517,6 +517,7 @@ const INPROC_BACKEND_CAPABILITIES: &[Capability] = &[
 ];
 
 const IOX2_BACKEND_CAPABILITIES: &[Capability] = &[
+    Capability::AbiVariablePayloadFrame,
     Capability::OverflowBlock,
     Capability::TopologyMultiProcess,
     Capability::TopologySingleHost,
@@ -795,11 +796,13 @@ fn collect_type_expr_abi_capabilities_inner(
             name: PrimitiveType::U128 | PrimitiveType::I128,
         } => required.push(Capability::AbiInt128),
         TypeExpr::Primitive { .. } => {}
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {
-            required.extend([
-                Capability::AbiVariablePayloadFrame,
-                Capability::AllocationUnboundedDynamic,
-            ]);
+        TypeExpr::VarBytes { max_len } | TypeExpr::VarString { max_len, .. } => {
+            required.push(Capability::AbiVariablePayloadFrame);
+            required.push(if max_len.is_some() {
+                Capability::AllocationBounded
+            } else {
+                Capability::AllocationUnboundedDynamic
+            });
         }
         TypeExpr::Named { name } => {
             if !visiting.insert(name.clone()) {
@@ -820,36 +823,44 @@ fn collect_type_expr_abi_capabilities_inner(
         TypeExpr::Array { element, .. } => {
             collect_type_expr_abi_capabilities_inner(element, types_by_name, required, visiting);
         }
-        TypeExpr::VarSequence { element, .. } => {
-            required.extend([
-                Capability::AbiVariablePayloadFrame,
-                Capability::AllocationUnboundedDynamic,
-            ]);
+        TypeExpr::VarSequence { element, max_len } => {
+            required.push(Capability::AbiVariablePayloadFrame);
+            required.push(if max_len.is_some() {
+                Capability::AllocationBounded
+            } else {
+                Capability::AllocationUnboundedDynamic
+            });
             collect_type_expr_abi_capabilities_inner(element, types_by_name, required, visiting);
         }
     }
 }
 
-fn type_expr_contains_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {
+fn type_expr_contains_unbounded_variable_data(expr: &TypeExpr, types: &[TypeIr]) -> bool {
     let types_by_name = types
         .iter()
         .map(|ty| (ty.qualified_name.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
     let mut visiting = BTreeSet::new();
-    type_expr_contains_variable_data_inner(expr, &types_by_name, &mut visiting)
+    type_expr_contains_unbounded_variable_data_inner(expr, &types_by_name, &mut visiting)
 }
 
-fn type_expr_contains_variable_data_inner(
+fn type_expr_contains_unbounded_variable_data_inner(
     expr: &TypeExpr,
     types_by_name: &BTreeMap<&str, &TypeIr>,
     visiting: &mut BTreeSet<String>,
 ) -> bool {
     match expr {
-        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
-            true
+        TypeExpr::VarBytes { max_len } | TypeExpr::VarString { max_len, .. } => max_len.is_none(),
+        TypeExpr::VarSequence { element, max_len } => {
+            max_len.is_none()
+                || type_expr_contains_unbounded_variable_data_inner(
+                    element,
+                    types_by_name,
+                    visiting,
+                )
         }
         TypeExpr::Array { element, .. } => {
-            type_expr_contains_variable_data_inner(element, types_by_name, visiting)
+            type_expr_contains_unbounded_variable_data_inner(element, types_by_name, visiting)
         }
         TypeExpr::Named { name } => {
             if !visiting.insert(name.clone()) {
@@ -857,13 +868,63 @@ fn type_expr_contains_variable_data_inner(
             }
             let contains = types_by_name.get(name.as_str()).is_some_and(|ty| {
                 ty.fields.iter().any(|field| {
-                    type_expr_contains_variable_data_inner(&field.ty, types_by_name, visiting)
+                    type_expr_contains_unbounded_variable_data_inner(
+                        &field.ty,
+                        types_by_name,
+                        visiting,
+                    )
                 })
             });
             visiting.remove(name);
             contains
         }
         TypeExpr::Primitive { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod unbounded_predicate_tests {
+    use super::*;
+
+    fn t(s: &str) -> TypeExpr {
+        s.parse::<TypeExpr>().unwrap()
+    }
+
+    #[test]
+    fn distinguishes_bounded_from_unbounded() {
+        let types: Vec<TypeIr> = vec![];
+        // 无界 → true
+        assert!(type_expr_contains_unbounded_variable_data(
+            &t("bytes"),
+            &types
+        ));
+        assert!(type_expr_contains_unbounded_variable_data(
+            &t("sequence<u32>"),
+            &types
+        ));
+        // 全有界 → false
+        assert!(!type_expr_contains_unbounded_variable_data(
+            &t("bytes<max=8>"),
+            &types
+        ));
+        assert!(!type_expr_contains_unbounded_variable_data(
+            &t("string<max=8>"),
+            &types
+        ));
+        assert!(!type_expr_contains_unbounded_variable_data(
+            &t("sequence<u32,max=8>"),
+            &types
+        ));
+        // 计数有界但元素无界 → 整体无界
+        assert!(type_expr_contains_unbounded_variable_data(
+            &t("sequence<bytes,max=8>"),
+            &types
+        ));
+        // 纯 fixed → false
+        assert!(!type_expr_contains_unbounded_variable_data(
+            &t("u32"),
+            &types
+        ));
     }
 }
 
@@ -979,6 +1040,10 @@ mod tests {
         }
     }
 
+    fn bounded() -> TypeExpr {
+        TypeExpr::VarBytes { max_len: Some(32) }
+    }
+
     fn topo(crosses_process: bool, crosses_target: bool, touches_external: bool) -> RouteTopology {
         RouteTopology {
             crosses_process,
@@ -1015,6 +1080,58 @@ mod tests {
             true,
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_iox2_bounded_explicit_keeps_iox2() {
+        use crate::ServiceBackendSource as S;
+
+        let r = resolve_service_backend(
+            "iox2",
+            Some(&bounded()),
+            Some(&bounded()),
+            &[],
+            topo(true, false, false),
+            true,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "iox2");
+        assert_eq!(r.source, S::Explicit);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_service_iox2_bounded_profile_keeps_iox2() {
+        use crate::ServiceBackendSource as S;
+
+        let r = resolve_service_backend(
+            "iox2",
+            Some(&bounded()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "iox2");
+        assert_eq!(r.source, S::ProfileDefault);
+    }
+
+    #[test]
+    fn control_plane_resolver_matrix_operation_iox2_bounded_goal_keeps_iox2() {
+        use crate::OperationBackendSource as O;
+
+        let r = resolve_operation_backend(
+            "iox2",
+            Some(&bounded()),
+            Some(&fixed()),
+            Some(&fixed()),
+            &[],
+            topo(true, false, false),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.backend, "iox2");
+        assert_eq!(r.source, O::ProfileDefault);
     }
 
     #[test]
@@ -1184,7 +1301,8 @@ mod tests {
         }
         let iox2_capabilities = backend_capabilities("iox2").unwrap();
         assert!(
-            !iox2_capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string()))
+            iox2_capabilities.contains(&CapabilityAtom("abi:variable_payload_frame".to_string())),
+            "iox2 通过定容 slot 承载有界 variable frame"
         );
         assert!(
             !iox2_capabilities
@@ -1202,6 +1320,7 @@ mod tests {
             capabilities,
             vec![
                 Capability::AbiFixedSizePlainData.atom(),
+                Capability::AbiVariablePayloadFrame.atom(),
                 Capability::LayoutNativeLayout.atom(),
                 Capability::AllocationBounded.atom(),
                 Capability::GraphStaticGraph.atom(),
