@@ -1,13 +1,18 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <future>
 #include <flowrt/backend_health.hpp>
 #include <flowrt/channels.hpp>
 #include <flowrt/executor.hpp>
-#include <memory>
+#include <flowrt/service.hpp>
 #include <flowrt/wire.hpp>
+#include <functional>
+#include <future>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -265,6 +270,47 @@ class Iox2PubSub {
     }
 
     /**
+     * @brief 使用当前 runtime wall clock 发布一个值。
+     */
+    ChannelPushResult publish(T value) noexcept { return publish_at(value, unix_now_ms()); }
+
+    /**
+     * @brief 逐条 take 一个 transport 样本，用于 FIFO/service request-response。
+     */
+    std::variant<std::optional<T>, ChannelError> receive() noexcept {
+#ifdef FLOWRT_HAS_ICEORYX2_CXX
+        if (!ensure_ready()) {
+            return ChannelError::Transport;
+        }
+
+        bool retried = false;
+        while (true) {
+            auto received = subscriber_->receive();
+            if (!received.has_value()) {
+                mark_transport_error("receive iceoryx2 sample");
+                if (retried || !recover_after_transport_error("receive iceoryx2 sample")) {
+                    return ChannelError::Transport;
+                }
+                retried = true;
+                continue;
+            }
+
+            auto sample = std::move(received).value();
+            if (!sample.has_value()) {
+                health_.mark_ready();
+                return std::optional<T>{};
+            }
+
+            ++revision_;
+            health_.mark_ready();
+            return std::optional<T>{sample->payload()};
+        }
+#else
+        return ChannelError::Unsupported;
+#endif
+    }
+
+    /**
      * @brief 读取 latest snapshot，并保留 transport 错误通道。
      *
      * @return 读取成功时返回 `Latest<T>`；transport 无法完成时返回 `ChannelError::Transport`。
@@ -412,7 +458,7 @@ class Iox2PubSub {
         node_.reset();
     }
 
-    PublishPayloadResult publish_payload(const T& value, std::uint64_t published_at_ms) noexcept {
+    PublishPayloadResult publish_payload(const T &value, std::uint64_t published_at_ms) noexcept {
         if (!publisher_) {
             mark_transport_error("iceoryx2 publisher is not ready");
             return PublishPayloadResult::Failed;
@@ -475,7 +521,8 @@ class Iox2PubSub {
                 return;
             }
             auto wake_node = std::move(node).value();
-            auto event = wake_node.service_builder(std::move(name).value()).event().open_or_create();
+            auto event =
+                wake_node.service_builder(std::move(name).value()).event().open_or_create();
             if (!event.has_value()) {
                 fail_ready();
                 return;
@@ -493,8 +540,7 @@ class Iox2PubSub {
             }
 
             while (!stop_token.stop_requested()) {
-                auto received =
-                    wake_listener.timed_wait_one(::iox2::bb::Duration::from_millis(50));
+                auto received = wake_listener.timed_wait_one(::iox2::bb::Duration::from_millis(50));
                 if (!received.has_value()) {
                     return;
                 }
@@ -512,9 +558,7 @@ class Iox2PubSub {
         return true;
     }
 
-    void stop_wake_listener() noexcept {
-        wake_thread_.reset();
-    }
+    void stop_wake_listener() noexcept { wake_thread_.reset(); }
 
     bool open_iox2_endpoint() {
         reset_iox2_endpoint();
@@ -605,6 +649,295 @@ class Iox2PubSub {
 #endif
 };
 
+inline std::string iox2_request_endpoint(std::string_view service_name) {
+    std::string endpoint{service_name};
+    endpoint += "/req";
+    return endpoint;
+}
+
+inline std::string iox2_response_endpoint(std::string_view service_name) {
+    std::string endpoint{service_name};
+    endpoint += "/resp";
+    return endpoint;
+}
+
+inline std::uint64_t next_session_id() noexcept {
+    static std::atomic<std::uint64_t> next{1U};
+    return next.fetch_add(1U, std::memory_order_relaxed);
+}
+
+/**
+ * @brief iox2 service 请求/响应 correlation。
+ */
+struct Iox2ServiceCorrelation {
+    static constexpr const char *IOX2_TYPE_NAME = "FlowRTIox2ServiceCorrelation";
+
+    std::uint64_t session_id{};
+    std::uint64_t sequence{};
+    std::uint64_t service_id{};
+};
+
+template <typename Req>
+struct Iox2ServiceRequest {
+    static constexpr const char *IOX2_TYPE_NAME = "FlowRTIox2ServiceRequest";
+
+    Iox2ServiceCorrelation correlation{};
+    Req payload{};
+};
+
+template <typename Resp>
+struct Iox2ServiceResponse {
+    static constexpr const char *IOX2_TYPE_NAME = "FlowRTIox2ServiceResponse";
+
+    Iox2ServiceCorrelation correlation{};
+    std::uint16_t status{};
+    std::uint8_t pad[6]{};
+    Resp payload{};
+};
+
+template <typename Resp>
+ServiceResult<Resp> decode_service_response(Iox2ServiceResponse<Resp> response) {
+    const auto error = service_error_from_abi(response.status);
+    if (!error.has_value()) {
+        return ServiceResult<Resp>::err(ServiceError::Protocol);
+    }
+    if (*error == ServiceError::Ok) {
+        return ServiceResult<Resp>::ok(response.payload);
+    }
+    return ServiceResult<Resp>::err(*error);
+}
+
+inline BackendHealthSnapshot unsupported_health(std::string error) {
+    return BackendHealthSnapshot{
+        .state = BackendHealthState::Unsupported,
+        .last_error = std::move(error),
+        .attempt = 0,
+        .next_retry_unix_ms = std::nullopt,
+        .recoverable = false,
+    };
+}
+
+/**
+ * @brief iox2 fixed-size Service client backend primitive。
+ */
+template <typename Req, typename Resp>
+class Iox2ServiceClient {
+   public:
+    Iox2ServiceClient(const Iox2ServiceClient &) = delete;
+    auto operator=(const Iox2ServiceClient &) -> Iox2ServiceClient & = delete;
+    Iox2ServiceClient(Iox2ServiceClient &&) = delete;
+    auto operator=(Iox2ServiceClient &&) -> Iox2ServiceClient & = delete;
+    ~Iox2ServiceClient() = default;
+
+    static Iox2ServiceClient open(std::string_view service_name) {
+        return Iox2ServiceClient(service_name, std::nullopt);
+    }
+
+    static Iox2ServiceClient unavailable(std::string_view service_name, std::string error) {
+        return Iox2ServiceClient(service_name, std::move(error));
+    }
+
+    ServiceResult<Resp> call(const Req &request, std::uint64_t timeout_ms) {
+        if (unavailable_.has_value()) {
+            return ServiceResult<Resp>::err_with_message(ServiceError::Unavailable, *unavailable_);
+        }
+        if (timeout_ms == 0U) {
+            return ServiceResult<Resp>::err(ServiceError::Timeout);
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!request_tx_.has_value() || !response_rx_.has_value()) {
+            return ServiceResult<Resp>::err(ServiceError::Unavailable);
+        }
+
+        const auto sequence = sequence_++;
+        const Iox2ServiceCorrelation correlation{
+            .session_id = session_id_,
+            .sequence = sequence,
+            .service_id = service_id_,
+        };
+        auto published = request_tx_->publish(
+            Iox2ServiceRequest<Req>{.correlation = correlation, .payload = request});
+        if (std::holds_alternative<ChannelError>(published)) {
+            const auto error = std::get<ChannelError>(published);
+            return ServiceResult<Resp>::err(error == ChannelError::Unsupported
+                                                ? ServiceError::Unavailable
+                                                : ServiceError::Backend);
+        }
+
+        if (auto pending = pending_.find(sequence); pending != pending_.end()) {
+            auto response = pending->second;
+            pending_.erase(pending);
+            return decode_service_response(response);
+        }
+
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (true) {
+            auto received = response_rx_->receive();
+            if (std::holds_alternative<ChannelError>(received)) {
+                const auto error = std::get<ChannelError>(received);
+                return ServiceResult<Resp>::err(error == ChannelError::Unsupported
+                                                    ? ServiceError::Unavailable
+                                                    : ServiceError::Backend);
+            }
+
+            auto response = std::get<std::optional<Iox2ServiceResponse<Resp>>>(received);
+            if (response.has_value() && response->correlation.service_id == service_id_ &&
+                response->correlation.session_id == session_id_) {
+                if (response->correlation.sequence == sequence) {
+                    return decode_service_response(*response);
+                }
+                pending_.emplace(response->correlation.sequence, *response);
+            }
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return ServiceResult<Resp>::err(ServiceError::Timeout);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+    }
+
+    std::string_view service_name() const noexcept { return service_name_; }
+
+    BackendHealthSnapshot health() const {
+        if (unavailable_.has_value()) {
+            return unsupported_health(*unavailable_);
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!request_tx_.has_value()) {
+            return unsupported_health("iceoryx2 service client is not open");
+        }
+        return request_tx_->health();
+    }
+
+   private:
+    Iox2ServiceClient(std::string_view service_name, std::optional<std::string> unavailable)
+        : service_name_(service_name),
+          session_id_(next_session_id()),
+          service_id_(fnv1a64(service_name_)),
+          unavailable_(std::move(unavailable)) {
+        static_assert(std::is_trivially_copyable_v<Req>,
+                      "FlowRT iox2 service request must be trivially copyable");
+        static_assert(std::is_trivially_copyable_v<Resp>,
+                      "FlowRT iox2 service response must be trivially copyable");
+        if (!unavailable_.has_value()) {
+            const auto config = Iox2ChannelConfig::fifo(64U, OverflowPolicy::DropOldest);
+            request_tx_.emplace(Iox2PubSub<Iox2ServiceRequest<Req>>::open_with_config(
+                iox2_request_endpoint(service_name_), config));
+            response_rx_.emplace(Iox2PubSub<Iox2ServiceResponse<Resp>>::open_with_config(
+                iox2_response_endpoint(service_name_), config));
+        }
+    }
+
+    std::string service_name_;
+    std::uint64_t session_id_;
+    std::uint64_t service_id_;
+    mutable std::mutex mutex_;
+    std::uint64_t sequence_ = 0;
+    std::optional<Iox2PubSub<Iox2ServiceRequest<Req>>> request_tx_;
+    std::optional<Iox2PubSub<Iox2ServiceResponse<Resp>>> response_rx_;
+    std::map<std::uint64_t, Iox2ServiceResponse<Resp>> pending_;
+    std::optional<std::string> unavailable_;
+};
+
+/**
+ * @brief iox2 fixed-size Service server backend primitive。
+ */
+template <typename Req, typename Resp>
+class Iox2ServiceServer {
+   public:
+    Iox2ServiceServer(const Iox2ServiceServer &) = delete;
+    auto operator=(const Iox2ServiceServer &) -> Iox2ServiceServer & = delete;
+    Iox2ServiceServer(Iox2ServiceServer &&) = default;
+    auto operator=(Iox2ServiceServer &&) -> Iox2ServiceServer & = default;
+    ~Iox2ServiceServer() = default;
+
+    static Iox2ServiceServer open(std::string_view service_name, std::size_t max_in_flight) {
+        return Iox2ServiceServer(service_name, max_in_flight, std::nullopt);
+    }
+
+    static Iox2ServiceServer unavailable(std::string_view service_name, std::string error) {
+        return Iox2ServiceServer(service_name, 1U, std::move(error));
+    }
+
+    void set_schedule_waiter(ScheduleWaiter waiter) noexcept {
+        if (request_rx_.has_value()) {
+            request_rx_->set_schedule_waiter(std::move(waiter));
+        }
+    }
+
+    std::optional<std::size_t> poll_requests(
+        const std::function<ServiceResult<Resp>(Req)> &handler) {
+        if (unavailable_.has_value() || !request_rx_.has_value() || !response_tx_.has_value()) {
+            return std::nullopt;
+        }
+
+        std::size_t handled = 0;
+        while (handled < max_in_flight_) {
+            auto received = request_rx_->receive();
+            if (std::holds_alternative<ChannelError>(received)) {
+                return std::nullopt;
+            }
+            auto request = std::get<std::optional<Iox2ServiceRequest<Req>>>(received);
+            if (!request.has_value()) {
+                break;
+            }
+
+            const auto result = handler(request->payload);
+            const auto status = static_cast<std::uint16_t>(result.error_code());
+            const auto payload = result.value() == nullptr ? Resp{} : *result.value();
+            auto published = response_tx_->publish(Iox2ServiceResponse<Resp>{
+                .correlation = request->correlation,
+                .status = status,
+                .pad = {},
+                .payload = payload,
+            });
+            if (std::holds_alternative<ChannelError>(published)) {
+                return std::nullopt;
+            }
+            ++handled;
+        }
+        return handled;
+    }
+
+    std::string_view service_name() const noexcept { return service_name_; }
+
+    BackendHealthSnapshot health() const {
+        if (unavailable_.has_value()) {
+            return unsupported_health(*unavailable_);
+        }
+        if (!request_rx_.has_value()) {
+            return unsupported_health("iceoryx2 service server is not open");
+        }
+        return request_rx_->health();
+    }
+
+   private:
+    Iox2ServiceServer(std::string_view service_name, std::size_t max_in_flight,
+                      std::optional<std::string> unavailable)
+        : service_name_(service_name),
+          max_in_flight_(max_in_flight == 0U ? 1U : max_in_flight),
+          unavailable_(std::move(unavailable)) {
+        static_assert(std::is_trivially_copyable_v<Req>,
+                      "FlowRT iox2 service request must be trivially copyable");
+        static_assert(std::is_trivially_copyable_v<Resp>,
+                      "FlowRT iox2 service response must be trivially copyable");
+        if (!unavailable_.has_value()) {
+            const auto config = Iox2ChannelConfig::fifo(64U, OverflowPolicy::DropOldest);
+            request_rx_.emplace(Iox2PubSub<Iox2ServiceRequest<Req>>::open_with_config(
+                iox2_request_endpoint(service_name_), config));
+            response_tx_.emplace(Iox2PubSub<Iox2ServiceResponse<Resp>>::open_with_config(
+                iox2_response_endpoint(service_name_), config));
+        }
+    }
+
+    std::string service_name_;
+    std::optional<Iox2PubSub<Iox2ServiceRequest<Req>>> request_rx_;
+    std::optional<Iox2PubSub<Iox2ServiceResponse<Resp>>> response_tx_;
+    std::size_t max_in_flight_;
+    std::optional<std::string> unavailable_;
+};
 
 }  // namespace iox2
 
