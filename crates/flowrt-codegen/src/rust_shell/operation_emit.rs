@@ -321,7 +321,7 @@ pub(crate) fn emit_rust_operation_new(
              let {server_component} = {server_instance}.clone();\n\
              let {start_handler}_control = {control_var}.clone();\n\
              let {start_handler} = move |request: flowrt::OperationStartRequest<{goal_ty}>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n\
-                 let ack = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {{\n\
+                 let ack = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {{\n\
                      Ok(ack) => ack,\n\
                      Err(error) => return flowrt_operation_control_error(error),\n\
                  }};\n\
@@ -623,7 +623,7 @@ pub(crate) fn emit_rust_zenoh_operation_endpoints(
                  let {start_handler}_control = app.{control_field}.clone();\n\
                  let operation_server_{index} = app.{server_instance}.clone();\n\
                  let {start_handler} = move |request: flowrt::OperationStartRequest<{goal_ty}>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n\
-                     let ack = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {{\n\
+                     let ack = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {{\n\
                          Ok(ack) => ack,\n\
                          Err(error) => return flowrt_operation_control_error(error),\n\
                      }};\n\
@@ -907,7 +907,7 @@ pub(crate) fn rust_iox2_operation_pending_drain(
          {indent}    let operation_start_control_{index} = {control_expr}.clone();\n\
          {indent}    let operation_server_{index} = {server_expr}.clone();\n\
          {indent}    if start_server.poll_requests(move |request: flowrt::OperationStartRequest<{goal_ty}>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n\
-         {indent}        let ack = match operation_start_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {{\n\
+         {indent}        let ack = match operation_start_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {{\n\
          {indent}            Ok(ack) => ack,\n\
          {indent}            Err(error) => return flowrt_operation_control_error(error),\n\
          {indent}        }};\n\
@@ -1052,10 +1052,11 @@ pub(crate) fn emit_rust_operation_wake_checks(
         let pending_condition = match plan.backend.0.as_str() {
             "zenoh" => String::new(),
             "iox2" => format!(
-                "self.{start_server}.get().is_some()\n                     || self.{cancel_server}.get().is_some()\n                     || self.{status_server}.get().is_some()\n                     || ",
+                "(self.{start_server}.get().is_some()\n                     || self.{cancel_server}.get().is_some()\n                     || self.{status_server}.get().is_some()) && !{tick_driven_flag}\n                     || ",
                 start_server = operation_start_server_field_name(plan),
                 cancel_server = operation_cancel_server_field_name(plan),
                 status_server = operation_status_server_field_name(plan),
+                tick_driven_flag = tick_driven_flag,
             ),
             _ => format!(
                 "self.{start_server}.pending_count() > 0\n                     || self.{cancel_server}.pending_count() > 0\n                     || self.{status_server}.pending_count() > 0\n                     || ",
@@ -1070,9 +1071,7 @@ pub(crate) fn emit_rust_operation_wake_checks(
                      && flowrt_operation_snapshot_{index}.state != flowrt::OperationState::Idle;\n\
                  if {pending_condition}(flowrt_operation_active_{index} && !{tick_driven_flag}) {{\n\
                      scheduler.wake(flowrt::TaskId({task_id}));\n\
-                     if flowrt_operation_active_{index} {{\n\
-                         {tick_driven_flag} = true;\n\
-                     }}\n\
+                     {tick_driven_flag} = true;\n\
                      woke_on_message = true;\n\
                  }}\n",
             index = plan.index,

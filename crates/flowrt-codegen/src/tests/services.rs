@@ -483,6 +483,33 @@ fn rust_service_iox2_emits_client_and_scheduler_driven_server() {
         "iox2 service server must be scheduler drained.\n\n{shell}"
     );
     assert!(
+        shell.contains("let mut flowrt_service_tick_driven_0 = false;"),
+        "iox2 service hidden task must track per-tick drive state.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "if app.service_server_plan_svc_plan.get().is_some() && !flowrt_service_tick_driven_0"
+        ),
+        "iox2 service hidden task must not wake forever just because the server is open.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));"
+        ),
+        "iox2 service drain must complete on scheduler thread because iceoryx2 ports are not Send.\n\n{shell}"
+    );
+    let client_task = generated_match_arm_containing(shell, "Self::step_task_plan_client_main");
+    assert!(
+        client_task.contains(
+            "pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));"
+        ),
+        "iox2 service client tasks must complete on scheduler thread because the client handle is not Send.\n\n{client_task}"
+    );
+    assert!(
+        !client_task.contains("worker_pool.submit_collect"),
+        "iox2 service client task must not capture the client handle in a worker closure.\n\n{client_task}"
+    );
+    assert!(
         !shell.contains("ZenohServiceServer"),
         "iox2 service path must not instantiate ZenohServiceServer.\n\n{shell}"
     );

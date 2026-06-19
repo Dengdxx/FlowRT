@@ -365,7 +365,7 @@ Ok(flowrt_operation_status_from_snapshot("controller.plan", "controller.plan", c
             let operation_start_control_0 = self.operation_control_0.clone();
             let operation_server_0 = self.navigator.clone();
             if start_server.poll_requests(move |request: flowrt::OperationStartRequest<PlanGoal>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {
-                let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {
+                let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {
                     Ok(ack) => ack,
                     Err(error) => return flowrt_operation_control_error(error),
                 };
@@ -660,14 +660,12 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                     let flowrt_operation_snapshot_0 = app.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();
     let flowrt_operation_active_0 = !flowrt_operation_snapshot_0.state.is_terminal()
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
-    if app.operation_start_server_navigator_plan.get().is_some()
+    if (app.operation_start_server_navigator_plan.get().is_some()
                          || app.operation_cancel_server_navigator_plan.get().is_some()
-                         || app.operation_status_server_navigator_plan.get().is_some()
+                         || app.operation_status_server_navigator_plan.get().is_some()) && !flowrt_operation_tick_driven_0
                          || (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
     scheduler.wake(flowrt::TaskId(3));
-    if flowrt_operation_active_0 {
     flowrt_operation_tick_driven_0 = true;
-    }
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -693,8 +691,6 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                             let __flowrt_operation_client_controller_plan = app.operation_client_controller_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let scheduler_events = scheduler_events.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "controller.main";
                             let task_trigger = "periodic";
                             let mut local_context = flowrt::Context::with_timing(flowrt::TaskTiming {
@@ -726,14 +722,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         flowrt::TaskId(2) => {
                             let __flowrt_component_navigator = app.navigator.clone();
@@ -788,11 +781,9 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                             let __flowrt_operation_server_0 = app.navigator.clone();
                             let __flowrt_operation_control_0 = app.operation_control_0.clone();
                             let introspection_state = introspection_state.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "__flowrt_operation.controller.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
-                            let task_outcome = {
+                            let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(3));
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
@@ -809,7 +800,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                     let operation_start_control_0 = __flowrt_operation_control_0.clone();
                                     let operation_server_0 = __flowrt_operation_server_0.clone();
                                     if start_server.poll_requests(move |request: flowrt::OperationStartRequest<PlanGoal>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {
-                                        let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {
+                                        let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {
                                             Ok(ack) => ack,
                                             Err(error) => return flowrt_operation_control_error(error),
                                         };
@@ -868,7 +859,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                         }
                                         flowrt::ServiceResult::ok(ack)
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 if let Some(cancel_server) = __flowrt_operation_cancel_server_navigator_plan.get() {
@@ -882,7 +873,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                             Err(error) => flowrt_operation_control_error(error),
                                         }
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 if let Some(status_server) = __flowrt_operation_status_server_navigator_plan.get() {
@@ -894,7 +885,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                             Err(error) => flowrt_operation_control_error(error),
                                         }
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 let mut operation_control = __flowrt_operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -934,14 +925,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         _ => {
                             let task_health_from_worker = task_health_from_workers.clone();
@@ -1317,14 +1305,12 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                     let flowrt_operation_snapshot_0 = app.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();
     let flowrt_operation_active_0 = !flowrt_operation_snapshot_0.state.is_terminal()
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
-    if app.operation_start_server_navigator_plan.get().is_some()
+    if (app.operation_start_server_navigator_plan.get().is_some()
                          || app.operation_cancel_server_navigator_plan.get().is_some()
-                         || app.operation_status_server_navigator_plan.get().is_some()
+                         || app.operation_status_server_navigator_plan.get().is_some()) && !flowrt_operation_tick_driven_0
                          || (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
     scheduler.wake(flowrt::TaskId(2));
-    if flowrt_operation_active_0 {
     flowrt_operation_tick_driven_0 = true;
-    }
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -1350,8 +1336,6 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_operation_client_controller_plan = app.operation_client_controller_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let scheduler_events = scheduler_events.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "controller.main";
                             let task_trigger = "periodic";
                             let mut local_context = flowrt::Context::with_timing(flowrt::TaskTiming {
@@ -1383,14 +1367,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         flowrt::TaskId(2) => {
                             let __flowrt_operation_start_server_navigator_plan = app.operation_start_server_navigator_plan.clone();
@@ -1399,11 +1380,9 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_operation_server_0 = app.navigator.clone();
                             let __flowrt_operation_control_0 = app.operation_control_0.clone();
                             let introspection_state = introspection_state.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "__flowrt_operation.controller.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
-                            let task_outcome = {
+                            let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
@@ -1420,7 +1399,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                     let operation_start_control_0 = __flowrt_operation_control_0.clone();
                                     let operation_server_0 = __flowrt_operation_server_0.clone();
                                     if start_server.poll_requests(move |request: flowrt::OperationStartRequest<PlanGoal>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {
-                                        let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {
+                                        let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {
                                             Ok(ack) => ack,
                                             Err(error) => return flowrt_operation_control_error(error),
                                         };
@@ -1479,7 +1458,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         }
                                         flowrt::ServiceResult::ok(ack)
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 if let Some(cancel_server) = __flowrt_operation_cancel_server_navigator_plan.get() {
@@ -1493,7 +1472,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                             Err(error) => flowrt_operation_control_error(error),
                                         }
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 if let Some(status_server) = __flowrt_operation_status_server_navigator_plan.get() {
@@ -1505,7 +1484,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                             Err(error) => flowrt_operation_control_error(error),
                                         }
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 let mut operation_control = __flowrt_operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1545,14 +1524,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         _ => {
                             let task_health_from_worker = task_health_from_workers.clone();
@@ -1873,14 +1849,12 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                     let flowrt_operation_snapshot_0 = app.operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();
     let flowrt_operation_active_0 = !flowrt_operation_snapshot_0.state.is_terminal()
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
-    if app.operation_start_server_navigator_plan.get().is_some()
+    if (app.operation_start_server_navigator_plan.get().is_some()
                          || app.operation_cancel_server_navigator_plan.get().is_some()
-                         || app.operation_status_server_navigator_plan.get().is_some()
+                         || app.operation_status_server_navigator_plan.get().is_some()) && !flowrt_operation_tick_driven_0
                          || (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
     scheduler.wake(flowrt::TaskId(2));
-    if flowrt_operation_active_0 {
     flowrt_operation_tick_driven_0 = true;
-    }
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -1954,11 +1928,9 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_operation_server_0 = app.navigator.clone();
                             let __flowrt_operation_control_0 = app.operation_control_0.clone();
                             let introspection_state = introspection_state.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "__flowrt_operation.controller.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
-                            let task_outcome = {
+                            let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
                                 let operation_cancel_control = __flowrt_operation_control_0.clone();
                                 introspection_state.register_operation_cancel_handler("controller.plan", move |operation_id| {
@@ -1975,7 +1947,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                     let operation_start_control_0 = __flowrt_operation_control_0.clone();
                                     let operation_server_0 = __flowrt_operation_server_0.clone();
                                     if start_server.poll_requests(move |request: flowrt::OperationStartRequest<PlanGoal>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {
-                                        let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {
+                                        let ack = match operation_start_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {
                                             Ok(ack) => ack,
                                             Err(error) => return flowrt_operation_control_error(error),
                                         };
@@ -2034,7 +2006,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                         }
                                         flowrt::ServiceResult::ok(ack)
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 if let Some(cancel_server) = __flowrt_operation_cancel_server_navigator_plan.get() {
@@ -2048,7 +2020,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                             Err(error) => flowrt_operation_control_error(error),
                                         }
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 if let Some(status_server) = __flowrt_operation_status_server_navigator_plan.get() {
@@ -2060,7 +2032,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                             Err(error) => flowrt_operation_control_error(error),
                                         }
                                     }).is_err() {
-                                        return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                        break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                     }
                                 }
                                 let mut operation_control = __flowrt_operation_control_0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2100,14 +2072,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         _ => {
                             let task_health_from_worker = task_health_from_workers.clone();

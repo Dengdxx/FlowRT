@@ -478,6 +478,27 @@ fn rust_iox2_operation_codegen_wires_transport() {
         "iox2 Operation servers must be drained by hidden scheduler task.\n\n{shell}"
     );
     assert!(
+        shell.contains("&& !flowrt_operation_tick_driven_0"),
+        "iox2 Operation hidden task must not wake forever just because control servers are open.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));"
+        ),
+        "iox2 Operation drain must complete on scheduler thread because iceoryx2 ports are not Send.\n\n{shell}"
+    );
+    let client_task = generated_match_arm_containing(shell, "Self::step_task_controller_main");
+    assert!(
+        client_task.contains(
+            "pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));"
+        ),
+        "iox2 Operation client tasks must complete on scheduler thread because the client handle is not Send.\n\n{client_task}"
+    );
+    assert!(
+        !client_task.contains("worker_pool.submit_collect"),
+        "iox2 Operation client task must not capture the client handle in a worker closure.\n\n{client_task}"
+    );
+    assert!(
         !shell.contains("ZenohServiceServer"),
         "iox2 Operation path must not instantiate ZenohServiceServer.\n\n{shell}"
     );

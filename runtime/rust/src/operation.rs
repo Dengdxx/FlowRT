@@ -13,10 +13,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "iox2")]
+use crate::ZeroCopySend;
 use crate::{FrameCodec, ServiceError, WireCodec, WireCodecError};
 
 /// 唯一标识一次 Operation invocation。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "iox2", derive(ZeroCopySend))]
 pub struct OperationId {
     /// Operation endpoint canonical name 的稳定 key。
     pub operation_key: u64,
@@ -63,7 +67,9 @@ impl WireCodec for OperationId {
 }
 
 /// Operation control authority owner。
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "iox2", derive(ZeroCopySend))]
 pub struct OperationOwner {
     /// 控制域 key；同一 Operation endpoint 使用同一 scope。
     pub scope_key: u64,
@@ -105,9 +111,12 @@ impl WireCodec for OperationOwner {
 }
 
 /// Operation 状态机状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "iox2", derive(ZeroCopySend))]
 pub enum OperationState {
     /// 没有 active invocation。
+    #[default]
     Idle,
     /// start request 已接受，尚未进入用户 handler。
     Starting,
@@ -456,7 +465,9 @@ impl Default for OperationCancelToken {
 }
 
 /// Operation 健康计数快照。
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "iox2", derive(ZeroCopySend))]
 pub struct OperationHealthSnapshot {
     pub started: u64,
     pub succeeded: u64,
@@ -551,7 +562,9 @@ impl OperationHealthCounters {
 }
 
 /// Operation 状态快照。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "iox2", derive(ZeroCopySend))]
 pub struct OperationStatusSnapshot {
     pub id: OperationId,
     pub owner: OperationOwner,
@@ -598,7 +611,9 @@ impl WireCodec for OperationStatusSnapshot {
 }
 
 /// Operation start 请求被 runtime 接受后的响应。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "iox2", derive(ZeroCopySend))]
 pub struct OperationStartAck {
     pub id: OperationId,
     pub owner: OperationOwner,
@@ -664,21 +679,35 @@ impl WireCodec for OperationStartAck {
 }
 
 /// Operation start 内部 lowering 请求。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OperationStartRequest<T> {
     pub goal: T,
     pub owner: OperationOwner,
-    pub timeout: Duration,
+    pub timeout_ms: u64,
 }
+
+#[cfg(feature = "iox2")]
+unsafe impl<T: ZeroCopySend> ZeroCopySend for OperationStartRequest<T> {}
 
 impl<T> OperationStartRequest<T> {
     /// 构造 start 请求 envelope。用户 API 仍只暴露 typed goal 和 timeout。
     pub const fn new(goal: T, owner: OperationOwner, timeout: Duration) -> Self {
+        let millis = timeout.as_millis();
         Self {
             goal,
             owner,
-            timeout,
+            timeout_ms: if millis > u64::MAX as u128 {
+                u64::MAX
+            } else {
+                millis as u64
+            },
         }
+    }
+
+    /// 返回 start 请求 timeout。
+    pub const fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
     }
 }
 
@@ -698,8 +727,7 @@ where
             ));
         }
         self.owner.encode_wire(&mut output[0..16])?;
-        (self.timeout.as_millis().min(u128::from(u64::MAX)) as u64)
-            .encode_wire(&mut output[16..24])?;
+        self.timeout_ms.encode_wire(&mut output[16..24])?;
         self.goal.encode_frame(&mut output[24..])?;
         Ok(())
     }
@@ -711,7 +739,7 @@ where
         }
         Ok(Self {
             owner: OperationOwner::decode_wire(&input[0..16])?,
-            timeout: Duration::from_millis(u64::decode_wire(&input[16..24])?),
+            timeout_ms: u64::decode_wire(&input[16..24])?,
             goal: T::decode_frame(&input[24..])?,
         })
     }
@@ -1651,6 +1679,36 @@ mod tests {
             OperationHandlerResult::<u32>::canceled(),
             OperationHandlerResult::Canceled
         );
+    }
+
+    #[cfg(feature = "iox2")]
+    #[test]
+    fn operation_control_plane_types_are_iox2_zero_copy() {
+        use crate::ZeroCopySend;
+
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ZeroCopySend)]
+        struct OperationZeroCopyGoal {
+            value: u32,
+        }
+
+        fn assert_iox2_payload<T>()
+        where
+            T: std::fmt::Debug + Copy + Default + ZeroCopySend + 'static,
+        {
+        }
+
+        assert_iox2_payload::<OperationId>();
+        assert_iox2_payload::<OperationStartAck>();
+        assert_iox2_payload::<OperationStatusSnapshot>();
+        assert_iox2_payload::<OperationStartRequest<OperationZeroCopyGoal>>();
+
+        let request = OperationStartRequest::new(
+            OperationZeroCopyGoal { value: 7 },
+            OperationOwner::new(11, 13),
+            Duration::from_millis(123),
+        );
+        assert_eq!(request.timeout(), Duration::from_millis(123));
     }
 
     #[test]

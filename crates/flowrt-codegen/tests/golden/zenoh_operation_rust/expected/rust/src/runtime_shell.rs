@@ -455,7 +455,7 @@ let _zenoh_operation_start_server_0 = if let Some(session) = zenoh_operation_ses
 let operation_start_handler_0_control = app.operation_control_0.clone();
 let operation_server_0 = app.navigator.clone();
 let operation_start_handler_0 = move |request: flowrt::OperationStartRequest<PlanGoal>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {
-let ack = match operation_start_handler_0_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {
+let ack = match operation_start_handler_0_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {
 Ok(ack) => ack,
 Err(error) => return flowrt_operation_control_error(error),
 };
@@ -638,9 +638,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
     if (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
     scheduler.wake(flowrt::TaskId(3));
-    if flowrt_operation_active_0 {
     flowrt_operation_tick_driven_0 = true;
-    }
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -1184,9 +1182,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
     if (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
     scheduler.wake(flowrt::TaskId(2));
-    if flowrt_operation_active_0 {
     flowrt_operation_tick_driven_0 = true;
-    }
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -1561,7 +1557,7 @@ let _zenoh_operation_start_server_0 = if let Some(session) = zenoh_operation_ses
 let operation_start_handler_0_control = app.operation_control_0.clone();
 let operation_server_0 = app.navigator.clone();
 let operation_start_handler_0 = move |request: flowrt::OperationStartRequest<PlanGoal>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {
-let ack = match operation_start_handler_0_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {
+let ack = match operation_start_handler_0_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout()) {
 Ok(ack) => ack,
 Err(error) => return flowrt_operation_control_error(error),
 };
@@ -1734,9 +1730,7 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
     && flowrt_operation_snapshot_0.state != flowrt::OperationState::Idle;
     if (flowrt_operation_active_0 && !flowrt_operation_tick_driven_0) {
     scheduler.wake(flowrt::TaskId(2));
-    if flowrt_operation_active_0 {
     flowrt_operation_tick_driven_0 = true;
-    }
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {

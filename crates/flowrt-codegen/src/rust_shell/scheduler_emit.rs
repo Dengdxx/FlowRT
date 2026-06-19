@@ -276,6 +276,11 @@ pub(super) fn emit_rust_scheduler_v2_loop(emission: RustSchedulerLoopEmission<'_
     } else {
         "let woke_on_message = false;"
     };
+    output.push_str(&service_emit::emit_rust_service_tick_driver_state(
+        contract,
+        graph,
+        &service_tasks,
+    ));
     output.push_str(&operation_emit::emit_rust_operation_tick_driver_state(
         &operation_tasks,
     ));
@@ -406,6 +411,7 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
         emit_rust_task_capture_prelude(contract, graph, binds, bridges, boundaries, task);
     let worker_ctx = emit_rust_worker_closure_context(task_name, trigger);
     let closure_tail = emit_rust_scheduler_task_closure_tail();
+    let inline_tail = emit_rust_scheduler_inline_task_tail();
     // 真实任务调用块；非注入任务直接作为 task_outcome，字节与旧产物一致。
     let call_block = format!(
         "{{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                Self::{function_name}({call_args}, tick_time_ms as usize, &mut local_context, &introspection_state, &scheduler_events, &mut local_health_map)\n                            }}",
@@ -434,9 +440,28 @@ fn emit_rust_dataflow_submit_case(emission: DataflowSubmitCaseEmission<'_>) -> S
         }
         None => (String::new(), call_block),
     };
+    if task_uses_iox2_control_client(contract, graph, task) {
+        return format!(
+            "                        flowrt::TaskId({task_id}) => {{\n{capture_prelude}                            let introspection_state = introspection_state.clone();\n                            let scheduler_events = scheduler_events.clone();\n{inject_decl}{worker_ctx}                            let task_outcome = {task_outcome_expr};\n{inline_tail}                        }},\n",
+        );
+    }
     format!(
         "                        flowrt::TaskId({task_id}) => {{\n{capture_prelude}                            let introspection_state = introspection_state.clone();\n                            let scheduler_events = scheduler_events.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n{inject_decl}                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{worker_ctx}                            let task_outcome = {task_outcome_expr};\n{closure_tail}                            }})\n                        }},\n",
     )
+}
+
+fn task_uses_iox2_control_client(contract: &ContractIr, graph: &GraphIr, task: &TaskIr) -> bool {
+    let instance = &task.instance.name;
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    crate::runtime_plan::client_service_plans(&service_plans, instance)
+        .iter()
+        .any(|plan| plan.backend.0 == "iox2")
+        || {
+            let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
+            crate::runtime_plan::client_operation_plans(&operation_plans, instance)
+                .iter()
+                .any(|plan| plan.backend.0 == "iox2")
+        }
 }
 
 fn rust_collect_task_call_args_for_scheduler(
@@ -747,9 +772,9 @@ fn emit_rust_service_submit_cases(
             };
             let status_update = service_emit::rust_iox2_service_status_update(plan, "handled");
             output.push_str(&format!(
-                "                        flowrt::TaskId({task_id}) => {{\n                            let {server_var} = app.{server_field}.clone();\n                            let {component_var} = app.{server_instance}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let Some(__flowrt_service_server) = {server_var}.get() else {{\n                                    return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());\n                                }};\n                                let handled = match __flowrt_service_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| {handler_call}) {{\n                                    Ok(handled) => handled,\n                                    Err(_) => return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),\n                                }};\n                                {status_update}                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
+                "                        flowrt::TaskId({task_id}) => {{\n                            let {server_var} = app.{server_field}.clone();\n                            let {component_var} = app.{server_instance}.clone();\n                            let introspection_state = introspection_state.clone();\n{}                            let task_outcome = 'flowrt_task: {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let Some(__flowrt_service_server) = {server_var}.get() else {{\n                                    break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());\n                                }};\n                                let handled = match __flowrt_service_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| {handler_call}) {{\n                                    Ok(handled) => handled,\n                                    Err(_) => break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),\n                                }};\n                                {status_update}                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                        }},\n",
                 emit_rust_hidden_worker_closure_context(&task.name),
-                emit_rust_scheduler_task_closure_tail(),
+                emit_rust_scheduler_inline_task_tail(),
             ));
         } else {
             output.push_str(&format!(
@@ -810,7 +835,7 @@ fn emit_rust_operation_submit_cases(
                             control_expr: &control_var,
                             server_expr: &server_var,
                             indent: "                                ",
-                            error_return: "return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());",
+                            error_return: "break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());",
                         },
                     ),
                 )
@@ -832,6 +857,14 @@ fn emit_rust_operation_submit_cases(
                 )
             }
         };
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "                        flowrt::TaskId({task_id}) => {{\n{server_capture}                            let {control_var} = self.{control_field}.clone();\n                            let introspection_state = introspection_state.clone();\n{}                            let task_outcome = 'flowrt_task: {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let operation_cancel_control = {control_var}.clone();\n                                introspection_state.register_operation_cancel_handler({operation_name}, move |operation_id| {{\n                                    let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                    let snapshot = control.snapshot();\n                                    if flowrt_operation_id_string(snapshot.id) != operation_id {{\n                                        return Err(format!(\"stale operation invocation `{{}}`; current is `{{}}`\", operation_id, flowrt_operation_id_string(snapshot.id)));\n                                    }}\n                                    control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;\n                                    Ok(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, control.snapshot()))\n                                }});\n{pending_drain}                                let mut operation_control = {control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());\n                                let snapshot = operation_control.snapshot();\n                                let events = operation_control.drain_events();\n                                drop(operation_control);\n                                for event in events {{\n                                    let operation_id = flowrt_operation_id_string(event.id);\n                                    match event.kind {{\n                                        flowrt::OperationRuntimeEventKind::StateChanged => {{\n                                            if let Some(state) = event.state {{\n                                                introspection_state.record_operation_transition({operation_name}, &operation_id, state.as_str(), Some({owner_name}), if state.is_terminal() {{ None }} else {{ Some(snapshot.deadline_ms) }});\n                                            }}\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Progress => {{\n                                            introspection_state.record_operation_progress({operation_name}, &operation_id, event.sequence.unwrap_or(0));\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Result => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"succeeded\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, None);\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Error => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"failed\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, Some(\"handler error\"));\n                                        }}\n                                    }}\n                                }}\n                                introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                        }},\n",
+                emit_rust_hidden_worker_closure_context(&task.name),
+                emit_rust_scheduler_inline_task_tail(),
+            ));
+            continue;
+        }
         output.push_str(&format!(
             "                        flowrt::TaskId({task_id}) => {{\n{server_capture}                            let {control_var} = self.{control_field}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let operation_cancel_control = {control_var}.clone();\n                                introspection_state.register_operation_cancel_handler({operation_name}, move |operation_id| {{\n                                    let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                    let snapshot = control.snapshot();\n                                    if flowrt_operation_id_string(snapshot.id) != operation_id {{\n                                        return Err(format!(\"stale operation invocation `{{}}`; current is `{{}}`\", operation_id, flowrt_operation_id_string(snapshot.id)));\n                                    }}\n                                    control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;\n                                    Ok(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, control.snapshot()))\n                                }});\n{pending_drain}                                let mut operation_control = {control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());\n                                let snapshot = operation_control.snapshot();\n                                let events = operation_control.drain_events();\n                                drop(operation_control);\n                                for event in events {{\n                                    let operation_id = flowrt_operation_id_string(event.id);\n                                    match event.kind {{\n                                        flowrt::OperationRuntimeEventKind::StateChanged => {{\n                                            if let Some(state) = event.state {{\n                                                introspection_state.record_operation_transition({operation_name}, &operation_id, state.as_str(), Some({owner_name}), if state.is_terminal() {{ None }} else {{ Some(snapshot.deadline_ms) }});\n                                            }}\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Progress => {{\n                                            introspection_state.record_operation_progress({operation_name}, &operation_id, event.sequence.unwrap_or(0));\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Result => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"succeeded\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, None);\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Error => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"failed\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, Some(\"handler error\"));\n                                        }}\n                                    }}\n                                }}\n                                introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
             emit_rust_hidden_worker_closure_context(&task.name),
@@ -1044,6 +1077,10 @@ fn emit_rust_task_result_health_update(tasks: &[SchedulerDataflowTaskPlan<'_>]) 
 
 fn emit_rust_scheduler_task_closure_tail() -> String {
     "                            if let Some(health) = local_health_map.get_mut(task_name) {\n                                health.inflight = false;\n                                health.scheduled_time_ms = Some(admission.scheduled_time_ms);\n                                health.observed_time_ms = Some(admission.observed_time_ms);\n                                health.lateness_ms = Some(admission.lateness_ms);\n                                health.missed_periods = Some(admission.missed_periods);\n                                health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));\n                            }\n                            {\n                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                for (name, health) in local_health_map {\n                                    merged_health.insert(name, health);\n                                }\n                            }\n                            task_outcome\n".to_string()
+}
+
+fn emit_rust_scheduler_inline_task_tail() -> String {
+    "                            if let Some(health) = local_health_map.get_mut(task_name) {\n                                health.inflight = false;\n                                health.scheduled_time_ms = Some(admission.scheduled_time_ms);\n                                health.observed_time_ms = Some(admission.observed_time_ms);\n                                health.lateness_ms = Some(admission.lateness_ms);\n                                health.missed_periods = Some(admission.missed_periods);\n                                health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));\n                            }\n                            for (name, health) in local_health_map {\n                                health_map.insert(name, health);\n                            }\n                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));\n                            Ok(())\n".to_string()
 }
 
 fn emit_rust_task_admission_health_update(tasks: &[SchedulerDataflowTaskPlan<'_>]) -> String {

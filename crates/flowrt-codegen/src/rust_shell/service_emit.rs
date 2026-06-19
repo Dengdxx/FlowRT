@@ -545,6 +545,32 @@ pub(crate) fn emit_rust_service_scheduler_registration(
     task_output
 }
 
+/// 生成 iox2 service hidden task 的每 tick 驱动状态。
+pub(crate) fn emit_rust_service_tick_driver_state(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    service_tasks: &[&SchedulerHiddenTaskPlan],
+) -> String {
+    let plans = service_runtime_plans(contract, graph);
+    if plans.is_empty() || service_tasks.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    for task in service_tasks {
+        let Some(plan) = plans.iter().find(|plan| plan.index == task.source_index) else {
+            continue;
+        };
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "            let mut flowrt_service_tick_driven_{} = false;\n",
+                plan.index
+            ));
+        }
+    }
+    output
+}
+
 /// 生成 service request arrival wake 检查代码。
 pub(crate) fn emit_rust_service_wake_checks(
     contract: &ContractIr,
@@ -565,9 +591,11 @@ pub(crate) fn emit_rust_service_wake_checks(
         let task_id = task.id;
         let server_field = server_field_name(plan);
         if plan.backend.0 == "iox2" {
+            let tick_driven_flag = format!("flowrt_service_tick_driven_{}", plan.index);
             output.push_str(&format!(
-                "                if self.{server_field}.get().is_some() {{\n\
+                "                if self.{server_field}.get().is_some() && !{tick_driven_flag} {{\n\
                          scheduler.wake(flowrt::TaskId({task_id}));\n\
+                         {tick_driven_flag} = true;\n\
                          woke_on_message = true;\n\
                      }}\n",
             ));

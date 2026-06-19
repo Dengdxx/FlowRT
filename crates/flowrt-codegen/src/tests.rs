@@ -69,6 +69,20 @@ fn generated_function_block<'a>(source: &'a str, function: &str) -> &'a str {
     &rest[..next]
 }
 
+fn generated_match_arm_containing<'a>(source: &'a str, marker: &str) -> &'a str {
+    let marker_at = source.find(marker).expect("generated marker must exist");
+    let start = source[..marker_at]
+        .rfind("\n                        flowrt::TaskId(")
+        .expect("generated match arm must exist");
+    let rest = &source[start + 1..];
+    let marker_in_rest = marker_at - start - 1;
+    let end = rest[marker_in_rest..]
+        .find("\n                        },")
+        .map(|offset| marker_in_rest + offset + "\n                        },".len())
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 fn extract_probe_field_for_registration<'a>(
     source: &'a str,
     registration_marker: &str,

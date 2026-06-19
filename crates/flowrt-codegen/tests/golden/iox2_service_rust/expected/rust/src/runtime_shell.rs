@@ -487,12 +487,14 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                 __h.name = "plan_svc.main".to_string();
                 __h.lane = "plan_svc_serial".to_string();
             }
+            let mut flowrt_service_tick_driven_0 = false;
             introspection_state.record_tick_at(tick_time_ms, clock_source);
             loop {
                 observed_data_generation = scheduler_events.data_generation();
                 let mut woke_on_message = false;
-                    if app.service_server_plan_svc_plan.get().is_some() {
+                    if app.service_server_plan_svc_plan.get().is_some() && !flowrt_service_tick_driven_0 {
     scheduler.wake(flowrt::TaskId(3));
+    flowrt_service_tick_driven_0 = true;
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -518,8 +520,6 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                             let __flowrt_service_client_plan_client_plan = app.service_client_plan_client_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let scheduler_events = scheduler_events.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "plan_client.main";
                             let task_trigger = "periodic";
                             let mut local_context = flowrt::Context::with_timing(flowrt::TaskTiming {
@@ -551,14 +551,11 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         flowrt::TaskId(2) => {
                             let __flowrt_component_plan_svc = app.plan_svc.clone();
@@ -610,18 +607,16 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(3), lane: flowrt::LaneI
                             let __flowrt_service_server_plan_svc_plan = app.service_server_plan_svc_plan.clone();
                             let __flowrt_service_component_plan_svc = app.plan_svc.clone();
                             let introspection_state = introspection_state.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "__flowrt_service.plan_client.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
-                            let task_outcome = {
+                            let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
                                 let Some(__flowrt_service_server) = __flowrt_service_server_plan_svc_plan.get() else {
-                                    return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                    break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                 };
                                 let handled = match __flowrt_service_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| __flowrt_service_component_plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_plan_request(&request)) {
                                     Ok(handled) => handled,
-                                    Err(_) => return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),
+                                    Err(_) => break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),
                                 };
                                 introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {
 name: "plan_client.plan".to_string(),
@@ -644,14 +639,11 @@ late_drop_count: 0,
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         _ => {
                             let task_health_from_worker = task_health_from_workers.clone();
@@ -996,12 +988,14 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                 __h.name = "plan_client.main".to_string();
                 __h.lane = "plan_client_serial".to_string();
             }
+            let mut flowrt_service_tick_driven_0 = false;
             introspection_state.record_tick_at(tick_time_ms, clock_source);
             loop {
                 observed_data_generation = scheduler_events.data_generation();
                 let mut woke_on_message = false;
-                    if app.service_server_plan_svc_plan.get().is_some() {
+                    if app.service_server_plan_svc_plan.get().is_some() && !flowrt_service_tick_driven_0 {
     scheduler.wake(flowrt::TaskId(2));
+    flowrt_service_tick_driven_0 = true;
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -1027,8 +1021,6 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_service_client_plan_client_plan = app.service_client_plan_client_plan.clone();
                             let introspection_state = introspection_state.clone();
                             let scheduler_events = scheduler_events.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "plan_client.main";
                             let task_trigger = "periodic";
                             let mut local_context = flowrt::Context::with_timing(flowrt::TaskTiming {
@@ -1060,31 +1052,26 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         flowrt::TaskId(2) => {
                             let __flowrt_service_server_plan_svc_plan = app.service_server_plan_svc_plan.clone();
                             let __flowrt_service_component_plan_svc = app.plan_svc.clone();
                             let introspection_state = introspection_state.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "__flowrt_service.plan_client.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
-                            let task_outcome = {
+                            let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(2));
                                 let Some(__flowrt_service_server) = __flowrt_service_server_plan_svc_plan.get() else {
-                                    return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                    break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                 };
                                 let handled = match __flowrt_service_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| __flowrt_service_component_plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_plan_request(&request)) {
                                     Ok(handled) => handled,
-                                    Err(_) => return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),
+                                    Err(_) => break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),
                                 };
                                 introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {
 name: "plan_client.plan".to_string(),
@@ -1107,14 +1094,11 @@ late_drop_count: 0,
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         _ => {
                             let task_health_from_worker = task_health_from_workers.clone();
@@ -1407,12 +1391,14 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                 __h.name = "plan_svc.main".to_string();
                 __h.lane = "plan_svc_serial".to_string();
             }
+            let mut flowrt_service_tick_driven_0 = false;
             introspection_state.record_tick_at(tick_time_ms, clock_source);
             loop {
                 observed_data_generation = scheduler_events.data_generation();
                 let mut woke_on_message = false;
-                    if app.service_server_plan_svc_plan.get().is_some() {
+                    if app.service_server_plan_svc_plan.get().is_some() && !flowrt_service_tick_driven_0 {
     scheduler.wake(flowrt::TaskId(2));
+    flowrt_service_tick_driven_0 = true;
     woke_on_message = true;
     }
                 for task_result in task_completion_queue.drain_completed() {
@@ -1483,18 +1469,16 @@ scheduler.add_task(flowrt::TaskSpec { id: flowrt::TaskId(2), lane: flowrt::LaneI
                             let __flowrt_service_server_plan_svc_plan = app.service_server_plan_svc_plan.clone();
                             let __flowrt_service_component_plan_svc = app.plan_svc.clone();
                             let introspection_state = introspection_state.clone();
-                            let task_health_from_worker = task_health_from_workers.clone();
-                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {
                             let task_name = "__flowrt_service.plan_client.plan";
                             let mut local_health_map: std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth> = std::collections::BTreeMap::new();
-                            let task_outcome = {
+                            let task_outcome = 'flowrt_task: {
                                 let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId(1));
                                 let Some(__flowrt_service_server) = __flowrt_service_server_plan_svc_plan.get() else {
-                                    return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
+                                    break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());
                                 };
                                 let handled = match __flowrt_service_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| __flowrt_service_component_plan_svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).on_plan_request(&request)) {
                                     Ok(handled) => handled,
-                                    Err(_) => return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),
+                                    Err(_) => break 'flowrt_task flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),
                                 };
                                 introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {
 name: "plan_client.plan".to_string(),
@@ -1517,14 +1501,11 @@ late_drop_count: 0,
                                 health.missed_periods = Some(admission.missed_periods);
                                 health.overrun = Some(admission.missed_periods > 0 || admission.period_ms.map_or(false, |period_ms| admission.lateness_ms > period_ms));
                             }
-                            {
-                                let mut merged_health = task_health_from_worker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                                for (name, health) in local_health_map {
-                                    merged_health.insert(name, health);
-                                }
+                            for (name, health) in local_health_map {
+                                health_map.insert(name, health);
                             }
-                            task_outcome
-                            })
+                            pending_task_results.insert(admission.task, flowrt::TaskRunOutput::from_outcome(admission.task, task_outcome));
+                            Ok(())
                         },
                         _ => {
                             let task_health_from_worker = task_health_from_workers.clone();
