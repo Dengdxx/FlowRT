@@ -66,6 +66,28 @@ fn restart_delay_saturates_at_max() {
     assert_eq!(policy.delay_ms_for(100), 1000);
 }
 
+#[test]
+fn status_snapshot_aggregation_merges_process_files() {
+    let dir = temp_test_dir("launch-status-aggregation");
+    std::fs::write(
+        dir.join("controller.status.json"),
+        r#"{"tick_count":6,"graph_health":"healthy","graph_critical_health":"healthy","instances":[],"routes":[],"failovers":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("actuator.status.json"),
+        r#"{"tick_count":6,"graph_health":"healthy","graph_critical_health":"healthy","instances":[],"routes":[],"failovers":[]}"#,
+    )
+    .unwrap();
+
+    let json = aggregate_status_snapshots_for_test(&dir, &["controller", "actuator"]).unwrap();
+
+    assert_eq!(json["mode"], "launch");
+    assert_eq!(json["processes"].as_array().unwrap().len(), 2);
+    assert_eq!(json["processes"][0]["process"], "controller");
+    assert_eq!(json["processes"][1]["process"], "actuator");
+}
+
 #[cfg(unix)]
 #[test]
 fn supervised_child_drop_terminates_running_process() {
@@ -92,7 +114,7 @@ fn supervisor_shutdown_token_terminates_active_children() {
     let shutdown = ShutdownToken::new_for_test();
     shutdown.request();
 
-    let result = supervise_children(&supervisor_state, &mut children, None, &shutdown);
+    let result = supervise_children(&supervisor_state, &mut children, None, &shutdown, None);
 
     assert!(result.is_ok());
     assert!(children[0].finished);
@@ -177,7 +199,7 @@ fn restart_waits_when_dependency_exits_in_same_monitor_iteration() {
         shutdown_clone.request();
     });
 
-    let result = supervise_children(&supervisor_state, &mut children, None, &shutdown);
+    let result = supervise_children(&supervisor_state, &mut children, None, &shutdown, None);
 
     shutdown_thread
         .join()
@@ -237,6 +259,7 @@ fn supervisor_terminates_active_children_when_run_ticks_reached() {
         std::slice::from_mut(&mut supervised),
         Some(3),
         &ShutdownToken::new_for_test(),
+        None,
     );
 
     assert!(

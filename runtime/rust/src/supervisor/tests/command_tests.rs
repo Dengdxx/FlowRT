@@ -78,6 +78,33 @@ fn process_command_applies_manifest_env() {
 }
 
 #[test]
+fn process_command_sets_status_out_when_requested() {
+    let process = test_process("controller", vec![]);
+    let snapshot_dir = std::env::temp_dir().join("flowrt-status-out-command-test");
+    let command = build_process_command_with_status_out(
+        Path::new("/bin/echo"),
+        &process,
+        Some(5),
+        None,
+        Some(&snapshot_dir),
+    );
+
+    assert_eq!(
+        command_args(&command),
+        vec!["--process", "controller", "--flowrt-run-steps", "5"]
+    );
+    assert_eq!(
+        command_env(&command, "FLOWRT_STATUS_OUT").as_deref(),
+        Some(
+            snapshot_dir
+                .join("controller.status.json")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+}
+
+#[test]
 fn cpp_runtime_executable_prefers_sibling_local_bin() {
     let root = temp_test_dir("cpp-sibling");
     let bin_dir = root.join("flowrt/build/bin/release");

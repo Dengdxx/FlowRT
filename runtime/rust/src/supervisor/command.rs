@@ -277,6 +277,24 @@ pub fn build_process_command(
     command
 }
 
+/// 构造子进程 Command，并可为 generated runtime shell 注入终态 status snapshot 路径。
+pub fn build_process_command_with_status_out(
+    app_exe: &Path,
+    process: &LaunchProcess,
+    run_ticks: Option<usize>,
+    zenoh_env: Option<&ZenohLaunchEnv>,
+    status_dir: Option<&Path>,
+) -> Command {
+    let mut command = build_process_command(app_exe, process, run_ticks, zenoh_env);
+    if let Some(status_dir) = status_dir {
+        command.env(
+            "FLOWRT_STATUS_OUT",
+            status_dir.join(format!("{}.status.json", process.name)),
+        );
+    }
+    command
+}
+
 /// 构造 external process Command。
 pub fn build_external_process_command(
     app_exe: &Path,
@@ -400,6 +418,7 @@ pub(super) fn build_launch_process_command(
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
     external_resolution: Option<&ExternalExecutableResolution>,
+    status_dir: Option<&Path>,
 ) -> Result<Command, String> {
     if process.runtime_kind == "external" {
         let external = process.external.as_ref().ok_or_else(|| {
@@ -418,8 +437,8 @@ pub(super) fn build_launch_process_command(
             app_exe, process, run_ticks, zenoh_env, external, resolution,
         ))
     } else {
-        Ok(build_process_command(
-            app_exe, process, run_ticks, zenoh_env,
+        Ok(build_process_command_with_status_out(
+            app_exe, process, run_ticks, zenoh_env, status_dir,
         ))
     }
 }
@@ -461,14 +480,22 @@ pub(super) fn spawn_launch_process(
     run_ticks: Option<usize>,
     zenoh_env: Option<&ZenohLaunchEnv>,
     external_resolution: Option<&ExternalExecutableResolution>,
+    status_dir: Option<&Path>,
 ) -> Result<Child, String> {
-    build_launch_process_command(app_exe, process, run_ticks, zenoh_env, external_resolution)?
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "failed to start FlowRT process `{}` executable `{}`: {error}",
-                process.name,
-                app_exe.display()
-            )
-        })
+    build_launch_process_command(
+        app_exe,
+        process,
+        run_ticks,
+        zenoh_env,
+        external_resolution,
+        status_dir,
+    )?
+    .spawn()
+    .map_err(|error| {
+        format!(
+            "failed to start FlowRT process `{}` executable `{}`: {error}",
+            process.name,
+            app_exe.display()
+        )
+    })
 }

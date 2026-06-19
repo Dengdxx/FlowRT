@@ -16,7 +16,8 @@ mod zenoh;
 
 pub use command::{
     ExternalExecutableResolution, app_executable_for_runtime, build_external_process_command,
-    build_process_command, external_app_executable, spawn_flowrt_process,
+    build_process_command, build_process_command_with_status_out, external_app_executable,
+    spawn_flowrt_process,
 };
 pub use dependency::{
     PropagatableChild, collect_propagated_failures, process_dependencies_satisfied,

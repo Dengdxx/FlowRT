@@ -1,7 +1,7 @@
 //! Supervisor launch 主循环、子进程状态和健康记录。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ use crate::shutdown::ShutdownToken;
 
 use super::command::{
     ExternalExecutableResolution, app_executable_for_runtime, build_external_process_command,
-    build_process_command, external_app_executable, spawn_launch_process,
+    build_process_command_with_status_out, external_app_executable, spawn_launch_process,
 };
 use super::dependency::process_dependencies_satisfied;
 use super::manifest::{
@@ -61,6 +61,99 @@ pub struct SupervisorConfig {
     pub package_name: &'static str,
     /// self-description hash（由生成物的 selfdesc 模块提供）。
     pub self_description_hash: fn() -> &'static str,
+}
+
+struct LaunchStatusSnapshot {
+    output: PathBuf,
+    child_dir: PathBuf,
+}
+
+fn launch_status_snapshot_from_env() -> Result<Option<LaunchStatusSnapshot>, String> {
+    let Some(output) = std::env::var_os("FLOWRT_STATUS_OUT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let child_dir = status_child_dir(&output);
+    let _ = std::fs::remove_dir_all(&child_dir);
+    std::fs::create_dir_all(&child_dir).map_err(|error| {
+        format!(
+            "failed to create launch status snapshot dir `{}`: {error}",
+            child_dir.display()
+        )
+    })?;
+    Ok(Some(LaunchStatusSnapshot { output, child_dir }))
+}
+
+fn status_child_dir(output: &Path) -> PathBuf {
+    let mut child_dir = output.as_os_str().to_os_string();
+    child_dir.push(".children");
+    PathBuf::from(child_dir)
+}
+
+fn process_writes_status_snapshot(process: &LaunchProcess) -> bool {
+    matches!(process.runtime_kind.as_str(), "rust" | "cpp" | "c")
+}
+
+pub(crate) fn aggregate_status_snapshots(
+    status_dir: &Path,
+    processes: &[LaunchProcess],
+) -> Result<serde_json::Value, String> {
+    let mut entries = Vec::with_capacity(processes.len());
+    for process in processes {
+        let path = status_dir.join(format!("{}.status.json", process.name));
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "failed to read status snapshot `{}`: {error}",
+                path.display()
+            )
+        })?;
+        let status: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+            format!(
+                "failed to parse status snapshot `{}`: {error}",
+                path.display()
+            )
+        })?;
+        entries.push(serde_json::json!({
+            "process": process.name,
+            "runtime": process.runtime_kind,
+            "status": status,
+        }));
+    }
+    Ok(serde_json::json!({
+        "mode": "launch",
+        "processes": entries,
+    }))
+}
+
+#[cfg(test)]
+pub(crate) fn aggregate_status_snapshots_for_test(
+    status_dir: &Path,
+    process_names: &[&str],
+) -> Result<serde_json::Value, String> {
+    let processes = process_names
+        .iter()
+        .map(|name| LaunchProcess {
+            name: (*name).to_string(),
+            backend: "inproc".to_string(),
+            target: None,
+            runtimes: Vec::new(),
+            runtime_kind: "rust".to_string(),
+            external: None,
+            depends_on: Vec::new(),
+            env: BTreeMap::new(),
+            restart: super::manifest::DEFAULT_RESTART_POLICY,
+            failure: "propagate".to_string(),
+            readiness: ReadinessGate::ProcessStarted,
+            startup_delay_ms: 0,
+            instances: Vec::new(),
+            tasks: Vec::new(),
+            resource_placement: ResourcePlacement::default(),
+            io_boundaries: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    aggregate_status_snapshots(status_dir, &processes)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +280,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
     let shutdown = crate::install_signal_shutdown_token();
+    let status_snapshot = launch_status_snapshot_from_env()?;
 
     let supervisor_state = IntrospectionState::new();
     let _supervisor_status_server = crate::spawn_status_server(
@@ -202,6 +296,7 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
 
     let mut zenoh_launch_plans = Vec::new();
     let mut children = Vec::new();
+    let mut status_processes = Vec::new();
     for graph in &manifest.graphs {
         let zenoh_plan = if should_auto_configure_zenoh() {
             let refs: Vec<&LaunchProcess> = graph.processes.iter().collect();
@@ -262,6 +357,9 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
                 run_ticks,
                 process_zenoh_env.as_ref(),
                 external_resolution.as_ref(),
+                status_snapshot.as_ref().and_then(|snapshot| {
+                    process_writes_status_snapshot(process).then_some(snapshot.child_dir.as_path())
+                }),
             )?;
             let resource_applied =
                 apply_resource_placement_to_pid(&process.resource_placement, Some(child.id()));
@@ -302,6 +400,9 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
             };
             record_child_health(&supervisor_state, &child, false);
             spawned_names.insert(process.name.clone());
+            if status_snapshot.is_some() && process_writes_status_snapshot(process) {
+                status_processes.push(process.clone());
+            }
 
             // 等待 readiness gate，然后再启动依赖此进程的后续进程。
             wait_for_readiness(
@@ -329,7 +430,38 @@ pub fn launch(config: &SupervisorConfig, run_ticks: Option<usize>) -> Result<(),
         return Err("FlowRT launch manifest does not contain process groups".to_string());
     }
 
-    supervise_children(&supervisor_state, &mut children, run_ticks, &shutdown)?;
+    supervise_children(
+        &supervisor_state,
+        &mut children,
+        run_ticks,
+        &shutdown,
+        status_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.child_dir.as_path()),
+    )?;
+    if let Some(snapshot) = &status_snapshot {
+        let aggregate = aggregate_status_snapshots(&snapshot.child_dir, &status_processes)?;
+        if let Some(parent) = snapshot
+            .output
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create status snapshot parent `{}`: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let json = serde_json::to_string_pretty(&aggregate)
+            .map_err(|error| format!("failed to encode launch status snapshot: {error}"))?;
+        std::fs::write(&snapshot.output, format!("{json}\n")).map_err(|error| {
+            format!(
+                "failed to write launch status snapshot `{}`: {error}",
+                snapshot.output.display()
+            )
+        })?;
+    }
 
     let mut failures = Vec::new();
     for child in children {
@@ -361,6 +493,7 @@ pub(super) fn supervise_children(
     children: &mut [SupervisedChild],
     run_ticks: Option<usize>,
     shutdown: &ShutdownToken,
+    status_dir: Option<&Path>,
 ) -> Result<(), String> {
     while children.iter().any(|child| !child.finished) {
         if shutdown.is_requested() {
@@ -415,7 +548,7 @@ pub(super) fn supervise_children(
             if let Some(next_restart_unix_ms) = child.next_restart_unix_ms {
                 if unix_time_ms() >= next_restart_unix_ms {
                     if child_dependencies_satisfied(child, &spawned_names, &ready_names) {
-                        restart_child(supervisor_state, child, run_ticks, shutdown)?;
+                        restart_child(supervisor_state, child, run_ticks, shutdown, status_dir)?;
                     } else {
                         child.state = "waiting_dependencies".to_string();
                         child.next_restart_unix_ms = Some(
@@ -453,6 +586,7 @@ pub(super) fn restart_child(
     child: &mut SupervisedChild,
     run_ticks: Option<usize>,
     shutdown: &ShutdownToken,
+    status_dir: Option<&Path>,
 ) -> Result<(), String> {
     let resource_gate_decision =
         evaluate_child_resource_gates(supervisor_state, child, ResourceGatePhase::Restart);
@@ -540,11 +674,17 @@ pub(super) fn restart_child(
             )
         })?
     } else {
-        build_process_command(
+        let child_status_dir = if matches!(child.runtime_kind.as_str(), "rust" | "cpp" | "c") {
+            status_dir
+        } else {
+            None
+        };
+        build_process_command_with_status_out(
             &child.app_exe,
             &restart_process,
             run_ticks,
             child.zenoh_env.as_ref(),
+            child_status_dir,
         )
         .spawn()
         .map_err(|error| {

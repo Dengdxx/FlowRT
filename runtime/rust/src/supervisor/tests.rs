@@ -11,8 +11,9 @@ mod prelude {
 
     pub(super) use super::super::command::binary_name;
     pub(super) use super::super::launch_loop::{
-        SupervisedChild, child_dependencies_satisfied, record_child_health,
-        record_child_reported_resource_statuses, refresh_child_health, supervise_children,
+        SupervisedChild, aggregate_status_snapshots_for_test, child_dependencies_satisfied,
+        record_child_health, record_child_reported_resource_statuses, refresh_child_health,
+        supervise_children,
     };
     pub(super) use super::super::manifest::{effective_readiness, parse_launch_manifest};
     pub(super) use super::super::readiness::{
