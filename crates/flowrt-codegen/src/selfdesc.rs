@@ -949,7 +949,12 @@ fn self_description_message_frame(
     let mut fields = Vec::with_capacity(ty.fields.len());
     for field in &ty.fields {
         let header_size = frame_header_size_for_expr(contract, &field.ty);
-        let tail_max = variable_tail_max_size(contract, &field.ty);
+        // 仅变长字段在 tail 中占位：有界给出上界，无界为 null；fixed 字段无 tail。
+        let tail_max = if type_contains_variable_data(contract, &field.ty) {
+            variable_tail_max_size(contract, &field.ty)
+        } else {
+            None
+        };
         fields.push(SelfDescriptionFrameField {
             name: field.name.clone(),
             ty: field.ty.canonical_syntax(),

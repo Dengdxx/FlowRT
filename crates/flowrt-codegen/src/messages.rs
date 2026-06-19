@@ -322,20 +322,43 @@ pub(crate) fn frame_header_size_for_expr(contract: &ContractIr, expr: &TypeExpr)
     }
 }
 
+/// 计算类型的 canonical frame 定容上界（固定 header + 变长 tail 上界）。
+/// 全部变长字段有界时返回 Some（可作 iox2 定容 slot 容量）；任一无界字段返回 None。
 pub(crate) fn frame_max_size_for_type(contract: &ContractIr, ty: &TypeIr) -> Option<usize> {
-    if type_contains_variable_data(
-        contract,
-        &TypeExpr::Named {
-            name: ty.qualified_name.clone(),
-        },
-    ) {
-        return None;
+    let mut tail = 0usize;
+    for field in &ty.fields {
+        tail += variable_tail_max_size(contract, &field.ty)?;
     }
-    Some(frame_header_size_for_type(contract, ty))
+    Some(frame_header_size_for_type(contract, ty) + tail)
 }
 
-pub(crate) fn variable_tail_max_size(_contract: &ContractIr, _expr: &TypeExpr) -> Option<usize> {
-    None
+/// 变长字段在 frame tail 中占用的字节上界；fixed 返回 Some(0)，无界返回 None。
+pub(crate) fn variable_tail_max_size(contract: &ContractIr, expr: &TypeExpr) -> Option<usize> {
+    match expr {
+        TypeExpr::Primitive { .. } => Some(0),
+        TypeExpr::VarBytes { max_len } => max_len.map(|n| n as usize),
+        TypeExpr::VarString { max_len, .. } => max_len.map(|n| n as usize),
+        TypeExpr::VarSequence { element, max_len } => {
+            let count = (*max_len)? as usize;
+            let unit = frame_unit_size(contract, element)?;
+            Some(count * unit)
+        }
+        TypeExpr::Array { element, len } => {
+            variable_tail_max_size(contract, element).map(|tail| tail * len)
+        }
+        TypeExpr::Named { name } => {
+            let mut tail = 0usize;
+            for field in &type_by_name(contract, name).fields {
+                tail += variable_tail_max_size(contract, &field.ty)?;
+            }
+            Some(tail)
+        }
+    }
+}
+
+/// 单个 sequence 元素在 frame 中占用的字节上界（header + 自身 tail）。
+fn frame_unit_size(contract: &ContractIr, expr: &TypeExpr) -> Option<usize> {
+    Some(frame_header_size_for_expr(contract, expr) + variable_tail_max_size(contract, expr)?)
 }
 
 fn message_sample_bytes(
