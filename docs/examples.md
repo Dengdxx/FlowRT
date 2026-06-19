@@ -811,6 +811,36 @@ flowrt list examples/zenoh_service_demo/flowrt/selfdesc/selfdesc.json
   `flowrt/service/plan_x5F_client.plan/request`，与 runtime 实际 queryable key expression
   一致。
 
+## `iox2_service_demo`
+
+入口文件：
+
+```text
+examples/iox2_service_demo/rsdl/robot.rsdl
+examples/iox2_service_demo/app/rust/mod.rs
+```
+
+该示例验证 Service / Operation over `iox2` 的同主机跨进程 control-plane：
+`plan_client` 和 `plan_svc` 分属不同 process group，profile 选择 `iox2`，Service
+request/response 与 Operation start/cancel/status 都使用 canonical iox2 service name。
+用户实现仍是 FlowRT typed Service / Operation API，不接触 `iceoryx2` SDK 类型。
+
+运行路径：
+
+```bash
+flowrt check examples/iox2_service_demo/rsdl/robot.rsdl
+FLOWRT_V0250_REQUIRE_IOX2_SDK=1 scripts/test-v0250-iox2-service-operation-smoke.sh
+```
+
+该示例验证：
+
+- Service request/response 和 Operation control path 都走 generated iox2 endpoint。
+- self-description 与 `launch/launch.json` 对 iox2 endpoint 暴露 `service` 字段，而不是
+  zenoh 的 `key_expr` 字段。
+- `iox2` 只承载 fixed-size plain data；Service request/response 或 Operation
+  goal/feedback/result 含 `bytes`、`string` 或 `sequence<T>` 时，省略 backend 会按 edge
+  fallback 到 `zenoh`，显式 `backend = "iox2"` 会被 validator 拒绝。
+
 ## `operation_demo`
 
 入口文件：
@@ -851,8 +881,8 @@ feedback = "latest"
 ```
 
 当前 generated Operation runtime 使用最终生命周期 `idle`、`starting`、`running`、
-`cancel_requested`、`cancelled`、`succeeded`、`failed`、`timed_out`，支持 `inproc` 与
-`zenoh` backend、`concurrency = "reject" | "queue"`、`preempt = "reject" |
+`cancel_requested`、`cancelled`、`succeeded`、`failed`、`timed_out`，支持 `inproc`、
+`iox2` 与 `zenoh` backend、`concurrency = "reject" | "queue"`、`preempt = "reject" |
 "cancel_running"`、`max_in_flight > 0`、`feedback = "latest" | "fifo"` 和
 `result_retention_ms`。start 会建立 invocation id、owner 和 deadline；默认同一 scope
 只允许单 owner 控制，第二个 owner start 会被结构化拒绝。`queue` 在 active slot 达到
@@ -893,8 +923,9 @@ flowrt op list --image examples/operation_demo/flowrt/selfdesc/selfdesc.json
 ```
 
 当前 Operation 会在生成物内部 lower 成 start/cancel/status service 与 feedback/result
-endpoint；用户文档和 CLI 的主视图仍是 Operation。`backend = "zenoh"` 时，
-start/cancel/status control path 走内部 zenoh service transport，不生成 placeholder API。
+endpoint；用户文档和 CLI 的主视图仍是 Operation。`backend = "iox2"` 时，
+start/cancel/status control path 走内部 iox2 service transport；`backend = "zenoh"` 时，
+start/cancel/status control path 走内部 zenoh service transport；两者都不生成 placeholder API。
 
 ## record smoke
 

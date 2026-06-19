@@ -5,22 +5,28 @@
 
 ## 当前版本背景
 
-当前开发线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
+当前开发线为 `v0.25.0 iox2 Service/Operation Transport`：把 native generated
+Service request/response 与 Operation start/cancel/status control path 接入本机
+`iox2` transport，并保持用户侧只看到 FlowRT typed Service / Operation API。iox2 仍是
+FlowRT runtime API 之下的 backend 实现细节，RSDL、Contract IR、self-description 和
+launch manifest 只暴露 backend 选择、canonical service name 和 capability 结果。
+
+当前 workspace 版本为 `0.25.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
+CHANGELOG v0.25.0 release 段在本发布收尾中同步。`v0.25.0 Iox2 Service Operation Smoke`
+focused gate 覆盖 `iox2_service_demo`、Service / Operation golden、manifest / selfdesc
+endpoint 展示，以及真实 `iceoryx2` SDK 可用时的 build/run 路径。
+
+本版本明确长期 invariant：`iox2` 永久只承载 fixed-size plain data，不承载
+`bytes`、`string`、`sequence<T>` 或 canonical variable frame；该规则同时适用于 dataflow
+channel、Service request/response 和 Operation goal/feedback/result。dataflow、Service
+和 Operation 都按 edge 解析 backend：省略 `backend` 继承 profile/default backend；profile
+默认 `iox2` 遇到动态 payload edge 时自动 fallback 到 `zenoh`；显式 `backend = "iox2"`
+遇到动态 payload 时由 validator fail-fast。
+
+上一发布线为 `v0.24.0 Fault Matrix Completion`：把 v0.23.3 已落地的 global tick、
 fault injection kind、route health、standby failover 和 graph health 组合成可运行、
 可校验、可发布把关的矩阵证据。`flowrt fault-matrix check/run` 是 test-only CLI fixture，
 不新增 RSDL 持久语法，不改变 Contract IR 故障语义，也不进入 `bundle` / `deploy` 主路径。
-
-当前 workspace 版本为 `0.24.0`。版本源、runtime 版本、Cargo.lock、README 安装示例和
-CHANGELOG v0.24.0 release 段已在发布收尾中同步。发布分支首轮 CI 的
-`v0.24.0 Fault Matrix Smoke` 曾在仓库开发模式下生成 case 构建时重新访问 crates.io；
-已改为对 repo runtime fallback 生成 Cargo offline config，使 `flowrt deps` 预热后的
-focused smoke 不再依赖网络。
-
-本版本目标是提供 fault matrix capstone：矩阵文件按 case 描述注入点、运行模式和
-graph / instance / route / failover 期望；CLI 逐 case 生成 test-only artifact，运行
-generated app 或 supervisor，采集 final status snapshot 并输出 JSON report。当前不纳入
-生产随机 / chaos 注入、性能矩阵、跨 backend 恢复时序压力测试、Python binding、
-Service over `iox2`、PTP/NTP、cross-host exact sync 或 hard realtime。
 
 上一发布线为 `v0.23.3 既有缺口收束`：该版本把 active scope / defer 收束在一个
 patch 版本内，不再拆成多个 `0.23.Z`。已收口 global tick determinism、cross-process
