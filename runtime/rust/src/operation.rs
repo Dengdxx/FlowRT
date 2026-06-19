@@ -5,6 +5,7 @@
 //! 控制面在更高层接入。
 
 use std::{
+    collections::{BTreeMap, VecDeque},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -357,6 +358,8 @@ pub struct OperationPolicy {
     pub queue_depth: u32,
     /// 最大同时 in-flight invocation 数。
     pub max_in_flight: u32,
+    /// 终态结果快照保留时间；0 表示只在 active 生命周期内可见。
+    pub result_retention: Duration,
 }
 
 impl OperationPolicy {
@@ -383,7 +386,17 @@ impl OperationPolicy {
             preempt,
             queue_depth,
             max_in_flight,
+            result_retention: Duration::ZERO,
         })
+    }
+
+    /// 返回设置了终态结果保留时间的 policy。
+    pub const fn with_result_retention(
+        mut self,
+        result_retention: Duration,
+    ) -> Result<Self, OperationError> {
+        self.result_retention = result_retention;
+        Ok(self)
     }
 
     fn validate(self) -> Result<Self, OperationError> {
@@ -394,6 +407,7 @@ impl OperationPolicy {
             self.queue_depth,
             self.max_in_flight,
         )
+        .and_then(|policy| policy.with_result_retention(self.result_retention))
     }
 }
 
@@ -405,6 +419,7 @@ impl Default for OperationPolicy {
             preempt: OperationPreemptPolicy::Reject,
             queue_depth: 8,
             max_in_flight: 1,
+            result_retention: Duration::ZERO,
         }
     }
 }
@@ -515,6 +530,11 @@ impl OperationHealthCounters {
             }
             OperationState::Idle | OperationState::Starting | OperationState::CancelRequested => {}
         }
+    }
+
+    /// 记录一次抢占事件。
+    pub fn record_preempted(&self) {
+        self.preempted.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 读取健康计数快照。
@@ -961,6 +981,12 @@ pub struct OperationRuntimeEvent {
     pub message: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RetainedOperationStatus {
+    snapshot: OperationStatusSnapshot,
+    expires_at_ms: Option<u64>,
+}
+
 /// Single-owner Operation control state。
 #[derive(Debug)]
 pub struct OperationControl {
@@ -968,8 +994,11 @@ pub struct OperationControl {
     policy: OperationPolicy,
     next_sequence: u64,
     lifecycle: Option<OperationLifecycle>,
+    in_flight: VecDeque<OperationLifecycle>,
+    queue: VecDeque<OperationLifecycle>,
     handler_active: bool,
     health: OperationHealthCounters,
+    retained_results: BTreeMap<OperationId, RetainedOperationStatus>,
     events: Vec<OperationRuntimeEvent>,
 }
 
@@ -981,8 +1010,11 @@ impl OperationControl {
             policy,
             next_sequence: 0,
             lifecycle: None,
+            in_flight: VecDeque::new(),
+            queue: VecDeque::new(),
             handler_active: false,
             health: OperationHealthCounters::default(),
+            retained_results: BTreeMap::new(),
             events: Vec::new(),
         }
     }
@@ -1003,17 +1035,14 @@ impl OperationControl {
         now_ms: u64,
         timeout: Duration,
     ) -> Result<OperationStartAck, OperationControlError> {
-        if let Some(active) = self.lifecycle.as_ref() {
-            if self.handler_active || !active.state().is_terminal() {
+        if self.active_count() > 0 {
+            if let Some(active) = self.lifecycle.as_ref() {
                 if active.owner() != owner {
                     return Err(OperationControlError::OwnerConflict {
                         active_owner: active.owner(),
                         requested_owner: owner,
                     });
                 }
-                return Err(OperationControlError::Busy {
-                    active_owner: active.owner(),
-                });
             }
         }
 
@@ -1025,6 +1054,41 @@ impl OperationControl {
         let lifecycle =
             OperationLifecycle::new_with_authority(id, self.policy, owner, deadline_ms)?;
         let ack = OperationStartAck::accepted_with_authority(id, owner, deadline_ms);
+
+        if self.active_count() > 0 {
+            if self.policy.preempt == OperationPreemptPolicy::CancelRunning {
+                self.preempt_active_invocations()?;
+                self.lifecycle = Some(lifecycle);
+                self.handler_active = true;
+                self.push_state_event(id, OperationState::Starting);
+                return Ok(ack);
+            }
+            if self.active_count() < self.policy.max_in_flight as usize {
+                self.in_flight.push_back(lifecycle);
+                self.push_state_event(id, OperationState::Starting);
+                return Ok(ack);
+            }
+            if self.policy.concurrency == OperationConcurrencyPolicy::Queue {
+                if self.queue.len() >= self.policy.queue_depth as usize {
+                    return Err(OperationControlError::Busy {
+                        active_owner: self
+                            .lifecycle
+                            .as_ref()
+                            .map(OperationLifecycle::owner)
+                            .unwrap_or(owner),
+                    });
+                }
+                self.queue.push_back(lifecycle);
+                self.push_state_event(id, OperationState::Starting);
+                return Ok(ack);
+            }
+            if let Some(active) = self.lifecycle.as_ref() {
+                return Err(OperationControlError::Busy {
+                    active_owner: active.owner(),
+                });
+            }
+        }
+
         self.lifecycle = Some(lifecycle);
         self.handler_active = true;
         self.push_state_event(id, OperationState::Starting);
@@ -1046,7 +1110,6 @@ impl OperationControl {
         id: OperationId,
         owner: OperationOwner,
     ) -> Result<OperationStatusSnapshot, OperationControlError> {
-        let current_id = self.lifecycle.as_ref().map(OperationLifecycle::id);
         let lifecycle = self.current_mut(id)?;
         if lifecycle.owner() != owner {
             return Err(OperationControlError::OwnerConflict {
@@ -1061,13 +1124,7 @@ impl OperationControl {
         }
         lifecycle.request_cancel()?;
         self.push_state_event(id, OperationState::CancelRequested);
-        current_id
-            .filter(|current| *current == id)
-            .map(|_| self.snapshot())
-            .ok_or(OperationControlError::StaleInvocation {
-                requested: id,
-                current: current_id,
-            })
+        self.status(id)
     }
 
     /// 完成 invocation。若 runtime 已先进入 timeout 终态，释放 handler 并返回终态错误。
@@ -1076,29 +1133,98 @@ impl OperationControl {
         id: OperationId,
         terminal_state: OperationState,
     ) -> Result<(), OperationControlError> {
-        let lifecycle = self.current_mut(id)?;
-        if lifecycle.state().is_terminal() {
-            let state = lifecycle.state();
-            self.handler_active = false;
-            return Err(OperationControlError::AlreadyTerminal { state });
+        self.complete_at(id, terminal_state, monotonic_time_ms())
+    }
+
+    /// 完成 invocation，并用显式时间驱动 result retention。
+    pub fn complete_at(
+        &mut self,
+        id: OperationId,
+        terminal_state: OperationState,
+        completed_at_ms: u64,
+    ) -> Result<(), OperationControlError> {
+        if !terminal_state.is_terminal() {
+            let from = self
+                .lifecycle
+                .as_ref()
+                .filter(|lifecycle| lifecycle.id() == id)
+                .map(OperationLifecycle::state)
+                .or_else(|| {
+                    self.retained_results
+                        .get(&id)
+                        .map(|entry| entry.snapshot.state)
+                })
+                .unwrap_or(OperationState::Idle);
+            return Err(OperationControlError::InvalidTransition {
+                from,
+                to: terminal_state,
+            });
         }
-        lifecycle.transition(terminal_state)?;
-        self.health.record_state(terminal_state);
-        self.handler_active = false;
-        let kind = if terminal_state == OperationState::Failed {
-            OperationRuntimeEventKind::Error
-        } else {
-            OperationRuntimeEventKind::Result
-        };
-        self.events.push(OperationRuntimeEvent {
-            id,
-            kind,
-            state: Some(terminal_state),
-            sequence: None,
-            message: None,
-        });
-        self.push_state_event(id, terminal_state);
-        Ok(())
+
+        if let Some((mut lifecycle, was_primary)) = self.remove_active(id) {
+            if lifecycle.state().is_terminal() {
+                let state = lifecycle.state();
+                self.handler_active = false;
+                if was_primary {
+                    self.lifecycle = Some(lifecycle);
+                } else {
+                    self.in_flight.push_front(lifecycle);
+                }
+                return Err(OperationControlError::AlreadyTerminal { state });
+            }
+            lifecycle.transition(terminal_state)?;
+            self.health.record_state(terminal_state);
+            self.handler_active = false;
+            self.push_result_event(id, terminal_state);
+            self.push_state_event(id, terminal_state);
+            let mut snapshot = lifecycle.snapshot();
+            snapshot.health = self.health.snapshot();
+            let should_keep_terminal_primary = was_primary
+                && self.in_flight.is_empty()
+                && self.queue.is_empty()
+                && self.retention_deadline(completed_at_ms).is_none();
+            if should_keep_terminal_primary {
+                self.lifecycle = Some(lifecycle);
+            } else {
+                self.retain_terminal_snapshot(snapshot, completed_at_ms);
+                if was_primary {
+                    self.promote_next_active();
+                }
+                self.promote_queued_until_capacity();
+            }
+            return Ok(());
+        }
+
+        let expires_at_ms = self.retention_deadline(completed_at_ms);
+        if let Some(entry) = self.retained_results.get_mut(&id) {
+            let from = entry.snapshot.state;
+            if from.is_terminal() {
+                return Err(OperationControlError::AlreadyTerminal { state: from });
+            }
+            if !valid_transition(from, terminal_state) {
+                return Err(OperationControlError::InvalidTransition {
+                    from,
+                    to: terminal_state,
+                });
+            }
+            self.health.record_state(terminal_state);
+            entry.snapshot.state = terminal_state;
+            entry.snapshot.health = self.health.snapshot();
+            entry.expires_at_ms = expires_at_ms;
+            let should_remove = entry.expires_at_ms.is_none();
+            let _ = entry;
+            self.push_result_event(id, terminal_state);
+            self.push_state_event(id, terminal_state);
+            if should_remove {
+                self.retained_results.remove(&id);
+            }
+            return Ok(());
+        }
+
+        Err(OperationControlError::StaleInvocation {
+            requested: id,
+            current: self.lifecycle.as_ref().map(OperationLifecycle::id),
+        })
     }
 
     /// 记录 progress publish。
@@ -1107,6 +1233,10 @@ impl OperationControl {
             .lifecycle
             .as_ref()
             .is_some_and(|lifecycle| lifecycle.id() == id && !lifecycle.state().is_terminal())
+            || self
+                .in_flight
+                .iter()
+                .any(|lifecycle| lifecycle.id() == id && !lifecycle.state().is_terminal())
         {
             self.events.push(OperationRuntimeEvent {
                 id,
@@ -1120,20 +1250,25 @@ impl OperationControl {
 
     /// 由 runtime/scheduler step 驱动 deadline。
     pub fn check_deadline(&mut self, now_ms: u64) -> bool {
-        let Some(lifecycle) = self.lifecycle.as_mut() else {
-            return false;
-        };
-        if lifecycle.state().is_terminal() || now_ms < lifecycle.deadline_ms() {
-            return false;
+        let mut due = Vec::new();
+        if let Some(lifecycle) = self.lifecycle.as_ref() {
+            if !lifecycle.state().is_terminal() && now_ms >= lifecycle.deadline_ms() {
+                due.push(lifecycle.id());
+            }
         }
-        let id = lifecycle.id();
-        lifecycle.cancel_token.request_cancel();
-        if lifecycle.transition(OperationState::TimedOut).is_ok() {
-            self.health.record_state(OperationState::TimedOut);
-            self.push_state_event(id, OperationState::TimedOut);
-            return true;
+        due.extend(self.in_flight.iter().filter_map(|lifecycle| {
+            (!lifecycle.state().is_terminal() && now_ms >= lifecycle.deadline_ms())
+                .then_some(lifecycle.id())
+        }));
+        due.extend(self.queue.iter().filter_map(|lifecycle| {
+            (!lifecycle.state().is_terminal() && now_ms >= lifecycle.deadline_ms())
+                .then_some(lifecycle.id())
+        }));
+        let mut changed = false;
+        for id in due {
+            changed |= self.timeout_active(id, now_ms) || self.timeout_queued(id, now_ms);
         }
-        false
+        changed
     }
 
     /// 返回当前 cancel token。
@@ -1141,6 +1276,30 @@ impl OperationControl {
         self.lifecycle
             .as_ref()
             .map(OperationLifecycle::cancel_token)
+    }
+
+    /// 返回指定 active invocation 的 cancel token。
+    pub fn cancel_token_for(&self, id: OperationId) -> Option<OperationCancelToken> {
+        self.lifecycle
+            .as_ref()
+            .filter(|lifecycle| lifecycle.id() == id)
+            .map(OperationLifecycle::cancel_token)
+            .or_else(|| {
+                self.in_flight
+                    .iter()
+                    .find(|lifecycle| lifecycle.id() == id)
+                    .map(OperationLifecycle::cancel_token)
+            })
+    }
+
+    /// 判断 invocation 是否已经成为可进入用户 handler 的 active 状态。
+    pub fn ready_to_run(&self, id: OperationId) -> bool {
+        self.lifecycle.as_ref().is_some_and(|lifecycle| {
+            lifecycle.id() == id && lifecycle.state() == OperationState::Starting
+        }) || self
+            .in_flight
+            .iter()
+            .any(|lifecycle| lifecycle.id() == id && lifecycle.state() == OperationState::Starting)
     }
 
     /// 返回当前状态快照。
@@ -1161,6 +1320,53 @@ impl OperationControl {
         }
     }
 
+    /// 返回指定 invocation 的状态快照。
+    pub fn status(
+        &self,
+        id: OperationId,
+    ) -> Result<OperationStatusSnapshot, OperationControlError> {
+        if let Some(lifecycle) = self
+            .lifecycle
+            .as_ref()
+            .filter(|lifecycle| lifecycle.id() == id)
+        {
+            let mut snapshot = lifecycle.snapshot();
+            snapshot.health = self.health.snapshot();
+            return Ok(snapshot);
+        }
+        if let Some(lifecycle) = self.in_flight.iter().find(|lifecycle| lifecycle.id() == id) {
+            let mut snapshot = lifecycle.snapshot();
+            snapshot.health = self.health.snapshot();
+            return Ok(snapshot);
+        }
+        if let Some(lifecycle) = self.queue.iter().find(|lifecycle| lifecycle.id() == id) {
+            let mut snapshot = lifecycle.snapshot();
+            snapshot.health = self.health.snapshot();
+            return Ok(snapshot);
+        }
+        if let Some(retained) = self.retained_results.get(&id) {
+            return Ok(retained.snapshot);
+        }
+        Err(OperationControlError::StaleInvocation {
+            requested: id,
+            current: self.lifecycle.as_ref().map(OperationLifecycle::id),
+        })
+    }
+
+    /// 返回等待队列中尚未进入 handler 的 invocation 数。
+    pub fn queued_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// 清理已超过 result retention 的终态快照。
+    pub fn evict_retained_results(&mut self, now_ms: u64) {
+        self.retained_results.retain(|_, retained| {
+            retained
+                .expires_at_ms
+                .is_none_or(|deadline| now_ms <= deadline)
+        });
+    }
+
     /// 取走 runtime events。
     pub fn drain_events(&mut self) -> Vec<OperationRuntimeEvent> {
         std::mem::take(&mut self.events)
@@ -1171,16 +1377,23 @@ impl OperationControl {
         id: OperationId,
     ) -> Result<&mut OperationLifecycle, OperationControlError> {
         let current = self.lifecycle.as_ref().map(OperationLifecycle::id);
-        if current != Some(id) {
-            return Err(OperationControlError::StaleInvocation {
-                requested: id,
-                current,
-            });
+        if current == Some(id) {
+            return Ok(self
+                .lifecycle
+                .as_mut()
+                .expect("checked current lifecycle must exist"));
         }
-        Ok(self
-            .lifecycle
-            .as_mut()
-            .expect("checked current lifecycle must exist"))
+        if let Some(lifecycle) = self
+            .in_flight
+            .iter_mut()
+            .find(|lifecycle| lifecycle.id() == id)
+        {
+            return Ok(lifecycle);
+        }
+        Err(OperationControlError::StaleInvocation {
+            requested: id,
+            current,
+        })
     }
 
     fn push_state_event(&mut self, id: OperationId, state: OperationState) {
@@ -1191,6 +1404,193 @@ impl OperationControl {
             sequence: None,
             message: None,
         });
+    }
+
+    fn push_result_event(&mut self, id: OperationId, terminal_state: OperationState) {
+        let kind = if terminal_state == OperationState::Failed {
+            OperationRuntimeEventKind::Error
+        } else {
+            OperationRuntimeEventKind::Result
+        };
+        self.events.push(OperationRuntimeEvent {
+            id,
+            kind,
+            state: Some(terminal_state),
+            sequence: None,
+            message: None,
+        });
+    }
+
+    fn active_count(&self) -> usize {
+        usize::from(
+            self.lifecycle
+                .as_ref()
+                .is_some_and(|lifecycle| !lifecycle.state().is_terminal()),
+        ) + self
+            .in_flight
+            .iter()
+            .filter(|lifecycle| !lifecycle.state().is_terminal())
+            .count()
+    }
+
+    fn remove_active(&mut self, id: OperationId) -> Option<(OperationLifecycle, bool)> {
+        if self.lifecycle.as_ref().map(OperationLifecycle::id) == Some(id) {
+            return self.lifecycle.take().map(|lifecycle| (lifecycle, true));
+        }
+        let index = self
+            .in_flight
+            .iter()
+            .position(|lifecycle| lifecycle.id() == id)?;
+        self.in_flight
+            .remove(index)
+            .map(|lifecycle| (lifecycle, false))
+    }
+
+    fn remove_queued(&mut self, id: OperationId) -> Option<(usize, OperationLifecycle)> {
+        let index = self
+            .queue
+            .iter()
+            .position(|lifecycle| lifecycle.id() == id)?;
+        self.queue.remove(index).map(|lifecycle| (index, lifecycle))
+    }
+
+    fn promote_next_active(&mut self) {
+        if self.lifecycle.is_none() {
+            self.lifecycle = self.in_flight.pop_front();
+        }
+    }
+
+    fn promote_queued_until_capacity(&mut self) {
+        self.promote_next_active();
+        while self.active_count() < self.policy.max_in_flight as usize {
+            let Some(next) = self.queue.pop_front() else {
+                break;
+            };
+            if self.lifecycle.is_none() {
+                self.lifecycle = Some(next);
+            } else {
+                self.in_flight.push_back(next);
+            }
+        }
+        self.handler_active = false;
+    }
+
+    fn preempt_active_invocations(&mut self) -> Result<(), OperationControlError> {
+        let mut active = Vec::new();
+        if let Some(lifecycle) = self.lifecycle.take() {
+            active.push(lifecycle);
+        }
+        active.extend(self.in_flight.drain(..));
+        for mut lifecycle in active {
+            if lifecycle.state().is_terminal() {
+                continue;
+            }
+            let id = lifecycle.id();
+            lifecycle.request_cancel()?;
+            self.health.record_preempted();
+            let mut snapshot = lifecycle.snapshot();
+            snapshot.health = self.health.snapshot();
+            self.retained_results.insert(
+                id,
+                RetainedOperationStatus {
+                    snapshot,
+                    expires_at_ms: None,
+                },
+            );
+            self.push_state_event(id, OperationState::CancelRequested);
+        }
+        self.handler_active = false;
+        Ok(())
+    }
+
+    fn timeout_active(&mut self, id: OperationId, now_ms: u64) -> bool {
+        let Some((mut lifecycle, was_primary)) = self.remove_active(id) else {
+            return false;
+        };
+        if lifecycle.state().is_terminal() || now_ms < lifecycle.deadline_ms() {
+            if was_primary {
+                self.lifecycle = Some(lifecycle);
+            } else {
+                self.in_flight.push_front(lifecycle);
+            }
+            return false;
+        }
+        lifecycle.cancel_token.request_cancel();
+        if lifecycle.transition(OperationState::TimedOut).is_err() {
+            if was_primary {
+                self.lifecycle = Some(lifecycle);
+            } else {
+                self.in_flight.push_front(lifecycle);
+            }
+            return false;
+        }
+        self.health.record_state(OperationState::TimedOut);
+        self.handler_active = false;
+        let mut snapshot = lifecycle.snapshot();
+        snapshot.health = self.health.snapshot();
+        self.push_state_event(id, OperationState::TimedOut);
+        let should_keep_terminal_primary = was_primary
+            && self.in_flight.is_empty()
+            && self.queue.is_empty()
+            && self.retention_deadline(now_ms).is_none();
+        if should_keep_terminal_primary {
+            self.lifecycle = Some(lifecycle);
+        } else {
+            self.retain_terminal_snapshot(snapshot, now_ms);
+            if was_primary {
+                self.promote_next_active();
+            }
+            self.promote_queued_until_capacity();
+        }
+        true
+    }
+
+    fn timeout_queued(&mut self, id: OperationId, now_ms: u64) -> bool {
+        let Some((index, mut lifecycle)) = self.remove_queued(id) else {
+            return false;
+        };
+        if lifecycle.state().is_terminal() || now_ms < lifecycle.deadline_ms() {
+            self.queue.insert(index, lifecycle);
+            return false;
+        }
+        lifecycle.cancel_token.request_cancel();
+        if lifecycle.transition(OperationState::TimedOut).is_err() {
+            self.queue.insert(index, lifecycle);
+            return false;
+        }
+        self.health.record_state(OperationState::TimedOut);
+        let mut snapshot = lifecycle.snapshot();
+        snapshot.health = self.health.snapshot();
+        self.push_state_event(id, OperationState::TimedOut);
+        self.retain_terminal_snapshot(snapshot, now_ms);
+        true
+    }
+
+    fn retain_terminal_snapshot(
+        &mut self,
+        snapshot: OperationStatusSnapshot,
+        completed_at_ms: u64,
+    ) {
+        let Some(expires_at_ms) = self.retention_deadline(completed_at_ms) else {
+            self.retained_results.remove(&snapshot.id);
+            return;
+        };
+        self.retained_results.insert(
+            snapshot.id,
+            RetainedOperationStatus {
+                snapshot,
+                expires_at_ms: Some(expires_at_ms),
+            },
+        );
+    }
+
+    fn retention_deadline(&self, completed_at_ms: u64) -> Option<u64> {
+        let retention_ms = duration_millis_u64(self.policy.result_retention);
+        if retention_ms == 0 {
+            None
+        } else {
+            Some(completed_at_ms.saturating_add(retention_ms))
+        }
     }
 }
 

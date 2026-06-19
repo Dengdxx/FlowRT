@@ -1252,14 +1252,16 @@ Operation runtime 生命周期固定为：
 | `failed` | handler error、panic/exception 或 runtime 执行失败 |
 | `timed_out` | scheduler/runtime 驱动 deadline 到期 |
 
-当前 generated Operation runtime 支持 `inproc` 与 `zenoh` backend，只支持单个运行中的
-invocation 和默认 single-owner control authority：policy 必须是 `concurrency = "reject"`、
-`preempt = "reject"`、`max_in_flight = 1`。start 会建立 invocation id、owner 和 deadline；
-同一 scope 的第二个 owner start 会返回结构化冲突错误。cancel 只作用于当前 invocation id，
-stale id 会被拒绝或返回明确说明，不会误取消后续 invocation。timeout/deadline 由 runtime
-hidden task 驱动，不依赖用户 handler 自觉检查。`backend = "zenoh"` 时，start/cancel/status
-control path 走内部 zenoh service transport，用户 API 仍保持 Operation 语义。`queue`、
-`cancel_running` 和多 in-flight 策略属于长期 IR 语义，runtime 完整实现前由 validator 拒绝。
+当前 generated Operation runtime 支持 `inproc` 与 `zenoh` backend、single-owner control
+authority、`concurrency = "reject" | "queue"`、`preempt = "reject" | "cancel_running"`、
+`max_in_flight > 0`、`feedback = "latest" | "fifo"` 和 `result_retention_ms`。start 会建立
+invocation id、owner 和 deadline；同一 scope 的第二个 owner start 会返回结构化冲突错误。
+`queue` 在 active slot 达到 `max_in_flight` 后按 `queue_depth` 有界排队；`cancel_running`
+会先请求当前 active invocation cooperative cancel，再接受替换 invocation。cancel 只作用于
+指定 invocation id，stale id 会被拒绝或返回明确说明，不会误取消后续 invocation。
+timeout/deadline 由 runtime hidden task 驱动，不依赖用户 handler 自觉检查。`backend =
+"zenoh"` 时，start/cancel/status control path 走内部 zenoh service transport，用户 API
+仍保持 Operation 语义。
 
 `op list` 读取 self-description：传入 `--image` 时读取生成应用二进制或 `selfdesc.json`，省略 `--image` 时通过 live socket 请求当前进程嵌入的 self-description。输出包含 Operation name、canonical id、client/server 端口、goal/feedback/result 类型、backend 和 policy 摘要。
 

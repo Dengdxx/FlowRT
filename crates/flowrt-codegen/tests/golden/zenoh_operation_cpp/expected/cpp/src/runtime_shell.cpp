@@ -300,7 +300,8 @@ App::App(
             flowrt::OperationConcurrencyPolicy::Reject,
             flowrt::OperationPreemptPolicy::Reject,
             4U,
-            1U);
+            1U,
+            std::chrono::milliseconds{60000});
         this->operation_control_0_ = std::make_shared<flowrt::OperationControl>(
             flowrt::fnv1a64("controller.plan"),
             operation_policy_0.value());
@@ -661,20 +662,33 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
                 }
                 const auto ack = started.value();
                 const auto id = ack.id;
-                const auto cancel = operation_control->cancel_token().value();
-                if (const auto error = operation_control->mark_running(id);
-                    error != flowrt::OperationControlError::Ok) {
-                    return flowrt_operation_control_error<flowrt::OperationStartAck>(error);
-                }
                 auto goal_for_worker = request.goal;
                 try {
-                    std::thread([operation_worker_server, operation_control, id, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {
+                    std::thread([operation_worker_server, operation_control, id, goal_for_worker = std::move(goal_for_worker)]() mutable {
+                        while (true) {
+                            const auto status = operation_control->status(id);
+                            if (!status.has_value() || flowrt::is_terminal(status->state)) {
+                                return;
+                            }
+                            if (operation_control->ready_to_run(id)) {
+                                break;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                        }
+                        const auto cancel = operation_control->cancel_token_for(id);
+                        if (!cancel.has_value()) {
+                            return;
+                        }
+                        if (const auto error = operation_control->mark_running(id);
+                            error != flowrt::OperationControlError::Ok) {
+                            return;
+                        }
                         auto progress = flowrt::OperationProgressPublisher<PlanFeedback>{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {
                             operation_control->publish_progress(progress_id, sequence);
                         }};
                         flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
                         try {
-                            const auto result = operation_worker_server->on_plan_operation(goal_for_worker, cancel, progress);
+                            const auto result = operation_worker_server->on_plan_operation(goal_for_worker, *cancel, progress);
                             switch (result.kind()) {
                                 case flowrt::OperationHandlerResult<PlanResult>::Kind::Succeeded:
                                     terminal_state = flowrt::OperationState::Succeeded;
@@ -715,8 +729,12 @@ flowrt::Status App::run(const flowrt::Backend& backend, std::optional<std::size_
         }
         this->operation_status_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
             "__flowrt_operation_controller_plan_status", zenoh_operation_session,
-            [this](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
-                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_0_->snapshot());
+            [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
+                const auto status = this->operation_control_0_->status(id);
+                if (!status.has_value()) {
+                    return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(status.error());
+                }
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(status.value());
             });
         if (!this->operation_status_server_navigator_plan_ || !this->operation_status_server_navigator_plan_->ready()) {
             status = flowrt::Status::Error;
@@ -1521,20 +1539,33 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
                 }
                 const auto ack = started.value();
                 const auto id = ack.id;
-                const auto cancel = operation_control->cancel_token().value();
-                if (const auto error = operation_control->mark_running(id);
-                    error != flowrt::OperationControlError::Ok) {
-                    return flowrt_operation_control_error<flowrt::OperationStartAck>(error);
-                }
                 auto goal_for_worker = request.goal;
                 try {
-                    std::thread([operation_worker_server, operation_control, id, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {
+                    std::thread([operation_worker_server, operation_control, id, goal_for_worker = std::move(goal_for_worker)]() mutable {
+                        while (true) {
+                            const auto status = operation_control->status(id);
+                            if (!status.has_value() || flowrt::is_terminal(status->state)) {
+                                return;
+                            }
+                            if (operation_control->ready_to_run(id)) {
+                                break;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                        }
+                        const auto cancel = operation_control->cancel_token_for(id);
+                        if (!cancel.has_value()) {
+                            return;
+                        }
+                        if (const auto error = operation_control->mark_running(id);
+                            error != flowrt::OperationControlError::Ok) {
+                            return;
+                        }
                         auto progress = flowrt::OperationProgressPublisher<PlanFeedback>{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {
                             operation_control->publish_progress(progress_id, sequence);
                         }};
                         flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
                         try {
-                            const auto result = operation_worker_server->on_plan_operation(goal_for_worker, cancel, progress);
+                            const auto result = operation_worker_server->on_plan_operation(goal_for_worker, *cancel, progress);
                             switch (result.kind()) {
                                 case flowrt::OperationHandlerResult<PlanResult>::Kind::Succeeded:
                                     terminal_state = flowrt::OperationState::Succeeded;
@@ -1575,8 +1606,12 @@ flowrt::Status App::run_process_server_proc(const flowrt::Backend& backend, std:
         }
         this->operation_status_server_navigator_plan_ = flowrt::zenoh::ZenohServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open(
             "__flowrt_operation_controller_plan_status", zenoh_operation_session,
-            [this](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
-                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_0_->snapshot());
+            [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {
+                const auto status = this->operation_control_0_->status(id);
+                if (!status.has_value()) {
+                    return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(status.error());
+                }
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(status.value());
             });
         if (!this->operation_status_server_navigator_plan_ || !this->operation_status_server_navigator_plan_->ready()) {
             status = flowrt::Status::Error;

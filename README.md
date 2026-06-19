@@ -599,7 +599,11 @@ server = "navigator.plan"
 backend = "inproc"
 timeout_ms = 5000
 queue_depth = 4
-max_in_flight = 1
+max_in_flight = 2
+concurrency = "queue"
+preempt = "cancel_running"
+feedback = "fifo"
+result_retention_ms = 5000
 ```
 
 codegen 为 client 生成 `OperationClient_{instance}_{port}` typed handle，为 server
@@ -620,17 +624,19 @@ generated Operation runtime 使用明确生命周期：
 | `failed` | handler error、panic/exception 或 runtime 执行失败 |
 | `timed_out` | scheduler/runtime 驱动 deadline 到期 |
 
-当前 generated Operation runtime 支持单个运行中的 invocation 和默认 single-owner control
-authority：`concurrency = "reject"`、`preempt = "reject"`、`max_in_flight = 1`。
-start 会建立 invocation id、owner 和 deadline；第二个 owner start 返回结构化冲突错误。
-cancel 只作用于当前 invocation id，stale id 会被拒绝或返回明确说明，不会误取消后续
-invocation。timeout/deadline 由 runtime hidden task 驱动，不依赖用户 handler 自觉检查。
-用户 handler 通过 `OperationCancelToken` 做 cooperative cancel check，并通过 typed
+当前 generated Operation runtime 支持 `inproc` 与 `zenoh` backend、single-owner control
+authority、`concurrency = "reject" | "queue"`、`preempt = "reject" | "cancel_running"`、
+`max_in_flight > 0`、`feedback = "latest" | "fifo"` 和 `result_retention_ms`。start 会建立
+invocation id、owner 和 deadline；同一 scope 的第二个 owner start 返回结构化冲突错误。
+`queue` 在 active slot 达到 `max_in_flight` 后按 `queue_depth` 有界排队；`cancel_running`
+会先请求当前 active invocation cooperative cancel，再接受替换 invocation。cancel 只作用于
+指定 invocation id，stale id 会被拒绝或返回明确说明，不会误取消后续 invocation。
+timeout/deadline 由 runtime hidden task 驱动，不依赖用户 handler 自觉检查。用户 handler
+通过 `OperationCancelToken` 做 cooperative cancel check，并通过 typed
 `OperationProgressPublisher` 发布 progress。`status` / `record` 会输出 state change、
-progress、result 和 error 事件。`backend = "zenoh"` 时，generated runtime 会把
-start/cancel/status control path 接到内部 zenoh service transport；用户 API 仍是
-Operation。`queue`、`cancel_running` 和多 in-flight 策略已保留在 IR 长期模型中，但在
-runtime 完整实现前由 validator 拒绝。
+progress、result 和 error 事件；终态 status 会按 `result_retention_ms` 保留。`backend =
+"zenoh"` 时，generated runtime 会把 start/cancel/status control path 接到内部 zenoh service
+transport；用户 API 仍是 Operation。
 
 查看 Operation 拓扑和运行态状态：
 

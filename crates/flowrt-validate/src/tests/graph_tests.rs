@@ -1089,10 +1089,10 @@ server = "navigator.plan"
 }
 
 #[test]
-fn rejects_operation_policies_not_supported_by_generated_runtime() {
+fn accepts_operation_policies_supported_by_generated_runtime() {
     let source = r#"
 [package]
-name = "bad_operation_policy"
+name = "operation_policy"
 rsdl_version = "0.1"
 
 [component.controller]
@@ -1120,46 +1120,17 @@ component = "navigator"
 [[bind.operation]]
 client = "controller.plan"
 server = "navigator.plan"
+concurrency = "queue"
+preempt = "cancel_running"
+queue_depth = 4
+max_in_flight = 2
+feedback = "fifo"
+result_retention_ms = 5000
 "#;
     let raw = parse_str(source).unwrap();
-    let mut ir = normalize_document(&raw, hash_source(source)).unwrap();
-    let policy = &mut ir.graphs[0].operations[0].policy;
-    policy.concurrency = flowrt_ir::OperationConcurrencyPolicy::Queue;
-    policy.preempt = flowrt_ir::OperationPreemptPolicy::CancelRunning;
-    policy.max_in_flight = 2;
-    policy.feedback = flowrt_ir::OperationFeedbackPolicy::Fifo;
-    policy.result_retention_ms = 120_000;
-    ir.graphs[0].operations[0].policy_source.result_retention_ms =
-        flowrt_ir::PolicyValueSource::Explicit;
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
 
-    let report =
-        validate_contract(&ir).expect_err("unsupported generated operation policy should fail");
-
-    assert!(report.errors.iter().any(|error| {
-        error.message.contains(
-            "operation bind `controller.plan -> navigator.plan` uses unsupported concurrency policy `queue`",
-        )
-    }));
-    assert!(report.errors.iter().any(|error| {
-        error.message.contains(
-            "operation bind `controller.plan -> navigator.plan` uses unsupported preempt policy `cancel_running`",
-        )
-    }));
-    assert!(report.errors.iter().any(|error| {
-        error.message.contains(
-            "operation bind `controller.plan -> navigator.plan` uses unsupported max_in_flight `2`",
-        )
-    }));
-    assert!(report.errors.iter().any(|error| {
-        error.message.contains(
-            "operation bind `controller.plan -> navigator.plan` uses unsupported feedback policy `fifo`",
-        )
-    }));
-    assert!(report.errors.iter().any(|error| {
-        error.message.contains(
-            "operation bind `controller.plan -> navigator.plan` uses unsupported result_retention_ms",
-        )
-    }));
+    validate_contract(&ir).expect("implemented Operation policy combination should validate");
 }
 
 #[test]

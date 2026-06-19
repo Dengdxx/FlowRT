@@ -197,6 +197,7 @@ pub(crate) fn emit_rust_operation_new(
             let queue_depth = plan.queue_depth.max(1);
             let max_in_flight = plan.max_in_flight.max(1);
             let timeout_ms = plan.timeout_ms.max(1);
+            let result_retention_ms = plan.result_retention_ms;
             let concurrency = rust_operation_concurrency(plan.concurrency);
             let preempt = rust_operation_preempt(plan.preempt);
             let control_var = format!("operation_control_{}", plan.index);
@@ -207,7 +208,7 @@ pub(crate) fn emit_rust_operation_new(
                  {preempt},\n\
                  {queue_depth},\n\
                  {max_in_flight},\n\
-             ) {{\n\
+             ).and_then(|policy| policy.with_result_retention(std::time::Duration::from_millis({result_retention_ms}))) {{\n\
                  Ok(policy) => policy,\n\
                  Err(error) => panic!(\"validated operation policy rejected at runtime: {{error}}\"),\n\
              }};\n\
@@ -233,6 +234,7 @@ pub(crate) fn emit_rust_operation_new(
         let queue_depth = plan.queue_depth.max(1);
         let max_in_flight = plan.max_in_flight.max(1);
         let timeout_ms = plan.timeout_ms.max(1);
+        let result_retention_ms = plan.result_retention_ms;
         let concurrency = rust_operation_concurrency(plan.concurrency);
         let preempt = rust_operation_preempt(plan.preempt);
         let lane_id = lane_id_base + operation_lane_offset + 1;
@@ -281,7 +283,7 @@ pub(crate) fn emit_rust_operation_new(
                  {preempt},\n\
                  {queue_depth},\n\
                  {max_in_flight},\n\
-             ) {{\n\
+             ).and_then(|policy| policy.with_result_retention(std::time::Duration::from_millis({result_retention_ms}))) {{\n\
                  Ok(policy) => policy,\n\
                  Err(error) => panic!(\"validated operation policy rejected at runtime: {{error}}\"),\n\
              }};\n\
@@ -294,19 +296,36 @@ pub(crate) fn emit_rust_operation_new(
                      Err(error) => return flowrt_operation_control_error(error),\n\
                  }};\n\
                  let id = ack.id;\n\
-                 let cancel = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cancel_token() {{\n\
-                     Some(cancel) => cancel,\n\
-                     None => return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError),\n\
-                 }};\n\
-                 if let Err(error) = {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).mark_running(id) {{\n\
-                     return flowrt_operation_control_error(error);\n\
-                 }}\n\
                  let operation_worker_server = {server_component}.clone();\n\
                  let operation_worker_control = {start_handler}_control.clone();\n\
                  let goal_for_worker = request.goal;\n\
                  let spawn_result = std::thread::Builder::new()\n\
                      .name(\"flowrt-operation-{index}\".to_string())\n\
                      .spawn(move || {{\n\
+                         loop {{\n\
+                             let should_start = {{\n\
+                                 let control = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+                                 let status = match control.status(id) {{\n\
+                                     Ok(status) => status,\n\
+                                     Err(_) => return,\n\
+                                 }};\n\
+                                 if status.state.is_terminal() {{\n\
+                                     return;\n\
+                                 }}\n\
+                                 control.ready_to_run(id)\n\
+                             }};\n\
+                             if should_start {{\n\
+                                 break;\n\
+                             }}\n\
+                             std::thread::sleep(std::time::Duration::from_millis(1));\n\
+                         }}\n\
+                         let cancel = match operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cancel_token_for(id) {{\n\
+                             Some(cancel) => cancel,\n\
+                             None => return,\n\
+                         }};\n\
+                         if operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).mark_running(id).is_err() {{\n\
+                             return;\n\
+                         }}\n\
                          let operation_progress_control = operation_worker_control.clone();\n\
                          let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
                              operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
@@ -343,8 +362,11 @@ pub(crate) fn emit_rust_operation_new(
                  }}\n\
              }};\n\
              let {status_handler}_control = {control_var}.clone();\n\
-             let {status_handler} = move |_id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
-                 flowrt::ServiceResult::ok({status_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot())\n\
+             let {status_handler} = move |id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
+                 match {status_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).status(id) {{\n\
+                     Ok(snapshot) => flowrt::ServiceResult::ok(snapshot),\n\
+                     Err(error) => flowrt_operation_control_error(error),\n\
+                 }}\n\
              }};\n"
         ));
 
@@ -555,19 +577,36 @@ pub(crate) fn emit_rust_zenoh_operation_endpoints(
                          Err(error) => return flowrt_operation_control_error(error),\n\
                      }};\n\
                      let id = ack.id;\n\
-                     let cancel = match {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cancel_token() {{\n\
-                         Some(cancel) => cancel,\n\
-                         None => return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError),\n\
-                     }};\n\
-                     if let Err(error) = {start_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).mark_running(id) {{\n\
-                         return flowrt_operation_control_error(error);\n\
-                     }}\n\
                      let operation_worker_server = operation_server_{index}.clone();\n\
                      let operation_worker_control = {start_handler}_control.clone();\n\
                      let goal_for_worker = request.goal;\n\
                      let spawn_result = std::thread::Builder::new()\n\
                          .name(\"flowrt-operation-{index}\".to_string())\n\
                          .spawn(move || {{\n\
+                             loop {{\n\
+                                 let should_start = {{\n\
+                                     let control = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+                                     let status = match control.status(id) {{\n\
+                                         Ok(status) => status,\n\
+                                         Err(_) => return,\n\
+                                     }};\n\
+                                     if status.state.is_terminal() {{\n\
+                                         return;\n\
+                                     }}\n\
+                                     control.ready_to_run(id)\n\
+                                 }};\n\
+                                 if should_start {{\n\
+                                     break;\n\
+                                 }}\n\
+                                 std::thread::sleep(std::time::Duration::from_millis(1));\n\
+                             }}\n\
+                             let cancel = match operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cancel_token_for(id) {{\n\
+                                 Some(cancel) => cancel,\n\
+                                 None => return,\n\
+                             }};\n\
+                             if operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).mark_running(id).is_err() {{\n\
+                                 return;\n\
+                             }}\n\
                              let operation_progress_control = operation_worker_control.clone();\n\
                              let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
                                  operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
@@ -627,8 +666,11 @@ pub(crate) fn emit_rust_zenoh_operation_endpoints(
              }};\n\
              let {status_server_var} = if let Some(session) = zenoh_operation_session.as_ref() {{\n\
                  let {status_handler}_control = app.{control_field}.clone();\n\
-                 let {status_handler} = move |_id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
-                     flowrt::ServiceResult::ok({status_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot())\n\
+                 let {status_handler} = move |id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
+                     match {status_handler}_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).status(id) {{\n\
+                         Ok(snapshot) => flowrt::ServiceResult::ok(snapshot),\n\
+                         Err(error) => flowrt_operation_control_error(error),\n\
+                     }}\n\
                  }};\n\
                  match flowrt::zenoh::ZenohServiceServer::open({status_name}, session.clone(), {status_handler}) {{\n\
                      Ok(server) => Some(server),\n\

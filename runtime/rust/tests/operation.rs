@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use flowrt::{
-    FrameCodec, OperationCancelToken, OperationConcurrencyPolicy, OperationError,
-    OperationHealthCounters, OperationHealthSnapshot, OperationId, OperationLifecycle,
-    OperationOwner, OperationPolicy, OperationPreemptPolicy, OperationProgress, OperationStartAck,
-    OperationStartRequest, OperationState, OperationStatusSnapshot,
+    FrameCodec, OperationCancelToken, OperationConcurrencyPolicy, OperationControl,
+    OperationControlError, OperationError, OperationHealthCounters, OperationHealthSnapshot,
+    OperationId, OperationLifecycle, OperationOwner, OperationPolicy, OperationPreemptPolicy,
+    OperationProgress, OperationStartAck, OperationStartRequest, OperationState,
+    OperationStatusSnapshot,
 };
 
 fn frame_roundtrip<T>(value: &T)
@@ -125,6 +126,175 @@ fn operation_timeout_updates_counters() {
     timed.transition(OperationState::Running).unwrap();
     timed.transition(OperationState::TimedOut).unwrap();
     assert_eq!(timed.snapshot().health.timeout, 1);
+}
+
+#[test]
+fn operation_control_queue_promotes_next_invocation_after_completion() {
+    let policy = OperationPolicy::new(
+        Duration::from_millis(50),
+        OperationConcurrencyPolicy::Queue,
+        OperationPreemptPolicy::Reject,
+        2,
+        1,
+    )
+    .unwrap();
+    let owner = OperationOwner::new(10, 20);
+    let mut control = OperationControl::new(99, policy);
+
+    let first = control.start(owner, 100).unwrap();
+    control.mark_running(first.id).unwrap();
+    let second = control.start(owner, 101).unwrap();
+
+    assert_eq!(control.queued_len(), 1);
+    assert_eq!(
+        control.status(second.id).unwrap().state,
+        OperationState::Starting
+    );
+    assert_eq!(
+        control.mark_running(second.id),
+        Err(OperationControlError::StaleInvocation {
+            requested: second.id,
+            current: Some(first.id),
+        })
+    );
+
+    control
+        .complete_at(first.id, OperationState::Succeeded, 110)
+        .unwrap();
+    assert_eq!(control.queued_len(), 0);
+    assert_eq!(control.snapshot().id, second.id);
+    assert_eq!(control.snapshot().state, OperationState::Starting);
+    control.mark_running(second.id).unwrap();
+}
+
+#[test]
+fn operation_control_times_out_queued_invocation_before_promotion() {
+    let policy = OperationPolicy::new(
+        Duration::from_millis(50),
+        OperationConcurrencyPolicy::Queue,
+        OperationPreemptPolicy::Reject,
+        2,
+        1,
+    )
+    .and_then(|policy| policy.with_result_retention(Duration::from_millis(100)))
+    .unwrap();
+    let owner = OperationOwner::new(10, 20);
+    let mut control = OperationControl::new(99, policy);
+
+    let first = control
+        .start_with_timeout(owner, 100, Duration::from_millis(200))
+        .unwrap();
+    control.mark_running(first.id).unwrap();
+    let second = control
+        .start_with_timeout(owner, 101, Duration::from_millis(10))
+        .unwrap();
+
+    assert_eq!(control.queued_len(), 1);
+    assert!(control.check_deadline(111));
+    assert_eq!(control.queued_len(), 0);
+    assert_eq!(control.snapshot().id, first.id);
+    assert_eq!(control.snapshot().state, OperationState::Running);
+    assert_eq!(
+        control.status(second.id).unwrap().state,
+        OperationState::TimedOut
+    );
+    assert!(!control.ready_to_run(second.id));
+}
+
+#[test]
+fn operation_control_cancel_running_preempts_active_invocation() {
+    let policy = OperationPolicy::new(
+        Duration::from_millis(50),
+        OperationConcurrencyPolicy::Reject,
+        OperationPreemptPolicy::CancelRunning,
+        8,
+        1,
+    )
+    .unwrap();
+    let owner = OperationOwner::new(10, 20);
+    let mut control = OperationControl::new(99, policy);
+
+    let first = control.start(owner, 100).unwrap();
+    control.mark_running(first.id).unwrap();
+    let first_cancel = control.cancel_token().unwrap();
+
+    let second = control.start(owner, 101).unwrap();
+
+    assert!(first_cancel.is_canceled());
+    assert_eq!(
+        control.status(first.id).unwrap().state,
+        OperationState::CancelRequested
+    );
+    assert_eq!(control.snapshot().id, second.id);
+    assert_eq!(control.snapshot().state, OperationState::Starting);
+    assert_eq!(control.snapshot().health.preempted, 1);
+    control.mark_running(second.id).unwrap();
+}
+
+#[test]
+fn operation_control_allows_multiple_in_flight_invocations_until_limit() {
+    let policy = OperationPolicy::new(
+        Duration::from_millis(50),
+        OperationConcurrencyPolicy::Queue,
+        OperationPreemptPolicy::Reject,
+        2,
+        2,
+    )
+    .unwrap();
+    let owner = OperationOwner::new(10, 20);
+    let mut control = OperationControl::new(99, policy);
+
+    let first = control.start(owner, 100).unwrap();
+    let second = control.start(owner, 101).unwrap();
+    let third = control.start(owner, 102).unwrap();
+
+    assert!(control.ready_to_run(first.id));
+    assert!(control.ready_to_run(second.id));
+    assert!(!control.ready_to_run(third.id));
+    assert_eq!(control.queued_len(), 1);
+    control.mark_running(first.id).unwrap();
+    control.mark_running(second.id).unwrap();
+    control
+        .complete_at(first.id, OperationState::Succeeded, 110)
+        .unwrap();
+
+    assert!(control.ready_to_run(third.id));
+    assert_eq!(control.queued_len(), 0);
+    control.mark_running(third.id).unwrap();
+}
+
+#[test]
+fn operation_control_retains_terminal_status_until_retention_deadline() {
+    let policy = OperationPolicy {
+        result_retention: Duration::from_millis(20),
+        ..OperationPolicy::default()
+    };
+    let owner = OperationOwner::new(10, 20);
+    let mut control = OperationControl::new(99, policy);
+
+    let ack = control.start(owner, 100).unwrap();
+    control.mark_running(ack.id).unwrap();
+    control
+        .complete_at(ack.id, OperationState::Succeeded, 110)
+        .unwrap();
+
+    assert_eq!(
+        control.status(ack.id).unwrap().state,
+        OperationState::Succeeded
+    );
+    control.evict_retained_results(129);
+    assert_eq!(
+        control.status(ack.id).unwrap().state,
+        OperationState::Succeeded
+    );
+    control.evict_retained_results(131);
+    assert_eq!(
+        control.status(ack.id),
+        Err(OperationControlError::StaleInvocation {
+            requested: ack.id,
+            current: None,
+        })
+    );
 }
 
 #[test]

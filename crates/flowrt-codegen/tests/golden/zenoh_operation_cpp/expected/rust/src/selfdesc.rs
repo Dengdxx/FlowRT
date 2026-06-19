@@ -2,7 +2,7 @@
 
 #[used]
 #[unsafe(link_section = ".flowrt.selfdesc")]
-static FLOWRT_SELF_DESCRIPTION: [u8; 7669] = *br#"{
+static FLOWRT_SELF_DESCRIPTION: [u8; 7670] = *br#"{
   "self_description_version": "0.1",
   "ir_version": "0.1",
   "schema_version": "0.1",
@@ -168,7 +168,7 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 7669] = *br#"{
           "queue_depth": 4,
           "max_in_flight": 1,
           "feedback": "latest",
-          "result_retention_ms": null,
+          "result_retention_ms": 60000,
           "lowering": {
             "start_service": "__flowrt_operation_controller_plan_start",
             "cancel_service": "__flowrt_operation_controller_plan_cancel",
@@ -331,5 +331,5 @@ pub fn self_description_json() -> &'static str {
 
 #[allow(dead_code)]
 pub fn self_description_hash() -> &'static str {
-    "72440cc678f7acc60841083e46326561e32528365bb52bdcfd67d77aa719a8f6"
+    "6863d8cee17ee3490899c38f859840ac4fcf872837e8bd82e4d56f102b2fdbfd"
 }

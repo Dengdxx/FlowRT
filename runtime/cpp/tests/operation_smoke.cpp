@@ -2,8 +2,8 @@
 ///
 /// 覆盖 OperationId、policy、状态转换、cooperative cancel、进度事件和健康计数。
 
-#include <cassert>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <flowrt/operation.hpp>
@@ -128,6 +128,110 @@ int main() {
     assert(control.snapshot().cancel_requested);
     assert(control.cancel_token().has_value());
     assert(control.cancel_token()->is_canceled());
+
+    auto queue_policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Queue,
+        flowrt::OperationPreemptPolicy::Reject, 2U, 1U);
+    assert(queue_policy.has_value());
+    flowrt::OperationControl queue_control{99U, *queue_policy};
+    const auto queued_first = queue_control.start(owner_a, 100U);
+    assert(queued_first.has_value());
+    assert(queue_control.mark_running(queued_first->id) == flowrt::OperationControlError::Ok);
+    const auto queued_second = queue_control.start(owner_a, 101U);
+    assert(queued_second.has_value());
+    assert(queue_control.queued_len() == 1U);
+    assert(queue_control.status(queued_second->id)->state == flowrt::OperationState::Starting);
+    assert(queue_control.mark_running(queued_second->id) ==
+           flowrt::OperationControlError::StaleInvocation);
+    assert(queue_control.complete_at(queued_first->id, flowrt::OperationState::Succeeded, 110U) ==
+           flowrt::OperationControlError::Ok);
+    assert(queue_control.queued_len() == 0U);
+    assert(queue_control.snapshot().id == queued_second->id);
+    assert(queue_control.snapshot().state == flowrt::OperationState::Starting);
+    assert(queue_control.mark_running(queued_second->id) == flowrt::OperationControlError::Ok);
+
+    auto queue_timeout_policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Queue,
+        flowrt::OperationPreemptPolicy::Reject, 2U, 1U, std::chrono::milliseconds{100});
+    assert(queue_timeout_policy.has_value());
+    flowrt::OperationControl queue_timeout_control{99U, *queue_timeout_policy};
+    const auto queue_timeout_first = queue_timeout_control.start_with_timeout(
+        owner_a, 100U, std::chrono::milliseconds{200});
+    assert(queue_timeout_first.has_value());
+    assert(queue_timeout_control.mark_running(queue_timeout_first->id) ==
+           flowrt::OperationControlError::Ok);
+    const auto queue_timeout_second = queue_timeout_control.start_with_timeout(
+        owner_a, 101U, std::chrono::milliseconds{10});
+    assert(queue_timeout_second.has_value());
+    assert(queue_timeout_control.queued_len() == 1U);
+    assert(queue_timeout_control.check_deadline(111U));
+    assert(queue_timeout_control.queued_len() == 0U);
+    assert(queue_timeout_control.snapshot().id == queue_timeout_first->id);
+    assert(queue_timeout_control.snapshot().state == flowrt::OperationState::Running);
+    assert(queue_timeout_control.status(queue_timeout_second->id)->state ==
+           flowrt::OperationState::TimedOut);
+    assert(!queue_timeout_control.ready_to_run(queue_timeout_second->id));
+
+    auto preempt_policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Reject,
+        flowrt::OperationPreemptPolicy::CancelRunning, 8U, 1U);
+    assert(preempt_policy.has_value());
+    flowrt::OperationControl preempt_control{99U, *preempt_policy};
+    const auto preempt_first = preempt_control.start(owner_a, 100U);
+    assert(preempt_first.has_value());
+    assert(preempt_control.mark_running(preempt_first->id) == flowrt::OperationControlError::Ok);
+    const auto first_cancel = preempt_control.cancel_token();
+    assert(first_cancel.has_value());
+    const auto preempt_second = preempt_control.start(owner_a, 101U);
+    assert(preempt_second.has_value());
+    assert(first_cancel->is_canceled());
+    assert(preempt_control.status(preempt_first->id)->state ==
+           flowrt::OperationState::CancelRequested);
+    assert(preempt_control.snapshot().id == preempt_second->id);
+    assert(preempt_control.snapshot().state == flowrt::OperationState::Starting);
+    assert(preempt_control.snapshot().health.preempted == 1U);
+    assert(preempt_control.mark_running(preempt_second->id) == flowrt::OperationControlError::Ok);
+
+    auto multi_policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Queue,
+        flowrt::OperationPreemptPolicy::Reject, 2U, 2U);
+    assert(multi_policy.has_value());
+    flowrt::OperationControl multi_control{99U, *multi_policy};
+    const auto multi_first = multi_control.start(owner_a, 100U);
+    const auto multi_second = multi_control.start(owner_a, 101U);
+    const auto multi_third = multi_control.start(owner_a, 102U);
+    assert(multi_first.has_value());
+    assert(multi_second.has_value());
+    assert(multi_third.has_value());
+    assert(multi_control.ready_to_run(multi_first->id));
+    assert(multi_control.ready_to_run(multi_second->id));
+    assert(!multi_control.ready_to_run(multi_third->id));
+    assert(multi_control.queued_len() == 1U);
+    assert(multi_control.mark_running(multi_first->id) == flowrt::OperationControlError::Ok);
+    assert(multi_control.mark_running(multi_second->id) == flowrt::OperationControlError::Ok);
+    assert(multi_control.complete_at(multi_first->id, flowrt::OperationState::Succeeded, 110U) ==
+           flowrt::OperationControlError::Ok);
+    assert(multi_control.ready_to_run(multi_third->id));
+    assert(multi_control.queued_len() == 0U);
+    assert(multi_control.mark_running(multi_third->id) == flowrt::OperationControlError::Ok);
+
+    auto retention_policy = flowrt::OperationPolicy::make(
+        std::chrono::milliseconds{50}, flowrt::OperationConcurrencyPolicy::Reject,
+        flowrt::OperationPreemptPolicy::Reject, 8U, 1U, std::chrono::milliseconds{20});
+    assert(retention_policy.has_value());
+    flowrt::OperationControl retention_control{99U, *retention_policy};
+    const auto retained = retention_control.start(owner_a, 100U);
+    assert(retained.has_value());
+    assert(retention_control.mark_running(retained->id) == flowrt::OperationControlError::Ok);
+    assert(retention_control.complete_at(retained->id, flowrt::OperationState::Succeeded, 110U) ==
+           flowrt::OperationControlError::Ok);
+    assert(retention_control.status(retained->id)->state == flowrt::OperationState::Succeeded);
+    retention_control.evict_retained_results(129U);
+    assert(retention_control.status(retained->id)->state == flowrt::OperationState::Succeeded);
+    retention_control.evict_retained_results(131U);
+    const auto evicted = retention_control.status(retained->id);
+    assert(!evicted.has_value());
+    assert(evicted.error() == flowrt::OperationControlError::StaleInvocation);
 
     const auto progress = flowrt::OperationProgress<int>{flowrt::OperationId{9U, 10U, 11U}, 3U, 42};
     assert(progress.id.operation_key == 9U);

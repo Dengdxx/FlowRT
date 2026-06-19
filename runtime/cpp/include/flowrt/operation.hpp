@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <flowrt/service.hpp>
 #include <flowrt/wire.hpp>
 #include <functional>
@@ -54,8 +56,8 @@ struct OperationOwner {
     std::uint64_t scope_key = 0;  ///< 控制域 key。
     std::uint64_t owner_key = 0;  ///< owner key。
 
-    friend constexpr bool operator==(const OperationOwner &, const OperationOwner &) noexcept =
-        default;
+    friend constexpr bool operator==(const OperationOwner &,
+                                     const OperationOwner &) noexcept = default;
 
     static constexpr std::size_t wire_size() noexcept { return sizeof(std::uint64_t) * 2U; }
 
@@ -319,7 +321,8 @@ OperationClientResult<T> operation_client_result_from_service(ServiceResult<T> r
         }
         return OperationClientResult<T>::err(OperationClientError::HandlerError);
     }
-    return OperationClientResult<T>::err(operation_client_error_from_service_error(result.error_code()));
+    return OperationClientResult<T>::err(
+        operation_client_error_from_service_error(result.error_code()));
 }
 
 /**
@@ -331,15 +334,15 @@ struct OperationPolicy {
     OperationPreemptPolicy preempt{OperationPreemptPolicy::Reject};  ///< 抢占策略。
     std::uint32_t queue_depth = 8;                                   ///< 等待队列深度。
     std::uint32_t max_in_flight = 1;                                 ///< 最大 in-flight 数。
+    std::chrono::milliseconds result_retention{0};  ///< 终态快照保留时间。
 
     /**
      * @brief 构造并校验 Operation policy。
      */
-    static std::optional<OperationPolicy> make(std::chrono::milliseconds timeout,
-                                               OperationConcurrencyPolicy concurrency,
-                                               OperationPreemptPolicy preempt,
-                                               std::uint32_t queue_depth,
-                                               std::uint32_t max_in_flight) noexcept {
+    static std::optional<OperationPolicy> make(
+        std::chrono::milliseconds timeout, OperationConcurrencyPolicy concurrency,
+        OperationPreemptPolicy preempt, std::uint32_t queue_depth, std::uint32_t max_in_flight,
+        std::chrono::milliseconds result_retention = std::chrono::milliseconds{0}) noexcept {
         if (timeout.count() <= 0 || queue_depth == 0U || max_in_flight == 0U) {
             return std::nullopt;
         }
@@ -349,6 +352,7 @@ struct OperationPolicy {
             .preempt = preempt,
             .queue_depth = queue_depth,
             .max_in_flight = max_in_flight,
+            .result_retention = result_retention,
         };
     }
 
@@ -418,6 +422,21 @@ struct OperationHealthSnapshot {
  */
 class OperationHealthCounters {
    public:
+    OperationHealthCounters() = default;
+    OperationHealthCounters(const OperationHealthCounters &) = delete;
+    OperationHealthCounters &operator=(const OperationHealthCounters &) = delete;
+
+    OperationHealthCounters(OperationHealthCounters &&other) noexcept {
+        assign_snapshot(other.snapshot());
+    }
+
+    OperationHealthCounters &operator=(OperationHealthCounters &&other) noexcept {
+        if (this != &other) {
+            assign_snapshot(other.snapshot());
+        }
+        return *this;
+    }
+
     /** @brief 按状态进入事件记录计数。 */
     void record_state(OperationState state) noexcept {
         switch (state) {
@@ -443,6 +462,9 @@ class OperationHealthCounters {
         }
     }
 
+    /** @brief 记录一次抢占事件。 */
+    void record_preempted() noexcept { ++preempted_; }
+
     /** @brief 读取健康计数快照。 */
     OperationHealthSnapshot snapshot() const noexcept {
         return OperationHealthSnapshot{
@@ -456,6 +478,15 @@ class OperationHealthCounters {
     }
 
    private:
+    void assign_snapshot(OperationHealthSnapshot snapshot) noexcept {
+        started_.store(snapshot.started, std::memory_order_relaxed);
+        succeeded_.store(snapshot.succeeded, std::memory_order_relaxed);
+        failed_.store(snapshot.failed, std::memory_order_relaxed);
+        canceled_.store(snapshot.canceled, std::memory_order_relaxed);
+        timeout_.store(snapshot.timeout, std::memory_order_relaxed);
+        preempted_.store(snapshot.preempted, std::memory_order_relaxed);
+    }
+
     std::atomic_uint64_t started_{0};
     std::atomic_uint64_t succeeded_{0};
     std::atomic_uint64_t failed_{0};
@@ -477,8 +508,7 @@ struct OperationStatusSnapshot {
 
     static constexpr std::size_t wire_size() noexcept {
         return OperationId::wire_size() + OperationOwner::wire_size() + sizeof(std::uint8_t) +
-               sizeof(std::uint8_t) + sizeof(std::uint64_t) +
-               OperationHealthSnapshot::wire_size();
+               sizeof(std::uint8_t) + sizeof(std::uint64_t) + OperationHealthSnapshot::wire_size();
     }
 
     void encode_wire(std::span<std::uint8_t> output) const {
@@ -499,9 +529,8 @@ struct OperationStatusSnapshot {
             .state = operation_wire_detail::decode_state(input.subspan(40U, 1U)),
             .cancel_requested = read_wire_le<bool>(input, 41U),
             .deadline_ms = read_wire_le<std::uint64_t>(input, 42U),
-            .health =
-                OperationHealthSnapshot::decode_wire(
-                    input.subspan(50U, OperationHealthSnapshot::wire_size())),
+            .health = OperationHealthSnapshot::decode_wire(
+                input.subspan(50U, OperationHealthSnapshot::wire_size())),
         };
     }
 };
@@ -708,6 +737,11 @@ class OperationLifecycle {
           valid_policy_(policy.valid()),
           state_(OperationState::Starting) {}
 
+    OperationLifecycle(const OperationLifecycle &) = delete;
+    OperationLifecycle &operator=(const OperationLifecycle &) = delete;
+    OperationLifecycle(OperationLifecycle &&) noexcept = default;
+    OperationLifecycle &operator=(OperationLifecycle &&) noexcept = default;
+
     OperationLifecycle(OperationId id, OperationPolicy policy, OperationOwner owner,
                        std::uint64_t deadline_ms)
         : id_(id),
@@ -775,6 +809,12 @@ class OperationLifecycle {
         };
     }
 
+    /** @brief 供 control authority 校验 retained 状态补终态。 */
+    static constexpr bool valid_transition_for_control(OperationState from,
+                                                       OperationState to) noexcept {
+        return valid_transition(from, to);
+    }
+
    private:
     static constexpr bool valid_transition(OperationState from, OperationState to) noexcept {
         return (from == OperationState::Idle && to == OperationState::Starting) ||
@@ -828,6 +868,34 @@ class OperationStartResult {
 };
 
 /**
+ * @brief Operation status query result。
+ */
+class OperationStatusResult {
+   public:
+    static OperationStatusResult ok(OperationStatusSnapshot snapshot) {
+        OperationStatusResult result;
+        result.value_ = snapshot;
+        return result;
+    }
+
+    static OperationStatusResult err(OperationControlError error) {
+        OperationStatusResult result;
+        result.error_ = error;
+        return result;
+    }
+
+    bool has_value() const noexcept { return value_.has_value(); }
+    explicit operator bool() const noexcept { return has_value(); }
+    const OperationStatusSnapshot &value() const noexcept { return *value_; }
+    const OperationStatusSnapshot *operator->() const noexcept { return &*value_; }
+    OperationControlError error() const noexcept { return error_; }
+
+   private:
+    std::optional<OperationStatusSnapshot> value_;
+    OperationControlError error_{OperationControlError::Ok};
+};
+
+/**
  * @brief Single-owner Operation control state。
  */
 class OperationControl {
@@ -842,15 +910,50 @@ class OperationControl {
     OperationStartResult start_with_timeout(OperationOwner owner, std::uint64_t now_ms,
                                             std::chrono::milliseconds timeout) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (lifecycle_.has_value() &&
-            (handler_active_ || !is_terminal(lifecycle_->state()))) {
+        if (active_count() > 0U) {
             if (lifecycle_->owner() != owner) {
                 return OperationStartResult::err(OperationControlError::OwnerConflict);
             }
+            const auto sequence = next_sequence_++;
+            const OperationId id{
+                .operation_key = operation_key_,
+                .client_id = owner.owner_key,
+                .sequence = sequence,
+            };
+            const auto timeout_ms =
+                static_cast<std::uint64_t>(std::max<std::int64_t>(1, timeout.count()));
+            const auto deadline_ms = now_ms + timeout_ms;
+            OperationLifecycle pending{id, policy_, owner, deadline_ms};
+            if (!policy_.valid()) {
+                return OperationStartResult::err(OperationControlError::InvalidPolicy);
+            }
+            if (policy_.preempt == OperationPreemptPolicy::CancelRunning) {
+                const auto cancel_error = preempt_active_invocations();
+                if (cancel_error != OperationControlError::Ok) {
+                    return OperationStartResult::err(cancel_error);
+                }
+                lifecycle_ = std::move(pending);
+                handler_active_ = true;
+                push_state_event(id, OperationState::Starting);
+                return OperationStartResult::ok(
+                    OperationStartAck::accepted_with_authority(id, owner, deadline_ms));
+            }
+            if (active_count() < policy_.max_in_flight) {
+                in_flight_.push_back(std::move(pending));
+                push_state_event(id, OperationState::Starting);
+                return OperationStartResult::ok(
+                    OperationStartAck::accepted_with_authority(id, owner, deadline_ms));
+            }
+            if (policy_.concurrency == OperationConcurrencyPolicy::Queue) {
+                if (queue_.size() >= policy_.queue_depth) {
+                    return OperationStartResult::err(OperationControlError::Busy);
+                }
+                queue_.push_back(std::move(pending));
+                push_state_event(id, OperationState::Starting);
+                return OperationStartResult::ok(
+                    OperationStartAck::accepted_with_authority(id, owner, deadline_ms));
+            }
             return OperationStartResult::err(OperationControlError::Busy);
-        }
-        if (lifecycle_.has_value() && is_terminal(lifecycle_->state()) && !handler_active_) {
-            lifecycle_.reset();
         }
         const auto sequence = next_sequence_++;
         const OperationId id{
@@ -858,8 +961,12 @@ class OperationControl {
             .client_id = owner.owner_key,
             .sequence = sequence,
         };
-        const auto timeout_ms = static_cast<std::uint64_t>(std::max<std::int64_t>(1, timeout.count()));
+        const auto timeout_ms =
+            static_cast<std::uint64_t>(std::max<std::int64_t>(1, timeout.count()));
         const auto deadline_ms = now_ms + timeout_ms;
+        if (!policy_.valid()) {
+            return OperationStartResult::err(OperationControlError::InvalidPolicy);
+        }
         lifecycle_.emplace(id, policy_, owner, deadline_ms);
         handler_active_ = true;
         push_state_event(id, OperationState::Starting);
@@ -901,51 +1008,102 @@ class OperationControl {
     }
 
     OperationControlError complete(OperationId id, OperationState terminal_state) noexcept {
+        return complete_at(id, terminal_state, monotonic_time_ms());
+    }
+
+    OperationControlError complete_at(OperationId id, OperationState terminal_state,
+                                      std::uint64_t completed_at_ms) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto *lifecycle = current(id);
-        if (lifecycle == nullptr) {
-            return OperationControlError::StaleInvocation;
+        if (!is_terminal(terminal_state)) {
+            return OperationControlError::InvalidTransition;
         }
-        if (is_terminal(lifecycle->state())) {
+        auto active = remove_active(id);
+        if (active.has_value()) {
+            auto lifecycle = std::move(active->lifecycle);
+            const auto was_primary = active->was_primary;
+            if (is_terminal(lifecycle.state())) {
+                handler_active_ = false;
+                restore_active(std::move(lifecycle), was_primary);
+                return OperationControlError::AlreadyTerminal;
+            }
+            const auto error = map_error(lifecycle.transition(terminal_state));
             handler_active_ = false;
-            return OperationControlError::AlreadyTerminal;
-        }
-        const auto error = map_error(lifecycle->transition(terminal_state));
-        handler_active_ = false;
-        if (error == OperationControlError::Ok) {
+            if (error != OperationControlError::Ok) {
+                restore_active(std::move(lifecycle), was_primary);
+                return error;
+            }
             health_.record_state(terminal_state);
-            events_.push_back(OperationRuntimeEvent{
-                .id = id,
-                .kind = terminal_state == OperationState::Failed ? OperationRuntimeEventKind::Error
-                                                                  : OperationRuntimeEventKind::Result,
-                .state = terminal_state,
-                .sequence = std::nullopt,
-                .message = std::nullopt,
-            });
+            push_result_event(id, terminal_state);
             push_state_event(id, terminal_state);
+            const auto snapshot = snapshot_with_health(lifecycle);
+            const bool keep_terminal_primary = was_primary && in_flight_.empty() &&
+                                               queue_.empty() &&
+                                               !retention_deadline(completed_at_ms).has_value();
+            if (keep_terminal_primary) {
+                lifecycle_ = std::move(lifecycle);
+            } else {
+                retain_terminal_snapshot(snapshot, completed_at_ms);
+                if (was_primary) {
+                    promote_next_active();
+                }
+                promote_queued_until_capacity();
+            }
+            return OperationControlError::Ok;
         }
-        return error;
+        auto retained = std::find_if(
+            retained_results_.begin(), retained_results_.end(),
+            [id](const RetainedOperationStatus &value) { return value.snapshot.id == id; });
+        if (retained != retained_results_.end()) {
+            const auto from = retained->snapshot.state;
+            if (is_terminal(from)) {
+                return OperationControlError::AlreadyTerminal;
+            }
+            if (!OperationLifecycle::valid_transition_for_control(from, terminal_state)) {
+                return OperationControlError::InvalidTransition;
+            }
+            health_.record_state(terminal_state);
+            retained->snapshot.state = terminal_state;
+            retained->snapshot.health = health_.snapshot();
+            retained->expires_at_ms = retention_deadline(completed_at_ms);
+            const auto should_remove = !retained->expires_at_ms.has_value();
+            push_result_event(id, terminal_state);
+            push_state_event(id, terminal_state);
+            if (should_remove) {
+                retained_results_.erase(retained);
+            }
+            return OperationControlError::Ok;
+        }
+        return OperationControlError::StaleInvocation;
     }
 
     bool check_deadline(std::uint64_t now_ms) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!lifecycle_.has_value() || is_terminal(lifecycle_->state()) ||
-            now_ms < lifecycle_->deadline_ms()) {
-            return false;
+        std::vector<OperationId> due;
+        if (lifecycle_.has_value() && !is_terminal(lifecycle_->state()) &&
+            now_ms >= lifecycle_->deadline_ms()) {
+            due.push_back(lifecycle_->id());
         }
-        lifecycle_->cancel_token().request_cancel();
-        if (lifecycle_->transition(OperationState::TimedOut) == OperationError::Ok) {
-            health_.record_state(OperationState::TimedOut);
-            push_state_event(lifecycle_->id(), OperationState::TimedOut);
-            return true;
+        for (const auto &lifecycle : in_flight_) {
+            if (!is_terminal(lifecycle.state()) && now_ms >= lifecycle.deadline_ms()) {
+                due.push_back(lifecycle.id());
+            }
         }
-        return false;
+        for (const auto &lifecycle : queue_) {
+            if (!is_terminal(lifecycle.state()) && now_ms >= lifecycle.deadline_ms()) {
+                due.push_back(lifecycle.id());
+            }
+        }
+        bool changed = false;
+        for (const auto id : due) {
+            changed = timeout_active(id, now_ms) || timeout_queued(id, now_ms) || changed;
+        }
+        return changed;
     }
 
     void publish_progress(OperationId id, std::uint64_t sequence) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!lifecycle_.has_value() || !(lifecycle_->id() == id) ||
-            is_terminal(lifecycle_->state())) {
+        auto *lifecycle = current(id);
+        if (lifecycle == nullptr || is_terminal(lifecycle->state())) {
             return;
         }
         events_.push_back(OperationRuntimeEvent{
@@ -965,6 +1123,32 @@ class OperationControl {
         return lifecycle_->cancel_token();
     }
 
+    std::optional<OperationCancelToken> cancel_token_for(OperationId id) const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lifecycle_.has_value() && lifecycle_->id() == id) {
+            return lifecycle_->cancel_token();
+        }
+        const auto found = std::find_if(
+            in_flight_.begin(), in_flight_.end(),
+            [id](const OperationLifecycle &lifecycle) { return lifecycle.id() == id; });
+        if (found == in_flight_.end()) {
+            return std::nullopt;
+        }
+        return found->cancel_token();
+    }
+
+    bool ready_to_run(OperationId id) const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lifecycle_.has_value() && lifecycle_->id() == id &&
+            lifecycle_->state() == OperationState::Starting) {
+            return true;
+        }
+        return std::any_of(
+            in_flight_.begin(), in_flight_.end(), [id](const OperationLifecycle &lifecycle) {
+                return lifecycle.id() == id && lifecycle.state() == OperationState::Starting;
+            });
+    }
+
     OperationStatusSnapshot snapshot() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!lifecycle_.has_value()) {
@@ -980,6 +1164,47 @@ class OperationControl {
         auto snapshot = lifecycle_->snapshot();
         snapshot.health = health_.snapshot();
         return snapshot;
+    }
+
+    OperationStatusResult status(OperationId id) const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lifecycle_.has_value() && lifecycle_->id() == id) {
+            return OperationStatusResult::ok(snapshot_with_health(*lifecycle_));
+        }
+        const auto active = std::find_if(
+            in_flight_.begin(), in_flight_.end(),
+            [id](const OperationLifecycle &lifecycle) { return lifecycle.id() == id; });
+        if (active != in_flight_.end()) {
+            return OperationStatusResult::ok(snapshot_with_health(*active));
+        }
+        const auto queued = std::find_if(
+            queue_.begin(), queue_.end(),
+            [id](const OperationLifecycle &lifecycle) { return lifecycle.id() == id; });
+        if (queued != queue_.end()) {
+            return OperationStatusResult::ok(snapshot_with_health(*queued));
+        }
+        const auto retained = std::find_if(
+            retained_results_.begin(), retained_results_.end(),
+            [id](const RetainedOperationStatus &value) { return value.snapshot.id == id; });
+        if (retained != retained_results_.end()) {
+            return OperationStatusResult::ok(retained->snapshot);
+        }
+        return OperationStatusResult::err(OperationControlError::StaleInvocation);
+    }
+
+    std::size_t queued_len() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.size();
+    }
+
+    void evict_retained_results(std::uint64_t now_ms) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        retained_results_.erase(std::remove_if(retained_results_.begin(), retained_results_.end(),
+                                               [now_ms](const RetainedOperationStatus &retained) {
+                                                   return retained.expires_at_ms.has_value() &&
+                                                          now_ms > *retained.expires_at_ms;
+                                               }),
+                                retained_results_.end());
     }
 
     std::vector<OperationRuntimeEvent> drain_events() {
@@ -1003,10 +1228,103 @@ class OperationControl {
     }
 
     OperationLifecycle *current(OperationId id) noexcept {
-        if (!lifecycle_.has_value() || !(lifecycle_->id() == id)) {
+        if (lifecycle_.has_value() && lifecycle_->id() == id) {
+            return &*lifecycle_;
+        }
+        auto found = std::find_if(
+            in_flight_.begin(), in_flight_.end(),
+            [id](const OperationLifecycle &lifecycle) { return lifecycle.id() == id; });
+        if (found == in_flight_.end()) {
             return nullptr;
         }
-        return &*lifecycle_;
+        return &*found;
+    }
+
+    struct RetainedOperationStatus {
+        OperationStatusSnapshot snapshot{};
+        std::optional<std::uint64_t> expires_at_ms;
+    };
+
+    struct ActiveEntry {
+        OperationLifecycle lifecycle;
+        bool was_primary = false;
+    };
+
+    struct QueuedEntry {
+        OperationLifecycle lifecycle;
+        std::size_t index = 0;
+    };
+
+    static bool same_id(OperationId left, OperationId right) noexcept { return left == right; }
+
+    std::size_t active_count() const noexcept {
+        return (lifecycle_.has_value() && !is_terminal(lifecycle_->state()) ? 1U : 0U) +
+               static_cast<std::size_t>(std::count_if(in_flight_.begin(), in_flight_.end(),
+                                                      [](const OperationLifecycle &lifecycle) {
+                                                          return !is_terminal(lifecycle.state());
+                                                      }));
+    }
+
+    std::optional<ActiveEntry> remove_active(OperationId id) {
+        if (lifecycle_.has_value() && lifecycle_->id() == id) {
+            auto lifecycle = std::move(*lifecycle_);
+            lifecycle_.reset();
+            return ActiveEntry{.lifecycle = std::move(lifecycle), .was_primary = true};
+        }
+        const auto found = std::find_if(
+            in_flight_.begin(), in_flight_.end(),
+            [id](const OperationLifecycle &lifecycle) { return lifecycle.id() == id; });
+        if (found == in_flight_.end()) {
+            return std::nullopt;
+        }
+        auto lifecycle = std::move(*found);
+        in_flight_.erase(found);
+        return ActiveEntry{.lifecycle = std::move(lifecycle), .was_primary = false};
+    }
+
+    std::optional<QueuedEntry> remove_queued(OperationId id) {
+        const auto found = std::find_if(
+            queue_.begin(), queue_.end(),
+            [id](const OperationLifecycle &lifecycle) { return lifecycle.id() == id; });
+        if (found == queue_.end()) {
+            return std::nullopt;
+        }
+        const auto index = static_cast<std::size_t>(std::distance(queue_.begin(), found));
+        auto lifecycle = std::move(*found);
+        queue_.erase(found);
+        return QueuedEntry{.lifecycle = std::move(lifecycle), .index = index};
+    }
+
+    void restore_queued(OperationLifecycle lifecycle, std::size_t index) {
+        const auto bounded_index = std::min(index, queue_.size());
+        queue_.insert(queue_.begin() + static_cast<std::ptrdiff_t>(bounded_index),
+                      std::move(lifecycle));
+    }
+
+    void restore_active(OperationLifecycle lifecycle, bool was_primary) {
+        if (was_primary) {
+            lifecycle_ = std::move(lifecycle);
+        } else {
+            in_flight_.push_front(std::move(lifecycle));
+        }
+    }
+
+    OperationStatusSnapshot snapshot_with_health(
+        const OperationLifecycle &lifecycle) const noexcept {
+        auto snapshot = lifecycle.snapshot();
+        snapshot.health = health_.snapshot();
+        return snapshot;
+    }
+
+    void push_result_event(OperationId id, OperationState terminal_state) {
+        events_.push_back(OperationRuntimeEvent{
+            .id = id,
+            .kind = terminal_state == OperationState::Failed ? OperationRuntimeEventKind::Error
+                                                             : OperationRuntimeEventKind::Result,
+            .state = terminal_state,
+            .sequence = std::nullopt,
+            .message = std::nullopt,
+        });
     }
 
     void push_state_event(OperationId id, OperationState state) {
@@ -1019,12 +1337,151 @@ class OperationControl {
         });
     }
 
+    void promote_next_active() {
+        if (!lifecycle_.has_value() && !in_flight_.empty()) {
+            lifecycle_ = std::move(in_flight_.front());
+            in_flight_.pop_front();
+        }
+    }
+
+    void promote_queued_until_capacity() {
+        promote_next_active();
+        while (active_count() < policy_.max_in_flight && !queue_.empty()) {
+            auto next = std::move(queue_.front());
+            queue_.pop_front();
+            if (!lifecycle_.has_value()) {
+                lifecycle_ = std::move(next);
+            } else {
+                in_flight_.push_back(std::move(next));
+            }
+        }
+        handler_active_ = false;
+    }
+
+    OperationControlError preempt_active_invocations() {
+        std::vector<OperationLifecycle> active;
+        if (lifecycle_.has_value()) {
+            active.push_back(std::move(*lifecycle_));
+            lifecycle_.reset();
+        }
+        while (!in_flight_.empty()) {
+            active.push_back(std::move(in_flight_.front()));
+            in_flight_.pop_front();
+        }
+        for (auto &lifecycle : active) {
+            if (is_terminal(lifecycle.state())) {
+                continue;
+            }
+            const auto id = lifecycle.id();
+            const auto error = map_error(lifecycle.request_cancel());
+            if (error != OperationControlError::Ok) {
+                restore_active(std::move(lifecycle), !lifecycle_.has_value());
+                return error;
+            }
+            health_.record_preempted();
+            retained_results_.push_back(RetainedOperationStatus{
+                .snapshot = snapshot_with_health(lifecycle),
+                .expires_at_ms = std::nullopt,
+            });
+            push_state_event(id, OperationState::CancelRequested);
+        }
+        handler_active_ = false;
+        return OperationControlError::Ok;
+    }
+
+    bool timeout_active(OperationId id, std::uint64_t now_ms) {
+        auto active = remove_active(id);
+        if (!active.has_value()) {
+            return false;
+        }
+        auto lifecycle = std::move(active->lifecycle);
+        const auto was_primary = active->was_primary;
+        if (is_terminal(lifecycle.state()) || now_ms < lifecycle.deadline_ms()) {
+            restore_active(std::move(lifecycle), was_primary);
+            return false;
+        }
+        lifecycle.cancel_token().request_cancel();
+        if (lifecycle.transition(OperationState::TimedOut) != OperationError::Ok) {
+            restore_active(std::move(lifecycle), was_primary);
+            return false;
+        }
+        health_.record_state(OperationState::TimedOut);
+        handler_active_ = false;
+        const auto snapshot = snapshot_with_health(lifecycle);
+        push_state_event(id, OperationState::TimedOut);
+        const bool keep_terminal_primary = was_primary && in_flight_.empty() && queue_.empty() &&
+                                           !retention_deadline(now_ms).has_value();
+        if (keep_terminal_primary) {
+            lifecycle_ = std::move(lifecycle);
+        } else {
+            retain_terminal_snapshot(snapshot, now_ms);
+            if (was_primary) {
+                promote_next_active();
+            }
+            promote_queued_until_capacity();
+        }
+        return true;
+    }
+
+    bool timeout_queued(OperationId id, std::uint64_t now_ms) {
+        auto queued = remove_queued(id);
+        if (!queued.has_value()) {
+            return false;
+        }
+        auto lifecycle = std::move(queued->lifecycle);
+        const auto index = queued->index;
+        if (is_terminal(lifecycle.state()) || now_ms < lifecycle.deadline_ms()) {
+            restore_queued(std::move(lifecycle), index);
+            return false;
+        }
+        lifecycle.cancel_token().request_cancel();
+        if (lifecycle.transition(OperationState::TimedOut) != OperationError::Ok) {
+            restore_queued(std::move(lifecycle), index);
+            return false;
+        }
+        health_.record_state(OperationState::TimedOut);
+        const auto snapshot = snapshot_with_health(lifecycle);
+        push_state_event(id, OperationState::TimedOut);
+        retain_terminal_snapshot(snapshot, now_ms);
+        return true;
+    }
+
+    void retain_terminal_snapshot(OperationStatusSnapshot snapshot, std::uint64_t completed_at_ms) {
+        const auto expires_at_ms = retention_deadline(completed_at_ms);
+        if (!expires_at_ms.has_value()) {
+            erase_retained(snapshot.id);
+            return;
+        }
+        retained_results_.push_back(RetainedOperationStatus{
+            .snapshot = snapshot,
+            .expires_at_ms = expires_at_ms,
+        });
+    }
+
+    std::optional<std::uint64_t> retention_deadline(std::uint64_t completed_at_ms) const noexcept {
+        if (policy_.result_retention.count() <= 0) {
+            return std::nullopt;
+        }
+        return completed_at_ms + static_cast<std::uint64_t>(policy_.result_retention.count());
+    }
+
+    void erase_retained(OperationId id) {
+        retained_results_.erase(std::remove_if(retained_results_.begin(), retained_results_.end(),
+                                               [id](const RetainedOperationStatus &retained) {
+                                                   return same_id(retained.snapshot.id, id);
+                                               }),
+                                retained_results_.end());
+    }
+
     std::uint64_t operation_key_ = 0;
     OperationPolicy policy_{};
     std::uint64_t next_sequence_ = 0;
     std::optional<OperationLifecycle> lifecycle_;
+    std::deque<OperationLifecycle> in_flight_;
+    std::deque<OperationLifecycle> queue_;
     bool handler_active_ = false;
     OperationHealthCounters health_{};
+    std::vector<RetainedOperationStatus> retained_results_;
     std::vector<OperationRuntimeEvent> events_;
     mutable std::mutex mutex_;
 };

@@ -164,7 +164,7 @@
           "queue_depth": 4,
           "max_in_flight": 1,
           "feedback": "latest",
-          "result_retention_ms": null,
+          "result_retention_ms": 60000,
           "lowering": {
             "start_service": "__flowrt_operation_controller_plan_start",
             "cancel_service": "__flowrt_operation_controller_plan_cancel",

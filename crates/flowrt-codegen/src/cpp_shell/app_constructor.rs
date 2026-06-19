@@ -173,11 +173,12 @@ pub(super) fn emit_cpp_app_constructor(
             let queue_depth = plan.queue_depth.max(1);
             let max_in_flight = plan.max_in_flight.max(1);
             let timeout_ms = plan.timeout_ms.max(1);
+            let result_retention_ms = plan.result_retention_ms;
             let concurrency = cpp_operation_concurrency(plan.concurrency);
             let preempt = cpp_operation_preempt(plan.preempt);
             let operation_index = plan.index;
             output.push_str(&format!(
-                "    {{\n        const auto operation_policy_{operation_index} = flowrt::OperationPolicy::make(\n            std::chrono::milliseconds{{{timeout_ms}}},\n            {concurrency},\n            {preempt},\n            {queue_depth}U,\n            {max_in_flight}U);\n        this->operation_control_{operation_index}_ = std::make_shared<flowrt::OperationControl>(\n            flowrt::fnv1a64({operation_key_name}),\n            operation_policy_{operation_index}.value());\n    }}\n"
+                "    {{\n        const auto operation_policy_{operation_index} = flowrt::OperationPolicy::make(\n            std::chrono::milliseconds{{{timeout_ms}}},\n            {concurrency},\n            {preempt},\n            {queue_depth}U,\n            {max_in_flight}U,\n            std::chrono::milliseconds{{{result_retention_ms}}});\n        this->operation_control_{operation_index}_ = std::make_shared<flowrt::OperationControl>(\n            flowrt::fnv1a64({operation_key_name}),\n            operation_policy_{operation_index}.value());\n    }}\n"
             ));
             continue;
         }

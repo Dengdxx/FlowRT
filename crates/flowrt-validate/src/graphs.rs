@@ -4,10 +4,9 @@ use std::path::{Component, Path};
 use flowrt_ir::{
     BackendName, BoundaryDirection, ChannelKind, ComponentIr, ContractIr, DeterminismMode,
     EntityId, GraphFaultReaction, GraphIr, GraphMode, InstanceFailurePolicy, InstanceIr,
-    LanguageKind, OperationConcurrencyPolicy, OperationFeedbackPolicy, OperationPortIr,
-    OperationPortRef, OperationPreemptPolicy, ParamValue, PolicyValueSource, PortIr, PortRef,
-    PrimitiveType, ProcessReadinessGate, RedundancyMode, Ros2BridgeDirection, ServicePortIr,
-    ServicePortRef, TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
+    LanguageKind, OperationPortIr, OperationPortRef, ParamValue, PortIr, PortRef, PrimitiveType,
+    ProcessReadinessGate, RedundancyMode, Ros2BridgeDirection, ServicePortIr, ServicePortRef,
+    TaskConcurrency, TaskIr, TaskReadiness, TriggerKind, TypeExpr, TypeIr,
 };
 
 use crate::ValidationError;
@@ -686,34 +685,6 @@ fn validate_operation_binds(
                 "operation bind `{client_key} -> {server_key}` has zero max_in_flight"
             )));
         }
-        if operation.policy.concurrency == OperationConcurrencyPolicy::Queue {
-            errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses unsupported concurrency policy `queue`; generated Operation runtime currently supports only `reject`"
-            )));
-        }
-        if operation.policy.preempt == OperationPreemptPolicy::CancelRunning {
-            errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses unsupported preempt policy `cancel_running`; generated Operation runtime currently supports only `reject`"
-            )));
-        }
-        if operation.policy.feedback == OperationFeedbackPolicy::Fifo {
-            errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses unsupported feedback policy `fifo`; generated Operation runtime currently supports only `latest` progress observation"
-            )));
-        }
-        if operation.policy_source.result_retention_ms == PolicyValueSource::Explicit {
-            errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses unsupported result_retention_ms `{}`; generated Operation runtime does not retain operation results",
-                operation.policy.result_retention_ms
-            )));
-        }
-        if operation.policy.max_in_flight != 1 {
-            errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses unsupported max_in_flight `{}`; generated Operation runtime currently supports only 1",
-                operation.policy.max_in_flight
-            )));
-        }
-
         if operation.backend.0 == "inproc"
             && operation_spans_boundaries(instances, &operation.client, &operation.server)
         {

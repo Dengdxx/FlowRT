@@ -278,7 +278,7 @@ fn self_description_contains_operation_topology_and_lowering_refs() {
     assert_eq!(operation["concurrency"], "reject");
     assert_eq!(operation["preempt"], "reject");
     assert_eq!(operation["feedback"], "latest");
-    assert!(operation["result_retention_ms"].is_null());
+    assert_eq!(operation["result_retention_ms"], 60000);
     assert_eq!(
         operation["lowering"]["start_service"],
         "__flowrt_operation_controller_plan_start"
@@ -303,6 +303,30 @@ fn self_description_contains_operation_topology_and_lowering_refs() {
     let component = &selfdesc["component_types"][0];
     assert_eq!(component["operation_clients"][0]["name"], "plan");
     assert_eq!(component["operation_clients"][0]["goal_type"], "PlanGoal");
+}
+
+#[test]
+fn self_description_exposes_operation_policy_values() {
+    let source = RUST_OPERATION_RSDL
+        .replace("concurrency = \"reject\"", "concurrency = \"queue\"")
+        .replace("preempt = \"reject\"", "preempt = \"cancel_running\"")
+        .replace(
+            "feedback = \"latest\"",
+            "feedback = \"fifo\"\nresult_retention_ms = 5000",
+        )
+        .replace("max_in_flight = 1", "max_in_flight = 2");
+    let contract = contract_from_source(&source);
+    let bundle = emit_artifacts(&contract).unwrap();
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let operation = &selfdesc["graphs"][0]["operations"][0];
+
+    assert_eq!(operation["concurrency"], "queue");
+    assert_eq!(operation["preempt"], "cancel_running");
+    assert_eq!(operation["feedback"], "fifo");
+    assert_eq!(operation["queue_depth"], 4);
+    assert_eq!(operation["max_in_flight"], 2);
+    assert_eq!(operation["result_retention_ms"], 5000);
 }
 
 /// zenoh Operation 必须生成真实 transport lowering，同时保持用户侧 Operation API。
@@ -429,7 +453,7 @@ fn cpp_operation_components_are_generated() {
         "C++ operation lowering must include a background worker for long handlers.\n\n{shell}"
     );
     assert!(
-        shell.contains("operation_control->cancel_token()"),
+        shell.contains("operation_control->cancel_token_for(id)"),
         "C++ operation lowering must get cooperative cancel token from OperationControl.\n\n{shell}"
     );
     assert!(

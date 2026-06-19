@@ -20,6 +20,7 @@ pub(super) fn cpp_operation_registration_block(
     let queue_depth = plan.queue_depth.max(1);
     let max_in_flight = plan.max_in_flight.max(1);
     let timeout_ms = plan.timeout_ms.max(1);
+    let result_retention_ms = plan.result_retention_ms;
     let concurrency = cpp_operation_concurrency(plan.concurrency);
     let preempt = cpp_operation_preempt(plan.preempt);
     let operation_index = plan.index;
@@ -36,7 +37,8 @@ pub(super) fn cpp_operation_registration_block(
             {concurrency},
             {preempt},
             {queue_depth}U,
-            {max_in_flight}U);
+            {max_in_flight}U,
+            std::chrono::milliseconds{{{result_retention_ms}}});
         this->operation_control_{operation_index}_ = std::make_shared<flowrt::OperationControl>(
             flowrt::fnv1a64({operation_key_name}),
             operation_policy_{operation_index}.value());
@@ -58,20 +60,33 @@ pub(super) fn cpp_operation_registration_block(
                 }}
                 const auto ack = started.value();
                 const auto id = ack.id;
-                const auto cancel = operation_control->cancel_token().value();
-                if (const auto error = operation_control->mark_running(id);
-                    error != flowrt::OperationControlError::Ok) {{
-                    return flowrt_operation_control_error<flowrt::OperationStartAck>(error);
-                }}
                 auto goal_for_worker = request.goal;
                 try {{
-                    std::thread([operation_worker_server, operation_control, id, cancel, goal_for_worker = std::move(goal_for_worker)]() mutable {{
+                    std::thread([operation_worker_server, operation_control, id, goal_for_worker = std::move(goal_for_worker)]() mutable {{
+                        while (true) {{
+                            const auto status = operation_control->status(id);
+                            if (!status.has_value() || flowrt::is_terminal(status->state)) {{
+                                return;
+                            }}
+                            if (operation_control->ready_to_run(id)) {{
+                                break;
+                            }}
+                            std::this_thread::sleep_for(std::chrono::milliseconds{{1}});
+                        }}
+                        const auto cancel = operation_control->cancel_token_for(id);
+                        if (!cancel.has_value()) {{
+                            return;
+                        }}
+                        if (const auto error = operation_control->mark_running(id);
+                            error != flowrt::OperationControlError::Ok) {{
+                            return;
+                        }}
                         auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {{
                             operation_control->publish_progress(progress_id, sequence);
                         }}}};
                         flowrt::OperationState terminal_state = flowrt::OperationState::Failed;
                         try {{
-                            const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, cancel, progress);
+                            const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, *cancel, progress);
                             switch (result.kind()) {{
                                 case flowrt::OperationHandlerResult<{result_ty}>::Kind::Succeeded:
                                     terminal_state = flowrt::OperationState::Succeeded;
@@ -108,8 +123,12 @@ pub(super) fn cpp_operation_registration_block(
             config);
         {status_server}_.emplace(
             {status_name},
-            [this](const flowrt::OperationId& /*id*/) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
-                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_{operation_index}_->snapshot());
+            [this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{
+                const auto status = this->operation_control_{operation_index}_->status(id);
+                if (!status.has_value()) {{
+                    return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(status.error());
+                }}
+                return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(status.value());
             }},
             config);
         {client_field}_ = {handle_name}(
