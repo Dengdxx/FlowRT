@@ -488,6 +488,36 @@ fn rust_service_iox2_emits_client_and_scheduler_driven_server() {
     );
 }
 
+/// C++ iox2 service transport 也必须生成 scheduler-driven server。
+#[test]
+fn cpp_service_iox2_emits_client_and_scheduler_driven_server() {
+    let source = SERVICE_RSDL
+        .replace("language = \"rust\"", "language = \"cpp\"")
+        .replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).expect("iox2 C++ service codegen must succeed");
+    let header = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(
+        header.contains("flowrt::iox2::Iox2ServiceClient"),
+        "C++ iox2 client handle must hold Iox2ServiceClient.\n\n{header}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceServer"),
+        "C++ runtime shell must hold/open Iox2ServiceServer.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(".poll_requests("),
+        "C++ iox2 service server must be scheduler drained.\n\n{shell}"
+    );
+    assert!(
+        !shell.contains("ZenohServiceServer"),
+        "C++ iox2 service path must not instantiate ZenohServiceServer.\n\n{shell}"
+    );
+}
+
 /// zenoh service 的静态拓扑必须暴露 runtime 实际 queryable 使用的 key expression。
 #[test]
 fn zenoh_service_manifest_and_selfdesc_expose_key_expr() {

@@ -17,11 +17,23 @@ pub(super) fn cpp_service_client_handle_classes(
         let req_ty = cpp_type(&plan.request_type);
         let resp_ty = cpp_type(&plan.response_type);
         let is_zenoh = plan.backend.0 == "zenoh";
+        let is_iox2 = plan.backend.0 == "iox2";
         let default_timeout_ms = plan.timeout_ms.max(1);
 
-        if is_zenoh {
+        if is_zenoh || is_iox2 {
+            let backend = if is_iox2 { "iox2" } else { "zenoh" };
+            let client_ty = if is_iox2 {
+                format!("flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>")
+            } else {
+                format!("flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>")
+            };
+            let client_label = if is_iox2 {
+                "Iox2ServiceClient"
+            } else {
+                "ZenohServiceClient"
+            };
             output.push_str(&format!(
-                "/**\n * @brief `{client}.{port}` service client（zenoh backend）。\n *\n * `slot_` 在所属进程启动时由 runtime shell 经 `bind()` 填充 `ZenohServiceClient`；\n * 其它进程不填充，调用返回 `ServiceError::Unavailable`。handle 经 shared_ptr 共享 slot，可拷贝传入回调。\n */\nclass {handle_name} {{\npublic:\n    {handle_name}() : slot_(std::make_shared<Slot>()) {{}}\n\n    /** @brief 由所属进程 runtime shell 填充 transport client。 */\n    void bind(flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}> client) {{\n        if (slot_) {{\n            slot_->client.emplace(std::move(client));\n        }}\n    }}\n\n    flowrt::ServiceResult<{resp_ty}> call(const {req_ty}& request, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!slot_ || !slot_->client.has_value()) {{\n            return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n        }}\n        return slot_->client->call(request, timeout_ms);\n    }}\n\n    flowrt::InprocServiceHandle<{resp_ty}> start_call(const {req_ty}& request, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!slot_ || !slot_->client.has_value()) {{\n            return flowrt::InprocServiceHandle<{resp_ty}>::ready_error(flowrt::ServiceError::Unavailable);\n        }}\n        return flowrt::InprocServiceHandle<{resp_ty}>::ready(slot_->client->call(request, timeout_ms));\n    }}\n\nprivate:\n    struct Slot {{\n        std::optional<flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>> client;\n    }};\n    std::shared_ptr<Slot> slot_;\n}};\n\n",
+                "/**\n * @brief `{client}.{port}` service client（{backend} backend）。\n *\n * `slot_` 在所属进程启动时由 runtime shell 经 `bind()` 填充 `{client_label}`；\n * 其它进程不填充，调用返回 `ServiceError::Unavailable`。handle 经 shared_ptr 共享 slot，可拷贝传入回调。\n */\nclass {handle_name} {{\npublic:\n    {handle_name}() : slot_(std::make_shared<Slot>()) {{}}\n\n    /** @brief 由所属进程 runtime shell 填充 transport client。 */\n    void bind({client_ty} client) {{\n        if (slot_) {{\n            slot_->client.emplace(std::move(client));\n        }}\n    }}\n\n    flowrt::ServiceResult<{resp_ty}> call(const {req_ty}& request, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!slot_ || !slot_->client.has_value()) {{\n            return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n        }}\n        return slot_->client->call(request, timeout_ms);\n    }}\n\n    flowrt::InprocServiceHandle<{resp_ty}> start_call(const {req_ty}& request, std::uint64_t timeout_ms = {default_timeout_ms}) {{\n        if (!slot_ || !slot_->client.has_value()) {{\n            return flowrt::InprocServiceHandle<{resp_ty}>::ready_error(flowrt::ServiceError::Unavailable);\n        }}\n        return flowrt::InprocServiceHandle<{resp_ty}>::ready(slot_->client->call(request, timeout_ms));\n    }}\n\nprivate:\n    struct Slot {{\n        std::optional<{client_ty}> client;\n    }};\n    std::shared_ptr<Slot> slot_;\n}};\n\n",
                 client = plan.client_instance,
                 port = plan.client_port,
             ));

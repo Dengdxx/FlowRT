@@ -144,8 +144,7 @@ pub(super) fn emit_cpp_app_constructor(
     // service registration
     let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
     for plan in &service_plans {
-        let is_zenoh = plan.backend.0 == "zenoh";
-        if is_zenoh {
+        if plan.backend.0 == "zenoh" || plan.backend.0 == "iox2" {
             continue;
         }
         let service_name_literal = cpp_string_literal(&plan.service_name);

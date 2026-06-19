@@ -159,7 +159,9 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
     output.push_str("#include <cstdint>\n#include <map>\n");
-    if service_plans.iter().any(|plan| plan.backend.0 == "zenoh")
+    if service_plans
+        .iter()
+        .any(|plan| matches!(plan.backend.0.as_str(), "zenoh" | "iox2"))
         || operation_plans.iter().any(|plan| plan.backend.0 == "zenoh")
     {
         output.push_str("#include <memory>\n");
@@ -168,6 +170,9 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     output.push_str(
         "#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n#include <flowrt/operation.hpp>\n#include <flowrt/service.hpp>\n",
     );
+    if service_plans.iter().any(|plan| plan.backend.0 == "iox2") {
+        output.push_str("#include <flowrt/iox2.hpp>\n");
+    }
     if contract.graphs.iter().any(|graph| {
         graph
             .tasks
@@ -394,9 +399,20 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         if is_zenoh {
             continue;
         }
-        output.push_str(&format!(
-            "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    (void)scheduler_events;\n    (void)health_map;\n    if ({server_field}_.has_value()) {{\n        {server_field}_->process_pending();\n    }}\n    return flowrt::Status::Ok;\n}}\n\n"
-        ));
+        if plan.backend.0 == "iox2" {
+            let req_ty = cpp_type(&plan.request_type);
+            let resp_ty = cpp_type(&plan.response_type);
+            let server_instance = &plan.server_instance;
+            let port = crate::snake_identifier(&plan.server_port);
+            output.push_str(&format!(
+                "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)scheduler_events;\n    (void)health_map;\n    if ({server_field}_.has_value()) {{\n        const auto handled = (*{server_field}_).poll_requests([this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n            if (!this->{server_instance}_) {{\n                return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n            }}\n            return this->{server_instance}_->on_{port}_request(request);\n        }});\n        if (!handled.has_value()) {{\n            return flowrt::Status::Error;\n        }}\n        introspection_state.record_service_health(flowrt::IntrospectionServiceStatus{{\n            .name = {service_name},\n            .ready = true,\n            .in_flight = 0,\n            .queued = 0,\n            .total_requests = static_cast<std::uint64_t>(*handled),\n        }});\n    }}\n    return flowrt::Status::Ok;\n}}\n\n",
+                service_name = cpp_string_literal(&plan.service_name),
+            ));
+        } else {
+            output.push_str(&format!(
+                "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)introspection_state;\n    (void)scheduler_events;\n    (void)health_map;\n    if ({server_field}_.has_value()) {{\n        {server_field}_->process_pending();\n    }}\n    return flowrt::Status::Ok;\n}}\n\n"
+            ));
+        }
     }
     // operation step functions
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
@@ -648,8 +664,11 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
         let server_field = cpp_service_server_field_name(plan);
         let req_ty = cpp_type(&plan.request_type);
         let resp_ty = cpp_type(&plan.response_type);
-        let is_zenoh = plan.backend.0 == "zenoh";
-        if !is_zenoh {
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "    std::optional<flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>> {server_field}_;\n"
+            ));
+        } else if plan.backend.0 != "zenoh" {
             output.push_str(&format!(
                 "    std::optional<flowrt::InprocServiceServer<{req_ty}, {resp_ty}>> {server_field}_;\n"
             ));

@@ -205,6 +205,11 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.graph,
         run.order,
     ));
+    output.push_str(&emit_cpp_iox2_service_endpoints(
+        run.contract,
+        run.graph,
+        run.order,
+    ));
     output.push_str(&emit_cpp_zenoh_operation_endpoints(
         run.contract,
         run.graph,
@@ -303,6 +308,57 @@ fn emit_cpp_zenoh_service_endpoints(
             let port = crate::snake_identifier(&plan.server_port);
             output.push_str(&format!(
                 "        this->{server_field}_ = flowrt::zenoh::ZenohServiceServer<{req_ty}, {resp_ty}>::open(\n            {name}, zenoh_service_session,\n            [this](const {req_ty}& request) -> flowrt::ServiceResult<{resp_ty}> {{\n                if (!this->{server_instance}_) {{\n                    return flowrt::ServiceResult<{resp_ty}>::err(flowrt::ServiceError::Unavailable);\n                }}\n                return this->{server_instance}_->on_{port}_request(request);\n            }});\n        if (this->{server_field}_ && this->{server_field}_->ready()) {{\n            introspection_state.register_service({name});\n            introspection_state.mark_service_ready({name});\n        }} else {{\n            status = flowrt::Status::Error;\n        }}\n",
+            ));
+        }
+    }
+    output.push_str("    }\n");
+    output
+}
+
+fn emit_cpp_iox2_service_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+) -> String {
+    let plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let iox2_plans: Vec<&crate::runtime_plan::ServiceRuntimePlan> = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "iox2")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect();
+    if iox2_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str("    if (status == flowrt::Status::Ok) {\n");
+    for plan in &iox2_plans {
+        let name = cpp_string_literal(
+            plan.endpoint
+                .service_name()
+                .expect("iox2 service plan must have transport service name"),
+        );
+        let logical_name = cpp_string_literal(&plan.service_name);
+        let req_ty = cpp_type(&plan.request_type);
+        let resp_ty = cpp_type(&plan.response_type);
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = cpp_service_client_field_name(plan);
+            output.push_str(&format!(
+                "        this->{client_field}_.bind(flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>::open({name}));\n",
+            ));
+        }
+        if active.contains(plan.server_instance.as_str()) {
+            let server_field = cpp_service_server_field_name(plan);
+            let max_in_flight = plan.max_in_flight.max(1);
+            output.push_str(&format!(
+                "        this->{server_field}_ = flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>::open({name}, {max_in_flight}U);\n        this->{server_field}_->set_schedule_waiter(scheduler_events);\n        if (this->{server_field}_->health().state == flowrt::BackendHealthState::Ready) {{\n            introspection_state.register_service({logical_name});\n            introspection_state.mark_service_ready({logical_name});\n        }} else {{\n            status = flowrt::Status::Error;\n        }}\n",
             ));
         }
     }
@@ -561,9 +617,15 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             .expect("scheduler service task must reference a service plan");
         let task_id = task.id;
         let server_field = cpp_service_server_field_name(plan);
-        output.push_str(&format!(
-            "            if ({server_field}_.has_value() && {server_field}_->pending_count() > 0) {{\n                scheduler.wake(flowrt::TaskId{{{task_id}}});\n                woke_on_message = true;\n            }}\n"
-        ));
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "            if ({server_field}_.has_value()) {{\n                scheduler.wake(flowrt::TaskId{{{task_id}}});\n                woke_on_message = true;\n            }}\n"
+            ));
+        } else {
+            output.push_str(&format!(
+                "            if ({server_field}_.has_value() && {server_field}_->pending_count() > 0) {{\n                scheduler.wake(flowrt::TaskId{{{task_id}}});\n                woke_on_message = true;\n            }}\n"
+            ));
+        }
     }
     for task in &operation_tasks {
         let plan = operation_plans
