@@ -547,10 +547,10 @@ fn validate_service_binds(
             )));
         }
 
-        // 校验 service backend 合法性：只允许 inproc 和 zenoh。
+        // 校验 service backend 合法性：只允许已知 control-plane backend。
         if !flowrt_ir::is_known_service_backend(&service.backend.0) {
             errors.push(ValidationError::new(format!(
-                "service bind `{client_key} -> {server_key}` uses unsupported backend `{}`; only `inproc` and `zenoh` are allowed",
+                "service bind `{client_key} -> {server_key}` uses unsupported backend `{}`; only `inproc`, `iox2` and `zenoh` are allowed",
                 service.backend.0
             )));
         }
@@ -580,6 +580,9 @@ fn validate_service_binds(
             )));
         }
 
+        // iox2 / inproc service server 由 scheduler-driven hidden task 驱动（handler 在
+        // scheduler lane 内调用，非 transport 回调线程），因此不要求 concurrency = "parallel"；
+        // 该 gate 仅适用于 zenoh queryable 回调线程模型。
         // zenoh service server 由 transport queryable 回调线程驱动，handler 要求
         // `Send + Sync`。只有 `parallel` component 生成的 trait 满足该约束；`exclusive`
         // component 在该线程上不安全，必须显式声明 `concurrency = "parallel"`。该约束只作用于
@@ -665,7 +668,7 @@ fn validate_operation_binds(
 
         if !flowrt_ir::is_known_operation_backend(&operation.backend.0) {
             errors.push(ValidationError::new(format!(
-                "operation bind `{client_key} -> {server_key}` uses unsupported backend `{}`; only `inproc` and `zenoh` are allowed",
+                "operation bind `{client_key} -> {server_key}` uses unsupported backend `{}`; only `inproc`, `iox2` and `zenoh` are allowed",
                 operation.backend.0
             )));
         }

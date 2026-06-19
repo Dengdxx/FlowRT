@@ -1134,10 +1134,10 @@ result_retention_ms = 5000
 }
 
 #[test]
-fn rejects_service_bind_with_iox2_backend() {
+fn iox2_fixed_service_server_allows_exclusive_component() {
     let source = r#"
 [package]
-name = "bad_service"
+name = "iox2_fixed_service"
 rsdl_version = "0.1"
 
 [component.client]
@@ -1150,23 +1150,79 @@ service_server = ["plan:u32->bool"]
 
 [instance.client]
 component = "client"
+process = "client_proc"
+target = "linux"
 
 [instance.server]
 component = "server"
+process = "server_proc"
+target = "linux"
 
 [[bind.service]]
 client = "client.plan"
 server = "server.plan"
+
+[profile.default]
 backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
 "#;
     let raw = parse_str(source).unwrap();
-    let error = normalize_document(&raw, hash_source(source))
-        .expect_err("iox2 service backend should fail at normalization");
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
 
-    assert!(
-        error.to_string().contains("iox2"),
-        "error should mention iox2: {error}"
-    );
+    validate_contract(&ir).expect("iox2 service 不应要求 parallel server");
+}
+
+#[test]
+fn iox2_fixed_operation_is_known_backend() {
+    let source = r#"
+[package]
+name = "iox2_fixed_operation"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "rust"
+
+[component.controller.operation_client.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.plan]
+goal = "u32"
+feedback = "u32"
+result = "bool"
+
+[instance.controller]
+component = "controller"
+process = "controller_proc"
+target = "linux"
+
+[instance.navigator]
+component = "navigator"
+process = "nav_proc"
+target = "linux"
+
+[[bind.operation]]
+client = "controller.plan"
+server = "navigator.plan"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).expect("iox2 operation backend should validate");
 }
 
 #[test]
