@@ -19,6 +19,7 @@ mod app_add;
 mod boundary_pub;
 mod build_model;
 mod cache;
+mod fault_matrix;
 mod frame_json;
 mod introspection;
 mod project_manifest;

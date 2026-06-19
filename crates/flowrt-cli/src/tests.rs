@@ -28,6 +28,7 @@ fn temp_test_dir(test_name: &str) -> PathBuf {
 mod build_runtime_tests;
 mod command_tests;
 mod echo_params_tests;
+mod fault_matrix_tests;
 mod record_tests;
 mod selfdesc_status_hz_tests;
 mod toolchain_tests;
