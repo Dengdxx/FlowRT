@@ -31,7 +31,7 @@ name = "backend_drop_route"
 kind = "backend_drop"
 instance = "controller_a"
 task = "main"
-invocations = [2]
+invocations = [1]
 reason = "drop active route"
 
 [[case.expect.route]]
