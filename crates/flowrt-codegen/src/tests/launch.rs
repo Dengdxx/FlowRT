@@ -1815,3 +1815,95 @@ backends = ["iox2"]
     assert!(supervisor.contains("cpp_app_stem: \"robot_demo_cpp_app\""));
     assert!(supervisor.contains("flowrt::supervisor::launch(&SUPERVISOR_CONFIG, run_ticks)"));
 }
+
+#[test]
+fn launch_manifest_and_selfdesc_expose_tracing_when_observability_trace_is_satisfied() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "tracing_demo"
+rsdl_version = "0.1"
+
+[component.observer]
+language = "rust"
+
+[component.observer.resource.trace]
+capability = "observability.trace"
+required = true
+
+[instance.observer]
+component = "observer"
+target = "edge"
+
+[instance.observer.task]
+trigger = "periodic"
+period_ms = 100
+
+[[resource.provider]]
+name = "otel_collector"
+capabilities = ["observability.trace"]
+scope = "target"
+target = "edge"
+readiness_source = "runtime_socket"
+health_source = "runtime_socket"
+
+[profile.default]
+backend = "inproc"
+
+[target.edge]
+runtime = ["rust"]
+backends = ["inproc"]
+"#,
+    );
+
+    let launch: serde_json::Value =
+        serde_json::from_str(&crate::launch_manifest::emit_launch_manifest(&ir).unwrap()).unwrap();
+    assert_eq!(
+        launch["graphs"][0]["tracing"],
+        serde_json::json!({
+            "enabled": true,
+            "capability": "observability.trace",
+            "provider": "otel_collector",
+            "endpoint": null
+        })
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(&crate::selfdesc::emit_self_description(&ir).unwrap()).unwrap();
+    assert_eq!(
+        selfdesc["graphs"][0]["tracing"],
+        launch["graphs"][0]["tracing"]
+    );
+}
+
+#[test]
+fn launch_manifest_and_selfdesc_omit_tracing_without_observability_trace() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "no_tracing_demo"
+rsdl_version = "0.1"
+
+[component.worker]
+language = "rust"
+
+[instance.worker]
+component = "worker"
+
+[instance.worker.task]
+trigger = "periodic"
+period_ms = 100
+
+[profile.default]
+backend = "inproc"
+"#,
+    );
+
+    let launch: serde_json::Value =
+        serde_json::from_str(&crate::launch_manifest::emit_launch_manifest(&ir).unwrap()).unwrap();
+    assert!(launch["graphs"][0].get("tracing").is_none());
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(&crate::selfdesc::emit_self_description(&ir).unwrap()).unwrap();
+    assert!(selfdesc["graphs"][0].get("tracing").is_none());
+}

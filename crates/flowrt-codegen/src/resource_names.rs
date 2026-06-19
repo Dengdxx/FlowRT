@@ -3,6 +3,8 @@ use flowrt_ir::{
     ResourceHealthPolicy, ResourceProviderScope, ResourceReadinessGate, ResourceSatisfactionIr,
 };
 
+pub(crate) const OBSERVABILITY_TRACE_CAPABILITY: &str = "observability.trace";
+
 pub(crate) fn resource_descriptor_kind_name(kind: ResourceDescriptorKind) -> &'static str {
     match kind {
         ResourceDescriptorKind::Frame => "frame",

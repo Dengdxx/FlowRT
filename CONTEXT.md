@@ -108,9 +108,13 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
   `last_fault_tick` 和 `last_transition_tick`；`flowrt status` 同步展示这些字段。
   generated shell 在 restart 尝试和 task error 路径记录 restart/fault metrics。图级容错
   capstone 剩余 fault matrix 后续继续收束。
-- debt 5 OpenTelemetry / distributed tracing：独立线，无结构依赖。当前仅有
-  observability capability/resource 命名或规划，不存在稳定 span/exporter 上报路径。
-  FlowRT introspection 优先，tracing 是 additive，可较晚按需排期。
+- debt 5 OpenTelemetry / distributed tracing：最小 additive exporter 已落地。Rust runtime
+  提供 `TracingExporterConfig`、`FlowrtSpan`、`FlowrtSpanSink` 和
+  `derive_tracing_spans`，从 `IntrospectionStatus` 派生
+  process/task/service/operation/route/failover/global_tick span；默认关闭，关闭时只做
+  布尔判断，不分配 span。sink 失败只返回 tracing diagnostic，不改写 runtime status。
+  `observability.trace` resource satisfied 时，launch manifest 和 self-description 的 graph
+  section 输出 `tracing`；未声明或未满足时不输出。
 - debt 3 fault injection 矩阵：已扩展 deterministic kind。`[[inject]]` 支持
   `kind = "status_error"`（默认）、`startup_error`、`shutdown_error`、`panic`、`deadline_miss`
   和 `backend_drop`；前者仍按 scheduler task 的 per-task pre-execution 计数器合成 error
@@ -382,6 +386,9 @@ input、route、process、resource、I/O boundary、param、service、operation 
 handshake/status/error 完整 JSON，文本输出保留 `diagnostic=...` 与参数 `apply_state`
 行。`flowrt record` 会在显式录制路径写入 `diagnostics_event`，status 查询本身保持无副
 作用，避免轮询状态污染录制。
+OpenTelemetry / tracing 仍保持 additive：runtime 可按需从 introspection 快照派生稳定
+FlowRT span，默认关闭；export sink 失败只生成调用方可见 diagnostic，不改变 live status
+或调度状态。
 
 variable frame 工程化已进入生成物和运行态观测主路径。Rust/C++ 生成物在含 `bytes`、
 `string` 或 `sequence<T>` 的 message contract 中生成 `message_frame` conformance 测试：

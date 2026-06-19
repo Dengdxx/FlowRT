@@ -9,9 +9,9 @@ use flowrt_ir::{
 };
 
 use crate::resource_names::{
-    descriptor_payload_capture_name, resource_access_name, resource_descriptor_kind_name,
-    resource_failure_name, resource_health_name, resource_provider_scope_name,
-    resource_readiness_name, resource_satisfaction_status,
+    OBSERVABILITY_TRACE_CAPABILITY, descriptor_payload_capture_name, resource_access_name,
+    resource_descriptor_kind_name, resource_failure_name, resource_health_name,
+    resource_provider_scope_name, resource_readiness_name, resource_satisfaction_status,
 };
 use crate::runtime_plan::{bridge_runtime_plans, contract_derived_facts, graph_derived_facts};
 use crate::{
@@ -26,7 +26,7 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
         .iter()
         .map(|graph| {
             let graph_facts = graph_derived_facts(&facts, graph);
-            Ok(serde_json::json!({
+            let mut graph_json = serde_json::json!({
                 "name": graph.name,
                 "mode": graph_mode_name(contract_artifact_mode(contract)),
                 "scheduler": launch_scheduler(contract, graph),
@@ -47,7 +47,14 @@ pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
                     })
                 }).collect::<Vec<_>>(),
                 "tasks": graph.tasks.iter().map(launch_task).collect::<Vec<_>>(),
-            }))
+            });
+            if let Some(tracing) = launch_tracing(graph_facts) {
+                graph_json
+                    .as_object_mut()
+                    .expect("launch graph must be a JSON object")
+                    .insert("tracing".to_string(), tracing);
+            }
+            Ok(graph_json)
         })
         .collect::<Result<Vec<_>>>()?;
     let launch = serde_json::json!({
@@ -186,6 +193,27 @@ fn launch_resource_satisfaction(satisfaction: &ResourceSatisfactionIr) -> serde_
         "provider": satisfaction.provider.as_ref().map(|provider| provider.name.as_str()),
         "diagnostic": satisfaction.diagnostic.as_deref(),
     })
+}
+
+fn launch_tracing(graph_facts: &GraphDerivedFacts) -> Option<serde_json::Value> {
+    let satisfaction = tracing_satisfaction(graph_facts)?;
+    Some(serde_json::json!({
+        "enabled": true,
+        "capability": OBSERVABILITY_TRACE_CAPABILITY,
+        "provider": satisfaction.provider.as_ref().map(|provider| provider.name.as_str()),
+        "endpoint": null,
+    }))
+}
+
+fn tracing_satisfaction(graph_facts: &GraphDerivedFacts) -> Option<&ResourceSatisfactionIr> {
+    graph_facts
+        .resources
+        .satisfactions
+        .iter()
+        .find(|satisfaction| {
+            satisfaction.satisfied
+                && satisfaction.capability.0.as_str() == OBSERVABILITY_TRACE_CAPABILITY
+        })
 }
 
 fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_json::Value>> {

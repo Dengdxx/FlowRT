@@ -1,11 +1,14 @@
 use std::time::Duration;
 
 use flowrt::{
-    FrameCodec, OperationCancelToken, OperationConcurrencyPolicy, OperationControl,
-    OperationControlError, OperationError, OperationHealthCounters, OperationHealthSnapshot,
-    OperationId, OperationLifecycle, OperationOwner, OperationPolicy, OperationPreemptPolicy,
-    OperationProgress, OperationStartAck, OperationStartRequest, OperationState,
-    OperationStatusSnapshot,
+    FlowrtSpan, FlowrtSpanSink, FrameCodec, IntrospectionClockStatus, IntrospectionFailoverEvent,
+    IntrospectionOperationStatus, IntrospectionProcessStatus, IntrospectionRouteStatus,
+    IntrospectionServiceStatus, IntrospectionStatus, IntrospectionTaskHealth, OperationCancelToken,
+    OperationConcurrencyPolicy, OperationControl, OperationControlError, OperationError,
+    OperationHealthCounters, OperationHealthSnapshot, OperationId, OperationLifecycle,
+    OperationOwner, OperationPolicy, OperationPreemptPolicy, OperationProgress, OperationStartAck,
+    OperationStartRequest, OperationState, OperationStatusSnapshot, TracingExporter,
+    TracingExporterConfig,
 };
 
 fn frame_roundtrip<T>(value: &T)
@@ -14,6 +17,188 @@ where
 {
     let frame = value.to_frame_vec().unwrap();
     assert_eq!(T::decode_frame(&frame).unwrap(), *value);
+}
+
+#[test]
+fn tracing_exporter_derives_spans_without_driving_runtime() {
+    let status = tracing_status_fixture();
+    let sink = CollectingSpanSink::default();
+    let exporter = TracingExporter::new(
+        TracingExporterConfig {
+            enabled: true,
+            endpoint: Some("http://127.0.0.1:4318/v1/traces".to_string()),
+        },
+        &sink,
+    );
+
+    let report = exporter.export_status(&status);
+
+    assert_eq!(report.emitted, 7);
+    assert!(report.diagnostics.is_empty());
+    let names = sink
+        .spans()
+        .into_iter()
+        .map(|span| span.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        names,
+        std::collections::BTreeSet::from([
+            "flowrt.failover.transition".to_string(),
+            "flowrt.global_tick".to_string(),
+            "flowrt.operation.invocation".to_string(),
+            "flowrt.process.lifecycle".to_string(),
+            "flowrt.route.publish".to_string(),
+            "flowrt.service.request".to_string(),
+            "flowrt.task.execution".to_string(),
+        ])
+    );
+
+    let disabled = TracingExporter::new(TracingExporterConfig::default(), &sink);
+    let disabled_report = disabled.export_status(&status);
+    assert_eq!(disabled_report.emitted, 0);
+    assert!(disabled_report.diagnostics.is_empty());
+}
+
+#[test]
+fn tracing_exporter_failure_records_diagnostic() {
+    let status = tracing_status_fixture();
+    let original_diagnostics = status.diagnostics.clone();
+    let sink = FailingSpanSink;
+    let exporter = TracingExporter::new(
+        TracingExporterConfig {
+            enabled: true,
+            endpoint: Some("otlp://collector".to_string()),
+        },
+        &sink,
+    );
+
+    let report = exporter.export_status(&status);
+
+    assert_eq!(status.diagnostics, original_diagnostics);
+    assert_eq!(report.emitted, 0);
+    assert_eq!(report.diagnostics.len(), 1);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.category, "tracing");
+    assert_eq!(diagnostic.entity_kind, "tracing_exporter");
+    assert_eq!(diagnostic.entity_id, "otlp://collector");
+    assert_eq!(diagnostic.state, "export_failed");
+    assert_eq!(diagnostic.severity, "warn");
+    assert_eq!(diagnostic.reason.as_deref(), Some("sink unavailable"));
+}
+
+#[derive(Default)]
+struct CollectingSpanSink {
+    spans: std::sync::Mutex<Vec<FlowrtSpan>>,
+}
+
+impl CollectingSpanSink {
+    fn spans(&self) -> Vec<FlowrtSpan> {
+        self.spans.lock().unwrap().clone()
+    }
+}
+
+impl FlowrtSpanSink for &CollectingSpanSink {
+    fn emit(&self, span: FlowrtSpan) -> Result<(), String> {
+        self.spans.lock().unwrap().push(span);
+        Ok(())
+    }
+}
+
+struct FailingSpanSink;
+
+impl FlowrtSpanSink for &FailingSpanSink {
+    fn emit(&self, _span: FlowrtSpan) -> Result<(), String> {
+        Err("sink unavailable".to_string())
+    }
+}
+
+fn tracing_status_fixture() -> IntrospectionStatus {
+    IntrospectionStatus {
+        tick_count: 42,
+        clock: IntrospectionClockStatus {
+            source: "global_tick".to_string(),
+            tick_time_ms: Some(420),
+            unit: "ms".to_string(),
+            field: "tick_time_ms".to_string(),
+        },
+        processes: vec![IntrospectionProcessStatus {
+            name: "control".to_string(),
+            state: "running".to_string(),
+            pid: Some(1001),
+            restart_count: 1,
+            tick_count: Some(42),
+            last_seen_unix_ms: Some(123_456),
+            tick_stale: false,
+            exit_code: None,
+            readiness_wait: None,
+            resource_placement: None,
+        }],
+        services: vec![IntrospectionServiceStatus {
+            name: "planner.plan".to_string(),
+            ready: true,
+            in_flight: 1,
+            queued: 0,
+            total_requests: 3,
+            timeout_count: 0,
+            busy_count: 0,
+            unavailable_count: 0,
+            late_drop_count: 0,
+        }],
+        operations: vec![IntrospectionOperationStatus {
+            name: "planner.execute".to_string(),
+            ready: true,
+            running: 1,
+            queued: 0,
+            current_operation_ids: vec!["op-1".to_string()],
+            total_started: 1,
+            succeeded_count: 0,
+            failed_count: 0,
+            canceled_count: 0,
+            timeout_count: 0,
+            preempted_count: 0,
+            current_state: Some("running".to_string()),
+            current_owner: Some("planner".to_string()),
+            current_deadline_ms: Some(450),
+            last_event: Some("started".to_string()),
+            last_error: None,
+            last_transition_ms: Some(123_400),
+        }],
+        tasks: vec![IntrospectionTaskHealth {
+            name: "planner.tick".to_string(),
+            lane: "planner".to_string(),
+            inflight: false,
+            scheduled_time_ms: Some(410),
+            observed_time_ms: Some(411),
+            lateness_ms: Some(1),
+            run_count: 2,
+            success_count: 2,
+            last_run_ms: Some(123_410),
+            last_success_ms: Some(123_410),
+            ..IntrospectionTaskHealth::default()
+        }],
+        routes: vec![IntrospectionRouteStatus {
+            name: "planner.command".to_string(),
+            from: "planner.command".to_string(),
+            to: "driver.command".to_string(),
+            message_type: "Command".to_string(),
+            backend: "zenoh".to_string(),
+            selected_reason: "explicit".to_string(),
+            published_count: 5,
+            last_publish_ms: Some(123_420),
+            ..IntrospectionRouteStatus::default()
+        }],
+        failovers: vec![IntrospectionFailoverEvent {
+            event: "switch_active".to_string(),
+            group: "drive_redundancy".to_string(),
+            old_active: "drive_primary".to_string(),
+            new_active: "drive_standby".to_string(),
+            tick_id: 42,
+            reason: "critical_fault".to_string(),
+        }],
+        graph_health: "healthy".to_string(),
+        graph_critical_health: "healthy".to_string(),
+        ..IntrospectionStatus::default()
+    }
 }
 
 #[test]

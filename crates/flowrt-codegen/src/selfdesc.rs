@@ -26,13 +26,14 @@ use flowrt_selfdesc::{
     SelfDescriptionServiceEndpoint, SelfDescriptionServicePortDecl, SelfDescriptionTarget,
     SelfDescriptionTask, SelfDescriptionTemporaryOverlay,
     SelfDescriptionTemporaryOverlayBoundaryMapping, SelfDescriptionTemporaryOverlayGeneration,
+    SelfDescriptionTracing,
 };
 use sha2::{Digest, Sha256};
 
 use crate::resource_names::{
-    descriptor_payload_capture_name, resource_access_name, resource_descriptor_kind_name,
-    resource_failure_name, resource_health_name, resource_provider_scope_name,
-    resource_readiness_name, resource_satisfaction_status,
+    OBSERVABILITY_TRACE_CAPABILITY, descriptor_payload_capture_name, resource_access_name,
+    resource_descriptor_kind_name, resource_failure_name, resource_health_name,
+    resource_provider_scope_name, resource_readiness_name, resource_satisfaction_status,
 };
 use crate::{
     Result, component_by_name, fixed_message_abi_expectations, frame_header_size_for_expr,
@@ -319,6 +320,7 @@ fn self_description_graph(
             .map(|service| self_description_service_endpoint(contract, graph, service))
             .collect(),
         operations: self_description_operation_endpoints(contract, graph),
+        tracing: self_description_tracing(graph_facts),
     }
 }
 
@@ -410,6 +412,26 @@ fn self_description_resource_satisfaction(
             .map(|provider| provider.name.clone()),
         diagnostic: satisfaction.diagnostic.clone(),
     }
+}
+
+fn self_description_tracing(graph_facts: &GraphDerivedFacts) -> Option<SelfDescriptionTracing> {
+    let satisfaction = graph_facts
+        .resources
+        .satisfactions
+        .iter()
+        .find(|satisfaction| {
+            satisfaction.satisfied
+                && satisfaction.capability.0.as_str() == OBSERVABILITY_TRACE_CAPABILITY
+        })?;
+    Some(SelfDescriptionTracing {
+        enabled: true,
+        capability: OBSERVABILITY_TRACE_CAPABILITY.to_string(),
+        provider: satisfaction
+            .provider
+            .as_ref()
+            .map(|provider| provider.name.clone()),
+        endpoint: None,
+    })
 }
 
 fn self_description_boundary_endpoint(

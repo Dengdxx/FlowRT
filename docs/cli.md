@@ -702,6 +702,7 @@ launch manifest 的关键字段包括：
 - task 的 `name`、`trigger`、`period_ms`、`deadline_ms`、`priority`、`inputs` 和 `outputs`
 - graph `channels`
 - graph `services`
+- graph `tracing`，仅当 `observability.trace` resource 已满足时出现
 - graph `ros2_bridges`
 - graph `external_processes`
 - iox2 channel 的 canonical service name

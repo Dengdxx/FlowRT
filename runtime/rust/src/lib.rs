@@ -24,6 +24,7 @@ pub mod shutdown;
 pub mod supervisor;
 pub mod synchronizer;
 pub mod time_driver;
+pub mod tracing;
 pub mod wire;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
@@ -106,6 +107,10 @@ pub use service::{
 };
 pub use shutdown::{ShutdownToken, install_signal_shutdown_token};
 pub use time_driver::{ReplayDriver, ReplayEvent, Step, StepController, SteppedDriver, TimeDriver};
+pub use tracing::{
+    FlowrtSpan, FlowrtSpanSink, TracingExportReport, TracingExporter, TracingExporterConfig,
+    derive_tracing_spans,
+};
 pub use wire::{WireCodec, WireCodecError};
 
 /// 生成组件接口返回的执行状态。

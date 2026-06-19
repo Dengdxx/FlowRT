@@ -461,6 +461,22 @@ pub struct SelfDescriptionGraph {
     /// v0.6+ operation endpoint 拓扑。
     #[serde(default)]
     pub operations: Vec<SelfDescriptionOperationEndpoint>,
+    /// v0.23.3+ tracing exporter 配置；仅当 contract 声明并满足 `observability.trace` 时存在。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracing: Option<SelfDescriptionTracing>,
+}
+
+/// graph 级 tracing exporter 投影。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionTracing {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 /// island mode 的 typed boundary endpoint 静态拓扑信息。
