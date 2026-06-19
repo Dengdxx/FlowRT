@@ -199,7 +199,7 @@ fn type_layout(
                 align_bytes: element_layout.align_bytes,
             })
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             Err(AbiError::UnsupportedFutureType {
                 context: context.to_string(),
                 type_expr: expr.canonical_syntax(),

@@ -61,7 +61,7 @@ fn collect_type_dependencies(expr: &TypeExpr, dependencies: &mut BTreeSet<String
             dependencies.insert(name.clone());
         }
         TypeExpr::Array { element, .. } => collect_type_dependencies(element, dependencies),
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
         TypeExpr::VarSequence { element, .. } => collect_type_dependencies(element, dependencies),
     }
 }
@@ -288,7 +288,9 @@ fn type_contains_variable_data_inner(
 ) -> bool {
     match expr {
         TypeExpr::Primitive { .. } => false,
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
         TypeExpr::Array { element, .. } => {
             type_contains_variable_data_inner(contract, element, visiting)
         }
@@ -315,7 +317,7 @@ pub(crate) fn frame_header_size_for_type(contract: &ContractIr, ty: &TypeIr) -> 
 
 pub(crate) fn frame_header_size_for_expr(contract: &ContractIr, expr: &TypeExpr) -> usize {
     match expr {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => 8,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => 8,
         _ => rust_wire_size(contract, expr),
     }
 }
@@ -388,7 +390,7 @@ fn sample_bytes_for_expr(
             }
             bytes
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -411,7 +413,7 @@ fn wire_sample_bytes_for_expr(contract: &ContractIr, expr: &TypeExpr, seed: usiz
             }
             bytes
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -962,7 +964,9 @@ fn variable_frame_sample_bytes(
     for (index, field) in ty.fields.iter().enumerate() {
         let seed = index + 2;
         match &field.ty {
-            TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            TypeExpr::VarBytes { .. }
+            | TypeExpr::VarString { .. }
+            | TypeExpr::VarSequence { .. } => {
                 let block = if empty_variable {
                     Vec::new()
                 } else {
@@ -989,9 +993,9 @@ fn variable_frame_sample_bytes(
 
 fn variable_field_sample_bytes(contract: &ContractIr, expr: &TypeExpr, seed: usize) -> Vec<u8> {
     match expr {
-        TypeExpr::VarBytes => vec![seed as u8, (seed + 1) as u8, (seed + 2) as u8],
+        TypeExpr::VarBytes { .. } => vec![seed as u8, (seed + 1) as u8, (seed + 2) as u8],
         TypeExpr::VarString { .. } => format!("utf8-\u{03bc}-{seed}").into_bytes(),
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             let mut bytes = wire_sample_bytes_for_expr(contract, element, seed);
             bytes.extend_from_slice(&wire_sample_bytes_for_expr(contract, element, seed + 1));
             bytes
@@ -1048,7 +1052,7 @@ fn rust_frame_sample_expr(
                 rust_frame_sample_expr(contract, element, seed, false)
             )
         }
-        TypeExpr::VarBytes => {
+        TypeExpr::VarBytes { .. } => {
             if empty_variable {
                 "Vec::new()".to_string()
             } else {
@@ -1062,7 +1066,7 @@ fn rust_frame_sample_expr(
                 format!("\"utf8-\\u{{03bc}}-{seed}\".to_string()")
             }
         }
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             if empty_variable {
                 "Vec::new()".to_string()
             } else {
@@ -1123,7 +1127,7 @@ fn cpp_frame_sample_expr(
             let array_ty = cpp_type(expr);
             format!("[] {{ {array_ty} value{{}}; value.fill({value}); return value; }}()")
         }
-        TypeExpr::VarBytes => {
+        TypeExpr::VarBytes { .. } => {
             if empty_variable {
                 "std::vector<std::uint8_t>{}".to_string()
             } else {
@@ -1142,7 +1146,7 @@ fn cpp_frame_sample_expr(
                 format!("\"utf8-\\xCE\\xBC-{seed}\"")
             }
         }
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             if empty_variable {
                 format!("std::vector<{}>{{}}", cpp_type(element))
             } else {
@@ -1166,7 +1170,7 @@ fn malformed_frame_offsets(contract: &ContractIr, ty: &TypeIr) -> Option<(usize,
         let size = frame_header_size_for_expr(contract, &field.ty);
         if matches!(
             field.ty,
-            TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. }
+            TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. }
         ) {
             first.get_or_insert(cursor);
             let block = variable_field_sample_bytes(contract, &field.ty, index + 2);
@@ -1209,9 +1213,9 @@ pub(crate) fn cpp_type(expr: &TypeExpr) -> String {
         TypeExpr::Array { element, len } => {
             format!("std::array<{}, {}>", cpp_type(element), len)
         }
-        TypeExpr::VarBytes => "std::vector<std::uint8_t>".to_string(),
+        TypeExpr::VarBytes { .. } => "std::vector<std::uint8_t>".to_string(),
         TypeExpr::VarString { .. } => "std::string".to_string(),
-        TypeExpr::VarSequence { element } => format!("std::vector<{}>", cpp_type(element)),
+        TypeExpr::VarSequence { element, .. } => format!("std::vector<{}>", cpp_type(element)),
     }
 }
 
@@ -1238,9 +1242,9 @@ pub(crate) fn rust_type(expr: &TypeExpr) -> String {
         TypeExpr::Primitive { name } => rust_primitive(*name).to_string(),
         TypeExpr::Named { name } => type_identifier(name),
         TypeExpr::Array { element, len } => format!("[{}; {}]", rust_type(element), len),
-        TypeExpr::VarBytes => "Vec<u8>".to_string(),
+        TypeExpr::VarBytes { .. } => "Vec<u8>".to_string(),
         TypeExpr::VarString { .. } => "String".to_string(),
-        TypeExpr::VarSequence { element } => format!("Vec<{}>", rust_type(element)),
+        TypeExpr::VarSequence { element, .. } => format!("Vec<{}>", rust_type(element)),
     }
 }
 
@@ -1455,13 +1459,13 @@ fn rust_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
     let mut output = String::new();
     for field in &ty.fields {
         match &field.ty {
-            TypeExpr::VarBytes => {
+            TypeExpr::VarBytes { .. } => {
                 output.push_str(&format!(" + self.{}.len()\n", field.name));
             }
             TypeExpr::VarString { .. } => {
                 output.push_str(&format!(" + self.{}.len()\n", field.name));
             }
-            TypeExpr::VarSequence { element } => {
+            TypeExpr::VarSequence { element, .. } => {
                 output.push_str(&format!(
                     " + self.{}.len() * {}\n",
                     field.name,
@@ -1480,7 +1484,7 @@ fn rust_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
 
 fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes => format!(
+        TypeExpr::VarBytes { .. } => format!(
             "        let {name}_span = flowrt::append_tail_block(&mut tail, self.{name}.as_slice())?;\n",
             name = field.name
         ),
@@ -1488,7 +1492,7 @@ fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Stri
             "        let {name}_span = flowrt::append_tail_block(&mut tail, self.{name}.as_bytes())?;\n",
             name = field.name
         ),
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
             let mut code = format!(
                 "        let mut {name}_tail = Vec::<u8>::with_capacity(self.{name}.len() * {element_size});\n        for element in &self.{name} {{\n            let start = {name}_tail.len();\n            {name}_tail.resize(start + {element_size}, 0);\n",
@@ -1514,7 +1518,7 @@ fn rust_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Stri
 
 fn rust_frame_encode_header_field(field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             format!(
                 "        {name}_span.encode(&mut output[cursor..cursor + flowrt::VAR_SPAN_WIRE_SIZE])?;\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
                 name = field.name
@@ -1526,7 +1530,7 @@ fn rust_frame_encode_header_field(field: &FieldIr) -> String {
 
 fn rust_frame_decode_header_field(field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             format!(
                 "        let {name}_span = flowrt::VarSpan::decode(&input[cursor..cursor + flowrt::VAR_SPAN_WIRE_SIZE])?;\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
                 name = field.name
@@ -1538,7 +1542,7 @@ fn rust_frame_decode_header_field(field: &FieldIr) -> String {
 
 fn rust_frame_decode_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes => format!(
+        TypeExpr::VarBytes { .. } => format!(
             "        let {name} = decoder.read_block({name}_span)?.to_vec();\n",
             name = field.name
         ),
@@ -1546,7 +1550,7 @@ fn rust_frame_decode_tail_field(contract: &ContractIr, field: &FieldIr) -> Strin
             "        let {name} = String::from_utf8(decoder.read_block({name}_span)?.to_vec()).map_err(|_| flowrt::WireCodecError::invalid_frame(\"string field is not valid UTF-8\"))?;\n",
             name = field.name
         ),
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
             let element_ty = rust_type(element);
             format!(
@@ -1567,7 +1571,7 @@ pub(crate) fn rust_wire_size(contract: &ContractIr, expr: &TypeExpr) -> usize {
             .map(|field| rust_wire_size(contract, &field.ty))
             .sum(),
         TypeExpr::Array { element, len } => rust_wire_size(contract, element) * *len,
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -1607,7 +1611,7 @@ fn rust_wire_encode_expr(expr: &TypeExpr, value: &str, output: &str, indent: usi
             code.push_str(&format!("{pad}}}\n"));
             code
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -1672,7 +1676,7 @@ fn rust_wire_decode_expr(expr: &TypeExpr, local: &str, input: &str, indent: usiz
             code.push_str(&format!("{pad}    *element = decoded_element;\n{pad}}}\n"));
             code
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -1810,13 +1814,13 @@ fn cpp_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
     let mut output = String::new();
     for field in &ty.fields {
         match &field.ty {
-            TypeExpr::VarBytes => {
+            TypeExpr::VarBytes { .. } => {
                 output.push_str(&format!(" + {}.size()", field.name));
             }
             TypeExpr::VarString { .. } => {
                 output.push_str(&format!(" + {}.size()", field.name));
             }
-            TypeExpr::VarSequence { element } => {
+            TypeExpr::VarSequence { element, .. } => {
                 output.push_str(&format!(
                     " + {}.size() * {}",
                     field.name,
@@ -1831,7 +1835,7 @@ fn cpp_dynamic_tail_size_exprs(contract: &ContractIr, ty: &TypeIr) -> String {
 
 fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes => format!(
+        TypeExpr::VarBytes { .. } => format!(
             "        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{{name}.data(), {name}.size()}});\n",
             name = field.name
         ),
@@ -1839,7 +1843,7 @@ fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Strin
             "        const auto {name}_span = flowrt::append_tail_block(tail, std::span<const std::uint8_t>{{reinterpret_cast<const std::uint8_t*>({name}.data()), {name}.size()}});\n",
             name = field.name
         ),
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
             let mut code = format!(
                 "        std::vector<std::uint8_t> {name}_tail;\n        {name}_tail.resize({name}.size() * {element_size});\n        std::size_t {name}_cursor = 0;\n        for (const auto& element : {name}) {{\n            std::size_t cursor = {name}_cursor;\n",
@@ -1867,7 +1871,7 @@ fn cpp_frame_prepare_tail_field(contract: &ContractIr, field: &FieldIr) -> Strin
 
 fn cpp_frame_encode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             format!(
                 "        flowrt::write_var_span(output.subspan(cursor, flowrt::VAR_SPAN_WIRE_SIZE), {name}_span);\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
                 name = field.name
@@ -1879,7 +1883,7 @@ fn cpp_frame_encode_header_field(contract: &ContractIr, field: &FieldIr) -> Stri
 
 fn cpp_frame_decode_header_field(contract: &ContractIr, field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             format!(
                 "        const auto {name}_span = flowrt::read_var_span(input.subspan(cursor, flowrt::VAR_SPAN_WIRE_SIZE));\n        cursor += flowrt::VAR_SPAN_WIRE_SIZE;\n",
                 name = field.name
@@ -1897,7 +1901,7 @@ fn cpp_frame_decode_header_field(contract: &ContractIr, field: &FieldIr) -> Stri
 
 fn cpp_frame_decode_tail_field(contract: &ContractIr, field: &FieldIr) -> String {
     match &field.ty {
-        TypeExpr::VarBytes => format!(
+        TypeExpr::VarBytes { .. } => format!(
             "        const auto {name}_block = decoder.read_block({name}_span);\n        value.{name}.assign({name}_block.begin(), {name}_block.end());\n",
             name = field.name
         ),
@@ -1905,7 +1909,7 @@ fn cpp_frame_decode_tail_field(contract: &ContractIr, field: &FieldIr) -> String
             "        const auto {name}_block = decoder.read_block({name}_span);\n        if (!flowrt::valid_utf8({name}_block)) {{\n            throw flowrt::WireCodecError(\"string field is not valid UTF-8\");\n        }}\n        if ({name}_block.empty()) {{\n            value.{name}.clear();\n        }} else {{\n            value.{name}.assign(reinterpret_cast<const char*>({name}_block.data()), {name}_block.size());\n        }}\n",
             name = field.name
         ),
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarSequence { element, .. } => {
             let element_size = rust_wire_size(contract, element);
             let element_ty = cpp_type(element);
             let decode_element = if matches!(**element, TypeExpr::Primitive { .. }) {
@@ -1964,7 +1968,7 @@ fn cpp_wire_encode_expr(
             code.push_str(&format!("{pad}}}\n"));
             code
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -2007,7 +2011,7 @@ fn cpp_wire_decode_expr(
             code.push_str(&format!("{pad}}}\n"));
             code
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -2041,7 +2045,7 @@ fn rust_sample_expr(expr: &TypeExpr, seed: usize) -> String {
         TypeExpr::Array { element, len } => {
             format!("[{}; {}]", rust_sample_expr(element, seed), len)
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -2080,7 +2084,7 @@ fn cpp_sample_expr(expr: &TypeExpr, seed: usize) -> String {
                 cpp_sample_expr(element, seed)
             )
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()
@@ -2096,7 +2100,7 @@ fn cpp_fixture_type(expr: &TypeExpr) -> String {
         TypeExpr::Array { element, len } => {
             format!("std::array<{}, {}>", cpp_fixture_type(element), len)
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
             panic!(
                 "validated Message ABI v0.1 contract must not contain {}",
                 expr.canonical_syntax()

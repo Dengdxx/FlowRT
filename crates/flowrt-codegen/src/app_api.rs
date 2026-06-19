@@ -1786,9 +1786,9 @@ fn rust_stub_type(expr: &TypeExpr) -> String {
         TypeExpr::Primitive { .. } => rust_type(expr),
         TypeExpr::Named { name } => format!("flowrt_app::messages::{name}"),
         TypeExpr::Array { element, len } => format!("[{}; {len}]", rust_stub_type(element)),
-        TypeExpr::VarBytes => "Vec<u8>".to_string(),
+        TypeExpr::VarBytes { .. } => "Vec<u8>".to_string(),
         TypeExpr::VarString { .. } => "String".to_string(),
-        TypeExpr::VarSequence { element } => format!("Vec<{}>", rust_stub_type(element)),
+        TypeExpr::VarSequence { element, .. } => format!("Vec<{}>", rust_stub_type(element)),
     }
 }
 
@@ -1799,9 +1799,9 @@ fn cpp_stub_type(expr: &TypeExpr) -> String {
         TypeExpr::Array { element, len } => {
             format!("std::array<{}, {len}>", cpp_stub_type(element))
         }
-        TypeExpr::VarBytes => "std::vector<std::uint8_t>".to_string(),
+        TypeExpr::VarBytes { .. } => "std::vector<std::uint8_t>".to_string(),
         TypeExpr::VarString { .. } => "std::string".to_string(),
-        TypeExpr::VarSequence { element } => format!("std::vector<{}>", cpp_stub_type(element)),
+        TypeExpr::VarSequence { element, .. } => format!("std::vector<{}>", cpp_stub_type(element)),
     }
 }
 

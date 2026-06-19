@@ -117,10 +117,11 @@ impl NameResolver {
                 element: Box::new(self.resolve_type_expr_in_module(*element, current_module)?),
                 len,
             }),
-            TypeExpr::VarSequence { element } => Ok(TypeExpr::VarSequence {
+            TypeExpr::VarSequence { element, max_len } => Ok(TypeExpr::VarSequence {
                 element: Box::new(self.resolve_type_expr_in_module(*element, current_module)?),
+                max_len,
             }),
-            TypeExpr::Primitive { .. } | TypeExpr::VarBytes | TypeExpr::VarString { .. } => {
+            TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {
                 Ok(expr)
             }
         }

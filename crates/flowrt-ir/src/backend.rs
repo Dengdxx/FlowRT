@@ -795,7 +795,7 @@ fn collect_type_expr_abi_capabilities_inner(
             name: PrimitiveType::U128 | PrimitiveType::I128,
         } => required.push(Capability::AbiInt128),
         TypeExpr::Primitive { .. } => {}
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {
             required.extend([
                 Capability::AbiVariablePayloadFrame,
                 Capability::AllocationUnboundedDynamic,
@@ -845,7 +845,9 @@ fn type_expr_contains_variable_data_inner(
     visiting: &mut BTreeSet<String>,
 ) -> bool {
     match expr {
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
         TypeExpr::Array { element, .. } => {
             type_expr_contains_variable_data_inner(element, types_by_name, visiting)
         }
@@ -973,6 +975,7 @@ mod tests {
     fn dynamic() -> TypeExpr {
         TypeExpr::VarString {
             encoding: crate::StringEncoding::Utf8,
+            max_len: None,
         }
     }
 
@@ -1562,7 +1565,7 @@ mod tests {
             vec![
                 crate::FieldIr {
                     name: "payload".to_string(),
-                    ty: TypeExpr::VarBytes,
+                    ty: TypeExpr::VarBytes { max_len: None },
                     default: None,
                 },
                 crate::FieldIr {
@@ -1571,6 +1574,7 @@ mod tests {
                         element: Box::new(TypeExpr::Primitive {
                             name: PrimitiveType::U32,
                         }),
+                        max_len: None,
                     },
                     default: None,
                 },

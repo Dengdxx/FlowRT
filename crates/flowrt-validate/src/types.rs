@@ -93,7 +93,7 @@ pub(crate) fn validate_variable_frame_shapes(ir: &ContractIr, errors: &mut Vec<V
         for field in &ty.fields {
             let context = format!("type `{}` field `{}`", ty.name, field.name);
             match &field.ty {
-                TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
+                TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
                 TypeExpr::VarSequence { element, .. } => {
                     if type_expr_contains_variable_data(element, &types_by_name) {
                         errors.push(ValidationError::new(format!(
@@ -126,7 +126,9 @@ fn type_expr_contains_variable_data_inner(
 ) -> bool {
     match expr {
         TypeExpr::Primitive { .. } => false,
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => true,
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } | TypeExpr::VarSequence { .. } => {
+            true
+        }
         TypeExpr::Array { element, .. } => {
             type_expr_contains_variable_data_inner(element, types_by_name, visiting)
         }
@@ -224,7 +226,7 @@ fn collect_recursive_types_from_expr(
                 recursive_types,
             );
         }
-        TypeExpr::Primitive { .. } | TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
+        TypeExpr::Primitive { .. } | TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
     }
 }
 
@@ -251,8 +253,8 @@ pub(crate) fn validate_type_expr(
             }
             validate_type_expr(element, type_names, context, errors);
         }
-        TypeExpr::VarBytes | TypeExpr::VarString { .. } => {}
-        TypeExpr::VarSequence { element } => {
+        TypeExpr::VarBytes { .. } | TypeExpr::VarString { .. } => {}
+        TypeExpr::VarSequence { element, .. } => {
             validate_type_expr(element, type_names, context, errors);
         }
     }
