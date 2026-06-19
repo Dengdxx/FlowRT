@@ -215,6 +215,11 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
         run.graph,
         run.order,
     ));
+    output.push_str(&emit_cpp_iox2_operation_endpoints(
+        run.contract,
+        run.graph,
+        run.order,
+    ));
     output.push_str(&emit_cpp_scheduler_v2_loop(run));
     output.push_str(&format!(
         "    if (status == flowrt::Status::Ok) {{\n        std::map<std::string, flowrt::IntrospectionTaskHealth> shutdown_health_map;\n        status = {}(0, lifecycle_context, introspection_state, scheduler_events, shutdown_health_map);\n    }}\n",
@@ -428,6 +433,67 @@ fn emit_cpp_zenoh_operation_endpoints(
     output
 }
 
+fn emit_cpp_iox2_operation_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&InstanceIr],
+) -> String {
+    let plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let iox2_plans = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "iox2")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect::<Vec<_>>();
+    if iox2_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str("    if (status == flowrt::Status::Ok) {\n");
+    for plan in iox2_plans {
+        let start_name = cpp_string_literal(
+            plan.start_endpoint
+                .service_name()
+                .expect("iox2 operation start endpoint must have service name"),
+        );
+        let cancel_name = cpp_string_literal(
+            plan.cancel_endpoint
+                .service_name()
+                .expect("iox2 operation cancel endpoint must have service name"),
+        );
+        let status_name = cpp_string_literal(
+            plan.status_endpoint
+                .service_name()
+                .expect("iox2 operation status endpoint must have service name"),
+        );
+        let goal_ty = cpp_type(&plan.goal_type);
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = cpp_operation_client_field_name(plan);
+            output.push_str(&format!(
+                "        this->{client_field}_.bind(\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}),\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}),\n            flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}));\n",
+            ));
+        }
+        if active.contains(plan.server_instance.as_str()) {
+            let start_server = cpp_operation_start_server_field_name(plan);
+            let cancel_server = cpp_operation_cancel_server_field_name(plan);
+            let status_server = cpp_operation_status_server_field_name(plan);
+            let max_in_flight = plan.max_in_flight.max(1);
+            output.push_str(&format!(
+                "        this->{start_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}, {max_in_flight}U);\n        this->{start_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{start_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{cancel_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}, {max_in_flight}U);\n        this->{cancel_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{cancel_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n        this->{status_server}_ = flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}, {max_in_flight}U);\n        this->{status_server}_->set_schedule_waiter(scheduler_events);\n        if (this->{status_server}_->health().state != flowrt::BackendHealthState::Ready) {{\n            status = flowrt::Status::Error;\n        }}\n",
+            ));
+        }
+    }
+    output.push_str("    }\n");
+    output
+}
+
 pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
     let scheduler_plan = scheduler_runtime_plan(run.contract, run.graph, run.order);
     let recoverable = recoverable_instances(run.contract, run.graph, run.order);
@@ -634,15 +700,24 @@ pub(super) fn emit_cpp_scheduler_v2_loop(run: &CppRunEmission<'_>) -> String {
             .expect("scheduler operation task must reference an operation plan");
         let task_id = task.id;
         let operation_index = plan.index;
-        let pending_condition = if plan.backend.0 == "zenoh" {
-            String::new()
-        } else {
-            let start_server = cpp_operation_start_server_field_name(plan);
-            let cancel_server = cpp_operation_cancel_server_field_name(plan);
-            let status_server = cpp_operation_status_server_field_name(plan);
-            format!(
-                "({start_server}_.has_value() && {start_server}_->pending_count() > 0) || ({cancel_server}_.has_value() && {cancel_server}_->pending_count() > 0) || ({status_server}_.has_value() && {status_server}_->pending_count() > 0) || "
-            )
+        let pending_condition = match plan.backend.0.as_str() {
+            "zenoh" => String::new(),
+            "iox2" => {
+                let start_server = cpp_operation_start_server_field_name(plan);
+                let cancel_server = cpp_operation_cancel_server_field_name(plan);
+                let status_server = cpp_operation_status_server_field_name(plan);
+                format!(
+                    "{start_server}_.has_value() || {cancel_server}_.has_value() || {status_server}_.has_value() || "
+                )
+            }
+            _ => {
+                let start_server = cpp_operation_start_server_field_name(plan);
+                let cancel_server = cpp_operation_cancel_server_field_name(plan);
+                let status_server = cpp_operation_status_server_field_name(plan);
+                format!(
+                    "({start_server}_.has_value() && {start_server}_->pending_count() > 0) || ({cancel_server}_.has_value() && {cancel_server}_->pending_count() > 0) || ({status_server}_.has_value() && {status_server}_->pending_count() > 0) || "
+                )
+            }
         };
         output.push_str(&format!(
             "            const auto flowrt_operation_snapshot_{operation_index} = this->operation_control_{operation_index}_ ? this->operation_control_{operation_index}_->snapshot() : flowrt::OperationStatusSnapshot{{}};\n            const bool flowrt_operation_active_{operation_index} = !flowrt::is_terminal(flowrt_operation_snapshot_{operation_index}.state) && flowrt_operation_snapshot_{operation_index}.state != flowrt::OperationState::Idle;\n            if ({pending_condition}(flowrt_operation_active_{operation_index} && !flowrt_operation_tick_driven_{operation_index})) {{\n                scheduler.wake(flowrt::TaskId{{{task_id}}});\n                if (flowrt_operation_active_{operation_index}) {{\n                    flowrt_operation_tick_driven_{operation_index} = true;\n                }}\n                woke_on_message = true;\n            }}\n"

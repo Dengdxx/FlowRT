@@ -397,6 +397,42 @@ fn rust_zenoh_operation_codegen_wires_transport() {
     );
 }
 
+/// iox2 Operation 复用三条内部 service transport，同时保持用户侧 Operation API。
+#[test]
+fn rust_iox2_operation_codegen_wires_transport() {
+    let source = RUST_OPERATION_RSDL.replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        components.contains("std::sync::OnceLock<flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>>"),
+        "iox2 Operation must hold an internal start service client slot.\n\n{components}"
+    );
+    assert!(
+        components.contains("std::sync::OnceLock<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>>"),
+        "iox2 Operation must hold cancel/status service client slots.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceClient::open"),
+        "runtime shell must open iox2 Operation control clients.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceServer::<"),
+        "runtime shell must open iox2 Operation control servers.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(".poll_requests("),
+        "iox2 Operation servers must be drained by hidden scheduler task.\n\n{shell}"
+    );
+    assert!(
+        !shell.contains("ZenohServiceServer"),
+        "iox2 Operation path must not instantiate ZenohServiceServer.\n\n{shell}"
+    );
+}
+
 /// C++ components 应生成和 Rust 等价的 Operation typed API。
 #[test]
 fn cpp_operation_components_are_generated() {
@@ -537,5 +573,45 @@ fn cpp_zenoh_operation_codegen_wires_transport() {
     assert!(
         shell.contains("__flowrt_operation_controller_plan_result"),
         "C++ result channel must remain an Operation lowering fact.\n\n{shell}"
+    );
+}
+
+/// C++ iox2 Operation 复用三条内部 service transport，同时保持 Operation typed API。
+#[test]
+fn cpp_iox2_operation_codegen_wires_transport() {
+    let source = RUST_OPERATION_RSDL
+        .replace("language = \"rust\"", "language = \"cpp\"")
+        .replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(
+        components.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>"),
+        "C++ iox2 Operation must hold an internal start service client.\n\n{components}"
+    );
+    assert!(
+        components.contains(
+            "flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>"
+        ),
+        "C++ iox2 Operation must hold cancel/status service clients.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open"),
+        "C++ runtime shell must open iox2 Operation start client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck>::open"),
+        "C++ runtime shell must open iox2 Operation start server.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("poll_requests("),
+        "C++ iox2 Operation servers must be drained by hidden scheduler task.\n\n{shell}"
+    );
+    assert!(
+        !shell.contains("ZenohServiceServer"),
+        "C++ iox2 Operation path must not instantiate ZenohServiceServer.\n\n{shell}"
     );
 }

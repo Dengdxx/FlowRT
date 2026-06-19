@@ -162,7 +162,9 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     if service_plans
         .iter()
         .any(|plan| matches!(plan.backend.0.as_str(), "zenoh" | "iox2"))
-        || operation_plans.iter().any(|plan| plan.backend.0 == "zenoh")
+        || operation_plans
+            .iter()
+            .any(|plan| matches!(plan.backend.0.as_str(), "zenoh" | "iox2"))
     {
         output.push_str("#include <memory>\n");
     }
@@ -170,7 +172,9 @@ pub(crate) fn emit_cpp_components(contract: &ContractIr) -> String {
     output.push_str(
         "#include <flowrt/runtime.hpp>\n#include <flowrt/inproc_service.hpp>\n#include <flowrt/operation.hpp>\n#include <flowrt/service.hpp>\n",
     );
-    if service_plans.iter().any(|plan| plan.backend.0 == "iox2") {
+    if service_plans.iter().any(|plan| plan.backend.0 == "iox2")
+        || operation_plans.iter().any(|plan| plan.backend.0 == "iox2")
+    {
         output.push_str("#include <flowrt/iox2.hpp>\n");
     }
     if contract.graphs.iter().any(|graph| {
@@ -421,15 +425,29 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         let owner_name =
             cpp_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
         let operation_index = plan.index;
-        let pending_block = if plan.backend.0 == "zenoh" {
-            String::new()
-        } else {
-            format!(
-                "    if ({start_server}_.has_value()) {{\n        {start_server}_->process_pending();\n    }}\n    if ({cancel_server}_.has_value()) {{\n        {cancel_server}_->process_pending();\n    }}\n    if ({status_server}_.has_value()) {{\n        {status_server}_->process_pending();\n    }}\n",
-                start_server = cpp_operation_start_server_field_name(plan),
-                cancel_server = cpp_operation_cancel_server_field_name(plan),
-                status_server = cpp_operation_status_server_field_name(plan),
-            )
+        let pending_block = match plan.backend.0.as_str() {
+            "zenoh" => String::new(),
+            "iox2" => {
+                let goal_ty = cpp_type(&plan.goal_type);
+                let feedback_ty = cpp_type(&plan.feedback_type);
+                let result_ty = cpp_type(&plan.result_type);
+                let port = crate::snake_identifier(&plan.server_port);
+                let server_instance = &plan.server_instance;
+                format!(
+                    "    if ({start_server}_.has_value()) {{\n        const auto handled = {start_server}_->poll_requests([this](const flowrt::OperationStartRequest<{goal_ty}>& request) -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n            auto operation_worker_server = this->{server_instance}_;\n            if (!operation_worker_server) {{\n                return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::Unavailable);\n            }}\n            auto operation_control = this->operation_control_{operation_index}_;\n            const auto started = operation_control->start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout);\n            if (!started.has_value()) {{\n                return flowrt_operation_control_error<flowrt::OperationStartAck>(started.error());\n            }}\n            const auto ack = started.value();\n            const auto id = ack.id;\n            auto goal_for_worker = request.goal;\n            try {{\n                std::thread([operation_worker_server, operation_control, id, goal_for_worker = std::move(goal_for_worker)]() mutable {{\n                    while (true) {{\n                        const auto status = operation_control->status(id);\n                        if (!status.has_value() || flowrt::is_terminal(status->state)) {{\n                            return;\n                        }}\n                        if (operation_control->ready_to_run(id)) {{\n                            break;\n                        }}\n                        std::this_thread::sleep_for(std::chrono::milliseconds{{1}});\n                    }}\n                    const auto cancel = operation_control->cancel_token_for(id);\n                    if (!cancel.has_value()) {{\n                        return;\n                    }}\n                    if (const auto error = operation_control->mark_running(id); error != flowrt::OperationControlError::Ok) {{\n                        return;\n                    }}\n                    auto progress = flowrt::OperationProgressPublisher<{feedback_ty}>{{id, [operation_control](flowrt::OperationId progress_id, std::uint64_t sequence) {{\n                        operation_control->publish_progress(progress_id, sequence);\n                    }}}};\n                    flowrt::OperationState terminal_state = flowrt::OperationState::Failed;\n                    try {{\n                        const auto result = operation_worker_server->on_{port}_operation(goal_for_worker, *cancel, progress);\n                        switch (result.kind()) {{\n                            case flowrt::OperationHandlerResult<{result_ty}>::Kind::Succeeded:\n                                terminal_state = flowrt::OperationState::Succeeded;\n                                break;\n                            case flowrt::OperationHandlerResult<{result_ty}>::Kind::Failed:\n                                terminal_state = flowrt::OperationState::Failed;\n                                break;\n                            case flowrt::OperationHandlerResult<{result_ty}>::Kind::Canceled:\n                                terminal_state = flowrt::OperationState::Cancelled;\n                                break;\n                        }}\n                    }} catch (...) {{\n                        terminal_state = flowrt::OperationState::Failed;\n                    }}\n                    (void)operation_control->complete(id, terminal_state);\n                }}).detach();\n            }} catch (...) {{\n                (void)operation_control->complete(id, flowrt::OperationState::Failed);\n                return flowrt::ServiceResult<flowrt::OperationStartAck>::err(flowrt::ServiceError::HandlerError);\n            }}\n            return flowrt::ServiceResult<flowrt::OperationStartAck>::ok(ack);\n        }});\n        if (!handled.has_value()) {{\n            return flowrt::Status::Error;\n        }}\n    }}\n    if ({cancel_server}_.has_value()) {{\n        const auto handled = {cancel_server}_->poll_requests([this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n            const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n            if (const auto error = this->operation_control_{operation_index}_->request_cancel(id, snapshot.owner); error != flowrt::OperationControlError::Ok) {{\n                return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(error);\n            }}\n            return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(this->operation_control_{operation_index}_->snapshot());\n        }});\n        if (!handled.has_value()) {{\n            return flowrt::Status::Error;\n        }}\n    }}\n    if ({status_server}_.has_value()) {{\n        const auto handled = {status_server}_->poll_requests([this](const flowrt::OperationId& id) -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n            const auto status = this->operation_control_{operation_index}_->status(id);\n            if (!status.has_value()) {{\n                return flowrt_operation_control_error<flowrt::OperationStatusSnapshot>(status.error());\n            }}\n            return flowrt::ServiceResult<flowrt::OperationStatusSnapshot>::ok(status.value());\n        }});\n        if (!handled.has_value()) {{\n            return flowrt::Status::Error;\n        }}\n    }}\n",
+                    start_server = cpp_operation_start_server_field_name(plan),
+                    cancel_server = cpp_operation_cancel_server_field_name(plan),
+                    status_server = cpp_operation_status_server_field_name(plan),
+                )
+            }
+            _ => {
+                format!(
+                    "    if ({start_server}_.has_value()) {{\n        {start_server}_->process_pending();\n    }}\n    if ({cancel_server}_.has_value()) {{\n        {cancel_server}_->process_pending();\n    }}\n    if ({status_server}_.has_value()) {{\n        {status_server}_->process_pending();\n    }}\n",
+                    start_server = cpp_operation_start_server_field_name(plan),
+                    cancel_server = cpp_operation_cancel_server_field_name(plan),
+                    status_server = cpp_operation_status_server_field_name(plan),
+                )
+            }
         };
         output.push_str(&format!(
             "flowrt::Status App::{fn_name}(std::size_t tick, flowrt::Context& tick_context, flowrt::IntrospectionState& introspection_state, flowrt::ScheduleWaiter& scheduler_events, std::map<std::string, flowrt::IntrospectionTaskHealth>& health_map) {{\n    (void)tick;\n    (void)tick_context;\n    (void)scheduler_events;\n    (void)health_map;\n    introspection_state.register_operation_cancel_handler({operation_name}, [this](std::string_view operation_id) -> std::variant<flowrt::IntrospectionOperationStatus, std::string> {{\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        if (flowrt_operation_id_string(snapshot.id) != operation_id) {{\n            return std::string{{\"stale operation invocation `\"}} + std::string{{operation_id}} + \"`; current is `\" + flowrt_operation_id_string(snapshot.id) + \"`\";\n        }}\n        if (const auto error = this->operation_control_{operation_index}_->request_cancel(snapshot.id, snapshot.owner); error != flowrt::OperationControlError::Ok) {{\n            return std::string{{flowrt::to_string(error)}};\n        }}\n        return flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, this->operation_control_{operation_index}_->snapshot());\n    }});\n{pending_block}    if (this->operation_control_{operation_index}_) {{\n        (void)this->operation_control_{operation_index}_->check_deadline(flowrt::monotonic_time_ms());\n        const auto snapshot = this->operation_control_{operation_index}_->snapshot();\n        const auto events = this->operation_control_{operation_index}_->drain_events();\n        for (const auto& event : events) {{\n            const auto operation_id = flowrt_operation_id_string(event.id);\n            switch (event.kind) {{\n                case flowrt::OperationRuntimeEventKind::StateChanged:\n                    if (event.state.has_value()) {{\n                        introspection_state.record_operation_transition(\n                            {operation_name},\n                            operation_id,\n                            flowrt::to_string(*event.state),\n                            std::optional<std::string_view>{{{owner_name}}},\n                            flowrt::is_terminal(*event.state) ? std::nullopt : std::optional<std::uint64_t>{{snapshot.deadline_ms}});\n                    }}\n                    break;\n                case flowrt::OperationRuntimeEventKind::Progress:\n                    introspection_state.record_operation_progress({operation_name}, operation_id, event.sequence.value_or(0U));\n                    break;\n                case flowrt::OperationRuntimeEventKind::Result: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"succeeded\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::nullopt);\n                    break;\n                }}\n                case flowrt::OperationRuntimeEventKind::Error: {{\n                    const auto result = event.state.has_value() ? flowrt::to_string(*event.state) : std::string_view{{\"failed\"}};\n                    introspection_state.record_operation_result({operation_name}, operation_id, result, std::optional<std::string_view>{{\"handler error\"}});\n                    break;\n                }}\n            }}\n        }}\n        introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n    }}\n    return flowrt::Status::Ok;\n}}\n\n",
@@ -526,6 +544,8 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     let bridge_plans = bridge_runtime_plans(contract, graph);
     let boundary_plans = boundary_runtime_plans(graph);
     let global_tick = selected_profile_uses_global_tick(contract);
+    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
+    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
 
     let mut output = managed_header();
     output.push_str("#pragma once\n\n");
@@ -542,8 +562,6 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
     );
     output.push_str("namespace flowrt_app {\n\n");
 
-    let service_plans = crate::runtime_plan::service_runtime_plans(contract, graph);
-    let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     output.push_str(
         "class App;\nusing FlowrtOutputCommit = std::function<flowrt::Status(App&, flowrt::IntrospectionState&, flowrt::ScheduleWaiter&, std::map<std::string, flowrt::IntrospectionTaskHealth>&)>;\nusing FlowrtTaskOutcome = flowrt::TaskRunOutcome<std::vector<FlowrtOutputCommit>>;\n\n",
     );
@@ -704,6 +722,21 @@ pub(crate) fn emit_cpp_runtime_shell_header(contract: &ContractIr) -> String {
             continue;
         }
         let goal_ty = cpp_type(&plan.goal_type);
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "    std::optional<flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>> {}_;\n",
+                cpp_operation_start_server_field_name(plan)
+            ));
+            output.push_str(&format!(
+                "    std::optional<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>> {}_;\n",
+                cpp_operation_cancel_server_field_name(plan)
+            ));
+            output.push_str(&format!(
+                "    std::optional<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>> {}_;\n",
+                cpp_operation_status_server_field_name(plan)
+            ));
+            continue;
+        }
         output.push_str(&format!(
             "    std::optional<flowrt::InprocServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>> {}_;\n",
             cpp_operation_start_server_field_name(plan)

@@ -86,14 +86,21 @@ pub(crate) fn emit_rust_operation_client_handles(contract: &ContractIr, graph: &
         }
         let goal_ty = rust_type(&plan.goal_type);
         let is_zenoh = plan.backend.0 == "zenoh";
+        let is_iox2 = plan.backend.0 == "iox2";
+        let transport_module = if is_iox2 { "iox2" } else { "zenoh" };
+        let transport_client = if is_iox2 {
+            "Iox2ServiceClient"
+        } else {
+            "ZenohServiceClient"
+        };
 
         output.push_str("#[allow(non_camel_case_types)]\n#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
-        if is_zenoh {
+        if is_zenoh || is_iox2 {
             output.push_str(&format!(
-                "    pub(crate) start_client: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>>>,\n\
-                 pub(crate) cancel_client: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n\
-                 pub(crate) status_client: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n",
+                "    pub(crate) start_client: std::sync::Arc<std::sync::OnceLock<flowrt::{transport_module}::{transport_client}<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>>>,\n\
+                 pub(crate) cancel_client: std::sync::Arc<std::sync::OnceLock<flowrt::{transport_module}::{transport_client}<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n\
+                 pub(crate) status_client: std::sync::Arc<std::sync::OnceLock<flowrt::{transport_module}::{transport_client}<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n",
             ));
         } else {
             output.push_str(&format!(
@@ -105,7 +112,7 @@ pub(crate) fn emit_rust_operation_client_handles(contract: &ContractIr, graph: &
         output.push_str("}\n\n");
 
         output.push_str(&format!("impl {handle_name} {{\n"));
-        if is_zenoh {
+        if is_zenoh || is_iox2 {
             output.push_str(&format!(
                 "    pub fn start(&self, goal: {goal_ty}, timeout: std::time::Duration) -> Result<flowrt::OperationStartAck, flowrt::OperationClientError> {{\n        let owner = flowrt::OperationOwner::new(flowrt::fnv1a64({owner_scope}.as_bytes()), flowrt::fnv1a64({owner_name}.as_bytes()));\n        let request = flowrt::OperationStartRequest::new(goal, owner, timeout);\n        let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64;\n        let Some(client) = self.start_client.get() else {{\n            return Err(flowrt::OperationClientError::Unavailable);\n        }};\n        flowrt_operation_result(client.call(request, timeout_ms))\n    }}\n\n",
                 owner_scope = rust_string_literal(&plan.operation_name),
@@ -157,6 +164,17 @@ pub(crate) fn rust_app_operation_fields(contract: &ContractIr, graph: &GraphIr) 
             continue;
         }
         let goal_ty = rust_type(&plan.goal_type);
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "    {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>>>>,\n\
+                 {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>>,\n\
+                 {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>>,\n",
+                operation_start_server_field_name(plan),
+                operation_cancel_server_field_name(plan),
+                operation_status_server_field_name(plan),
+            ));
+            continue;
+        }
         output.push_str(&format!(
             "    {}: flowrt::InprocServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>,\n\
              {}: flowrt::InprocServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>,\n\
@@ -178,7 +196,9 @@ pub(crate) fn emit_rust_operation_new(
     if plans.is_empty() {
         return (String::new(), String::new());
     }
-    let has_inproc_operation = plans.iter().any(|plan| plan.backend.0 != "zenoh");
+    let has_inproc_operation = plans
+        .iter()
+        .any(|plan| !matches!(plan.backend.0.as_str(), "zenoh" | "iox2"));
 
     let mut registration = String::new();
     if has_inproc_operation {
@@ -191,7 +211,7 @@ pub(crate) fn emit_rust_operation_new(
     for plan in &plans {
         let client_field = operation_client_field_name(plan);
         let handle_name = operation_client_handle_name(plan);
-        if plan.backend.0 == "zenoh" {
+        if matches!(plan.backend.0.as_str(), "zenoh" | "iox2") {
             let operation_key_name = rust_string_literal(&plan.operation_name);
             let operation_key = format!("flowrt::fnv1a64({operation_key_name}.as_bytes())");
             let queue_depth = plan.queue_depth.max(1);
@@ -219,6 +239,16 @@ pub(crate) fn emit_rust_operation_new(
                 "            {client_field}: {handle_name} {{ start_client: std::sync::Arc::new(std::sync::OnceLock::new()), cancel_client: std::sync::Arc::new(std::sync::OnceLock::new()), status_client: std::sync::Arc::new(std::sync::OnceLock::new()) }},\n\
                  {control_var}: {control_var}.clone(),\n"
             ));
+            if plan.backend.0 == "iox2" {
+                initializers.push_str(&format!(
+                    "            {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n\
+                     {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n\
+                     {}: std::sync::Arc::new(std::sync::OnceLock::new()),\n",
+                    operation_start_server_field_name(plan),
+                    operation_cancel_server_field_name(plan),
+                    operation_status_server_field_name(plan),
+                ));
+            }
             continue;
         }
 
@@ -419,15 +449,28 @@ pub(crate) fn emit_rust_operation_step_functions(contract: &ContractIr, graph: &
         let owner_name =
             rust_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
         let control_var = format!("operation_control_{}", plan.index);
-        let pending_block = if plan.backend.0 == "zenoh" {
-            String::new()
-        } else {
-            format!(
-                "        self.{start_server}.process_pending_requests();\n        self.{cancel_server}.process_pending_requests();\n        self.{status_server}.process_pending_requests();\n",
-                start_server = operation_start_server_field_name(plan),
-                cancel_server = operation_cancel_server_field_name(plan),
-                status_server = operation_status_server_field_name(plan),
-            )
+        let pending_block = match plan.backend.0.as_str() {
+            "zenoh" => String::new(),
+            "iox2" => rust_iox2_operation_pending_drain(
+                contract,
+                graph,
+                plan,
+                &format!("self.{}", operation_start_server_field_name(plan)),
+                &format!("self.{}", operation_cancel_server_field_name(plan)),
+                &format!("self.{}", operation_status_server_field_name(plan)),
+                &format!("self.{control_var}"),
+                &format!("self.{}", plan.server_instance),
+                "        ",
+                "return flowrt::Status::Error;",
+            ),
+            _ => {
+                format!(
+                    "        self.{start_server}.process_pending_requests();\n        self.{cancel_server}.process_pending_requests();\n        self.{status_server}.process_pending_requests();\n",
+                    start_server = operation_start_server_field_name(plan),
+                    cancel_server = operation_cancel_server_field_name(plan),
+                    status_server = operation_status_server_field_name(plan),
+                )
+            }
         };
         output.push_str(&format!(
             "    fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
@@ -689,6 +732,250 @@ pub(crate) fn emit_rust_zenoh_operation_endpoints(
     output
 }
 
+/// 生成进程级 iox2 Operation endpoint 构造代码。
+///
+/// Operation over iox2 复用 start/cancel/status 三条内部 Service；
+/// request drain 由 hidden operation task 通过 `poll_requests` 驱动。
+pub(crate) fn emit_rust_iox2_operation_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&flowrt_ir::InstanceIr],
+) -> String {
+    let plans = operation_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let iox2_plans = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "iox2")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect::<Vec<_>>();
+    if iox2_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    for plan in iox2_plans {
+        let goal_ty = rust_type(&plan.goal_type);
+        let start_name = rust_string_literal(
+            plan.start_endpoint
+                .service_name()
+                .expect("iox2 operation start endpoint must have service name"),
+        );
+        let cancel_name = rust_string_literal(
+            plan.cancel_endpoint
+                .service_name()
+                .expect("iox2 operation cancel endpoint must have service name"),
+        );
+        let status_name = rust_string_literal(
+            plan.status_endpoint
+                .service_name()
+                .expect("iox2 operation status endpoint must have service name"),
+        );
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = operation_client_field_name(plan);
+            output.push_str(&format!(
+                "        let _ = app.{client_field}.start_client.set(match flowrt::iox2::Iox2ServiceClient::open({start_name}) {{\n\
+                 \x20           Ok(client) => client,\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 operation start client {{}}: {{error}}\", {start_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20               flowrt::iox2::Iox2ServiceClient::unavailable({start_name}, error.to_string())\n\
+                 \x20           }}\n\
+                 \x20       }});\n\
+                 \x20       let _ = app.{client_field}.cancel_client.set(match flowrt::iox2::Iox2ServiceClient::open({cancel_name}) {{\n\
+                 \x20           Ok(client) => client,\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 operation cancel client {{}}: {{error}}\", {cancel_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20               flowrt::iox2::Iox2ServiceClient::unavailable({cancel_name}, error.to_string())\n\
+                 \x20           }}\n\
+                 \x20       }});\n\
+                 \x20       let _ = app.{client_field}.status_client.set(match flowrt::iox2::Iox2ServiceClient::open({status_name}) {{\n\
+                 \x20           Ok(client) => client,\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 operation status client {{}}: {{error}}\", {status_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20               flowrt::iox2::Iox2ServiceClient::unavailable({status_name}, error.to_string())\n\
+                 \x20           }}\n\
+                 \x20       }});\n",
+            ));
+        }
+
+        if active.contains(plan.server_instance.as_str()) {
+            let start_server = operation_start_server_field_name(plan);
+            let cancel_server = operation_cancel_server_field_name(plan);
+            let status_server = operation_status_server_field_name(plan);
+            let max_in_flight = plan.max_in_flight.max(1);
+            output.push_str(&format!(
+                "        match flowrt::iox2::Iox2ServiceServer::<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}, {max_in_flight}usize) {{\n\
+                 \x20           Ok(mut server) => {{\n\
+                 \x20               server.set_schedule_waiter(scheduler_events.clone());\n\
+                 \x20               let _ = app.{start_server}.set(std::sync::Mutex::new(server));\n\
+                 \x20           }}\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 operation start server {{}}: {{error}}\", {start_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20           }}\n\
+                 \x20       }}\n\
+                 \x20       match flowrt::iox2::Iox2ServiceServer::<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({cancel_name}, {max_in_flight}usize) {{\n\
+                 \x20           Ok(mut server) => {{\n\
+                 \x20               server.set_schedule_waiter(scheduler_events.clone());\n\
+                 \x20               let _ = app.{cancel_server}.set(std::sync::Mutex::new(server));\n\
+                 \x20           }}\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 operation cancel server {{}}: {{error}}\", {cancel_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20           }}\n\
+                 \x20       }}\n\
+                 \x20       match flowrt::iox2::Iox2ServiceServer::<flowrt::OperationId, flowrt::OperationStatusSnapshot>::open({status_name}, {max_in_flight}usize) {{\n\
+                 \x20           Ok(mut server) => {{\n\
+                 \x20               server.set_schedule_waiter(scheduler_events.clone());\n\
+                 \x20               let _ = app.{status_server}.set(std::sync::Mutex::new(server));\n\
+                 \x20           }}\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 operation status server {{}}: {{error}}\", {status_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20           }}\n\
+                 \x20       }}\n",
+            ));
+        }
+    }
+    output
+}
+
+pub(crate) fn rust_iox2_operation_pending_drain(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    plan: &OperationRuntimePlan,
+    start_server_expr: &str,
+    cancel_server_expr: &str,
+    status_server_expr: &str,
+    control_expr: &str,
+    server_expr: &str,
+    indent: &str,
+    error_return: &str,
+) -> String {
+    let goal_ty = rust_type(&plan.goal_type);
+    let feedback_ty = rust_type(&plan.feedback_type);
+    let method_name = operation_handler_method_name(&plan.server_port);
+    let server_instance_ir = graph
+        .instances
+        .iter()
+        .find(|instance| instance.name == plan.server_instance)
+        .expect("validated operation server instance must exist");
+    let server_component = crate::component_by_name(contract, &server_instance_ir.component.name);
+    let operation_handler_call = if super::rust_component_is_parallel(server_component) {
+        format!(
+            "operation_worker_server.as_ref().as_ref().{method_name}(&goal_for_worker, cancel.clone(), &mut progress)"
+        )
+    } else {
+        format!(
+            "operation_worker_server\n\
+                         .lock()\n\
+                         .unwrap_or_else(|poisoned| poisoned.into_inner())\n\
+                         .{method_name}(&goal_for_worker, cancel.clone(), &mut progress)"
+        )
+    };
+    let index = plan.index;
+    format!(
+        "{indent}if let Some(start_server) = {start_server_expr}.get() {{\n\
+         {indent}    let mut start_server = start_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+         {indent}    let operation_start_control_{index} = {control_expr}.clone();\n\
+         {indent}    let operation_server_{index} = {server_expr}.clone();\n\
+         {indent}    if start_server.poll_requests(move |request: flowrt::OperationStartRequest<{goal_ty}>| -> flowrt::ServiceResult<flowrt::OperationStartAck> {{\n\
+         {indent}        let ack = match operation_start_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).start_with_timeout(request.owner, flowrt::monotonic_time_ms(), request.timeout) {{\n\
+         {indent}            Ok(ack) => ack,\n\
+         {indent}            Err(error) => return flowrt_operation_control_error(error),\n\
+         {indent}        }};\n\
+         {indent}        let id = ack.id;\n\
+         {indent}        let operation_worker_server = operation_server_{index}.clone();\n\
+         {indent}        let operation_worker_control = operation_start_control_{index}.clone();\n\
+         {indent}        let goal_for_worker = request.goal;\n\
+         {indent}        let spawn_result = std::thread::Builder::new()\n\
+         {indent}            .name(\"flowrt-operation-{index}\".to_string())\n\
+         {indent}            .spawn(move || {{\n\
+         {indent}                loop {{\n\
+         {indent}                    let should_start = {{\n\
+         {indent}                        let control = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+         {indent}                        let status = match control.status(id) {{\n\
+         {indent}                            Ok(status) => status,\n\
+         {indent}                            Err(_) => return,\n\
+         {indent}                        }};\n\
+         {indent}                        if status.state.is_terminal() {{\n\
+         {indent}                            return;\n\
+         {indent}                        }}\n\
+         {indent}                        control.ready_to_run(id)\n\
+         {indent}                    }};\n\
+         {indent}                    if should_start {{\n\
+         {indent}                        break;\n\
+         {indent}                    }}\n\
+         {indent}                    std::thread::sleep(std::time::Duration::from_millis(1));\n\
+         {indent}                }}\n\
+         {indent}                let cancel = match operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).cancel_token_for(id) {{\n\
+         {indent}                    Some(cancel) => cancel,\n\
+         {indent}                    None => return,\n\
+         {indent}                }};\n\
+         {indent}                if operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).mark_running(id).is_err() {{\n\
+         {indent}                    return;\n\
+         {indent}                }}\n\
+         {indent}                let operation_progress_control = operation_worker_control.clone();\n\
+         {indent}                let progress_hook: std::sync::Arc<dyn Fn(flowrt::OperationId, u64) + Send + Sync> = std::sync::Arc::new(move |progress_id, sequence| {{\n\
+         {indent}                    operation_progress_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).publish_progress(progress_id, sequence);\n\
+         {indent}                }});\n\
+         {indent}                let mut progress = flowrt::OperationProgressPublisher::<{feedback_ty}>::with_hook(id, progress_hook);\n\
+         {indent}                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{\n\
+         {indent}                    {operation_handler_call}\n\
+         {indent}                }}));\n\
+         {indent}                let terminal_state = match result {{\n\
+         {indent}                    Ok(flowrt::OperationHandlerResult::Succeeded(_)) => flowrt::OperationState::Succeeded,\n\
+         {indent}                    Ok(flowrt::OperationHandlerResult::Failed) | Err(_) => flowrt::OperationState::Failed,\n\
+         {indent}                    Ok(flowrt::OperationHandlerResult::Canceled) => flowrt::OperationState::Cancelled,\n\
+         {indent}                }};\n\
+         {indent}                let _ = operation_worker_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, terminal_state);\n\
+         {indent}            }});\n\
+         {indent}        if spawn_result.is_err() {{\n\
+         {indent}            let _ = operation_start_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).complete(id, flowrt::OperationState::Failed);\n\
+         {indent}            return flowrt::ServiceResult::err(flowrt::ServiceError::HandlerError);\n\
+         {indent}        }}\n\
+         {indent}        flowrt::ServiceResult::ok(ack)\n\
+         {indent}    }}).is_err() {{\n\
+         {indent}        {error_return}\n\
+         {indent}    }}\n\
+         {indent}}}\n\
+         {indent}if let Some(cancel_server) = {cancel_server_expr}.get() {{\n\
+         {indent}    let mut cancel_server = cancel_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+         {indent}    let operation_cancel_control_{index} = {control_expr}.clone();\n\
+         {indent}    if cancel_server.poll_requests(move |id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
+         {indent}        let mut control = operation_cancel_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+         {indent}        let snapshot = control.snapshot();\n\
+         {indent}        match control.request_cancel(id, snapshot.owner) {{\n\
+         {indent}            Ok(snapshot) => flowrt::ServiceResult::ok(snapshot),\n\
+         {indent}            Err(error) => flowrt_operation_control_error(error),\n\
+         {indent}        }}\n\
+         {indent}    }}).is_err() {{\n\
+         {indent}        {error_return}\n\
+         {indent}    }}\n\
+         {indent}}}\n\
+         {indent}if let Some(status_server) = {status_server_expr}.get() {{\n\
+         {indent}    let mut status_server = status_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n\
+         {indent}    let operation_status_control_{index} = {control_expr}.clone();\n\
+         {indent}    if status_server.poll_requests(move |id: flowrt::OperationId| -> flowrt::ServiceResult<flowrt::OperationStatusSnapshot> {{\n\
+         {indent}        match operation_status_control_{index}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).status(id) {{\n\
+         {indent}            Ok(snapshot) => flowrt::ServiceResult::ok(snapshot),\n\
+         {indent}            Err(error) => flowrt_operation_control_error(error),\n\
+         {indent}        }}\n\
+         {indent}    }}).is_err() {{\n\
+         {indent}        {error_return}\n\
+         {indent}    }}\n\
+         {indent}}}\n",
+    )
+}
+
 pub(crate) fn emit_rust_operation_scheduler_registration(
     operation_tasks: &[&SchedulerHiddenTaskPlan],
 ) -> String {
@@ -743,15 +1030,20 @@ pub(crate) fn emit_rust_operation_wake_checks(
         let task_id = task.id;
         let tick_driven_flag = format!("flowrt_operation_tick_driven_{}", plan.index);
         let control_var = format!("operation_control_{}", plan.index);
-        let pending_condition = if plan.backend.0 == "zenoh" {
-            String::new()
-        } else {
-            format!(
+        let pending_condition = match plan.backend.0.as_str() {
+            "zenoh" => String::new(),
+            "iox2" => format!(
+                "self.{start_server}.get().is_some()\n                     || self.{cancel_server}.get().is_some()\n                     || self.{status_server}.get().is_some()\n                     || ",
+                start_server = operation_start_server_field_name(plan),
+                cancel_server = operation_cancel_server_field_name(plan),
+                status_server = operation_status_server_field_name(plan),
+            ),
+            _ => format!(
                 "self.{start_server}.pending_count() > 0\n                     || self.{cancel_server}.pending_count() > 0\n                     || self.{status_server}.pending_count() > 0\n                     || ",
                 start_server = operation_start_server_field_name(plan),
                 cancel_server = operation_cancel_server_field_name(plan),
                 status_server = operation_status_server_field_name(plan),
-            )
+            ),
         };
         output.push_str(&format!(
             "                let flowrt_operation_snapshot_{index} = self.{control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).snapshot();\n\

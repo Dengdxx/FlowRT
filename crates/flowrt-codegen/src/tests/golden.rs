@@ -174,8 +174,18 @@ fn golden_zenoh_operation_rust() {
 }
 
 #[test]
+fn golden_iox2_operation_rust() {
+    check_case("iox2_operation_rust");
+}
+
+#[test]
 fn golden_zenoh_operation_cpp() {
     check_case("zenoh_operation_cpp");
+}
+
+#[test]
+fn golden_iox2_operation_cpp() {
+    check_case("iox2_operation_cpp");
 }
 
 #[test]

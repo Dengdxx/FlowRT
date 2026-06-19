@@ -784,23 +784,51 @@ fn emit_rust_operation_submit_cases(
             crate::rust_string_literal(&format!("{}.{}", plan.client_instance, plan.client_port));
         let control_field = format!("operation_control_{}", plan.index);
         let control_var = format!("__flowrt_{control_field}");
-        let (server_capture, pending_drain) = if plan.backend.0 == "zenoh" {
-            (String::new(), String::new())
-        } else {
-            let start_server = operation_emit::operation_start_server_field_name(plan);
-            let cancel_server = operation_emit::operation_cancel_server_field_name(plan);
-            let status_server = operation_emit::operation_status_server_field_name(plan);
-            let start_var = format!("__flowrt_{}", crate::snake_identifier(&start_server));
-            let cancel_var = format!("__flowrt_{}", crate::snake_identifier(&cancel_server));
-            let status_var = format!("__flowrt_{}", crate::snake_identifier(&status_server));
-            (
-                format!(
-                    "                            let {start_var} = self.{start_server}.clone();\n                            let {cancel_var} = self.{cancel_server}.clone();\n                            let {status_var} = self.{status_server}.clone();\n"
-                ),
-                format!(
-                    "                                {start_var}.process_pending_requests();\n                                {cancel_var}.process_pending_requests();\n                                {status_var}.process_pending_requests();\n"
-                ),
-            )
+        let (server_capture, pending_drain) = match plan.backend.0.as_str() {
+            "zenoh" => (String::new(), String::new()),
+            "iox2" => {
+                let start_server = operation_emit::operation_start_server_field_name(plan);
+                let cancel_server = operation_emit::operation_cancel_server_field_name(plan);
+                let status_server = operation_emit::operation_status_server_field_name(plan);
+                let start_var = format!("__flowrt_{}", crate::snake_identifier(&start_server));
+                let cancel_var = format!("__flowrt_{}", crate::snake_identifier(&cancel_server));
+                let status_var = format!("__flowrt_{}", crate::snake_identifier(&status_server));
+                let server_var = format!("__flowrt_operation_server_{}", plan.index);
+                (
+                    format!(
+                        "                            let {start_var} = self.{start_server}.clone();\n                            let {cancel_var} = self.{cancel_server}.clone();\n                            let {status_var} = self.{status_server}.clone();\n                            let {server_var} = self.{server_instance}.clone();\n",
+                        server_instance = plan.server_instance,
+                    ),
+                    operation_emit::rust_iox2_operation_pending_drain(
+                        contract,
+                        graph,
+                        plan,
+                        &start_var,
+                        &cancel_var,
+                        &status_var,
+                        &control_var,
+                        &server_var,
+                        "                                ",
+                        "return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());",
+                    ),
+                )
+            }
+            _ => {
+                let start_server = operation_emit::operation_start_server_field_name(plan);
+                let cancel_server = operation_emit::operation_cancel_server_field_name(plan);
+                let status_server = operation_emit::operation_status_server_field_name(plan);
+                let start_var = format!("__flowrt_{}", crate::snake_identifier(&start_server));
+                let cancel_var = format!("__flowrt_{}", crate::snake_identifier(&cancel_server));
+                let status_var = format!("__flowrt_{}", crate::snake_identifier(&status_server));
+                (
+                    format!(
+                        "                            let {start_var} = self.{start_server}.clone();\n                            let {cancel_var} = self.{cancel_server}.clone();\n                            let {status_var} = self.{status_server}.clone();\n"
+                    ),
+                    format!(
+                        "                                {start_var}.process_pending_requests();\n                                {cancel_var}.process_pending_requests();\n                                {status_var}.process_pending_requests();\n"
+                    ),
+                )
+            }
         };
         output.push_str(&format!(
             "                        flowrt::TaskId({task_id}) => {{\n{server_capture}                            let {control_var} = self.{control_field}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let operation_cancel_control = {control_var}.clone();\n                                introspection_state.register_operation_cancel_handler({operation_name}, move |operation_id| {{\n                                    let mut control = operation_cancel_control.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                    let snapshot = control.snapshot();\n                                    if flowrt_operation_id_string(snapshot.id) != operation_id {{\n                                        return Err(format!(\"stale operation invocation `{{}}`; current is `{{}}`\", operation_id, flowrt_operation_id_string(snapshot.id)));\n                                    }}\n                                    control.request_cancel(snapshot.id, snapshot.owner).map_err(|error| error.to_string())?;\n                                    Ok(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, control.snapshot()))\n                                }});\n{pending_drain}                                let mut operation_control = {control_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner());\n                                let _ = operation_control.check_deadline(flowrt::monotonic_time_ms());\n                                let snapshot = operation_control.snapshot();\n                                let events = operation_control.drain_events();\n                                drop(operation_control);\n                                for event in events {{\n                                    let operation_id = flowrt_operation_id_string(event.id);\n                                    match event.kind {{\n                                        flowrt::OperationRuntimeEventKind::StateChanged => {{\n                                            if let Some(state) = event.state {{\n                                                introspection_state.record_operation_transition({operation_name}, &operation_id, state.as_str(), Some({owner_name}), if state.is_terminal() {{ None }} else {{ Some(snapshot.deadline_ms) }});\n                                            }}\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Progress => {{\n                                            introspection_state.record_operation_progress({operation_name}, &operation_id, event.sequence.unwrap_or(0));\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Result => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"succeeded\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, None);\n                                        }}\n                                        flowrt::OperationRuntimeEventKind::Error => {{\n                                            let result = event.state.map(flowrt::OperationState::as_str).unwrap_or(\"failed\");\n                                            introspection_state.record_operation_result({operation_name}, &operation_id, result, Some(\"handler error\"));\n                                        }}\n                                    }}\n                                }}\n                                introspection_state.record_operation_health(flowrt_operation_status_from_snapshot({operation_name}, {owner_name}, snapshot));\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",

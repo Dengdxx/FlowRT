@@ -167,7 +167,7 @@ pub(super) fn emit_cpp_app_constructor(
     }
     let operation_plans = crate::runtime_plan::operation_runtime_plans(contract, graph);
     for plan in &operation_plans {
-        if plan.backend.0 == "zenoh" {
+        if plan.backend.0 == "zenoh" || plan.backend.0 == "iox2" {
             let operation_key_name = cpp_string_literal(&plan.operation_name);
             let queue_depth = plan.queue_depth.max(1);
             let max_in_flight = plan.max_in_flight.max(1);
