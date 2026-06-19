@@ -235,6 +235,9 @@ pub(super) fn emit_cpp_app_run_function(run: &CppRunEmission<'_>) -> String {
             lit = cpp_string_literal(&instance.name),
         ));
     }
+    output.push_str(
+        "    if (const char* flowrt_status_out = std::getenv(\"FLOWRT_STATUS_OUT\");\n        flowrt_status_out != nullptr && flowrt_status_out[0] != '\\0') {\n        std::ofstream flowrt_status_file(flowrt_status_out);\n        if (flowrt_status_file.good()) {\n            flowrt_status_file << flowrt::introspection_status_json(introspection_state.status()) << '\\n';\n        } else {\n            std::fprintf(stderr, \"FlowRT: failed to write FLOWRT_STATUS_OUT `%s`\\n\", flowrt_status_out);\n        }\n    }\n",
+    );
     output.push_str("    return status;\n}\n\n");
     output
 }

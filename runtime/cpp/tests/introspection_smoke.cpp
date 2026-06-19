@@ -448,7 +448,7 @@ void assert_status_json_schema_parity_fixture() {
     status.graph_health = "faulted";
     status.graph_critical_health = "faulted";
 
-    const auto parsed = JsonParser{flowrt::detail::status_json(status)}.parse();
+    const auto parsed = JsonParser{flowrt::introspection_status_json(status)}.parse();
     assert(parsed.kind == JsonValue::Kind::Object);
     assert_number_field(parsed, "tick_count", "7");
     assert_string_field(object_field(parsed, "clock"), "source", "simulated_replay");
@@ -835,10 +835,8 @@ int main() {
         std::string(descriptor_payload_events.front().payload.begin(),
                     descriptor_payload_events.front().payload.end());
     assert_contains(descriptor_payload_artifact, R"("payload_recording":true)");
-    assert_contains(descriptor_payload_artifact,
-                    R"("artifact_ref":"artifact://camera/slot-7/42")");
-    assert_contains(descriptor_payload_artifact,
-                    R"("content_hash":"sha256:0123456789abcdef")");
+    assert_contains(descriptor_payload_artifact, R"("artifact_ref":"artifact://camera/slot-7/42")");
+    assert_contains(descriptor_payload_artifact, R"("content_hash":"sha256:0123456789abcdef")");
     assert_contains(descriptor_payload_artifact, R"("size_bytes":921600)");
 
     flowrt::IntrospectionState service_recorder_state;

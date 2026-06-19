@@ -573,6 +573,9 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
             lit = crate::rust_string_literal(&instance.name),
         ));
     }
+    output.push_str(
+        "        if let Ok(__flowrt_status_out) = std::env::var(\"FLOWRT_STATUS_OUT\") {\n            match serde_json::to_string_pretty(&introspection_state.status()) {\n                Ok(__flowrt_status_json) => {\n                    if let Err(error) = std::fs::write(&__flowrt_status_out, format!(\"{__flowrt_status_json}\\n\")) {\n                        eprintln!(\"FlowRT: failed to write FLOWRT_STATUS_OUT `{}`: {error}\", __flowrt_status_out);\n                    }\n                }\n                Err(error) => {\n                    eprintln!(\"FlowRT: failed to encode FLOWRT_STATUS_OUT status: {error}\");\n                }\n            }\n        }\n",
+    );
     output.push_str("        status\n    }\n");
     output
 }

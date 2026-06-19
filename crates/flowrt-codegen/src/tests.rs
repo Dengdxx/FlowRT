@@ -9,6 +9,7 @@ mod backend;
 mod channels;
 mod explain;
 mod fault_injection;
+mod fault_matrix;
 mod golden;
 mod introspection;
 mod launch;

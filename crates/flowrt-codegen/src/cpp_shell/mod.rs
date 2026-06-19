@@ -277,7 +277,7 @@ pub(crate) fn emit_cpp_runtime_shell(contract: &ContractIr) -> String {
         output.push_str("#include \"flowrt_app/c_components.h\"\n\n");
     }
     output.push_str("#include \"flowrt_app/selfdesc.hpp\"\n\n");
-    output.push_str("#include <algorithm>\n#include <array>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n");
+    output.push_str("#include <algorithm>\n#include <array>\n#include <atomic>\n#include <cerrno>\n#include <chrono>\n#include <cmath>\n#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <fstream>\n");
     if contract_has_c_components(contract) {
         output.push_str("#include <iostream>\n");
     }
