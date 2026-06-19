@@ -49,6 +49,20 @@ pub struct ChannelBackendResolution {
     pub source: ChannelBackendSource,
 }
 
+/// service backend 解析结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceBackendResolution {
+    pub backend: String,
+    pub source: crate::model::ServiceBackendSource,
+}
+
+/// operation backend 解析结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationBackendResolution {
+    pub backend: String,
+    pub source: crate::model::OperationBackendSource,
+}
+
 /// 解析单条 dataflow route 实际使用的 backend。
 ///
 /// 该函数是 normalizer 与 validator 的共同事实源：profile/default backend、显式
@@ -741,6 +755,24 @@ mod tests {
     fn rejects_unknown_backend_names() {
         assert!(!is_known_backend("typo_backend"));
         assert!(backend_capabilities("typo_backend").is_none());
+    }
+
+    #[test]
+    fn control_plane_backend_source_json_spellings() {
+        use crate::{OperationBackendSource, ServiceBackendSource};
+
+        assert_eq!(
+            serde_json::to_string(&ServiceBackendSource::AutoFallback).unwrap(),
+            "\"auto_fallback\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ServiceBackendSource::ProfileDefault).unwrap(),
+            "\"profile_default\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OperationBackendSource::AutoFallback).unwrap(),
+            "\"auto_fallback\""
+        );
     }
 
     #[test]

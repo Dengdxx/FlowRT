@@ -879,8 +879,12 @@ pub struct ServicePortRef {
 pub enum ServiceBackendSource {
     /// 用户在 RSDL 中显式指定了 backend。
     Explicit,
+    /// 继承 profile/default backend，未 fallback。
+    ProfileDefault,
     /// 由 auto resolver 根据拓扑自动选择。
     AutoResolved,
+    /// 原选择无法满足 payload/topology，自动 fallback 到 `zenoh`。
+    AutoFallback,
 }
 
 /// service overflow 行为：队列满时的处理策略。
@@ -937,8 +941,14 @@ pub struct OperationPortRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationBackendSource {
+    /// 用户在 RSDL 中显式指定了 backend。
     Explicit,
+    /// 继承 profile/default backend，未 fallback。
+    ProfileDefault,
+    /// 由 auto resolver 根据拓扑自动选择。
     AutoResolved,
+    /// 原选择无法满足 payload/topology，自动 fallback 到 `zenoh`。
+    AutoFallback,
 }
 
 /// operation 并发策略。
