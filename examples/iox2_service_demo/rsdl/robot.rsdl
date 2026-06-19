@@ -1,0 +1,110 @@
+[package]
+name = "iox2_service_demo"
+version = "0.1.0"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+
+[type.PlanResponse]
+accepted = "bool"
+
+[type.PlanGoal]
+target = "u32"
+
+[type.PlanFeedback]
+progress = "f32"
+
+[type.PlanResult]
+accepted = "bool"
+
+[component.plan_service]
+language = "rust"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[component.planner]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+output = ["result:i32"]
+
+[component.nav_controller]
+language = "rust"
+
+[component.nav_controller.operation_client.nav]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[component.navigator]
+language = "rust"
+
+[component.navigator.operation_server.nav]
+goal = "PlanGoal"
+feedback = "PlanFeedback"
+result = "PlanResult"
+
+[instance.nav_client]
+component = "nav_controller"
+process = "client_proc"
+target = "linux"
+
+[instance.nav_client.task]
+trigger = "periodic"
+period_ms = 100
+
+[instance.nav_svc]
+component = "navigator"
+process = "server_proc"
+target = "linux"
+
+[instance.nav_svc.task]
+trigger = "periodic"
+period_ms = 1000
+
+[instance.plan_client]
+component = "planner"
+process = "client_proc"
+target = "linux"
+
+[instance.plan_client.task]
+trigger = "periodic"
+period_ms = 100
+output = ["result"]
+
+[instance.plan_svc]
+component = "plan_service"
+process = "server_proc"
+target = "linux"
+
+[instance.plan_svc.task]
+trigger = "periodic"
+period_ms = 1000
+
+[[bind.service]]
+client = "plan_client.plan"
+server = "plan_svc.plan"
+backend = "iox2"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"
+
+[[bind.operation]]
+client = "nav_client.nav"
+server = "nav_svc.nav"
+backend = "iox2"
+timeout_ms = 5000
+queue_depth = 4
+max_in_flight = 1
+concurrency = "reject"
+preempt = "reject"
+feedback = "latest"
+
+[profile.default]
+backend = "iox2"
+default_overflow = "drop_oldest"
+default_stale_policy = "warn"
+
+[target.linux]
+platform = "linux-amd64"
+runtime = ["rust"]
+backends = ["iox2"]

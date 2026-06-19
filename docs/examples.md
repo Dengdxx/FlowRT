@@ -38,6 +38,7 @@
 | `examples/variable_frame_island_demo` | Rust | `inproc` | `scripts/test-v091-variable-frame-island-demo.sh` | 验证 `sequence<f32>` canonical frame boundary input、`flowrt pub --file --freq` 和 echo 输出摘要 |
 | `examples/service_demo` | Rust | `inproc` | `flowrt build examples/service_demo/service_demo.rsdl` | 验证 service client/server typed API、inproc request/response、service policy 和 `flowrt status` 健康观测 |
 | `examples/zenoh_service_demo` | Rust | `zenoh` | `flowrt build --launcher examples/zenoh_service_demo/rsdl/robot.rsdl` | 验证 generated Service over zenoh 的跨进程 request/response、typed API 和 service key expression |
+| `examples/iox2_service_demo` | Rust | `iox2` | `flowrt check examples/iox2_service_demo/rsdl/robot.rsdl` | 验证 generated Service/Operation over iox2 的同主机跨进程 control-plane、typed API 和 canonical service name |
 | `examples/operation_demo` | Rust | `inproc` | `flowrt build --launcher examples/operation_demo/rsdl/robot.rsdl` | 验证 Operation client/server typed API、自描述、inproc lowering 和 `flowrt op list` |
 | `examples/external_driver_demo` | External executable | `zenoh` | `flowrt build --launcher examples/external_driver_demo/rsdl/robot.rsdl` | 验证 external package manifest、supervisor 启动、环境变量契约和 bundle/deploy baseline |
 | `examples/frame_descriptor_demo` | Rust | `iox2` | `flowrt build --launcher examples/frame_descriptor_demo/rsdl/robot.rsdl` | 验证 I/O boundary 标准 FrameDescriptor、iox2 fixed descriptor route、echo/status/record descriptor 观测 |
