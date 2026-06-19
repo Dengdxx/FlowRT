@@ -16,7 +16,7 @@ use crate::resource_names::{
 use crate::runtime_plan::{bridge_runtime_plans, contract_derived_facts, graph_derived_facts};
 use crate::{
     CodegenError, Result, component_by_name, iox2_service_name_for_edge, language_name,
-    ros2_bridge_key_expr, zenoh_key_expr_for_edge, zenoh_service_key_expr,
+    ros2_bridge_key_expr, zenoh_key_expr_for_edge,
 };
 
 pub(super) fn emit_launch_manifest(contract: &ContractIr) -> Result<String> {
@@ -271,6 +271,8 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
                 });
             }
             let name = format!("{}.{}", service.client.instance.name, service.client.port);
+            let transport_endpoint =
+                crate::runtime_plan::transport_endpoint(&service.backend.0, &name);
             let mut endpoint = serde_json::json!({
                 "name": name,
                 "client": format!("{}.{}", service.client.instance.name, service.client.port),
@@ -288,10 +290,10 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
                 "lane": service.policy.lane,
                 "max_in_flight": service.policy.max_in_flight,
             });
-            if service.backend.0 == "zenoh" {
+            if let Some(key_expr) = transport_endpoint.key_expr() {
                 endpoint.as_object_mut().expect("service endpoint must be a JSON object").insert(
                     "key_expr".to_string(),
-                    serde_json::Value::String(zenoh_service_key_expr(&name)),
+                    serde_json::Value::String(key_expr.to_string()),
                 );
             }
             Ok(endpoint)

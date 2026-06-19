@@ -1015,6 +1015,53 @@ pub(crate) fn runtime_param_name(instance: &InstanceIr, param: &ParamIr) -> Stri
     format!("{}.{}", instance.name, param.name)
 }
 
+/// service / operation 单个 control-plane endpoint 的 backend-specific 命名事实源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum TransportEndpoint {
+    /// inproc：仅进程内逻辑名。
+    Inproc { name: String },
+    /// iox2：canonical iox2 service name。
+    Iox2 { service_name: String },
+    /// zenoh：request key expression。
+    Zenoh { key_expr: String },
+}
+
+impl TransportEndpoint {
+    /// 供 selfdesc / manifest 的 `service` 字段。
+    #[allow(dead_code)]
+    pub(crate) fn service_name(&self) -> Option<&str> {
+        match self {
+            TransportEndpoint::Inproc { name } => Some(name),
+            TransportEndpoint::Iox2 { service_name } => Some(service_name),
+            TransportEndpoint::Zenoh { .. } => None,
+        }
+    }
+
+    /// 供 selfdesc / manifest 的 `key_expr` 字段。
+    pub(crate) fn key_expr(&self) -> Option<&str> {
+        match self {
+            TransportEndpoint::Zenoh { key_expr } => Some(key_expr),
+            TransportEndpoint::Inproc { .. } | TransportEndpoint::Iox2 { .. } => None,
+        }
+    }
+}
+
+/// 由 backend + 逻辑 service 名构造 control-plane endpoint descriptor。
+pub(crate) fn transport_endpoint(backend: &str, logical_name: &str) -> TransportEndpoint {
+    match backend {
+        "iox2" => TransportEndpoint::Iox2 {
+            service_name: crate::iox2_service_endpoint_name(logical_name),
+        },
+        "zenoh" => TransportEndpoint::Zenoh {
+            key_expr: crate::zenoh_service_key_expr(logical_name),
+        },
+        _ => TransportEndpoint::Inproc {
+            name: logical_name.to_string(),
+        },
+    }
+}
+
 /// service bind 的 codegen 计划。
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1023,6 +1070,8 @@ pub(crate) struct ServiceRuntimePlan {
     pub(crate) index: usize,
     /// service canonical name（`{client_instance}.{client_port}`）。
     pub(crate) service_name: String,
+    /// backend-specific endpoint descriptor。
+    pub(crate) endpoint: TransportEndpoint,
     /// client 端实例名。
     pub(crate) client_instance: String,
     /// client 端 component 名。
@@ -1079,9 +1128,13 @@ pub(crate) fn service_runtime_plans(
                 .find(|p| p.name == *server_port)
                 .expect("validated service bind must reference existing server port");
 
+            let service_name = format!("{client_instance}.{client_port}");
+            let endpoint = transport_endpoint(&service.backend.0, &service_name);
+
             ServiceRuntimePlan {
                 index,
-                service_name: format!("{client_instance}.{client_port}"),
+                service_name,
+                endpoint,
                 client_instance: client_instance.clone(),
                 client_component: client_instance_ir.component.name.clone(),
                 client_port: client_port.clone(),
@@ -1149,6 +1202,12 @@ pub(crate) struct OperationRuntimePlan {
     pub(crate) index: usize,
     /// operation canonical name（`{client_instance}.{client_port}`）。
     pub(crate) operation_name: String,
+    /// start service backend-specific endpoint descriptor。
+    pub(crate) start_endpoint: TransportEndpoint,
+    /// cancel service backend-specific endpoint descriptor。
+    pub(crate) cancel_endpoint: TransportEndpoint,
+    /// status service backend-specific endpoint descriptor。
+    pub(crate) status_endpoint: TransportEndpoint,
     /// client 端实例名。
     pub(crate) client_instance: String,
     /// client 端 component 名。
@@ -1208,9 +1267,18 @@ pub(crate) fn operation_runtime_plans(
                 .find(|port| port.name == *server_port)
                 .expect("validated operation bind must reference existing server port");
 
+            let operation_name = format!("{client_instance}.{client_port}");
+            let start_name = operation_start_endpoint_name(client_instance, client_port);
+            let cancel_name = operation_cancel_endpoint_name(client_instance, client_port);
+            let status_name = operation_status_endpoint_name(client_instance, client_port);
+            let backend = operation.backend.clone();
+
             OperationRuntimePlan {
                 index,
-                operation_name: format!("{client_instance}.{client_port}"),
+                operation_name,
+                start_endpoint: transport_endpoint(&backend.0, &start_name),
+                cancel_endpoint: transport_endpoint(&backend.0, &cancel_name),
+                status_endpoint: transport_endpoint(&backend.0, &status_name),
                 client_instance: client_instance.clone(),
                 client_component: client_instance_ir.component.name.clone(),
                 client_port: client_port.clone(),
@@ -1220,7 +1288,7 @@ pub(crate) fn operation_runtime_plans(
                 goal_type: server_port_ir.goal.clone(),
                 feedback_type: server_port_ir.feedback.clone(),
                 result_type: server_port_ir.result.clone(),
-                backend: operation.backend.clone(),
+                backend,
                 timeout_ms: operation.policy.timeout_ms,
                 concurrency: operation.policy.concurrency,
                 preempt: operation.policy.preempt,
@@ -1231,6 +1299,30 @@ pub(crate) fn operation_runtime_plans(
             }
         })
         .collect()
+}
+
+fn operation_start_endpoint_name(client_instance: &str, client_port: &str) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_start",
+        crate::snake_identifier(client_instance),
+        crate::snake_identifier(client_port)
+    )
+}
+
+fn operation_cancel_endpoint_name(client_instance: &str, client_port: &str) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_cancel",
+        crate::snake_identifier(client_instance),
+        crate::snake_identifier(client_port)
+    )
+}
+
+fn operation_status_endpoint_name(client_instance: &str, client_port: &str) -> String {
+    format!(
+        "__flowrt_operation_{}_{}_status",
+        crate::snake_identifier(client_instance),
+        crate::snake_identifier(client_port)
+    )
 }
 
 /// 获取 operation server 的 lane 名称。
@@ -1259,4 +1351,23 @@ pub(crate) fn server_operation_plans<'a>(
         .iter()
         .filter(|plan| plan.server_instance == instance_name)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_endpoint_splits_iox2_name_and_zenoh_key_expr() {
+        let iox2 = transport_endpoint("iox2", "plan_client.plan");
+        assert_eq!(iox2.service_name(), Some("FlowRT/service/plan_client_plan"));
+        assert!(iox2.key_expr().is_none());
+
+        let zenoh = transport_endpoint("zenoh", "plan_client.plan");
+        assert_eq!(
+            zenoh.key_expr(),
+            Some("flowrt/service/plan_x5F_client.plan/request")
+        );
+        assert!(zenoh.service_name().is_none());
+    }
 }

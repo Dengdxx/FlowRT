@@ -303,6 +303,10 @@ pub(crate) fn zenoh_service_key_expr(service_name: &str) -> String {
     format!("flowrt/service/{encoded}/request")
 }
 
+pub(crate) fn iox2_service_endpoint_name(service_name: &str) -> String {
+    format!("FlowRT/service/{}", flowrt_path_part(service_name))
+}
+
 pub(crate) fn ros2_bridge_key_expr(
     contract: &ContractIr,
     graph: &GraphIr,
