@@ -288,9 +288,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         service.response_type,
                         service.backend
                     ));
-                    if let Some(key_expr) = service.key_expr.as_deref() {
-                        output.push_str(&format!(" key_expr={key_expr}"));
-                    }
+                    append_service_transport_endpoint(&mut output, service);
                 }
             }
 
@@ -311,6 +309,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         operation.result_type,
                         operation.backend
                     ));
+                    append_operation_lowering(&mut output, operation);
                 }
             }
 
@@ -347,9 +346,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     service.response_type,
                     service.backend
                 ));
-                if let Some(key_expr) = service.key_expr.as_deref() {
-                    output.push_str(&format!(" key_expr={key_expr}"));
-                }
+                append_service_transport_endpoint(&mut output, service);
             }
         }
         for operation in &graph.operations {
@@ -368,6 +365,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     operation.result_type,
                     operation.backend
                 ));
+                append_operation_lowering(&mut output, operation);
             }
         }
     }
@@ -805,7 +803,63 @@ pub(crate) fn format_operation_endpoint(operation: &SelfDescriptionOperationEndp
     if !operation.feedback.is_empty() {
         line.push_str(&format!(" feedback_policy={}", operation.feedback));
     }
+    append_operation_lowering(&mut line, operation);
     line
+}
+
+fn append_service_transport_endpoint(
+    line: &mut String,
+    service: &flowrt_selfdesc::SelfDescriptionServiceEndpoint,
+) {
+    match service.backend.as_str() {
+        "iox2" | "inproc" => {
+            if let Some(service_name) = service.service.as_deref() {
+                line.push_str(&format!(" service={service_name}"));
+            }
+        }
+        "zenoh" => {
+            if let Some(key_expr) = service.key_expr.as_deref() {
+                line.push_str(&format!(" key_expr={key_expr}"));
+            }
+        }
+        _ => {
+            if let Some(service_name) = service.service.as_deref() {
+                line.push_str(&format!(" service={service_name}"));
+            }
+            if let Some(key_expr) = service.key_expr.as_deref() {
+                line.push_str(&format!(" key_expr={key_expr}"));
+            }
+        }
+    }
+}
+
+fn append_operation_lowering(line: &mut String, operation: &SelfDescriptionOperationEndpoint) {
+    match operation.backend.as_str() {
+        "iox2" | "inproc" => {
+            append_non_empty(line, "start_service", &operation.lowering.start_service);
+            append_non_empty(line, "cancel_service", &operation.lowering.cancel_service);
+            append_non_empty(line, "status_service", &operation.lowering.status_service);
+        }
+        "zenoh" => {
+            append_non_empty(line, "start_key_expr", &operation.lowering.start_key_expr);
+            append_non_empty(line, "cancel_key_expr", &operation.lowering.cancel_key_expr);
+            append_non_empty(line, "status_key_expr", &operation.lowering.status_key_expr);
+        }
+        _ => {
+            append_non_empty(line, "start_service", &operation.lowering.start_service);
+            append_non_empty(line, "start_key_expr", &operation.lowering.start_key_expr);
+            append_non_empty(line, "cancel_service", &operation.lowering.cancel_service);
+            append_non_empty(line, "cancel_key_expr", &operation.lowering.cancel_key_expr);
+            append_non_empty(line, "status_service", &operation.lowering.status_service);
+            append_non_empty(line, "status_key_expr", &operation.lowering.status_key_expr);
+        }
+    }
+}
+
+fn append_non_empty(line: &mut String, key: &str, value: &str) {
+    if !value.is_empty() {
+        line.push_str(&format!(" {key}={value}"));
+    }
 }
 
 pub(crate) fn json_inline(value: &serde_json::Value) -> String {

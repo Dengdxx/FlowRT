@@ -1260,6 +1260,73 @@ fn self_description_summary_displays_service_endpoints() {
 }
 
 #[test]
+fn self_description_summary_separates_iox2_service_name_and_zenoh_key_expr() {
+    let iox2_source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "iox2_svc_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "services": [{
+      "name": "planner.plan_to_executor.execute",
+      "client_instance": "planner",
+      "client_port": "plan",
+      "server_instance": "executor",
+      "server_port": "execute",
+      "request_type": "PlanRequest",
+      "response_type": "PlanResponse",
+      "backend": "iox2",
+      "service": "FlowRT/service/planner_plan"
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let iox2: flowrt_selfdesc::SelfDescription = serde_json::from_str(iox2_source).unwrap();
+    let iox2_list = self_description_summary(&iox2);
+
+    assert!(iox2_list.contains("backend=iox2"));
+    assert!(iox2_list.contains("service=FlowRT/service/planner_plan"));
+    assert!(!iox2_list.contains("key_expr="));
+
+    let zenoh_source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "zenoh_svc_demo" },
+  "graphs": [{
+    "name": "default",
+    "instances": [],
+    "tasks": [],
+    "channels": [],
+    "services": [{
+      "name": "planner.plan_to_executor.execute",
+      "client_instance": "planner",
+      "client_port": "plan",
+      "server_instance": "executor",
+      "server_port": "execute",
+      "request_type": "PlanRequest",
+      "response_type": "PlanResponse",
+      "backend": "zenoh",
+      "key_expr": "flowrt/service/planner.plan/request"
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let zenoh: flowrt_selfdesc::SelfDescription = serde_json::from_str(zenoh_source).unwrap();
+    let zenoh_list = self_description_summary(&zenoh);
+
+    assert!(zenoh_list.contains("backend=zenoh"));
+    assert!(zenoh_list.contains("key_expr=flowrt/service/planner.plan/request"));
+    assert!(!zenoh_list.contains("service=FlowRT/service/"));
+}
+
+#[test]
 fn self_description_summary_displays_operation_endpoints() {
     let source = r#"
 {
@@ -1351,6 +1418,87 @@ fn self_description_summary_displays_operation_endpoints() {
     assert!(list.contains("operation_clients: plan:PlanGoal->PlanFeedback->PlanResult"));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn operation_topology_summary_separates_iox2_service_name_and_zenoh_key_expr() {
+    let iox2_source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "iox2_op_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "iox2",
+      "lowering": {
+        "start_service": "FlowRT/service/__flowrt_operation_controller_plan_start",
+        "start_key_expr": "",
+        "cancel_service": "FlowRT/service/__flowrt_operation_controller_plan_cancel",
+        "cancel_key_expr": "",
+        "status_service": "FlowRT/service/__flowrt_operation_controller_plan_status",
+        "status_key_expr": ""
+      }
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let iox2: flowrt_selfdesc::SelfDescription = serde_json::from_str(iox2_source).unwrap();
+    let iox2_list = crate::introspection::operation_topology_summary(&iox2);
+
+    assert!(iox2_list.contains("backend=iox2"));
+    assert!(
+        iox2_list.contains("start_service=FlowRT/service/__flowrt_operation_controller_plan_start")
+    );
+    assert!(!iox2_list.contains("start_key_expr="));
+
+    let zenoh_source = r#"
+{
+  "self_description_version": "0.1",
+  "source_hash": "abc",
+  "package": { "name": "zenoh_op_demo" },
+  "graphs": [{
+    "name": "default",
+    "operations": [{
+      "name": "controller.plan",
+      "client_instance": "controller",
+      "client_port": "plan",
+      "server_instance": "navigator",
+      "server_port": "plan",
+      "goal_type": "PlanGoal",
+      "feedback_type": "PlanFeedback",
+      "result_type": "PlanResult",
+      "backend": "zenoh",
+      "lowering": {
+        "start_service": "",
+        "start_key_expr": "flowrt/service/__flowrt_operation_controller_plan_start/request",
+        "cancel_service": "",
+        "cancel_key_expr": "flowrt/service/__flowrt_operation_controller_plan_cancel/request",
+        "status_service": "",
+        "status_key_expr": "flowrt/service/__flowrt_operation_controller_plan_status/request"
+      }
+    }]
+  }],
+  "message_abi": []
+}
+"#;
+    let zenoh: flowrt_selfdesc::SelfDescription = serde_json::from_str(zenoh_source).unwrap();
+    let zenoh_list = crate::introspection::operation_topology_summary(&zenoh);
+
+    assert!(zenoh_list.contains("backend=zenoh"));
+    assert!(zenoh_list.contains(
+        "start_key_expr=flowrt/service/__flowrt_operation_controller_plan_start/request"
+    ));
+    assert!(!zenoh_list.contains("start_service=FlowRT/service/"));
 }
 
 #[test]

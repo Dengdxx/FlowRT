@@ -603,8 +603,6 @@ inline std::string status_json(const IntrospectionStatus &status) {
     output.append(std::to_string(status.tick_count));
     output.append(",\"clock\":");
     output.append(clock_status_json(status.clock));
-    output.append(",\"recorder\":");
-    output.append(recorder_status_json(status.recorder));
     output.append(",\"channels\":[");
     for (std::size_t index = 0; index < status.channels.size(); ++index) {
         if (index != 0) {
@@ -682,7 +680,9 @@ inline std::string status_json(const IntrospectionStatus &status) {
         }
         output.append(lane_health_json(status.lanes[index]));
     }
-    output.append("],\"instances\":[");
+    output.append("],\"recorder\":");
+    output.append(recorder_status_json(status.recorder));
+    output.append(",\"instances\":[");
     for (std::size_t index = 0; index < status.instances.size(); ++index) {
         if (index != 0) {
             output.push_back(',');

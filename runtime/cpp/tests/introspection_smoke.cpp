@@ -448,7 +448,17 @@ void assert_status_json_schema_parity_fixture() {
     status.graph_health = "faulted";
     status.graph_critical_health = "faulted";
 
-    const auto parsed = JsonParser{flowrt::introspection_status_json(status)}.parse();
+    const auto status_json = flowrt::introspection_status_json(status);
+    const auto lanes_pos = status_json.find(R"("lanes")");
+    const auto recorder_pos = status_json.find(R"("recorder")");
+    const auto instances_pos = status_json.find(R"("instances")");
+    assert(lanes_pos != std::string::npos);
+    assert(recorder_pos != std::string::npos);
+    assert(instances_pos != std::string::npos);
+    assert(lanes_pos < recorder_pos);
+    assert(recorder_pos < instances_pos);
+
+    const auto parsed = JsonParser{status_json}.parse();
     assert(parsed.kind == JsonValue::Kind::Object);
     assert_number_field(parsed, "tick_count", "7");
     assert_string_field(object_field(parsed, "clock"), "source", "simulated_replay");
