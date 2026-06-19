@@ -107,7 +107,7 @@ int main() {
     static_assert(FLOWRT_FRAME_LEASE_GENERATION_MISMATCH == 4U);
     static_assert(FLOWRT_FRAME_LEASE_ERROR == 5U);
     static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR == 0U);
-    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 2U);
+    static_assert(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR == 3U);
     static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 == 1U);
     static_assert(FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1 == 2U);
     static_assert(FLOWRT_C_CLOCK_SOURCE_RUNTIME == 0U);
@@ -211,6 +211,12 @@ int main() {
     static_assert(offsetof(flowrt_params_update_result_t, error_index) == 24U);
     static_assert(offsetof(flowrt_params_update_result_t, has_error_index) == 32U);
     static_assert(offsetof(flowrt_params_update_result_t, message) == 40U);
+    static_assert(sizeof(flowrt_c_param_snapshot_v0_t) == 32U);
+    static_assert(alignof(flowrt_c_param_snapshot_v0_t) == alignof(void *));
+    static_assert(offsetof(flowrt_c_param_snapshot_v0_t, abi_version) == 0U);
+    static_assert(offsetof(flowrt_c_param_snapshot_v0_t, param_count) == 4U);
+    static_assert(offsetof(flowrt_c_param_snapshot_v0_t, params) == 8U);
+    static_assert(offsetof(flowrt_c_param_snapshot_v0_t, reserved) == 16U);
     static_assert(sizeof(flowrt_operation_id_t) == 24U);
     static_assert(alignof(flowrt_operation_id_t) == alignof(std::uint64_t));
     static_assert(offsetof(flowrt_operation_id_t, operation_key) == 0U);
@@ -306,7 +312,7 @@ int main() {
     static_assert(offsetof(flowrt_c_task_timing_t, has_deadline_ms) == 113U);
     static_assert(offsetof(flowrt_c_task_timing_t, deadline_missed) == 114U);
     static_assert(offsetof(flowrt_c_task_timing_t, overrun) == 115U);
-    static_assert(sizeof(flowrt_c_component_context_t) == 216U);
+    static_assert(sizeof(flowrt_c_component_context_t) == 248U);
     static_assert(offsetof(flowrt_c_component_context_t, component_name) == 0U);
     static_assert(offsetof(flowrt_c_component_context_t, instance_name) ==
                   sizeof(flowrt_string_view_t));
@@ -320,6 +326,7 @@ int main() {
     static_assert(offsetof(flowrt_c_component_context_t, has_deadline_ms) == 88U);
     static_assert(offsetof(flowrt_c_component_context_t, has_timing) == 89U);
     static_assert(offsetof(flowrt_c_component_context_t, timing) == 96U);
+    static_assert(offsetof(flowrt_c_component_context_t, params) == 216U);
     static_assert(sizeof(flowrt_c_input_view_t) == 88U);
     static_assert(offsetof(flowrt_c_input_view_t, name) == 0U);
     static_assert(offsetof(flowrt_c_input_view_t, type_name) == sizeof(flowrt_string_view_t));

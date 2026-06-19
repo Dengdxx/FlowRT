@@ -130,8 +130,10 @@ patch 版本切碎。每项要么完整端到端实现，要么继续 validator/
   `result_retention_ms`，self-description 暴露真实 policy，validator 不再拒绝已实现组合。
 - FrameDescriptor `record_payload = true` 进入本版；payload 只通过 payload capture
   provider 记录 artifact ref/hash，不塞回普通 message channel。
-- C v0 只放开固定大小 params readonly snapshot；service、operation、variable frame、
-  `io_boundary`、`external`、`pkg_config`、动态加载和 Python binding 继续 fail-fast。
+- C v0 已放开 params readonly snapshot：callback context 携带
+  `flowrt_c_param_snapshot_v0_t`，支持 primitive/array/table 参数的 borrowed JSON view；
+  string param、service、operation、variable frame、`io_boundary`、`external`、`pkg_config`、
+  动态加载和 Python binding 继续 fail-fast。
 
 上一发布线为 `v0.22.1 Reserved Keyword Naming`，是 `0.22.x 容错验证` 主题之后的验证
 加固 patch：validator 拒绝会被 codegen 直接生成为 Rust/C++ 标识符、且与任一目标语言
@@ -367,8 +369,8 @@ generated shell 在 apply 边界重新校验 type、`min`、`max`、`enum` 与
 校验拒绝时旧参数继续生效，pending 被拒绝并记录，不会把无效值先写入再回滚；同一
 instance 多 task 每个 scheduler step 只在 instance 边界 apply 一次。`flowrt params
 get/list/set` 会展示 `apply_state=applied|pending|startup-only`，App API manifest 与
-self-description 均暴露 params schema、update policy 和回调签名；C v0 仍 fail-fast
-拒绝 params。
+self-description 均暴露 params schema、update policy 和回调签名；C v0 通过 callback
+context 暴露 readonly params snapshot，不提供 C 侧 `on_params_update` 写入接口。
 
 RSDL / Contract IR 已增加抽象 resource requirement 和 provider 语义：component 可声明
 resource `capability`、访问方式、必需性、readiness、health 和失败传播，graph 可声明
@@ -438,9 +440,9 @@ amd64/arm64 `v0.12.0 Authoring Smoke`：在临时项目中覆盖 `flowrt init` R
 `import_demo`、`cpp_counter_demo` 和 `c_counter_demo` 副本上按 runner 架构运行普通
 build/run；package/release 依赖链会等待该 gate，`scripts/check-release-readiness.sh`
 也会检查该 gate、`CHANGELOG.md` 版本段和 `CONTEXT.md` 当前版本状态。C v0 仍只支持 native component、
-fixed-size plain data 输入/输出和 inproc demo，不支持 params、service、operation、
-variable frame、`io_boundary`、`external`、`pkg_config`、动态加载、独立 C runtime 或
-Python binding。`v0.11.1` 定位为 App SDK / C ABI v0 hardening：不扩展 C 功能，不引入
+fixed-size plain data 输入/输出、readonly params snapshot 和 inproc demo，不支持 service、
+operation、variable frame、`io_boundary`、`external`、`pkg_config`、动态加载、独立 C runtime
+或 Python binding。`v0.11.1` 定位为 App SDK / C ABI v0 hardening：不扩展 C 功能，不引入
 Python，只收紧 `flowrt init/add/explain` 诊断、C callback table 失败原因、用户接入边界
 和发布就绪检查。RSDL / Contract IR / validator 现已承载
 v0.10.0 并发
@@ -771,9 +773,9 @@ v0.4 Service runtime，只修复现有能力缺陷。修复范围：
   backend SDK handle、动态插件 ABI 或所有权语义。C component 先编进 app binary，
   形成最小可运行 demo；Python binding 不进入本版本，后续只能建立在该 C ABI 边界上。
   `language = "c"` 已进入 RSDL/Contract IR/validator/codegen/CLI 用户入口；validator
-  会拒绝 C v0 暂不支持的 params、service、operation、variable frame、`io_boundary`、
+  会拒绝 C v0 暂不支持的 string param、service、operation、variable frame、`io_boundary`、
   `external`、`pkg_config`、动态加载、独立 C runtime 和 Python binding，codegen 只在
-  C v0 native / fixed-size message 范围内生成 callback table adapter。generated
+  C v0 native / fixed-size message / readonly params snapshot 范围内生成 callback table adapter。generated
   supervisor 已支持 `runtime_kind = "c"` 并启动 CMake app binary。
 - `v0.11.1` 不扩展 C ABI v0 的功能面，只做硬化：callback table 校验必须报告明确
   失败原因；`flowrt add` 写入前要尽量完成冲突和 Contract IR 校验；用户骨架要把
@@ -1280,10 +1282,10 @@ snapshot、C component task timing、C component context、fixed input view、ou
 高层类型，并通过转换函数或 C header 对齐。operation state 编码使用当前长期 lifecycle
 常量：`IDLE`、`STARTING`、`RUNNING`、`CANCEL_REQUESTED`、`SUCCEEDED`、`FAILED`、
 `CANCELLED` 和 `TIMED_OUT`，不保留旧 `ACCEPTED` / `CANCELING` / `PREEMPTED`
-别名。C component callback ABI 当前为 `0.2`，callback table 必须设置 v0 callback 和
-task timing 两个 feature bit；该 callback table 只表达边界，当前 C v0 已开放
-adapter、`app/c` 用户接入路径和最小 demo，但不表示完整 C runtime、动态加载或 Python
-binding 已开放。`iox2` 和 `zenoh`
+别名。C component callback ABI 当前为 `0.3`，callback table 必须设置 v0 callback 和
+task timing 两个 feature bit；callback context 携带 readonly params snapshot。该 callback
+table 只表达边界，当前 C v0 已开放 adapter、`app/c` 用户接入路径、params snapshot 和最小
+demo，但不表示完整 C runtime、动态加载或 Python binding 已开放。`iox2` 和 `zenoh`
 endpoint 已接入自动恢复：本地 transport 资源丢失或操作失败会重建本地
 publisher/subscriber/session；codec/schema 错误不得触发重连。
 

@@ -29,16 +29,16 @@ use flowrt::{
         FLOWRT_RESOURCE_HEALTH_UNKNOWN, FLOWRT_STATUS_ERROR, FLOWRT_STATUS_OK, FLOWRT_STATUS_RETRY,
         FlowrtBackendHealthSnapshot, FlowrtBytesView, FlowrtCComponentCallbackTable,
         FlowrtCComponentContext, FlowrtCInputArrayView, FlowrtCInputView, FlowrtCLifecycleCallback,
-        FlowrtCOutputArrayView, FlowrtCOutputSlot, FlowrtCTaskCallback, FlowrtCTaskTiming,
-        FlowrtDiagnosticArrayView, FlowrtDiagnosticView, FlowrtDiagnosticsSnapshot,
-        FlowrtFrameDescriptor, FlowrtFrameView, FlowrtI128, FlowrtOperationId,
-        FlowrtOperationIdArrayView, FlowrtOperationProgressView, FlowrtOperationResultSummaryView,
-        FlowrtOperationStatusView, FlowrtParamView, FlowrtParamsUpdateResult, FlowrtParamsView,
-        FlowrtReconnectPolicy, FlowrtResourceDescriptor, FlowrtResourceHealthArrayView,
-        FlowrtResourceHealthSnapshot, FlowrtStringView, FlowrtU128, backend_health_snapshot_to_abi,
-        backend_health_state_to_abi, clock_source_to_c_abi, frame_descriptor_to_abi,
-        frame_lease_status_to_abi, operation_id_to_abi, operation_state_to_abi,
-        reconnect_policy_to_abi, status_to_abi,
+        FlowrtCOutputArrayView, FlowrtCOutputSlot, FlowrtCParamSnapshotV0, FlowrtCTaskCallback,
+        FlowrtCTaskTiming, FlowrtDiagnosticArrayView, FlowrtDiagnosticView,
+        FlowrtDiagnosticsSnapshot, FlowrtFrameDescriptor, FlowrtFrameView, FlowrtI128,
+        FlowrtOperationId, FlowrtOperationIdArrayView, FlowrtOperationProgressView,
+        FlowrtOperationResultSummaryView, FlowrtOperationStatusView, FlowrtParamView,
+        FlowrtParamsUpdateResult, FlowrtParamsView, FlowrtReconnectPolicy,
+        FlowrtResourceDescriptor, FlowrtResourceHealthArrayView, FlowrtResourceHealthSnapshot,
+        FlowrtStringView, FlowrtU128, backend_health_snapshot_to_abi, backend_health_state_to_abi,
+        clock_source_to_c_abi, frame_descriptor_to_abi, frame_lease_status_to_abi,
+        operation_id_to_abi, operation_state_to_abi, reconnect_policy_to_abi, status_to_abi,
     },
 };
 
@@ -160,6 +160,16 @@ fn c_abi_params_views_use_borrowed_json_values() {
     assert_eq!(offset_of!(FlowrtParamsUpdateResult, error_index), 24);
     assert_eq!(offset_of!(FlowrtParamsUpdateResult, has_error_index), 32);
     assert_eq!(offset_of!(FlowrtParamsUpdateResult, message), 40);
+}
+
+#[test]
+fn c_component_param_snapshot_v0_abi_layout_is_stable() {
+    assert_eq!(size_of::<FlowrtCParamSnapshotV0>(), 32);
+    assert_eq!(align_of::<FlowrtCParamSnapshotV0>(), align_of::<usize>());
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV0, abi_version), 0);
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV0, param_count), 4);
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV0, params), 8);
+    assert_eq!(offset_of!(FlowrtCParamSnapshotV0, reserved), 16);
 }
 
 #[test]
@@ -474,7 +484,7 @@ fn abi_frame_descriptor_and_lease_status_are_plain_borrowed_views() {
 #[test]
 fn c_component_callback_abi_constants_are_stable() {
     assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR, 0);
-    assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, 2);
+    assert_eq!(FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR, 3);
     assert_eq!(FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0, 1);
     assert_eq!(FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1, 1 << 1);
     assert_eq!(FLOWRT_C_CLOCK_SOURCE_RUNTIME, 0);
@@ -518,7 +528,7 @@ fn c_component_task_timing_abi_layout_is_stable() {
 
 #[test]
 fn c_component_context_abi_layout_is_stable() {
-    assert_eq!(size_of::<FlowrtCComponentContext>(), 216);
+    assert_eq!(size_of::<FlowrtCComponentContext>(), 248);
     assert_eq!(align_of::<FlowrtCComponentContext>(), align_of::<usize>());
     assert_eq!(offset_of!(FlowrtCComponentContext, component_name), 0);
     assert_eq!(
@@ -539,6 +549,7 @@ fn c_component_context_abi_layout_is_stable() {
     assert_eq!(offset_of!(FlowrtCComponentContext, has_deadline_ms), 88);
     assert_eq!(offset_of!(FlowrtCComponentContext, has_timing), 89);
     assert_eq!(offset_of!(FlowrtCComponentContext, timing), 96);
+    assert_eq!(offset_of!(FlowrtCComponentContext, params), 216);
 }
 
 #[test]

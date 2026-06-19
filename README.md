@@ -69,9 +69,9 @@ C 入口当前是 C ABI v0 callback table 最小切片：声明真实 C componen
 `prepare` / `explain` 会展示 `app/c/<component>.c` 和 generated
 `flowrt_app/c_components.h` callback table 接入线索。用户代码仍手写或复制到
 `app/c/**`，随 generated C++ runtime shell 静态编入 CMake app，支持 native component、
-fixed-size plain data message、普通 `build/run` 和 `build --launcher` 后的 `launch`。
-它不是完整 C runtime，也不包含 params、service、operation、variable frame、
-`io_boundary`、`external`、动态加载或 Python binding。
+fixed-size plain data message、readonly params snapshot、普通 `build/run` 和
+`build --launcher` 后的 `launch`。它不是完整 C runtime，也不包含 service、operation、
+variable frame、`io_boundary`、`external`、动态加载或 Python binding。
 
 ## 安装
 
@@ -210,7 +210,7 @@ my_robot/
 RSDL v0.1 使用 TOML 表面语法。下面是一个 C++ counter 示例。C component v0 使用
 同样的 RSDL 结构，只是 `language = "c"` 且用户代码放在 `app/c/**`，通过
 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0` callback table 接入；当前 C v0 只覆盖
-native component 和 fixed-size message，不是完整 C runtime：
+native component、fixed-size message 和 readonly params snapshot，不是完整 C runtime：
 
 ```toml
 [package]
@@ -434,8 +434,9 @@ runtime header 已包含 `flowrt/abi.h`，Rust runtime 也提供对应的 `repr(
 operation、diagnostics 和 resource health 等基础形状。
 
 当前 C component v0 已能通过 callback table 编进 generated C++ runtime shell，适用于
-fixed-size message 的 native component 最小切片。这不表示已经提供 Python binding、
-动态加载或完整 C runtime wrapper；超出 C v0 的能力仍会被 validator 拒绝。
+fixed-size message 和 readonly params snapshot 的 native component 最小切片。这不表示
+已经提供 Python binding、动态加载或完整 C runtime wrapper；超出 C v0 的能力仍会被
+validator 拒绝。
 
 ## 参数
 

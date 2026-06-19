@@ -17,6 +17,29 @@ flowrt_bytes_view_t c_bytes_view(const void* data, std::size_t size) {
     return flowrt_bytes_view_t{.data = reinterpret_cast<const std::uint8_t*>(data), .len = size};
 }
 
+std::string c_param_json(bool value) {
+    return value ? "true" : "false";
+}
+
+template <typename T>
+std::string c_param_json(T value) {
+    return std::to_string(value);
+}
+
+std::string c_param_json(const std::string& value) {
+    return value;
+}
+
+flowrt_c_param_snapshot_v0_t make_c_param_snapshot(const flowrt_param_view_t* params,
+                                                   std::size_t param_count) {
+    return flowrt_c_param_snapshot_v0_t{
+        .abi_version = 0U,
+        .param_count = static_cast<std::uint32_t>(param_count),
+        .params = params,
+        .reserved = {},
+    };
+}
+
 flowrt_c_clock_source_t c_clock_source(flowrt::ClockSource source) {
     switch (source) {
         case flowrt::ClockSource::Runtime:
@@ -118,7 +141,8 @@ flowrt_c_component_context_t make_c_component_context(std::string_view component
                                                       std::uint64_t step,
                                                       std::uint64_t tick_time_ms,
                                                       std::uint64_t deadline_ms,
-                                                      bool has_deadline_ms) {
+                                                      bool has_deadline_ms,
+                                                      flowrt_c_param_snapshot_v0_t param_snapshot) {
     const auto* timing = runtime_context.timing();
     return flowrt_c_component_context_t{
         .component_name = c_string_view(component_name),
@@ -135,6 +159,7 @@ flowrt_c_component_context_t make_c_component_context(std::string_view component
         .has_timing = timing != nullptr ? std::uint8_t{1} : std::uint8_t{0},
         .reserved = {},
         .timing = timing != nullptr ? make_c_task_timing(*timing) : flowrt_c_task_timing_t{},
+        .params = param_snapshot,
     };
 }
 
@@ -207,7 +232,7 @@ pub(super) fn emit_c_adapter_class(
         output.push_str(&emit_c_adapter_task_method(component, instance, task));
     }
     output.push_str(&format!(
-        "private:\n    bool callbacks_valid(std::string_view instance_name) const {{\n        const char* error = callback_table_validation_error(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n        if (error == nullptr) {{\n            return true;\n        }}\n        std::cerr << \"FlowRT C component callback table invalid for instance `\" << instance_name << \"`: \" << error << '\\n';\n        return false;\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name, const flowrt::Context& runtime_context) {{\n        if (!callbacks_valid(instance_name)) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, runtime_context, 0U, 0U, 0U, false);\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
+        "private:\n    bool callbacks_valid(std::string_view instance_name) const {{\n        const char* error = callback_table_validation_error(callbacks_, {needs_periodic}, {needs_on_message}, {needs_startup}, {needs_shutdown});\n        if (error == nullptr) {{\n            return true;\n        }}\n        std::cerr << \"FlowRT C component callback table invalid for instance `\" << instance_name << \"`: \" << error << '\\n';\n        return false;\n    }}\n\n    flowrt::Status call_lifecycle(flowrt_c_lifecycle_callback_t callback, std::string_view hook_name, std::string_view component_name, std::string_view instance_name, const flowrt::Context& runtime_context) {{\n        if (!callbacks_valid(instance_name)) {{\n            return flowrt::Status::Error;\n        }}\n        if (callback == nullptr) {{\n            return flowrt::Status::Ok;\n        }}\n        const auto context = make_c_component_context(component_name, instance_name, hook_name, std::string_view{{}}, runtime_context, 0U, 0U, 0U, false, flowrt_c_param_snapshot_v0_t{{}});\n        return status_from_c(callback(callbacks_->user_data, &context));\n    }}\n\n    const flowrt_c_component_callback_table_t* callbacks_ = nullptr;\n}};\n\nstd::unique_ptr<flowrt_app::{component}Interface> {factory_name}() {{\n    return std::make_unique<{class_name}>({symbol}());\n}}\n\n",
         component = component_cpp_name(component),
     ));
     output
@@ -260,6 +285,12 @@ pub(super) fn emit_c_adapter_task_method(
             input.name
         ));
     }
+    if !component.params.is_empty() {
+        args.push(format!(
+            "const {}Params& params",
+            component_cpp_name(component)
+        ));
+    }
     for output in &component.outputs {
         args.push(format!(
             "flowrt::Output<{}>& {}",
@@ -274,15 +305,21 @@ pub(super) fn emit_c_adapter_task_method(
         .join(",\n");
     let callback_field = c_task_callback_field(task);
     let mut output = format!(
-        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid({instance_name}) || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, tick_context, step, tick_time_ms, {deadline}, {has_deadline});\n",
+        "    flowrt::Status {method}(\n{joined}) {{\n        if (!callbacks_valid({instance_name}) || callbacks_->{callback_field} == nullptr) {{\n            return flowrt::Status::Error;\n        }}\n",
         method = c_adapter_task_method_name(task),
+        instance_name = cpp_string_literal(&instance.name),
+        callback_field = callback_field,
+    );
+    output.push_str(&emit_c_param_snapshot_vars(component, instance));
+    output.push_str(&format!(
+        "        const auto context = make_c_component_context({component_name}, {instance_name}, {task_name}, {lane_name}, tick_context, step, tick_time_ms, {deadline}, {has_deadline}, param_snapshot);\n",
         component_name = cpp_string_literal(&component.name),
         instance_name = cpp_string_literal(&instance.name),
         task_name = cpp_string_literal(&task.name),
         lane_name = cpp_string_literal(&cpp_task_lane_name(task)),
         deadline = task.deadline_ms.unwrap_or(0),
         has_deadline = c_bool_literal(task.deadline_ms.is_some()),
-    );
+    ));
 
     let task_inputs = task
         .inputs
@@ -360,6 +397,79 @@ pub(super) fn emit_c_adapter_task_method(
     output.push_str("        return flowrt::Status::Ok;\n    }\n\n");
 
     output
+}
+
+pub(super) fn emit_c_param_snapshot_vars(component: &ComponentIr, instance: &InstanceIr) -> String {
+    if component.params.is_empty() {
+        return "        const auto param_snapshot = make_c_param_snapshot(nullptr, 0U);\n"
+            .to_string();
+    }
+
+    let instance_name = crate::snake_identifier(&instance.name);
+    let json_values = component
+        .params
+        .iter()
+        .map(|param| format!("            c_param_json(params.{}),", param.name))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let views = component
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            format!(
+                "            flowrt_param_view_t{{\n                .instance_name = c_string_view({instance_literal}),\n                .param_name = c_string_view({param_literal}),\n                .type_name = c_string_view({type_literal}),\n                .update_policy = c_string_view({update_literal}),\n                .current_json = c_string_view({instance_name}_param_json[{index}]),\n                .pending_json = flowrt_string_view_t{{}},\n                .min_json = {min_json},\n                .max_json = {max_json},\n                .choices_json = {choices_json},\n                .schema_hash = flowrt::fnv1a64({runtime_literal}),\n                .revision = 0U,\n                .mutable_at_runtime = {mutable_at_runtime},\n                .has_pending = 0U,\n                .has_min = {has_min},\n                .has_max = {has_max},\n                .reserved = {{}},\n            }},",
+                instance_literal = cpp_string_literal(&instance.name),
+                param_literal = cpp_string_literal(&param.name),
+                type_literal = cpp_string_literal(crate::param_type_name(param.ty)),
+                update_literal = cpp_string_literal(crate::param_update_name(param.update)),
+                min_json = c_param_json_view_literal(param.min.as_ref()),
+                max_json = c_param_json_view_literal(param.max.as_ref()),
+                choices_json = c_param_choices_view_literal(&param.choices),
+                runtime_literal =
+                    cpp_string_literal(&crate::runtime_plan::runtime_param_name(instance, param)),
+                mutable_at_runtime = if param.update == ParamUpdatePolicy::OnTick {
+                    "1U"
+                } else {
+                    "0U"
+                },
+                has_min = if param.min.is_some() { "1U" } else { "0U" },
+                has_max = if param.max.is_some() { "1U" } else { "0U" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "        std::array<std::string, {len}> {instance_name}_param_json{{{{\n{json_values}\n        }}}};\n        std::array<flowrt_param_view_t, {len}> {instance_name}_param_views{{{{\n{views}\n        }}}};\n        const auto param_snapshot = make_c_param_snapshot({instance_name}_param_views.data(), {instance_name}_param_views.size());\n",
+        len = component.params.len(),
+    )
+}
+
+fn c_param_json_view_literal(value: Option<&ParamValue>) -> String {
+    value
+        .map(|value| {
+            format!(
+                "c_string_view({})",
+                cpp_string_literal(&param_json_literal(value))
+            )
+        })
+        .unwrap_or_else(|| "flowrt_string_view_t{}".to_string())
+}
+
+fn c_param_choices_view_literal(values: &[ParamValue]) -> String {
+    if values.is_empty() {
+        return "flowrt_string_view_t{}".to_string();
+    }
+    let json = format!(
+        "[{}]",
+        values
+            .iter()
+            .map(param_json_literal)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    format!("c_string_view({})", cpp_string_literal(&json))
 }
 
 pub(super) fn emit_c_input_array(
@@ -443,6 +553,9 @@ pub(super) fn emit_c_adapter_task_step_call(
     for input in &component.inputs {
         args.push(c_input_revision_expr(emission, instance, input));
         args.push(cpp_step_local_name(&instance.name, &input.name));
+    }
+    if !component.params.is_empty() {
+        args.push(format!("{}_params_", instance.name));
     }
     for output in &component.outputs {
         args.push(cpp_step_local_name(&instance.name, &output.name));

@@ -171,7 +171,77 @@ channel = "latest"
 }
 
 #[test]
-fn rejects_c_component_v0_unsupported_surface() {
+fn accepts_c_v0_component_params_snapshot_subset() {
+    let source = r#"
+[package]
+name = "c_params_ok"
+rsdl_version = "0.1"
+
+[type.Sample]
+value = "u32"
+
+[component.controller]
+language = "c"
+output = ["sample:Sample"]
+
+[component.controller.params]
+enabled = { type = "bool", default = true, update = "startup" }
+gain = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+limits = { type = "array", default = [1, 2, 3], update = "startup" }
+calibration = { type = "table", default = { x = 1.0, y = 2.0 }, update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+gain = 2.0
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["sample"]
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    validate_contract(&ir).unwrap();
+}
+
+#[test]
+fn rejects_c_v0_string_params() {
+    let source = r#"
+[package]
+name = "c_string_param_rejected"
+rsdl_version = "0.1"
+
+[component.controller]
+language = "c"
+
+[component.controller.params]
+mode = { type = "string", default = "normal", update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+"#;
+    let raw = parse_str(source).unwrap();
+    let ir = normalize_document(&raw, hash_source(source)).unwrap();
+
+    let report = validate_contract(&ir).expect_err("C v0 string params must fail");
+    assert!(
+        report.errors.iter().any(|error| error.message.contains(
+            "component `controller` param `mode` uses string data but C v0 params only support primitive, array and table snapshot values"
+        )),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn rejects_c_v0_unsupported_surface() {
     let source = r#"
 [package]
 name = "c_native_rejected_surface"
@@ -221,7 +291,6 @@ result = "Result"
     for expected in [
         "component `controller` declares pkg-config dependencies but language is not `cpp`",
         "component `controller` uses language `c` but C v0 only supports native components",
-        "component `controller` uses language `c` but C v0 does not support params",
         "component `controller` uses language `c` but C v0 does not support service ports",
         "component `controller` uses language `c` but C v0 does not support operation ports",
         "component `controller` port `sample` uses variable frame data but C v0 only supports fixed-size message types",

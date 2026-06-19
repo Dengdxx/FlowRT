@@ -163,8 +163,9 @@ counter_source.count -> counter_sink.count
 `flowrt_app/c_components.h` 声明的 callback table factory，并显式设置
 `FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0`。示例只使用 fixed-size `Count` message、
 native component 和 `inproc` channel，用来验证 C ABI v0 callback table 可以随 generated
-C++ runtime shell 一起 build/run；它不表示 C 已支持 params、service、operation、
-variable frame、`io_boundary`、`external` 或独立 C runtime。
+C++ runtime shell 一起 build/run；C v0 已支持 readonly params snapshot，但该示例不覆盖。
+它不表示 C 已支持 service、operation、variable frame、`io_boundary`、`external` 或独立 C
+runtime。
 
 常用命令：
 

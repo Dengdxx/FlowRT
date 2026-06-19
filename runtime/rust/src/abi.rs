@@ -15,7 +15,7 @@ pub const FLOWRT_ABI_VERSION_MAJOR: u32 = 0;
 pub const FLOWRT_ABI_VERSION_MINOR: u32 = 2;
 
 pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR: u32 = 0;
-pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 2;
+pub const FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR: u32 = 3;
 pub const FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0: u64 = 1;
 pub const FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1: u64 = 1 << 1;
 
@@ -232,6 +232,16 @@ pub struct FlowrtParamsUpdateResult {
     pub message: FlowrtStringView,
 }
 
+/// C component callback 中暴露的 readonly 参数快照。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowrtCParamSnapshotV0 {
+    pub abi_version: u32,
+    pub param_count: u32,
+    pub params: *const FlowrtParamView,
+    pub reserved: [u8; 16],
+}
+
 pub type FlowrtOperationState = u32;
 pub const FLOWRT_OPERATION_STATE_IDLE: FlowrtOperationState = 0;
 pub const FLOWRT_OPERATION_STATE_STARTING: FlowrtOperationState = 1;
@@ -422,6 +432,7 @@ pub struct FlowrtCComponentContext {
     pub has_timing: u8,
     pub reserved: [u8; 6],
     pub timing: FlowrtCTaskTiming,
+    pub params: FlowrtCParamSnapshotV0,
 }
 
 /// C component fixed-size input borrowed view.

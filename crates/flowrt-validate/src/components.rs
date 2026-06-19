@@ -150,11 +150,13 @@ fn validate_c_component_v0_surface(
             component.name
         )));
     }
-    if !component.params.is_empty() {
-        errors.push(ValidationError::new(format!(
-            "component `{}` uses language `c` but C v0 does not support params",
-            component.name
-        )));
+    for param in &component.params {
+        if param.ty == ParamType::String {
+            errors.push(ValidationError::new(format!(
+                "component `{}` param `{}` uses string data but C v0 params only support primitive, array and table snapshot values",
+                component.name, param.name
+            )));
+        }
     }
     if !component.service_clients.is_empty() || !component.service_servers.is_empty() {
         errors.push(ValidationError::new(format!(

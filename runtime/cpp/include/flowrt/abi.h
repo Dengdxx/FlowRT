@@ -19,7 +19,7 @@ extern "C" {
 #define FLOWRT_ABI_VERSION_MINOR UINT32_C(2)
 
 #define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MAJOR UINT32_C(0)
-#define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR UINT32_C(2)
+#define FLOWRT_C_COMPONENT_CALLBACK_ABI_VERSION_MINOR UINT32_C(3)
 #define FLOWRT_ABI_FEATURE_C_COMPONENT_CALLBACKS_V0 UINT64_C(1)
 #define FLOWRT_ABI_FEATURE_C_COMPONENT_TASK_TIMING_V1 UINT64_C(2)
 
@@ -171,6 +171,13 @@ typedef struct flowrt_params_update_result_t {
     uint8_t reserved[7];
     flowrt_string_view_t message;
 } flowrt_params_update_result_t;
+
+typedef struct flowrt_c_param_snapshot_v0_t {
+    uint32_t abi_version;
+    uint32_t param_count;
+    const flowrt_param_view_t *params;
+    uint8_t reserved[16];
+} flowrt_c_param_snapshot_v0_t;
 
 typedef uint32_t flowrt_operation_state_t;
 #define FLOWRT_OPERATION_STATE_IDLE ((flowrt_operation_state_t)0U)
@@ -345,6 +352,7 @@ typedef struct flowrt_c_component_context_t {
     uint8_t has_timing;
     uint8_t reserved[6];
     flowrt_c_task_timing_t timing;
+    flowrt_c_param_snapshot_v0_t params;
 } flowrt_c_component_context_t;
 
 typedef struct flowrt_c_input_view_t {

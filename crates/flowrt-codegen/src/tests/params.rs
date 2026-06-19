@@ -419,6 +419,62 @@ output = ["cmd"]
 }
 
 #[test]
+fn generated_c_params_callback_receives_readonly_snapshot() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "c_params_demo"
+rsdl_version = "0.1"
+
+[type.Cmd]
+value = "u32"
+
+[component.controller]
+language = "c"
+output = ["cmd:Cmd"]
+
+[component.controller.params]
+enabled = { type = "bool", default = true, update = "startup" }
+gain = { type = "f32", default = 1.0, min = 0.0, max = 10.0, update = "on_tick" }
+limits = { type = "array", default = [1, 2, 3], update = "startup" }
+
+[instance.controller]
+component = "controller"
+
+[instance.controller.params]
+gain = 2.0
+
+[instance.controller.task]
+trigger = "periodic"
+period_ms = 5
+output = ["cmd"]
+"#,
+    );
+    let bundle = emit_artifacts(&ir).unwrap();
+    let components = artifact_content(&bundle, "cpp/include/flowrt_app/components.hpp");
+    let shell = artifact_content(&bundle, "cpp/src/runtime_shell.cpp");
+
+    assert!(components.contains("struct ControllerParams"));
+    assert!(components.contains("bool enabled"));
+    assert!(components.contains("float gain"));
+    assert!(components.contains("std::string limits"));
+    assert!(components.contains("const ControllerParams& params"));
+    assert!(shell.contains("flowrt_c_param_snapshot_v0_t make_c_param_snapshot"));
+    assert!(shell.contains("const ControllerParams& params"));
+    assert!(shell.contains("std::array<std::string, 3> controller_param_json"));
+    assert!(shell.contains("std::array<flowrt_param_view_t, 3> controller_param_views"));
+    assert!(shell.contains(
+        "make_c_param_snapshot(controller_param_views.data(), controller_param_views.size())"
+    ));
+    assert!(shell.contains(".params = param_snapshot"));
+    assert!(
+        shell.contains(
+            "callbacks_->run_periodic(callbacks_->user_data, &context, &inputs, &outputs)"
+        )
+    );
+}
+
+#[test]
 fn generated_cpp_param_decoder_checks_integer_ranges() {
     let ir = contract_from_source(
         r#"
