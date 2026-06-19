@@ -13,6 +13,289 @@ pub mod inproc;
 pub mod introspection;
 #[cfg(feature = "iox2")]
 pub mod iox2;
+#[cfg(not(feature = "iox2"))]
+pub mod iox2 {
+    use std::{fmt::Debug, marker::PhantomData};
+
+    use crate::{
+        BackendHealthSnapshot, BackendHealthState, Latest, OverflowPolicy, ServiceError,
+        ServiceResult, StaleConfig,
+    };
+
+    /// 可选 iceoryx2 transport helper 返回的错误。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Iox2Error {
+        message: String,
+    }
+
+    impl Iox2Error {
+        fn unsupported() -> Self {
+            Self {
+                message: "iceoryx2 support is not compiled into this FlowRT runtime".to_string(),
+            }
+        }
+
+        /// 返回错误消息。
+        pub fn message(&self) -> &str {
+            &self.message
+        }
+    }
+
+    impl std::fmt::Display for Iox2Error {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl std::error::Error for Iox2Error {}
+
+    /// 打开 iceoryx2 publish-subscribe endpoint 时使用的 QoS 配置。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Iox2ChannelConfig {
+        depth: usize,
+        overflow: OverflowPolicy,
+        stale: StaleConfig,
+    }
+
+    impl Iox2ChannelConfig {
+        /// 构造 latest channel 的默认 QoS 配置。
+        pub fn latest() -> Self {
+            Self {
+                depth: 1,
+                overflow: OverflowPolicy::DropOldest,
+                stale: StaleConfig::default(),
+            }
+        }
+
+        /// 构造 FIFO channel 的 QoS 配置；`depth` 为 0 时按 1 处理。
+        pub fn fifo(depth: usize, overflow: OverflowPolicy) -> Self {
+            Self {
+                depth: depth.max(1),
+                overflow,
+                stale: StaleConfig::default(),
+            }
+        }
+
+        /// 构造 service request/response endpoint 的 FIFO QoS 配置。
+        pub fn service_default() -> Self {
+            Self::fifo(64, OverflowPolicy::DropOldest)
+        }
+
+        /// 设置 freshness 配置。
+        pub fn with_stale_config(mut self, stale: StaleConfig) -> Self {
+            self.stale = stale;
+            self
+        }
+
+        /// 返回归一化后的 channel depth。
+        pub fn depth(&self) -> usize {
+            self.depth
+        }
+
+        /// 返回 overflow policy。
+        pub fn overflow(&self) -> OverflowPolicy {
+            self.overflow
+        }
+
+        /// 返回 stale-data 配置。
+        pub fn stale(&self) -> StaleConfig {
+            self.stale
+        }
+    }
+
+    impl Default for Iox2ChannelConfig {
+        fn default() -> Self {
+            Self::latest()
+        }
+    }
+
+    /// disabled-feature iox2 typed pub/sub endpoint。
+    pub struct Iox2PubSub<T> {
+        service_name: String,
+        config: Iox2ChannelConfig,
+        error: String,
+        _marker: PhantomData<T>,
+    }
+
+    impl<T> Iox2PubSub<T>
+    where
+        T: Debug + Copy + 'static,
+    {
+        /// 打开 endpoint。未启用 feature 时 fail-fast。
+        pub fn open(_service_name: &str) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        /// 使用显式 QoS 打开 endpoint。未启用 feature 时 fail-fast。
+        pub fn open_with_config(
+            _service_name: &str,
+            _config: Iox2ChannelConfig,
+        ) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        /// 构造不可用 endpoint。
+        pub fn unavailable(
+            service_name: &str,
+            config: Iox2ChannelConfig,
+            error: impl Into<String>,
+        ) -> Self {
+            Self {
+                service_name: service_name.to_string(),
+                config,
+                error: error.into(),
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn publish(&mut self, _value: T) -> Result<(), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn publish_at(&mut self, _value: T, _published_at_ms: u64) -> Result<(), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn set_schedule_waiter(&mut self, _waiter: crate::ScheduleWaiter) {}
+
+        pub fn receive(&mut self) -> Result<Option<T>, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn receive_latest_at(&mut self, _now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn receive_latest_with_revision_at(
+            &mut self,
+            _now_ms: u64,
+        ) -> Result<(Latest<'_, T>, u64), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn cached_latest_at(&self, now_ms: u64) -> Latest<'_, T> {
+            let _ = now_ms;
+            Latest::new(None, false)
+        }
+
+        pub fn config(&self) -> Iox2ChannelConfig {
+            self.config
+        }
+
+        pub fn ready(&self) -> bool {
+            false
+        }
+
+        pub fn health(&self) -> BackendHealthSnapshot {
+            unsupported_health(self.error.clone())
+        }
+
+        pub fn revision(&self) -> u64 {
+            0
+        }
+
+        pub fn reconnect_policy(&self) -> crate::ReconnectPolicy {
+            crate::ReconnectPolicy::default()
+        }
+
+        pub fn poll_once(&self, _timeout: std::time::Duration) -> Result<(), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn service_name(&self) -> &str {
+            &self.service_name
+        }
+    }
+
+    /// disabled-feature iox2 Service client。
+    pub struct Iox2ServiceClient<Req, Resp> {
+        service_name: String,
+        error: String,
+        _marker: PhantomData<(Req, Resp)>,
+    }
+
+    impl<Req, Resp> Iox2ServiceClient<Req, Resp>
+    where
+        Req: Copy + 'static,
+        Resp: Copy + Default + 'static,
+    {
+        pub fn open(_service_name: &str) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn unavailable(service_name: &str, error: impl Into<String>) -> Self {
+            Self {
+                service_name: service_name.to_string(),
+                error: error.into(),
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn call(&self, _request: Req, _timeout_ms: u64) -> ServiceResult<Resp> {
+            ServiceResult::err_with_message(ServiceError::Unavailable, self.error.clone())
+        }
+
+        pub fn service_name(&self) -> &str {
+            &self.service_name
+        }
+
+        pub fn health(&self) -> BackendHealthSnapshot {
+            unsupported_health(self.error.clone())
+        }
+    }
+
+    /// disabled-feature iox2 Service server。
+    pub struct Iox2ServiceServer<Req, Resp> {
+        service_name: String,
+        error: String,
+        _marker: PhantomData<(Req, Resp)>,
+    }
+
+    impl<Req, Resp> Iox2ServiceServer<Req, Resp>
+    where
+        Req: Copy + 'static,
+        Resp: Copy + Default + 'static,
+    {
+        pub fn open(_service_name: &str, _max_in_flight: usize) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn unavailable(service_name: &str, error: impl Into<String>) -> Self {
+            Self {
+                service_name: service_name.to_string(),
+                error: error.into(),
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn set_schedule_waiter(&mut self, _waiter: crate::ScheduleWaiter) {}
+
+        pub fn poll_requests(
+            &mut self,
+            _handler: impl FnMut(Req) -> ServiceResult<Resp>,
+        ) -> Result<usize, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn service_name(&self) -> &str {
+            &self.service_name
+        }
+
+        pub fn health(&self) -> BackendHealthSnapshot {
+            unsupported_health(self.error.clone())
+        }
+    }
+
+    fn unsupported_health(error: String) -> BackendHealthSnapshot {
+        BackendHealthSnapshot {
+            state: BackendHealthState::Unsupported,
+            last_error: Some(error),
+            attempt: 0,
+            next_retry_unix_ms: None,
+            recoverable: false,
+        }
+    }
+}
 pub mod lifecycle;
 pub mod operation;
 #[cfg(feature = "zenoh")]

@@ -4,13 +4,15 @@
 //! payload 可以通过 iceoryx2 传输；用户算法代码仍不应直接依赖本模块。
 
 use std::{
+    collections::BTreeMap,
+    fmt::Debug,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use iceoryx2::port::{listener::Listener, notifier::Notifier};
@@ -19,7 +21,7 @@ use iceoryx2::sample::Sample;
 
 use crate::{
     BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, Latest, OverflowPolicy,
-    ReconnectPolicy, StaleConfig, StalePolicy,
+    ReconnectPolicy, ServiceError, ServiceResult, StaleConfig, StalePolicy, service::fnv1a64,
 };
 
 type IpcNode = Node<ipc::Service>;
@@ -203,6 +205,11 @@ impl Iox2ChannelConfig {
             overflow,
             stale: StaleConfig::default(),
         }
+    }
+
+    /// 构造 service request/response endpoint 的 FIFO QoS 配置。
+    pub fn service_default() -> Self {
+        Self::fifo(64, OverflowPolicy::DropOldest)
     }
 
     /// 设置 freshness 配置。
@@ -592,6 +599,296 @@ where
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
+#[type_name("FlowRTIox2ServiceCorrelation")]
+struct Iox2ServiceCorrelation {
+    session_id: u64,
+    sequence: u64,
+    service_id: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("FlowRTIox2ServiceRequest")]
+struct Iox2ServiceRequest<Req: Debug + Copy + ZeroCopySend + 'static> {
+    correlation: Iox2ServiceCorrelation,
+    payload: Req,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("FlowRTIox2ServiceResponse")]
+struct Iox2ServiceResponse<Resp: Debug + Copy + ZeroCopySend + 'static> {
+    correlation: Iox2ServiceCorrelation,
+    status: u16,
+    _pad: [u8; 6],
+    payload: Resp,
+}
+
+struct Iox2ServiceClientInner<Req, Resp>
+where
+    Req: Debug + Copy + ZeroCopySend + 'static,
+    Resp: Debug + Copy + ZeroCopySend + Default + 'static,
+{
+    sequence: u64,
+    request_tx: Iox2PubSub<Iox2ServiceRequest<Req>>,
+    response_rx: Iox2PubSub<Iox2ServiceResponse<Resp>>,
+    pending: BTreeMap<u64, Iox2ServiceResponse<Resp>>,
+}
+
+/// iox2 fixed-size Service client backend primitive。
+pub struct Iox2ServiceClient<Req, Resp>
+where
+    Req: Debug + Copy + ZeroCopySend + 'static,
+    Resp: Debug + Copy + ZeroCopySend + Default + 'static,
+{
+    service_name: String,
+    session_id: u64,
+    service_id: u64,
+    inner: Mutex<Iox2ServiceClientInner<Req, Resp>>,
+    unavailable: Option<String>,
+}
+
+impl<Req, Resp> Iox2ServiceClient<Req, Resp>
+where
+    Req: Debug + Copy + ZeroCopySend + 'static,
+    Resp: Debug + Copy + ZeroCopySend + Default + 'static,
+{
+    /// 打开 iox2 service client。
+    pub fn open(service_name: &str) -> Result<Self, Iox2Error> {
+        let config = Iox2ChannelConfig::service_default();
+        Ok(Self {
+            service_name: service_name.to_string(),
+            session_id: next_session_id(),
+            service_id: stable_service_id(service_name),
+            inner: Mutex::new(Iox2ServiceClientInner {
+                sequence: 0,
+                request_tx: Iox2PubSub::open_with_config(
+                    &iox2_request_endpoint(service_name),
+                    config,
+                )?,
+                response_rx: Iox2PubSub::open_with_config(
+                    &iox2_response_endpoint(service_name),
+                    config,
+                )?,
+                pending: BTreeMap::new(),
+            }),
+            unavailable: None,
+        })
+    }
+
+    /// 构造不可用 client，用于缺少 iox2 feature/SDK 的 fail-fast 路径。
+    pub fn unavailable(service_name: &str, error: impl Into<String>) -> Self {
+        let config = Iox2ChannelConfig::service_default();
+        let error = error.into();
+        Self {
+            service_name: service_name.to_string(),
+            session_id: next_session_id(),
+            service_id: stable_service_id(service_name),
+            inner: Mutex::new(Iox2ServiceClientInner {
+                sequence: 0,
+                request_tx: Iox2PubSub::unavailable(
+                    &iox2_request_endpoint(service_name),
+                    config,
+                    error.clone(),
+                ),
+                response_rx: Iox2PubSub::unavailable(
+                    &iox2_response_endpoint(service_name),
+                    config,
+                    error.clone(),
+                ),
+                pending: BTreeMap::new(),
+            }),
+            unavailable: Some(error),
+        }
+    }
+
+    /// 发起同步 request/response 调用。
+    pub fn call(&self, request: Req, timeout_ms: u64) -> ServiceResult<Resp> {
+        if let Some(error) = &self.unavailable {
+            return ServiceResult::err_with_message(ServiceError::Unavailable, error.clone());
+        }
+        if timeout_ms == 0 {
+            return ServiceResult::err(ServiceError::Timeout);
+        }
+
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let sequence = inner.sequence;
+        inner.sequence = inner.sequence.wrapping_add(1);
+        let correlation = Iox2ServiceCorrelation {
+            session_id: self.session_id,
+            sequence,
+            service_id: self.service_id,
+        };
+        if inner
+            .request_tx
+            .publish(Iox2ServiceRequest {
+                correlation,
+                payload: request,
+            })
+            .is_err()
+        {
+            return ServiceResult::err(ServiceError::Backend);
+        }
+
+        if let Some(response) = inner.pending.remove(&sequence) {
+            return decode_service_response(response);
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            match inner.response_rx.receive() {
+                Ok(Some(response))
+                    if response.correlation.service_id == self.service_id
+                        && response.correlation.session_id == self.session_id =>
+                {
+                    if response.correlation.sequence == sequence {
+                        return decode_service_response(response);
+                    }
+                    inner
+                        .pending
+                        .insert(response.correlation.sequence, response);
+                }
+                Ok(Some(_)) | Ok(None) => {}
+                Err(_) => return ServiceResult::err(ServiceError::Backend),
+            }
+
+            if Instant::now() >= deadline {
+                return ServiceResult::err(ServiceError::Timeout);
+            }
+            let _ = inner.response_rx.poll_once(Duration::from_millis(1));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// 返回 canonical service name。
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    /// 返回 backend health。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        if let Some(error) = &self.unavailable {
+            return BackendHealthSnapshot {
+                state: BackendHealthState::Unsupported,
+                last_error: Some(error.clone()),
+                attempt: 0,
+                next_retry_unix_ms: None,
+                recoverable: false,
+            };
+        }
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .request_tx
+            .health()
+    }
+}
+
+/// iox2 fixed-size Service server backend primitive。
+pub struct Iox2ServiceServer<Req, Resp>
+where
+    Req: Debug + Copy + ZeroCopySend + 'static,
+    Resp: Debug + Copy + ZeroCopySend + Default + 'static,
+{
+    service_name: String,
+    request_rx: Iox2PubSub<Iox2ServiceRequest<Req>>,
+    response_tx: Iox2PubSub<Iox2ServiceResponse<Resp>>,
+    max_in_flight: usize,
+}
+
+impl<Req, Resp> Iox2ServiceServer<Req, Resp>
+where
+    Req: Debug + Copy + ZeroCopySend + 'static,
+    Resp: Debug + Copy + ZeroCopySend + Default + 'static,
+{
+    /// 打开 iox2 service server。
+    pub fn open(service_name: &str, max_in_flight: usize) -> Result<Self, Iox2Error> {
+        let config = Iox2ChannelConfig::service_default();
+        Ok(Self {
+            service_name: service_name.to_string(),
+            request_rx: Iox2PubSub::open_with_config(&iox2_request_endpoint(service_name), config)?,
+            response_tx: Iox2PubSub::open_with_config(
+                &iox2_response_endpoint(service_name),
+                config,
+            )?,
+            max_in_flight: max_in_flight.max(1),
+        })
+    }
+
+    /// 注册 scheduler 数据到达唤醒器。
+    pub fn set_schedule_waiter(&mut self, waiter: crate::ScheduleWaiter) {
+        self.request_rx.set_schedule_waiter(waiter);
+    }
+
+    /// 由 scheduler hidden task drain request 并调用 handler。
+    pub fn poll_requests(
+        &mut self,
+        mut handler: impl FnMut(Req) -> ServiceResult<Resp>,
+    ) -> Result<usize, Iox2Error> {
+        let mut handled = 0usize;
+        while handled < self.max_in_flight {
+            let Some(request) = self.request_rx.receive()? else {
+                break;
+            };
+            let (status, payload) = match handler(request.payload) {
+                ServiceResult::Ok(response) => (ServiceError::Ok as u16, response),
+                ServiceResult::Err(code, _) => (code as u16, Resp::default()),
+            };
+            self.response_tx.publish(Iox2ServiceResponse {
+                correlation: request.correlation,
+                status,
+                _pad: [0; 6],
+                payload,
+            })?;
+            handled += 1;
+        }
+        Ok(handled)
+    }
+
+    /// 返回 canonical service name。
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
+    /// 返回 backend health。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        self.request_rx.health()
+    }
+}
+
+fn decode_service_response<Resp>(response: Iox2ServiceResponse<Resp>) -> ServiceResult<Resp>
+where
+    Resp: Debug + Copy + ZeroCopySend + Default + 'static,
+{
+    match ServiceError::from_abi(response.status) {
+        Some(ServiceError::Ok) => ServiceResult::ok(response.payload),
+        Some(code) => ServiceResult::err(code),
+        None => ServiceResult::err(ServiceError::Protocol),
+    }
+}
+
+fn iox2_request_endpoint(service_name: &str) -> String {
+    format!("{service_name}/req")
+}
+
+fn iox2_response_endpoint(service_name: &str) -> String {
+    format!("{service_name}/resp")
+}
+
+fn stable_service_id(service_name: &str) -> u64 {
+    fnv1a64(service_name.as_bytes())
+}
+
+fn next_session_id() -> u64 {
+    static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 fn open_iox2_parts<T>(
     service_name: &str,
     config: Iox2ChannelConfig,
@@ -612,6 +909,8 @@ where
         .enable_safe_overflow(config.safe_overflow())
         .history_size(config.depth())
         .subscriber_max_buffer_size(config.depth())
+        .max_publishers(config.depth().max(8))
+        .max_subscribers(config.depth().max(8))
         .open_or_create()
         .map_err(|error| {
             Iox2Error::new("failed to open or create iceoryx2 pubsub service", error)
@@ -768,6 +1067,7 @@ pub fn smoke_pubsub_u64(service_name: &str, value: u64) -> Result<u64, Iox2Error
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ServiceError, ServiceResult};
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, ZeroCopySend)]
@@ -1076,5 +1376,115 @@ mod tests {
             .expect("publish should reopen a reset iox2 endpoint");
 
         assert_eq!(endpoint.health().state, BackendHealthState::Ready);
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, ZeroCopySend)]
+    struct Iox2SvcReq {
+        goal: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, ZeroCopySend)]
+    struct Iox2SvcResp {
+        accepted: u32,
+    }
+
+    fn unique_service_name(prefix: &str) -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!(
+            "FlowRT/Smoke/Service/{prefix}/{}/{}",
+            std::process::id(),
+            sequence
+        )
+    }
+
+    #[test]
+    fn iox2_service_request_response_roundtrips() {
+        let name = unique_service_name("roundtrip");
+        let server_name = name.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut server =
+                Iox2ServiceServer::<Iox2SvcReq, Iox2SvcResp>::open(&server_name, 8).unwrap();
+            ready_tx.send(()).unwrap();
+            for _ in 0..50 {
+                let _ = server.poll_requests(|req| {
+                    ServiceResult::ok(Iox2SvcResp {
+                        accepted: u32::from(req.goal % 2 == 0),
+                    })
+                });
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        let client = Iox2ServiceClient::<Iox2SvcReq, Iox2SvcResp>::open(&name).unwrap();
+        let response = client.call(Iox2SvcReq { goal: 4 }, 1000);
+        assert_eq!(response, ServiceResult::Ok(Iox2SvcResp { accepted: 1 }));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn iox2_service_call_times_out_without_server() {
+        let name = unique_service_name("timeout");
+        let client = Iox2ServiceClient::<Iox2SvcReq, Iox2SvcResp>::open(&name).unwrap();
+
+        let response = client.call(Iox2SvcReq { goal: 1 }, 50);
+
+        assert_eq!(response.error_code(), ServiceError::Timeout);
+    }
+
+    #[test]
+    fn iox2_service_unavailable_client_returns_unavailable() {
+        let client = Iox2ServiceClient::<Iox2SvcReq, Iox2SvcResp>::unavailable("svc", "no sdk");
+
+        let response = client.call(Iox2SvcReq { goal: 1 }, 50);
+
+        assert_eq!(response.error_code(), ServiceError::Unavailable);
+        assert_eq!(client.health().state, BackendHealthState::Unsupported);
+    }
+
+    #[test]
+    fn iox2_service_multi_client_correlation_isolated() {
+        let name = unique_service_name("multi-client");
+        let server_name = name.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut server =
+                Iox2ServiceServer::<Iox2SvcReq, Iox2SvcResp>::open(&server_name, 8).unwrap();
+            ready_tx.send(()).unwrap();
+            for _ in 0..100 {
+                let _ = server.poll_requests(|req| {
+                    ServiceResult::ok(Iox2SvcResp {
+                        accepted: req.goal + 100,
+                    })
+                });
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        ready_rx.recv().unwrap();
+
+        let name_a = name.clone();
+        let name_b = name.clone();
+        let left = std::thread::spawn(move || {
+            let client = Iox2ServiceClient::<Iox2SvcReq, Iox2SvcResp>::open(&name_a).unwrap();
+            client.call(Iox2SvcReq { goal: 7 }, 1000)
+        });
+        let right = std::thread::spawn(move || {
+            let client = Iox2ServiceClient::<Iox2SvcReq, Iox2SvcResp>::open(&name_b).unwrap();
+            client.call(Iox2SvcReq { goal: 9 }, 1000)
+        });
+
+        assert_eq!(
+            left.join().unwrap(),
+            ServiceResult::Ok(Iox2SvcResp { accepted: 107 })
+        );
+        assert_eq!(
+            right.join().unwrap(),
+            ServiceResult::Ok(Iox2SvcResp { accepted: 109 })
+        );
+        server.join().unwrap();
     }
 }
