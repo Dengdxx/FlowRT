@@ -724,11 +724,40 @@ fn emit_rust_service_submit_cases(
         let server_field = service_emit::server_field_name(plan);
         let server_var = format!("__flowrt_{}", crate::snake_identifier(&server_field));
         let service_name = crate::rust_string_literal(&plan.service_name);
-        output.push_str(&format!(
-            "                        flowrt::TaskId({task_id}) => {{\n                            let {server_var} = self.{server_field}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                {server_var}.process_pending_requests();\n                                {{\n                                    let service_stats = {server_var}.stats();\n                                    introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {{\n                                        name: {service_name}.to_string(),\n                                        ready: true,\n                                        in_flight: {server_var}.in_flight_count() as u64,\n                                        queued: {server_var}.pending_count() as u64,\n                                        total_requests: service_stats.requests,\n                                        timeout_count: service_stats.timeout,\n                                        busy_count: service_stats.busy,\n                                        unavailable_count: service_stats.unavailable,\n                                        late_drop_count: service_stats.late_dropped,\n                                    }});\n                                }}\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
-            emit_rust_hidden_worker_closure_context(&task.name),
-            emit_rust_scheduler_task_closure_tail(),
-        ));
+        if plan.backend.0 == "iox2" {
+            let server_instance = &plan.server_instance;
+            let component_var = format!(
+                "__flowrt_service_component_{}",
+                crate::snake_identifier(server_instance)
+            );
+            let method_name = service_emit::service_handler_method_name(&plan.server_port);
+            let server_instance_ir = graph
+                .instances
+                .iter()
+                .find(|instance| instance.name == *server_instance)
+                .expect("validated service server instance must exist");
+            let server_component =
+                crate::component_by_name(contract, &server_instance_ir.component.name);
+            let handler_call = if super::rust_component_is_parallel(server_component) {
+                format!("{component_var}.as_ref().as_ref().{method_name}(&request)")
+            } else {
+                format!(
+                    "{component_var}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{method_name}(&request)"
+                )
+            };
+            let status_update = service_emit::rust_iox2_service_status_update(plan, "handled");
+            output.push_str(&format!(
+                "                        flowrt::TaskId({task_id}) => {{\n                            let {server_var} = app.{server_field}.clone();\n                            let {component_var} = app.{server_instance}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                let Some(__flowrt_service_server) = {server_var}.get() else {{\n                                    return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new());\n                                }};\n                                let handled = match __flowrt_service_server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| {handler_call}) {{\n                                    Ok(handled) => handled,\n                                    Err(_) => return flowrt::TaskRunOutcome::new(flowrt::Status::Error, Vec::new()),\n                                }};\n                                {status_update}                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
+                emit_rust_hidden_worker_closure_context(&task.name),
+                emit_rust_scheduler_task_closure_tail(),
+            ));
+        } else {
+            output.push_str(&format!(
+                "                        flowrt::TaskId({task_id}) => {{\n                            let {server_var} = self.{server_field}.clone();\n                            let introspection_state = introspection_state.clone();\n                            let task_health_from_worker = task_health_from_workers.clone();\n                            worker_pool.submit_collect(admission.task, &task_completion_queue_for_task, move || {{\n{}                            let task_outcome = {{\n                                let _flowrt_lane_guard = flowrt::enter_lane(flowrt::LaneId({lane_id}));\n                                {server_var}.process_pending_requests();\n                                {{\n                                    let service_stats = {server_var}.stats();\n                                    introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {{\n                                        name: {service_name}.to_string(),\n                                        ready: true,\n                                        in_flight: {server_var}.in_flight_count() as u64,\n                                        queued: {server_var}.pending_count() as u64,\n                                        total_requests: service_stats.requests,\n                                        timeout_count: service_stats.timeout,\n                                        busy_count: service_stats.busy,\n                                        unavailable_count: service_stats.unavailable,\n                                        late_drop_count: service_stats.late_dropped,\n                                    }});\n                                }}\n                                flowrt::TaskRunOutcome::new(flowrt::Status::Ok, Vec::new())\n                            }};\n{}                            }})\n                        }},\n",
+                emit_rust_hidden_worker_closure_context(&task.name),
+                emit_rust_scheduler_task_closure_tail(),
+            ));
+        }
     }
     output
 }

@@ -100,6 +100,7 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
         let is_zenoh = plan.backend.0 == "zenoh";
+        let is_iox2 = plan.backend.0 == "iox2";
 
         // struct 定义
         if is_zenoh {
@@ -107,6 +108,15 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
                 "/// `{client}.{port}` service client typed handle（zenoh backend）。\n\
                  ///\n\
                  /// `inner` 在所属进程启动时由 runtime shell 用 `ZenohServiceClient` 填充；\n\
+                 /// 其它进程不会填充，调用返回 `ServiceError::Unavailable`。\n",
+                client = plan.client_instance,
+                port = plan.client_port,
+            ));
+        } else if is_iox2 {
+            output.push_str(&format!(
+                "/// `{client}.{port}` service client typed handle（iox2 backend）。\n\
+                 ///\n\
+                 /// `inner` 在所属进程启动时由 runtime shell 用 `Iox2ServiceClient` 填充；\n\
                  /// 其它进程不会填充，调用返回 `ServiceError::Unavailable`。\n",
                 client = plan.client_instance,
                 port = plan.client_port,
@@ -127,6 +137,10 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
             output.push_str(&format!(
                 "    pub(crate) inner: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>>>,\n",
             ));
+        } else if is_iox2 {
+            output.push_str(&format!(
+                "    pub(crate) inner: std::sync::Arc<std::sync::OnceLock<flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>>>,\n",
+            ));
         } else {
             output.push_str(&format!(
                 "    pub(crate) inner: flowrt::InprocServiceClient<{req_ty}, {resp_ty}>,\n",
@@ -137,10 +151,11 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
         // impl 块
         output.push_str(&format!("impl {handle_name} {{\n"));
 
-        if is_zenoh {
-            // zenoh backend: 经 transport client 同步 query；未填充时 Unavailable
+        if is_zenoh || is_iox2 {
+            let backend = if is_iox2 { "iox2" } else { "zenoh" };
+            // transport backend: 经 transport client 同步 request/response；未填充时 Unavailable
             output.push_str(&format!(
-                "    /// 发起同步阻塞 zenoh service 调用。\n\
+                "    /// 发起同步阻塞 {backend} service 调用。\n\
                  ///\n\
                  /// 所属进程未填充 transport client 时返回 `ServiceError::Unavailable`。\n\
                  pub fn call(\n\
@@ -155,7 +170,7 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
                  }}\n\n",
             ));
             output.push_str(&format!(
-                "    /// 发起 zenoh service 调用并返回就绪 `ServiceCallHandle`。\n\
+                "    /// 发起 {backend} service 调用并返回就绪 `ServiceCallHandle`。\n\
                  ///\n\
                  /// v1 实现先同步完成 query 再包装结果；transport client 未填充时返回就绪错误。\n\
                  pub fn start_call(\n\
@@ -226,9 +241,15 @@ pub(crate) fn rust_app_service_fields(contract: &ContractIr, graph: &GraphIr) ->
         let server_field = server_field_name(plan);
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
-        output.push_str(&format!(
-            "    {server_field}: flowrt::InprocServiceServer<{req_ty}, {resp_ty}>,\n",
-        ));
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "    {server_field}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>>>>,\n",
+            ));
+        } else {
+            output.push_str(&format!(
+                "    {server_field}: flowrt::InprocServiceServer<{req_ty}, {resp_ty}>,\n",
+            ));
+        }
     }
 
     output
@@ -249,7 +270,7 @@ pub(crate) fn emit_rust_service_new(
     if plans.is_empty() {
         return (String::new(), String::new());
     }
-    let has_inproc_service = plans.iter().any(|plan| plan.backend.0 != "zenoh");
+    let has_inproc_service = plans.iter().any(|plan| plan.backend.0 == "inproc");
 
     let mut registration = String::new();
     if has_inproc_service {
@@ -262,18 +283,25 @@ pub(crate) fn emit_rust_service_new(
 
     for plan in &plans {
         let is_zenoh = plan.backend.0 == "zenoh";
+        let is_iox2 = plan.backend.0 == "iox2";
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
 
-        if is_zenoh {
-            // zenoh backend: skip inproc registration, generate placeholder initializers.
-            // transport client 在所属进程启动时填充（emit_rust_zenoh_service_endpoints）。
+        if is_zenoh || is_iox2 {
+            // transport backend: skip inproc registration, generate placeholder initializers.
+            // transport client/server 在所属进程启动时填充。
             let client_field = client_field_name(plan);
             let handle_name = client_handle_name(plan);
 
             initializers.push_str(&format!(
                 "            {client_field}: {handle_name} {{ inner: std::sync::Arc::new(std::sync::OnceLock::new()) }},\n",
             ));
+            if is_iox2 {
+                let server_field = server_field_name(plan);
+                initializers.push_str(&format!(
+                    "            {server_field}: std::sync::Arc::new(std::sync::OnceLock::new()),\n",
+                ));
+            }
             continue;
         }
 
@@ -361,18 +389,53 @@ pub(crate) fn emit_rust_service_step_functions(contract: &ContractIr, graph: &Gr
         let fn_name = service_step_fn_name(plan);
         let server_field = server_field_name(plan);
         let server_instance = &plan.server_instance;
+        let server_instance_ir = graph
+            .instances
+            .iter()
+            .find(|instance| instance.name == *server_instance)
+            .expect("validated service server instance must exist");
+        let server_component =
+            crate::component_by_name(contract, &server_instance_ir.component.name);
+        let handler_method = service_handler_method_name(&plan.server_port);
+        let handler_call = if super::rust_component_is_parallel(server_component) {
+            format!("self.{server_instance}.as_ref().as_ref().{handler_method}(&request)")
+        } else {
+            format!(
+                "self.{server_instance}.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).{handler_method}(&request)"
+            )
+        };
 
-        output.push_str(&format!(
-            "    /// Hidden service task: process pending requests for `{server_instance}.{server_port}`。\n\
-             fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
-                 self.{server_field}.process_pending_requests();\n\
-                 {status_update}\
-                 flowrt::Status::Ok\n\
-             }}\n\n",
-            server_instance = server_instance,
-            server_port = plan.server_port,
-            status_update = rust_service_status_update(plan),
-        ));
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "    /// Hidden service task: process pending iox2 requests for `{server_instance}.{server_port}`。\n\
+                 fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
+                     let Some(server) = self.{server_field}.get() else {{ return flowrt::Status::Error; }};\n\
+                     let handled = match server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).poll_requests(|request| {handler_call}) {{\n\
+                         Ok(handled) => handled,\n\
+                         Err(_) => return flowrt::Status::Error,\n\
+                     }};\n\
+                     {status_update}\
+                     let _ = handled;\n\
+                     flowrt::Status::Ok\n\
+                 }}\n\n",
+                server_instance = server_instance,
+                server_port = plan.server_port,
+                handler_call = handler_call,
+                status_update = rust_iox2_service_status_update(plan, "handled"),
+            ));
+        } else {
+            output.push_str(&format!(
+                "    /// Hidden service task: process pending requests for `{server_instance}.{server_port}`。\n\
+                 fn {fn_name}(&self, introspection_state: &flowrt::IntrospectionState, _health_map: &mut std::collections::BTreeMap<String, flowrt::IntrospectionTaskHealth>) -> flowrt::Status {{\n\
+                     self.{server_field}.process_pending_requests();\n\
+                     {status_update}\
+                     flowrt::Status::Ok\n\
+                 }}\n\n",
+                server_instance = server_instance,
+                server_port = plan.server_port,
+                status_update = rust_service_status_update(plan),
+            ));
+        }
     }
 
     output
@@ -390,7 +453,7 @@ pub(crate) fn emit_rust_service_introspection_registration(
 
     let mut output = String::new();
     for plan in &plans {
-        if plan.backend.0 == "zenoh" {
+        if plan.backend.0 != "inproc" {
             continue;
         }
         let service_name = rust_string_literal(&plan.service_name);
@@ -410,7 +473,7 @@ pub(crate) fn emit_rust_service_ready_marks(contract: &ContractIr, graph: &Graph
 
     let mut output = String::new();
     for plan in &plans {
-        if plan.backend.0 == "zenoh" {
+        if plan.backend.0 != "inproc" {
             continue;
         }
         let service_name = rust_string_literal(&plan.service_name);
@@ -439,6 +502,26 @@ fn rust_service_status_update(plan: &ServiceRuntimePlan) -> String {
                  late_drop_count: service_stats.late_dropped,\n\
              }});\n\
          }}\n"
+    )
+}
+
+pub(crate) fn rust_iox2_service_status_update(
+    plan: &ServiceRuntimePlan,
+    handled_var: &str,
+) -> String {
+    let service_name = rust_string_literal(&plan.service_name);
+    format!(
+        "introspection_state.record_service_health(flowrt::IntrospectionServiceStatus {{\n\
+             name: {service_name}.to_string(),\n\
+             ready: true,\n\
+             in_flight: 0,\n\
+             queued: 0,\n\
+             total_requests: {handled_var} as u64,\n\
+             timeout_count: 0,\n\
+             busy_count: 0,\n\
+             unavailable_count: 0,\n\
+             late_drop_count: 0,\n\
+         }});\n"
     )
 }
 
@@ -481,12 +564,21 @@ pub(crate) fn emit_rust_service_wake_checks(
             .expect("scheduler service task must reference a service plan");
         let task_id = task.id;
         let server_field = server_field_name(plan);
-        output.push_str(&format!(
-            "                if self.{server_field}.pending_count() > 0 {{\n\
-                     scheduler.wake(flowrt::TaskId({task_id}));\n\
-                     woke_on_message = true;\n\
-                 }}\n",
-        ));
+        if plan.backend.0 == "iox2" {
+            output.push_str(&format!(
+                "                if self.{server_field}.get().is_some() {{\n\
+                         scheduler.wake(flowrt::TaskId({task_id}));\n\
+                         woke_on_message = true;\n\
+                     }}\n",
+            ));
+        } else {
+            output.push_str(&format!(
+                "                if self.{server_field}.pending_count() > 0 {{\n\
+                         scheduler.wake(flowrt::TaskId({task_id}));\n\
+                         woke_on_message = true;\n\
+                     }}\n",
+            ));
+        }
     }
 
     output
@@ -616,6 +708,75 @@ pub(crate) fn emit_rust_zenoh_service_endpoints(
                  \x20       }} else {{\n\
                  \x20           None\n\
                  \x20       }};\n",
+            ));
+        }
+    }
+    output
+}
+
+/// 生成进程级 iox2 service endpoint 构造代码，注入 `run_process_*` 函数体。
+///
+/// client/server 都在所属进程启动后打开；server 只注册 transport endpoint，
+/// request drain 仍由 scheduler hidden service task 调用 `poll_requests`。
+pub(crate) fn emit_rust_iox2_service_endpoints(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    order: &[&flowrt_ir::InstanceIr],
+) -> String {
+    let plans = service_runtime_plans(contract, graph);
+    let active: std::collections::BTreeSet<&str> = order
+        .iter()
+        .map(|instance| instance.name.as_str())
+        .collect();
+    let iox2_plans: Vec<&ServiceRuntimePlan> = plans
+        .iter()
+        .filter(|plan| plan.backend.0 == "iox2")
+        .filter(|plan| {
+            active.contains(plan.client_instance.as_str())
+                || active.contains(plan.server_instance.as_str())
+        })
+        .collect();
+    if iox2_plans.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    for plan in &iox2_plans {
+        let transport_service_name = plan
+            .endpoint
+            .service_name()
+            .expect("iox2 service plan must have transport service name");
+        let transport_service_name = rust_string_literal(transport_service_name);
+        let service_name_literal = rust_string_literal(&plan.service_name);
+        if active.contains(plan.client_instance.as_str()) {
+            let client_field = client_field_name(plan);
+            output.push_str(&format!(
+                "        let _ = app.{client_field}.inner.set(match flowrt::iox2::Iox2ServiceClient::open({transport_service_name}) {{\n\
+                 \x20           Ok(client) => client,\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 service client {{}}: {{error}}\", {transport_service_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20               flowrt::iox2::Iox2ServiceClient::unavailable({transport_service_name}, error.to_string())\n\
+                 \x20           }}\n\
+                 \x20       }});\n",
+            ));
+        }
+        if active.contains(plan.server_instance.as_str()) {
+            let server_field = server_field_name(plan);
+            let max_in_flight = plan.max_in_flight.max(1);
+            output.push_str(&format!(
+                "        match flowrt::iox2::Iox2ServiceServer::open({transport_service_name}, {max_in_flight}usize) {{\n\
+                 \x20           Ok(mut server) => {{\n\
+                 \x20               server.set_schedule_waiter(scheduler_events.clone());\n\
+                 \x20               let _ = app.{server_field}.set(std::sync::Mutex::new(server));\n\
+                 \x20               introspection_state.register_service({service_name_literal});\n\
+                 \x20               introspection_state.mark_service_ready({service_name_literal});\n\
+                 \x20           }}\n\
+                 \x20           Err(error) => {{\n\
+                 \x20               eprintln!(\"FlowRT: failed to open iox2 service server {{}}: {{error}}\", {transport_service_name});\n\
+                 \x20               status = flowrt::Status::Error;\n\
+                 \x20           }}\n\
+                 \x20       }}\n",
             ));
         }
     }

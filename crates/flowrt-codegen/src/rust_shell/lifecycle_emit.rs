@@ -503,8 +503,17 @@ fn emit_rust_app_run_function(emission: RustRunFunctionEmission<'_>) -> String {
         output.push_str(&service_ready_marks);
         output.push_str("        }\n");
     }
-    // zenoh service 端点在组件 on_start 之后、调度循环之前按进程构造：
-    // client 填充 transport，server 打开 queryable（此时 server 组件已 started）。
+    // transport service 端点在组件 on_start 之后、调度循环之前按进程构造。
+    let iox2_service_endpoints = service_emit::emit_rust_iox2_service_endpoints(
+        emission.contract,
+        emission.graph,
+        emission.order,
+    );
+    if !iox2_service_endpoints.is_empty() {
+        output.push_str("        if status == flowrt::Status::Ok {\n");
+        output.push_str(&iox2_service_endpoints);
+        output.push_str("        }\n");
+    }
     let zenoh_service_endpoints = service_emit::emit_rust_zenoh_service_endpoints(
         emission.contract,
         emission.graph,

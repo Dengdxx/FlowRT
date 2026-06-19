@@ -460,6 +460,34 @@ fn zenoh_service_codegen_wires_transport() {
     );
 }
 
+/// iox2 service transport 必须生成 scheduler-driven server，而不是 zenoh 回调式 server。
+#[test]
+fn rust_service_iox2_emits_client_and_scheduler_driven_server() {
+    let source = SERVICE_RSDL.replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).expect("iox2 service codegen must succeed");
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        components.contains("flowrt::iox2::Iox2ServiceClient"),
+        "iox2 client handle must hold Iox2ServiceClient.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2ServiceServer"),
+        "runtime shell must hold Iox2ServiceServer.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(".poll_requests("),
+        "iox2 service server must be scheduler drained.\n\n{shell}"
+    );
+    assert!(
+        !shell.contains("ZenohServiceServer"),
+        "iox2 service path must not instantiate ZenohServiceServer.\n\n{shell}"
+    );
+}
+
 /// zenoh service 的静态拓扑必须暴露 runtime 实际 queryable 使用的 key expression。
 #[test]
 fn zenoh_service_manifest_and_selfdesc_expose_key_expr() {

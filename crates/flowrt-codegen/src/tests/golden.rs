@@ -154,6 +154,11 @@ fn golden_zenoh_service_rust() {
 }
 
 #[test]
+fn golden_iox2_service_rust() {
+    check_case("iox2_service_rust");
+}
+
+#[test]
 fn golden_zenoh_service_cpp() {
     check_case("zenoh_service_cpp");
 }
