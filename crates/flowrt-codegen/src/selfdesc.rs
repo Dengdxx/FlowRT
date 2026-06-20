@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use flowrt_conformance::MessageAbiExpectation;
 use flowrt_ir::{
@@ -15,11 +15,12 @@ use flowrt_selfdesc::{
     SelfDescriptionArtifact, SelfDescriptionBoundaryEndpoint, SelfDescriptionChannel,
     SelfDescriptionClock, SelfDescriptionComponentType, SelfDescriptionDeployment,
     SelfDescriptionExternalProcess, SelfDescriptionFieldAbi, SelfDescriptionFrameField,
-    SelfDescriptionGraph, SelfDescriptionInstance, SelfDescriptionIoBoundary,
-    SelfDescriptionMessageAbi, SelfDescriptionMessageFrame, SelfDescriptionOperationEndpoint,
-    SelfDescriptionOperationLowering, SelfDescriptionOperationPortDecl, SelfDescriptionPackage,
-    SelfDescriptionParam, SelfDescriptionParamDecl, SelfDescriptionPortDecl,
-    SelfDescriptionProfile, SelfDescriptionResourceContract, SelfDescriptionResourceDescriptor,
+    SelfDescriptionFrameTransport, SelfDescriptionGraph, SelfDescriptionInstance,
+    SelfDescriptionIoBoundary, SelfDescriptionMessageAbi, SelfDescriptionMessageFrame,
+    SelfDescriptionOperationEndpoint, SelfDescriptionOperationLowering,
+    SelfDescriptionOperationPortDecl, SelfDescriptionPackage, SelfDescriptionParam,
+    SelfDescriptionParamDecl, SelfDescriptionPortDecl, SelfDescriptionProfile,
+    SelfDescriptionResourceContract, SelfDescriptionResourceDescriptor,
     SelfDescriptionResourceProvider, SelfDescriptionResourceRequirement,
     SelfDescriptionResourceRequirementBinding, SelfDescriptionResourceSatisfaction,
     SelfDescriptionScheduler, SelfDescriptionSchedulerLane, SelfDescriptionSchedulerTask,
@@ -40,7 +41,7 @@ use crate::{
     frame_header_size_for_type, frame_max_size_for_type, language_name, managed_header,
     param_type_name, param_update_name, param_value_for_instance, param_value_json,
     runtime_plan::{contract_derived_facts, graph_derived_facts},
-    type_contains_variable_data, variable_tail_max_size,
+    rust_wire_size, type_contains_variable_data, variable_tail_max_size,
 };
 
 pub(super) fn emit_self_description(contract: &ContractIr) -> Result<String> {
@@ -279,10 +280,35 @@ fn self_description_graph(
                     .copied()
                     .expect("derived route facts must contain every self-description channel");
                 let backend = route.backend.0.clone();
+                let message_expr = channel_message_expr(contract, graph, bind);
+                let message_type = message_expr.canonical_syntax();
+                let frame = frame_transport_for_expr_with_backend_slot(
+                    contract,
+                    &message_expr,
+                    &message_type,
+                    &backend,
+                );
+                let backend_source = frame
+                    .is_some()
+                    .then(|| channel_backend_source_name(route.backend_source).to_string());
+                let diagnostic = unbounded_frame_fallback_diagnostic(
+                    contract,
+                    &message_expr,
+                    &message_type,
+                    &format!(
+                        "{}.{} -> {}.{}",
+                        bind.from.instance.name,
+                        bind.from.port,
+                        bind.to.instance.name,
+                        bind.to.port
+                    ),
+                    &backend,
+                    route.backend_source == flowrt_ir::ChannelBackendSource::AutoFallback,
+                );
                 SelfDescriptionChannel {
                     from: format!("{}.{}", bind.from.instance.name, bind.from.port),
                     to: format!("{}.{}", bind.to.instance.name, bind.to.port),
-                    message_type: channel_message_type(contract, graph, bind),
+                    message_type,
                     service: if backend == "iox2" {
                         Some(crate::iox2_service_name_for_edge(
                             contract, graph, index, bind,
@@ -301,6 +327,9 @@ fn self_description_graph(
                     stale_policy: stale_name(bind.stale).to_string(),
                     max_age_ms: bind.max_age_ms,
                     backend,
+                    backend_source,
+                    diagnostic,
+                    frame,
                     thread_affinity: route
                         .thread_affinity
                         .map(thread_affinity_name)
@@ -520,7 +549,7 @@ fn self_description_service_endpoint(
         .map(|instance| (instance.name.as_str(), instance))
         .collect::<BTreeMap<_, _>>();
 
-    let (request_type, response_type) = instances
+    let (request_expr, response_expr) = instances
         .get(service.client.instance.name.as_str())
         .map(|instance| {
             let component = component_by_name(contract, &instance.component.name);
@@ -529,12 +558,11 @@ fn self_description_service_endpoint(
                 .iter()
                 .find(|port| port.name == service.client.port)
                 .expect("validated service bind must reference existing client service port");
-            (
-                port.request.canonical_syntax(),
-                port.response.canonical_syntax(),
-            )
+            (port.request.clone(), port.response.clone())
         })
         .expect("validated service bind must reference existing client instance");
+    let request_type = request_expr.canonical_syntax();
+    let response_type = response_expr.canonical_syntax();
 
     let name = format!(
         "{}.{}_to_{}.{}",
@@ -546,8 +574,39 @@ fn self_description_service_endpoint(
     let service_name = format!("{}.{}", service.client.instance.name, service.client.port);
     let transport_endpoint =
         crate::runtime_plan::transport_endpoint(&service.backend.0, &service_name);
-    let backend_source = (service.backend_source == flowrt_ir::ServiceBackendSource::AutoFallback)
-        .then(|| "auto_fallback".to_string());
+    let request_frame = frame_transport_for_expr_with_backend_slot(
+        contract,
+        &request_expr,
+        &request_type,
+        &service.backend.0,
+    );
+    let response_frame = frame_transport_for_expr_with_backend_slot(
+        contract,
+        &response_expr,
+        &response_type,
+        &service.backend.0,
+    );
+    let has_frame = request_frame.is_some() || response_frame.is_some();
+    let backend_source =
+        has_frame.then(|| service_backend_source_name(service.backend_source).to_string());
+    let diagnostic = unbounded_frame_fallback_diagnostic(
+        contract,
+        &request_expr,
+        &request_type,
+        &name,
+        &service.backend.0,
+        service.backend_source == flowrt_ir::ServiceBackendSource::AutoFallback,
+    )
+    .or_else(|| {
+        unbounded_frame_fallback_diagnostic(
+            contract,
+            &response_expr,
+            &response_type,
+            &name,
+            &service.backend.0,
+            service.backend_source == flowrt_ir::ServiceBackendSource::AutoFallback,
+        )
+    });
 
     SelfDescriptionServiceEndpoint {
         name,
@@ -560,6 +619,9 @@ fn self_description_service_endpoint(
         response_type,
         backend: service.backend.0.clone(),
         backend_source,
+        diagnostic,
+        request_frame,
+        response_frame,
         service: transport_endpoint.service_name().map(ToString::to_string),
         key_expr: transport_endpoint.key_expr().map(ToString::to_string),
         timeout_ms: Some(service.policy.timeout_ms),
@@ -585,6 +647,21 @@ fn self_description_operation_endpoints(
         .iter()
         .map(|plan| {
             let operation = &graph.operations[plan.index];
+            let goal_type = plan.goal_type.canonical_syntax();
+            let goal_frame = frame_transport_for_expr(contract, &plan.goal_type, &goal_type, None);
+            let start_request_frame =
+                operation_start_request_frame_transport(contract, &plan.goal_type, &plan.backend.0);
+            let has_frame = goal_frame.is_some() || start_request_frame.is_some();
+            let backend_source = has_frame
+                .then(|| operation_backend_source_name(operation.backend_source).to_string());
+            let diagnostic = unbounded_frame_fallback_diagnostic(
+                contract,
+                &plan.goal_type,
+                &goal_type,
+                &plan.operation_name,
+                &plan.backend.0,
+                operation.backend_source == flowrt_ir::OperationBackendSource::AutoFallback,
+            );
             SelfDescriptionOperationEndpoint {
                 name: plan.operation_name.clone(),
                 canonical_id: operation.id.0.clone(),
@@ -592,10 +669,14 @@ fn self_description_operation_endpoints(
                 client_port: plan.client_port.clone(),
                 server_instance: plan.server_instance.clone(),
                 server_port: plan.server_port.clone(),
-                goal_type: plan.goal_type.canonical_syntax(),
+                goal_type,
                 feedback_type: plan.feedback_type.canonical_syntax(),
                 result_type: plan.result_type.canonical_syntax(),
                 backend: plan.backend.0.clone(),
+                backend_source,
+                diagnostic,
+                goal_frame,
+                start_request_frame,
                 timeout_ms: Some(plan.timeout_ms),
                 concurrency: operation_concurrency_name(plan.concurrency).to_string(),
                 preempt: operation_preempt_name(plan.preempt).to_string(),
@@ -677,6 +758,170 @@ fn operation_result_endpoint_name(plan: &crate::runtime_plan::OperationRuntimePl
         crate::snake_identifier(&plan.client_instance),
         crate::snake_identifier(&plan.client_port)
     )
+}
+
+pub(crate) fn frame_transport_for_expr_with_backend_slot(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    message_type: &str,
+    backend: &str,
+) -> Option<SelfDescriptionFrameTransport> {
+    let max_size = frame_max_size_for_transport_expr(contract, expr);
+    let iox2_slot_cap_bytes = if backend == "iox2" { max_size } else { None };
+    frame_transport_for_expr(contract, expr, message_type, iox2_slot_cap_bytes)
+}
+
+pub(crate) fn frame_transport_for_expr(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    message_type: &str,
+    iox2_slot_cap_bytes: Option<usize>,
+) -> Option<SelfDescriptionFrameTransport> {
+    if !type_contains_variable_data(contract, expr) {
+        return None;
+    }
+    let max_size_bytes = frame_max_size_for_transport_expr(contract, expr);
+    Some(SelfDescriptionFrameTransport {
+        message_type: message_type.to_string(),
+        encoding: "canonical_frame_v1".to_string(),
+        variable: true,
+        bounded: max_size_bytes.is_some(),
+        max_size_bytes,
+        iox2_slot_cap_bytes,
+    })
+}
+
+pub(crate) fn operation_start_request_frame_transport(
+    contract: &ContractIr,
+    goal_type: &TypeExpr,
+    backend: &str,
+) -> Option<SelfDescriptionFrameTransport> {
+    if !type_contains_variable_data(contract, goal_type) {
+        return None;
+    }
+    let goal_cap = frame_max_size_for_transport_expr(contract, goal_type)?;
+    let request_cap = operation_start_request_frame_cap(goal_cap);
+    Some(SelfDescriptionFrameTransport {
+        message_type: format!("OperationStartRequest<{}>", goal_type.canonical_syntax()),
+        encoding: "canonical_frame_v1".to_string(),
+        variable: true,
+        bounded: true,
+        max_size_bytes: Some(request_cap),
+        iox2_slot_cap_bytes: (backend == "iox2").then_some(request_cap),
+    })
+}
+
+fn operation_start_request_frame_cap(goal_cap: usize) -> usize {
+    const OPERATION_START_REQUEST_HEADER_CAP: usize = 24;
+    OPERATION_START_REQUEST_HEADER_CAP + goal_cap
+}
+
+fn frame_max_size_for_transport_expr(contract: &ContractIr, expr: &TypeExpr) -> Option<usize> {
+    match expr {
+        TypeExpr::Named { name } => {
+            frame_max_size_for_type(contract, crate::type_by_name(contract, name))
+        }
+        _ if type_contains_variable_data(contract, expr) => Some(
+            frame_header_size_for_expr(contract, expr) + variable_tail_max_size(contract, expr)?,
+        ),
+        _ => Some(rust_wire_size(contract, expr)),
+    }
+}
+
+pub(crate) fn unbounded_frame_fallback_diagnostic(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    message_type: &str,
+    edge_label: &str,
+    backend: &str,
+    auto_fallback: bool,
+) -> Option<String> {
+    if backend != "zenoh"
+        || !auto_fallback
+        || frame_max_size_for_transport_expr(contract, expr).is_some()
+    {
+        return None;
+    }
+    let field = first_unbounded_variable_path(contract, expr, message_type)
+        .unwrap_or_else(|| message_type.to_string());
+    Some(format!(
+        "edge {edge_label} 因字段 {field} 无界落到 zenoh；加 max=N 可留在 iox2"
+    ))
+}
+
+fn first_unbounded_variable_path(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    root: &str,
+) -> Option<String> {
+    first_unbounded_variable_path_inner(contract, expr, root, &mut BTreeSet::new())
+}
+
+fn first_unbounded_variable_path_inner(
+    contract: &ContractIr,
+    expr: &TypeExpr,
+    path: &str,
+    visiting: &mut BTreeSet<String>,
+) -> Option<String> {
+    match expr {
+        TypeExpr::Primitive { .. } => None,
+        TypeExpr::VarBytes { max_len } | TypeExpr::VarString { max_len, .. } => {
+            max_len.is_none().then(|| path.to_string())
+        }
+        TypeExpr::VarSequence { element, max_len } => {
+            if max_len.is_none() {
+                return Some(path.to_string());
+            }
+            first_unbounded_variable_path_inner(contract, element, &format!("{path}[]"), visiting)
+        }
+        TypeExpr::Array { element, .. } => {
+            first_unbounded_variable_path_inner(contract, element, &format!("{path}[]"), visiting)
+        }
+        TypeExpr::Named { name } => {
+            if !visiting.insert(name.clone()) {
+                return None;
+            }
+            let ty = crate::type_by_name(contract, name);
+            let path = ty.fields.iter().find_map(|field| {
+                first_unbounded_variable_path_inner(
+                    contract,
+                    &field.ty,
+                    &format!("{path}.{}", field.name),
+                    visiting,
+                )
+            });
+            visiting.remove(name);
+            path
+        }
+    }
+}
+
+pub(crate) fn channel_backend_source_name(source: flowrt_ir::ChannelBackendSource) -> &'static str {
+    match source {
+        flowrt_ir::ChannelBackendSource::Explicit => "explicit",
+        flowrt_ir::ChannelBackendSource::ProfileDefault => "profile_default",
+        flowrt_ir::ChannelBackendSource::AutoFallback => "auto_fallback",
+    }
+}
+
+pub(crate) fn service_backend_source_name(source: flowrt_ir::ServiceBackendSource) -> &'static str {
+    match source {
+        flowrt_ir::ServiceBackendSource::Explicit => "explicit",
+        flowrt_ir::ServiceBackendSource::ProfileDefault => "profile_default",
+        flowrt_ir::ServiceBackendSource::AutoResolved => "auto_resolved",
+        flowrt_ir::ServiceBackendSource::AutoFallback => "auto_fallback",
+    }
+}
+
+pub(crate) fn operation_backend_source_name(
+    source: flowrt_ir::OperationBackendSource,
+) -> &'static str {
+    match source {
+        flowrt_ir::OperationBackendSource::Explicit => "explicit",
+        flowrt_ir::OperationBackendSource::ProfileDefault => "profile_default",
+        flowrt_ir::OperationBackendSource::AutoResolved => "auto_resolved",
+        flowrt_ir::OperationBackendSource::AutoFallback => "auto_fallback",
+    }
 }
 
 fn self_description_component_type(component: &ComponentIr) -> SelfDescriptionComponentType {
@@ -979,7 +1224,11 @@ fn self_description_message_frame(
     }
 }
 
-fn channel_message_type(contract: &ContractIr, graph: &GraphIr, bind: &ChannelEdgeIr) -> String {
+pub(crate) fn channel_message_expr(
+    contract: &ContractIr,
+    graph: &GraphIr,
+    bind: &ChannelEdgeIr,
+) -> TypeExpr {
     let instances = graph
         .instances
         .iter()
@@ -993,7 +1242,7 @@ fn channel_message_type(contract: &ContractIr, graph: &GraphIr, bind: &ChannelEd
         .outputs
         .iter()
         .find(|port| port.name == bind.from.port)
-        .map(|port| port.ty.canonical_syntax())
+        .map(|port| port.ty.clone())
         .expect("validated bind source port must exist")
 }
 

@@ -617,6 +617,15 @@ pub struct SelfDescriptionChannel {
     pub message_type: String,
     #[serde(default)]
     pub backend: String,
+    /// backend 选择来源；用于解释 profile default、explicit 或 auto fallback。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_source: Option<String>,
+    /// backend 选择或 frame 承载诊断；当前主要用于无界变长 fallback。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    /// 变长 message 的 canonical frame 承载信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<SelfDescriptionFrameTransport>,
     /// route backend 线程亲和：send_safe / scheduler_local_commit。
     #[serde(default)]
     pub thread_affinity: String,
@@ -634,6 +643,29 @@ pub struct SelfDescriptionChannel {
     #[serde(default)]
     pub stale_policy: String,
     pub max_age_ms: Option<u64>,
+}
+
+/// endpoint 上的 canonical frame 承载摘要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfDescriptionFrameTransport {
+    /// 承载的用户消息类型或内部 lowering 类型。
+    #[serde(default)]
+    pub message_type: String,
+    /// frame 编码版本。
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
+    /// 是否包含变长字段。
+    #[serde(default)]
+    pub variable: bool,
+    /// true 表示所有变长字段均有 `max=N` 上界。
+    #[serde(default)]
+    pub bounded: bool,
+    /// canonical frame 最大字节数；无界 frame 为 null。
+    #[serde(default)]
+    pub max_size_bytes: Option<usize>,
+    /// iox2 定容 slot 容量；非 iox2 或无界 frame 为 null。
+    #[serde(default)]
+    pub iox2_slot_cap_bytes: Option<usize>,
 }
 
 /// service endpoint 静态拓扑信息。
@@ -668,9 +700,18 @@ pub struct SelfDescriptionServiceEndpoint {
     /// 解析后的通信后端名称；当前 IR 尚未直接记录，由 deployment 推导。
     #[serde(default)]
     pub backend: String,
-    /// backend 选择来源；仅在发生自动 fallback 等需要解释时输出。
+    /// backend 选择来源；用于解释 profile default、explicit 或 auto fallback。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_source: Option<String>,
+    /// backend 选择或 frame 承载诊断；当前主要用于无界变长 fallback。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    /// request payload 的 canonical frame 承载信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_frame: Option<SelfDescriptionFrameTransport>,
+    /// response payload 的 canonical frame 承载信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_frame: Option<SelfDescriptionFrameTransport>,
     /// iox2/inproc service endpoint 名称；zenoh backend 为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -726,6 +767,18 @@ pub struct SelfDescriptionOperationEndpoint {
     /// 解析后的通信后端名称。
     #[serde(default)]
     pub backend: String,
+    /// backend 选择来源；用于解释 profile default、explicit 或 auto fallback。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_source: Option<String>,
+    /// backend 选择或 frame 承载诊断；当前主要用于无界变长 fallback。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    /// goal payload 的 canonical frame 承载信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_frame: Option<SelfDescriptionFrameTransport>,
+    /// start service request envelope 的 canonical frame 承载信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_request_frame: Option<SelfDescriptionFrameTransport>,
     /// 请求超时（毫秒）。
     pub timeout_ms: Option<u64>,
     /// 并发策略。

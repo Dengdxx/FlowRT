@@ -2,7 +2,7 @@
 
 #[used]
 #[unsafe(link_section = ".flowrt.selfdesc")]
-static FLOWRT_SELF_DESCRIPTION: [u8; 6495] = *br#"{
+static FLOWRT_SELF_DESCRIPTION: [u8; 7171] = *br#"{
   "self_description_version": "0.1",
   "ir_version": "0.1",
   "schema_version": "0.1",
@@ -161,6 +161,23 @@ static FLOWRT_SELF_DESCRIPTION: [u8; 6495] = *br#"{
           "response_type": "PlanResponse",
           "backend": "zenoh",
           "backend_source": "auto_fallback",
+          "diagnostic": "edge plan_client.plan_to_plan_svc.plan 因字段 PlanRequest.label 无界落到 zenoh；加 max=N 可留在 iox2",
+          "request_frame": {
+            "message_type": "PlanRequest",
+            "encoding": "canonical_frame_v1",
+            "variable": true,
+            "bounded": false,
+            "max_size_bytes": null,
+            "iox2_slot_cap_bytes": null
+          },
+          "response_frame": {
+            "message_type": "PlanResponse",
+            "encoding": "canonical_frame_v1",
+            "variable": true,
+            "bounded": false,
+            "max_size_bytes": null,
+            "iox2_slot_cap_bytes": null
+          },
           "key_expr": "flowrt/service/plan_x5F_client.plan/request",
           "timeout_ms": 1000,
           "queue_depth": 16,
@@ -280,5 +297,5 @@ pub fn self_description_json() -> &'static str {
 
 #[allow(dead_code)]
 pub fn self_description_hash() -> &'static str {
-    "e111a9fa47f41d90e18ad6fa658b1e66b34615f2ce6e6cd85cc33502857bfc0d"
+    "85b2a477b40508caff1a1b7160048b3bc9adc3d5dfe9f8e1e1f9fcaad68b15f6"
 }

@@ -263,6 +263,14 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         "\n    channel {} -> {} type={} backend={}",
                         channel.from, channel.to, channel.message_type, channel.backend
                     ));
+                    append_backend_source_and_diagnostic(
+                        &mut output,
+                        channel.backend_source.as_deref(),
+                        channel.diagnostic.as_deref(),
+                    );
+                    if let Some(frame) = &channel.frame {
+                        append_frame_transport(&mut output, "frame", frame);
+                    }
                     if !channel.thread_affinity.is_empty() {
                         output.push_str(&format!(" thread_affinity={}", channel.thread_affinity));
                     }
@@ -288,6 +296,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         service.response_type,
                         service.backend
                     ));
+                    append_service_frame_details(&mut output, service);
                     append_service_transport_endpoint(&mut output, service);
                 }
             }
@@ -309,6 +318,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                         operation.result_type,
                         operation.backend
                     ));
+                    append_operation_frame_details(&mut output, operation);
                     append_operation_lowering(&mut output, operation);
                 }
             }
@@ -346,6 +356,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     service.response_type,
                     service.backend
                 ));
+                append_service_frame_details(&mut output, service);
                 append_service_transport_endpoint(&mut output, service);
             }
         }
@@ -365,6 +376,7 @@ pub(crate) fn self_description_summary(self_description: &SelfDescription) -> St
                     operation.result_type,
                     operation.backend
                 ));
+                append_operation_frame_details(&mut output, operation);
                 append_operation_lowering(&mut output, operation);
             }
         }
@@ -803,8 +815,69 @@ pub(crate) fn format_operation_endpoint(operation: &SelfDescriptionOperationEndp
     if !operation.feedback.is_empty() {
         line.push_str(&format!(" feedback_policy={}", operation.feedback));
     }
+    append_operation_frame_details(&mut line, operation);
     append_operation_lowering(&mut line, operation);
     line
+}
+
+fn append_service_frame_details(
+    line: &mut String,
+    service: &flowrt_selfdesc::SelfDescriptionServiceEndpoint,
+) {
+    append_backend_source_and_diagnostic(
+        line,
+        service.backend_source.as_deref(),
+        service.diagnostic.as_deref(),
+    );
+    if let Some(frame) = &service.request_frame {
+        append_frame_transport(line, "request_frame", frame);
+    }
+    if let Some(frame) = &service.response_frame {
+        append_frame_transport(line, "response_frame", frame);
+    }
+}
+
+fn append_operation_frame_details(line: &mut String, operation: &SelfDescriptionOperationEndpoint) {
+    append_backend_source_and_diagnostic(
+        line,
+        operation.backend_source.as_deref(),
+        operation.diagnostic.as_deref(),
+    );
+    if let Some(frame) = &operation.goal_frame {
+        append_frame_transport(line, "goal_frame", frame);
+    }
+    if let Some(frame) = &operation.start_request_frame {
+        append_frame_transport(line, "start_request_frame", frame);
+    }
+}
+
+fn append_backend_source_and_diagnostic(
+    line: &mut String,
+    backend_source: Option<&str>,
+    diagnostic: Option<&str>,
+) {
+    if let Some(backend_source) = backend_source {
+        line.push_str(&format!(" backend_source={backend_source}"));
+    }
+    if let Some(diagnostic) = diagnostic {
+        line.push_str(&format!(" diagnostic={diagnostic}"));
+    }
+}
+
+fn append_frame_transport(
+    line: &mut String,
+    prefix: &str,
+    frame: &flowrt_selfdesc::SelfDescriptionFrameTransport,
+) {
+    line.push_str(&format!(
+        " {prefix}_type={} {prefix}_encoding={} {prefix}_variable={} {prefix}_bounded={} {prefix}_max_size_bytes={} {prefix}_iox2_slot_cap_bytes={}",
+        frame.message_type,
+        frame.encoding,
+        frame.variable,
+        frame.bounded,
+        option_usize(frame.max_size_bytes),
+        option_usize(frame.iox2_slot_cap_bytes)
+    ));
 }
 
 fn append_service_transport_endpoint(

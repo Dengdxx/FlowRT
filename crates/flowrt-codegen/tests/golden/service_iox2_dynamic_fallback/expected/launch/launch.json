@@ -178,9 +178,11 @@
       "services": [
         {
           "backend": "zenoh",
+          "backend_source": "auto_fallback",
           "client": "plan_client.plan",
           "client_instance": "plan_client",
           "client_port": "plan",
+          "diagnostic": "edge plan_client.plan 因字段 PlanRequest.label 无界落到 zenoh；加 max=N 可留在 iox2",
           "key_expr": "flowrt/service/plan_x5F_client.plan/request",
           "lane": null,
           "max_in_flight": 64,
@@ -188,7 +190,23 @@
           "overflow": "busy",
           "queue_depth": 16,
           "request": "PlanRequest",
+          "request_frame": {
+            "bounded": false,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": null,
+            "max_size_bytes": null,
+            "message_type": "PlanRequest",
+            "variable": true
+          },
           "response": "PlanResponse",
+          "response_frame": {
+            "bounded": false,
+            "encoding": "canonical_frame_v1",
+            "iox2_slot_cap_bytes": null,
+            "max_size_bytes": null,
+            "message_type": "PlanResponse",
+            "variable": true
+          },
           "server": "plan_svc.plan",
           "server_instance": "plan_svc",
           "server_port": "plan",

@@ -626,6 +626,21 @@ backends = ["iox2", "zenoh"]
     );
     assert_eq!(endpoint["backend"], "zenoh");
     assert_eq!(endpoint["backend_source"], "auto_fallback");
+    let diagnostic = endpoint["diagnostic"].as_str().unwrap();
+    assert!(
+        diagnostic.contains("无界落到 zenoh") && diagnostic.contains("加 max=N 可留在 iox2"),
+        "dynamic service fallback selfdesc must explain how to stay on iox2.\n\n{diagnostic}"
+    );
+    assert_eq!(endpoint["request_frame"]["bounded"], false);
+    assert_eq!(
+        endpoint["request_frame"]["max_size_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(endpoint["response_frame"]["bounded"], false);
+    assert_eq!(
+        endpoint["response_frame"]["max_size_bytes"],
+        serde_json::Value::Null
+    );
     assert!(endpoint["key_expr"].as_str().is_some());
     assert!(endpoint.get("service").is_none());
 }
@@ -717,6 +732,31 @@ backends = ["iox2", "zenoh"]
         "bounded variable service must not fallback to zenoh.\n\n{components}"
     );
     assert_eq!(endpoint["backend"], "iox2");
+    assert_eq!(endpoint["backend_source"], "profile_default");
+    assert_eq!(endpoint["request_frame"]["message_type"], "PlanRequest");
+    assert_eq!(endpoint["request_frame"]["encoding"], "canonical_frame_v1");
+    assert_eq!(endpoint["request_frame"]["variable"], true);
+    assert_eq!(endpoint["request_frame"]["bounded"], true);
+    assert_eq!(endpoint["request_frame"]["max_size_bytes"], 44);
+    assert_eq!(endpoint["request_frame"]["iox2_slot_cap_bytes"], 44);
+    assert_eq!(endpoint["response_frame"]["message_type"], "PlanResponse");
+    assert_eq!(endpoint["response_frame"]["encoding"], "canonical_frame_v1");
+    assert_eq!(endpoint["response_frame"]["variable"], true);
+    assert_eq!(endpoint["response_frame"]["bounded"], true);
+    assert_eq!(endpoint["response_frame"]["max_size_bytes"], 21);
+    assert_eq!(endpoint["response_frame"]["iox2_slot_cap_bytes"], 21);
+
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let launch_endpoint = &launch["graphs"][0]["services"][0];
+    assert_eq!(launch_endpoint["backend"], "iox2");
+    assert_eq!(launch_endpoint["backend_source"], "profile_default");
+    assert_eq!(launch_endpoint["request_frame"]["bounded"], true);
+    assert_eq!(launch_endpoint["request_frame"]["max_size_bytes"], 44);
+    assert_eq!(launch_endpoint["request_frame"]["iox2_slot_cap_bytes"], 44);
+    assert_eq!(launch_endpoint["response_frame"]["bounded"], true);
+    assert_eq!(launch_endpoint["response_frame"]["max_size_bytes"], 21);
+    assert_eq!(launch_endpoint["response_frame"]["iox2_slot_cap_bytes"], 21);
 }
 
 /// C++ profile 默认 iox2 遇到有界变长 service payload 时也必须用 frame slot 承载。

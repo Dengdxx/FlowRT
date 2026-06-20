@@ -126,7 +126,40 @@ backends = ["iox2", "zenoh"]
 
     let launch: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
-    assert_eq!(launch["graphs"][0]["channels"][0]["backend"], "zenoh");
+    let launch_channel = &launch["graphs"][0]["channels"][0];
+    assert_eq!(launch_channel["backend"], "zenoh");
+    assert_eq!(launch_channel["backend_source"], "auto_fallback");
+    assert_eq!(launch_channel["frame"]["message_type"], "Packet");
+    assert_eq!(launch_channel["frame"]["encoding"], "canonical_frame_v1");
+    assert_eq!(launch_channel["frame"]["variable"], true);
+    assert_eq!(launch_channel["frame"]["bounded"], false);
+    assert_eq!(
+        launch_channel["frame"]["max_size_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        launch_channel["frame"]["iox2_slot_cap_bytes"],
+        serde_json::Value::Null
+    );
+    let launch_diagnostic = launch_channel["diagnostic"].as_str().unwrap();
+    assert!(
+        launch_diagnostic.contains("因字段 Packet.payload 无界落到 zenoh")
+            && launch_diagnostic.contains("加 max=N 可留在 iox2"),
+        "launch manifest must explain unbounded variable fallback.\n\n{launch_diagnostic}"
+    );
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let selfdesc_channel = &selfdesc["graphs"][0]["channels"][0];
+    assert_eq!(selfdesc_channel["backend"], "zenoh");
+    assert_eq!(selfdesc_channel["backend_source"], "auto_fallback");
+    assert_eq!(selfdesc_channel["frame"]["bounded"], false);
+    let selfdesc_diagnostic = selfdesc_channel["diagnostic"].as_str().unwrap();
+    assert!(
+        selfdesc_diagnostic.contains("因字段 Packet.payload 无界落到 zenoh")
+            && selfdesc_diagnostic.contains("加 max=N 可留在 iox2"),
+        "selfdesc must explain unbounded variable fallback.\n\n{selfdesc_diagnostic}"
+    );
 
     let cargo_manifest = artifact_content(&bundle, "build/Cargo.toml");
     assert!(cargo_manifest.contains("features = [\"iox2\", \"zenoh\"]"));
@@ -206,7 +239,24 @@ backends = ["iox2", "zenoh"]
 
     let launch: serde_json::Value =
         serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
-    assert_eq!(launch["graphs"][0]["channels"][0]["backend"], "iox2");
+    let launch_channel = &launch["graphs"][0]["channels"][0];
+    assert_eq!(launch_channel["backend"], "iox2");
+    assert_eq!(launch_channel["backend_source"], "profile_default");
+    assert_eq!(launch_channel["frame"]["message_type"], "Packet");
+    assert_eq!(launch_channel["frame"]["encoding"], "canonical_frame_v1");
+    assert_eq!(launch_channel["frame"]["variable"], true);
+    assert_eq!(launch_channel["frame"]["bounded"], true);
+    assert_eq!(launch_channel["frame"]["max_size_bytes"], 60);
+    assert_eq!(launch_channel["frame"]["iox2_slot_cap_bytes"], 60);
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let selfdesc_channel = &selfdesc["graphs"][0]["channels"][0];
+    assert_eq!(selfdesc_channel["backend"], "iox2");
+    assert_eq!(selfdesc_channel["backend_source"], "profile_default");
+    assert_eq!(selfdesc_channel["frame"]["bounded"], true);
+    assert_eq!(selfdesc_channel["frame"]["max_size_bytes"], 60);
+    assert_eq!(selfdesc_channel["frame"]["iox2_slot_cap_bytes"], 60);
 }
 
 #[test]

@@ -15,6 +15,12 @@ use crate::resource_names::{
     resource_provider_scope_name, resource_readiness_name, resource_satisfaction_status,
 };
 use crate::runtime_plan::{bridge_runtime_plans, contract_derived_facts, graph_derived_facts};
+use crate::selfdesc::{
+    channel_backend_source_name, channel_message_expr, frame_transport_for_expr,
+    frame_transport_for_expr_with_backend_slot, operation_backend_source_name,
+    operation_start_request_frame_transport, service_backend_source_name,
+    unbounded_frame_fallback_diagnostic,
+};
 use crate::{
     CodegenError, Result, component_by_name, iox2_service_name_for_edge, language_name,
     ros2_bridge_key_expr, zenoh_key_expr_for_edge,
@@ -275,6 +281,39 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
             let name = format!("{}.{}", service.client.instance.name, service.client.port);
             let transport_endpoint =
                 crate::runtime_plan::transport_endpoint(&service.backend.0, &name);
+            let request_type = client.request.canonical_syntax();
+            let response_type = client.response.canonical_syntax();
+            let request_frame = frame_transport_for_expr_with_backend_slot(
+                contract,
+                &client.request,
+                &request_type,
+                &service.backend.0,
+            );
+            let response_frame = frame_transport_for_expr_with_backend_slot(
+                contract,
+                &client.response,
+                &response_type,
+                &service.backend.0,
+            );
+            let has_frame = request_frame.is_some() || response_frame.is_some();
+            let diagnostic = unbounded_frame_fallback_diagnostic(
+                contract,
+                &client.request,
+                &request_type,
+                &name,
+                &service.backend.0,
+                service.backend_source == flowrt_ir::ServiceBackendSource::AutoFallback,
+            )
+            .or_else(|| {
+                unbounded_frame_fallback_diagnostic(
+                    contract,
+                    &client.response,
+                    &response_type,
+                    &name,
+                    &service.backend.0,
+                    service.backend_source == flowrt_ir::ServiceBackendSource::AutoFallback,
+                )
+            });
             let mut endpoint = serde_json::json!({
                 "name": name,
                 "client": format!("{}.{}", service.client.instance.name, service.client.port),
@@ -283,8 +322,8 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
                 "server": format!("{}.{}", service.server.instance.name, service.server.port),
                 "server_instance": service.server.instance.name,
                 "server_port": service.server.port,
-                "request": client.request.canonical_syntax(),
-                "response": client.response.canonical_syntax(),
+                "request": request_type,
+                "response": response_type,
                 "backend": service.backend.0,
                 "timeout_ms": service.policy.timeout_ms,
                 "queue_depth": service.policy.queue_depth,
@@ -304,6 +343,30 @@ fn launch_services(contract: &ContractIr, graph: &GraphIr) -> Result<Vec<serde_j
                     serde_json::Value::String(service_name.to_string()),
                 );
             }
+            if has_frame {
+                endpoint.as_object_mut().expect("service endpoint must be a JSON object").insert(
+                    "backend_source".to_string(),
+                    serde_json::Value::String(service_backend_source_name(service.backend_source).to_string()),
+                );
+            }
+            if let Some(diagnostic) = diagnostic {
+                endpoint.as_object_mut().expect("service endpoint must be a JSON object").insert(
+                    "diagnostic".to_string(),
+                    serde_json::Value::String(diagnostic),
+                );
+            }
+            if let Some(frame) = request_frame {
+                endpoint.as_object_mut().expect("service endpoint must be a JSON object").insert(
+                    "request_frame".to_string(),
+                    serde_json::to_value(frame).expect("frame transport must serialize"),
+                );
+            }
+            if let Some(frame) = response_frame {
+                endpoint.as_object_mut().expect("service endpoint must be a JSON object").insert(
+                    "response_frame".to_string(),
+                    serde_json::to_value(frame).expect("frame transport must serialize"),
+                );
+            }
             Ok(endpoint)
         })
         .collect()
@@ -313,6 +376,20 @@ fn launch_operations(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::
     crate::runtime_plan::operation_runtime_plans(contract, graph)
         .iter()
         .map(|plan| {
+            let operation_edge = &graph.operations[plan.index];
+            let goal_type = plan.goal_type.canonical_syntax();
+            let goal_frame = frame_transport_for_expr(contract, &plan.goal_type, &goal_type, None);
+            let start_request_frame =
+                operation_start_request_frame_transport(contract, &plan.goal_type, &plan.backend.0);
+            let has_frame = goal_frame.is_some() || start_request_frame.is_some();
+            let diagnostic = unbounded_frame_fallback_diagnostic(
+                contract,
+                &plan.goal_type,
+                &goal_type,
+                &plan.operation_name,
+                &plan.backend.0,
+                operation_edge.backend_source == flowrt_ir::OperationBackendSource::AutoFallback,
+            );
             let mut operation = serde_json::json!({
                 "name": plan.operation_name,
                 "client": format!("{}.{}", plan.client_instance, plan.client_port),
@@ -321,7 +398,7 @@ fn launch_operations(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::
                 "server": format!("{}.{}", plan.server_instance, plan.server_port),
                 "server_instance": plan.server_instance,
                 "server_port": plan.server_port,
-                "goal": plan.goal_type.canonical_syntax(),
+                "goal": goal_type,
                 "feedback": plan.feedback_type.canonical_syntax(),
                 "result": plan.result_type.canonical_syntax(),
                 "backend": plan.backend.0,
@@ -336,6 +413,45 @@ fn launch_operations(contract: &ContractIr, graph: &GraphIr) -> Vec<serde_json::
             insert_operation_endpoint(&mut operation, "start", &plan.start_endpoint);
             insert_operation_endpoint(&mut operation, "cancel", &plan.cancel_endpoint);
             insert_operation_endpoint(&mut operation, "status", &plan.status_endpoint);
+            if has_frame {
+                operation
+                    .as_object_mut()
+                    .expect("operation endpoint must be a JSON object")
+                    .insert(
+                        "backend_source".to_string(),
+                        serde_json::Value::String(
+                            operation_backend_source_name(operation_edge.backend_source)
+                                .to_string(),
+                        ),
+                    );
+            }
+            if let Some(diagnostic) = diagnostic {
+                operation
+                    .as_object_mut()
+                    .expect("operation endpoint must be a JSON object")
+                    .insert(
+                        "diagnostic".to_string(),
+                        serde_json::Value::String(diagnostic),
+                    );
+            }
+            if let Some(frame) = goal_frame {
+                operation
+                    .as_object_mut()
+                    .expect("operation endpoint must be a JSON object")
+                    .insert(
+                        "goal_frame".to_string(),
+                        serde_json::to_value(frame).expect("frame transport must serialize"),
+                    );
+            }
+            if let Some(frame) = start_request_frame {
+                operation
+                    .as_object_mut()
+                    .expect("operation endpoint must be a JSON object")
+                    .insert(
+                        "start_request_frame".to_string(),
+                        serde_json::to_value(frame).expect("frame transport must serialize"),
+                    );
+            }
             operation
         })
         .collect()
@@ -589,7 +705,26 @@ fn launch_channels(
                 .then(|| iox2_service_name_for_edge(contract, graph, index, bind));
             let key_expr =
                 (backend == "zenoh").then(|| zenoh_key_expr_for_edge(contract, graph, index, bind));
-            serde_json::json!({
+            let message_expr = channel_message_expr(contract, graph, bind);
+            let message_type = message_expr.canonical_syntax();
+            let frame = frame_transport_for_expr_with_backend_slot(
+                contract,
+                &message_expr,
+                &message_type,
+                backend,
+            );
+            let diagnostic = unbounded_frame_fallback_diagnostic(
+                contract,
+                &message_expr,
+                &message_type,
+                &format!(
+                    "{}.{} -> {}.{}",
+                    bind.from.instance.name, bind.from.port, bind.to.instance.name, bind.to.port
+                ),
+                backend,
+                route.backend_source == flowrt_ir::ChannelBackendSource::AutoFallback,
+            );
+            let mut channel = serde_json::json!({
                 "from": format!("{}.{}", bind.from.instance.name, bind.from.port),
                 "to": format!("{}.{}", bind.to.instance.name, bind.to.port),
                 "backend": backend,
@@ -601,7 +736,37 @@ fn launch_channels(
                 "overflow": bind.overflow,
                 "stale_policy": bind.stale,
                 "max_age_ms": bind.max_age_ms,
-            })
+            });
+            if frame.is_some() {
+                channel
+                    .as_object_mut()
+                    .expect("channel endpoint must be a JSON object")
+                    .insert(
+                        "backend_source".to_string(),
+                        serde_json::Value::String(
+                            channel_backend_source_name(route.backend_source).to_string(),
+                        ),
+                    );
+            }
+            if let Some(diagnostic) = diagnostic {
+                channel
+                    .as_object_mut()
+                    .expect("channel endpoint must be a JSON object")
+                    .insert(
+                        "diagnostic".to_string(),
+                        serde_json::Value::String(diagnostic),
+                    );
+            }
+            if let Some(frame) = frame {
+                channel
+                    .as_object_mut()
+                    .expect("channel endpoint must be a JSON object")
+                    .insert(
+                        "frame".to_string(),
+                        serde_json::to_value(frame).expect("frame transport must serialize"),
+                    );
+            }
+            channel
         })
         .collect()
 }

@@ -537,6 +537,53 @@ fn rust_iox2_operation_bounded_goal_uses_frame_start_transport() {
             && shell.contains("status_client.set(match flowrt::iox2::Iox2ServiceClient::open"),
         "runtime shell must keep cancel/status fixed-size clients.\n\n{shell}"
     );
+
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    let launch_operation = &launch["graphs"][0]["operations"][0];
+    assert_eq!(launch_operation["backend"], "iox2");
+    assert_eq!(launch_operation["backend_source"], "explicit");
+    assert_eq!(launch_operation["goal_frame"]["message_type"], "PlanGoal");
+    assert_eq!(launch_operation["goal_frame"]["bounded"], true);
+    assert_eq!(launch_operation["goal_frame"]["max_size_bytes"], 16);
+    assert_eq!(
+        launch_operation["goal_frame"]["iox2_slot_cap_bytes"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        launch_operation["start_request_frame"]["message_type"],
+        "OperationStartRequest<PlanGoal>"
+    );
+    assert_eq!(launch_operation["start_request_frame"]["bounded"], true);
+    assert_eq!(
+        launch_operation["start_request_frame"]["max_size_bytes"],
+        40
+    );
+    assert_eq!(
+        launch_operation["start_request_frame"]["iox2_slot_cap_bytes"],
+        40
+    );
+    assert!(launch_operation.get("cancel_frame").is_none());
+    assert!(launch_operation.get("status_frame").is_none());
+
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let selfdesc_operation = &selfdesc["graphs"][0]["operations"][0];
+    assert_eq!(selfdesc_operation["backend"], "iox2");
+    assert_eq!(selfdesc_operation["backend_source"], "explicit");
+    assert_eq!(selfdesc_operation["goal_frame"]["bounded"], true);
+    assert_eq!(selfdesc_operation["goal_frame"]["max_size_bytes"], 16);
+    assert_eq!(selfdesc_operation["start_request_frame"]["bounded"], true);
+    assert_eq!(
+        selfdesc_operation["start_request_frame"]["max_size_bytes"],
+        40
+    );
+    assert_eq!(
+        selfdesc_operation["start_request_frame"]["iox2_slot_cap_bytes"],
+        40
+    );
+    assert!(selfdesc_operation.get("cancel_frame").is_none());
+    assert!(selfdesc_operation.get("status_frame").is_none());
 }
 
 /// C++ components 应生成和 Rust 等价的 Operation typed API。
