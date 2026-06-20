@@ -18,8 +18,8 @@ pub mod iox2 {
     use std::{fmt::Debug, marker::PhantomData};
 
     use crate::{
-        BackendHealthSnapshot, BackendHealthState, Latest, OverflowPolicy, ServiceError,
-        ServiceResult, StaleConfig,
+        BackendHealthSnapshot, BackendHealthState, FrameCodec, Latest, OverflowPolicy,
+        ServiceError, ServiceResult, StaleConfig,
     };
 
     /// 可选 iceoryx2 transport helper 返回的错误。
@@ -207,6 +207,104 @@ pub mod iox2 {
         }
     }
 
+    /// disabled-feature iox2 frame pub/sub endpoint。
+    pub struct Iox2FramePubSub<T, const CAP: usize> {
+        service_name: String,
+        config: Iox2ChannelConfig,
+        error: String,
+        _marker: PhantomData<T>,
+    }
+
+    impl<T, const CAP: usize> Iox2FramePubSub<T, CAP>
+    where
+        T: FrameCodec + Clone + 'static,
+    {
+        /// 打开 endpoint。未启用 feature 时 fail-fast。
+        pub fn open(_service_name: &str) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        /// 使用显式 QoS 打开 endpoint。未启用 feature 时 fail-fast。
+        pub fn open_with_config(
+            _service_name: &str,
+            _config: Iox2ChannelConfig,
+        ) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        /// 构造不可用 endpoint。
+        pub fn unavailable(
+            service_name: &str,
+            config: Iox2ChannelConfig,
+            error: impl Into<String>,
+        ) -> Self {
+            Self {
+                service_name: service_name.to_string(),
+                config,
+                error: error.into(),
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn publish(&mut self, _value: T) -> Result<(), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn publish_at(&mut self, _value: T, _published_at_ms: u64) -> Result<(), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn set_schedule_waiter(&mut self, _waiter: crate::ScheduleWaiter) {}
+
+        pub fn receive(&mut self) -> Result<Option<T>, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn receive_latest_at(&mut self, _now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn receive_latest_with_revision_at(
+            &mut self,
+            _now_ms: u64,
+        ) -> Result<(Latest<'_, T>, u64), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn cached_latest_at(&self, now_ms: u64) -> Latest<'_, T> {
+            let _ = now_ms;
+            Latest::new(None, false)
+        }
+
+        pub fn config(&self) -> Iox2ChannelConfig {
+            self.config
+        }
+
+        pub fn ready(&self) -> bool {
+            false
+        }
+
+        pub fn health(&self) -> BackendHealthSnapshot {
+            unsupported_health(self.error.clone())
+        }
+
+        pub fn revision(&self) -> u64 {
+            0
+        }
+
+        pub fn reconnect_policy(&self) -> crate::ReconnectPolicy {
+            crate::ReconnectPolicy::default()
+        }
+
+        pub fn poll_once(&self, _timeout: std::time::Duration) -> Result<(), Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn service_name(&self) -> &str {
+            &self.service_name
+        }
+    }
+
     /// disabled-feature iox2 Service client。
     pub struct Iox2ServiceClient<Req, Resp> {
         service_name: String,
@@ -244,6 +342,44 @@ pub mod iox2 {
         }
     }
 
+    /// disabled-feature iox2 frame Service client。
+    pub struct Iox2FrameServiceClient<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize> {
+        service_name: String,
+        error: String,
+        _marker: PhantomData<(Req, Resp)>,
+    }
+
+    impl<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize>
+        Iox2FrameServiceClient<Req, Resp, REQ_CAP, RESP_CAP>
+    where
+        Req: FrameCodec + 'static,
+        Resp: FrameCodec + 'static,
+    {
+        pub fn open(_service_name: &str) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn unavailable(service_name: &str, error: impl Into<String>) -> Self {
+            Self {
+                service_name: service_name.to_string(),
+                error: error.into(),
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn call(&self, _request: Req, _timeout_ms: u64) -> ServiceResult<Resp> {
+            ServiceResult::err_with_message(ServiceError::Unavailable, self.error.clone())
+        }
+
+        pub fn service_name(&self) -> &str {
+            &self.service_name
+        }
+
+        pub fn health(&self) -> BackendHealthSnapshot {
+            unsupported_health(self.error.clone())
+        }
+    }
+
     /// disabled-feature iox2 Service server。
     pub struct Iox2ServiceServer<Req, Resp> {
         service_name: String,
@@ -255,6 +391,49 @@ pub mod iox2 {
     where
         Req: Copy + 'static,
         Resp: Copy + Default + 'static,
+    {
+        pub fn open(_service_name: &str, _max_in_flight: usize) -> Result<Self, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn unavailable(service_name: &str, error: impl Into<String>) -> Self {
+            Self {
+                service_name: service_name.to_string(),
+                error: error.into(),
+                _marker: PhantomData,
+            }
+        }
+
+        pub fn set_schedule_waiter(&mut self, _waiter: crate::ScheduleWaiter) {}
+
+        pub fn poll_requests(
+            &mut self,
+            _handler: impl FnMut(Req) -> ServiceResult<Resp>,
+        ) -> Result<usize, Iox2Error> {
+            Err(Iox2Error::unsupported())
+        }
+
+        pub fn service_name(&self) -> &str {
+            &self.service_name
+        }
+
+        pub fn health(&self) -> BackendHealthSnapshot {
+            unsupported_health(self.error.clone())
+        }
+    }
+
+    /// disabled-feature iox2 frame Service server。
+    pub struct Iox2FrameServiceServer<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize> {
+        service_name: String,
+        error: String,
+        _marker: PhantomData<(Req, Resp)>,
+    }
+
+    impl<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize>
+        Iox2FrameServiceServer<Req, Resp, REQ_CAP, RESP_CAP>
+    where
+        Req: FrameCodec + 'static,
+        Resp: FrameCodec + 'static,
     {
         pub fn open(_service_name: &str, _max_in_flight: usize) -> Result<Self, Iox2Error> {
             Err(Iox2Error::unsupported())

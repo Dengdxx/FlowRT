@@ -1,15 +1,18 @@
 use flowrt_ir::{ChannelEdgeIr, ChannelKind, ContractIr, GraphIr, StalePolicy as IrStalePolicy};
 
-use crate::messages::rust_type;
+use crate::messages::{frame_max_size_for_type, rust_type, type_contains_variable_data};
 use crate::runtime_plan::{
     BindRuntimePlan, BridgeRuntimePlan, bind_backend, runtime_channel_message_type,
     runtime_channel_name,
 };
 use crate::{flowrt_path_part, flowrt_topic_path_part};
 
-pub(super) fn runtime_channel_type(bind: &BindRuntimePlan) -> String {
+pub(super) fn runtime_channel_type(contract: &ContractIr, bind: &BindRuntimePlan) -> String {
     let ty = rust_type(&bind.source_type);
     if bind_backend(bind) == "iox2" {
+        if let Some(cap) = iox2_frame_channel_cap(contract, bind) {
+            return format!("flowrt::iox2::Iox2FramePubSub<{ty}, {cap}>");
+        }
         return format!("flowrt::iox2::Iox2PubSub<{ty}>");
     }
     if bind_backend(bind) == "zenoh" {
@@ -37,8 +40,13 @@ pub(super) fn runtime_channel_initializer(
     if bind_backend(bind) == "iox2" {
         let service_name = crate::rust_string_literal(&iox2_service_name(contract, graph, bind));
         let config = iox2_channel_config_expr(bind);
+        let channel = if iox2_frame_channel_cap(contract, bind).is_some() {
+            "flowrt::iox2::Iox2FramePubSub"
+        } else {
+            "flowrt::iox2::Iox2PubSub"
+        };
         return format!(
-            "match flowrt::iox2::Iox2PubSub::open_with_config({service_name}, {config}) {{\n                Ok(channel) => channel,\n                Err(error) => {{\n                    eprintln!(\"FlowRT: failed to open iox2 channel {{}}: {{error}}\", {service_name});\n                    startup_status = flowrt::Status::Error;\n                    flowrt::iox2::Iox2PubSub::unavailable({service_name}, {config}, error.to_string())\n                }}\n            }}",
+            "match {channel}::open_with_config({service_name}, {config}) {{\n                Ok(channel) => channel,\n                Err(error) => {{\n                    eprintln!(\"FlowRT: failed to open iox2 channel {{}}: {{error}}\", {service_name});\n                    startup_status = flowrt::Status::Error;\n                    {channel}::unavailable({service_name}, {config}, error.to_string())\n                }}\n            }}",
         );
     }
     if bind_backend(bind) == "zenoh" {
@@ -56,6 +64,16 @@ pub(super) fn runtime_channel_initializer(
         ),
         ChannelKind::Fifo => runtime_fifo_channel_initializer(bind),
     }
+}
+
+fn iox2_frame_channel_cap(contract: &ContractIr, bind: &BindRuntimePlan) -> Option<usize> {
+    if !type_contains_variable_data(contract, &bind.source_type) {
+        return None;
+    }
+    let flowrt_ir::TypeExpr::Named { name } = &bind.source_type else {
+        return None;
+    };
+    frame_max_size_for_type(contract, crate::type_by_name(contract, name))
 }
 
 pub(super) fn bridge_runtime_channel_initializer(

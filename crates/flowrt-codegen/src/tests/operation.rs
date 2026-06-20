@@ -504,6 +504,41 @@ fn rust_iox2_operation_codegen_wires_transport() {
     );
 }
 
+/// iox2 Operation 的 start service 在 goal 有界变长时必须使用 frame slot 承载。
+#[test]
+fn rust_iox2_operation_bounded_goal_uses_frame_start_transport() {
+    let source = RUST_OPERATION_RSDL
+        .replace("target = \"u32\"", "target = \"string<max=8>\"")
+        .replace("backend = \"inproc\"", "backend = \"iox2\"");
+    let contract = contract_from_source(&source);
+
+    let bundle = emit_artifacts(&contract).unwrap();
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        components.contains("std::sync::OnceLock<flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>>"),
+        "bounded goal start client must use frame service transport.\n\n{components}"
+    );
+    assert!(
+        components.contains("std::sync::OnceLock<flowrt::iox2::Iox2ServiceClient<flowrt::OperationId, flowrt::OperationStatusSnapshot>>"),
+        "cancel/status control services should remain fixed-size iox2 clients.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        "runtime shell must open frame start client.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<PlanGoal>, flowrt::OperationStartAck, 40, 49>::open"),
+        "runtime shell must open frame start server.\n\n{shell}"
+    );
+    assert!(
+        shell.contains("cancel_client.set(match flowrt::iox2::Iox2ServiceClient::open")
+            && shell.contains("status_client.set(match flowrt::iox2::Iox2ServiceClient::open"),
+        "runtime shell must keep cancel/status fixed-size clients.\n\n{shell}"
+    );
+}
+
 /// C++ components 应生成和 Rust 等价的 Operation typed API。
 #[test]
 fn cpp_operation_components_are_generated() {

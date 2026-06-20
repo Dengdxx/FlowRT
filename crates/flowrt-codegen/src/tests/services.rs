@@ -630,6 +630,95 @@ backends = ["iox2", "zenoh"]
     assert!(endpoint.get("service").is_none());
 }
 
+/// profile 默认 iox2 遇到有界变长 service payload 时必须留在 iox2，并用 frame slot 承载。
+#[test]
+fn service_iox2_bounded_variable_emits_frame_slot_transport() {
+    let source = r#"
+[package]
+name = "service_iox2_bounded_variable"
+rsdl_version = "0.1"
+
+[type.PlanRequest]
+goal = "u32"
+label = "string<max=8>"
+samples = "sequence<u32,max=4>"
+
+[type.PlanResponse]
+accepted = "bool"
+detail = "string<max=12>"
+
+[component.plan_service]
+language = "rust"
+concurrency = "parallel"
+service_server = ["plan:PlanRequest->PlanResponse"]
+
+[component.planner]
+language = "rust"
+service_client = ["plan:PlanRequest->PlanResponse"]
+
+[instance.plan_svc]
+component = "plan_service"
+process = "server_proc"
+target = "linux"
+
+[instance.plan_svc.task]
+trigger = "periodic"
+period_ms = 1000
+
+[instance.plan_client]
+component = "planner"
+process = "client_proc"
+target = "linux"
+
+[instance.plan_client.task]
+trigger = "periodic"
+period_ms = 100
+
+[[bind.service]]
+client = "plan_client.plan"
+server = "plan_svc.plan"
+timeout_ms = 1000
+queue_depth = 16
+overflow = "busy"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+"#;
+    let contract = contract_from_source(source);
+
+    let bundle = emit_artifacts(&contract).expect("bounded service iox2 codegen must succeed");
+    let components = artifact_content(&bundle, "rust/src/components.rs");
+    let shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+    let selfdesc: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "selfdesc/selfdesc.json")).unwrap();
+    let endpoint = &selfdesc["graphs"][0]["services"][0];
+
+    assert!(
+        components
+            .contains("flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>"),
+        "bounded service client must hold Iox2FrameServiceClient with request/response CAP.\n\n{components}"
+    );
+    assert!(
+        shell.contains("flowrt::iox2::Iox2FrameServiceServer<PlanRequest, PlanResponse, 44, 21>"),
+        "bounded service server must hold Iox2FrameServiceServer with request/response CAP.\n\n{shell}"
+    );
+    assert!(
+        shell.contains(
+            "flowrt::iox2::Iox2FrameServiceClient<PlanRequest, PlanResponse, 44, 21>::open"
+        ),
+        "runtime shell must open frame service client.\n\n{shell}"
+    );
+    assert!(
+        !components.contains("flowrt::zenoh::ZenohServiceClient"),
+        "bounded variable service must not fallback to zenoh.\n\n{components}"
+    );
+    assert_eq!(endpoint["backend"], "iox2");
+}
+
 /// iox2 service selfdesc 使用 canonical service name；zenoh 使用 key expression。
 #[test]
 fn selfdesc_service_separates_iox2_service_name_and_zenoh_key_expr() {

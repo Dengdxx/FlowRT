@@ -137,6 +137,79 @@ backends = ["iox2", "zenoh"]
 }
 
 #[test]
+fn iox2_profile_routes_bounded_variable_messages_over_frame_slots() {
+    let ir = contract_from_source(
+        r#"
+[package]
+name = "bounded_variable_route_demo"
+rsdl_version = "0.1"
+
+[type.Packet]
+payload = "bytes<max=8>"
+label = "string<max=12>"
+samples = "sequence<u32,max=4>"
+
+[component.source]
+language = "rust"
+output = ["packet:Packet"]
+
+[component.sink]
+language = "rust"
+input = ["packet:Packet"]
+
+[instance.source]
+component = "source"
+target = "linux"
+
+[instance.source.task]
+trigger = "periodic"
+period_ms = 5
+output = ["packet"]
+
+[instance.sink]
+component = "sink"
+target = "linux"
+
+[instance.sink.task]
+trigger = "on_message"
+input = ["packet"]
+
+[[bind.dataflow]]
+from = "source.packet"
+to = "sink.packet"
+channel = "latest"
+
+[profile.default]
+backend = "iox2"
+
+[target.linux]
+runtime = ["rust"]
+backends = ["iox2", "zenoh"]
+"#,
+    );
+
+    let bundle = emit_artifacts(&ir).unwrap();
+    let rust_shell = artifact_content(&bundle, "rust/src/runtime_shell.rs");
+
+    assert!(
+        rust_shell.contains("flowrt::iox2::Iox2FramePubSub<Packet, 60>"),
+        "bounded variable iox2 channel must use frame slot transport.\n\n{rust_shell}"
+    );
+    assert!(
+        !rust_shell.contains("flowrt::iox2::Iox2PubSub<Packet>"),
+        "bounded variable iox2 channel must not use fixed-size iox2 pubsub.\n\n{rust_shell}"
+    );
+    assert!(
+        !rust_shell.contains("flowrt::zenoh::ZenohPubSub<Packet>"),
+        "bounded variable iox2 channel must not fallback to zenoh.\n\n{rust_shell}"
+    );
+
+    let launch: serde_json::Value =
+        serde_json::from_str(artifact_content(&bundle, "launch/launch.json")).unwrap();
+    assert_eq!(launch["graphs"][0]["channels"][0]["backend"], "iox2");
+}
+
+#[test]
 fn iox2_profile_keeps_frame_descriptor_routes_on_iox2() {
     let ir = contract_from_source(
         r#"

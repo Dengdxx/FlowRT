@@ -7,7 +7,9 @@
 
 use flowrt_ir::{ContractIr, GraphIr, ServiceOverflowPolicy};
 
-use crate::messages::rust_type;
+use crate::messages::{
+    frame_max_size_for_type, rust_type, rust_wire_size, type_contains_variable_data,
+};
 use crate::runtime_plan::{
     SchedulerHiddenTaskPlan, ServiceRuntimePlan, service_runtime_plans, service_server_lane,
 };
@@ -138,8 +140,9 @@ pub(crate) fn emit_rust_service_client_handles(contract: &ContractIr, graph: &Gr
                 "    pub(crate) inner: std::sync::Arc<std::sync::OnceLock<flowrt::zenoh::ZenohServiceClient<{req_ty}, {resp_ty}>>>,\n",
             ));
         } else if is_iox2 {
+            let transport_ty = service_client_transport_type(contract, plan, &req_ty, &resp_ty);
             output.push_str(&format!(
-                "    pub(crate) inner: std::sync::Arc<std::sync::OnceLock<flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>>>,\n",
+                "    pub(crate) inner: std::sync::Arc<std::sync::OnceLock<{transport_ty}>>,\n",
             ));
         } else {
             output.push_str(&format!(
@@ -242,8 +245,9 @@ pub(crate) fn rust_app_service_fields(contract: &ContractIr, graph: &GraphIr) ->
         let req_ty = rust_type(&plan.request_type);
         let resp_ty = rust_type(&plan.response_type);
         if plan.backend.0 == "iox2" {
+            let transport_ty = service_server_transport_type(contract, plan, &req_ty, &resp_ty);
             output.push_str(&format!(
-                "    {server_field}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>>>>,\n",
+                "    {server_field}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<{transport_ty}>>>,\n",
             ));
         } else {
             output.push_str(&format!(
@@ -778,13 +782,14 @@ pub(crate) fn emit_rust_iox2_service_endpoints(
         let service_name_literal = rust_string_literal(&plan.service_name);
         if active.contains(plan.client_instance.as_str()) {
             let client_field = client_field_name(plan);
+            let client_ty = service_client_open_type(contract, plan);
             output.push_str(&format!(
-                "        let _ = app.{client_field}.inner.set(match flowrt::iox2::Iox2ServiceClient::open({transport_service_name}) {{\n\
+                "        let _ = app.{client_field}.inner.set(match {client_ty}::open({transport_service_name}) {{\n\
                  \x20           Ok(client) => client,\n\
                  \x20           Err(error) => {{\n\
                  \x20               eprintln!(\"FlowRT: failed to open iox2 service client {{}}: {{error}}\", {transport_service_name});\n\
                  \x20               status = flowrt::Status::Error;\n\
-                 \x20               flowrt::iox2::Iox2ServiceClient::unavailable({transport_service_name}, error.to_string())\n\
+                 \x20               {client_ty}::unavailable({transport_service_name}, error.to_string())\n\
                  \x20           }}\n\
                  \x20       }});\n",
             ));
@@ -792,8 +797,9 @@ pub(crate) fn emit_rust_iox2_service_endpoints(
         if active.contains(plan.server_instance.as_str()) {
             let server_field = server_field_name(plan);
             let max_in_flight = plan.max_in_flight.max(1);
+            let server_ty = service_server_open_type(contract, plan);
             output.push_str(&format!(
-                "        match flowrt::iox2::Iox2ServiceServer::open({transport_service_name}, {max_in_flight}usize) {{\n\
+                "        match {server_ty}::open({transport_service_name}, {max_in_flight}usize) {{\n\
                  \x20           Ok(mut server) => {{\n\
                  \x20               server.set_schedule_waiter(scheduler_events.clone());\n\
                  \x20               let _ = app.{server_field}.set(std::sync::Mutex::new(server));\n\
@@ -809,4 +815,75 @@ pub(crate) fn emit_rust_iox2_service_endpoints(
         }
     }
     output
+}
+
+fn service_client_transport_type(
+    contract: &ContractIr,
+    plan: &ServiceRuntimePlan,
+    req_ty: &str,
+    resp_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_frame_service_caps(contract, plan) {
+        format!("flowrt::iox2::Iox2FrameServiceClient<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+    } else {
+        format!("flowrt::iox2::Iox2ServiceClient<{req_ty}, {resp_ty}>")
+    }
+}
+
+fn service_server_transport_type(
+    contract: &ContractIr,
+    plan: &ServiceRuntimePlan,
+    req_ty: &str,
+    resp_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_frame_service_caps(contract, plan) {
+        format!("flowrt::iox2::Iox2FrameServiceServer<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+    } else {
+        format!("flowrt::iox2::Iox2ServiceServer<{req_ty}, {resp_ty}>")
+    }
+}
+
+fn service_client_open_type(contract: &ContractIr, plan: &ServiceRuntimePlan) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_frame_service_caps(contract, plan) {
+        let req_ty = rust_type(&plan.request_type);
+        let resp_ty = rust_type(&plan.response_type);
+        format!("flowrt::iox2::Iox2FrameServiceClient<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+    } else {
+        "flowrt::iox2::Iox2ServiceClient".to_string()
+    }
+}
+
+fn service_server_open_type(contract: &ContractIr, plan: &ServiceRuntimePlan) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_frame_service_caps(contract, plan) {
+        let req_ty = rust_type(&plan.request_type);
+        let resp_ty = rust_type(&plan.response_type);
+        format!("flowrt::iox2::Iox2FrameServiceServer<{req_ty}, {resp_ty}, {req_cap}, {resp_cap}>")
+    } else {
+        "flowrt::iox2::Iox2ServiceServer".to_string()
+    }
+}
+
+fn iox2_frame_service_caps(
+    contract: &ContractIr,
+    plan: &ServiceRuntimePlan,
+) -> Option<(usize, usize)> {
+    let request_variable = type_contains_variable_data(contract, &plan.request_type);
+    let response_variable = type_contains_variable_data(contract, &plan.response_type);
+    if !request_variable && !response_variable {
+        return None;
+    }
+    Some((
+        frame_cap_for_service_expr(contract, &plan.request_type)?,
+        frame_cap_for_service_expr(contract, &plan.response_type)?,
+    ))
+}
+
+fn frame_cap_for_service_expr(contract: &ContractIr, expr: &flowrt_ir::TypeExpr) -> Option<usize> {
+    match expr {
+        flowrt_ir::TypeExpr::Named { name } => {
+            frame_max_size_for_type(contract, crate::type_by_name(contract, name))
+        }
+        _ if type_contains_variable_data(contract, expr) => None,
+        _ => Some(rust_wire_size(contract, expr)),
+    }
 }

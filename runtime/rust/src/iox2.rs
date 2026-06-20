@@ -6,6 +6,7 @@
 use std::{
     collections::BTreeMap,
     fmt::Debug,
+    marker::PhantomData,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -20,8 +21,9 @@ use iceoryx2::prelude::*;
 use iceoryx2::sample::Sample;
 
 use crate::{
-    BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, Latest, OverflowPolicy,
-    ReconnectPolicy, ServiceError, ServiceResult, StaleConfig, StalePolicy, service::fnv1a64,
+    BackendHealthSnapshot, BackendHealthState, BackendHealthTracker, FrameCodec, Latest,
+    OverflowPolicy, ReconnectPolicy, ServiceError, ServiceResult, StaleConfig, StalePolicy,
+    service::fnv1a64,
 };
 
 type IpcNode = Node<ipc::Service>;
@@ -39,10 +41,7 @@ struct FlowrtIox2Header {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Iox2Received<T>
-where
-    T: Copy,
-{
+struct Iox2Received<T> {
     published_at_ms: u64,
     payload: T,
 }
@@ -250,6 +249,91 @@ impl Iox2ChannelConfig {
 impl Default for Iox2ChannelConfig {
     fn default() -> Self {
         Self::latest()
+    }
+}
+
+/// 有界 canonical frame 在 iceoryx2 typed payload 中的定容承载。
+///
+/// `CAP` 来自 Contract IR 中有界变长类型的 frame 上界。slot 只承载 FlowRT canonical frame
+/// bytes，不改变用户侧 `Vec` / `String` API，也不改变 frame wire 格式。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+pub struct Iox2FrameSlot<const CAP: usize> {
+    len: u32,
+    data: [u8; CAP],
+}
+
+impl<const CAP: usize> Default for Iox2FrameSlot<CAP> {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            data: [0; CAP],
+        }
+    }
+}
+
+impl<const CAP: usize> Iox2FrameSlot<CAP> {
+    /// 从已编码的 canonical frame 构造 slot，超出 `CAP` 时返回错误。
+    pub fn try_from_frame(frame: &[u8]) -> Result<Self, Iox2Error> {
+        if frame.len() > CAP {
+            return Err(Iox2Error::new(
+                "encode FlowRT iox2 frame slot",
+                format!(
+                    "frame length {} exceeds iox2 frame slot capacity {CAP}",
+                    frame.len()
+                ),
+            ));
+        }
+        let len = u32::try_from(frame.len())
+            .map_err(|error| Iox2Error::new("encode FlowRT iox2 frame slot length", error))?;
+        let mut slot = Self {
+            len,
+            data: [0; CAP],
+        };
+        slot.data[..frame.len()].copy_from_slice(frame);
+        Ok(slot)
+    }
+
+    /// 从实现 `FrameCodec` 的消息直接编码 slot。
+    pub fn try_from_message<T>(message: &T) -> Result<Self, Iox2Error>
+    where
+        T: FrameCodec,
+    {
+        let frame = message
+            .to_frame_vec()
+            .map_err(|error| Iox2Error::new("encode FlowRT iox2 frame payload", error))?;
+        Self::try_from_frame(&frame)
+    }
+
+    /// 返回当前 frame 字节数。
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// 判断当前 slot 是否为空 frame。
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 借用 slot 中的 canonical frame bytes。
+    pub fn frame(&self) -> Result<&[u8], Iox2Error> {
+        let len = self.len();
+        if len > CAP {
+            return Err(Iox2Error::new(
+                "decode FlowRT iox2 frame slot",
+                format!("slot length {len} exceeds iox2 frame slot capacity {CAP}"),
+            ));
+        }
+        Ok(&self.data[..len])
+    }
+
+    /// 将 slot 中的 canonical frame 解码成消息。
+    pub fn decode_message<T>(&self) -> Result<T, Iox2Error>
+    where
+        T: FrameCodec,
+    {
+        T::decode_frame(self.frame()?)
+            .map_err(|error| Iox2Error::new("decode FlowRT iox2 frame payload", error))
     }
 }
 
@@ -599,6 +683,161 @@ where
     }
 }
 
+/// iox2 有界变长 frame publish-subscribe endpoint。
+///
+/// 该 wrapper 对 generated shell 暴露与 `Iox2PubSub<T>` 对齐的 channel surface，内部用
+/// `Iox2FrameSlot<CAP>` 通过 iceoryx2 typed pub/sub 传输 canonical frame bytes。
+pub struct Iox2FramePubSub<T, const CAP: usize>
+where
+    T: FrameCodec + Clone,
+{
+    inner: Iox2PubSub<Iox2FrameSlot<CAP>>,
+    received: Option<Iox2Received<T>>,
+    decoded_revision: u64,
+}
+
+impl<T, const CAP: usize> Iox2FramePubSub<T, CAP>
+where
+    T: FrameCodec + Clone,
+{
+    /// 打开或创建一个本机 IPC frame publish-subscribe service。
+    pub fn open(service_name: &str) -> Result<Self, Iox2Error> {
+        Self::open_with_config(service_name, Iox2ChannelConfig::latest())
+    }
+
+    /// 使用显式 QoS 配置打开或创建一个本机 IPC frame publish-subscribe service。
+    pub fn open_with_config(
+        service_name: &str,
+        config: Iox2ChannelConfig,
+    ) -> Result<Self, Iox2Error> {
+        Ok(Self {
+            inner: Iox2PubSub::open_with_config(service_name, config)?,
+            received: None,
+            decoded_revision: 0,
+        })
+    }
+
+    /// 构造一个不可用 endpoint，用于 generated shell 在 startup open 失败后保留结构化状态。
+    pub fn unavailable(
+        service_name: &str,
+        config: Iox2ChannelConfig,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            inner: Iox2PubSub::unavailable(service_name, config, error),
+            received: None,
+            decoded_revision: 0,
+        }
+    }
+
+    /// 发布一个 frame-codec 消息。
+    pub fn publish(&mut self, value: T) -> Result<(), Iox2Error> {
+        self.publish_at(value, 0)
+    }
+
+    /// 带 FlowRT runtime 时间戳发布一个 frame-codec 消息。
+    pub fn publish_at(&mut self, value: T, published_at_ms: u64) -> Result<(), Iox2Error> {
+        let slot = Iox2FrameSlot::<CAP>::try_from_message(&value)?;
+        self.inner.publish_at(slot, published_at_ms)
+    }
+
+    /// 注册 scheduler 数据到达唤醒器。
+    pub fn set_schedule_waiter(&mut self, waiter: crate::ScheduleWaiter) {
+        self.inner.set_schedule_waiter(waiter);
+    }
+
+    /// 如果有可用样本，则接收并解码一个值。
+    pub fn receive(&mut self) -> Result<Option<T>, Iox2Error> {
+        self.inner
+            .receive()?
+            .map(|slot| slot.decode_message())
+            .transpose()
+    }
+
+    /// 接收一个 frame 值，并根据 transport 时间戳暴露 freshness 状态。
+    pub fn receive_latest_at(&mut self, now_ms: u64) -> Result<Latest<'_, T>, Iox2Error> {
+        self.inner.receive_latest_at(now_ms)?;
+        self.refresh_decoded_from_inner()?;
+        Ok(self.cached_latest_at(now_ms))
+    }
+
+    /// 接收当前 latest view，并同时返回接收后的修订号。
+    pub fn receive_latest_with_revision_at(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<(Latest<'_, T>, u64), Iox2Error> {
+        self.inner.receive_latest_with_revision_at(now_ms)?;
+        self.refresh_decoded_from_inner()?;
+        let revision = self.revision();
+        Ok((self.cached_latest_at(now_ms), revision))
+    }
+
+    /// 返回最近一次已解码样本的 cached latest view，不触碰 transport。
+    pub fn cached_latest_at(&self, now_ms: u64) -> Latest<'_, T> {
+        let stale = self
+            .received
+            .as_ref()
+            .map(|sample| {
+                self.config()
+                    .stale()
+                    .stale_at(Some(sample.published_at_ms), now_ms)
+            })
+            .unwrap_or(false);
+        let value = if stale && self.config().stale().policy() == StalePolicy::Drop {
+            None
+        } else {
+            self.received.as_ref().map(|sample| &sample.payload)
+        };
+
+        Latest::new(value, stale)
+    }
+
+    /// 返回 endpoint 的 QoS 配置。
+    pub fn config(&self) -> Iox2ChannelConfig {
+        self.inner.config()
+    }
+
+    /// 判断底层 iox2 endpoint 是否已经打开。
+    pub fn ready(&self) -> bool {
+        self.inner.ready()
+    }
+
+    /// 返回 endpoint 健康快照。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        self.inner.health()
+    }
+
+    /// 返回接收侧已接受样本的修订号，用于调度器检测新到达数据。
+    pub fn revision(&self) -> u64 {
+        self.inner.revision()
+    }
+
+    /// 返回 endpoint 重连策略。
+    pub fn reconnect_policy(&self) -> ReconnectPolicy {
+        self.inner.reconnect_policy()
+    }
+
+    /// 短暂等待，让 iceoryx2 推进本机 endpoint 状态。
+    pub fn poll_once(&self, timeout: Duration) -> Result<(), Iox2Error> {
+        self.inner.poll_once(timeout)
+    }
+
+    fn refresh_decoded_from_inner(&mut self) -> Result<(), Iox2Error> {
+        let revision = self.inner.revision();
+        if self.decoded_revision == revision {
+            return Ok(());
+        }
+        if let Some(sample) = self.inner.received.as_ref() {
+            self.received = Some(Iox2Received {
+                published_at_ms: sample.published_at_ms,
+                payload: sample.payload.decode_message()?,
+            });
+        }
+        self.decoded_revision = revision;
+        Ok(())
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
 #[type_name("FlowRTIox2ServiceCorrelation")]
@@ -872,6 +1111,141 @@ where
     }
 }
 
+/// iox2 有界变长 Service client backend primitive。
+///
+/// request/response 仍使用 canonical `FrameCodec`，内部用定容 slot 复用 fixed-size iox2
+/// service transport。`REQ_CAP` 与 `RESP_CAP` 来自 Contract IR frame 上界。
+pub struct Iox2FrameServiceClient<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize>
+where
+    Req: FrameCodec,
+    Resp: FrameCodec,
+{
+    inner: Iox2ServiceClient<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>,
+    _marker: PhantomData<(Req, Resp)>,
+}
+
+impl<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize>
+    Iox2FrameServiceClient<Req, Resp, REQ_CAP, RESP_CAP>
+where
+    Req: FrameCodec,
+    Resp: FrameCodec,
+{
+    /// 打开 iox2 frame service client。
+    pub fn open(service_name: &str) -> Result<Self, Iox2Error> {
+        Ok(Self {
+            inner: Iox2ServiceClient::open(service_name)?,
+            _marker: PhantomData,
+        })
+    }
+
+    /// 构造不可用 client，用于缺少 iox2 feature/SDK 的 fail-fast 路径。
+    pub fn unavailable(service_name: &str, error: impl Into<String>) -> Self {
+        Self {
+            inner: Iox2ServiceClient::unavailable(service_name, error),
+            _marker: PhantomData,
+        }
+    }
+
+    /// 发起同步 request/response 调用。
+    pub fn call(&self, request: Req, timeout_ms: u64) -> ServiceResult<Resp> {
+        let request_slot = match Iox2FrameSlot::<REQ_CAP>::try_from_message(&request) {
+            Ok(slot) => slot,
+            Err(error) => {
+                return ServiceResult::err_with_message(ServiceError::Backend, error.to_string());
+            }
+        };
+        match self.inner.call(request_slot, timeout_ms) {
+            ServiceResult::Ok(response_slot) => match response_slot.decode_message() {
+                Ok(response) => ServiceResult::ok(response),
+                Err(error) => {
+                    ServiceResult::err_with_message(ServiceError::Protocol, error.to_string())
+                }
+            },
+            ServiceResult::Err(code, message) => ServiceResult::Err(code, message),
+        }
+    }
+
+    /// 返回 canonical service name。
+    pub fn service_name(&self) -> &str {
+        self.inner.service_name()
+    }
+
+    /// 返回 backend health。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        self.inner.health()
+    }
+}
+
+/// iox2 有界变长 Service server backend primitive。
+pub struct Iox2FrameServiceServer<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize>
+where
+    Req: FrameCodec,
+    Resp: FrameCodec,
+{
+    inner: Iox2ServiceServer<Iox2FrameSlot<REQ_CAP>, Iox2FrameSlot<RESP_CAP>>,
+    _marker: PhantomData<(Req, Resp)>,
+}
+
+impl<Req, Resp, const REQ_CAP: usize, const RESP_CAP: usize>
+    Iox2FrameServiceServer<Req, Resp, REQ_CAP, RESP_CAP>
+where
+    Req: FrameCodec,
+    Resp: FrameCodec,
+{
+    /// 打开 iox2 frame service server。
+    pub fn open(service_name: &str, max_in_flight: usize) -> Result<Self, Iox2Error> {
+        Ok(Self {
+            inner: Iox2ServiceServer::open(service_name, max_in_flight)?,
+            _marker: PhantomData,
+        })
+    }
+
+    /// 注册 scheduler 数据到达唤醒器。
+    pub fn set_schedule_waiter(&mut self, waiter: crate::ScheduleWaiter) {
+        self.inner.set_schedule_waiter(waiter);
+    }
+
+    /// 由 scheduler hidden task drain request 并调用 handler。
+    pub fn poll_requests(
+        &mut self,
+        mut handler: impl FnMut(Req) -> ServiceResult<Resp>,
+    ) -> Result<usize, Iox2Error> {
+        self.inner.poll_requests(|slot| {
+            let request = match slot.decode_message() {
+                Ok(request) => request,
+                Err(error) => {
+                    return ServiceResult::err_with_message(
+                        ServiceError::Protocol,
+                        error.to_string(),
+                    );
+                }
+            };
+            match handler(request) {
+                ServiceResult::Ok(response) => {
+                    match Iox2FrameSlot::<RESP_CAP>::try_from_message(&response) {
+                        Ok(slot) => ServiceResult::ok(slot),
+                        Err(error) => ServiceResult::err_with_message(
+                            ServiceError::Backend,
+                            error.to_string(),
+                        ),
+                    }
+                }
+                ServiceResult::Err(code, message) => ServiceResult::Err(code, message),
+            }
+        })
+    }
+
+    /// 返回 canonical service name。
+    pub fn service_name(&self) -> &str {
+        self.inner.service_name()
+    }
+
+    /// 返回 backend health。
+    pub fn health(&self) -> BackendHealthSnapshot {
+        self.inner.health()
+    }
+}
+
 fn iox2_request_endpoint(service_name: &str) -> String {
     format!("{service_name}/req")
 }
@@ -1067,7 +1441,7 @@ pub fn smoke_pubsub_u64(service_name: &str, value: u64) -> Result<u64, Iox2Error
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ServiceError, ServiceResult};
+    use crate::{FrameCodec, ServiceError, ServiceResult, WireCodecError};
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, ZeroCopySend)]
@@ -1075,6 +1449,43 @@ mod tests {
         timestamp: u64,
         x: f32,
         y: f32,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Iox2VariableMessage {
+        payload: Vec<u8>,
+    }
+
+    impl FrameCodec for Iox2VariableMessage {
+        fn encoded_frame_size(&self) -> usize {
+            1 + self.payload.len()
+        }
+
+        fn encode_frame(&self, output: &mut [u8]) -> Result<(), WireCodecError> {
+            if output.len() != self.encoded_frame_size() {
+                return Err(WireCodecError::wrong_size(
+                    self.encoded_frame_size(),
+                    output.len(),
+                ));
+            }
+            let len = u8::try_from(self.payload.len())
+                .map_err(|_| WireCodecError::invalid_frame("payload exceeds test frame limit"))?;
+            output[0] = len;
+            output[1..].copy_from_slice(&self.payload);
+            Ok(())
+        }
+
+        fn decode_frame(input: &[u8]) -> Result<Self, WireCodecError> {
+            let Some((&len, payload)) = input.split_first() else {
+                return Err(WireCodecError::wrong_size(1, 0));
+            };
+            if payload.len() != usize::from(len) {
+                return Err(WireCodecError::wrong_size(usize::from(len), payload.len()));
+            }
+            Ok(Self {
+                payload: payload.to_vec(),
+            })
+        }
     }
 
     #[test]
@@ -1115,6 +1526,91 @@ mod tests {
         let received = smoke_pubsub("FlowRT/Smoke/AbiMessage", message)
             .expect("iceoryx2 pubsub should roundtrip a FlowRT ABI plain-data message");
         assert_eq!(received, message);
+    }
+
+    #[test]
+    fn frame_slot_encodes_decodes_and_rejects_oversized_frames() {
+        let message = Iox2VariableMessage {
+            payload: vec![1, 2, 3],
+        };
+
+        let slot = Iox2FrameSlot::<4>::try_from_message(&message)
+            .expect("bounded frame should fit the slot capacity");
+
+        assert_eq!(slot.len(), 4);
+        assert_eq!(slot.frame().unwrap(), &[3, 1, 2, 3]);
+        assert_eq!(
+            slot.decode_message::<Iox2VariableMessage>().unwrap(),
+            message
+        );
+
+        let error = Iox2FrameSlot::<3>::try_from_message(&message)
+            .expect_err("oversized frame must not be silently truncated");
+        assert!(
+            error.message().contains("exceeds iox2 frame slot capacity"),
+            "unexpected error: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn frame_pubsub_roundtrips_variable_frame_payload() {
+        let service_name = "FlowRT/Smoke/FramePubSub";
+        let mut receiver = Iox2FramePubSub::<Iox2VariableMessage, 16>::open(service_name).unwrap();
+        let mut sender = Iox2FramePubSub::<Iox2VariableMessage, 16>::open(service_name).unwrap();
+        let message = Iox2VariableMessage {
+            payload: vec![8, 13, 21],
+        };
+
+        sender.publish_at(message.clone(), 500).unwrap();
+        receiver.poll_once(Duration::from_millis(1)).unwrap();
+        let latest = receiver.receive_latest_at(501).unwrap();
+
+        assert_eq!(latest.as_ref(), Some(&message));
+        assert_eq!(receiver.revision(), 1);
+    }
+
+    #[test]
+    fn frame_service_request_response_roundtrips_variable_payloads() {
+        let name = unique_service_name("frame-roundtrip");
+        let server_name = name.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut server =
+                Iox2FrameServiceServer::<Iox2VariableMessage, Iox2VariableMessage, 16, 16>::open(
+                    &server_name,
+                    8,
+                )
+                .unwrap();
+            ready_tx.send(()).unwrap();
+            for _ in 0..50 {
+                let _ = server.poll_requests(|req| {
+                    let mut payload = req.payload;
+                    payload.push(55);
+                    ServiceResult::ok(Iox2VariableMessage { payload })
+                });
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        ready_rx.recv().unwrap();
+        let client =
+            Iox2FrameServiceClient::<Iox2VariableMessage, Iox2VariableMessage, 16, 16>::open(&name)
+                .unwrap();
+        let response = client.call(
+            Iox2VariableMessage {
+                payload: vec![1, 2, 3],
+            },
+            1000,
+        );
+
+        assert_eq!(
+            response,
+            ServiceResult::Ok(Iox2VariableMessage {
+                payload: vec![1, 2, 3, 55]
+            })
+        );
+        server.join().unwrap();
     }
 
     #[test]

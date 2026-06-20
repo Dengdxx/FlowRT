@@ -2,7 +2,7 @@
 
 use flowrt_ir::{ContractIr, GraphIr, OperationConcurrencyPolicy, OperationPreemptPolicy};
 
-use crate::messages::rust_type;
+use crate::messages::{frame_max_size_for_type, rust_type, type_contains_variable_data};
 use crate::runtime_plan::{OperationRuntimePlan, SchedulerHiddenTaskPlan, operation_runtime_plans};
 use crate::rust_string_literal;
 
@@ -94,8 +94,15 @@ pub(crate) fn emit_rust_operation_client_handles(contract: &ContractIr, graph: &
         output.push_str("#[allow(non_camel_case_types)]\n#[derive(Clone)]\n");
         output.push_str(&format!("pub struct {handle_name} {{\n"));
         if is_zenoh || is_iox2 {
+            let start_client_ty = if is_iox2 {
+                iox2_operation_start_client_type(contract, plan, &goal_ty)
+            } else {
+                format!(
+                    "flowrt::{transport_module}::{transport_client}<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>"
+                )
+            };
             output.push_str(&format!(
-                "    pub(crate) start_client: std::sync::Arc<std::sync::OnceLock<flowrt::{transport_module}::{transport_client}<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>>>,\n\
+                "    pub(crate) start_client: std::sync::Arc<std::sync::OnceLock<{start_client_ty}>>,\n\
                  pub(crate) cancel_client: std::sync::Arc<std::sync::OnceLock<flowrt::{transport_module}::{transport_client}<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n\
                  pub(crate) status_client: std::sync::Arc<std::sync::OnceLock<flowrt::{transport_module}::{transport_client}<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>,\n",
             ));
@@ -162,8 +169,9 @@ pub(crate) fn rust_app_operation_fields(contract: &ContractIr, graph: &GraphIr) 
         }
         let goal_ty = rust_type(&plan.goal_type);
         if plan.backend.0 == "iox2" {
+            let start_server_ty = iox2_operation_start_server_type(contract, plan, &goal_ty);
             output.push_str(&format!(
-                "    {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>>>>,\n\
+                "    {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<{start_server_ty}>>>,\n\
                  {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>>,\n\
                  {}: std::sync::Arc<std::sync::OnceLock<std::sync::Mutex<flowrt::iox2::Iox2ServiceServer<flowrt::OperationId, flowrt::OperationStatusSnapshot>>>>,\n",
                 operation_start_server_field_name(plan),
@@ -783,13 +791,14 @@ pub(crate) fn emit_rust_iox2_operation_endpoints(
         );
         if active.contains(plan.client_instance.as_str()) {
             let client_field = operation_client_field_name(plan);
+            let start_client_ty = iox2_operation_start_client_open_type(contract, plan, &goal_ty);
             output.push_str(&format!(
-                "        let _ = app.{client_field}.start_client.set(match flowrt::iox2::Iox2ServiceClient::open({start_name}) {{\n\
+                "        let _ = app.{client_field}.start_client.set(match {start_client_ty}::open({start_name}) {{\n\
                  \x20           Ok(client) => client,\n\
                  \x20           Err(error) => {{\n\
                  \x20               eprintln!(\"FlowRT: failed to open iox2 operation start client {{}}: {{error}}\", {start_name});\n\
                  \x20               status = flowrt::Status::Error;\n\
-                 \x20               flowrt::iox2::Iox2ServiceClient::unavailable({start_name}, error.to_string())\n\
+                 \x20               {start_client_ty}::unavailable({start_name}, error.to_string())\n\
                  \x20           }}\n\
                  \x20       }});\n\
                  \x20       let _ = app.{client_field}.cancel_client.set(match flowrt::iox2::Iox2ServiceClient::open({cancel_name}) {{\n\
@@ -816,8 +825,9 @@ pub(crate) fn emit_rust_iox2_operation_endpoints(
             let cancel_server = operation_cancel_server_field_name(plan);
             let status_server = operation_status_server_field_name(plan);
             let max_in_flight = plan.max_in_flight.max(1);
+            let start_server_ty = iox2_operation_start_server_open_type(contract, plan, &goal_ty);
             output.push_str(&format!(
-                "        match flowrt::iox2::Iox2ServiceServer::<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>::open({start_name}, {max_in_flight}usize) {{\n\
+                "        match {start_server_ty}::open({start_name}, {max_in_flight}usize) {{\n\
                  \x20           Ok(mut server) => {{\n\
                  \x20               server.set_schedule_waiter(scheduler_events.clone());\n\
                  \x20               let _ = app.{start_server}.set(std::sync::Mutex::new(server));\n\
@@ -1077,6 +1087,87 @@ pub(crate) fn emit_rust_operation_wake_checks(
     }
 
     output
+}
+
+fn iox2_operation_start_client_type(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+    goal_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_operation_start_caps(contract, plan) {
+        format!(
+            "flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+        )
+    } else {
+        format!(
+            "flowrt::iox2::Iox2ServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>"
+        )
+    }
+}
+
+fn iox2_operation_start_server_type(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+    goal_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_operation_start_caps(contract, plan) {
+        format!(
+            "flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+        )
+    } else {
+        format!(
+            "flowrt::iox2::Iox2ServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>"
+        )
+    }
+}
+
+fn iox2_operation_start_client_open_type(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+    goal_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_operation_start_caps(contract, plan) {
+        format!(
+            "flowrt::iox2::Iox2FrameServiceClient<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+        )
+    } else {
+        "flowrt::iox2::Iox2ServiceClient".to_string()
+    }
+}
+
+fn iox2_operation_start_server_open_type(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+    goal_ty: &str,
+) -> String {
+    if let Some((req_cap, resp_cap)) = iox2_operation_start_caps(contract, plan) {
+        format!(
+            "flowrt::iox2::Iox2FrameServiceServer<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck, {req_cap}, {resp_cap}>"
+        )
+    } else {
+        format!(
+            "flowrt::iox2::Iox2ServiceServer::<flowrt::OperationStartRequest<{goal_ty}>, flowrt::OperationStartAck>"
+        )
+    }
+}
+
+fn iox2_operation_start_caps(
+    contract: &ContractIr,
+    plan: &OperationRuntimePlan,
+) -> Option<(usize, usize)> {
+    if !type_contains_variable_data(contract, &plan.goal_type) {
+        return None;
+    }
+    let flowrt_ir::TypeExpr::Named { name } = &plan.goal_type else {
+        return None;
+    };
+    let goal_cap = frame_max_size_for_type(contract, crate::type_by_name(contract, name))?;
+    const OPERATION_START_REQUEST_HEADER_CAP: usize = 24;
+    const OPERATION_START_ACK_CAP: usize = 49;
+    Some((
+        OPERATION_START_REQUEST_HEADER_CAP + goal_cap,
+        OPERATION_START_ACK_CAP,
+    ))
 }
 
 pub(crate) fn operation_client_handle_name(plan: &OperationRuntimePlan) -> String {

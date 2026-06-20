@@ -189,7 +189,7 @@ pub(crate) fn emit_rust_runtime_shell(contract: &ContractIr) -> String {
         output.push_str(&format!(
             "    {}: std::sync::Arc<std::sync::Mutex<{}>>,\n",
             bind.field_name,
-            backend_emit::runtime_channel_type(bind)
+            backend_emit::runtime_channel_type(contract, bind)
         ));
         output.push_str(&format!(
             "    {}: std::sync::OnceLock<flowrt::IntrospectionChannelProbe>,\n",
